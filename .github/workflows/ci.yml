@@ -11,6 +11,11 @@ env:
   # Opt in to Node 24 for JavaScript actions ahead of the June 2026 default
   # flip. Without this, Node 20 actions emit deprecation warnings.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Rocky 9/10 minimal images install /usr/bin/gcc but not the /usr/bin/cc
+  # alternatives symlink. Force rustc to call gcc directly so we don't
+  # depend on the symlink existing.
+  CC: gcc
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: gcc
 
 jobs:
   check:
@@ -33,28 +38,29 @@ jobs:
       # Bootstrap: install everything needed by the rest of the job. Each
       # package is justified — drop any of them and a later step breaks.
       #   bash, tar, gzip, xz       — Swatinem/rust-cache needs tar+xz
-      #   findutils, which          — basic POSIX tools missing in :10
-      #   gcc, glibc-devel, make    — rustc's default linker is `cc` which
-      #                               on Rocky comes from the `gcc` package
-      #                               via the alternatives system. We also
-      #                               create the symlink defensively below
-      #                               since :9/:10 minimal images skip it.
+      #   findutils                 — basic POSIX tools missing in :10
+      #   gcc, glibc-devel, make    — rustc invokes the C toolchain as
+      #                               linker (CC=gcc env var above bypasses
+      #                               the missing /usr/bin/cc symlink).
       #   git                       — actions/checkout uses it post-clone
       #   ca-certificates           — rustup uses HTTPS
-      # NOTE: openssl-devel and pkgconfig deliberately left out — no native
-      # deps in the workspace yet. Adding either to the list on Rocky 10
-      # may trip the `pkgconfig` -> `pkgconf-pkg-config` rename and fail the
-      # whole transaction silently. Add back when we pull in a `-sys` crate.
+      # NOTE: `which`, `openssl-devel`, `pkgconfig` deliberately left out.
+      # `which` was removed on RHEL 10 (use the bash builtin `command -v`);
+      # `pkgconfig` was renamed to `pkgconf-pkg-config` on RHEL 10. dnf
+      # aborts the entire transaction silently if any name fails to resolve,
+      # which would leave the container without bash, tar, gcc, etc. Add
+      # any of these back only with version-aware logic.
       - name: Bootstrap (install bash, tar, gcc, …)
         run: |
-          dnf -y install bash tar gzip xz findutils which gcc glibc-devel make git ca-certificates
-          # Create /usr/bin/cc -> gcc symlink if the alternatives system
-          # didn't (true on Rocky 9/10 minimal images).
-          if [ ! -e /usr/bin/cc ]; then ln -s gcc /usr/bin/cc; fi
+          dnf -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          # Visibility: confirm dnf actually installed what we asked for.
+          rpm -q bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
           # Sanity-check everything the cache action + rustc need.
-          for bin in bash tar gzip xz gcc cc make git; do
+          for bin in bash tar gzip xz gcc make git; do
             command -v "$bin" || { echo "MISSING: $bin"; exit 1; }
           done
+          echo "PATH=$PATH"
+          echo "CC=$CC"
 
       - uses: actions/checkout@v5
 
