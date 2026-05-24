@@ -53,14 +53,6 @@ jobs:
       - name: Bootstrap (install bash, tar, gcc, …)
         run: |
           dnf -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
-          # Visibility: confirm dnf actually installed what we asked for.
-          rpm -q bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
-          # Sanity-check everything the cache action + rustc need.
-          for bin in bash tar gzip xz gcc make git; do
-            command -v "$bin" || { echo "MISSING: $bin"; exit 1; }
-          done
-          echo "PATH=$PATH"
-          echo "CC=$CC"
 
       - uses: actions/checkout@v5
 
@@ -73,7 +65,6 @@ jobs:
           # Also persist /usr/bin so rustc-spawned subprocesses (linker)
           # always find gcc, regardless of how GitHub re-assembles PATH.
           echo "/usr/bin" >> "$GITHUB_PATH"
-          ls -l /usr/bin/gcc
 
       - uses: Swatinem/rust-cache@v2
 
