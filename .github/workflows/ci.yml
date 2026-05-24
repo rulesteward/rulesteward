@@ -21,14 +21,18 @@ jobs:
       matrix:
         rocky: ["8", "9", "10"]
     container:
-      image: rockylinux:${{ matrix.rocky }}
+      # Use the rockylinux/rockylinux namespace — the legacy `rockylinux:10`
+      # tag doesn't exist on Docker Hub. The new namespace works for 8/9/10.
+      image: rockylinux/rockylinux:${{ matrix.rocky }}
     steps:
       - name: Install base tooling
         shell: bash
         run: |
           set -euxo pipefail
           if command -v dnf >/dev/null 2>&1; then PKG=dnf; else PKG=yum; fi
-          $PKG -y install gcc gcc-c++ make git pkgconfig openssl-devel ca-certificates curl
+          # Don't install `curl` — Rocky ships `curl-minimal`, which provides
+          # the same binary; pulling in full `curl` conflicts.
+          $PKG -y install gcc gcc-c++ make git pkgconfig openssl-devel ca-certificates
 
       - uses: actions/checkout@v4
 
