@@ -24,9 +24,13 @@ jobs:
       # Use the rockylinux/rockylinux namespace — the legacy `rockylinux:10`
       # tag doesn't exist on Docker Hub. The new namespace works for 8/9/10.
       image: rockylinux/rockylinux:${{ matrix.rocky }}
+    defaults:
+      run:
+        # The minimal rockylinux/rockylinux images ship /usr/bin/bash but no
+        # /bin/sh symlink, so the default `sh -c` shell fails. Force bash.
+        shell: bash
     steps:
       - name: Install base tooling
-        shell: bash
         run: |
           set -euxo pipefail
           if command -v dnf >/dev/null 2>&1; then PKG=dnf; else PKG=yum; fi
@@ -37,7 +41,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install stable Rust toolchain via rustup
-        shell: bash
         run: |
           set -euxo pipefail
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
