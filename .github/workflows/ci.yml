@@ -30,12 +30,31 @@ jobs:
         # minimal rockylinux/rockylinux images.
         shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
     steps:
-      # Bootstrap installs bash + tar (Swatinem/rust-cache needs tar) +
-      # build toolchain. Runs via `/usr/bin/bash` (the rockylinux base ships
-      # bash but may not have /bin/sh or /bin/bash symlinks).
-      - name: Bootstrap (install bash, tar, gcc, openssl-devel, …)
+      # Bootstrap: install everything needed by the rest of the job. Each
+      # package is justified — drop any of them and a later step breaks.
+      #   bash, tar, gzip, xz       — Swatinem/rust-cache needs tar+xz
+      #   findutils, which          — basic POSIX tools missing in :10
+      #   gcc, glibc-devel, make    — rustc's default linker is `cc` which
+      #                               on Rocky comes from the `gcc` package
+      #                               via the alternatives system. We also
+      #                               create the symlink defensively below
+      #                               since :9/:10 minimal images skip it.
+      #   git                       — actions/checkout uses it post-clone
+      #   ca-certificates           — rustup uses HTTPS
+      # NOTE: openssl-devel and pkgconfig deliberately left out — no native
+      # deps in the workspace yet. Adding either to the list on Rocky 10
+      # may trip the `pkgconfig` -> `pkgconf-pkg-config` rename and fail the
+      # whole transaction silently. Add back when we pull in a `-sys` crate.
+      - name: Bootstrap (install bash, tar, gcc, …)
         run: |
-          dnf -y install bash tar gzip xz which findutils gcc gcc-c++ make git pkgconfig openssl-devel ca-certificates
+          dnf -y install bash tar gzip xz findutils which gcc glibc-devel make git ca-certificates
+          # Create /usr/bin/cc -> gcc symlink if the alternatives system
+          # didn't (true on Rocky 9/10 minimal images).
+          if [ ! -e /usr/bin/cc ]; then ln -s gcc /usr/bin/cc; fi
+          # Sanity-check everything the cache action + rustc need.
+          for bin in bash tar gzip xz gcc cc make git; do
+            command -v "$bin" || { echo "MISSING: $bin"; exit 1; }
+          done
 
       - uses: actions/checkout@v5
 
