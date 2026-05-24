@@ -28,3 +28,4 @@ rustc-ice-*.txt
 .private-docs
 .rtk
 .wolf
+docs
