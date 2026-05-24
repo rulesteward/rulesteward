@@ -1,0 +1,44 @@
+name: Rule template request
+description: Request a new fapolicyd / SELinux / auditd rule template (or improvements to an existing one).
+title: "[template] "
+labels: ["rule-template", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rule templates live in the separate `rulesteward-templates` repository (BSD-3-Clause).
+        File this issue here only if the template request is tied to engine work in this repo.
+        Pure template requests should go to that repo's issue tracker.
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      options:
+        - fapolicyd
+        - selinux
+        - auditd
+    validations:
+      required: true
+  - type: input
+    id: application
+    attributes:
+      label: Application / workload covered
+      placeholder: "podman / nginx / postgres / ansible-pull / ..."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: What the template should allow / deny / audit
+    validations:
+      required: true
+  - type: textarea
+    id: compliance
+    attributes:
+      label: Compliance mapping (optional)
+      description: DISA STIG ID, ACSC Essential Eight ML, CIS Benchmark item, etc.
+  - type: textarea
+    id: references
+    attributes:
+      label: Upstream references
+      description: Vendor docs, distro packaging hints, related templates elsewhere.

@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Opt in to Node 24 for JavaScript actions ahead of the June 2026 default
+  # flip. Without this, Node 20 actions emit deprecation warnings.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Rocky 9/10 minimal images install /usr/bin/gcc but not the /usr/bin/cc
+  # alternatives symlink. Force rustc to call gcc directly via absolute
+  # path so PATH-lookup discrepancies in the linker exec don't bite us.
+  CC: /usr/bin/gcc
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: /usr/bin/gcc
+
+jobs:
+  check:
+    name: rocky${{ matrix.rocky }} — fmt + clippy + test + release-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rocky: ["8", "9", "10"]
+    container:
+      # Use the rockylinux/rockylinux namespace — the legacy `rockylinux:10`
+      # tag doesn't exist on Docker Hub. The new namespace works for 8/9/10.
+      image: rockylinux/rockylinux:${{ matrix.rocky }}
+    defaults:
+      run:
+        # Absolute path: don't depend on /bin/bash symlink or PATH in the
+        # minimal rockylinux/rockylinux images.
+        shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
+    steps:
+      # Bootstrap: install everything needed by the rest of the job. Each
+      # package is justified — drop any of them and a later step breaks.
+      #   bash, tar, gzip, xz       — Swatinem/rust-cache needs tar+xz
+      #   findutils                 — basic POSIX tools missing in :10
+      #   gcc, glibc-devel, make    — rustc invokes the C toolchain as
+      #                               linker (CC=gcc env var above bypasses
+      #                               the missing /usr/bin/cc symlink).
+      #   git                       — actions/checkout uses it post-clone
+      #   ca-certificates           — rustup uses HTTPS
+      # NOTE: `which`, `openssl-devel`, `pkgconfig` deliberately left out.
+      # `which` was removed on RHEL 10 (use the bash builtin `command -v`);
+      # `pkgconfig` was renamed to `pkgconf-pkg-config` on RHEL 10. dnf
+      # aborts the entire transaction silently if any name fails to resolve,
+      # which would leave the container without bash, tar, gcc, etc. Add
+      # any of these back only with version-aware logic.
+      - name: Bootstrap (install bash, tar, gcc, …)
+        run: |
+          dnf -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+
+      - uses: actions/checkout@v5
+
+      - name: Install stable Rust toolchain via rustup
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | bash -s -- -y --profile minimal --default-toolchain stable --component rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Also persist /usr/bin so rustc-spawned subprocesses (linker)
+          # always find gcc, regardless of how GitHub re-assembles PATH.
+          echo "/usr/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: cargo build --release (rulesteward bin, glibc)
+        run: cargo build --release --bin rulesteward --locked
