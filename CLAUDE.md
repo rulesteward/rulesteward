@@ -13,6 +13,7 @@ This project uses OpenWolf for context management. Read and follow .wolf/OPENWOL
 # Superpowers - Development Skills
 
 Make use of /superpowers skills whenever feasible.
+
 - /brainstorming
 - /writing-plans
 - /subagent-driven-development
@@ -49,3 +50,14 @@ Make use of /superpowers skills whenever feasible.
 - This specific project uses Rust, which the user does not have a deep understanding of.  Idiomatic Rust should be explained when being written.
 - Tokens are cheap, rework isn't.
     - It's better to spend more time, context, and thinking than to implement something that needs to be constantly reworked in the future.
+
+# Project Context — RuleSteward
+
+- **Spec + research lives in `.private-docs/`** — a gitignored symlink to `/home/runner/rulesteward-docs/`. Not in the GitHub repo. Start every session by reading `.private-docs/rulesteward-cli-tool-spec.md` (the v0.2 spec) and any `handoff-session-N.md` for the current milestone.
+- **Locked design decisions** are enumerated in spec §3 (19 of them). Do not re-litigate. If you find evidence contradicting one, surface it as `[QUESTION FOR USER]` and pause.
+- **Crate plan** (per spec §14.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`.
+- **Locked crates:** parser `chumsky = "0.13"` + `ariadne = "0.6"`; LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
+- **Distribution target:** `x86_64-unknown-linux-musl` static binary.
+- **License:** Engine Apache-2.0; rule templates BSD-3-Clause (separate repo).
+- **Commits are user-authored only. Never add `Co-Authored-By: Claude` or any AI-attribution trailer.** Branch + PR for every change; no commits to `main` directly.
+- **No telemetry. Read-only by default.** Every write/mutation flag must be opt-in.

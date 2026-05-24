@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in RuleSteward behaves incorrectly or crashes.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: rulesteward --version
+      placeholder: "0.1.0-dev"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / distro
+      placeholder: "RHEL 9.4 / Rocky 9.4 / Fedora 44 / ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options:
+        - fapolicyd
+        - selinux
+        - auditd
+        - cli (top-level)
+        - build / install
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command run
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior (include exit code + output)
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: rule
+    attributes:
+      label: Minimal rule / config that reproduces (if applicable)
+      render: text
+  - type: checkboxes
+    id: sensitive
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have stripped any sensitive paths / hostnames from the output above
+          required: true
+        - label: I have searched existing issues for duplicates
+          required: true

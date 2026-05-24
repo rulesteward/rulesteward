@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest a new capability for RuleSteward.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options:
+        - fapolicyd
+        - selinux
+        - auditd
+        - cli (top-level)
+        - core (shared types, diagnostics, formatters)
+        - sink (event sinks: stdout, file, syslog, ...)
+        - license / packaging
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem you're trying to solve
+      description: What can't you do today? What's the operational pain?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed CLI / API surface
+      description: Sketch the command, flags, and output. Concrete examples beat abstractions.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: textarea
+    id: stig
+    attributes:
+      label: Compliance mapping (optional)
+      description: DISA STIG ID, ACSC Essential Eight maturity level, CIS Benchmark item, etc.
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Alignment check
+      options:
+        - label: Read-only by default (any mutation is opt-in)
+        - label: No telemetry / phone-home introduced
+        - label: Unprivileged-friendly where possible

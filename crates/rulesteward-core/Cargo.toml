@@ -1,0 +1,12 @@
+[package]
+name = "rulesteward-core"
+description = "Shared types (diagnostics, severity, AST) for the RuleSteward toolkit."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
