@@ -13,10 +13,11 @@
 //! present.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal as _;
 
 use core::fmt::Write as _;
 
-use ariadne::{Label, Report, ReportKind, Source};
+use ariadne::{Config, Label, Report, ReportKind, Source};
 use rulesteward_core::{Diagnostic, Severity, span::Span};
 
 /// Map our `Severity` to an `ariadne::ReportKind`.
@@ -36,13 +37,24 @@ fn label_for<'a>(id: &'a str, d: &'a Diagnostic) -> Label<(&'a str, Span)> {
     Label::new((id, d.span.clone())).with_message(d.message.as_str())
 }
 
+/// Determine whether ANSI color output is appropriate.
+///
+/// Colors are enabled only when stdout is a TTY AND the `NO_COLOR`
+/// environment variable is absent. This follows the `NO_COLOR.org` convention
+/// and prevents escape codes from appearing in piped or redirected output.
+fn color_enabled() -> bool {
+    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
 /// Render a single diagnostic as an ariadne snippet into `out`.
 ///
 /// Returns `false` when the source text is not available and the caller
 /// should fall back to plain rendering.
 fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
+    let config = Config::default().with_color(color_enabled());
     let mut report_buf: Vec<u8> = Vec::new();
     let result = Report::build(report_kind(d.severity), (source_id, d.span.clone()))
+        .with_config(config)
         .with_message(format!(
             "{file}:{line}:{col} [{code}] {sev}: {msg}",
             file = d.file.display(),

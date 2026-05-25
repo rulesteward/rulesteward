@@ -182,6 +182,55 @@ fn lint_human_output_falls_back_to_plain_when_source_id_absent() {
         .stdout(predicate::str::contains('\u{2500}').not()); // U+2500 ─
 }
 
+/// When stdout is captured by `assert_cmd` (a pipe, not a TTY), ariadne must
+/// disable ANSI color escape sequences. Box-drawing characters (e.g. U+2500
+/// which ariadne uses for structural underlines) remain - they are part of
+/// structural rendering, not color rendering.
+#[test]
+fn lint_human_output_strips_ansi_when_stdout_is_not_a_tty() {
+    // assert_cmd captures stdout via a pipe, so the binary should detect
+    // non-TTY and disable ANSI color codes.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+    let output = Command::cargo_bin("rulesteward")
+        .expect("binary exists")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(&fixture)
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("command runs");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    assert!(
+        !stdout.contains('\u{001b}'),
+        "stdout must not contain ANSI escape codes when piped, got: {stdout:?}"
+    );
+    // Sanity: box-drawing structural chars still present (not color rendering).
+    assert!(
+        stdout.contains('\u{2500}'),
+        "box-drawing chars should remain on pipe, got: {stdout:?}"
+    );
+}
+
+/// Even when `NO_COLOR=1` is set, ANSI codes must be suppressed.
+/// (`assert_cmd` is already non-TTY so this also documents the `NO_COLOR` contract.)
+#[test]
+fn lint_human_output_strips_ansi_when_no_color_set() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+    let output = Command::cargo_bin("rulesteward")
+        .expect("binary exists")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(&fixture)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("command runs");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    assert!(
+        !stdout.contains('\u{001b}'),
+        "NO_COLOR=1 must suppress ANSI codes, got: {stdout:?}"
+    );
+}
+
 /// Switching to JSON output must not be affected by the ariadne renderer path.
 /// JSON output should still be a JSON array with the expected code.
 #[test]
