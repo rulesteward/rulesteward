@@ -13,7 +13,7 @@ use crate::cli::{Cli, CompletionShell, CompletionsArgs};
 use crate::exit_code::EXIT_CLEAN;
 
 #[must_use]
-pub fn run(args: CompletionsArgs) -> i32 {
+pub fn run(args: &CompletionsArgs) -> i32 {
     let mut cmd = Cli::command();
     let bin_name = "rulesteward";
     let mut stdout = io::stdout().lock();
