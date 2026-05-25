@@ -202,7 +202,7 @@ fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Decision, SyntaxFlavor};
+    use crate::ast::{Attr, Decision, SyntaxFlavor};
 
     #[test]
     fn empty_source_parses_to_no_entries() {
@@ -312,6 +312,64 @@ mod tests {
         assert_eq!(
             rule.span.end, 20,
             "Rule.span.end must reach just past `all`"
+        );
+    }
+
+    // --- Integration tests: legacy rules with dir/ftype/trust as object anchors ---
+
+    #[test]
+    fn legacy_rule_with_trust_object_anchor_parses() {
+        // Before Task 5's fix: trust was classified as Either, so positional_split
+        // could not find an object-only attribute to anchor the legacy subject/object
+        // split. The rule failed to parse. After Task 5: trust is legacy-classified
+        // as Object, so the split fires at the `trust` attribute.
+        let entries = parse_rules_file("allow uid=0 trust=1\n")
+            .expect("legacy rule with trust as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule, got {:?}", entries[0])
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert_eq!(r.subject.len(), 1, "subject side should contain uid=0");
+        assert_eq!(r.object.len(), 1, "object side should contain trust=1");
+        assert!(
+            matches!(&r.subject[0], Attr::Kv { key, .. } if key == "uid"),
+            "subject[0] should be uid, got {:?}",
+            r.subject[0]
+        );
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "trust"),
+            "object[0] should be trust, got {:?}",
+            r.object[0]
+        );
+    }
+
+    #[test]
+    fn legacy_rule_with_dir_object_anchor_parses() {
+        let entries = parse_rules_file("allow uid=0 dir=/usr\n")
+            .expect("legacy rule with dir as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule")
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "dir"),
+            "object[0] should be dir, got {:?}",
+            r.object[0]
+        );
+    }
+
+    #[test]
+    fn legacy_rule_with_ftype_object_anchor_parses() {
+        let entries = parse_rules_file("allow uid=0 ftype=application/x-executable\n")
+            .expect("legacy rule with ftype as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule")
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "ftype"),
+            "object[0] should be ftype, got {:?}",
+            r.object[0]
         );
     }
 

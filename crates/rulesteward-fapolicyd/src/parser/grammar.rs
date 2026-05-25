@@ -3,7 +3,7 @@
 //! Two top-level productions:
 //! * [`modern_rule`]  - `decision [perm=X] subj : obj`
 //! * [`legacy_rule`]  - `decision [perm=X] subj... obj...` (no colon;
-//!   subject/object split positionally via [`crate::attrs::classify`]).
+//!   subject/object split positionally via the internal `legacy_classify`).
 //!
 //! Plus [`set_definition`] for `%name=val1,val2`. Every named production
 //! carries a `.labelled(...)` so chumsky's expected-token list surfaces
@@ -14,7 +14,7 @@ use chumsky::extra;
 use chumsky::prelude::*;
 
 use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
-use crate::attrs::{self, AttrSide};
+use crate::attrs::AttrSide;
 
 fn decision_kw<'a>() -> impl Parser<'a, &'a str, Decision, extra::Err<Rich<'a, char>>> + Clone {
     choice((
@@ -186,14 +186,45 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
         .labelled("set definition")
 }
 
+/// Legacy-flavor attribute classification for the positional split.
+///
+/// This is intentionally different from `attrs::classify`, which is
+/// flavor-agnostic (modern dialect). In the legacy ORIG format:
+///
+/// * `dir`, `ftype`, `trust` are object-only (in modern they are `Either`).
+/// * `gid`, `ppid` are illegal on the legacy subject side and are NOT valid
+///   split anchors (return `None`).
+///
+/// Source: R2-audit-grammar.md "Subject attributes (legacy ORIG format)" and
+/// "Object attributes" sections.
+fn legacy_classify(name: &str) -> Option<AttrSide> {
+    match name {
+        // Subject-only in legacy
+        "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "exe_dir" | "exe_type" => {
+            Some(AttrSide::Subject)
+        }
+        // Object-only in legacy (dir/ftype/trust differ from modern's Either)
+        "path" | "device" | "filehash" | "sha256hash" | "dir" | "ftype" | "trust" => {
+            Some(AttrSide::Object)
+        }
+        // Valid on either side in both flavors
+        "all" | "pattern" => Some(AttrSide::Either),
+        // Unknown attribute, or legacy-illegal attrs (gid, ppid) - not a valid split anchor
+        _ => None,
+    }
+}
+
 /// Split a flat legacy-syntax attribute list into `(subject, object)` using
-/// the attribute-name classifier from `attrs.rs`. The first object-only
-/// attribute marks the switch point.
+/// the legacy-specific attribute classifier. The first object-only attribute
+/// marks the switch point.
+///
+/// Uses `legacy_classify` (not `attrs::classify`) so that `dir`, `ftype`, and
+/// `trust` correctly serve as object-side anchors in the legacy dialect.
 fn positional_split(attrs_flat: &[Attr]) -> Result<(Vec<Attr>, Vec<Attr>), String> {
     let switch_at = attrs_flat
         .iter()
         .position(|a| {
-            matches!(a, Attr::Kv { key, .. } if matches!(attrs::classify(key), Some(AttrSide::Object)))
+            matches!(a, Attr::Kv { key, .. } if matches!(legacy_classify(key), Some(AttrSide::Object)))
         })
         .ok_or_else(|| "legacy rule has no object-only attribute to split on".to_string())?;
 
@@ -324,6 +355,184 @@ mod tests {
         if let Entry::Rule(r) = parsed {
             assert_eq!(r.span.start, 0);
             assert_eq!(r.span.end, body.len());
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    // --- legacy_classify unit tests (one per truth-table row) ---
+
+    #[test]
+    fn legacy_classify_uid_is_subject() {
+        assert_eq!(legacy_classify("uid"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_auid_is_subject() {
+        assert_eq!(legacy_classify("auid"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_sessionid_is_subject() {
+        assert_eq!(legacy_classify("sessionid"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_pid_is_subject() {
+        assert_eq!(legacy_classify("pid"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_comm_is_subject() {
+        assert_eq!(legacy_classify("comm"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_exe_is_subject() {
+        assert_eq!(legacy_classify("exe"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_exe_dir_is_subject() {
+        assert_eq!(legacy_classify("exe_dir"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_exe_type_is_subject() {
+        assert_eq!(legacy_classify("exe_type"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn legacy_classify_gid_is_illegal_in_legacy() {
+        // gid is legal in modern subject; illegal in legacy - not a split anchor.
+        assert_eq!(legacy_classify("gid"), None);
+    }
+
+    #[test]
+    fn legacy_classify_ppid_is_illegal_in_legacy() {
+        // ppid is legal in modern subject; illegal in legacy - not a split anchor.
+        assert_eq!(legacy_classify("ppid"), None);
+    }
+
+    #[test]
+    fn legacy_classify_path_is_object() {
+        assert_eq!(legacy_classify("path"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_device_is_object() {
+        assert_eq!(legacy_classify("device"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_filehash_is_object() {
+        assert_eq!(legacy_classify("filehash"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_sha256hash_is_object() {
+        assert_eq!(legacy_classify("sha256hash"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_trust_is_object_in_legacy() {
+        // Key variance from modern: trust is Either in modern, Object-only in legacy.
+        // This locks the fix for the positional_split bug.
+        assert_eq!(legacy_classify("trust"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_dir_is_object_in_legacy() {
+        // Key variance from modern: dir is Either in modern, Object-only in legacy.
+        assert_eq!(legacy_classify("dir"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_ftype_is_object_in_legacy() {
+        // Key variance from modern: ftype is Either in modern, Object-only in legacy.
+        assert_eq!(legacy_classify("ftype"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_all_is_either() {
+        assert_eq!(legacy_classify("all"), Some(AttrSide::Either));
+    }
+
+    #[test]
+    fn legacy_classify_pattern_is_either() {
+        assert_eq!(legacy_classify("pattern"), Some(AttrSide::Either));
+    }
+
+    #[test]
+    fn legacy_classify_unknown_returns_none() {
+        assert_eq!(legacy_classify("bogus_attr"), None);
+        assert_eq!(legacy_classify(""), None);
+    }
+
+    // --- legacy_rule integration tests for dir/ftype/trust as object anchors ---
+
+    #[test]
+    fn legacy_rule_with_trust_as_object_anchor_parses() {
+        // Before Task 5's fix: trust was classified as Either, so positional_split
+        // could not find an object-only attribute to anchor the legacy subject/object
+        // split. The rule failed to parse. After Task 5: trust is legacy-classified
+        // as Object, so the split fires correctly.
+        let parsed = legacy_rule()
+            .parse("allow uid=0 trust=1")
+            .into_result()
+            .expect("legacy rule with trust as object anchor must parse");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+            assert_eq!(r.subject.len(), 1, "subject side should contain uid=0");
+            assert_eq!(r.object.len(), 1, "object side should contain trust=1");
+            assert!(
+                matches!(&r.subject[0], Attr::Kv { key, .. } if key == "uid"),
+                "subject[0] should be uid, got {:?}",
+                r.subject[0]
+            );
+            assert!(
+                matches!(&r.object[0], Attr::Kv { key, .. } if key == "trust"),
+                "object[0] should be trust, got {:?}",
+                r.object[0]
+            );
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_with_dir_as_object_anchor_parses() {
+        // dir is object-only in legacy; verify it anchors the split correctly.
+        let parsed = legacy_rule()
+            .parse("allow uid=0 dir=/usr")
+            .into_result()
+            .expect("legacy rule with dir as object anchor must parse");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+            assert!(
+                matches!(&r.object[0], Attr::Kv { key, .. } if key == "dir"),
+                "object[0] should be dir, got {:?}",
+                r.object[0]
+            );
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_with_ftype_as_object_anchor_parses() {
+        // ftype is object-only in legacy; verify it anchors the split correctly.
+        let parsed = legacy_rule()
+            .parse("allow uid=0 ftype=application/x-executable")
+            .into_result()
+            .expect("legacy rule with ftype as object anchor must parse");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+            assert!(
+                matches!(&r.object[0], Attr::Kv { key, .. } if key == "ftype"),
+                "object[0] should be ftype, got {:?}",
+                r.object[0]
+            );
         } else {
             panic!("expected Rule");
         }
