@@ -46,8 +46,16 @@ pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::
     // The parser emits diagnostics with file = "<source>" placeholder
     // (the parser doesn't know the path). Rewrite to the real path so
     // CI tooling that greps `file:line:col` sees the actual file.
+    //
+    // Also set `source_id` to the same path string the CLI uses as the
+    // key in its `BTreeMap<String, String>` source cache (`Path::display`
+    // formatting). With both `source_id` set and a real byte-range span
+    // from the chumsky `Rich::span()`, F01 diagnostics now render with an
+    // ariadne snippet just like E01 / F03 / W02 / W03.
+    let source_id = path.display().to_string();
     for d in &mut parse_diags {
         d.file = path.to_path_buf();
+        d.source_id = Some(source_id.clone());
     }
     let mut diags = parse_diags;
     diags.extend(lint(&entries, &source, path));
@@ -93,6 +101,15 @@ mod tests {
             f.path(),
             "F01 diagnostic file should match input path, got {:?}",
             f01.file
+        );
+        // The lint_file post-emission rewrite must also set source_id so the
+        // ariadne renderer can find the source text in the CLI's source map.
+        // Without this, F01 silently falls back to plain rendering even
+        // though its span is a real byte range.
+        assert_eq!(
+            f01.source_id.as_deref(),
+            Some(f.path().display().to_string().as_str()),
+            "F01 source_id must match the file path string used by the CLI source map",
         );
     }
 
