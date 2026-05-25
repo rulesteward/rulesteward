@@ -7,7 +7,7 @@
 //! ## Why a hand-formatted snapshot (not yaml / debug)?
 //!
 //! `insta::assert_yaml_snapshot!` would need `serde::Serialize` on a custom
-//! helper struct, which would require adding a `serde` dev-dep — the agent
+//! helper struct, which would require adding a `serde` dev-dep - the agent
 //! brief forbids new deps. `assert_debug_snapshot!` would tie the snapshot
 //! to the `Debug` representation of `Vec<Diagnostic>`, which is verbose,
 //! noisy, and Rust-version-sensitive.
@@ -28,10 +28,10 @@
 //!
 //! ## What ships when
 //!
-//! No `.snap` files exist yet — they are generated on the first impl-green
+//! No `.snap` files exist yet - they are generated on the first impl-green
 //! run by `INSTA_UPDATE=always cargo test --test snapshot_test` or the
 //! `cargo insta review` workflow. Until the parser/lint bodies land, every
-//! snapshot test panics inside `todo!()` — that is the TDD discipline.
+//! snapshot test panics inside `todo!()` - that is the TDD discipline.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -62,7 +62,7 @@ fn list_rules_files(code: &str) -> Vec<PathBuf> {
     out
 }
 
-/// List every immediate subdirectory of `<traps>/F02/`, sorted by name —
+/// List every immediate subdirectory of `<traps>/F02/`, sorted by name -
 /// these are the layout scenarios (each contains a representative
 /// `fapolicyd.rules` and/or `rules.d/`).
 fn list_layout_scenarios() -> Vec<PathBuf> {
@@ -79,7 +79,7 @@ fn list_layout_scenarios() -> Vec<PathBuf> {
 
 /// Render diagnostics into the deterministic line-per-diagnostic snapshot
 /// shape described in the module doc. The `outcome` header on line 1 is
-/// either `parse=ok` or `parse=err` — itself a mutation-killing assertion
+/// either `parse=ok` or `parse=err` - itself a mutation-killing assertion
 /// (flipping the success/failure branch in the parser changes line 1).
 fn render(outcome: &str, diags: &[Diagnostic]) -> String {
     let mut s = String::new();
@@ -142,7 +142,7 @@ fn drive_file(code: &str, path: &Path) {
 
     let snapshot_name = format!("{code}__{stem}");
     // Override the snapshot path so all snaps land in tests/snapshots/ with
-    // the predictable name above — keeps the review surface tidy.
+    // the predictable name above - keeps the review surface tidy.
     let mut settings = Settings::clone_current();
     settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
     settings.set_prepend_module_to_snapshot(false);
@@ -152,7 +152,7 @@ fn drive_file(code: &str, path: &Path) {
 }
 
 // ---------------------------------------------------------------------------
-// F01 — syntax errors / unknown directives. Parser-driven; lint never runs.
+// F01 - syntax errors / unknown directives. Parser-driven; lint never runs.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -169,7 +169,7 @@ fn f01_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// F03 — mixed modern + legacy syntax in one file. Lint-walker-driven.
+// F03 - mixed modern + legacy syntax in one file. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -186,7 +186,7 @@ fn f03_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// E01 — unknown attribute name. Lint-walker-driven, one E01 per offender.
+// E01 - unknown attribute name. Lint-walker-driven, one E01 per offender.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -203,7 +203,7 @@ fn e01_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// W02 — broad allow on execute / any with `all : all`. Lint-walker-driven.
+// W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -220,7 +220,7 @@ fn w02_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// W03 — inline trailing `# comment`. Parser pre-pass-driven.
+// W03 - inline trailing `# comment`. Parser pre-pass-driven.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -237,7 +237,7 @@ fn w03_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// F02 — file-layout coexistence. Filesystem-driven via `check_layout`.
+// F02 - file-layout coexistence. Filesystem-driven via `check_layout`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -258,7 +258,7 @@ fn f02_layout_traps() {
         let diag_opt = check_layout(scenario_dir);
 
         // Render: single-line outcome on line 1, then the diagnostic line if
-        // any. We do NOT use `Debug` of `Option<Diagnostic>` — that would
+        // any. We do NOT use `Debug` of `Option<Diagnostic>` - that would
         // include the absolute `file: PathBuf` which is host-specific.
         let mut rendered = String::new();
         match &diag_opt {

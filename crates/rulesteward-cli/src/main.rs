@@ -1,4 +1,4 @@
-//! `rulesteward` — top-level CLI binary.
+//! `rulesteward` - top-level CLI binary.
 //!
 //! Thin shell: parse argv via clap, dispatch to the matching
 //! `commands::<ns>::run`, and use the returned `i32` as the

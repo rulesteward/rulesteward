@@ -1,4 +1,4 @@
-//! `--help` smoke tests — verify that clap renders the full subcommand
+//! `--help` smoke tests - verify that clap renders the full subcommand
 //! tree (fapolicyd / selinux / auditd) and that `fapolicyd lint --help`
 //! exposes the `--file`, `--format`, and `--against-trustdb` flags.
 

@@ -6,7 +6,7 @@
 /// Byte index of an inline `#` (one that follows at least one non-whitespace
 /// token earlier on the line), or `None` if no inline `#` is present.
 ///
-/// A leading-whitespace `#` is NOT inline — there's no preceding
+/// A leading-whitespace `#` is NOT inline - there's no preceding
 /// non-whitespace token. Such a line is rejected by the parser as F01, not
 /// flagged by W03.
 #[must_use]

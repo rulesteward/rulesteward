@@ -1,4 +1,4 @@
-//! Lossless `Display` impls for the IR — render any `Entry` back to a
+//! Lossless `Display` impls for the IR - render any `Entry` back to a
 //! source line that re-parses to the same `Entry` (modulo `line`, which is
 //! position-driven on re-parse). Used by the round-trip proptest property
 //! and (eventually) by `simulate` for diff rendering.

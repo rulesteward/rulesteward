@@ -1,9 +1,9 @@
 //! Known attribute names + their permitted side (subject / object / either).
 //!
 //! Used in two places:
-//! * `parser::legacy_rule` — to positionally split the flat attribute list
+//! * `parser::legacy_rule` - to positionally split the flat attribute list
 //!   into `(subject, object)` halves in the legacy (no-colon) syntax.
-//! * `lints::E01` — to flag unknown attribute names.
+//! * `lints::E01` - to flag unknown attribute names.
 //!
 //! Source: R2-audit-grammar.md, derived from
 //! `src/library/{subject,object}-attr.c` in upstream fapolicyd.
@@ -19,7 +19,7 @@
 //! but lets the legacy positional split reject some valid legacy rules
 //! (those whose object side is purely `dir/ftype/trust` without an
 //! `OBJECT_ONLY` anchor like `path=`). Per plan §7 this was explicitly
-//! flagged as a "do not silently relax" decision — the fix needs a
+//! flagged as a "do not silently relax" decision - the fix needs a
 //! flavor-aware classifier and per-flavor `is_known()` semantics.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

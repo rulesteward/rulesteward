@@ -13,7 +13,7 @@ use crate::cli::OutputFormat;
 /// human and JSON renderers cannot fail.
 #[derive(Debug)]
 pub enum RenderError {
-    /// SARIF rendering is stubbed in v0.1.0-dev — caller must map to exit 3.
+    /// SARIF rendering is stubbed in v0.1.0-dev - caller must map to exit 3.
     SarifNotImplemented,
 }
 

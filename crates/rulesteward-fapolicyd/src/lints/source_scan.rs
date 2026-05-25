@@ -1,4 +1,4 @@
-//! Source-driven lint passes — re-scan the raw `&str` source to emit W03
+//! Source-driven lint passes - re-scan the raw `&str` source to emit W03
 //! (inline trailing `# comment`). The parser strips inline `#` text before
 //! handing the line to chumsky; we re-detect it here so the warning surface
 //! is owned by the lint module, not the parser.
@@ -9,7 +9,7 @@ use rulesteward_core::{Diagnostic, Severity};
 
 use crate::parser::inline;
 
-/// W03 — inline trailing `# comment` past the first non-whitespace token.
+/// W03 - inline trailing `# comment` past the first non-whitespace token.
 /// fapolicyd silently fails to parse such lines, so we warn before they hit
 /// production.
 pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
@@ -38,7 +38,7 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
                 Severity::Warning,
                 "W03",
                 span_start..span_end,
-                "inline `# comment` after a rule line — fapolicyd silently drops this rule",
+                "inline `# comment` after a rule line - fapolicyd silently drops this rule",
                 file,
                 lineno,
                 hash_col_in_line + 1,

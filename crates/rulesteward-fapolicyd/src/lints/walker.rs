@@ -1,4 +1,4 @@
-//! AST-driven lint passes — walk `&[Entry]` once and emit diagnostics for
+//! AST-driven lint passes - walk `&[Entry]` once and emit diagnostics for
 //! F03 (mixed-syntax), E01 (unknown attribute), and W02 (broad allow on
 //! execute).
 //!
@@ -28,7 +28,7 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out
 }
 
-/// F03 — both `SyntaxFlavor::Modern` and `SyntaxFlavor::Legacy` present in
+/// F03 - both `SyntaxFlavor::Modern` and `SyntaxFlavor::Legacy` present in
 /// the same file. Reported on the line where the SECOND flavor first
 /// appears (whichever it is).
 fn f03(entries: &[Entry], file: &Path) -> Option<Diagnostic> {
@@ -53,7 +53,7 @@ fn f03(entries: &[Entry], file: &Path) -> Option<Diagnostic> {
                 Severity::Fatal,
                 "F03",
                 0..0,
-                "file mixes modern (`:`) and legacy (no `:`) rule syntaxes — pick one",
+                "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
                 file,
                 trigger_line,
                 1,
@@ -63,7 +63,7 @@ fn f03(entries: &[Entry], file: &Path) -> Option<Diagnostic> {
     }
 }
 
-/// E01 — attribute key not in `attrs::is_known`. Emitted once per offending
+/// E01 - attribute key not in `attrs::is_known`. Emitted once per offending
 /// attribute (so a rule with two unknown keys yields two diagnostics).
 fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -89,7 +89,7 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// W02 — broad allow on execute. Fires when the decision is one of the
+/// W02 - broad allow on execute. Fires when the decision is one of the
 /// `allow_*` family AND `perm` is `Execute` or `Any` AND both subject and
 /// object are exactly `[Attr::All]`.
 fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
@@ -109,7 +109,7 @@ fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 Severity::Warning,
                 "W02",
                 0..0,
-                "broad allow on execute (subject=all, object=all) — every binary on the system can run",
+                "broad allow on execute (subject=all, object=all) - every binary on the system can run",
                 file,
                 r.line,
                 1,

@@ -1,7 +1,7 @@
 //! End-to-end CLI tests via `assert_cmd`. These exercise the whole pipeline:
 //! argv → clap parse → command dispatch → `lint_file` → render → exit code.
 //!
-//! One test per exit-code path. The temp files are minimal — they exercise
+//! One test per exit-code path. The temp files are minimal - they exercise
 //! the path through the code, not the full lint surface (the parser and
 //! lint walker have their own dedicated test suites in
 //! `rulesteward-fapolicyd`).

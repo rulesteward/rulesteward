@@ -1,12 +1,12 @@
 # RuleSteward
 
-**Modular RHEL hardening toolkit** — read-only, CI-friendly static analysis and live triage for `fapolicyd`, SELinux, and `auditd`.
+**Modular RHEL hardening toolkit** - read-only, CI-friendly static analysis and live triage for `fapolicyd`, SELinux, and `auditd`.
 
 > Compatible with **DISA STIG RHEL 8/9/10** and **ACSC Essential Eight** application control objectives.
 
 ## Status
 
-`0.1.0-dev` — workspace scaffold. No domain code yet. See [`.private-docs/handoff-session-2.md`](.private-docs/handoff-session-2.md) for the next implementation milestone (fapolicyd parser + `rulesteward fapolicyd lint`).
+`0.1.0-dev` - workspace scaffold. No domain code yet. See [`.private-docs/handoff-session-2.md`](.private-docs/handoff-session-2.md) for the next implementation milestone (fapolicyd parser + `rulesteward fapolicyd lint`).
 
 ## Design principles
 

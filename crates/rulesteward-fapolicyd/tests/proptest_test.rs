@@ -3,7 +3,7 @@
 //! Three proptest properties + two hard-coded sentinel `#[test]`s. The
 //! sentinels exist so that mutations which trivialize the parser (e.g.
 //! "always return `Ok(vec![])`" or "only report the first F01") are killed
-//! even by a single non-shrinking run — `cargo-mutants` will see one of the
+//! even by a single non-shrinking run - `cargo-mutants` will see one of the
 //! sentinels fail and mark the mutant as caught.
 //!
 //! ## Field-comparison contract for the round-trip property
@@ -14,7 +14,7 @@
 //! the line in the source text. We render entries one-per-line with a
 //! trailing `'\n'`, so after re-parsing, line N corresponds to the entry at
 //! index N-1 in both the original and the re-parsed `Vec`. We therefore
-//! compare every AST field directly without normalization — `line` agrees by
+//! compare every AST field directly without normalization - `line` agrees by
 //! construction, not by accident. If a future Display impl emits multi-line
 //! output for a single entry, this property will start failing and force
 //! either a normalization pass or a Display fix; both outcomes are fine.
@@ -125,7 +125,7 @@ mod generators {
     }
 
     /// Strict subject keys (legacy positional classifier guarantees these
-    /// land on the subject side regardless of input order — see
+    /// land on the subject side regardless of input order - see
     /// `attrs::SUBJECT_ONLY`).
     pub(super) fn arb_subject_only_attr() -> impl Strategy<Value = Attr> {
         arb_kv_from(attrs::SUBJECT_ONLY)
@@ -137,7 +137,7 @@ mod generators {
     }
 
     /// Modern-syntax attribute: any of the three keysets, plus `Attr::All`.
-    /// The `BOTH_SIDES` set has `"all"` filtered out — the bare `all` token
+    /// The `BOTH_SIDES` set has `"all"` filtered out - the bare `all` token
     /// is generated separately as `Attr::All`.
     pub(super) fn arb_modern_attr() -> impl Strategy<Value = Attr> {
         // BOTH_SIDES contains "all"; the parser treats `all` as Attr::All
@@ -152,7 +152,7 @@ mod generators {
     }
 
     /// Generate a Modern-syntax rule: subject (1..=4 attrs), `:`, object
-    /// (1..=4 attrs). Either side may include any known key — the colon
+    /// (1..=4 attrs). Either side may include any known key - the colon
     /// disambiguates positionally.
     pub(super) fn arb_modern_rule() -> impl Strategy<Value = Rule> {
         (
@@ -176,7 +176,7 @@ mod generators {
     ///
     /// 1. Subject keys are drawn ONLY from `attrs::SUBJECT_ONLY`; object
     ///    keys ONLY from `attrs::OBJECT_ONLY`. `BOTH_SIDES` keys (including
-    ///    `Attr::All`) are excluded — without a `:` delimiter, a `dir=`
+    ///    `Attr::All`) are excluded - without a `:` delimiter, a `dir=`
     ///    could legally be classified onto either side, which would cause a
     ///    round-trip mismatch.
     /// 2. The Display impl renders subject first, then object, with no
@@ -223,7 +223,7 @@ mod generators {
     fn arb_comment_entry() -> impl Strategy<Value = Entry> {
         // Comment text: printable ASCII (no `\n`, no `\r`). The Display
         // impl prefixes with `#`, so a comment text containing additional
-        // `#` characters is fine — the parser reads everything to EOL.
+        // `#` characters is fine - the parser reads everything to EOL.
         "[ -~]{0,64}".prop_map(|text| Entry::Comment { text, line: 0 })
     }
 
@@ -292,7 +292,7 @@ mod generators {
 /// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order.
 /// Both sides of the round-trip equality go through this, so we never
 /// compare an actual parser-emitted line number against the generator's
-/// stamped one — the source-text construction guarantees they match, but
+/// stamped one - the source-text construction guarantees they match, but
 /// being explicit prevents a future Display change from silently breaking
 /// the property.
 fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
@@ -338,7 +338,7 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
-    /// Property 1 — `parse_rules_file` never panics on arbitrary input, and
+    /// Property 1 - `parse_rules_file` never panics on arbitrary input, and
     /// on `Err` always returns at least one `Fatal` diagnostic whose code
     /// starts with `'F'`. The Fatal-content assertion kills the mutation
     /// "replace `Err(diags)` with `Err(vec![])`".
@@ -355,7 +355,7 @@ proptest! {
         if let Ok(Err(diags)) = result {
             prop_assert!(
                 !diags.is_empty(),
-                "Err path returned an empty diagnostic vec — caller has no way to know what failed"
+                "Err path returned an empty diagnostic vec - caller has no way to know what failed"
             );
             let has_fatal_f = diags.iter().any(|d| {
                 d.severity == Severity::Fatal && d.code.as_ref().starts_with('F')
@@ -369,14 +369,14 @@ proptest! {
         }
     }
 
-    /// Property 2 — every `Vec<Entry>` produced by `arb_program()` renders
+    /// Property 2 - every `Vec<Entry>` produced by `arb_program()` renders
     /// to a source string that re-parses to an equal `Vec<Entry>` (after
-    /// line-normalization on both sides — see top-of-file contract).
+    /// line-normalization on both sides - see top-of-file contract).
     ///
     /// `arb_program()` is constrained to only emit shapes the parser must
     /// accept (known attribute keys, legacy rules respect the positional
     /// classifier, no reserved characters in payloads). If parsing fails,
-    /// the generator and parser disagree on what counts as "valid" — we
+    /// the generator and parser disagree on what counts as "valid" - we
     /// surface that as a property failure with the source text in the
     /// shrunken counter-example.
     #[test]
@@ -409,11 +409,11 @@ proptest! {
         );
     }
 
-    /// Property 3 — adding N invalid lines in front of a valid input never
+    /// Property 3 - adding N invalid lines in front of a valid input never
     /// reduces the count of `Severity::Fatal` diagnostics. Specifically:
     ///
-    ///   * `fatal_count(combined) >= N`        — at least one F01 per bad line
-    ///   * `fatal_count(combined) >= fatal_count(valid)` — monotonic in N
+    ///   * `fatal_count(combined) >= N`        - at least one F01 per bad line
+    ///   * `fatal_count(combined) >= fatal_count(valid)` - monotonic in N
     ///
     /// The first inequality kills the mutation "return only the first
     /// error". The second kills the mutation "return zero diagnostics on
@@ -424,7 +424,7 @@ proptest! {
         valid in generators::arb_valid_rule_text(),
         garbage_n in 0u8..=8u8,
         garbage_lines in prop::collection::vec(
-            // Lines of pure reserved characters — these contain no decision
+            // Lines of pure reserved characters - these contain no decision
             // keyword, no `#`, no `%`, and no `=`, so they cannot match any
             // top-level production. Every such line must produce ≥1 F01.
             proptest::string::string_regex("[!@$^&*]{1,16}").unwrap(),
@@ -452,7 +452,7 @@ proptest! {
 
         // Sanity: the valid-only input must parse cleanly (zero fatals).
         // If it doesn't, the generator is producing something the parser
-        // rejects — we want to know about that, but it's a generator bug,
+        // rejects - we want to know about that, but it's a generator bug,
         // not a monotonicity violation. Surface as a failure with context.
         prop_assert_eq!(
             valid_fatals,
@@ -476,7 +476,7 @@ proptest! {
 
         prop_assert!(
             combined_fatals >= valid_fatals,
-            "adding garbage reduced the fatal-count from {} to {} — diagnostics are not monotonic",
+            "adding garbage reduced the fatal-count from {} to {} - diagnostics are not monotonic",
             valid_fatals,
             combined_fatals
         );
@@ -484,7 +484,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Sentinels — deterministic, single-case tests that kill specific mutations
+// Sentinels - deterministic, single-case tests that kill specific mutations
 // even if a non-shrinking proptest run doesn't surface them.
 // ---------------------------------------------------------------------------
 
