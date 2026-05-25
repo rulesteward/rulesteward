@@ -1,0 +1,27 @@
+# cargo-mutants configuration — scope mutation testing to parser + lints.
+#
+# Excludes:
+#   * format.rs (Display impls — mutation-noise heavy; the round-trip proptest
+#     property catches semantic regressions there but cargo-mutants would
+#     emit many low-signal "delete this whitespace" candidates).
+#   * ast.rs (no behavior — just type defs).
+#   * stub crates (rulesteward-auditd/selinux/sink/license/cli).
+#   * every test file (mutating tests is meaningless).
+
+examine_globs = [
+    "crates/rulesteward-core/src/diagnostic.rs",
+    "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
+    "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
+    "crates/rulesteward-fapolicyd/src/attrs.rs",
+]
+
+exclude_globs = [
+    "**/tests/**",
+    "**/format.rs",
+    "**/ast.rs",
+]
+
+# Tests are mixed unit + proptest + insta; proptest property runs especially
+# can be slow, so generous timeout (90s) avoids false-positive "timed out"
+# survivors that aren't really survivors.
+minimum_test_timeout = 90.0

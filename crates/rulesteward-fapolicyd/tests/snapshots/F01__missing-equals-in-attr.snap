@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=err
+diagnostics=1
+[F01] sev=Fatal line=1 col=10 span=9..10 :: found ' ' expected something else, or '='

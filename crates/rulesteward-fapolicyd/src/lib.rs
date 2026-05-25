@@ -1,8 +1,17 @@
-//! fapolicyd module: rule parser, trust-DB reader, audit-log reader.
+//! fapolicyd rule parser, AST, and lint passes.
 //!
-//! Session 1 ships a stub. The real parser (chumsky 0.13 + ariadne 0.6
-//! diagnostics) and the `lint` lint passes land in session 2 — see
-//! `.private-docs/handoff-session-2.md`.
+//! Public API:
+//! * [`parse_rules_file`] — chumsky-driven, per-line, emits all diagnostics.
+//! * [`lint`] / [`check_layout`] — post-parse lint walker + file-layout check.
+//! * AST types (`Entry`, `Rule`, `Decision`, `Perm`, `Attr`, `AttrValue`,
+//!   `SyntaxFlavor`) for downstream consumers.
 
-#[doc(hidden)]
-pub fn placeholder() {}
+pub mod ast;
+pub mod attrs;
+pub mod format;
+pub mod lints;
+pub mod parser;
+
+pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+pub use lints::{check_layout, lint};
+pub use parser::{inline, parse_rules_file};

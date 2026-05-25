@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 82ff6c565484a693421eb0b9ff1982450a9793dd6d51eaf941d27e1d011230ea # shrinks to original = [Rule(Rule { decision: Allow, perm: None, subject: [Kv { key: "auid", value: Str("a") }], object: [Kv { key: "path", value: Str("0") }], syntax: Modern, line: 1 })]
+cc 54db5c0145dbe30b803560f988c7dd8e0760a9c1ed27116afc1c91b250b1ae8a # shrinks to valid = "allow auid=_ : auid=0a\n", garbage_n = 0, garbage_lines = ["!", "@", "*", "*", "$", "$", "&", "&"]
+cc 99a8a69b459dcf75b380c4b75ba8c454dab462ff9f10373ab4bbc73a518e0ca6 # shrinks to original = [Rule(Rule { decision: Allow, perm: None, subject: [Kv { key: "auid", value: Str("A") }], object: [Kv { key: "dir", value: Str("-0") }], syntax: Modern, line: 1 })]

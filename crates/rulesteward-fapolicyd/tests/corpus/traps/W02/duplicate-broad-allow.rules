@@ -1,0 +1,2 @@
+allow perm=execute all : all
+allow perm=any all : all

@@ -8,5 +8,15 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+rulesteward-core = { workspace = true }
+chumsky = { workspace = true }
+ariadne = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

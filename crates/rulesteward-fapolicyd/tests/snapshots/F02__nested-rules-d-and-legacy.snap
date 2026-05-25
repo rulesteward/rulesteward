@@ -1,0 +1,6 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+layout=trip
+[F02] sev=Fatal line=0 col=0 span=0..0 file=fapolicyd.rules :: fapolicyd refuses to start when both `fapolicyd.rules` and `rules.d/` contain rules — remove one

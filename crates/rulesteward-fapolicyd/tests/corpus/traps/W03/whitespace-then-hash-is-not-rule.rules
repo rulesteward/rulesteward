@@ -1,0 +1,2 @@
+   # leading-whitespace-then-hash: borderline (no first non-ws token before #)
+allow perm=open uid=0 : all

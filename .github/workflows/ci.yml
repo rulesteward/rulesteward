@@ -66,7 +66,12 @@ jobs:
           # always find gcc, regardless of how GitHub re-assembles PATH.
           echo "/usr/bin" >> "$GITHUB_PATH"
 
+      # Per-Rocky cache key — without this all three matrix entries race
+      # to save the same key, so two of them log "Failed to save: Unable to
+      # reserve cache" and only one Rocky version's cache survives.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: rocky${{ matrix.rocky }}
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -79,3 +84,21 @@ jobs:
 
       - name: cargo build --release (rulesteward bin, glibc)
         run: cargo build --release --bin rulesteward --locked
+
+  coverage:
+    name: cargo llvm-cov (floor 80%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install stable toolchain with llvm-tools
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | bash -s -- -y --profile minimal --default-toolchain stable --component llvm-tools-preview
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: cargo llvm-cov --workspace --fail-under-lines 80
+        run: cargo llvm-cov --workspace --locked --fail-under-lines 80

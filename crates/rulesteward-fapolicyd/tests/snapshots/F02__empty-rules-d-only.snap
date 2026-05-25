@@ -1,0 +1,6 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+layout=ok
+no-diagnostic
