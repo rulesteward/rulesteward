@@ -43,10 +43,15 @@ env:
 
 jobs:
   # Fast pre-flight: fmt + clippy on a single ubuntu host. Cheaper than
-  # running them 3x inside the Rocky matrix containers. Downstream
-  # jobs (`check`, `coverage`, `musl-build`) depend on this one so a
-  # fmt/clippy failure short-circuits the whole pipeline before the
-  # heavier matrix jobs spin up.
+  # running them 3x inside the Rocky matrix containers. `check` and
+  # `coverage` depend on this one directly; `musl-build` depends on
+  # `check` (transitively waiting on fmt-clippy), so any fmt/clippy
+  # failure short-circuits the whole pipeline before the heavier
+  # matrix jobs spin up. `coverage` runs in parallel with `check` (not
+  # gated on it) - llvm-cov reruns the tests so a `check` failure will
+  # also fail coverage, but we accept the parallel-burn on red pushes
+  # in exchange for ~8-10 min faster wall-clock on green pushes (the
+  # common case).
   fmt-clippy:
     name: fmt + clippy (ubuntu)
     runs-on: ubuntu-latest
