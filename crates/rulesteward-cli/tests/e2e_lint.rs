@@ -128,12 +128,19 @@ fn unknown_subcommand_exits_three_not_two() {
 
 /// When a diagnostic has `source_id` set (E01 from AST lints), the human
 /// renderer should produce ariadne-style rich output containing the source
-/// line text AND a caret (`^`) underline, plus the `[E01]` code header.
+/// line text AND a box-drawing underline (`-`, U+2500). The earlier draft of
+/// this test asserted a caret `^`, but ariadne 0.6 uses Unicode box-drawing
+/// chars, not ASCII carets.
+///
+/// Also asserts that the ariadne bracket line shows the real source file path
+/// (e.g. `..../E01/unknown-xyz.rules`) rather than the placeholder `<unknown>`
+/// that ariadne emits when the span type carries no source identity.
 #[test]
 fn lint_human_output_renders_ariadne_snippet_when_span_present() {
     // unknown-xyz.rules: "allow xyz=0 : all\n" -> triggers E01 with span set.
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+    let fixture_str = fixture.to_str().expect("valid utf-8 fixture path");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
@@ -142,9 +149,13 @@ fn lint_human_output_renders_ariadne_snippet_when_span_present() {
         .code(2) // error-level exit
         .stdout(predicate::str::contains("[E01]"))
         .stdout(predicate::str::contains("xyz")) // source line appears in snippet
-        // ariadne 0.6 uses box-drawing underlines (─ or ╭) rather than ASCII ^.
+        // ariadne 0.6 uses box-drawing underlines (- or ╭) rather than ASCII ^.
         // We check for the source line box bracket open which ariadne always emits.
-        .stdout(predicate::str::contains('\u{2500}')); // U+2500 BOX DRAWINGS LIGHT HORIZONTAL (─)
+        .stdout(predicate::str::contains('\u{2500}')) // U+2500 BOX DRAWINGS LIGHT HORIZONTAL (-)
+        // The ariadne bracket line must show the real source path, not <unknown>.
+        .stdout(predicate::str::contains("unknown-xyz.rules"))
+        .stdout(predicate::str::contains(fixture_str))
+        .stdout(predicate::str::contains("<unknown>").not());
 }
 
 /// When a diagnostic does NOT have `source_id` set (F02 layout fatal, which

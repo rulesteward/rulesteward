@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use core::fmt::Write as _;
 
 use ariadne::{Label, Report, ReportKind, Source};
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, span::Span};
 
 /// Map our `Severity` to an `ariadne::ReportKind`.
 fn report_kind(severity: Severity) -> ReportKind<'static> {
@@ -32,17 +32,17 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// `source_id`. Centralized so a future migration of `Span` from
 /// `Range<usize>` to a newtype touches one call site, not every
 /// emit-site renderer.
-fn label_for(d: &Diagnostic) -> Label {
-    Label::new(d.span.clone()).with_message(d.message.as_str())
+fn label_for<'a>(id: &'a str, d: &'a Diagnostic) -> Label<(&'a str, Span)> {
+    Label::new((id, d.span.clone())).with_message(d.message.as_str())
 }
 
 /// Render a single diagnostic as an ariadne snippet into `out`.
 ///
 /// Returns `false` when the source text is not available and the caller
 /// should fall back to plain rendering.
-fn render_ariadne(d: &Diagnostic, source_text: &str, out: &mut Vec<u8>) -> bool {
+fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
     let mut report_buf: Vec<u8> = Vec::new();
-    let result = Report::build(report_kind(d.severity), d.span.clone())
+    let result = Report::build(report_kind(d.severity), (source_id, d.span.clone()))
         .with_message(format!(
             "{file}:{line}:{col} [{code}] {sev}: {msg}",
             file = d.file.display(),
@@ -52,9 +52,9 @@ fn render_ariadne(d: &Diagnostic, source_text: &str, out: &mut Vec<u8>) -> bool 
             sev = severity_word(d.severity),
             msg = d.message,
         ))
-        .with_label(label_for(d))
+        .with_label(label_for(source_id, d))
         .finish()
-        .write(Source::from(source_text), &mut report_buf);
+        .write((source_id, Source::from(source_text)), &mut report_buf);
     match result {
         Ok(()) => {
             out.extend_from_slice(&report_buf);
@@ -81,7 +81,7 @@ pub fn render(diags: &[Diagnostic], sources: &BTreeMap<String, String>) -> Strin
     for d in diags {
         let used_ariadne = if let Some(ref id) = d.source_id {
             if let Some(text) = sources.get(id) {
-                render_ariadne(d, text, &mut out_bytes)
+                render_ariadne(d, id.as_str(), text, &mut out_bytes)
             } else {
                 false
             }
