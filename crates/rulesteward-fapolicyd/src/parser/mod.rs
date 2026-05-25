@@ -182,13 +182,25 @@ where
 ///
 /// Only `Entry::Rule` carries a span; all other entry kinds keep only the
 /// line adjustment.
+///
+/// **Invariant:** both `modern_rule()` and `legacy_rule()` in `grammar.rs`
+/// open with `ws0()`, so chumsky's `e.span().start` is always 0 within the
+/// parsed body. We therefore offset only the end, not the start. The
+/// `debug_assert` below catches future grammar changes that violate this
+/// (and would silently produce incorrectly-shifted spans).
 fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry {
     match entry {
-        Entry::Rule(r) => Entry::Rule(Rule {
-            line: lineno,
-            span: (body_start_in_file + r.span.start)..(body_start_in_file + r.span.end),
-            ..r
-        }),
+        Entry::Rule(r) => {
+            debug_assert_eq!(
+                r.span.start, 0,
+                "chumsky grammar invariant: Rule.span.start must be 0 within parsed body",
+            );
+            Entry::Rule(Rule {
+                line: lineno,
+                span: body_start_in_file..(body_start_in_file + r.span.end),
+                ..r
+            })
+        }
         Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {
             name,
             values,
