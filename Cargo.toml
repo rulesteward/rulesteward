@@ -17,6 +17,7 @@ ariadne = "0.6"
 assert_cmd = "2"
 chumsky = "0.13"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 insta = { version = "1", features = ["yaml"] }
 predicates = "3"
 proptest = "1"
