@@ -19,7 +19,7 @@ pub enum TopCommand {
     #[command(subcommand)]
     Fapolicyd(FapolicydCommand),
 
-    /// SELinux operations
+    /// `SELinux` operations
     #[command(subcommand)]
     Selinux(SelinuxCommand),
 
@@ -76,7 +76,7 @@ pub enum OutputFormat {
 
 #[derive(Debug, Subcommand)]
 pub enum SelinuxCommand {
-    /// (stub) Triage SELinux AVCs
+    /// (stub) Triage `SELinux` AVCs
     Triage,
 }
 
