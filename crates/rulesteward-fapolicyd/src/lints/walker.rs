@@ -143,6 +143,7 @@ mod tests {
             object: obj,
             syntax: SyntaxFlavor::Modern,
             line,
+            span: rulesteward_core::span(0, 0),
         })
     }
 
@@ -160,6 +161,7 @@ mod tests {
             object: obj,
             syntax: SyntaxFlavor::Legacy,
             line,
+            span: rulesteward_core::span(0, 0),
         })
     }
 

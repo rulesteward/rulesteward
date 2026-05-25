@@ -115,7 +115,8 @@ pub fn modern_rule<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'a, 
         .then(attr_list)
         .then_ignore(ws0())
         .then_ignore(end())
-        .map(|(((decision, perm), subject), object)| {
+        .map_with(|(((decision, perm), subject), object), e| {
+            let s = e.span();
             Entry::Rule(Rule {
                 decision,
                 perm,
@@ -123,6 +124,7 @@ pub fn modern_rule<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'a, 
                 object,
                 syntax: SyntaxFlavor::Modern,
                 line: 0,
+                span: s.start..s.end,
             })
         })
 }
@@ -150,6 +152,7 @@ pub fn legacy_rule<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'a, 
                 object,
                 syntax: SyntaxFlavor::Legacy,
                 line: 0,
+                span: span.start..span.end,
             }))
         })
 }
@@ -294,5 +297,35 @@ mod tests {
         }];
         // Subject would be empty - error.
         assert!(positional_split(&attrs_flat).is_err());
+    }
+
+    #[test]
+    fn modern_rule_captures_full_body_span() {
+        let body = "allow perm=execute uid=0 : path=/usr/bin/foo";
+        let parsed = modern_rule().parse(body).into_result().expect("parses");
+        if let Entry::Rule(r) = parsed {
+            // The grammar yields a LINE-RELATIVE span here (full file fixup
+            // happens in parser/mod.rs). For this single-rule body parsed
+            // standalone, span should cover the entire input.
+            assert_eq!(r.span.start, 0);
+            assert_eq!(r.span.end, body.len());
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_captures_full_body_span() {
+        let body = "allow uid=0 path=/usr/bin/sh";
+        let parsed = legacy_rule()
+            .parse(body)
+            .into_result()
+            .expect("legacy parses");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(r.span.start, 0);
+            assert_eq!(r.span.end, body.len());
+        } else {
+            panic!("expected Rule");
+        }
     }
 }

@@ -89,6 +89,7 @@ impl fmt::Display for Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rulesteward_core::span;
 
     #[test]
     fn modern_rule_renders_with_colon() {
@@ -102,6 +103,7 @@ mod tests {
             object: vec![Attr::All],
             syntax: SyntaxFlavor::Modern,
             line: 1,
+            span: span(0, 0),
         };
         assert_eq!(r.to_string(), "allow perm=open uid=0 : all");
     }
@@ -121,6 +123,7 @@ mod tests {
             }],
             syntax: SyntaxFlavor::Legacy,
             line: 1,
+            span: span(0, 0),
         };
         assert_eq!(r.to_string(), "allow uid=0 path=/x");
     }
