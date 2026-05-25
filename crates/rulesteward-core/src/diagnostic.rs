@@ -9,6 +9,8 @@ use core::ops::Range;
 use std::borrow::Cow;
 use std::path::PathBuf;
 
+use crate::span::Span;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -53,11 +55,19 @@ impl Severity {
 pub struct Diagnostic {
     pub severity: Severity,
     pub code: Cow<'static, str>,
-    pub span: Range<usize>,
     pub message: String,
     pub file: PathBuf,
     pub line: usize,
     pub column: usize,
+    /// Byte range into the source file pointed at by `source_id`. See
+    /// [`crate::span`] for the type-alias rationale and the path to a
+    /// future newtype migration.
+    pub span: Span,
+    /// Stable identifier for the source the diagnostic references. Used by
+    /// ariadne to key its `Source` cache. `None` for diagnostics that are
+    /// not anchored to a specific source byte range (e.g., file-layout
+    /// fatals).
+    pub source_id: Option<String>,
 }
 
 impl Diagnostic {
@@ -79,7 +89,18 @@ impl Diagnostic {
             file: file.into(),
             line,
             column,
+            source_id: None,
         }
+    }
+
+    /// Set the source identifier for this diagnostic.
+    ///
+    /// This is a builder method that sets the `source_id` field and returns
+    /// the modified `Diagnostic`. Used by ariadne to key its `Source` cache.
+    #[must_use]
+    pub fn with_source_id(mut self, id: impl Into<String>) -> Self {
+        self.source_id = Some(id.into());
+        self
     }
 }
 
@@ -118,6 +139,7 @@ mod tests {
             d.file.to_str(),
             Some("/etc/fapolicyd/rules.d/90-allow.rules")
         );
+        assert_eq!(d.source_id, None);
     }
 
     #[cfg(feature = "serde")]
@@ -131,10 +153,41 @@ mod tests {
             "/tmp/sample.rules",
             3,
             12,
-        );
+        )
+        .with_source_id("/tmp/sample.rules");
         let json = serde_json::to_string(&original).expect("serialize");
         let parsed: Diagnostic = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.source_id, original.source_id);
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn diagnostic_default_has_no_source_id() {
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "W02",
+            0..5,
+            "some message",
+            "/etc/fapolicyd/rules.d/test.rules",
+            1,
+            1,
+        );
+        assert_eq!(d.source_id, None);
+    }
+
+    #[test]
+    fn diagnostic_with_source_id_sets_field() {
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "W02",
+            0..5,
+            "some message",
+            "/etc/fapolicyd/rules.d/test.rules",
+            1,
+            1,
+        )
+        .with_source_id("/etc/foo.rules");
+        assert_eq!(d.source_id, Some("/etc/foo.rules".to_string()));
     }
 
     #[cfg(feature = "serde")]
