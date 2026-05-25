@@ -50,16 +50,19 @@ fn color_enabled() -> bool {
 ///
 /// Returns `false` when the source text is not available and the caller
 /// should fall back to plain rendering.
+///
+/// The `Report::with_message` title intentionally omits `file:line:col` -
+/// ariadne's own bracket header (`[ <source_id>:<line>:<col> ]`) already
+/// shows that. Including both produced visible duplication in the rendered
+/// output. Plain mode (the fallback branch in `render`) still emits the full
+/// `file:line:col [CODE] sev: msg` for grep parity.
 fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
     let config = Config::default().with_color(color_enabled());
     let mut report_buf: Vec<u8> = Vec::new();
     let result = Report::build(report_kind(d.severity), (source_id, d.span.clone()))
         .with_config(config)
         .with_message(format!(
-            "{file}:{line}:{col} [{code}] {sev}: {msg}",
-            file = d.file.display(),
-            line = d.line,
-            col = d.column,
+            "[{code}] {sev}: {msg}",
             code = d.code,
             sev = severity_word(d.severity),
             msg = d.message,
