@@ -23,7 +23,8 @@ fn main() {
             // flag, missing required arg, etc.) and false for help /
             // version output. Help → exit 0; usage error → exit 3.
             let usage_error = e.use_stderr();
-            e.print().expect("clap error printer");
+            e.print()
+                .expect("failed to write clap error to stderr/stdout");
             std::process::exit(if usage_error { EXIT_TOOL_FAILURE } else { 0 });
         }
     };

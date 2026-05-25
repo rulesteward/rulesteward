@@ -14,6 +14,7 @@ pub fn render(diags: &[Diagnostic]) -> String {
     }
     let mut out = String::new();
     for d in diags {
+        // `fmt::Write` on a `String` is infallible — the `Result` is always `Ok`.
         let _ = writeln!(
             out,
             "{file}:{line}:{col} [{code}] {sev}: {msg}",
@@ -57,14 +58,23 @@ mod tests {
         );
         let out = render(&[d]);
         assert!(out.contains("[W02]"), "expected `[W02]` in {out}");
-        assert!(out.contains("broad allow on execute"), "expected message in {out}");
-        assert!(out.contains("/tmp/sample.rules"), "expected file path in {out}");
+        assert!(
+            out.contains("broad allow on execute"),
+            "expected message in {out}"
+        );
+        assert!(
+            out.contains("/tmp/sample.rules"),
+            "expected file path in {out}"
+        );
         assert!(out.contains(":5:"), "expected line number `:5:` in {out}");
     }
 
     #[test]
     fn human_renders_zero_diagnostics_as_empty() {
         let out = render(&[]);
-        assert!(out.is_empty(), "expected empty output for empty diags, got {out:?}");
+        assert!(
+            out.is_empty(),
+            "expected empty output for empty diags, got {out:?}"
+        );
     }
 }

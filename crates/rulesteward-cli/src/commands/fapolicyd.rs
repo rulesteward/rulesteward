@@ -28,6 +28,7 @@ pub fn run(cmd: FapolicydCommand) -> i32 {
     }
 }
 
+#[must_use]
 fn run_lint(args: &LintArgs) -> i32 {
     if args.against_trustdb.is_some() {
         eprintln!("--against-trustdb is not yet implemented in v0.1.0-dev");
@@ -69,11 +70,11 @@ fn run_lint(args: &LintArgs) -> i32 {
     exit_code::compute(&all_diags, tool_err)
 }
 
-/// Returns `(files_to_lint, optional_layout_diagnostic)`.
-///
-/// * `--file <FILE>` → lint exactly that file. No layout check.
-/// * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run F02 against the parent of that dir.
-/// * Default: `/etc/fapolicyd/rules.d/`.
+// Returns `(files_to_lint, optional_layout_diagnostic)`.
+//
+// * `--file <FILE>` → lint exactly that file. No layout check.
+// * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run F02 against the parent of that dir.
+// * Default: `/etc/fapolicyd/rules.d/`.
 fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>), String> {
     if let Some(file) = &args.file {
         return Ok((vec![file.clone()], None));
@@ -85,9 +86,7 @@ fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>)
     if !dir.is_dir() {
         return Err(format!("{}: not a directory", dir.display()));
     }
-    let rules_root = dir
-        .parent()
-        .map_or_else(|| dir.clone(), Path::to_path_buf);
+    let rules_root = dir.parent().map_or_else(|| dir.clone(), Path::to_path_buf);
     let layout_diag = check_layout(&rules_root);
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -119,7 +118,10 @@ mod tests {
         let args = lint_args(None, Some(PathBuf::from("/some/path/foo.rules")));
         let (files, layout_diag) = resolve_targets(&args).expect("ok");
         assert_eq!(files, vec![PathBuf::from("/some/path/foo.rules")]);
-        assert!(layout_diag.is_none(), "--file mode must NOT run layout check");
+        assert!(
+            layout_diag.is_none(),
+            "--file mode must NOT run layout check"
+        );
     }
 
     #[test]
@@ -179,9 +181,8 @@ mod tests {
 
         let args = lint_args(Some(rules_d), None);
         let (_files, layout_diag) = resolve_targets(&args).expect("ok");
-        let diag = layout_diag.expect(
-            "F02 must fire when both rules.d/ and fapolicyd.rules exist at parent",
-        );
+        let diag = layout_diag
+            .expect("F02 must fire when both rules.d/ and fapolicyd.rules exist at parent");
         assert_eq!(diag.code.as_ref(), "F02");
     }
 }

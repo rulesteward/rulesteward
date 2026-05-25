@@ -9,6 +9,8 @@ use rulesteward_core::Diagnostic;
 
 use crate::cli::OutputFormat;
 
+/// Errors a renderer can return. Currently only used by the SARIF stub;
+/// human and JSON renderers cannot fail.
 #[derive(Debug)]
 pub enum RenderError {
     /// SARIF rendering is stubbed in v0.1.0-dev — caller must map to exit 3.
@@ -29,7 +31,15 @@ mod tests {
     use rulesteward_core::Severity;
 
     fn fake_diag() -> Diagnostic {
-        Diagnostic::new(Severity::Warning, "W02", 0..0, "broad allow", "/tmp/x.rules", 1, 1)
+        Diagnostic::new(
+            Severity::Warning,
+            "W02",
+            0..0,
+            "broad allow",
+            "/tmp/x.rules",
+            1,
+            1,
+        )
     }
 
     #[test]

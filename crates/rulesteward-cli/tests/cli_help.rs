@@ -1,7 +1,6 @@
-//! `--help` smoke tests. EXPECTED TO FAIL until Task 11 rewrites `main.rs`
-//! to actually parse args via clap. Once `main.rs` calls `Cli::parse()`,
-//! clap renders the subcommand tree into the --help output and these
-//! assertions pass.
+//! `--help` smoke tests — verify that clap renders the full subcommand
+//! tree (fapolicyd / selinux / auditd) and that `fapolicyd lint --help`
+//! exposes the `--file`, `--format`, and `--against-trustdb` flags.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
