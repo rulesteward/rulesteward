@@ -2,7 +2,7 @@
 //!
 //! Public API:
 //! * [`parse_rules_file`] — chumsky-driven, per-line, emits all diagnostics.
-//! * [`lint`] / [`check_layout`] — post-parse lint walker + file-layout check.
+//! * [`lint`] / [`lint_file`] / [`check_layout`] — post-parse lint walker + file-layout check.
 //! * AST types (`Entry`, `Rule`, `Decision`, `Perm`, `Attr`, `AttrValue`,
 //!   `SyntaxFlavor`) for downstream consumers.
 
@@ -13,5 +13,5 @@ pub mod lints;
 pub mod parser;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
-pub use lints::{check_layout, lint};
+pub use lints::{check_layout, lint, lint_file};
 pub use parser::{inline, parse_rules_file};
