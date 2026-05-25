@@ -19,14 +19,14 @@ env:
 
 jobs:
   check:
-    name: rocky${{ matrix.rocky }} — fmt + clippy + test + release-build
+    name: rocky${{ matrix.rocky }} - fmt + clippy + test + release-build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         rocky: ["8", "9", "10"]
     container:
-      # Use the rockylinux/rockylinux namespace — the legacy `rockylinux:10`
+      # Use the rockylinux/rockylinux namespace - the legacy `rockylinux:10`
       # tag doesn't exist on Docker Hub. The new namespace works for 8/9/10.
       image: rockylinux/rockylinux:${{ matrix.rocky }}
     defaults:
@@ -36,14 +36,14 @@ jobs:
         shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
     steps:
       # Bootstrap: install everything needed by the rest of the job. Each
-      # package is justified — drop any of them and a later step breaks.
-      #   bash, tar, gzip, xz       — Swatinem/rust-cache needs tar+xz
-      #   findutils                 — basic POSIX tools missing in :10
-      #   gcc, glibc-devel, make    — rustc invokes the C toolchain as
+      # package is justified - drop any of them and a later step breaks.
+      #   bash, tar, gzip, xz       - Swatinem/rust-cache needs tar+xz
+      #   findutils                 - basic POSIX tools missing in :10
+      #   gcc, glibc-devel, make    - rustc invokes the C toolchain as
       #                               linker (CC=gcc env var above bypasses
       #                               the missing /usr/bin/cc symlink).
-      #   git                       — actions/checkout uses it post-clone
-      #   ca-certificates           — rustup uses HTTPS
+      #   git                       - actions/checkout uses it post-clone
+      #   ca-certificates           - rustup uses HTTPS
       # NOTE: `which`, `openssl-devel`, `pkgconfig` deliberately left out.
       # `which` was removed on RHEL 10 (use the bash builtin `command -v`);
       # `pkgconfig` was renamed to `pkgconf-pkg-config` on RHEL 10. dnf
@@ -66,7 +66,7 @@ jobs:
           # always find gcc, regardless of how GitHub re-assembles PATH.
           echo "/usr/bin" >> "$GITHUB_PATH"
 
-      # Per-Rocky cache key — without this all three matrix entries race
+      # Per-Rocky cache key - without this all three matrix entries race
       # to save the same key, so two of them log "Failed to save: Unable to
       # reserve cache" and only one Rocky version's cache survives.
       - uses: Swatinem/rust-cache@v2
@@ -102,3 +102,87 @@ jobs:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov --workspace --fail-under-lines 80
         run: cargo llvm-cov --workspace --locked --fail-under-lines 80
+
+  musl-build:
+    name: build static musl binary (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install stable Rust + musl target
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | bash -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          ~/.cargo/bin/rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl-tools (provides musl-gcc)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-musl
+
+      - name: cargo build --release --target x86_64-unknown-linux-musl
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
+
+      - name: Verify static linkage (the RED test)
+        run: |
+          file target/x86_64-unknown-linux-musl/release/rulesteward
+          # musl + recent Rust produces "static-pie linked" (PIE = position-independent
+          # executable, a security hardening feature). Both "statically linked" and
+          # "static-pie linked" are fully static -- accept either form.
+          file target/x86_64-unknown-linux-musl/release/rulesteward \
+            | grep -qE "statically linked|static-pie linked"
+
+      - name: Upload static binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rulesteward-x86_64-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/rulesteward
+          retention-days: 7
+          if-no-files-found: error
+
+  musl-smoke:
+    name: rocky${{ matrix.rocky }} - run static musl binary
+    needs: musl-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rocky: ["8", "9", "10"]
+    container:
+      image: rockylinux/rockylinux:${{ matrix.rocky }}
+    defaults:
+      run:
+        shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
+    steps:
+      - name: Bootstrap minimum tooling (bash + ca-certificates only)
+        # Static binary doesn't need much. ca-certificates is in case
+        # actions/download-artifact uses HTTPS internally on the runner side.
+        run: dnf -y install bash ca-certificates findutils
+
+      - name: Download the static binary from musl-build
+        uses: actions/download-artifact@v4
+        with:
+          name: rulesteward-x86_64-linux-musl
+          path: ./bin
+
+      - name: Smoke -- the binary actually runs on this Rocky
+        run: |
+          chmod +x ./bin/rulesteward
+          ./bin/rulesteward --help
+          ./bin/rulesteward --version
+
+      - name: Smoke -- completions subcommand works on this Rocky
+        run: |
+          ./bin/rulesteward completions bash | head -5
+          ./bin/rulesteward completions bash | grep -q '_rulesteward'
+
+      - name: Functional smoke -- no placeholder leakage in --help
+        run: |
+          ./bin/rulesteward --help | grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' && exit 1 || true
