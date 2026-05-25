@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(
     name = "rulesteward",
     version,
-    about = "RuleSteward — fapolicyd / SELinux / auditd policy linter"
+    about = "RuleSteward - fapolicyd / SELinux / auditd policy linter"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -61,7 +61,7 @@ pub struct LintArgs {
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Single-file mode — lint exactly this file
+    /// Single-file mode - lint exactly this file
     #[arg(long, value_name = "FILE", conflicts_with = "path")]
     pub file: Option<PathBuf>,
 

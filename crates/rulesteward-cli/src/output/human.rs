@@ -14,7 +14,7 @@ pub fn render(diags: &[Diagnostic]) -> String {
     }
     let mut out = String::new();
     for d in diags {
-        // `fmt::Write` on a `String` is infallible — the `Result` is always `Ok`.
+        // `fmt::Write` on a `String` is infallible - the `Result` is always `Ok`.
         let _ = writeln!(
             out,
             "{file}:{line}:{col} [{code}] {sev}: {msg}",

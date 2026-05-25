@@ -1,4 +1,4 @@
-# Mutation baseline — `rulesteward-fapolicyd` + `rulesteward-core`
+# Mutation baseline - `rulesteward-fapolicyd` + `rulesteward-core`
 
 ## Baseline
 
@@ -8,7 +8,7 @@
 | Command | `cargo mutants --no-shuffle` (config: `.cargo/mutants.toml`) |
 | Mutants generated | 93 |
 | **Caught (killed by tests)** | **71** |
-| **Missed (survived — the regression-bait number)** | **0** |
+| **Missed (survived - the regression-bait number)** | **0** |
 | Unviable (mutation produced uncompilable code) | 22 |
 | Timeouts | 0 |
 | **CI gate** | `--error-on-survival 0` |
@@ -35,7 +35,7 @@ exclude_globs = [
 ```
 
 `format.rs` (Display impls) is excluded because mutation-noise is heavy
-there — most mutations on a Display impl are textual nudges that the
+there - most mutations on a Display impl are textual nudges that the
 round-trip property already catches semantically. `ast.rs` is excluded
 because it's plain type definitions with no behaviour to mutate.
 
@@ -65,9 +65,9 @@ The config at `.cargo/mutants.toml` is auto-loaded.
 
 The `.github/workflows/mutants.yml` workflow runs on three triggers:
 
-1. **Nightly cron** — `0 4 * * *` (04:00 UTC).
-2. **PR label** — add the `run-mutants` label to any open PR.
-3. **Manual** — `workflow_dispatch`.
+1. **Nightly cron** - `0 4 * * *` (04:00 UTC).
+2. **PR label** - add the `run-mutants` label to any open PR.
+3. **Manual** - `workflow_dispatch`.
 
 It uses `taiki-e/install-action@v2` to install `cargo-mutants` from a
 prebuilt binary (seconds, not minutes), then runs the same command above
@@ -79,7 +79,7 @@ Bump the baseline number (and update `mutants.yml`) only after a
 deliberate review of the new survivor. Acceptable reasons:
 
 - The mutated line is in defensive error-handling that can't be reached
-  in practice (rare — add a `#[allow(...)]` or refactor to remove the
+  in practice (rare - add a `#[allow(...)]` or refactor to remove the
   unreachable branch first).
 - The mutation produces semantically-identical behaviour (the function
   is symmetric in the mutated direction).

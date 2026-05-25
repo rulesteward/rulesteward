@@ -1,8 +1,8 @@
 //! fapolicyd rule parser, AST, and lint passes.
 //!
 //! Public API:
-//! * [`parse_rules_file`] — chumsky-driven, per-line, emits all diagnostics.
-//! * [`lint`] / [`lint_file`] / [`check_layout`] — post-parse lint walker + file-layout check.
+//! * [`parse_rules_file`] - chumsky-driven, per-line, emits all diagnostics.
+//! * [`lint`] / [`lint_file`] / [`check_layout`] - post-parse lint walker + file-layout check.
 //! * AST types (`Entry`, `Rule`, `Decision`, `Perm`, `Attr`, `AttrValue`,
 //!   `SyntaxFlavor`) for downstream consumers.
 

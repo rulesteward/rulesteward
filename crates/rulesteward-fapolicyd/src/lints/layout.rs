@@ -1,4 +1,4 @@
-//! F02 — file-layout coexistence. fapolicyd refuses to start when both the
+//! F02 - file-layout coexistence. fapolicyd refuses to start when both the
 //! deprecated `fapolicyd.rules` file AND any `rules.d/*.rules` exist.
 
 use std::path::Path;
@@ -26,7 +26,7 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
         Severity::Fatal,
         "F02",
         0..0,
-        "fapolicyd refuses to start when both `fapolicyd.rules` and `rules.d/` contain rules — remove one",
+        "fapolicyd refuses to start when both `fapolicyd.rules` and `rules.d/` contain rules - remove one",
         legacy,
         0,
         0,

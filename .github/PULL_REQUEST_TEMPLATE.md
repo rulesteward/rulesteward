@@ -19,7 +19,7 @@
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [ ] `cargo test --workspace --locked` passes
-- [ ] Read-only by default — any new mutation flag is opt-in
+- [ ] Read-only by default - any new mutation flag is opt-in
 - [ ] No telemetry, no phone-home
 - [ ] No AI-attribution trailers in commits (`Co-Authored-By: Claude` etc.)
 - [ ] If a locked spec §3 decision is touched, a `[QUESTION FOR USER]` was raised first

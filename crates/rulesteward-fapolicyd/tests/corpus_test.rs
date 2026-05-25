@@ -5,7 +5,7 @@
 //! `Ok(entries)` with a non-empty `Vec<Entry>` for each file.
 //!
 //! On failure, prints which file failed and every diagnostic that fired
-//! before panicking — first-run debuggability is the whole point.
+//! before panicking - first-run debuggability is the whole point.
 //!
 //! NOTE (mutation-test resilience): we do not merely assert "Ok". We also
 //! assert that the returned `Vec<Entry>` is non-empty AND that at least one
@@ -52,7 +52,7 @@ fn parses_full_corpus() {
     // guard catches.
     assert!(
         corpus.len() >= 11,
-        "expected ≥11 happy-corpus files under tests/corpus/happy/, found {} — \
+        "expected ≥11 happy-corpus files under tests/corpus/happy/, found {} - \
          files were deleted without updating this assertion",
         corpus.len()
     );
@@ -63,7 +63,7 @@ fn parses_full_corpus() {
             Ok(entries) => {
                 assert!(
                     !entries.is_empty(),
-                    "{filename}: parse returned Ok but Vec<Entry> is empty — \
+                    "{filename}: parse returned Ok but Vec<Entry> is empty - \
                      the parser likely silently dropped every line",
                 );
                 let content_count = entries
@@ -73,7 +73,7 @@ fn parses_full_corpus() {
                 assert!(
                     content_count >= 1,
                     "{filename}: parse returned Ok with {} entries but ZERO are Rule or \
-                     SetDefinition — the parser silently dropped every content line",
+                     SetDefinition - the parser silently dropped every content line",
                     entries.len(),
                 );
             }
@@ -95,6 +95,6 @@ fn parses_full_corpus() {
 
     assert!(
         !any_failed,
-        "one or more happy-corpus files failed to parse — see stderr above for per-file diagnostics",
+        "one or more happy-corpus files failed to parse - see stderr above for per-file diagnostics",
     );
 }

@@ -6,8 +6,8 @@
 
 Report privately via either channel:
 
-1. **GitHub Security Advisories** — preferred. Use the "Report a vulnerability" button on the [Security tab](https://github.com/rulesteward/rulesteward/security/advisories/new).
-2. **Email** — `rulesteward+security@rulesteward.com` (PGP key fingerprint to be published before v0.1.0 GA).
+1. **GitHub Security Advisories** - preferred. Use the "Report a vulnerability" button on the [Security tab](https://github.com/rulesteward/rulesteward/security/advisories/new).
+2. **Email** - `rulesteward+security@rulesteward.com` (PGP key fingerprint to be published before v0.1.0 GA).
 
 Please include:
 - Affected version (`rulesteward --version`)
@@ -32,7 +32,7 @@ In-scope:
 - The CI pipeline and release artifacts (signed binaries, RPMs)
 
 Out-of-scope:
-- Upstream `fapolicyd`, `selinux`, `auditd` — report to the respective project
+- Upstream `fapolicyd`, `selinux`, `auditd` - report to the respective project
 - Rule-template repository (separate `SECURITY.md` lives there)
 - Issues that require a malicious local administrator with root access
 

@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[W03] sev=Warning line=1 col=29 span=28..57 :: inline `# comment` after a rule line — fapolicyd silently drops this rule
+[W03] sev=Warning line=1 col=29 span=28..57 :: inline `# comment` after a rule line - fapolicyd silently drops this rule

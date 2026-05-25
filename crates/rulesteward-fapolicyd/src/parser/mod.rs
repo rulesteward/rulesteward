@@ -1,15 +1,15 @@
-//! fapolicyd rule parser — per-line dispatch over a chumsky 0.13 grammar.
+//! fapolicyd rule parser - per-line dispatch over a chumsky 0.13 grammar.
 //!
 //! Public surface: [`parse_rules_file`] consumes a `&str` source and returns
 //! `Ok(Vec<Entry>)` when every line parses cleanly, `Err(Vec<Diagnostic>)`
 //! when one or more lines fail. Diagnostics are accumulated across the
-//! whole file — first-failure-only is explicitly avoided (see the
+//! whole file - first-failure-only is explicitly avoided (see the
 //! monotonicity proptest in `tests/proptest_test.rs`).
 //!
 //! W03 (inline trailing `# comment`) is emitted by [`crate::lints::lint`]
 //! via source re-scan, not by the parser. The parser strips inline `#` text
 //! before handing the line to chumsky so the grammar stays clean. A
-//! leading-whitespace `#` is rejected as F01 — fapolicyd itself only
+//! leading-whitespace `#` is rejected as F01 - fapolicyd itself only
 //! accepts `#` at column 0.
 
 mod error;
@@ -48,7 +48,7 @@ pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
 
     for (idx, raw_line) in lines.iter().enumerate() {
         // A file ending in `\n` produces a trailing empty chunk that is the
-        // LF terminator, not an extra blank line — suppress it.
+        // LF terminator, not an extra blank line - suppress it.
         if idx == last_idx && raw_line.is_empty() {
             break;
         }
@@ -78,7 +78,7 @@ fn parse_line(line: &str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>) {
     }
 
     // Column-0 comment ONLY. Leading-whitespace `#` falls through to the
-    // chumsky path below where every production fails — yielding an F01.
+    // chumsky path below where every production fails - yielding an F01.
     if let Some(text) = line.strip_prefix('#') {
         return (
             vec![Entry::Comment {
@@ -103,7 +103,7 @@ fn parse_line(line: &str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>) {
             if legacy_diags.is_empty() {
                 (legacy_entries, legacy_diags)
             } else {
-                // Both failed — return modern's diagnostics. Modern is the
+                // Both failed - return modern's diagnostics. Modern is the
                 // dominant case and chumsky's "expected colon" is the most
                 // actionable hint.
                 (Vec::new(), modern_diags)
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_line_is_blank_entry() {
-        // Mixed space and tab — the blank detector must accept any line
+        // Mixed space and tab - the blank detector must accept any line
         // composed of only space-or-tab bytes, not only fully-empty lines.
         let entries = parse_rules_file("  \t  \n").expect("ws-only line is blank");
         assert_eq!(entries.len(), 1);
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn inline_comment_is_stripped_before_chumsky() {
         // The trailing `# comment` is stripped so the line parses cleanly.
-        // W03 emission for this line is the lint walker's job — not the
+        // W03 emission for this line is the lint walker's job - not the
         // parser's.
         let entries =
             parse_rules_file("allow uid=0 : all # trailing\n").expect("parses after strip");

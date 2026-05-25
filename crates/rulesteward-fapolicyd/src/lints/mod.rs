@@ -1,9 +1,9 @@
 //! Post-parse lint passes.
 //!
 //! Code split:
-//! * `walker` — AST-driven passes (F03, E01, W02).
-//! * `source_scan` — raw-source re-scan for W03.
-//! * `layout` — filesystem-driven F02 check.
+//! * `walker` - AST-driven passes (F03, E01, W02).
+//! * `source_scan` - raw-source re-scan for W03.
+//! * `layout` - filesystem-driven F02 check.
 
 mod layout;
 mod source_scan;

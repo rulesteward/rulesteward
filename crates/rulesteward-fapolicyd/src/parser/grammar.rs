@@ -1,8 +1,8 @@
 //! chumsky 0.13 combinators for the fapolicyd rule grammar.
 //!
 //! Two top-level productions:
-//! * [`modern_rule`]  — `decision [perm=X] subj : obj`
-//! * [`legacy_rule`]  — `decision [perm=X] subj... obj...` (no colon;
+//! * [`modern_rule`]  - `decision [perm=X] subj : obj`
+//! * [`legacy_rule`]  - `decision [perm=X] subj... obj...` (no colon;
 //!   subject/object split positionally via [`crate::attrs::classify`]).
 //!
 //! Plus [`set_definition`] for `%name=val1,val2`. Every named production
@@ -292,7 +292,7 @@ mod tests {
             key: "path".into(),
             value: AttrValue::Str("/x".into()),
         }];
-        // Subject would be empty — error.
+        // Subject would be empty - error.
         assert!(positional_split(&attrs_flat).is_err());
     }
 }
