@@ -98,3 +98,90 @@ fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>)
     files.sort();
     Ok((files, layout_diag))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::OutputFormat;
+    use std::path::PathBuf;
+
+    fn lint_args(path: Option<PathBuf>, file: Option<PathBuf>) -> LintArgs {
+        LintArgs {
+            path,
+            file,
+            format: OutputFormat::Human,
+            against_trustdb: None,
+        }
+    }
+
+    #[test]
+    fn resolve_targets_file_mode_returns_single_file_no_layout_diag() {
+        let args = lint_args(None, Some(PathBuf::from("/some/path/foo.rules")));
+        let (files, layout_diag) = resolve_targets(&args).expect("ok");
+        assert_eq!(files, vec![PathBuf::from("/some/path/foo.rules")]);
+        assert!(layout_diag.is_none(), "--file mode must NOT run layout check");
+    }
+
+    #[test]
+    fn resolve_targets_directory_enumerates_rules_files_alphabetically() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let rules_d = parent.path().join("rules.d");
+        std::fs::create_dir(&rules_d).expect("mkdir");
+        // Write in NON-alphabetical order to verify sorting.
+        for name in ["80-zzz.rules", "10-aaa.rules", "40-mmm.rules"] {
+            std::fs::write(rules_d.join(name), "").expect("write");
+        }
+        let args = lint_args(Some(rules_d), None);
+        let (files, _layout) = resolve_targets(&args).expect("ok");
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["10-aaa.rules", "40-mmm.rules", "80-zzz.rules"]);
+    }
+
+    #[test]
+    fn resolve_targets_directory_filters_non_rules_extensions() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let rules_d = parent.path().join("rules.d");
+        std::fs::create_dir(&rules_d).expect("mkdir");
+        for name in ["40-x.rules", "40-x.rules.bak", "README.txt", "40-x"] {
+            std::fs::write(rules_d.join(name), "").expect("write");
+        }
+        let args = lint_args(Some(rules_d), None);
+        let (files, _layout) = resolve_targets(&args).expect("ok");
+        assert_eq!(files.len(), 1, "expected only 40-x.rules, got {files:?}");
+        assert_eq!(
+            files[0].file_name().unwrap().to_string_lossy(),
+            "40-x.rules"
+        );
+    }
+
+    #[test]
+    fn resolve_targets_nonexistent_path_returns_err_with_not_a_directory() {
+        let args = lint_args(Some(PathBuf::from("/nonexistent/path/12345")), None);
+        let result = resolve_targets(&args);
+        let err = result.expect_err("expected Err for non-existent path");
+        assert!(
+            err.contains("not a directory"),
+            "expected 'not a directory' in error, got {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_targets_directory_runs_check_layout_against_parent() {
+        // Mirror the F02 trap corpus: parent has BOTH rules.d/ and fapolicyd.rules.
+        let parent = tempfile::tempdir().expect("tempdir");
+        let rules_d = parent.path().join("rules.d");
+        std::fs::create_dir(&rules_d).expect("mkdir");
+        std::fs::write(rules_d.join("40-x.rules"), "").expect("write");
+        std::fs::write(parent.path().join("fapolicyd.rules"), "").expect("write");
+
+        let args = lint_args(Some(rules_d), None);
+        let (_files, layout_diag) = resolve_targets(&args).expect("ok");
+        let diag = layout_diag.expect(
+            "F02 must fire when both rules.d/ and fapolicyd.rules exist at parent",
+        );
+        assert_eq!(diag.code.as_ref(), "F02");
+    }
+}
