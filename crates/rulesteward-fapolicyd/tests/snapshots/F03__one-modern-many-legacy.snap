@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[F03] sev=Fatal line=3 col=1 span=0..0 :: file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one
+[F03] sev=Fatal line=3 col=1 span=81..106 :: file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one
