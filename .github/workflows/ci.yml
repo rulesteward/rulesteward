@@ -154,7 +154,12 @@ jobs:
   musl-build:
     name: build static musl binary (ubuntu)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    # Gate the entire musl chain on `check` passing. If a Rust regression
+    # breaks tests, we avoid burning ~3 min on musl-build plus ~3 min on
+    # the 3-way musl-smoke matrix. Costs ~3-5 min of wall-clock on green
+    # pushes (serialization); the minutes accounting is zero on green and
+    # net-positive on red.
+    needs: check
     steps:
       - uses: actions/checkout@v5
 
