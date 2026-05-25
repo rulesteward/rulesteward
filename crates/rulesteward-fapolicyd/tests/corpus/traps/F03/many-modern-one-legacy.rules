@@ -1,0 +1,4 @@
+allow perm=open uid=0 : all
+allow perm=execute uid=0 : trust=1
+deny_audit perm=any all : ftype=application/x-bad-elf
+deny perm=any all path=/tmp/forbidden

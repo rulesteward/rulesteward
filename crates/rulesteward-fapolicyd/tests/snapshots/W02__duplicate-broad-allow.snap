@@ -1,0 +1,8 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=2
+[W02] sev=Warning line=1 col=1 span=0..0 :: broad allow on execute (subject=all, object=all) — every binary on the system can run
+[W02] sev=Warning line=2 col=1 span=0..0 :: broad allow on execute (subject=all, object=all) — every binary on the system can run

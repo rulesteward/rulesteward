@@ -1,0 +1,571 @@
+//! Property tests for `rulesteward-fapolicyd::parse_rules_file`.
+//!
+//! Three proptest properties + two hard-coded sentinel `#[test]`s. The
+//! sentinels exist so that mutations which trivialize the parser (e.g.
+//! "always return `Ok(vec![])`" or "only report the first F01") are killed
+//! even by a single non-shrinking run — `cargo-mutants` will see one of the
+//! sentinels fail and mark the mutant as caught.
+//!
+//! ## Field-comparison contract for the round-trip property
+//!
+//! `arb_program()` emits a `Vec<Entry>` where each entry's `line` field is
+//! 1-based and strictly monotonic (1, 2, 3, ...). The `Display` impl does
+//! not emit line numbers; the parser assigns `line` based on the position of
+//! the line in the source text. We render entries one-per-line with a
+//! trailing `'\n'`, so after re-parsing, line N corresponds to the entry at
+//! index N-1 in both the original and the re-parsed `Vec`. We therefore
+//! compare every AST field directly without normalization — `line` agrees by
+//! construction, not by accident. If a future Display impl emits multi-line
+//! output for a single entry, this property will start failing and force
+//! either a normalization pass or a Display fix; both outcomes are fine.
+//!
+//! ## Anti-vacuous discipline
+//!
+//! Every assertion targets a concrete invariant. We never assert
+//! `result.is_ok()` without then inspecting the contents, and never assert
+//! `result.is_err()` without inspecting `Severity` and `code`. The
+//! never-panics property additionally asserts that a returned `Err` carries
+//! at least one `Severity::Fatal` diagnostic whose `code` begins with `'F'`,
+//! so a mutation that swaps `Err(diags)` for `Err(vec![])` dies. Property 3
+//! asserts a lower bound on the fatal count, so a mutation that returns only
+//! the first error dies.
+//!
+//! All proptest properties use ≥256 cases (proptest default = 256 in 1.x;
+//! the explicit config below pins it so a future default change doesn't
+//! silently weaken the suite).
+
+use std::fmt::Write as _;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use proptest::prelude::*;
+
+use rulesteward_core::Severity;
+use rulesteward_fapolicyd::{
+    ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor},
+    attrs, parse_rules_file,
+};
+
+// ---------------------------------------------------------------------------
+// Generators
+// ---------------------------------------------------------------------------
+
+mod generators {
+    use super::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor, attrs};
+    use proptest::prelude::*;
+
+    /// All 8 decision keywords; flavor-agnostic.
+    pub(super) fn arb_decision() -> impl Strategy<Value = Decision> {
+        prop_oneof![
+            Just(Decision::Allow),
+            Just(Decision::Deny),
+            Just(Decision::AllowAudit),
+            Just(Decision::DenyAudit),
+            Just(Decision::AllowSyslog),
+            Just(Decision::DenySyslog),
+            Just(Decision::AllowLog),
+            Just(Decision::DenyLog),
+        ]
+    }
+
+    /// `Some(perm)` for one of 3 perm values, or `None`. Both modern and
+    /// legacy syntax accept an optional `perm=` clause.
+    pub(super) fn arb_perm_opt() -> impl Strategy<Value = Option<Perm>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(Perm::Open)),
+            Just(Some(Perm::Execute)),
+            Just(Some(Perm::Any)),
+        ]
+    }
+
+    /// String payload for `AttrValue::Str`. Char set is alphanumeric or one
+    /// of `_ / . -` (none of which carry parser meaning). The filter rules
+    /// out any string that the parser would round-trip into `AttrValue::Int`
+    /// (parser captures the value as one slug and post-classifies via
+    /// `parse::<i64>()`, so `0`, `-12`, `0042` etc. would re-parse as Int).
+    pub(super) fn arb_str_value() -> impl Strategy<Value = AttrValue> {
+        "[a-zA-Z0-9_/.\\-]{1,32}"
+            .prop_filter("must not parse as i64", |s: &String| {
+                s.parse::<i64>().is_err()
+            })
+            .prop_map(AttrValue::Str)
+    }
+
+    /// Non-negative integer attribute value. `text::int(10)` in the spike
+    /// parser only accepts digit sequences (no leading `-`), so we constrain
+    /// the generator accordingly to keep the round-trip lossless.
+    pub(super) fn arb_int_value() -> impl Strategy<Value = AttrValue> {
+        (0i64..1_000_000_i64).prop_map(AttrValue::Int)
+    }
+
+    /// `%setref` value. The identifier-character set matches the spike's
+    /// `ident` combinator: ASCII alpha / underscore start, then
+    /// alphanumeric / underscore tail.
+    pub(super) fn arb_setref_value() -> impl Strategy<Value = AttrValue> {
+        "[a-zA-Z_][a-zA-Z0-9_]{0,15}".prop_map(AttrValue::SetRef)
+    }
+
+    pub(super) fn arb_attr_value() -> impl Strategy<Value = AttrValue> {
+        prop_oneof![arb_str_value(), arb_int_value(), arb_setref_value()]
+    }
+
+    /// Build a key-value `Attr::Kv` whose key is drawn from `keys`. The
+    /// reserved literal `"all"` is filtered out at call-sites that include
+    /// `BOTH_SIDES`, because the spike parser unconditionally treats a bare
+    /// `all` token as `Attr::All`, not as a `Kv { key: "all", ... }`. Doing
+    /// the filter at the keyset level (rather than inside this function)
+    /// keeps the generator monomorphic and the assumption visible.
+    fn arb_kv_from(keys: &'static [&'static str]) -> impl Strategy<Value = Attr> {
+        let keys = keys.to_vec();
+        (
+            (0..keys.len()).prop_map(move |idx| keys[idx].to_string()),
+            arb_attr_value(),
+        )
+            .prop_map(|(key, value)| Attr::Kv { key, value })
+    }
+
+    /// Strict subject keys (legacy positional classifier guarantees these
+    /// land on the subject side regardless of input order — see
+    /// `attrs::SUBJECT_ONLY`).
+    pub(super) fn arb_subject_only_attr() -> impl Strategy<Value = Attr> {
+        arb_kv_from(attrs::SUBJECT_ONLY)
+    }
+
+    /// Strict object keys.
+    pub(super) fn arb_object_only_attr() -> impl Strategy<Value = Attr> {
+        arb_kv_from(attrs::OBJECT_ONLY)
+    }
+
+    /// Modern-syntax attribute: any of the three keysets, plus `Attr::All`.
+    /// The `BOTH_SIDES` set has `"all"` filtered out — the bare `all` token
+    /// is generated separately as `Attr::All`.
+    pub(super) fn arb_modern_attr() -> impl Strategy<Value = Attr> {
+        // BOTH_SIDES contains "all"; the parser treats `all` as Attr::All
+        // (no `=`), so we route it through `Attr::All` only.
+        const BOTH_NO_ALL: &[&str] = &["dir", "ftype", "trust", "pattern"];
+        prop_oneof![
+            10 => arb_kv_from(attrs::SUBJECT_ONLY),
+            10 => arb_kv_from(attrs::OBJECT_ONLY),
+            5  => arb_kv_from(BOTH_NO_ALL),
+            1  => Just(Attr::All),
+        ]
+    }
+
+    /// Generate a Modern-syntax rule: subject (1..=4 attrs), `:`, object
+    /// (1..=4 attrs). Either side may include any known key — the colon
+    /// disambiguates positionally.
+    pub(super) fn arb_modern_rule() -> impl Strategy<Value = Rule> {
+        (
+            arb_decision(),
+            arb_perm_opt(),
+            prop::collection::vec(arb_modern_attr(), 1..=4),
+            prop::collection::vec(arb_modern_attr(), 1..=4),
+        )
+            .prop_map(|(decision, perm, subject, object)| Rule {
+                decision,
+                perm,
+                subject,
+                object,
+                syntax: SyntaxFlavor::Modern,
+                line: 0, // filled in by arb_program()
+            })
+    }
+
+    /// Generate a Legacy-syntax rule. Two hard constraints to keep the
+    /// positional classifier deterministic:
+    ///
+    /// 1. Subject keys are drawn ONLY from `attrs::SUBJECT_ONLY`; object
+    ///    keys ONLY from `attrs::OBJECT_ONLY`. `BOTH_SIDES` keys (including
+    ///    `Attr::All`) are excluded — without a `:` delimiter, a `dir=`
+    ///    could legally be classified onto either side, which would cause a
+    ///    round-trip mismatch.
+    /// 2. The Display impl renders subject first, then object, with no
+    ///    colon. The classifier reads subject-only tokens until it hits the
+    ///    first object-only token, then switches. Strict-only keys make this
+    ///    unambiguous.
+    pub(super) fn arb_legacy_rule() -> impl Strategy<Value = Rule> {
+        (
+            arb_decision(),
+            arb_perm_opt(),
+            prop::collection::vec(arb_subject_only_attr(), 1..=4),
+            prop::collection::vec(arb_object_only_attr(), 1..=4),
+        )
+            .prop_map(|(decision, perm, subject, object)| Rule {
+                decision,
+                perm,
+                subject,
+                object,
+                syntax: SyntaxFlavor::Legacy,
+                line: 0,
+            })
+    }
+
+    /// 50/50 mix of Modern and Legacy rules wrapped in `Entry::Rule`.
+    fn arb_rule_entry() -> impl Strategy<Value = Entry> {
+        prop_oneof![
+            arb_modern_rule().prop_map(Entry::Rule),
+            arb_legacy_rule().prop_map(Entry::Rule),
+        ]
+    }
+
+    fn arb_setdef_entry() -> impl Strategy<Value = Entry> {
+        (
+            "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            prop::collection::vec("[a-zA-Z0-9_/.\\-]{1,16}", 1..=4),
+        )
+            .prop_map(|(name, values)| Entry::SetDefinition {
+                name,
+                values,
+                line: 0,
+            })
+    }
+
+    fn arb_comment_entry() -> impl Strategy<Value = Entry> {
+        // Comment text: printable ASCII (no `\n`, no `\r`). The Display
+        // impl prefixes with `#`, so a comment text containing additional
+        // `#` characters is fine — the parser reads everything to EOL.
+        "[ -~]{0,64}".prop_map(|text| Entry::Comment { text, line: 0 })
+    }
+
+    fn arb_blank_entry() -> impl Strategy<Value = Entry> {
+        Just(Entry::Blank { line: 0 })
+    }
+
+    /// A single entry, line-number stamping happens in `arb_program`.
+    /// Weights bias toward rules so the generated source stresses the
+    /// parser's rule machinery (the round-trip property's main target).
+    pub(super) fn arb_entry() -> impl Strategy<Value = Entry> {
+        prop_oneof![
+            6 => arb_rule_entry(),
+            1 => arb_setdef_entry(),
+            1 => arb_comment_entry(),
+            1 => arb_blank_entry(),
+        ]
+    }
+
+    /// Generate a `Vec<Entry>` with 1-based, strictly-monotonic `line`
+    /// fields. We stamp the line numbers after generation so the generator
+    /// stays compositional.
+    pub(super) fn arb_program() -> impl Strategy<Value = Vec<Entry>> {
+        prop::collection::vec(arb_entry(), 1..=12).prop_map(|entries| {
+            entries
+                .into_iter()
+                .enumerate()
+                .map(|(idx, e)| stamp_line(e, idx + 1))
+                .collect()
+        })
+    }
+
+    /// Plain-text rendering of a small valid-rules string. Used by Property
+    /// 3 to build a "valid prefix" that the parser must accept cleanly.
+    /// Always Modern flavor; always 1..=3 rules.
+    pub(super) fn arb_valid_rule_text() -> impl Strategy<Value = String> {
+        use std::fmt::Write as _;
+        prop::collection::vec(arb_modern_rule(), 1..=3).prop_map(|rules| {
+            rules.into_iter().fold(String::new(), |mut acc, r| {
+                let _ = writeln!(acc, "{}", Entry::Rule(stamp_rule_line(r, 1)));
+                acc
+            })
+        })
+    }
+
+    fn stamp_line(entry: Entry, line: usize) -> Entry {
+        match entry {
+            Entry::Rule(r) => Entry::Rule(stamp_rule_line(r, line)),
+            Entry::SetDefinition { name, values, .. } => {
+                Entry::SetDefinition { name, values, line }
+            }
+            Entry::Comment { text, .. } => Entry::Comment { text, line },
+            Entry::Blank { .. } => Entry::Blank { line },
+        }
+    }
+
+    fn stamp_rule_line(rule: Rule, line: usize) -> Rule {
+        Rule { line, ..rule }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order.
+/// Both sides of the round-trip equality go through this, so we never
+/// compare an actual parser-emitted line number against the generator's
+/// stamped one — the source-text construction guarantees they match, but
+/// being explicit prevents a future Display change from silently breaking
+/// the property.
+fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let line = idx + 1;
+            match entry {
+                Entry::Rule(r) => Entry::Rule(Rule { line, ..r }),
+                Entry::SetDefinition { name, values, .. } => {
+                    Entry::SetDefinition { name, values, line }
+                }
+                Entry::Comment { text, .. } => Entry::Comment { text, line },
+                Entry::Blank { .. } => Entry::Blank { line },
+            }
+        })
+        .collect()
+}
+
+fn render_program(entries: &[Entry]) -> String {
+    let mut s = String::new();
+    for entry in entries {
+        let _ = writeln!(s, "{entry}");
+    }
+    s
+}
+
+fn fatal_count(diags: &[rulesteward_core::Diagnostic]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.severity == Severity::Fatal)
+        .count()
+}
+
+// ---------------------------------------------------------------------------
+// Properties
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        .. ProptestConfig::default()
+    })]
+
+    /// Property 1 — `parse_rules_file` never panics on arbitrary input, and
+    /// on `Err` always returns at least one `Fatal` diagnostic whose code
+    /// starts with `'F'`. The Fatal-content assertion kills the mutation
+    /// "replace `Err(diags)` with `Err(vec![])`".
+    #[test]
+    fn parse_never_panics(s in proptest::string::string_regex(".{0,16384}").unwrap()) {
+        let result = catch_unwind(AssertUnwindSafe(|| parse_rules_file(&s)));
+        prop_assert!(
+            result.is_ok(),
+            "parse_rules_file panicked on input of len {}",
+            s.len()
+        );
+        // `result` is Result<Result<Vec<Entry>, Vec<Diagnostic>>, Box<Any>>.
+        // The outer Ok is "did not panic"; the inner Result is parser's own.
+        if let Ok(Err(diags)) = result {
+            prop_assert!(
+                !diags.is_empty(),
+                "Err path returned an empty diagnostic vec — caller has no way to know what failed"
+            );
+            let has_fatal_f = diags.iter().any(|d| {
+                d.severity == Severity::Fatal && d.code.as_ref().starts_with('F')
+            });
+            prop_assert!(
+                has_fatal_f,
+                "Err path returned diagnostics, but none were Severity::Fatal with a code starting with 'F'. \
+                 Got: {:?}",
+                diags.iter().map(|d| (d.severity, d.code.as_ref())).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Property 2 — every `Vec<Entry>` produced by `arb_program()` renders
+    /// to a source string that re-parses to an equal `Vec<Entry>` (after
+    /// line-normalization on both sides — see top-of-file contract).
+    ///
+    /// `arb_program()` is constrained to only emit shapes the parser must
+    /// accept (known attribute keys, legacy rules respect the positional
+    /// classifier, no reserved characters in payloads). If parsing fails,
+    /// the generator and parser disagree on what counts as "valid" — we
+    /// surface that as a property failure with the source text in the
+    /// shrunken counter-example.
+    #[test]
+    fn parsed_program_round_trips(original in generators::arb_program()) {
+        let source = render_program(&original);
+        let reparsed = match parse_rules_file(&source) {
+            Ok(entries) => entries,
+            Err(diags) => {
+                return Err(TestCaseError::fail(format!(
+                    "round-trip parse failed on generator output. \
+                     source={source:?}, diagnostics={diags:?}"
+                )));
+            }
+        };
+
+        let original_norm = normalize_lines(original);
+        let reparsed_norm = normalize_lines(reparsed);
+
+        prop_assert_eq!(
+            original_norm.len(),
+            reparsed_norm.len(),
+            "round-trip produced a different number of entries. source={:?}",
+            source
+        );
+        prop_assert_eq!(
+            &original_norm,
+            &reparsed_norm,
+            "round-trip changed the AST. source={:?}",
+            source
+        );
+    }
+
+    /// Property 3 — adding N invalid lines in front of a valid input never
+    /// reduces the count of `Severity::Fatal` diagnostics. Specifically:
+    ///
+    ///   * `fatal_count(combined) >= N`        — at least one F01 per bad line
+    ///   * `fatal_count(combined) >= fatal_count(valid)` — monotonic in N
+    ///
+    /// The first inequality kills the mutation "return only the first
+    /// error". The second kills the mutation "return zero diagnostics on
+    /// error" (and is a backstop against any mutation that silently drops
+    /// diagnostics when one section parses cleanly).
+    #[test]
+    fn diagnostics_are_monotonic(
+        valid in generators::arb_valid_rule_text(),
+        garbage_n in 0u8..=8u8,
+        garbage_lines in prop::collection::vec(
+            // Lines of pure reserved characters — these contain no decision
+            // keyword, no `#`, no `%`, and no `=`, so they cannot match any
+            // top-level production. Every such line must produce ≥1 F01.
+            proptest::string::string_regex("[!@$^&*]{1,16}").unwrap(),
+            8,
+        ),
+    ) {
+        let n = garbage_n as usize;
+        let garbage: String = garbage_lines.iter().take(n).fold(String::new(), |mut acc, line| {
+            let _ = writeln!(acc, "{line}");
+            acc
+        });
+        let combined = format!("{garbage}{valid}");
+
+        let valid_diags = match parse_rules_file(&valid) {
+            Ok(_) => Vec::new(),
+            Err(d) => d,
+        };
+        let combined_diags = match parse_rules_file(&combined) {
+            Ok(_) => Vec::new(),
+            Err(d) => d,
+        };
+
+        let valid_fatals = fatal_count(&valid_diags);
+        let combined_fatals = fatal_count(&combined_diags);
+
+        // Sanity: the valid-only input must parse cleanly (zero fatals).
+        // If it doesn't, the generator is producing something the parser
+        // rejects — we want to know about that, but it's a generator bug,
+        // not a monotonicity violation. Surface as a failure with context.
+        prop_assert_eq!(
+            valid_fatals,
+            0,
+            "arb_valid_rule_text produced text the parser rejected. \
+             source={:?}, diagnostics={:?}",
+            valid,
+            valid_diags
+        );
+
+        prop_assert!(
+            combined_fatals >= n,
+            "expected at least {} fatal diagnostics (one per garbage line), got {}. \
+             garbage={:?}, valid={:?}, diagnostics={:?}",
+            n,
+            combined_fatals,
+            garbage,
+            valid,
+            combined_diags
+        );
+
+        prop_assert!(
+            combined_fatals >= valid_fatals,
+            "adding garbage reduced the fatal-count from {} to {} — diagnostics are not monotonic",
+            valid_fatals,
+            combined_fatals
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sentinels — deterministic, single-case tests that kill specific mutations
+// even if a non-shrinking proptest run doesn't surface them.
+// ---------------------------------------------------------------------------
+
+/// Sentinel for Property 2. Two hand-rolled Modern rules go through
+/// render → parse and must come back unchanged (after line normalization).
+/// Kills the mutation "always return `Ok(vec![])`": that mutant would make
+/// the length check fail.
+#[test]
+fn roundtrip_sentinel() {
+    let original = vec![
+        Entry::Rule(Rule {
+            decision: Decision::Allow,
+            perm: Some(Perm::Open),
+            subject: vec![Attr::Kv {
+                key: "uid".to_string(),
+                value: AttrValue::Int(0),
+            }],
+            object: vec![Attr::All],
+            syntax: SyntaxFlavor::Modern,
+            line: 1,
+        }),
+        Entry::Rule(Rule {
+            decision: Decision::Deny,
+            perm: Some(Perm::Execute),
+            subject: vec![Attr::Kv {
+                key: "exe".to_string(),
+                value: AttrValue::Str("/usr/bin/foo".to_string()),
+            }],
+            object: vec![Attr::Kv {
+                key: "path".to_string(),
+                value: AttrValue::Str("/etc/passwd".to_string()),
+            }],
+            syntax: SyntaxFlavor::Modern,
+            line: 2,
+        }),
+    ];
+
+    let source = render_program(&original);
+    let reparsed = parse_rules_file(&source).expect("hand-rolled sentinel must parse cleanly");
+
+    assert_eq!(
+        normalize_lines(original),
+        normalize_lines(reparsed),
+        "sentinel round-trip failed; source was:\n{source}"
+    );
+}
+
+/// Sentinel for Property 3. Hard-coded N=3 garbage lines + 1 valid Modern
+/// rule. The parser must report at least 3 Fatal diagnostics. Kills the
+/// mutation "return only the first error".
+#[test]
+fn monotonicity_sentinel() {
+    let source = "\
+!!!garbage1!!!
+@@@garbage2@@@
+&&&garbage3&&&
+allow perm=open uid=0 : all
+";
+
+    let Err(diags) = parse_rules_file(source) else {
+        panic!(
+            "sentinel input must produce parse errors (3 garbage lines), \
+             but parse_rules_file returned Ok"
+        )
+    };
+
+    let fatals = fatal_count(&diags);
+    assert!(
+        fatals >= 3,
+        "expected ≥3 Fatal diagnostics (one per garbage line); got {fatals}. \
+         diagnostics={diags:?}"
+    );
+
+    // Spot-check the structure: every Fatal should have a code starting
+    // with 'F'. Catches a mutation that downgrades Fatal → Error or
+    // emits Fatals without an F-code.
+    for d in diags.iter().filter(|d| d.severity == Severity::Fatal) {
+        assert!(
+            d.code.as_ref().starts_with('F'),
+            "Fatal diagnostic with non-F code: {:?}",
+            d.code
+        );
+    }
+}

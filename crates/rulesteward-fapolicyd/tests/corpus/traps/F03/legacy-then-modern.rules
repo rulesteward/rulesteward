@@ -1,0 +1,2 @@
+allow perm=open uid=0 path=/usr/bin/ls
+deny perm=execute all : all

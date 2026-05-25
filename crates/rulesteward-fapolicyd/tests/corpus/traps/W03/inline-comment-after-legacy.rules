@@ -1,0 +1,1 @@
+allow perm=open uid=0 path=/etc/hosts # legacy-flavor with inline comment

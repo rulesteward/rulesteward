@@ -1,0 +1,43 @@
+name: mutants
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    name: cargo-mutants (parser + lints)
+    # Gate the label-triggered path to a specific label so unrelated PRs
+    # don't burn minutes here. The scheduled run has no label and is
+    # always allowed; `workflow_dispatch` is manual-only and always allowed.
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-mutants'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install stable toolchain
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | bash -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      # Baseline + scope live in crates/rulesteward-fapolicyd/MUTATION-BASELINE.md
+      # and .cargo/mutants.toml respectively. `--error-on-survival 0` says
+      # "any survivor at all is a regression"; bump only on deliberate
+      # baseline review.
+      - name: cargo mutants
+        run: cargo mutants --no-shuffle --error-on-survival 0
