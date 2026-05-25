@@ -1,6 +1,6 @@
 # RuleSteward
 
-**Modular RHEL hardening toolkit** - read-only, CI-friendly static analysis and live triage for `fapolicyd`, SELinux, and `auditd`.
+**Modular RHEL hardening toolkit** - read-only, CI-friendly static analysis and live triage for `fapolicyd`, `SELinux`, and `auditd`.
 
 > Compatible with **DISA STIG RHEL 8/9/10** and **ACSC Essential Eight** application control objectives.
 
