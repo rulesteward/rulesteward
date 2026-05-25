@@ -161,10 +161,11 @@ jobs:
       run:
         shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
     steps:
-      - name: Bootstrap minimum tooling (bash + ca-certificates only)
-        # Static binary doesn't need much. ca-certificates is in case
-        # actions/download-artifact uses HTTPS internally on the runner side.
-        run: dnf -y install bash ca-certificates findutils
+      - name: Bootstrap minimum tooling (bash + ca-certificates)
+        # actions/download-artifact@v4 is a JavaScript action; when a job
+        # declares container:, JS actions run INSIDE that container and
+        # need TLS root certs to fetch the artifact over HTTPS.
+        run: dnf -y install bash ca-certificates
 
       - name: Download the static binary from musl-build
         uses: actions/download-artifact@v4
@@ -184,5 +185,12 @@ jobs:
           ./bin/rulesteward completions bash | grep -q '_rulesteward'
 
       - name: Functional smoke -- no placeholder leakage in --help
+        # Capture --help output to a file FIRST, so a binary crash (non-zero
+        # exit) fails the step under set -e instead of being masked by a
+        # `|| true` swallow on the grep no-match branch.
         run: |
-          ./bin/rulesteward --help | grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' && exit 1 || true
+          ./bin/rulesteward --help > /tmp/help_output
+          if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
+            grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
+            exit 1
+          fi
