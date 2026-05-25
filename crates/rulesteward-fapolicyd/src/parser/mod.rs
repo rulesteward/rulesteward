@@ -297,8 +297,22 @@ mod tests {
 
     #[test]
     fn bom_is_stripped_from_first_line() {
+        // Source layout: BOM (3 bytes) + "allow uid=0 : all" (17 bytes) + "\n"
+        // (1 byte) = 21 bytes total. Rule body lives at bytes 3..20; the span
+        // must be file-relative, NOT line-relative (which would be 0..17).
+        // This assertion locks the BOM accounting in `body_start_in_file`.
         let entries = parse_rules_file("\u{feff}allow uid=0 : all\n").expect("bom parses");
-        assert!(matches!(entries[0], Entry::Rule(_)));
+        let Entry::Rule(rule) = &entries[0] else {
+            panic!("entries[0] expected Rule, got {:?}", entries[0])
+        };
+        assert_eq!(
+            rule.span.start, 3,
+            "Rule.span.start must account for the 3-byte BOM"
+        );
+        assert_eq!(
+            rule.span.end, 20,
+            "Rule.span.end must reach just past `all`"
+        );
     }
 
     #[test]
