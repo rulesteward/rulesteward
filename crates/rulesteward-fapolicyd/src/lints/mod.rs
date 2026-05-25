@@ -36,6 +36,7 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
 /// parsing failed; `diagnostics` always contains everything the parser and
 /// lint walker found. The `io::Error` is propagated unchanged so the CLI
 /// can map it to exit code 3 (tool failure).
+#[must_use = "lint results contain parse and lint diagnostics that should be checked"]
 pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
     let source = std::fs::read_to_string(path)?;
     let (entries, parse_diags) = match parser::parse_rules_file(&source) {
@@ -58,7 +59,10 @@ mod tests {
         writeln!(f, "allow uid=0 : all").expect("write");
         let (entries, diags) = lint_file(f.path()).expect("read");
         assert_eq!(entries.len(), 1);
-        assert!(diags.is_empty(), "clean rule should produce no diagnostics, got {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "clean rule should produce no diagnostics, got {diags:?}"
+        );
     }
 
     #[test]
@@ -66,7 +70,10 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         writeln!(f, "!!!garbage").expect("write");
         let (entries, diags) = lint_file(f.path()).expect("read");
-        assert!(entries.is_empty());
+        assert!(
+            entries.is_empty(),
+            "expected no entries on parse failure, got {entries:?}"
+        );
         assert!(
             diags.iter().any(|d| d.code.as_ref() == "F01"),
             "garbage line must produce F01, got {diags:?}"
