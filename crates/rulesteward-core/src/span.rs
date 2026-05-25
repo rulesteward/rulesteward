@@ -42,7 +42,7 @@ pub mod span_util {
     /// Returns the number of bytes covered by the span.
     #[must_use]
     pub fn len(s: &Span) -> usize {
-        s.end - s.start
+        s.len()
     }
 
     /// Returns `true` if `byte` falls within the span (half-open: start inclusive, end exclusive).
@@ -55,8 +55,23 @@ pub mod span_util {
     ///
     /// Iterates the bytes before `s.start` counting newlines. Column resets
     /// to 1 after each newline. Both line and column are 1-based.
+    ///
+    /// **Column counts bytes, not Unicode code points or grapheme clusters.**
+    /// This is consistent with the byte-offset spans the parser produces.
+    /// The returned column equals `1 + (number of bytes on the current line
+    /// before `s.start`)`.
+    ///
+    /// **Precondition:** `s.start` must be a valid byte boundary in `src` and
+    /// `s.start <= src.len()`. Out-of-range or mid-codepoint inputs produce a
+    /// defined but possibly confusing result; they do not panic.
     #[must_use]
     pub fn line_col(s: &Span, src: &str) -> (usize, usize) {
+        debug_assert!(
+            s.start <= src.len(),
+            "line_col: span start {} exceeds source length {}",
+            s.start,
+            src.len()
+        );
         let mut line = 1usize;
         let mut col = 1usize;
         for b in src.bytes().take(s.start) {
@@ -109,5 +124,19 @@ mod tests {
     #[test]
     fn span_util_line_col_mid_line() {
         assert_eq!(span_util::line_col(&span(6, 6), "abc\ndef"), (2, 3));
+    }
+
+    #[test]
+    fn span_util_line_col_mid_first_line() {
+        // byte 2 is `c` in "abc\ndef" - line 1, column 3. Kills mutations
+        // that disable the `col += 1` increment for non-newline bytes.
+        assert_eq!(span_util::line_col(&span(2, 2), "abc\ndef"), (1, 3));
+    }
+
+    #[test]
+    fn span_util_line_col_consecutive_newlines() {
+        // Source "\n\na" - byte 2 (the `a`) sits on line 3 at column 1.
+        // Kills mutations that change `col = 1` reset to `col = 0`.
+        assert_eq!(span_util::line_col(&span(2, 2), "\n\na"), (3, 1));
     }
 }

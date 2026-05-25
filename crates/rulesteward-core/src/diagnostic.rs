@@ -5,7 +5,6 @@
 //! (Fatal / Error / Warning / Style / Convention / Extra → `F/E/W/S/C/X`).
 //! Lint codes such as `"F01"`, `"W02"` pair the letter with a 2-digit number.
 
-use core::ops::Range;
 use std::borrow::Cow;
 use std::path::PathBuf;
 
@@ -75,7 +74,7 @@ impl Diagnostic {
     pub fn new(
         severity: Severity,
         code: impl Into<Cow<'static, str>>,
-        span: Range<usize>,
+        span: Span,
         message: impl Into<String>,
         file: impl Into<PathBuf>,
         line: usize,
