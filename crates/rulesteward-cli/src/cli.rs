@@ -30,6 +30,9 @@ pub enum TopCommand {
     /// auditd operations
     #[command(subcommand)]
     Auditd(AuditdCommand),
+
+    /// Print shell-completion script for the given shell
+    Completions(CompletionsArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -88,4 +91,20 @@ pub enum SelinuxCommand {
 pub enum AuditdCommand {
     /// (stub) auditd cost calculator
     Cost,
+}
+
+#[derive(Debug, Parser)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    #[arg(value_enum)]
+    pub shell: CompletionShell,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Elvish,
+    PowerShell,
 }

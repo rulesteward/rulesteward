@@ -33,6 +33,10 @@ fn main() {
         TopCommand::Fapolicyd(cmd) => commands::fapolicyd::run(cmd),
         TopCommand::Selinux(cmd) => commands::selinux::run(cmd),
         TopCommand::Auditd(cmd) => commands::auditd::run(cmd),
+        TopCommand::Completions(_args) => {
+            // wired up in Task B
+            rulesteward_cli::exit_code::EXIT_CLEAN
+        }
     };
     std::process::exit(code);
 }

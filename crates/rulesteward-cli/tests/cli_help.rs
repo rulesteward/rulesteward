@@ -28,3 +28,25 @@ fn fapolicyd_lint_help_lists_format_flag() {
         .stdout(predicate::str::contains("--file"))
         .stdout(predicate::str::contains("--against-trustdb"));
 }
+
+#[test]
+fn root_help_lists_completions_subcommand() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("completions"));
+}
+
+#[test]
+fn completions_help_lists_supported_shells() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["completions", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bash"))
+        .stdout(predicate::str::contains("zsh"))
+        .stdout(predicate::str::contains("fish"));
+}
