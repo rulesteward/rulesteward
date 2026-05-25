@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[W02] sev=Warning line=1 col=1 span=0..0 :: broad allow on execute (subject=all, object=all) - every binary on the system can run
+[W02] sev=Warning line=1 col=1 span=0..28 :: broad allow on execute (subject=all, object=all) - every binary on the system can run

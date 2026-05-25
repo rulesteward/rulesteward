@@ -39,7 +39,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use proptest::prelude::*;
 
-use rulesteward_core::Severity;
+use rulesteward_core::{Severity, span};
 use rulesteward_fapolicyd::{
     ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor},
     attrs, parse_rules_file,
@@ -50,7 +50,7 @@ use rulesteward_fapolicyd::{
 // ---------------------------------------------------------------------------
 
 mod generators {
-    use super::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor, attrs};
+    use super::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor, attrs, span};
     use proptest::prelude::*;
 
     /// All 8 decision keywords; flavor-agnostic.
@@ -167,7 +167,8 @@ mod generators {
                 subject,
                 object,
                 syntax: SyntaxFlavor::Modern,
-                line: 0, // filled in by arb_program()
+                line: 0,          // filled in by arb_program()
+                span: span(0, 0), // placeholder; file-relative span set by parser
             })
     }
 
@@ -197,6 +198,7 @@ mod generators {
                 object,
                 syntax: SyntaxFlavor::Legacy,
                 line: 0,
+                span: span(0, 0), // placeholder; file-relative span set by parser
             })
     }
 
@@ -281,7 +283,11 @@ mod generators {
     }
 
     fn stamp_rule_line(rule: Rule, line: usize) -> Rule {
-        Rule { line, ..rule }
+        Rule {
+            line,
+            span: span(0, 0),
+            ..rule
+        }
     }
 }
 
@@ -289,12 +295,17 @@ mod generators {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order.
-/// Both sides of the round-trip equality go through this, so we never
-/// compare an actual parser-emitted line number against the generator's
-/// stamped one - the source-text construction guarantees they match, but
-/// being explicit prevents a future Display change from silently breaking
-/// the property.
+/// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order
+/// and `Rule.span` fields are zeroed out. Both sides of the round-trip
+/// equality go through this:
+/// - `line` normalization: the source-text construction guarantees line
+///   numbers agree, but being explicit prevents a future Display change
+///   from silently breaking the property.
+/// - `span` normalization: the generator uses `span(0,0)` placeholders
+///   while the parser produces real file-relative spans. We zero both
+///   sides so the round-trip property stays focused on AST shape, not
+///   byte offsets. Span correctness is verified by dedicated unit tests
+///   in `parser/mod.rs`.
 fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
     entries
         .into_iter()
@@ -302,7 +313,11 @@ fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
         .map(|(idx, entry)| {
             let line = idx + 1;
             match entry {
-                Entry::Rule(r) => Entry::Rule(Rule { line, ..r }),
+                Entry::Rule(r) => Entry::Rule(Rule {
+                    line,
+                    span: span(0, 0),
+                    ..r
+                }),
                 Entry::SetDefinition { name, values, .. } => {
                     Entry::SetDefinition { name, values, line }
                 }
@@ -481,6 +496,44 @@ proptest! {
             combined_fatals
         );
     }
+
+    /// Property 4 - every `Rule` produced by `parse_rules_file` has a
+    /// non-empty span that lies within the bounds of the source string.
+    ///
+    /// Kills mutations that:
+    /// - Leave `span` as `0..0` (the placeholder default): the non-empty
+    ///   assertion fails for any non-empty rule body.
+    /// - Set `span.end` beyond `source.len()`: the upper-bound assertion
+    ///   fails.
+    #[test]
+    fn parsed_rule_spans_are_non_empty_subranges_of_source(
+        source in generators::arb_valid_rule_text()
+    ) {
+        if let Ok(entries) = parse_rules_file(&source) {
+            for entry in &entries {
+                if let Entry::Rule(r) = entry {
+                    prop_assert!(
+                        r.span.start < r.span.end,
+                        "Rule.span must be non-empty; got {:?} in source {:?}",
+                        r.span,
+                        source
+                    );
+                    prop_assert!(
+                        r.span.end <= source.len(),
+                        "Rule.span.end ({}) must not exceed source.len() ({})",
+                        r.span.end,
+                        source.len()
+                    );
+                    prop_assert!(
+                        r.span.start <= source.len(),
+                        "Rule.span.start ({}) must not exceed source.len() ({})",
+                        r.span.start,
+                        source.len()
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +558,7 @@ fn roundtrip_sentinel() {
             object: vec![Attr::All],
             syntax: SyntaxFlavor::Modern,
             line: 1,
+            span: span(0, 0),
         }),
         Entry::Rule(Rule {
             decision: Decision::Deny,
@@ -519,6 +573,7 @@ fn roundtrip_sentinel() {
             }],
             syntax: SyntaxFlavor::Modern,
             line: 2,
+            span: span(0, 0),
         }),
     ];
 

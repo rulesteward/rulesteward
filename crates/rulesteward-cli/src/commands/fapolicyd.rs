@@ -1,5 +1,6 @@
 //! Body of `rulesteward fapolicyd <subcommand>`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rulesteward_core::Diagnostic;
@@ -45,10 +46,23 @@ fn run_lint(args: &LintArgs) -> i32 {
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
+    // Build source map: source_id (file path string) -> raw file content.
+    // Re-reading each file here is intentional: lint_file already read it
+    // once for parsing; we read again to populate the ariadne source cache.
+    // For v0.1 single-file workloads the double-read cost is negligible.
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
 
     for path in &target_files {
         match lint_file(path) {
-            Ok((_entries, diags)) => all_diags.extend(diags),
+            Ok((_entries, diags)) => {
+                all_diags.extend(diags);
+                // Load source text for ariadne snippets. Failures are soft:
+                // the human renderer falls back to plain format if the entry
+                // is absent from `sources`.
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    sources.insert(path.display().to_string(), text);
+                }
+            }
             Err(io) => {
                 eprintln!("{}: {}", path.display(), io);
                 tool_err = true;
@@ -56,7 +70,7 @@ fn run_lint(args: &LintArgs) -> i32 {
         }
     }
 
-    let rendered = match output::render(args.format, &all_diags) {
+    let rendered = match output::render(args.format, &all_diags, &sources) {
         Ok(s) => s,
         Err(RenderError::SarifNotImplemented) => {
             println!("{{\"error\":\"sarif format not yet implemented in v0.1.0-dev\"}}");

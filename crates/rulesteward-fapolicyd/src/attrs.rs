@@ -1,26 +1,25 @@
 //! Known attribute names + their permitted side (subject / object / either).
 //!
-//! Used in two places:
-//! * `parser::legacy_rule` - to positionally split the flat attribute list
-//!   into `(subject, object)` halves in the legacy (no-colon) syntax.
-//! * `lints::E01` - to flag unknown attribute names.
+//! The lists here are FLAVOR-AGNOSTIC: they record the most-permissive
+//! classification (e.g. `dir`, `ftype`, `trust` are `Either` because
+//! modern accepts them on either side). The legacy dialect is stricter,
+//! and that stricter classification lives in
+//! `parser::grammar::legacy_classify` (file-private). The legacy
+//! positional split anchors on the parser-local `legacy_classify`, not
+//! on the functions exported here.
+//!
+//! Used by:
+//! * `lints::E01` - to flag unknown attribute names (via [`is_known`]).
 //!
 //! Source: R2-audit-grammar.md, derived from
 //! `src/library/{subject,object}-attr.c` in upstream fapolicyd.
 //!
-//! KNOWN LIMITATION (deferred to Session 3): these lists are FLAVOR-AGNOSTIC. Per R2 §"Subject attributes (legacy ORIG format)"
-//! the legacy dialect is stricter than modern in two ways:
-//!
-//!   * `ppid`, `gid`, `trust` are NOT legal on legacy subject side.
-//!   * `dir`, `ftype`, `trust` appear ONLY on legacy object side (in modern
-//!     they're either-side).
-//!
-//! Today, `classify("dir")` returns `Either`, which is correct for modern
-//! but lets the legacy positional split reject some valid legacy rules
-//! (those whose object side is purely `dir/ftype/trust` without an
-//! `OBJECT_ONLY` anchor like `path=`). Per plan §7 this was explicitly
-//! flagged as a "do not silently relax" decision - the fix needs a
-//! flavor-aware classifier and per-flavor `is_known()` semantics.
+//! For the per-flavor deltas (e.g. `gid`/`ppid` illegal on legacy
+//! subject side; `trust`/`dir`/`ftype` object-only in legacy) see the
+//! truth table inline in `parser::grammar::legacy_classify`. Session 3a
+//! intentionally kept that knowledge parser-internal because no public
+//! consumer exists yet; a future session may expose a public flavor-aware
+//! API when E02 / E03 lint codes give it a concrete consumer.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrSide {

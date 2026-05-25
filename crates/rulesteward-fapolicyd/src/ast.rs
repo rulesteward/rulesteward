@@ -5,6 +5,8 @@
 //! `Entry::Rule(Rule { ..., syntax: SyntaxFlavor::{Modern|Legacy} })`. Lint
 //! passes consume the unified `Vec<Entry>` and never see raw chumsky output.
 
+use rulesteward_core::Span;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Decision {
     Allow,
@@ -56,6 +58,11 @@ pub struct Rule {
     pub object: Vec<Attr>,
     pub syntax: SyntaxFlavor,
     pub line: usize,
+    /// Byte range into the file source this rule was parsed from.
+    /// File-relative (not line-relative). Populated by the parser via
+    /// chumsky's span capture; layout-level constructions (tests) may
+    /// use [`rulesteward_core::span`] to set a placeholder.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

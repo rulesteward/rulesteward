@@ -2,19 +2,16 @@
 //! F03 (mixed-syntax), E01 (unknown attribute), and W02 (broad allow on
 //! execute).
 //!
-//! KNOWN LIMITATION (session 3+): the `span` field on diagnostics emitted
-//! here is hard-coded to `0..0`. The AST (see `crate::ast`) does not carry
-//! byte-range spans for individual attributes/rules, so the walker has no
-//! source-position handle to thread through. Per plan §1.3 this was a
-//! deliberate Session-2a deferral; a future change will add `Range<usize>`
-//! span fields on `Rule` and `Attr` so `ariadne` can underline the
-//! offending region.
+//! Spans on emitted diagnostics are file-relative byte ranges lifted from
+//! `Rule.span` (set by the parser in session 3a). `source_id` is set to
+//! `file.display().to_string()` on every rule-level diagnostic so ariadne
+//! can key its Source cache.
 
 use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::{Attr, Decision, Entry, Perm, SyntaxFlavor};
+use crate::ast::{Attr, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
 /// Run F03, E01, and W02 over `entries` and return the merged diagnostics.
@@ -31,33 +28,38 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 /// F03 - both `SyntaxFlavor::Modern` and `SyntaxFlavor::Legacy` present in
 /// the same file. Reported on the line where the SECOND flavor first
 /// appears (whichever it is).
-fn f03(entries: &[Entry], file: &Path) -> Option<Diagnostic> {
-    let mut first_modern: Option<usize> = None;
-    let mut first_legacy: Option<usize> = None;
+fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
+    let mut first_modern: Option<&'e Rule> = None;
+    let mut first_legacy: Option<&'e Rule> = None;
     for entry in entries {
         if let Entry::Rule(r) = entry {
             match r.syntax {
                 SyntaxFlavor::Modern => {
-                    first_modern.get_or_insert(r.line);
+                    first_modern.get_or_insert(r);
                 }
                 SyntaxFlavor::Legacy => {
-                    first_legacy.get_or_insert(r.line);
+                    first_legacy.get_or_insert(r);
                 }
             }
         }
     }
     match (first_modern, first_legacy) {
         (Some(m), Some(l)) => {
-            let trigger_line = m.max(l);
-            Some(Diagnostic::new(
-                Severity::Fatal,
-                "F03",
-                0..0,
-                "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
-                file,
-                trigger_line,
-                1,
-            ))
+            // The trigger is the rule with the higher line number (i.e. the
+            // second flavor to appear).
+            let trigger = if m.line >= l.line { m } else { l };
+            Some(
+                Diagnostic::new(
+                    Severity::Fatal,
+                    "F03",
+                    trigger.span.clone(),
+                    "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
+                    file,
+                    trigger.line,
+                    1,
+                )
+                .with_source_id(file.display().to_string()),
+            )
         }
         _ => None,
     }
@@ -73,15 +75,18 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 if let Attr::Kv { key, .. } = attr
                     && !attrs::is_known(key)
                 {
-                    diags.push(Diagnostic::new(
-                        Severity::Error,
-                        "E01",
-                        0..0,
-                        format!("unknown attribute `{key}`"),
-                        file,
-                        r.line,
-                        1,
-                    ));
+                    diags.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            "E01",
+                            r.span.clone(),
+                            format!("unknown attribute `{key}`"),
+                            file,
+                            r.line,
+                            1,
+                        )
+                        .with_source_id(file.display().to_string()),
+                    );
                 }
             }
         }
@@ -105,15 +110,18 @@ fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         let object_is_all = matches!(r.object.as_slice(), [Attr::All]);
 
         if is_allow_class && is_execute_or_any && subject_is_all && object_is_all {
-            diags.push(Diagnostic::new(
-                Severity::Warning,
-                "W02",
-                0..0,
-                "broad allow on execute (subject=all, object=all) - every binary on the system can run",
-                file,
-                r.line,
-                1,
-            ));
+            diags.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    "W02",
+                    r.span.clone(),
+                    "broad allow on execute (subject=all, object=all) - every binary on the system can run",
+                    file,
+                    r.line,
+                    1,
+                )
+                .with_source_id(file.display().to_string()),
+            );
         }
     }
     diags
@@ -143,6 +151,7 @@ mod tests {
             object: obj,
             syntax: SyntaxFlavor::Modern,
             line,
+            span: rulesteward_core::span(0, 0),
         })
     }
 
@@ -160,6 +169,7 @@ mod tests {
             object: obj,
             syntax: SyntaxFlavor::Legacy,
             line,
+            span: rulesteward_core::span(0, 0),
         })
     }
 
@@ -196,6 +206,7 @@ mod tests {
         let d = f03(&entries, &p()).expect("F03 fires");
         assert_eq!(d.code.as_ref(), "F03");
         assert_eq!(d.line, 3);
+        assert_eq!(d.source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]
@@ -216,6 +227,11 @@ mod tests {
         let diags = e01(&entries, &p());
         assert_eq!(diags.len(), 2);
         assert!(diags.iter().all(|d| d.code.as_ref() == "E01"));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.source_id == Some("/tmp/test.rules".to_string()))
+        );
     }
 
     #[test]
@@ -230,6 +246,7 @@ mod tests {
         let diags = w02(&entries, &p());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.as_ref(), "W02");
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]

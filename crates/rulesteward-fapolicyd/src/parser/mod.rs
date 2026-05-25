@@ -46,6 +46,13 @@ pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
     let lines: Vec<&str> = source.split('\n').collect();
     let last_idx = lines.len().saturating_sub(1);
 
+    // `line_byte_offset` tracks the byte position of the start of each raw
+    // line within the original `source` string. We add `raw_line.len() + 1`
+    // per iteration (the `+1` accounts for the LF separator that `split('\n')`
+    // consumed). This lets us convert chumsky's line-relative byte spans into
+    // file-relative spans.
+    let mut line_byte_offset: usize = 0;
+
     for (idx, raw_line) in lines.iter().enumerate() {
         // A file ending in `\n` produces a trailing empty chunk that is the
         // LF terminator, not an extra blank line - suppress it.
@@ -54,15 +61,27 @@ pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
         }
         let lineno = idx + 1;
         let trimmed_cr = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-        let no_bom = if idx == 0 {
-            trimmed_cr.strip_prefix(UTF8_BOM).unwrap_or(trimmed_cr)
+        let bom_stripped = idx == 0 && trimmed_cr.starts_with(UTF8_BOM);
+        let no_bom = if bom_stripped {
+            &trimmed_cr[UTF8_BOM.len()..]
         } else {
             trimmed_cr
         };
 
-        let (line_entries, line_diags) = parse_line(no_bom, lineno);
+        // `body_start_in_file` is the byte offset of `no_bom[0]` within
+        // `source`. For the first line with a BOM we skip 3 bytes.
+        let body_start_in_file = if bom_stripped {
+            line_byte_offset + UTF8_BOM.len()
+        } else {
+            line_byte_offset
+        };
+
+        let (line_entries, line_diags) = parse_line(no_bom, lineno, body_start_in_file);
         entries.extend(line_entries);
         diagnostics.extend(line_diags);
+
+        // Advance past this raw line plus its LF separator.
+        line_byte_offset += raw_line.len() + 1;
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Fatal) {
@@ -72,7 +91,11 @@ pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
     }
 }
 
-fn parse_line(line: &str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>) {
+fn parse_line(
+    line: &str,
+    lineno: usize,
+    body_start_in_file: usize,
+) -> (Vec<Entry>, Vec<Diagnostic>) {
     if line.bytes().all(|b| b == b' ' || b == b'\t') {
         return (vec![Entry::Blank { line: lineno }], Vec::new());
     }
@@ -93,13 +116,15 @@ fn parse_line(line: &str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>) {
     let first_nonws = body.trim_start_matches([' ', '\t']).chars().next();
 
     if first_nonws == Some('%') {
-        run_chumsky(grammar::set_definition(), body, lineno)
+        run_chumsky(grammar::set_definition(), body, lineno, body_start_in_file)
     } else {
-        let (entries, modern_diags) = run_chumsky(grammar::modern_rule(), body, lineno);
+        let (entries, modern_diags) =
+            run_chumsky(grammar::modern_rule(), body, lineno, body_start_in_file);
         if modern_diags.is_empty() {
             (entries, modern_diags)
         } else {
-            let (legacy_entries, legacy_diags) = run_chumsky(grammar::legacy_rule(), body, lineno);
+            let (legacy_entries, legacy_diags) =
+                run_chumsky(grammar::legacy_rule(), body, lineno, body_start_in_file);
             if legacy_diags.is_empty() {
                 (legacy_entries, legacy_diags)
             } else {
@@ -112,14 +137,22 @@ fn parse_line(line: &str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>) {
     }
 }
 
-fn run_chumsky<'a, P>(parser: P, body: &'a str, lineno: usize) -> (Vec<Entry>, Vec<Diagnostic>)
+fn run_chumsky<'a, P>(
+    parser: P,
+    body: &'a str,
+    lineno: usize,
+    body_start_in_file: usize,
+) -> (Vec<Entry>, Vec<Diagnostic>)
 where
     P: Parser<'a, &'a str, Entry, extra::Err<Rich<'a, char>>>,
 {
     let (output, errors) = parser.parse(body).into_output_errors();
     if errors.is_empty() {
         if let Some(entry) = output {
-            (vec![set_entry_line(entry, lineno)], Vec::new())
+            (
+                vec![fixup_entry(entry, lineno, body_start_in_file)],
+                Vec::new(),
+            )
         } else {
             (
                 Vec::new(),
@@ -143,9 +176,31 @@ where
     }
 }
 
-fn set_entry_line(entry: Entry, lineno: usize) -> Entry {
+/// Set the line number and convert the span from line-relative to
+/// file-relative coordinates. `body_start_in_file` is the byte offset of the
+/// first character of the parsed body within the original source string.
+///
+/// Only `Entry::Rule` carries a span; all other entry kinds keep only the
+/// line adjustment.
+///
+/// **Invariant:** both `modern_rule()` and `legacy_rule()` in `grammar.rs`
+/// open with `ws0()`, so chumsky's `e.span().start` is always 0 within the
+/// parsed body. We therefore offset only the end, not the start. The
+/// `debug_assert` below catches future grammar changes that violate this
+/// (and would silently produce incorrectly-shifted spans).
+fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry {
     match entry {
-        Entry::Rule(r) => Entry::Rule(Rule { line: lineno, ..r }),
+        Entry::Rule(r) => {
+            debug_assert_eq!(
+                r.span.start, 0,
+                "chumsky grammar invariant: Rule.span.start must be 0 within parsed body",
+            );
+            Entry::Rule(Rule {
+                line: lineno,
+                span: body_start_in_file..(body_start_in_file + r.span.end),
+                ..r
+            })
+        }
         Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {
             name,
             values,
@@ -159,7 +214,7 @@ fn set_entry_line(entry: Entry, lineno: usize) -> Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Decision, SyntaxFlavor};
+    use crate::ast::{Attr, Decision, SyntaxFlavor};
 
     #[test]
     fn empty_source_parses_to_no_entries() {
@@ -254,7 +309,111 @@ mod tests {
 
     #[test]
     fn bom_is_stripped_from_first_line() {
+        // Source layout: BOM (3 bytes) + "allow uid=0 : all" (17 bytes) + "\n"
+        // (1 byte) = 21 bytes total. Rule body lives at bytes 3..20; the span
+        // must be file-relative, NOT line-relative (which would be 0..17).
+        // This assertion locks the BOM accounting in `body_start_in_file`.
         let entries = parse_rules_file("\u{feff}allow uid=0 : all\n").expect("bom parses");
-        assert!(matches!(entries[0], Entry::Rule(_)));
+        let Entry::Rule(rule) = &entries[0] else {
+            panic!("entries[0] expected Rule, got {:?}", entries[0])
+        };
+        assert_eq!(
+            rule.span.start, 3,
+            "Rule.span.start must account for the 3-byte BOM"
+        );
+        assert_eq!(
+            rule.span.end, 20,
+            "Rule.span.end must reach just past `all`"
+        );
+    }
+
+    // --- Integration tests: legacy rules with dir/ftype/trust as object anchors ---
+
+    #[test]
+    fn legacy_rule_with_trust_object_anchor_parses() {
+        // Before Task 5's fix: trust was classified as Either, so positional_split
+        // could not find an object-only attribute to anchor the legacy subject/object
+        // split. The rule failed to parse. After Task 5: trust is legacy-classified
+        // as Object, so the split fires at the `trust` attribute.
+        let entries = parse_rules_file("allow uid=0 trust=1\n")
+            .expect("legacy rule with trust as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule, got {:?}", entries[0])
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert_eq!(r.subject.len(), 1, "subject side should contain uid=0");
+        assert_eq!(r.object.len(), 1, "object side should contain trust=1");
+        assert!(
+            matches!(&r.subject[0], Attr::Kv { key, .. } if key == "uid"),
+            "subject[0] should be uid, got {:?}",
+            r.subject[0]
+        );
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "trust"),
+            "object[0] should be trust, got {:?}",
+            r.object[0]
+        );
+    }
+
+    #[test]
+    fn legacy_rule_with_dir_object_anchor_parses() {
+        let entries = parse_rules_file("allow uid=0 dir=/usr\n")
+            .expect("legacy rule with dir as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule")
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "dir"),
+            "object[0] should be dir, got {:?}",
+            r.object[0]
+        );
+    }
+
+    #[test]
+    fn legacy_rule_with_ftype_object_anchor_parses() {
+        let entries = parse_rules_file("allow uid=0 ftype=application/x-executable\n")
+            .expect("legacy rule with ftype as object anchor must parse");
+        let Entry::Rule(r) = &entries[0] else {
+            panic!("entries[0] expected Rule")
+        };
+        assert_eq!(r.syntax, SyntaxFlavor::Legacy);
+        assert!(
+            matches!(&r.object[0], Attr::Kv { key, .. } if key == "ftype"),
+            "object[0] should be ftype, got {:?}",
+            r.object[0]
+        );
+    }
+
+    #[test]
+    fn three_line_file_assigns_file_relative_spans() {
+        // Layout (byte offsets):
+        //   "# comment\n"        = bytes 0..10  (9 chars + LF)
+        //   "allow uid=0 : all\n" = bytes 10..28 (17 chars + LF)
+        //   "allow uid=1 : all\n" = bytes 28..46 (17 chars + LF)
+        let source = "# comment\nallow uid=0 : all\nallow uid=1 : all\n";
+        let entries = parse_rules_file(source).expect("parses");
+        // entries[0] = Comment (line 1), entries[1] = Rule (line 2), entries[2] = Rule (line 3)
+        let Entry::Rule(rule1) = &entries[1] else {
+            panic!("entries[1] expected Rule")
+        };
+        let Entry::Rule(rule2) = &entries[2] else {
+            panic!("entries[2] expected Rule")
+        };
+        assert_eq!(rule1.line, 2);
+        assert_eq!(
+            rule1.span.start, 10,
+            "rule1 span starts at the `a` of `allow uid=0`"
+        );
+        assert_eq!(
+            rule1.span.end, 27,
+            "rule1 span ends past `all` (byte 27 is where the LF starts)"
+        );
+        assert_eq!(rule2.line, 3);
+        assert_eq!(
+            rule2.span.start, 28,
+            "rule2 span starts at the `a` of `allow uid=1`"
+        );
+        assert_eq!(rule2.span.end, 45, "rule2 span ends past `all`");
     }
 }

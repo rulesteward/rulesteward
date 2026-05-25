@@ -34,15 +34,18 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
             // file-relative byte coords.
             let span_start = line_byte_offset + hash_col_in_line;
             let span_end = line_byte_offset + line.len();
-            diags.push(Diagnostic::new(
-                Severity::Warning,
-                "W03",
-                span_start..span_end,
-                "inline `# comment` after a rule line - fapolicyd silently drops this rule",
-                file,
-                lineno,
-                hash_col_in_line + 1,
-            ));
+            diags.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    "W03",
+                    span_start..span_end,
+                    "inline `# comment` after a rule line - fapolicyd silently drops this rule",
+                    file,
+                    lineno,
+                    hash_col_in_line + 1,
+                )
+                .with_source_id(file.display().to_string()),
+            );
         }
         line_byte_offset += raw_line.len() + 1;
     }
@@ -66,6 +69,7 @@ mod tests {
         assert_eq!(diags[0].code.as_ref(), "W03");
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(diags[0].line, 1);
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]
