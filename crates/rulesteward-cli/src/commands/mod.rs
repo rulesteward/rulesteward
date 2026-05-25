@@ -2,5 +2,6 @@
 //! args struct and returns the appropriate exit code.
 
 pub mod auditd;
+pub mod completions;
 pub mod fapolicyd;
 pub mod selinux;

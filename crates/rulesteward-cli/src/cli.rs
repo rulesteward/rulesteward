@@ -93,7 +93,7 @@ pub enum AuditdCommand {
     Cost,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Copy, Parser)]
 pub struct CompletionsArgs {
     /// Shell to generate completions for
     #[arg(value_enum)]
