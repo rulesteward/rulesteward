@@ -48,5 +48,7 @@ fn completions_help_lists_supported_shells() {
         .success()
         .stdout(predicate::str::contains("bash"))
         .stdout(predicate::str::contains("zsh"))
-        .stdout(predicate::str::contains("fish"));
+        .stdout(predicate::str::contains("fish"))
+        .stdout(predicate::str::contains("elvish"))
+        .stdout(predicate::str::contains("power-shell"));
 }
