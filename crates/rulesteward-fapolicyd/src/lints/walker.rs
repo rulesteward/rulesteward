@@ -206,6 +206,7 @@ mod tests {
         let d = f03(&entries, &p()).expect("F03 fires");
         assert_eq!(d.code.as_ref(), "F03");
         assert_eq!(d.line, 3);
+        assert_eq!(d.source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]
@@ -226,6 +227,11 @@ mod tests {
         let diags = e01(&entries, &p());
         assert_eq!(diags.len(), 2);
         assert!(diags.iter().all(|d| d.code.as_ref() == "E01"));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.source_id == Some("/tmp/test.rules".to_string()))
+        );
     }
 
     #[test]
@@ -240,6 +246,7 @@ mod tests {
         let diags = w02(&entries, &p());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.as_ref(), "W02");
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]

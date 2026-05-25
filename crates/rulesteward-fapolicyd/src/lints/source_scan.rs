@@ -69,6 +69,7 @@ mod tests {
         assert_eq!(diags[0].code.as_ref(), "W03");
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(diags[0].line, 1);
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
     }
 
     #[test]
