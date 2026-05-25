@@ -1,9 +1,15 @@
 //! Output-format dispatch. Each format module owns a
-//! `render(&[Diagnostic]) -> Result<String, RenderError>`.
+//! `render` function for its specific output type.
+//!
+//! The `human` renderer takes an additional `sources` map so it can produce
+//! ariadne snippets when source text is available. The `json` and `sarif`
+//! renderers do not need source text.
 
 pub mod human;
 pub mod json;
 pub mod sarif;
+
+use std::collections::BTreeMap;
 
 use rulesteward_core::Diagnostic;
 
@@ -17,9 +23,17 @@ pub enum RenderError {
     SarifNotImplemented,
 }
 
-pub fn render(format: OutputFormat, diags: &[Diagnostic]) -> Result<String, RenderError> {
+/// Render diagnostics in the requested format.
+///
+/// `sources` maps `source_id` values to raw source-file content. Only the
+/// human renderer uses this; json and sarif renderers ignore it.
+pub fn render(
+    format: OutputFormat,
+    diags: &[Diagnostic],
+    sources: &BTreeMap<String, String>,
+) -> Result<String, RenderError> {
     match format {
-        OutputFormat::Human => Ok(human::render(diags)),
+        OutputFormat::Human => Ok(human::render(diags, sources)),
         OutputFormat::Json => Ok(json::render(diags)),
         OutputFormat::Sarif => sarif::render(diags),
     }
@@ -42,9 +56,13 @@ mod tests {
         )
     }
 
+    fn empty_sources() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
     #[test]
     fn sarif_dispatch_returns_err_not_implemented() {
-        match render(OutputFormat::Sarif, &[fake_diag()]) {
+        match render(OutputFormat::Sarif, &[fake_diag()], &empty_sources()) {
             Err(RenderError::SarifNotImplemented) => {}
             other => panic!("expected SarifNotImplemented, got {other:?}"),
         }
