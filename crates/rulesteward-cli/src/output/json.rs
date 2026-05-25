@@ -4,7 +4,9 @@ use rulesteward_core::Diagnostic;
 
 #[must_use]
 pub fn render(diags: &[Diagnostic]) -> String {
-    serde_json::to_string_pretty(diags).expect("Diagnostic serialization cannot fail")
+    let mut s = serde_json::to_string_pretty(diags).expect("Diagnostic serialization cannot fail");
+    s.push('\n');
+    s
 }
 
 #[cfg(test)]
@@ -14,7 +16,15 @@ mod tests {
 
     #[test]
     fn json_renders_as_array_of_diagnostic_objects() {
-        let d = Diagnostic::new(Severity::Error, "E01", 5..10, "unknown attribute", "/tmp/x.rules", 3, 12);
+        let d = Diagnostic::new(
+            Severity::Error,
+            "E01",
+            5..10,
+            "unknown attribute",
+            "/tmp/x.rules",
+            3,
+            12,
+        );
         let out = render(std::slice::from_ref(&d));
         let parsed: Vec<Diagnostic> = serde_json::from_str(&out).expect("re-parse json output");
         assert_eq!(parsed.len(), 1);

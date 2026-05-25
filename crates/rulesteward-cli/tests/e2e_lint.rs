@@ -43,13 +43,15 @@ fn lint_file_with_warning_exits_one() {
 #[test]
 fn lint_file_with_syntax_error_exits_five() {
     let f = write_tmp("!!!garbage line\n");
+    let path_str = f.path().to_str().expect("utf8 path");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
         .arg(f.path())
         .assert()
         .code(5)
-        .stdout(predicate::str::contains("[F01]"));
+        .stdout(predicate::str::contains("[F01]"))
+        .stdout(predicate::str::contains(path_str));
 }
 
 #[test]

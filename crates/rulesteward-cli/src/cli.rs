@@ -7,7 +7,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "rulesteward", version, about = "RuleSteward — fapolicyd / SELinux / auditd policy linter")]
+#[command(
+    name = "rulesteward",
+    version,
+    about = "RuleSteward — fapolicyd / SELinux / auditd policy linter"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: TopCommand,
@@ -50,12 +54,12 @@ pub enum FapolicydCommand {
 
 #[derive(Debug, Parser)]
 pub struct LintArgs {
-    /// Directory containing rules.d/ (defaults to /etc/fapolicyd/rules.d/)
+    /// Path to the rules.d/ directory to lint (defaults to /etc/fapolicyd/rules.d/)
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
     /// Single-file mode — lint exactly this file
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with = "path")]
     pub file: Option<PathBuf>,
 
     /// Output format

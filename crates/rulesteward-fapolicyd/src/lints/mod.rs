@@ -39,10 +39,16 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
 #[must_use = "lint results contain parse and lint diagnostics that should be checked"]
 pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
     let source = std::fs::read_to_string(path)?;
-    let (entries, parse_diags) = match parser::parse_rules_file(&source) {
+    let (entries, mut parse_diags) = match parser::parse_rules_file(&source) {
         Ok(entries) => (entries, Vec::new()),
         Err(diags) => (Vec::new(), diags),
     };
+    // The parser emits diagnostics with file = "<source>" placeholder
+    // (the parser doesn't know the path). Rewrite to the real path so
+    // CI tooling that greps `file:line:col` sees the actual file.
+    for d in &mut parse_diags {
+        d.file = path.to_path_buf();
+    }
     let mut diags = parse_diags;
     diags.extend(lint(&entries, &source, path));
     Ok((entries, diags))
@@ -77,6 +83,16 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code.as_ref() == "F01"),
             "garbage line must produce F01, got {diags:?}"
+        );
+        let f01 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "F01")
+            .expect("F01 should be present");
+        assert_eq!(
+            f01.file,
+            f.path(),
+            "F01 diagnostic file should match input path, got {:?}",
+            f01.file
         );
     }
 

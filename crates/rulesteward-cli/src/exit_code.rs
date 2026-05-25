@@ -53,7 +53,10 @@ mod tests {
 
     #[test]
     fn warnings_only_returns_one() {
-        assert_eq!(compute(&[diag(Severity::Warning, "W02")], false), EXIT_WARNINGS);
+        assert_eq!(
+            compute(&[diag(Severity::Warning, "W02")], false),
+            EXIT_WARNINGS
+        );
     }
 
     #[test]
