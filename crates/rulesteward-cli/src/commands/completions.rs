@@ -21,6 +21,16 @@ use crate::exit_code::EXIT_CLEAN;
 /// file")` on every write, so a `BrokenPipe` from a pipe consumer that closed
 /// early (e.g. `| head -5`) panics with exit 101 under musl. Wrapping stdout
 /// in this adapter makes those writes silently succeed instead.
+///
+/// NOTE on the partial-write contract: `write()` returns `Ok(buf.len())`
+/// on `BrokenPipe` rather than `Ok(0)`. This is intentional for the
+/// `clap_complete` use case: returning `Ok(0)` would make `write_all`
+/// surface `Err(BrokenPipe)`, which the backends then `.expect(...)` on,
+/// re-creating the panic this adapter exists to suppress. Reporting the
+/// full `buf.len()` lets the generator complete its remaining `write!`
+/// calls and exit normally. This struct is purpose-built for the
+/// `clap_complete` consumer; do not generalize without revisiting this
+/// trade-off.
 pub(crate) struct EpipeSwallowingWriter<W: io::Write> {
     pub(crate) inner: W,
     pub(crate) pipe_closed: bool,
