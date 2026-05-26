@@ -6,6 +6,9 @@
 //! `Rule.span` (set by the parser in session 3a). `source_id` is set to
 //! `file.display().to_string()` on every rule-level diagnostic so ariadne
 //! can key its Source cache.
+//!
+//! Sibling lint modules cover related families: `validation` (E02),
+//! `macros` (E03/E04/E05), `deprecation` (W07).
 
 use std::path::Path;
 

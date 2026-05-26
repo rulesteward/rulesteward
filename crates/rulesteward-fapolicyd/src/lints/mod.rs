@@ -2,11 +2,17 @@
 //!
 //! Code split:
 //! * `walker` - AST-driven passes (F03, E01, W02).
+//! * `validation` - AST-driven attribute-value validation (E02).
+//! * `macros` - AST-driven macro-system passes (E03, E04, E05).
+//! * `deprecation` - AST-driven deprecated-attribute-name passes (W07).
 //! * `source_scan` - raw-source re-scan for W03.
 //! * `layout` - filesystem-driven F02 check.
 
+mod deprecation;
 mod layout;
+mod macros;
 mod source_scan;
+mod validation;
 mod walker;
 
 pub use layout::check_layout;
@@ -26,6 +32,9 @@ use crate::parser;
 #[must_use]
 pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     let mut diags = walker::walk(entries, file);
+    diags.extend(validation::walk(entries, file));
+    diags.extend(macros::walk(entries, file));
+    diags.extend(deprecation::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
     diags
 }

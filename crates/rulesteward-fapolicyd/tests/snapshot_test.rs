@@ -203,6 +203,81 @@ fn e01_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// E02 - invalid attribute value (non-hex filehash, malformed uid, ...).
+// Lint-walker-driven, one E02 per offending value.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e02_traps() {
+    let files = list_rules_files("E02");
+    assert!(
+        files.len() >= 4,
+        "E02 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E02", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E03 - macro reference to undefined `%setname`. Lint-walker-driven, one
+// E03 per offending reference. Single-pass walk: definition must appear
+// above reference (forward references fire E03).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e03_traps() {
+    let files = list_rules_files("E03");
+    assert!(
+        files.len() >= 4,
+        "E03 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E03", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E04 - macro reference (`%setname`) in `trust=` or `pattern=` attribute
+// value. fapolicyd does not substitute macros in these positions regardless
+// of whether the macro is defined. Lint-walker-driven; independent of E03.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e04_traps() {
+    let files = list_rules_files("E04");
+    assert!(
+        files.len() >= 4,
+        "E04 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E04", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E05 - macro `%name=` set definition whose values mix numeric (parses as
+// i64) and string (everything else). Lint-walker-driven; one E05 per
+// offending SetDefinition. Single-value sets are trivially homogeneous.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e05_traps() {
+    let files = list_rules_files("E05");
+    assert!(
+        files.len() >= 4,
+        "E05 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E05", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 
@@ -216,6 +291,26 @@ fn w02_traps() {
     );
     for path in &files {
         drive_file("W02", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W07 - deprecated `sha256hash=` attribute name (recommend `filehash=`).
+// Lint-walker-driven, one W07 per offending `Attr::Kv { key: "sha256hash" }`.
+// W07 ignores the value entirely - only the attribute NAME matters; value-
+// shape validation belongs to E02 separately.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w07_traps() {
+    let files = list_rules_files("W07");
+    assert!(
+        files.len() >= 4,
+        "W07 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("W07", path);
     }
 }
 

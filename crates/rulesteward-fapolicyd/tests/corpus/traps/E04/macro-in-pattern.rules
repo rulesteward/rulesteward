@@ -1,0 +1,2 @@
+%mymacro=ld_so
+allow uid=0 : pattern=%mymacro

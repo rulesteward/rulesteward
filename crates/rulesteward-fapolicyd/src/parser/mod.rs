@@ -180,14 +180,14 @@ where
 /// file-relative coordinates. `body_start_in_file` is the byte offset of the
 /// first character of the parsed body within the original source string.
 ///
-/// Only `Entry::Rule` carries a span; all other entry kinds keep only the
-/// line adjustment.
+/// `Entry::Rule` and `Entry::SetDefinition` both carry a span; `Comment`
+/// and `Blank` keep only the line adjustment.
 ///
-/// **Invariant:** both `modern_rule()` and `legacy_rule()` in `grammar.rs`
-/// open with `ws0()`, so chumsky's `e.span().start` is always 0 within the
-/// parsed body. We therefore offset only the end, not the start. The
-/// `debug_assert` below catches future grammar changes that violate this
-/// (and would silently produce incorrectly-shifted spans).
+/// **Invariant:** `modern_rule()`, `legacy_rule()`, and `set_definition()`
+/// in `grammar.rs` all open with `ws0()`, so chumsky's `e.span().start` is
+/// always 0 within the parsed body. We therefore offset only the end, not
+/// the start. The `debug_assert`s below catch future grammar changes that
+/// violate this (and would silently produce incorrectly-shifted spans).
 fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry {
     match entry {
         Entry::Rule(r) => {
@@ -201,11 +201,20 @@ fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry 
                 ..r
             })
         }
-        Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {
-            name,
-            values,
-            line: lineno,
-        },
+        Entry::SetDefinition {
+            name, values, span, ..
+        } => {
+            debug_assert_eq!(
+                span.start, 0,
+                "chumsky grammar invariant: SetDefinition.span.start must be 0 within parsed body",
+            );
+            Entry::SetDefinition {
+                name,
+                values,
+                line: lineno,
+                span: body_start_in_file..(body_start_in_file + span.end),
+            }
+        }
         Entry::Comment { text, .. } => Entry::Comment { text, line: lineno },
         Entry::Blank { .. } => Entry::Blank { line: lineno },
     }
@@ -383,6 +392,44 @@ mod tests {
             "object[0] should be ftype, got {:?}",
             r.object[0]
         );
+    }
+
+    #[test]
+    fn set_definition_assigns_file_relative_span() {
+        // Layout (byte offsets):
+        //   "# header\n"               = bytes 0..9   (8 chars + LF)
+        //   "%langs=ruby,perl,bash\n"  = bytes 9..31  (21 chars + LF)
+        let source = "# header\n%langs=ruby,perl,bash\n";
+        let entries = parse_rules_file(source).expect("parses");
+        // entries[0] = Comment (line 1), entries[1] = SetDefinition (line 2)
+        let Entry::SetDefinition {
+            name, span, line, ..
+        } = &entries[1]
+        else {
+            panic!("entries[1] expected SetDefinition, got {:?}", entries[1])
+        };
+        assert_eq!(name, "langs");
+        assert_eq!(*line, 2);
+        assert_eq!(
+            span.start, 9,
+            "set definition span starts at the `%` of `%langs=...`"
+        );
+        assert_eq!(
+            span.end, 30,
+            "set definition span ends just before the LF of line 2"
+        );
+    }
+
+    #[test]
+    fn set_definition_bom_accounting_on_first_line() {
+        // Source: BOM (3 bytes) + "%langs=ruby" (11 bytes) + LF = 15 bytes total.
+        // SetDefinition body lives at bytes 3..14; span must be file-relative.
+        let entries = parse_rules_file("\u{feff}%langs=ruby\n").expect("bom parses");
+        let Entry::SetDefinition { span, .. } = &entries[0] else {
+            panic!("entries[0] expected SetDefinition")
+        };
+        assert_eq!(span.start, 3, "span.start accounts for 3-byte BOM");
+        assert_eq!(span.end, 14, "span.end reaches past `ruby`");
     }
 
     #[test]
