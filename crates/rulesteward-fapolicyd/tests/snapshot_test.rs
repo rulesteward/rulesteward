@@ -203,6 +203,24 @@ fn e01_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// E02 - invalid attribute value (non-hex filehash, malformed uid, ...).
+// Lint-walker-driven, one E02 per offending value.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e02_traps() {
+    let files = list_rules_files("E02");
+    assert!(
+        files.len() >= 4,
+        "E02 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E02", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 

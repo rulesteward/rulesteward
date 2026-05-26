@@ -39,10 +39,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use proptest::prelude::*;
 
+use std::path::PathBuf;
+
 use rulesteward_core::{Severity, span};
 use rulesteward_fapolicyd::{
     ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor},
-    attrs, parse_rules_file,
+    attrs, lint, parse_rules_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -540,6 +542,58 @@ proptest! {
                 }
             }
         }
+    }
+
+    /// Property 5 (E02) - the lint walker never panics on any parser-
+    /// accepted input. We use `arb_valid_rule_text` so the parser
+    /// always succeeds; the property then exercises the full `lint`
+    /// pipeline (which includes E02) and asserts it returns without
+    /// panicking. Together with parse_never_panics, this covers the
+    /// entire "input -> diagnostics" pipeline for E02.
+    #[test]
+    fn e02_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
+    /// walker emits zero E02 diagnostics for a rule of shape
+    /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.
+    /// Kills mutations that flip the predicate (e.g. emitting E02 on
+    /// any filehash regardless of validity).
+    #[test]
+    fn e02_silent_on_canonical_filehash(
+        hex_nibbles in prop::collection::vec(0u8..16u8, 64..=64)
+    ) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        let hex: String = hex_nibbles
+            .iter()
+            .map(|n| HEX_CHARS[*n as usize] as char)
+            .collect();
+        prop_assert_eq!(hex.len(), 64, "generator must produce exactly 64 chars");
+
+        let source = format!("allow filehash={hex} : exe=/foo\n");
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(format!("canonical filehash failed to parse: {d:?}")))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let e02_count = diags.iter().filter(|d| d.code.as_ref() == "E02").count();
+        prop_assert_eq!(
+            e02_count,
+            0,
+            "canonical 64-hex filehash must produce zero E02 diagnostics; got {:?}",
+            diags
+        );
     }
 }
 
