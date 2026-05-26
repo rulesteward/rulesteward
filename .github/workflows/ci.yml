@@ -76,7 +76,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   check:
-    name: rocky${{ matrix.rocky }} - test + release-build
+    name: rocky${{ matrix.rocky }} - test
     runs-on: ubuntu-latest
     needs: fmt-clippy
     strategy:
@@ -133,9 +133,8 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
-
-      - name: cargo build --release (rulesteward bin, glibc)
-        run: cargo build --release --bin rulesteward --locked
+      # release-build step dropped: musl-build covers the release profile;
+      # RuleSteward has no FFI / cfg-gated release-only paths that would surface a glibc-release-only bug.
 
   coverage:
     name: cargo llvm-cov (floor 80%)
