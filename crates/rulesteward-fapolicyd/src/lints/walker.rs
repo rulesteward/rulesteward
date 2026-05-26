@@ -1,12 +1,13 @@
 //! AST-driven lint passes - walk `&[Entry]` once and emit diagnostics for
 //! F03 (mixed-syntax), E01 (unknown attribute), E02 (invalid attribute
-//! value), and W02 (broad allow on execute).
+//! value), E03 (undefined macro reference), and W02 (broad allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
 //! `Rule.span` (set by the parser in session 3a). `source_id` is set to
 //! `file.display().to_string()` on every rule-level diagnostic so ariadne
 //! can key its Source cache.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
@@ -14,7 +15,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
-/// Run F03, E01, E02, and W02 over `entries` and return the merged diagnostics.
+/// Run F03, E01, E02, E03, and W02 over `entries` and return the merged
+/// diagnostics.
 pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     if let Some(d) = f03(entries, file) {
@@ -22,6 +24,7 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     }
     out.extend(e01(entries, file));
     out.extend(e02(entries, file));
+    out.extend(e03(entries, file));
     out.extend(w02(entries, file));
     out
 }
@@ -213,6 +216,57 @@ fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String
         // SetRef is filtered out before reaching this fn.
         (_, AttrValue::SetRef(_)) => None,
     }
+}
+
+/// E03 - macro reference to an undefined `%setname`. Single-pass walk over
+/// `entries` in source order, maintaining a `HashSet<String>` of macro names
+/// seen so far. For each `Attr::Kv` with `AttrValue::SetRef(name)`, emit E03
+/// if `name` is not yet in the set. This naturally enforces "definition above
+/// reference" - a forward reference fires E03 because the definition has not
+/// been inserted yet when the single-pass walk checks the reference.
+///
+/// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
+/// filters them out); only `AttrValue::SetRef(_)` participates.
+///
+/// Span is the enclosing rule's span (per-attribute spans deferred per
+/// spec §3f).
+fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut defined: HashSet<String> = HashSet::new();
+    for entry in entries {
+        match entry {
+            Entry::SetDefinition { name, .. } => {
+                defined.insert(name.clone());
+            }
+            Entry::Rule(r) => {
+                for attr in r.subject.iter().chain(r.object.iter()) {
+                    let Attr::Kv {
+                        value: AttrValue::SetRef(name),
+                        ..
+                    } = attr
+                    else {
+                        continue;
+                    };
+                    if !defined.contains(name) {
+                        diags.push(
+                            Diagnostic::new(
+                                Severity::Error,
+                                "E03",
+                                r.span.clone(),
+                                format!("undefined macro reference `%{name}`"),
+                                file,
+                                r.line,
+                                1,
+                            )
+                            .with_source_id(file.display().to_string()),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    diags
 }
 
 /// W02 - broad allow on execute. Fires when the decision is one of the
@@ -603,5 +657,215 @@ mod tests {
             diags.is_empty(),
             "SetRef values are E03/E04/E05's concern, not E02: {diags:?}",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // E03 helper-level unit tests. Pins the single-pass walker so each
+    // branch (defined-before, defined-after, Str-with-%, Int, multiple
+    // undefined refs in one rule) is exercised independently of the
+    // snapshot suite. A mutant that swaps `!defined.contains(name)` for
+    // `defined.contains(name)`, or moves the `defined.insert(name)` from
+    // before the rule-check to after, will die here.
+    // -----------------------------------------------------------------
+
+    fn setdef(line: usize, name: &str) -> Entry {
+        Entry::SetDefinition {
+            name: name.to_string(),
+            values: vec!["foo".to_string()],
+            line,
+            span: rulesteward_core::span(0, 0),
+        }
+    }
+
+    #[test]
+    fn e03_emits_when_ref_undefined() {
+        // No definitions; a single SetRef on the subject side fires E03.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::SetRef("nope".into()),
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e03(&entries, &p());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_ref(), "E03");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("nope"),
+            "message must name the undefined macro: {}",
+            diags[0].message,
+        );
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+    }
+
+    #[test]
+    fn e03_silent_when_ref_defined_first() {
+        // Definition on entry index 0, reference on entry index 1.
+        let entries = vec![
+            setdef(1, "langs"),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![Attr::Kv {
+                    key: "uid".into(),
+                    value: AttrValue::SetRef("langs".into()),
+                }],
+                vec![Attr::All],
+            ),
+        ];
+        let diags = e03(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "definition above reference must silence E03: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e03_fires_on_forward_reference() {
+        // Reference on entry index 0, definition on entry index 1.
+        // The single-pass walk has NOT yet seen the definition when it
+        // checks the reference, so E03 fires. Pins the forward-ref
+        // decision (spec §4 Task 2).
+        let entries = vec![
+            modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![Attr::Kv {
+                    key: "uid".into(),
+                    value: AttrValue::SetRef("langs".into()),
+                }],
+                vec![Attr::All],
+            ),
+            setdef(2, "langs"),
+        ];
+        let diags = e03(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "forward reference must fire E03 (definition below reference): {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "E03");
+    }
+
+    #[test]
+    fn e03_skips_str_value_with_percent() {
+        // The parser produces `AttrValue::Str` for `path=/var/%foo/x`
+        // because the leading char is not `%`. E03 must skip Str values
+        // even if they contain a literal `%`.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "path".into(),
+                value: AttrValue::Str("/var/%foo/bar".into()),
+            }],
+        )];
+        let diags = e03(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "Str values are never E03's concern, even if they contain `%`: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e03_skips_int_value() {
+        // `uid=0` is `AttrValue::Int(0)`; E03 only checks SetRef.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e03(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "Int values are never E03's concern: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e03_walker_emits_one_diag_per_undefined_ref() {
+        // A single rule with TWO undefined SetRef attributes -> 2 diags.
+        let entries = vec![modern_rule(
+            3,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::SetRef("undef_a".into()),
+            }],
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::SetRef("undef_b".into()),
+            }],
+        )];
+        let diags = e03(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected one E03 per undefined ref in the rule: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "E03"));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.source_id == Some("/tmp/test.rules".to_string()))
+        );
+    }
+
+    #[test]
+    fn e03_walker_skips_str_and_int_keeps_only_undefined_setrefs() {
+        // Mixed rule: Str, Int, defined SetRef, undefined SetRef.
+        // Only the undefined SetRef should fire.
+        let entries = vec![
+            setdef(1, "ok_macro"),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![
+                    Attr::Kv {
+                        key: "uid".into(),
+                        value: AttrValue::Int(0),
+                    },
+                    Attr::Kv {
+                        key: "auid".into(),
+                        value: AttrValue::SetRef("ok_macro".into()),
+                    },
+                ],
+                vec![
+                    Attr::Kv {
+                        key: "path".into(),
+                        value: AttrValue::Str("/etc/passwd".into()),
+                    },
+                    Attr::Kv {
+                        key: "exe".into(),
+                        value: AttrValue::SetRef("bad_macro".into()),
+                    },
+                ],
+            ),
+        ];
+        let diags = e03(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the undefined SetRef should fire: {diags:?}"
+        );
+        assert!(diags[0].message.contains("bad_macro"));
     }
 }

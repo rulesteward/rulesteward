@@ -566,6 +566,75 @@ proptest! {
         );
     }
 
+    /// Property 7 (E03) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5 for E03; together with
+    /// `parse_never_panics`, covers the full pipeline.
+    #[test]
+    fn e03_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Property 8 (E03) - when every macro reference in a file has a
+    /// matching `%name=...` definition ABOVE it in source order, E03
+    /// emits zero diagnostics. Generates N (1..=4) distinct macro names,
+    /// emits their definitions first, then a single rule that references
+    /// each name. Kills mutations that flip the membership check (e.g.
+    /// emitting E03 unconditionally, or treating an empty `defined` set
+    /// as containing every name).
+    #[test]
+    fn e03_silent_when_all_refs_match_definitions(
+        names in prop::collection::vec(
+            "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            1..=4,
+        ).prop_filter(
+            "names must be unique",
+            |v| {
+                let mut sorted = v.clone();
+                sorted.sort();
+                sorted.dedup();
+                sorted.len() == v.len()
+            },
+        )
+    ) {
+        // Build: each name gets a `%name=foo` definition on its own line,
+        // followed by a single rule referencing each in turn on the
+        // subject side via `uid=%name`. (uid accepts SetRef per the
+        // parser; E02 explicitly skips SetRef values, so only E03's
+        // membership check is exercised.)
+        let mut source = String::new();
+        for name in &names {
+            let _ = writeln!(source, "%{name}=foo");
+        }
+        // One rule per macro name to keep the lint walk simple.
+        for name in &names {
+            let _ = writeln!(source, "allow uid=%{name} : exe=/foo");
+        }
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let e03_count = diags.iter().filter(|d| d.code.as_ref() == "E03").count();
+        prop_assert_eq!(
+            e03_count,
+            0,
+            "all macro refs are defined above; expected 0 E03 diagnostics, got {:?}",
+            diags.iter().filter(|d| d.code.as_ref() == "E03").collect::<Vec<_>>()
+        );
+    }
+
     /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
     /// walker emits zero E02 diagnostics for a rule of shape
     /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.

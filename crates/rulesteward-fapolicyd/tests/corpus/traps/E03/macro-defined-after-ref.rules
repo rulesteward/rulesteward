@@ -1,0 +1,2 @@
+allow uid=0 : exe=%langs
+%langs=ruby,perl

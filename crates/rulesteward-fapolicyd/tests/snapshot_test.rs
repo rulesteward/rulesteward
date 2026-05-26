@@ -221,6 +221,25 @@ fn e02_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// E03 - macro reference to undefined `%setname`. Lint-walker-driven, one
+// E03 per offending reference. Single-pass walk: definition must appear
+// above reference (forward references fire E03).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e03_traps() {
+    let files = list_rules_files("E03");
+    assert!(
+        files.len() >= 4,
+        "E03 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E03", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 

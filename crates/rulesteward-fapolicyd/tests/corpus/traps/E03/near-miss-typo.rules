@@ -1,0 +1,2 @@
+%mymacro=foo,bar
+allow uid=0 : exe=%mymarco
