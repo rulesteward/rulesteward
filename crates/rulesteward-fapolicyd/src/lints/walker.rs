@@ -1,6 +1,7 @@
 //! AST-driven lint passes - walk `&[Entry]` once and emit diagnostics for
 //! F03 (mixed-syntax), E01 (unknown attribute), E02 (invalid attribute
-//! value), E03 (undefined macro reference), and W02 (broad allow on execute).
+//! value), E03 (undefined macro reference), E04 (macro reference in
+//! `trust=`/`pattern=`), and W02 (broad allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
 //! `Rule.span` (set by the parser in session 3a). `source_id` is set to
@@ -15,8 +16,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
-/// Run F03, E01, E02, E03, and W02 over `entries` and return the merged
-/// diagnostics.
+/// Run F03, E01, E02, E03, E04, and W02 over `entries` and return the
+/// merged diagnostics.
 pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     if let Some(d) = f03(entries, file) {
@@ -25,6 +26,7 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out.extend(e01(entries, file));
     out.extend(e02(entries, file));
     out.extend(e03(entries, file));
+    out.extend(e04(entries, file));
     out.extend(w02(entries, file));
     out
 }
@@ -264,6 +266,52 @@ fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 }
             }
             _ => {}
+        }
+    }
+    diags
+}
+
+/// E04 - macro reference (`%setname`) in a `trust=` or `pattern=` attribute
+/// value. fapolicyd does NOT substitute macros for these two attributes
+/// regardless of whether the macro is defined, so any such reference is a
+/// silent no-op at runtime. Independent of E03: a rule like
+/// `trust=%undefined` fires BOTH E03 (undefined macro) and E04 (macro in
+/// trust=) - the membership check in E03 and the key check in E04 operate
+/// on the same `Attr::Kv` without interfering with each other.
+///
+/// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
+/// filters them out); only `AttrValue::SetRef(_)` participates.
+///
+/// Span is the enclosing rule's span (per-attribute spans deferred per
+/// spec §3f).
+fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for entry in entries {
+        let Entry::Rule(r) = entry else { continue };
+        for attr in r.subject.iter().chain(r.object.iter()) {
+            let Attr::Kv {
+                key,
+                value: AttrValue::SetRef(name),
+            } = attr
+            else {
+                continue;
+            };
+            if key == "trust" || key == "pattern" {
+                diags.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "E04",
+                        r.span.clone(),
+                        format!(
+                            "macro reference `%{name}` not supported in `{key}=` (fapolicyd does not substitute macros here)"
+                        ),
+                        file,
+                        r.line,
+                        1,
+                    )
+                    .with_source_id(file.display().to_string()),
+                );
+            }
         }
     }
     diags
@@ -867,5 +915,207 @@ mod tests {
             "only the undefined SetRef should fire: {diags:?}"
         );
         assert!(diags[0].message.contains("bad_macro"));
+    }
+
+    // -----------------------------------------------------------------
+    // E04 helper-level unit tests. Pins the per-attribute walker so each
+    // branch (trust/pattern key, SetRef value, non-SetRef value, other
+    // key, multi-offender rule, independence from macro definitions)
+    // is exercised independently of the snapshot suite. A mutant that
+    // swaps the key comparison (e.g. `==` -> `!=`), broadens the key
+    // set to include unrelated attrs, or only matches on SetRef without
+    // checking the key dies here.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e04_emits_on_trust_setref() {
+        // `trust=%mac` -> 1 E04 diagnostic naming the macro and the key.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "trust".into(),
+                value: AttrValue::SetRef("mac".into()),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_ref(), "E04");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("mac"),
+            "message must name the macro: {}",
+            diags[0].message,
+        );
+        assert!(
+            diags[0].message.contains("trust"),
+            "message must name the offending attribute key: {}",
+            diags[0].message,
+        );
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+    }
+
+    #[test]
+    fn e04_emits_on_pattern_setref() {
+        // `pattern=%mac` -> 1 E04 diagnostic naming the macro and the key.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "pattern".into(),
+                value: AttrValue::SetRef("mac".into()),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_ref(), "E04");
+        assert!(
+            diags[0].message.contains("pattern"),
+            "message must name the offending attribute key: {}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn e04_silent_on_path_setref() {
+        // `path=%mac` is NOT an E04 offender; only `trust`/`pattern` qualify.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "path".into(),
+                value: AttrValue::SetRef("mac".into()),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "path= is not in the trust/pattern set; E04 must not fire: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e04_silent_on_trust_str_value() {
+        // `trust=somestring` (parsed as Str, not SetRef) is not an E04 offender.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "trust".into(),
+                value: AttrValue::Str("yes".into()),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "Str values are never E04's concern: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e04_silent_on_trust_int_value() {
+        // `trust=1` (parsed as Int) is not an E04 offender either.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "trust".into(),
+                value: AttrValue::Int(1),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "Int values are never E04's concern: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e04_walker_emits_one_per_offending_attr() {
+        // A rule with `trust=%a` AND `pattern=%b` -> 2 E04 diagnostics.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "trust".into(),
+                value: AttrValue::SetRef("a".into()),
+            }],
+            vec![Attr::Kv {
+                key: "pattern".into(),
+                value: AttrValue::SetRef("b".into()),
+            }],
+        )];
+        let diags = e04(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected one E04 per offending attr in the rule: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "E04"));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.source_id == Some("/tmp/test.rules".to_string()))
+        );
+    }
+
+    #[test]
+    fn e04_walker_independent_of_definitions() {
+        // E04 fires on `trust=%foo` whether or not `%foo` is defined.
+        // (The defined-above-reference machinery is E03's concern;
+        // E04 only cares about the key + SetRef value pairing.)
+        let defined_entries = vec![
+            setdef(1, "foo"),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![Attr::All],
+                vec![Attr::Kv {
+                    key: "trust".into(),
+                    value: AttrValue::SetRef("foo".into()),
+                }],
+            ),
+        ];
+        let undefined_entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "trust".into(),
+                value: AttrValue::SetRef("foo".into()),
+            }],
+        )];
+        assert_eq!(
+            e04(&defined_entries, &p()).len(),
+            1,
+            "E04 must fire on `trust=%foo` even when `%foo` is defined above",
+        );
+        assert_eq!(
+            e04(&undefined_entries, &p()).len(),
+            1,
+            "E04 must fire on `trust=%foo` when `%foo` is undefined",
+        );
     }
 }

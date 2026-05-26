@@ -635,6 +635,62 @@ proptest! {
         );
     }
 
+    /// Property 9 (E04) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7 for E04; together with
+    /// `parse_never_panics`, covers the full pipeline.
+    #[test]
+    fn e04_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Property 10 (E04) - when no rule contains a `trust=%setname` or
+    /// `pattern=%setname` attribute, E04 emits zero diagnostics. We
+    /// generate rules of the shape `allow uid=N : path=/foo` whose attrs
+    /// contain neither SetRefs nor `trust`/`pattern` keys, so E04's
+    /// predicate (key in {"trust", "pattern"} AND value is SetRef) is
+    /// never satisfied. Kills mutations that flip the membership check
+    /// (e.g. emitting E04 unconditionally, or treating the empty key
+    /// set as containing every key).
+    #[test]
+    fn e04_silent_when_no_trust_or_pattern_macro(
+        rules in prop::collection::vec(
+            (0u32..1_000_000u32, "[a-zA-Z0-9_/.\\-]{1,16}"),
+            1..=4,
+        )
+    ) {
+        // Emit one `allow uid=N : path=P` rule per generator tuple.
+        // Neither attr is in {"trust", "pattern"} and no value is a
+        // SetRef, so E04 must fire zero times.
+        let mut source = String::new();
+        for (uid, path) in &rules {
+            let _ = writeln!(source, "allow uid={uid} : path={path}");
+        }
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let e04_count = diags.iter().filter(|d| d.code.as_ref() == "E04").count();
+        prop_assert_eq!(
+            e04_count,
+            0,
+            "no rule has trust=/pattern= macro; expected 0 E04 diagnostics, got {:?}",
+            diags.iter().filter(|d| d.code.as_ref() == "E04").collect::<Vec<_>>()
+        );
+    }
+
     /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
     /// walker emits zero E02 diagnostics for a rule of shape
     /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.

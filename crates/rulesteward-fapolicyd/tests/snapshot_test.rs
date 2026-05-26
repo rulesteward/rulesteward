@@ -240,6 +240,25 @@ fn e03_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// E04 - macro reference (`%setname`) in `trust=` or `pattern=` attribute
+// value. fapolicyd does not substitute macros in these positions regardless
+// of whether the macro is defined. Lint-walker-driven; independent of E03.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e04_traps() {
+    let files = list_rules_files("E04");
+    assert!(
+        files.len() >= 4,
+        "E04 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E04", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 
