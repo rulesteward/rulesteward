@@ -109,8 +109,22 @@ jobs:
       # which would leave the container without bash, tar, gcc, etc. Add
       # any of these back only with version-aware logic.
       - name: Bootstrap (install bash, tar, gcc, ...)
+        # Two dnf tuning flags address slow CI installs:
+        #
+        # `--disablerepo=extras` skips the Extras repo's metadata download.
+        # All 10 packages here live in BaseOS or AppStream (Extras carries
+        # epel-release + a handful of unrelated utilities). The Extras
+        # metadata download has been observed pulling at ~259 B/s in CI -
+        # a stalled / rate-limited mirror that adds ~60 s of wall-clock
+        # to every Rocky job. Disabling it eliminates that stall entirely.
+        #
+        # `--setopt=fastestmirror=True` tells dnf to probe mirrors for the
+        # remaining enabled repos (BaseOS + AppStream) and pick the fastest
+        # one per repo. BaseOS has been observed at ~910 kB/s on the
+        # default mirror; probing typically lands a CDN-backed mirror that
+        # is 5-10x faster, saving another ~30-50 s per Rocky job.
         run: |
-          dnf -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
       - uses: actions/checkout@v5
 
@@ -228,7 +242,12 @@ jobs:
         # ca-certificates: actions/download-artifact@v4 is a JS action; when
         # a job declares container:, JS actions run INSIDE that container
         # and need TLS root certs to fetch the artifact over HTTPS.
-        run: dnf -y install bash ca-certificates
+        # `--disablerepo=extras` + `--setopt=fastestmirror=True`: same dnf
+        # tuning as the check job's bootstrap step above. Extras is unused
+        # here (both packages live in BaseOS) and the default mirror has
+        # been observed in the kB/s and B/s range; the fastestmirror probe
+        # picks a CDN-backed mirror for BaseOS instead.
+        run: dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash ca-certificates
 
       - name: Download the static binary from musl-build
         uses: actions/download-artifact@v4
