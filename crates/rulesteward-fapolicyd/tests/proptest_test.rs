@@ -219,6 +219,7 @@ mod generators {
                 name,
                 values,
                 line: 0,
+                span: span(0, 0), // placeholder; file-relative span set by parser
             })
     }
 
@@ -274,9 +275,12 @@ mod generators {
     fn stamp_line(entry: Entry, line: usize) -> Entry {
         match entry {
             Entry::Rule(r) => Entry::Rule(stamp_rule_line(r, line)),
-            Entry::SetDefinition { name, values, .. } => {
-                Entry::SetDefinition { name, values, line }
-            }
+            Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {
+                name,
+                values,
+                line,
+                span: span(0, 0),
+            },
             Entry::Comment { text, .. } => Entry::Comment { text, line },
             Entry::Blank { .. } => Entry::Blank { line },
         }
@@ -296,8 +300,8 @@ mod generators {
 // ---------------------------------------------------------------------------
 
 /// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order
-/// and `Rule.span` fields are zeroed out. Both sides of the round-trip
-/// equality go through this:
+/// and span fields on `Rule` and `SetDefinition` are zeroed out. Both sides
+/// of the round-trip equality go through this:
 /// - `line` normalization: the source-text construction guarantees line
 ///   numbers agree, but being explicit prevents a future Display change
 ///   from silently breaking the property.
@@ -318,9 +322,12 @@ fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
                     span: span(0, 0),
                     ..r
                 }),
-                Entry::SetDefinition { name, values, .. } => {
-                    Entry::SetDefinition { name, values, line }
-                }
+                Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {
+                    name,
+                    values,
+                    line,
+                    span: span(0, 0),
+                },
                 Entry::Comment { text, .. } => Entry::Comment { text, line },
                 Entry::Blank { .. } => Entry::Blank { line },
             }

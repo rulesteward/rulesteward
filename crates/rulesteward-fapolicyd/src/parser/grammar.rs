@@ -178,10 +178,14 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
         )
         .then_ignore(ws0())
         .then_ignore(end())
-        .map(|(name, values)| Entry::SetDefinition {
-            name,
-            values,
-            line: 0,
+        .map_with(|(name, values), e| {
+            let s = e.span();
+            Entry::SetDefinition {
+                name,
+                values,
+                line: 0,
+                span: s.start..s.end,
+            }
         })
         .labelled("set definition")
 }

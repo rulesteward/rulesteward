@@ -72,6 +72,12 @@ pub enum Entry {
         name: String,
         values: Vec<String>,
         line: usize,
+        /// Byte range into the file source this set definition was parsed
+        /// from. File-relative (not line-relative). Populated by the parser
+        /// via chumsky's span capture; layout-level constructions (tests,
+        /// generators) may use [`rulesteward_core::span`] to set a
+        /// placeholder.
+        span: Span,
     },
     Comment {
         text: String,

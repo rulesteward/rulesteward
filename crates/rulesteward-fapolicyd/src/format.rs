@@ -134,6 +134,7 @@ mod tests {
             name: "langs".into(),
             values: vec!["ruby".into(), "perl".into()],
             line: 1,
+            span: span(0, 0),
         };
         assert_eq!(e.to_string(), "%langs=ruby,perl");
     }
