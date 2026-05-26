@@ -29,6 +29,10 @@ fn w07(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             let Attr::Kv { key, .. } = attr else {
                 continue;
             };
+            // Case-sensitive: only the lowercase form fires W07. Uppercase
+            // variants like `Sha256Hash=` or `SHA256HASH=` are reported by E01
+            // (unknown attribute) since fapolicyd's parser is case-sensitive
+            // on attribute names. Confirmed via E01__sha256hash-uppercase trap.
             if key == "sha256hash" {
                 diags.push(
                     Diagnostic::new(

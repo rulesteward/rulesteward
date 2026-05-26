@@ -246,3 +246,85 @@ fn lint_json_output_unchanged_by_ariadne_renderer() {
         .stdout(predicate::str::contains("\"E01\""))
         .stdout(predicate::str::starts_with("["));
 }
+
+// --- per-code CLI exit-code tests for E02/E03/E04/E05/W07 ---
+//
+// Each test exercises the whole binary pipeline (clap parse -> commands::
+// fapolicyd::run_lint -> parse_rules_file -> lints::lint -> output::human ->
+// exit_code::compute) on a minimal hardcoded source that fires the target
+// code in isolation. Pins the exit-code mapping (Error -> 2, Warning -> 1)
+// that `exit_code::compute` implements generically over severity. A future
+// refactor that changes the severity of any of these codes would flip the
+// exit code and surface here.
+
+#[test]
+fn lint_fires_e02_with_exit_two_and_code_in_stdout() {
+    // `filehash=abc` -> 3 chars, not 64. E02 fires; no other code applies.
+    let f = write_tmp("allow filehash=abc : exe=/foo\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("[E02]"));
+}
+
+#[test]
+fn lint_fires_e03_with_exit_two_and_code_in_stdout() {
+    // `exe=%undef` references an undefined macro. E03 fires; E04 does not
+    // (key is `exe`, not `trust`/`pattern`).
+    let f = write_tmp("allow uid=0 : exe=%undef\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("[E03]"));
+}
+
+#[test]
+fn lint_fires_e04_with_exit_two_and_code_in_stdout() {
+    // `%mymacro` defined before reference; `trust=%mymacro` fires E04 (macro
+    // in trust=) but NOT E03 (macro IS defined). Single-value all-string
+    // set definition, so E05 stays silent too.
+    let f = write_tmp("%mymacro=foo\nallow uid=0 : trust=%mymacro\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("[E04]"));
+}
+
+#[test]
+fn lint_fires_e05_with_exit_two_and_code_in_stdout() {
+    // `%mymacro=1,2,foo` mixes numeric (`1`, `2`) and string (`foo`) values.
+    // E05 fires; no rule, so nothing else applies.
+    let f = write_tmp("%mymacro=1,2,foo\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("[E05]"));
+}
+
+#[test]
+fn lint_fires_w07_with_exit_one_and_code_in_stdout() {
+    // `sha256hash=<64-hex>` is the deprecated spelling but the value is a
+    // valid 64-hex digest, so E02 stays silent. Only W07 fires -> exit 1.
+    let f = write_tmp(
+        "allow uid=0 : sha256hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+    );
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[W07]"));
+}
