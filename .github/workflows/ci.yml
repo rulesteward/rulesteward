@@ -276,3 +276,19 @@ jobs:
             grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
             exit 1
           fi
+
+  # Cargo-audit: scan the workspace's Cargo.lock against the RustSec
+  # advisory DB. First-iteration warn-only via continue-on-error so a
+  # brand-new advisory dropping the day this lands shows yellow rather
+  # than blocking main. A follow-up PR flips to blocking once a clean
+  # baseline run is observed. Independent of fmt-clippy: no toolchain
+  # state shared.
+  audit:
+    name: cargo-audit (warn-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
