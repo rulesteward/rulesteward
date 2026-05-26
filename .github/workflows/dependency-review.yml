@@ -1,0 +1,29 @@
+name: dependency-review
+
+# Runs on every PR to flag new dependencies with known advisories
+# BEFORE the change merges. Complements the cargo-audit job in ci.yml
+# (which scans the merged dep set on a wider trigger); this job's
+# value is the PR-time block: a contributor adding a vuln-bearing
+# crate sees the failure in their own PR check column.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    name: actions/dependency-review-action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          # Block PRs that introduce critical/high-severity advisories.
+          # Tighter than the cargo-audit baseline (which is warn-only on
+          # first iteration); the asymmetry is deliberate. PR-time blocks
+          # only fire on a deliberate dep addition, so a true-positive
+          # block is unambiguous: revert the dep or accept the risk.
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
