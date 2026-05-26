@@ -295,6 +295,26 @@ fn w02_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// W07 - deprecated `sha256hash=` attribute name (recommend `filehash=`).
+// Lint-walker-driven, one W07 per offending `Attr::Kv { key: "sha256hash" }`.
+// W07 ignores the value entirely - only the attribute NAME matters; value-
+// shape validation belongs to E02 separately.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w07_traps() {
+    let files = list_rules_files("W07");
+    assert!(
+        files.len() >= 4,
+        "W07 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("W07", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W03 - inline trailing `# comment`. Parser pre-pass-driven.
 // ---------------------------------------------------------------------------
 

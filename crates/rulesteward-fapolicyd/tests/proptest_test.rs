@@ -752,6 +752,96 @@ proptest! {
         );
     }
 
+    /// Property 13 (W07) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7/9/11 for W07; together with
+    /// `parse_never_panics`, covers the full pipeline.
+    #[test]
+    fn w07_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Property 14 (W07) - W07 fires exactly once per `sha256hash=` attribute
+    /// and exactly zero times for any number of `filehash=` attributes in the
+    /// same rule. We generate N (1..=3) `sha256hash=<64hex>` attributes on
+    /// the subject side and M (0..=3) `filehash=<64hex>` attributes on the
+    /// object side, build a syntactically valid rule, parse + lint, and
+    /// assert the W07 diagnostic count equals N (independent of M). Kills
+    /// mutations that flip the predicate (e.g. firing on filehash, double-
+    /// emitting, deduplicating, or skipping every other attr).
+    #[test]
+    fn w07_fires_exactly_once_per_sha256hash_attr(
+        n in 1usize..=3usize,
+        m in 0usize..=3usize,
+        // 64-char hex blocks - one per attribute we'll emit. We generate
+        // enough for the maximum N+M and slice as needed.
+        nibbles in prop::collection::vec(
+            prop::collection::vec(0u8..16u8, 64..=64),
+            6..=6,
+        )
+    ) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        let hex_block = |idx: usize| -> String {
+            nibbles[idx]
+                .iter()
+                .map(|nib| HEX_CHARS[*nib as usize] as char)
+                .collect()
+        };
+
+        // Build the subject side: N `sha256hash=<hex>` attrs.
+        let mut subject = String::new();
+        for i in 0..n {
+            if !subject.is_empty() {
+                subject.push(' ');
+            }
+            let _ = write!(subject, "sha256hash={}", hex_block(i));
+        }
+        // Build the object side: M `filehash=<hex>` attrs (M may be 0).
+        // When M == 0 we need *some* object attr for the rule to parse,
+        // so default to `exe=/foo`. When M > 0, the filehash attrs are
+        // the object body.
+        let object = if m == 0 {
+            "exe=/foo".to_string()
+        } else {
+            let mut parts = Vec::with_capacity(m);
+            for j in 0..m {
+                parts.push(format!("filehash={}", hex_block(n + j)));
+            }
+            parts.join(" ")
+        };
+
+        let source = format!("allow {subject} : {object}\n");
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let w07_count = diags.iter().filter(|d| d.code.as_ref() == "W07").count();
+        prop_assert_eq!(
+            w07_count,
+            n,
+            "expected exactly {} W07 diagnostics (one per sha256hash=) but got {}; \
+             N={}, M={}, source={:?}, diags={:?}",
+            n,
+            w07_count,
+            n,
+            m,
+            source,
+            diags.iter().filter(|d| d.code.as_ref() == "W07").collect::<Vec<_>>()
+        );
+    }
+
     /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
     /// walker emits zero E02 diagnostics for a rule of shape
     /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.
