@@ -259,6 +259,25 @@ fn e04_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// E05 - macro `%name=` set definition whose values mix numeric (parses as
+// i64) and string (everything else). Lint-walker-driven; one E05 per
+// offending SetDefinition. Single-value sets are trivially homogeneous.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e05_traps() {
+    let files = list_rules_files("E05");
+    assert!(
+        files.len() >= 4,
+        "E05 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("E05", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 

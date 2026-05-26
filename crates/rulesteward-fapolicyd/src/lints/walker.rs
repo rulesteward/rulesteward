@@ -1,7 +1,8 @@
 //! AST-driven lint passes - walk `&[Entry]` once and emit diagnostics for
 //! F03 (mixed-syntax), E01 (unknown attribute), E02 (invalid attribute
 //! value), E03 (undefined macro reference), E04 (macro reference in
-//! `trust=`/`pattern=`), and W02 (broad allow on execute).
+//! `trust=`/`pattern=`), E05 (macro values of mixed type), and W02 (broad
+//! allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
 //! `Rule.span` (set by the parser in session 3a). `source_id` is set to
@@ -16,7 +17,7 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
-/// Run F03, E01, E02, E03, E04, and W02 over `entries` and return the
+/// Run F03, E01, E02, E03, E04, E05, and W02 over `entries` and return the
 /// merged diagnostics.
 pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -27,6 +28,7 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out.extend(e02(entries, file));
     out.extend(e03(entries, file));
     out.extend(e04(entries, file));
+    out.extend(e05(entries, file));
     out.extend(w02(entries, file));
     out
 }
@@ -312,6 +314,60 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     .with_source_id(file.display().to_string()),
                 );
             }
+        }
+    }
+    diags
+}
+
+/// E05 - macro values of mixed type. For each `Entry::SetDefinition`,
+/// classify each value as numeric (parses as `i64`) or string (everything
+/// else). Emit one E05 diagnostic per offending set definition whose values
+/// contain BOTH kinds. Single-value sets are trivially homogeneous; all-
+/// numeric and all-string sets are silent. Independent of E03/E04: the set
+/// definition pass runs over `Entry::SetDefinition` only, while E03/E04
+/// inspect `Entry::Rule` attrs.
+///
+/// Numeric classification uses `str::parse::<i64>()`, which accepts signed
+/// integers (`-5`), unsigned (`42`), and leading-zero ints (`01` -> 1).
+/// Everything else (paths, identifiers, mixed alpha-numeric) is treated as
+/// string.
+fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for entry in entries {
+        let Entry::SetDefinition {
+            name,
+            values,
+            line,
+            span,
+        } = entry
+        else {
+            continue;
+        };
+        let mut has_numeric = false;
+        let mut has_string = false;
+        for v in values {
+            if v.parse::<i64>().is_ok() {
+                has_numeric = true;
+            } else {
+                has_string = true;
+            }
+            if has_numeric && has_string {
+                break;
+            }
+        }
+        if has_numeric && has_string {
+            diags.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "E05",
+                    span.clone(),
+                    format!("macro `%{name}` mixes numeric and string values"),
+                    file,
+                    *line,
+                    1,
+                )
+                .with_source_id(file.display().to_string()),
+            );
         }
     }
     diags
@@ -1117,5 +1173,135 @@ mod tests {
             1,
             "E04 must fire on `trust=%foo` when `%foo` is undefined",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // E05 helper-level unit tests. Pin the per-SetDefinition walker so
+    // every branch (mixed -> fire, all-numeric -> silent, all-string ->
+    // silent, single-value -> silent, leading-zero -> numeric, walker
+    // skips Rule entries, multi-set independence) is exercised
+    // independently of the snapshot + proptest suites. A mutant that
+    // swaps the `has_numeric && has_string` predicate, drops the
+    // `i64::parse` classification, or fires on Rule entries dies here.
+    // -----------------------------------------------------------------
+
+    fn setdef_with_values(line: usize, name: &str, values: &[&str]) -> Entry {
+        Entry::SetDefinition {
+            name: name.to_string(),
+            values: values.iter().map(|s| (*s).to_string()).collect(),
+            line,
+            span: rulesteward_core::span(0, 0),
+        }
+    }
+
+    #[test]
+    fn e05_emits_on_mixed_int_and_string() {
+        // `%mymacro=1,2,foo,3` -> 1 E05 naming the macro.
+        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "foo", "3"])];
+        let diags = e05(&entries, &p());
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_ref(), "E05");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("mymacro"),
+            "message must name the macro: {}",
+            diags[0].message,
+        );
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+    }
+
+    #[test]
+    fn e05_silent_on_all_numeric() {
+        // `%mymacro=1,2,3,4` -> all values parse as i64; no E05.
+        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "3", "4"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "all-numeric set must produce no E05: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e05_silent_on_all_string() {
+        // `%mymacro=/bin/bash,/usr/bin/zsh` -> all values are strings; no E05.
+        let entries = vec![setdef_with_values(
+            1,
+            "mymacro",
+            &["/bin/bash", "/usr/bin/zsh"],
+        )];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "all-string set must produce no E05: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e05_silent_on_single_value() {
+        // `%mymacro=42` -> 1 value is trivially homogeneous; no E05.
+        // Pins the boundary case: a single value can't be mixed.
+        let entries = vec![setdef_with_values(1, "mymacro", &["42"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "single-value set must produce no E05: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e05_treats_leading_zero_as_numeric() {
+        // `%mymacro=01,02,03` -> `parse::<i64>()` accepts "01" -> 1, etc.
+        // All values are numeric; no E05. Pins the classification rule:
+        // numeric = parses as i64, not "looks like a literal digit string".
+        let entries = vec![setdef_with_values(1, "mymacro", &["01", "02", "03"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "leading-zero values must classify as numeric (no E05): {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_walker_skips_non_setdefinition_entries() {
+        // A Rule entry (no SetDefinition involved) must never fire E05.
+        // Kills a mutation that fires E05 on every Entry regardless of variant.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "path".into(),
+                value: AttrValue::Str("/etc/passwd".into()),
+            }],
+        )];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "Rule entries are not E05's concern: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_walker_emits_one_per_mixed_setdefinition() {
+        // Two mixed sets in the same file -> 2 E05 diagnostics, one per
+        // SetDefinition. Kills a mutation that deduplicates by name or
+        // short-circuits after the first hit.
+        let entries = vec![
+            setdef_with_values(1, "first", &["1", "alpha"]),
+            setdef_with_values(2, "second", &["beta", "2"]),
+        ];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected one E05 per mixed SetDefinition: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "E05"));
+        assert!(diags.iter().any(|d| d.message.contains("first")));
+        assert!(diags.iter().any(|d| d.message.contains("second")));
     }
 }

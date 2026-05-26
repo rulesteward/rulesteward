@@ -691,6 +691,67 @@ proptest! {
         );
     }
 
+    /// Property 11 (E05) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7/9 for E05; together with
+    /// `parse_never_panics`, covers the full pipeline.
+    #[test]
+    fn e05_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Property 12 (E05) - when every value in a `%name=...` set
+    /// definition is homogeneous (all parse as `i64`, OR all do not
+    /// parse as `i64`), E05 emits zero diagnostics. Generates a `bool`
+    /// to choose which homogeneous family to build, then 1..=6 values
+    /// of that family, and constructs `%mymacro=v1,v2,...`. Kills
+    /// mutations that flip the predicate (e.g. emitting E05 on every
+    /// SetDefinition, or treating an all-numeric set as mixed).
+    #[test]
+    fn e05_silent_when_homogeneous(
+        use_numeric in any::<bool>(),
+        nums in prop::collection::vec(0i64..1_000_000_i64, 1..=6),
+        // String values must NOT parse as i64; the filter mirrors the
+        // round-trip generator's `arb_str_value` exclusion so we never
+        // accidentally drift a "string" into the numeric column.
+        strs in prop::collection::vec(
+            "[a-zA-Z_/.][a-zA-Z0-9_/.\\-]{0,15}"
+                .prop_filter("must not parse as i64", |s: &String| s.parse::<i64>().is_err()),
+            1..=6,
+        ),
+    ) {
+        let values: Vec<String> = if use_numeric {
+            nums.iter().map(i64::to_string).collect()
+        } else {
+            strs.clone()
+        };
+        let source = format!("%mymacro={}\n", values.join(","));
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let e05_count = diags.iter().filter(|d| d.code.as_ref() == "E05").count();
+        prop_assert_eq!(
+            e05_count,
+            0,
+            "homogeneous set must produce zero E05; values={:?} diags={:?}",
+            values,
+            diags.iter().filter(|d| d.code.as_ref() == "E05").collect::<Vec<_>>()
+        );
+    }
+
     /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
     /// walker emits zero E02 diagnostics for a rule of shape
     /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.
