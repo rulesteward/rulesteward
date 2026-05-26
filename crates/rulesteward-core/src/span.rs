@@ -15,10 +15,6 @@
 //! 3. Query spans via free functions in [`span_util`]. Extension-trait
 //!    methods on `Range<usize>` would bind to the std type and have to
 //!    be rewritten at migration time; free functions adapt.
-//!
-//! See `.private-docs/archive/session-3a-*` for the original migration
-//! decision record. Once that archive moves, this doc-comment is the
-//! sole source of truth.
 
 pub type Span = core::ops::Range<usize>;
 
