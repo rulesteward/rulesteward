@@ -36,8 +36,9 @@ jobs:
         with:
           tool: cargo-mutants
       # Baseline + scope live in crates/rulesteward-fapolicyd/MUTATION-BASELINE.md
-      # and .cargo/mutants.toml respectively. `--error-on-survival 0` says
-      # "any survivor at all is a regression"; bump only on deliberate
-      # baseline review.
+      # and .cargo/mutants.toml respectively. cargo-mutants 27+ exits non-zero
+      # by default when a genuine survivor exists (the old `--error-on-survival`
+      # flag was removed in 27.x). "Any survivor at all is a regression"
+      # remains the gate; bump only on deliberate baseline review.
       - name: cargo mutants
-        run: cargo mutants --no-shuffle --error-on-survival 0
+        run: cargo mutants --no-shuffle
