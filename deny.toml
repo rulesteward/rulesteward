@@ -4,6 +4,10 @@
 # cargo-deny runs are: advisories, bans, licenses, sources. We rely on
 # cargo-audit for the advisories check (separate `audit` CI job), so
 # this config focuses on licenses + bans + sources.
+#
+# Schema tested against cargo-deny 0.19.7. Bump this comment and the
+# pin in .github/workflows/ci.yml together if cargo-deny ships a
+# config-format-affecting release.
 
 [licenses]
 # Allowlist of SPDX expressions permitted in the workspace dep tree.
