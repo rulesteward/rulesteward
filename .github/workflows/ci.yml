@@ -75,10 +75,23 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # rocky-suite: per-Rocky test + musl smoke in a single container.
+  # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
+  # matrix, the dnf bootstrap, the bash shell override, and the
+  # actions/checkout call. Merging eliminates 3 of the 6 matrix container
+  # starts per CI run and shortens the critical path (the smoke add-on is
+  # `./binary --help + grep`, dwarfed by the ~33 s dnf bootstrap and ~28 s
+  # rust-cache restore already happening for the test step).
+  #
+  # Tradeoff vs. the prior shape: `musl-build` no longer waits on Rocky
+  # tests, so a red push wastes ~38 s of musl-build compute that the prior
+  # `needs: check` short-circuit would have saved. This is a small cost
+  # in exchange for the wall-clock and CI-minutes win on the (common)
+  # green path.
   check:
-    name: rocky${{ matrix.rocky }} - test
+    name: rocky${{ matrix.rocky }} - test + musl smoke
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, musl-build]
     strategy:
       fail-fast: false
       matrix:
@@ -150,6 +163,39 @@ jobs:
       # release-build step dropped: musl-build covers the release profile;
       # RuleSteward has no FFI / cfg-gated release-only paths that would surface a glibc-release-only bug.
 
+      # Smoke section: the steps below were previously a separate `musl-smoke`
+      # matrix job. Merged here so each Rocky container does test+smoke in one
+      # provisioning cycle (the dnf bootstrap above already covers the
+      # `bash + ca-certificates` superset that musl-smoke used to install
+      # separately).
+      - name: Download static musl binary from musl-build
+        uses: actions/download-artifact@v4
+        with:
+          name: rulesteward-x86_64-linux-musl
+          path: ./bin
+
+      - name: Smoke -- the static musl binary runs on this Rocky
+        run: |
+          chmod +x ./bin/rulesteward
+          ./bin/rulesteward --help
+          ./bin/rulesteward --version
+
+      - name: Smoke -- completions subcommand works on this Rocky
+        run: |
+          ./bin/rulesteward completions bash | head -5
+          ./bin/rulesteward completions bash | grep -q '_rulesteward'
+
+      - name: Functional smoke -- no placeholder leakage in --help
+        # Capture --help output to a file FIRST, so a binary crash (non-zero
+        # exit) fails the step under set -e instead of being masked by a
+        # `|| true` swallow on the grep no-match branch.
+        run: |
+          ./bin/rulesteward --help > /tmp/help_output
+          if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
+            grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
+            exit 1
+          fi
+
   coverage:
     name: cargo llvm-cov (floor 80%)
     runs-on: ubuntu-latest
@@ -172,12 +218,12 @@ jobs:
   musl-build:
     name: build static musl binary (ubuntu)
     runs-on: ubuntu-latest
-    # Gate the entire musl chain on `check` passing. If a Rust regression
-    # breaks tests, we avoid burning ~3 min on musl-build plus ~3 min on
-    # the 3-way musl-smoke matrix. Costs ~3-5 min of wall-clock on green
-    # pushes (serialization); the minutes accounting is zero on green and
-    # net-positive on red.
-    needs: check
+    # Depends on fmt-clippy only. The merged `check` job (test + smoke)
+    # consumes this artifact and so depends on musl-build downstream; the
+    # prior gate `needs: check` would now be a dependency cycle. A red push
+    # wastes ~38 s of musl-build compute that the prior gate would have
+    # saved, in exchange for the wall-clock win on green pushes.
+    needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
 
@@ -218,64 +264,6 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/rulesteward
           retention-days: 7
           if-no-files-found: error
-
-  musl-smoke:
-    name: rocky${{ matrix.rocky }} - run static musl binary
-    needs: musl-build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rocky: ["8", "9", "10"]
-    container:
-      image: rockylinux/rockylinux:${{ matrix.rocky }}
-    defaults:
-      run:
-        shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
-    steps:
-      - name: Bootstrap minimum tooling (bash + ca-certificates)
-        # bash: required because defaults.run.shell points at /usr/bin/bash
-        # and that shell override fires before any step can install packages.
-        # The rockylinux/rockylinux minimal image already ships bash, but the
-        # explicit install guards against future image variations. Matches
-        # the check: job's pattern.
-        # ca-certificates: actions/download-artifact@v4 is a JS action; when
-        # a job declares container:, JS actions run INSIDE that container
-        # and need TLS root certs to fetch the artifact over HTTPS.
-        # `--disablerepo=extras` + `--setopt=fastestmirror=True`: same dnf
-        # tuning as the check job's bootstrap step above. Extras is unused
-        # here (both packages live in BaseOS) and the default mirror has
-        # been observed in the kB/s and B/s range; the fastestmirror probe
-        # picks a CDN-backed mirror for BaseOS instead.
-        run: dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash ca-certificates
-
-      - name: Download the static binary from musl-build
-        uses: actions/download-artifact@v4
-        with:
-          name: rulesteward-x86_64-linux-musl
-          path: ./bin
-
-      - name: Smoke -- the binary actually runs on this Rocky
-        run: |
-          chmod +x ./bin/rulesteward
-          ./bin/rulesteward --help
-          ./bin/rulesteward --version
-
-      - name: Smoke -- completions subcommand works on this Rocky
-        run: |
-          ./bin/rulesteward completions bash | head -5
-          ./bin/rulesteward completions bash | grep -q '_rulesteward'
-
-      - name: Functional smoke -- no placeholder leakage in --help
-        # Capture --help output to a file FIRST, so a binary crash (non-zero
-        # exit) fails the step under set -e instead of being masked by a
-        # `|| true` swallow on the grep no-match branch.
-        run: |
-          ./bin/rulesteward --help > /tmp/help_output
-          if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
-            grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
-            exit 1
-          fi
 
   # Cargo-audit: scan the workspace's Cargo.lock against the RustSec
   # advisory DB. First-iteration warn-only via continue-on-error so a
