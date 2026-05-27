@@ -286,6 +286,13 @@ jobs:
   audit:
     name: cargo-audit (warn-only)
     runs-on: ubuntu-latest
+    # PR-only: the action's value on this project is the check annotation
+    # in the PR's check column, where new advisories surface during review.
+    # On push/tag events the action would create tracking Issues, but every
+    # change on this repo goes through a PR before landing on main, so the
+    # push-event path would only duplicate work. Skip on push to keep CI
+    # minutes focused on the PR signal.
+    if: github.event_name == 'pull_request'
     continue-on-error: true
     # rustsec/audit-check creates GitHub Check Runs on pull_request events
     # (and Issues on schedule/push events). Without checks: write the action
