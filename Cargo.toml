@@ -21,10 +21,10 @@ clap_complete = "4"
 insta = { version = "1", features = ["yaml"] }
 predicates = "3"
 proptest = "1"
-rand = ">=0.9.3"
+rand = ">=0.9.3"  # transitive floor: RUSTSEC-2026-0097 affects rand < 0.9.3
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shlex = ">=1.3.0"
+shlex = ">=1.3.0"  # transitive floor: shlex < 1.3 has a quoting bug; moot today (no shlex in tree) but defends future regressions
 tempfile = "3"
 thiserror = "2"
 
