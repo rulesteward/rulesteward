@@ -4,10 +4,9 @@
 use crate::cli::AuditdCommand;
 use crate::exit_code::EXIT_NO_OP;
 
-#[must_use]
-pub fn run(_cmd: AuditdCommand) -> i32 {
+pub fn run(_cmd: AuditdCommand) -> anyhow::Result<i32> {
     eprintln!("rulesteward auditd: not yet implemented in v0.1.0-dev");
-    EXIT_NO_OP
+    Ok(EXIT_NO_OP)
 }
 
 #[cfg(test)]
@@ -16,6 +15,9 @@ mod tests {
 
     #[test]
     fn auditd_cost_stub_returns_exit_no_op() {
-        assert_eq!(run(AuditdCommand::Cost), EXIT_NO_OP);
+        assert_eq!(
+            run(AuditdCommand::Cost).expect("stub never errors"),
+            EXIT_NO_OP
+        );
     }
 }
