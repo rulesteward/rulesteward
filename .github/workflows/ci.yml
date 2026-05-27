@@ -338,29 +338,26 @@ jobs:
   audit:
     name: cargo-audit (warn-only)
     runs-on: ubuntu-latest
-    # PR-only + manual: the action's value on this project is the check
-    # annotation in the PR's check column, where new advisories surface
-    # during review. On push/tag events the action would create tracking
-    # Issues, but every change on this repo goes through a PR before
-    # landing on main, so the push-event path would only duplicate work.
+    # PR-only + manual: every change on this repo goes through a PR before
+    # landing on main, so push-event audit would duplicate the PR signal.
     # workflow_dispatch is included so a maintainer can manually verify
     # advisory state after a cargo update without opening a PR.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     continue-on-error: true
-    # rustsec/audit-check creates GitHub Check Runs on pull_request events
-    # (and Issues on schedule/push events). Without checks: write the action
-    # falls back to stdout-only and no annotation appears in the PR checks
-    # column -- which defeats most of the continue-on-error UX. Grant the
-    # minimum required permissions explicitly so behaviour is deterministic
-    # regardless of the repo's default GITHUB_TOKEN permission setting.
-    permissions:
-      contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v5
-      - uses: rustsec/audit-check@v2
+      # Install cargo-audit from prebuilt binaries via taiki-e/install-action.
+      # The previous rustsec/audit-check@v2 wrapper installed via
+      # `cargo install cargo-audit` which compiled the tool from source --
+      # observed at ~3-5 min on every PR run. The taiki-e action uses
+      # binstall + a published manifest to drop a prebuilt binary into
+      # ~/.cargo/bin in ~10-20s. Pinned to a specific version for the
+      # same drift-prevention reason cargo-mutants is pinned in mutants.yml.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit@0.22.1
+      - name: cargo audit
+        run: cargo audit
 
   # MSRV verification: build the workspace on the declared minimum
   # supported Rust version. Cargo.toml's rust-version = "1.85" floor
