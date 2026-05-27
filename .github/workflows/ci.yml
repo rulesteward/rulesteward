@@ -127,6 +127,16 @@ jobs:
       # aborts the entire transaction silently if any name fails to resolve,
       # which would leave the container without bash, tar, gcc, etc. Add
       # any of these back only with version-aware logic.
+      # actions/cache@v4 needs `tar` in PATH to extract the cache archive.
+      # The rockylinux/rockylinux base image does not reliably include tar
+      # (the Bootstrap step below installs it as one of the 10 baseline
+      # packages -- if it were already present, that install would be
+      # redundant). Pre-install it via a tiny dnf call before the cache
+      # action runs. ~1-2s on a cold cache; harmless on a hit (dnf is a
+      # no-op when tar is already installed by a cached RPM).
+      - name: Pre-install tar (required by actions/cache)
+        run: dnf -y install tar
+
       # Cache /var/cache/dnf across runs so the second-and-later runs skip
       # the package download phase. The cache survives because the bootstrap
       # step below passes --setopt=keepcache=True; without that flag dnf
@@ -321,13 +331,14 @@ jobs:
   audit:
     name: cargo-audit (warn-only)
     runs-on: ubuntu-latest
-    # PR-only: the action's value on this project is the check annotation
-    # in the PR's check column, where new advisories surface during review.
-    # On push/tag events the action would create tracking Issues, but every
-    # change on this repo goes through a PR before landing on main, so the
-    # push-event path would only duplicate work. Skip on push to keep CI
-    # minutes focused on the PR signal.
-    if: github.event_name == 'pull_request'
+    # PR-only + manual: the action's value on this project is the check
+    # annotation in the PR's check column, where new advisories surface
+    # during review. On push/tag events the action would create tracking
+    # Issues, but every change on this repo goes through a PR before
+    # landing on main, so the push-event path would only duplicate work.
+    # workflow_dispatch is included so a maintainer can manually verify
+    # advisory state after a cargo update without opening a PR.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     continue-on-error: true
     # rustsec/audit-check creates GitHub Check Runs on pull_request events
     # (and Issues on schedule/push events). Without checks: write the action
