@@ -121,8 +121,28 @@ jobs:
       # aborts the entire transaction silently if any name fails to resolve,
       # which would leave the container without bash, tar, gcc, etc. Add
       # any of these back only with version-aware logic.
+      # Cache /var/cache/dnf across runs so the second-and-later runs skip
+      # the package download phase. The cache survives because the bootstrap
+      # step below passes --setopt=keepcache=True; without that flag dnf
+      # deletes the RPMs after install and the cache is empty.
+      #
+      # Key strategy: any change to ci.yml invalidates the cache (the
+      # package list is here). The restore-keys fallback lets a partial
+      # cache from a prior ci.yml revision still seed most of the packages
+      # so the worst case is a partial-miss, not a full miss.
+      #
+      # Path is the in-container path; actions/cache runs inside the
+      # container when `container:` is set on the job, so this Just Works.
+      - name: Restore dnf cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: dnf-${{ matrix.rocky }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            dnf-${{ matrix.rocky }}-
+
       - name: Bootstrap (install bash, tar, gcc, ...)
-        # Two dnf tuning flags address slow CI installs:
+        # dnf tuning flags address slow CI installs:
         #
         # `--disablerepo=extras` skips the Extras repo's metadata download.
         # All 10 packages here live in BaseOS or AppStream (Extras carries
@@ -136,8 +156,13 @@ jobs:
         # one per repo. BaseOS has been observed at ~910 kB/s on the
         # default mirror; probing typically lands a CDN-backed mirror that
         # is 5-10x faster, saving another ~30-50 s per Rocky job.
+        #
+        # `--setopt=keepcache=True` preserves the downloaded RPMs in
+        # /var/cache/dnf after install. The default behavior deletes them
+        # post-install; with keepcache the cache action above can save
+        # them for the next run's restore.
         run: |
-          dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
       - uses: actions/checkout@v5
 
