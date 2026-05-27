@@ -2,7 +2,7 @@
 //!
 //! Three proptest properties + two hard-coded sentinel `#[test]`s. The
 //! sentinels exist so that mutations which trivialize the parser (e.g.
-//! "always return `Ok(vec![])`" or "only report the first F01") are killed
+//! "always return `Ok(vec![])`" or "only report the first fapd-F01") are killed
 //! even by a single non-shrinking run - `cargo-mutants` will see one of the
 //! sentinels fail and mark the mutant as caught.
 //!
@@ -364,7 +364,7 @@ proptest! {
 
     /// Property 1 - `parse_rules_file` never panics on arbitrary input, and
     /// on `Err` always returns at least one `Fatal` diagnostic whose code
-    /// starts with `'F'`. The Fatal-content assertion kills the mutation
+    /// starts with `"fapd-F"`. The Fatal-content assertion kills the mutation
     /// "replace `Err(diags)` with `Err(vec![])`".
     #[test]
     fn parse_never_panics(s in proptest::string::string_regex(".{0,16384}").unwrap()) {
@@ -382,11 +382,11 @@ proptest! {
                 "Err path returned an empty diagnostic vec - caller has no way to know what failed"
             );
             let has_fatal_f = diags.iter().any(|d| {
-                d.severity == Severity::Fatal && d.code.as_ref().starts_with('F')
+                d.severity == Severity::Fatal && d.code.as_ref().starts_with("fapd-F")
             });
             prop_assert!(
                 has_fatal_f,
-                "Err path returned diagnostics, but none were Severity::Fatal with a code starting with 'F'. \
+                "Err path returned diagnostics, but none were Severity::Fatal with a code starting with \"fapd-F\". \
                  Got: {:?}",
                 diags.iter().map(|d| (d.severity, d.code.as_ref())).collect::<Vec<_>>()
             );
@@ -436,7 +436,7 @@ proptest! {
     /// Property 3 - adding N invalid lines in front of a valid input never
     /// reduces the count of `Severity::Fatal` diagnostics. Specifically:
     ///
-    ///   * `fatal_count(combined) >= N`        - at least one F01 per bad line
+    ///   * `fatal_count(combined) >= N`        - at least one fapd-F01 per bad line
     ///   * `fatal_count(combined) >= fatal_count(valid)` - monotonic in N
     ///
     /// The first inequality kills the mutation "return only the first
@@ -450,7 +450,7 @@ proptest! {
         garbage_lines in prop::collection::vec(
             // Lines of pure reserved characters - these contain no decision
             // keyword, no `#`, no `%`, and no `=`, so they cannot match any
-            // top-level production. Every such line must produce ≥1 F01.
+            // top-level production. Every such line must produce ≥1 fapd-F01.
             proptest::string::string_regex("[!@$^&*]{1,16}").unwrap(),
             8,
         ),
@@ -544,12 +544,12 @@ proptest! {
         }
     }
 
-    /// Property 5 (E02) - the lint walker never panics on any parser-
+    /// Property 5 (fapd-E02) - the lint walker never panics on any parser-
     /// accepted input. We use `arb_valid_rule_text` so the parser
     /// always succeeds; the property then exercises the full `lint`
-    /// pipeline (which includes E02) and asserts it returns without
+    /// pipeline (which includes fapd-E02) and asserts it returns without
     /// panicking. Together with parse_never_panics, this covers the
-    /// entire "input -> diagnostics" pipeline for E02.
+    /// entire "input -> diagnostics" pipeline for fapd-E02.
     #[test]
     fn e02_never_panics_on_parser_accepted_input(
         source in generators::arb_valid_rule_text()
@@ -566,8 +566,8 @@ proptest! {
         );
     }
 
-    /// Property 7 (E03) - the lint walker never panics on any parser-
-    /// accepted input. Mirror of Property 5 for E03; together with
+    /// Property 7 (fapd-E03) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5 for fapd-E03; together with
     /// `parse_never_panics`, covers the full pipeline.
     #[test]
     fn e03_never_panics_on_parser_accepted_input(
@@ -585,12 +585,12 @@ proptest! {
         );
     }
 
-    /// Property 8 (E03) - when every macro reference in a file has a
-    /// matching `%name=...` definition ABOVE it in source order, E03
+    /// Property 8 (fapd-E03) - when every macro reference in a file has a
+    /// matching `%name=...` definition ABOVE it in source order, fapd-E03
     /// emits zero diagnostics. Generates N (1..=4) distinct macro names,
     /// emits their definitions first, then a single rule that references
     /// each name. Kills mutations that flip the membership check (e.g.
-    /// emitting E03 unconditionally, or treating an empty `defined` set
+    /// emitting fapd-E03 unconditionally, or treating an empty `defined` set
     /// as containing every name).
     #[test]
     fn e03_silent_when_all_refs_match_definitions(
@@ -610,7 +610,7 @@ proptest! {
         // Build: each name gets a `%name=foo` definition on its own line,
         // followed by a single rule referencing each in turn on the
         // subject side via `uid=%name`. (uid accepts SetRef per the
-        // parser; E02 explicitly skips SetRef values, so only E03's
+        // parser; fapd-E02 explicitly skips SetRef values, so only fapd-E03's
         // membership check is exercised.)
         let mut source = String::new();
         for name in &names {
@@ -626,17 +626,17 @@ proptest! {
             ))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
-        let e03_count = diags.iter().filter(|d| d.code.as_ref() == "E03").count();
+        let e03_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-E03").count();
         prop_assert_eq!(
             e03_count,
             0,
-            "all macro refs are defined above; expected 0 E03 diagnostics, got {:?}",
-            diags.iter().filter(|d| d.code.as_ref() == "E03").collect::<Vec<_>>()
+            "all macro refs are defined above; expected 0 fapd-E03 diagnostics, got {:?}",
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-E03").collect::<Vec<_>>()
         );
     }
 
-    /// Property 9 (E04) - the lint walker never panics on any parser-
-    /// accepted input. Mirror of Property 5/7 for E04; together with
+    /// Property 9 (fapd-E04) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7 for fapd-E04; together with
     /// `parse_never_panics`, covers the full pipeline.
     #[test]
     fn e04_never_panics_on_parser_accepted_input(
@@ -654,13 +654,13 @@ proptest! {
         );
     }
 
-    /// Property 10 (E04) - when no rule contains a `trust=%setname` or
-    /// `pattern=%setname` attribute, E04 emits zero diagnostics. We
+    /// Property 10 (fapd-E04) - when no rule contains a `trust=%setname` or
+    /// `pattern=%setname` attribute, fapd-E04 emits zero diagnostics. We
     /// generate rules of the shape `allow uid=N : path=/foo` whose attrs
-    /// contain neither SetRefs nor `trust`/`pattern` keys, so E04's
+    /// contain neither SetRefs nor `trust`/`pattern` keys, so fapd-E04's
     /// predicate (key in {"trust", "pattern"} AND value is SetRef) is
     /// never satisfied. Kills mutations that flip the membership check
-    /// (e.g. emitting E04 unconditionally, or treating the empty key
+    /// (e.g. emitting fapd-E04 unconditionally, or treating the empty key
     /// set as containing every key).
     #[test]
     fn e04_silent_when_no_trust_or_pattern_macro(
@@ -671,7 +671,7 @@ proptest! {
     ) {
         // Emit one `allow uid=N : path=P` rule per generator tuple.
         // Neither attr is in {"trust", "pattern"} and no value is a
-        // SetRef, so E04 must fire zero times.
+        // SetRef, so fapd-E04 must fire zero times.
         let mut source = String::new();
         for (uid, path) in &rules {
             let _ = writeln!(source, "allow uid={uid} : path={path}");
@@ -682,17 +682,17 @@ proptest! {
             ))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
-        let e04_count = diags.iter().filter(|d| d.code.as_ref() == "E04").count();
+        let e04_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-E04").count();
         prop_assert_eq!(
             e04_count,
             0,
-            "no rule has trust=/pattern= macro; expected 0 E04 diagnostics, got {:?}",
-            diags.iter().filter(|d| d.code.as_ref() == "E04").collect::<Vec<_>>()
+            "no rule has trust=/pattern= macro; expected 0 fapd-E04 diagnostics, got {:?}",
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-E04").collect::<Vec<_>>()
         );
     }
 
-    /// Property 11 (E05) - the lint walker never panics on any parser-
-    /// accepted input. Mirror of Property 5/7/9 for E05; together with
+    /// Property 11 (fapd-E05) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7/9 for fapd-E05; together with
     /// `parse_never_panics`, covers the full pipeline.
     #[test]
     fn e05_never_panics_on_parser_accepted_input(
@@ -710,12 +710,12 @@ proptest! {
         );
     }
 
-    /// Property 12 (E05) - when every value in a `%name=...` set
+    /// Property 12 (fapd-E05) - when every value in a `%name=...` set
     /// definition is homogeneous (all parse as `i64`, OR all do not
-    /// parse as `i64`), E05 emits zero diagnostics. Generates a `bool`
+    /// parse as `i64`), fapd-E05 emits zero diagnostics. Generates a `bool`
     /// to choose which homogeneous family to build, then 1..=6 values
     /// of that family, and constructs `%mymacro=v1,v2,...`. Kills
-    /// mutations that flip the predicate (e.g. emitting E05 on every
+    /// mutations that flip the predicate (e.g. emitting fapd-E05 on every
     /// SetDefinition, or treating an all-numeric set as mixed).
     #[test]
     fn e05_silent_when_homogeneous(
@@ -742,18 +742,18 @@ proptest! {
             ))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
-        let e05_count = diags.iter().filter(|d| d.code.as_ref() == "E05").count();
+        let e05_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-E05").count();
         prop_assert_eq!(
             e05_count,
             0,
-            "homogeneous set must produce zero E05; values={:?} diags={:?}",
+            "homogeneous set must produce zero fapd-E05; values={:?} diags={:?}",
             values,
-            diags.iter().filter(|d| d.code.as_ref() == "E05").collect::<Vec<_>>()
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-E05").collect::<Vec<_>>()
         );
     }
 
-    /// Property 13 (W07) - the lint walker never panics on any parser-
-    /// accepted input. Mirror of Property 5/7/9/11 for W07; together with
+    /// Property 13 (fapd-W07) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7/9/11 for fapd-W07; together with
     /// `parse_never_panics`, covers the full pipeline.
     #[test]
     fn w07_never_panics_on_parser_accepted_input(
@@ -771,14 +771,15 @@ proptest! {
         );
     }
 
-    /// Property 14 (W07) - W07 fires exactly once per `sha256hash=` attribute
-    /// and exactly zero times for any number of `filehash=` attributes in the
-    /// same rule. We generate N (1..=3) `sha256hash=<64hex>` attributes on
-    /// the subject side and M (0..=3) `filehash=<64hex>` attributes on the
-    /// object side, build a syntactically valid rule, parse + lint, and
-    /// assert the W07 diagnostic count equals N (independent of M). Kills
-    /// mutations that flip the predicate (e.g. firing on filehash, double-
-    /// emitting, deduplicating, or skipping every other attr).
+    /// Property 14 (fapd-W07) - fapd-W07 fires exactly once per `sha256hash=`
+    /// attribute and exactly zero times for any number of `filehash=`
+    /// attributes in the same rule. We generate N (1..=3) `sha256hash=<64hex>`
+    /// attributes on the subject side and M (0..=3) `filehash=<64hex>`
+    /// attributes on the object side, build a syntactically valid rule, parse
+    /// + lint, and assert the fapd-W07 diagnostic count equals N (independent
+    /// of M). Kills mutations that flip the predicate (e.g. firing on
+    /// filehash, double-emitting, deduplicating, or skipping every other
+    /// attr).
     #[test]
     fn w07_fires_exactly_once_per_sha256hash_attr(
         n in 1usize..=3usize,
@@ -827,25 +828,25 @@ proptest! {
             ))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
-        let w07_count = diags.iter().filter(|d| d.code.as_ref() == "W07").count();
+        let w07_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W07").count();
         prop_assert_eq!(
             w07_count,
             n,
-            "expected exactly {} W07 diagnostics (one per sha256hash=) but got {}; \
+            "expected exactly {} fapd-W07 diagnostics (one per sha256hash=) but got {}; \
              N={}, M={}, source={:?}, diags={:?}",
             n,
             w07_count,
             n,
             m,
             source,
-            diags.iter().filter(|d| d.code.as_ref() == "W07").collect::<Vec<_>>()
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-W07").collect::<Vec<_>>()
         );
     }
 
-    /// Property 6 (E02) - for any 64-char ASCII hex string, the lint
-    /// walker emits zero E02 diagnostics for a rule of shape
+    /// Property 6 (fapd-E02) - for any 64-char ASCII hex string, the lint
+    /// walker emits zero fapd-E02 diagnostics for a rule of shape
     /// `allow filehash=<hex> : exe=/foo`. Pins the Hex64 valid-path.
-    /// Kills mutations that flip the predicate (e.g. emitting E02 on
+    /// Kills mutations that flip the predicate (e.g. emitting fapd-E02 on
     /// any filehash regardless of validity).
     #[test]
     fn e02_silent_on_canonical_filehash(
@@ -863,11 +864,11 @@ proptest! {
             .map_err(|d| TestCaseError::fail(format!("canonical filehash failed to parse: {d:?}")))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
-        let e02_count = diags.iter().filter(|d| d.code.as_ref() == "E02").count();
+        let e02_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-E02").count();
         prop_assert_eq!(
             e02_count,
             0,
-            "canonical 64-hex filehash must produce zero E02 diagnostics; got {:?}",
+            "canonical 64-hex filehash must produce zero fapd-E02 diagnostics; got {:?}",
             diags
         );
     }
@@ -951,11 +952,11 @@ allow perm=open uid=0 : all
     );
 
     // Spot-check the structure: every Fatal should have a code starting
-    // with 'F'. Catches a mutation that downgrades Fatal → Error or
+    // with "fapd-F". Catches a mutation that downgrades Fatal → Error or
     // emits Fatals without an F-code.
     for d in diags.iter().filter(|d| d.severity == Severity::Fatal) {
         assert!(
-            d.code.as_ref().starts_with('F'),
+            d.code.as_ref().starts_with("fapd-F"),
             "Fatal diagnostic with non-F code: {:?}",
             d.code
         );

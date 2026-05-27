@@ -22,8 +22,8 @@ needed.
 
 ## How to add a new lint code
 
-The fapolicyd module is the worked example. Each lint code (E02, E03, E04,
-E05, W07) lives as its own file under
+The fapolicyd module is the worked example. Each lint code (fapd-E02,
+fapd-E03, fapd-E04, fapd-E05, fapd-W07) lives as its own file under
 `crates/rulesteward-fapolicyd/src/lints/` with the diagnostic builder, the
 test fixtures, and the `#[cfg(test)]` module side by side. Copy the shape
 of an existing code, register the new code in `lints/mod.rs`, and add

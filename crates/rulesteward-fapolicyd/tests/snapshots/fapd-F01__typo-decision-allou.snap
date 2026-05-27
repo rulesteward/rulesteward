@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=err
+diagnostics=1
+[fapd-F01] sev=Fatal line=1 col=5 span=4..5 :: found 'u' expected 'w'

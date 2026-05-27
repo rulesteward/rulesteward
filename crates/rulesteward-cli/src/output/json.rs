@@ -18,7 +18,7 @@ mod tests {
     fn json_renders_as_array_of_diagnostic_objects() {
         let d = Diagnostic::new(
             Severity::Error,
-            "E01",
+            "fapd-E01",
             5..10,
             "unknown attribute",
             "/tmp/x.rules",

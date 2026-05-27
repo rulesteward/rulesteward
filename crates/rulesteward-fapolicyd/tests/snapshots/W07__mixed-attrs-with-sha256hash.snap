@@ -1,7 +1,0 @@
----
-source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
-expression: rendered
----
-parse=ok
-diagnostics=1
-[W07] sev=Warning line=1 col=1 span=0..111 :: deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)

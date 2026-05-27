@@ -1,2 +1,0 @@
-# This is a column-0 comment and must NOT trigger W03
-allow perm=open uid=0 : all

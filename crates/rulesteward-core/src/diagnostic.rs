@@ -3,7 +3,8 @@
 //!
 //! The severity scheme is SELint-style: a single letter per tier
 //! (Fatal / Error / Warning / Style / Convention / Extra → `F/E/W/S/C/X`).
-//! Lint codes such as `"F01"`, `"W02"` pair the letter with a 2-digit number.
+//! Lint codes such as `"fapd-F01"`, `"fapd-W02"` pair a per-module prefix
+//! (currently `fapd-` for fapolicyd) with the letter + 2-digit-number key.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -47,7 +48,7 @@ impl Severity {
 /// `ariadne` reports.
 ///
 /// `code` is `Cow<'static, str>` so emitter call-sites pay zero allocation
-/// for the compile-time string constants (`"F01"`) while deserialize from
+/// for the compile-time string constants (`"fapd-F01"`) while deserialize from
 /// JSON/SARIF still works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -121,7 +122,7 @@ mod tests {
     fn diagnostic_new_assigns_every_field() {
         let d = Diagnostic::new(
             Severity::Warning,
-            "W02",
+            "fapd-W02",
             12..47,
             "broad allow on execute",
             "/etc/fapolicyd/rules.d/90-allow.rules",
@@ -129,7 +130,7 @@ mod tests {
             1,
         );
         assert_eq!(d.severity, Severity::Warning);
-        assert_eq!(d.code, "W02");
+        assert_eq!(d.code, "fapd-W02");
         assert_eq!(d.span, 12..47);
         assert_eq!(d.message, "broad allow on execute");
         assert_eq!(d.line, 7);
@@ -146,7 +147,7 @@ mod tests {
     fn diagnostic_serde_round_trip_is_lossless() {
         let original = Diagnostic::new(
             Severity::Error,
-            "E01",
+            "fapd-E01",
             5..10,
             "unknown attribute",
             "/tmp/sample.rules",
@@ -164,7 +165,7 @@ mod tests {
     fn diagnostic_default_has_no_source_id() {
         let d = Diagnostic::new(
             Severity::Warning,
-            "W02",
+            "fapd-W02",
             0..5,
             "some message",
             "/etc/fapolicyd/rules.d/test.rules",
@@ -178,7 +179,7 @@ mod tests {
     fn diagnostic_with_source_id_sets_field() {
         let d = Diagnostic::new(
             Severity::Warning,
-            "W02",
+            "fapd-W02",
             0..5,
             "some message",
             "/etc/fapolicyd/rules.d/test.rules",

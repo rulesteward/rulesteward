@@ -29,7 +29,7 @@ fn lint_clean_file_exits_zero() {
 
 #[test]
 fn lint_file_with_warning_exits_one() {
-    // Inline-trailing-# triggers W03 (Warning).
+    // Inline-trailing-# triggers fapd-W03 (Warning).
     let f = write_tmp("allow uid=0 : all # bad comment\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -37,7 +37,7 @@ fn lint_file_with_warning_exits_one() {
         .arg(f.path())
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("[W03]"));
+        .stdout(predicate::str::contains("[fapd-W03]"));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn lint_file_with_syntax_error_exits_five() {
         .arg(f.path())
         .assert()
         .code(5)
-        .stdout(predicate::str::contains("[F01]"))
+        .stdout(predicate::str::contains("[fapd-F01]"))
         .stdout(predicate::str::contains(path_str));
 }
 
@@ -63,7 +63,7 @@ fn lint_json_format_emits_array() {
         .arg(f.path())
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("\"W03\""))
+        .stdout(predicate::str::contains("\"fapd-W03\""))
         .stdout(predicate::str::starts_with("["));
 }
 
@@ -141,20 +141,20 @@ fn lint_nonexistent_dir_emits_error_prefix_on_stderr() {
 
 // --- ariadne renderer tests (Task 4) ---
 
-/// When a diagnostic has `source_id` set (E01 from AST lints), the human
+/// When a diagnostic has `source_id` set (fapd-E01 from AST lints), the human
 /// renderer should produce ariadne-style rich output containing the source
 /// line text AND a box-drawing underline (`-`, U+2500). The earlier draft of
 /// this test asserted a caret `^`, but ariadne 0.6 uses Unicode box-drawing
 /// chars, not ASCII carets.
 ///
 /// Also asserts that the ariadne bracket line shows the real source file path
-/// (e.g. `..../E01/unknown-xyz.rules`) rather than the placeholder `<unknown>`
-/// that ariadne emits when the span type carries no source identity.
+/// (e.g. `..../fapd-E01/unknown-xyz.rules`) rather than the placeholder
+/// `<unknown>` that ariadne emits when the span type carries no source identity.
 #[test]
 fn lint_human_output_renders_ariadne_snippet_when_span_present() {
-    // unknown-xyz.rules: "allow xyz=0 : all\n" -> triggers E01 with span set.
+    // unknown-xyz.rules: "allow xyz=0 : all\n" -> triggers fapd-E01 with span set.
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/fapd-E01/unknown-xyz.rules");
     let fixture_str = fixture.to_str().expect("valid utf-8 fixture path");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -162,7 +162,7 @@ fn lint_human_output_renders_ariadne_snippet_when_span_present() {
         .arg(&fixture)
         .assert()
         .code(2) // error-level exit
-        .stdout(predicate::str::contains("[E01]"))
+        .stdout(predicate::str::contains("[fapd-E01]"))
         .stdout(predicate::str::contains("xyz")) // source line appears in snippet
         // ariadne 0.6 uses box-drawing underlines (- or ╭) rather than ASCII ^.
         // We check for the source line box bracket open which ariadne always emits.
@@ -173,26 +173,28 @@ fn lint_human_output_renders_ariadne_snippet_when_span_present() {
         .stdout(predicate::str::contains("<unknown>").not());
 }
 
-/// When a diagnostic does NOT have `source_id` set (F02 layout fatal, which
-/// has no per-byte span), the human renderer falls back to the plain
-/// `file:line:col [F02] fatal: ...` format and must NOT produce a caret line.
+/// When a diagnostic does NOT have `source_id` set (fapd-F02 layout fatal,
+/// which has no per-byte span), the human renderer falls back to the plain
+/// `file:line:col [fapd-F02] fatal: ...` format and must NOT produce a caret
+/// line.
 #[test]
 fn lint_human_output_falls_back_to_plain_when_source_id_absent() {
-    // The F02 "canonical-both-present" fixture: a directory that has BOTH
+    // The fapd-F02 "canonical-both-present" fixture: a directory that has BOTH
     // fapolicyd.rules and rules.d/. The CLI must receive this as a directory
-    // path (not --file), so the layout check fires and emits F02 with no
+    // path (not --file), so the layout check fires and emits fapd-F02 with no
     // source_id. We pass the rules.d/ subdirectory as the --path arg.
-    let rules_d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rulesteward-fapolicyd/tests/corpus/traps/F02/canonical-both-present/rules.d");
+    let rules_d = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../rulesteward-fapolicyd/tests/corpus/traps/fapd-F02/canonical-both-present/rules.d",
+    );
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint"])
         .arg(&rules_d)
         .assert()
-        // F02 is Fatal (non-F01) -> exit 2 per exit_code::compute.
+        // fapd-F02 is Fatal (non-fapd-F01) -> exit 2 per exit_code::compute.
         .code(2)
-        .stdout(predicate::str::contains("[F02]"))
-        .stdout(predicate::str::is_match(r"\[F02\] fatal:").expect("valid regex"))
+        .stdout(predicate::str::contains("[fapd-F02]"))
+        .stdout(predicate::str::is_match(r"\[fapd-F02\] fatal:").expect("valid regex"))
         // Must NOT contain ariadne box-drawing underlines - no span to point at.
         .stdout(predicate::str::contains('\u{2500}').not()); // U+2500 ─
 }
@@ -206,7 +208,7 @@ fn lint_human_output_strips_ansi_when_stdout_is_not_a_tty() {
     // assert_cmd captures stdout via a pipe, so the binary should detect
     // non-TTY and disable ANSI color codes.
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/fapd-E01/unknown-xyz.rules");
     let output = Command::cargo_bin("rulesteward")
         .expect("binary exists")
         .args(["fapolicyd", "lint", "--file"])
@@ -231,7 +233,7 @@ fn lint_human_output_strips_ansi_when_stdout_is_not_a_tty() {
 #[test]
 fn lint_human_output_strips_ansi_when_no_color_set() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/fapd-E01/unknown-xyz.rules");
     let output = Command::cargo_bin("rulesteward")
         .expect("binary exists")
         .args(["fapolicyd", "lint", "--file"])
@@ -251,18 +253,18 @@ fn lint_human_output_strips_ansi_when_no_color_set() {
 #[test]
 fn lint_json_output_unchanged_by_ariadne_renderer() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rulesteward-fapolicyd/tests/corpus/traps/E01/unknown-xyz.rules");
+        .join("../rulesteward-fapolicyd/tests/corpus/traps/fapd-E01/unknown-xyz.rules");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--format", "json", "--file"])
         .arg(&fixture)
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("\"E01\""))
+        .stdout(predicate::str::contains("\"fapd-E01\""))
         .stdout(predicate::str::starts_with("["));
 }
 
-// --- per-code CLI exit-code tests for E02/E03/E04/E05/W07 ---
+// --- per-code CLI exit-code tests for fapd-E02/fapd-E03/fapd-E04/fapd-E05/fapd-W07 ---
 //
 // Each test exercises the whole binary pipeline (clap parse -> commands::
 // fapolicyd::run_lint -> parse_rules_file -> lints::lint -> output::human ->
@@ -274,7 +276,7 @@ fn lint_json_output_unchanged_by_ariadne_renderer() {
 
 #[test]
 fn lint_fires_e02_with_exit_two_and_code_in_stdout() {
-    // `filehash=abc` -> 3 chars, not 64. E02 fires; no other code applies.
+    // `filehash=abc` -> 3 chars, not 64. fapd-E02 fires; no other code applies.
     let f = write_tmp("allow filehash=abc : exe=/foo\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -282,13 +284,13 @@ fn lint_fires_e02_with_exit_two_and_code_in_stdout() {
         .arg(f.path())
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("[E02]"));
+        .stdout(predicate::str::contains("[fapd-E02]"));
 }
 
 #[test]
 fn lint_fires_e03_with_exit_two_and_code_in_stdout() {
-    // `exe=%undef` references an undefined macro. E03 fires; E04 does not
-    // (key is `exe`, not `trust`/`pattern`).
+    // `exe=%undef` references an undefined macro. fapd-E03 fires; fapd-E04
+    // does not (key is `exe`, not `trust`/`pattern`).
     let f = write_tmp("allow uid=0 : exe=%undef\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -296,14 +298,14 @@ fn lint_fires_e03_with_exit_two_and_code_in_stdout() {
         .arg(f.path())
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("[E03]"));
+        .stdout(predicate::str::contains("[fapd-E03]"));
 }
 
 #[test]
 fn lint_fires_e04_with_exit_two_and_code_in_stdout() {
-    // `%mymacro` defined before reference; `trust=%mymacro` fires E04 (macro
-    // in trust=) but NOT E03 (macro IS defined). Single-value all-string
-    // set definition, so E05 stays silent too.
+    // `%mymacro` defined before reference; `trust=%mymacro` fires fapd-E04
+    // (macro in trust=) but NOT fapd-E03 (macro IS defined). Single-value
+    // all-string set definition, so fapd-E05 stays silent too.
     let f = write_tmp("%mymacro=foo\nallow uid=0 : trust=%mymacro\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -311,13 +313,13 @@ fn lint_fires_e04_with_exit_two_and_code_in_stdout() {
         .arg(f.path())
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("[E04]"));
+        .stdout(predicate::str::contains("[fapd-E04]"));
 }
 
 #[test]
 fn lint_fires_e05_with_exit_two_and_code_in_stdout() {
     // `%mymacro=1,2,foo` mixes numeric (`1`, `2`) and string (`foo`) values.
-    // E05 fires; no rule, so nothing else applies.
+    // fapd-E05 fires; no rule, so nothing else applies.
     let f = write_tmp("%mymacro=1,2,foo\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -325,13 +327,14 @@ fn lint_fires_e05_with_exit_two_and_code_in_stdout() {
         .arg(f.path())
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("[E05]"));
+        .stdout(predicate::str::contains("[fapd-E05]"));
 }
 
 #[test]
 fn lint_fires_w07_with_exit_one_and_code_in_stdout() {
     // `sha256hash=<64-hex>` is the deprecated spelling but the value is a
-    // valid 64-hex digest, so E02 stays silent. Only W07 fires -> exit 1.
+    // valid 64-hex digest, so fapd-E02 stays silent. Only fapd-W07 fires
+    // -> exit 1.
     let f = write_tmp(
         "allow uid=0 : sha256hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
     );
@@ -341,5 +344,5 @@ fn lint_fires_w07_with_exit_one_and_code_in_stdout() {
         .arg(f.path())
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("[W07]"));
+        .stdout(predicate::str::contains("[fapd-W07]"));
 }

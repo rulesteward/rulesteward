@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-F03] sev=Fatal line=7 col=1 span=130..181 :: file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one

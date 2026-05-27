@@ -7,7 +7,7 @@
 //!
 //! Plus [`set_definition`] for `%name=val1,val2`. Every named production
 //! carries a `.labelled(...)` so chumsky's expected-token list surfaces
-//! operator-facing names in F01 diagnostics rather than raw character
+//! operator-facing names in fapd-F01 diagnostics rather than raw character
 //! classes.
 
 use chumsky::extra;

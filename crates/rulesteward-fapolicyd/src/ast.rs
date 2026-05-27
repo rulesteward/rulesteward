@@ -41,7 +41,7 @@ pub enum Attr {
 
 /// Which front-end production produced a given `Rule`.
 ///
-/// F03 (mixed-syntax detection) walks `Vec<Entry>` and emits a fatal
+/// fapd-F03 (mixed-syntax detection) walks `Vec<Entry>` and emits a fatal
 /// diagnostic when both flavors appear in one file. Future grammar variants
 /// add another variant here without disturbing `Rule` or the lint walker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -9,7 +9,7 @@
 //! on the functions exported here.
 //!
 //! Used by:
-//! * `lints::E01` - to flag unknown attribute names (via [`is_known`]).
+//! * `lints::fapd-E01` - to flag unknown attribute names (via [`is_known`]).
 //!
 //! Source: R2-audit-grammar.md, derived from
 //! `src/library/{subject,object}-attr.c` in upstream fapolicyd.
@@ -19,7 +19,7 @@
 //! truth table inline in `parser::grammar::legacy_classify`. Session 3a
 //! intentionally kept that knowledge parser-internal because no public
 //! consumer exists yet; a future session may expose a public flavor-aware
-//! API when E02 / E03 lint codes give it a concrete consumer.
+//! API when fapd-E02 / fapd-E03 lint codes give it a concrete consumer.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrSide {

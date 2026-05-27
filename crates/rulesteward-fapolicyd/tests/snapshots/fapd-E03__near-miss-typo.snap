@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E03] sev=Error line=2 col=1 span=17..43 :: undefined macro reference `%mymarco`

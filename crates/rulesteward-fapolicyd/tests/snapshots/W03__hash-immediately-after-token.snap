@@ -1,7 +1,0 @@
----
-source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
-expression: rendered
----
-parse=ok
-diagnostics=1
-[W03] sev=Warning line=1 col=28 span=27..36 :: inline `# comment` after a rule line - fapolicyd silently drops this rule

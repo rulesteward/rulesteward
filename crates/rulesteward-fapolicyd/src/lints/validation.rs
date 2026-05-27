@@ -1,4 +1,4 @@
-//! Attribute-value validation lint passes. Currently E02 (invalid
+//! Attribute-value validation lint passes. Currently fapd-E02 (invalid
 //! attribute value). Future codes that validate the SHAPE of an
 //! attribute value (vs the key's existence or the value's macro-ref
 //! status) land here.
@@ -16,8 +16,9 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 }
 
 /// Validation category for an attribute key whose value shape we care
-/// about for E02. Anything not represented here is out of E02's scope
-/// (covered by E01 if the key is unknown, or simply not value-checked).
+/// about for fapd-E02. Anything not represented here is out of fapd-E02's
+/// scope (covered by fapd-E01 if the key is unknown, or simply not
+/// value-checked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum E02Category {
     /// `uid`, `gid`, `auid`, `pid`, `ppid`, `sessionid` - accept a u32
@@ -27,9 +28,9 @@ enum E02Category {
     Hex64,
 }
 
-/// Look up `key` in the E02 validation table. Returns `None` if the key
-/// is out of scope for E02 (either unknown - E01 territory - or known
-/// but with no value-shape we lint).
+/// Look up `key` in the fapd-E02 validation table. Returns `None` if the key
+/// is out of scope for fapd-E02 (either unknown - fapd-E01 territory - or
+/// known but with no value-shape we lint).
 fn classify_e02_key(key: &str) -> Option<E02Category> {
     match key {
         "uid" | "gid" | "auid" | "pid" | "ppid" | "sessionid" => Some(E02Category::NumericId),
@@ -49,9 +50,9 @@ fn is_valid_numeric_id_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// E02 - invalid attribute value. Per-attribute scan; emits one diagnostic
-/// per offending `Attr::Kv`. `SetRef` values (macros) are skipped - they are
-/// checked by E03/E04/E05 in later milestones.
+/// fapd-E02 - invalid attribute value. Per-attribute scan; emits one
+/// diagnostic per offending `Attr::Kv`. `SetRef` values (macros) are skipped -
+/// they are checked by fapd-E03/fapd-E04/fapd-E05 in later milestones.
 ///
 /// Span is the enclosing rule's span (per-attribute spans deferred per
 /// spec §3f).
@@ -64,7 +65,7 @@ fn e02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 continue;
             };
             if let AttrValue::SetRef(_) = value {
-                // Macro refs are E03/E04/E05's concern, not E02's.
+                // Macro refs are fapd-E03/fapd-E04/fapd-E05's concern, not fapd-E02's.
                 continue;
             }
             let Some(category) = classify_e02_key(key) else {
@@ -76,7 +77,7 @@ fn e02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             diags.push(
                 Diagnostic::new(
                     Severity::Error,
-                    "E02",
+                    "fapd-E02",
                     r.span.clone(),
                     format!("invalid value for `{key}=`: {detail}"),
                     file,
@@ -164,7 +165,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // E02 helper-level unit tests. Snapshot tests cover the integrated
+    // fapd-E02 helper-level unit tests. Snapshot tests cover the integrated
     // behavior; these tests pin the individual predicates so a mutant
     // in (say) the Hex64 length check dies even without a corpus run.
     // -----------------------------------------------------------------
@@ -188,11 +189,11 @@ mod tests {
 
     #[test]
     fn e02_classify_out_of_scope_returns_none() {
-        // `exe` and `path` are known attrs but E02 doesn't validate their
+        // `exe` and `path` are known attrs but fapd-E02 doesn't validate their
         // values (they accept arbitrary path strings).
         assert_eq!(classify_e02_key("exe"), None);
         assert_eq!(classify_e02_key("path"), None);
-        // Unknown attrs are also None (E01's job to flag).
+        // Unknown attrs are also None (fapd-E01's job to flag).
         assert_eq!(classify_e02_key("xyz"), None);
     }
 
@@ -297,7 +298,7 @@ mod tests {
 
     #[test]
     fn e02_walker_emits_one_diag_per_offending_attribute() {
-        // Two offenders in one rule -> two E02 diagnostics, both with
+        // Two offenders in one rule -> two fapd-E02 diagnostics, both with
         // the same span (rule-level).
         let entries = vec![modern_rule(
             7,
@@ -314,7 +315,7 @@ mod tests {
         )];
         let diags = e02(&entries, &p());
         assert_eq!(diags.len(), 2, "expected one diagnostic per offender");
-        assert!(diags.iter().all(|d| d.code.as_ref() == "E02"));
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E02"));
         assert!(diags.iter().all(|d| d.severity == Severity::Error));
         assert!(
             diags
@@ -325,7 +326,7 @@ mod tests {
 
     #[test]
     fn e02_walker_skips_set_ref_values() {
-        // Macro reference - never an E02 concern regardless of key.
+        // Macro reference - never an fapd-E02 concern regardless of key.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -342,7 +343,7 @@ mod tests {
         let diags = e02(&entries, &p());
         assert!(
             diags.is_empty(),
-            "SetRef values are E03/E04/E05's concern, not E02: {diags:?}",
+            "SetRef values are fapd-E03/fapd-E04/fapd-E05's concern, not fapd-E02: {diags:?}",
         );
     }
 }
