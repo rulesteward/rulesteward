@@ -4,7 +4,7 @@
 //! available in `sources`, renders a rich `ariadne::Report` snippet with the
 //! source line and a caret underline.
 //!
-//! When `source_id` is absent (e.g. F02 layout fatals, F01 parse errors), the
+//! When `source_id` is absent (e.g. fapd-F02 layout fatals, fapd-F01 parse errors), the
 //! renderer falls back to a plain `file:line:col [CODE] severity: message`
 //! line - the same format used before Session 3a.
 //!
@@ -159,7 +159,7 @@ mod tests {
     fn human_renders_severity_letter_code_and_message_plain() {
         let d = Diagnostic::new(
             Severity::Warning,
-            "W02",
+            "fapd-W02",
             0..0,
             "broad allow on execute (subject=all, object=all)",
             "/tmp/sample.rules",
@@ -167,7 +167,7 @@ mod tests {
             1,
         );
         let out = render(&[d], &empty_sources());
-        assert!(out.contains("[W02]"), "expected `[W02]` in {out}");
+        assert!(out.contains("[fapd-W02]"), "expected `[fapd-W02]` in {out}");
         assert!(
             out.contains("broad allow on execute"),
             "expected message in {out}"
@@ -195,7 +195,7 @@ mod tests {
         sources.insert("/tmp/test.rules".to_string(), source.to_string());
         let d = Diagnostic::new(
             Severity::Error,
-            "E01",
+            "fapd-E01",
             6..9, // "xyz" within "allow xyz=0 : all"
             "unknown attribute `xyz`",
             "/tmp/test.rules",
@@ -220,7 +220,7 @@ mod tests {
         // No .with_source_id() call - source_id stays None.
         let d = Diagnostic::new(
             Severity::Fatal,
-            "F02",
+            "fapd-F02",
             0..0,
             "both fapolicyd.rules and rules.d/ present",
             "/tmp/test.rules",
@@ -228,7 +228,10 @@ mod tests {
             0,
         );
         let out = render(&[d], &sources);
-        assert!(out.contains("[F02]"), "plain [F02] must appear in {out:?}");
+        assert!(
+            out.contains("[fapd-F02]"),
+            "plain [fapd-F02] must appear in {out:?}"
+        );
         assert!(!out.contains('^'), "no caret for fallback plain in {out:?}");
     }
 

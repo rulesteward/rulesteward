@@ -1,12 +1,12 @@
 //! Post-parse lint passes.
 //!
 //! Code split:
-//! * `walker` - AST-driven passes (F03, E01, W02).
-//! * `validation` - AST-driven attribute-value validation (E02).
-//! * `macros` - AST-driven macro-system passes (E03, E04, E05).
-//! * `deprecation` - AST-driven deprecated-attribute-name passes (W07).
-//! * `source_scan` - raw-source re-scan for W03.
-//! * `layout` - filesystem-driven F02 check.
+//! * `walker` - AST-driven passes (fapd-F03, fapd-E01, fapd-W02).
+//! * `validation` - AST-driven attribute-value validation (fapd-E02).
+//! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05).
+//! * `deprecation` - AST-driven deprecated-attribute-name passes (fapd-W07).
+//! * `source_scan` - raw-source re-scan for fapd-W03.
+//! * `layout` - filesystem-driven fapd-F02 check.
 
 mod deprecation;
 mod layout;
@@ -26,7 +26,7 @@ use crate::parser;
 
 /// Run every per-file lint pass and return the merged diagnostic list.
 ///
-/// `source` is the raw rules-file text, needed for W03 (inline trailing
+/// `source` is the raw rules-file text, needed for fapd-W03 (inline trailing
 /// `# comment`) re-scan. `file` is the path used in every emitted
 /// `Diagnostic::file`.
 #[must_use]
@@ -59,8 +59,8 @@ pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::
     // Also set `source_id` to the same path string the CLI uses as the
     // key in its `BTreeMap<String, String>` source cache (`Path::display`
     // formatting). With both `source_id` set and a real byte-range span
-    // from the chumsky `Rich::span()`, F01 diagnostics now render with an
-    // ariadne snippet just like E01 / F03 / W02 / W03.
+    // from the chumsky `Rich::span()`, fapd-F01 diagnostics now render with
+    // an ariadne snippet just like fapd-E01 / fapd-F03 / fapd-W02 / fapd-W03.
     let source_id = path.display().to_string();
     for d in &mut parse_diags {
         d.file = path.to_path_buf();
@@ -93,7 +93,7 @@ mod tests {
         //   source_scan::w03 -> trailing `# bad` (inline comment past tokens)
         //
         // The parser strips the inline `# bad` BEFORE chumsky sees the line,
-        // so the rule itself parses cleanly; W03 is then re-detected from
+        // so the rule itself parses cleanly; fapd-W03 is then re-detected from
         // the raw `source` string by the source_scan walk.
         let source =
             "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\n";
@@ -104,23 +104,23 @@ mod tests {
         let diags = lint(&entries, source, &path);
         let codes: HashSet<&str> = diags.iter().map(|d| d.code.as_ref()).collect();
         assert!(
-            codes.contains("E01"),
+            codes.contains("fapd-E01"),
             "expected walker::e01 to fire (bogusattr= on subject side), got codes={codes:?} diags={diags:?}",
         );
         assert!(
-            codes.contains("E02"),
+            codes.contains("fapd-E02"),
             "expected validation::e02 to fire (sha256hash=abc -> 3 chars not 64), got codes={codes:?} diags={diags:?}",
         );
         assert!(
-            codes.contains("E03"),
+            codes.contains("fapd-E03"),
             "expected macros::e03 to fire (%undefinedmacro reference), got codes={codes:?} diags={diags:?}",
         );
         assert!(
-            codes.contains("W07"),
+            codes.contains("fapd-W07"),
             "expected deprecation::w07 to fire (sha256hash= deprecated), got codes={codes:?} diags={diags:?}",
         );
         assert!(
-            codes.contains("W03"),
+            codes.contains("fapd-W03"),
             "expected source_scan::w03 to fire (inline `# bad` comment), got codes={codes:?} diags={diags:?}",
         );
     }
@@ -147,27 +147,27 @@ mod tests {
             "expected no entries on parse failure, got {entries:?}"
         );
         assert!(
-            diags.iter().any(|d| d.code.as_ref() == "F01"),
-            "garbage line must produce F01, got {diags:?}"
+            diags.iter().any(|d| d.code.as_ref() == "fapd-F01"),
+            "garbage line must produce fapd-F01, got {diags:?}"
         );
         let f01 = diags
             .iter()
-            .find(|d| d.code.as_ref() == "F01")
-            .expect("F01 should be present");
+            .find(|d| d.code.as_ref() == "fapd-F01")
+            .expect("fapd-F01 should be present");
         assert_eq!(
             f01.file,
             f.path(),
-            "F01 diagnostic file should match input path, got {:?}",
+            "fapd-F01 diagnostic file should match input path, got {:?}",
             f01.file
         );
         // The lint_file post-emission rewrite must also set source_id so the
         // ariadne renderer can find the source text in the CLI's source map.
-        // Without this, F01 silently falls back to plain rendering even
+        // Without this, fapd-F01 silently falls back to plain rendering even
         // though its span is a real byte range.
         assert_eq!(
             f01.source_id.as_deref(),
             Some(f.path().display().to_string().as_str()),
-            "F01 source_id must match the file path string used by the CLI source map",
+            "fapd-F01 source_id must match the file path string used by the CLI source map",
         );
     }
 

@@ -48,7 +48,7 @@ mod tests {
     fn fake_diag() -> Diagnostic {
         Diagnostic::new(
             Severity::Warning,
-            "W02",
+            "fapd-W02",
             0..0,
             "broad allow",
             "/tmp/x.rules",

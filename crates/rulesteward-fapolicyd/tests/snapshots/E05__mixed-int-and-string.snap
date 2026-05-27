@@ -1,7 +1,0 @@
----
-source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
-expression: rendered
----
-parse=ok
-diagnostics=1
-[E05] sev=Error line=1 col=1 span=0..18 :: macro `%mymacro` mixes numeric and string values

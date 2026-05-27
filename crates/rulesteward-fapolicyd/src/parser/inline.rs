@@ -1,14 +1,14 @@
 //! Inline-comment detection. Used both by the parser (to strip the inline
 //! `# ...` tail before chumsky runs) and by [`crate::lints`] (to re-scan
-//! the source for W03 emission). Keeping the scanner in one place means
+//! the source for fapd-W03 emission). Keeping the scanner in one place means
 //! parser-strip and lint-emit can never drift.
 
 /// Byte index of an inline `#` (one that follows at least one non-whitespace
 /// token earlier on the line), or `None` if no inline `#` is present.
 ///
 /// A leading-whitespace `#` is NOT inline - there's no preceding
-/// non-whitespace token. Such a line is rejected by the parser as F01, not
-/// flagged by W03.
+/// non-whitespace token. Such a line is rejected by the parser as fapd-F01,
+/// not flagged by fapd-W03.
 #[must_use]
 pub fn inline_comment_index(line: &str) -> Option<usize> {
     let mut seen_token = false;

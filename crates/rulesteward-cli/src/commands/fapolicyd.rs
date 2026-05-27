@@ -85,7 +85,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
 // Returns `(files_to_lint, optional_layout_diagnostic)`.
 //
 // * `--file <FILE>` → lint exactly that file. No layout check.
-// * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run F02 against the parent of that dir.
+// * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run fapd-F02 against the parent of that dir.
 // * Default: `/etc/fapolicyd/rules.d/`.
 fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diagnostic>)> {
     if let Some(file) = &args.file {
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn resolve_targets_directory_runs_check_layout_against_parent() {
-        // Mirror the F02 trap corpus: parent has BOTH rules.d/ and fapolicyd.rules.
+        // Mirror the fapd-F02 trap corpus: parent has BOTH rules.d/ and fapolicyd.rules.
         let parent = tempfile::tempdir().expect("tempdir");
         let rules_d = parent.path().join("rules.d");
         std::fs::create_dir(&rules_d).expect("mkdir");
@@ -210,7 +210,7 @@ mod tests {
         let args = lint_args(Some(rules_d), None);
         let (_files, layout_diag) = resolve_targets(&args).expect("ok");
         let diag = layout_diag
-            .expect("F02 must fire when both rules.d/ and fapolicyd.rules exist at parent");
-        assert_eq!(diag.code.as_ref(), "F02");
+            .expect("fapd-F02 must fire when both rules.d/ and fapolicyd.rules exist at parent");
+        assert_eq!(diag.code.as_ref(), "fapd-F02");
     }
 }

@@ -14,7 +14,7 @@ pub const EXIT_NO_OP: i32 = 9;
 ///
 /// Order matters:
 /// 1. `tool_err == true` → [`EXIT_TOOL_FAILURE`] (3).
-/// 2. Any `F01` → [`EXIT_RULE_PARSE_ERROR`] (5).
+/// 2. Any `fapd-F01` → [`EXIT_RULE_PARSE_ERROR`] (5).
 /// 3. Any `Fatal` or `Error` → [`EXIT_ERRORS`] (2).
 /// 4. Any `Warning` → [`EXIT_WARNINGS`] (1).
 /// 5. Otherwise → [`EXIT_CLEAN`] (0).
@@ -23,7 +23,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     if tool_err {
         return EXIT_TOOL_FAILURE;
     }
-    if diags.iter().any(|d| d.code.as_ref() == "F01") {
+    if diags.iter().any(|d| d.code.as_ref() == "fapd-F01") {
         return EXIT_RULE_PARSE_ERROR;
     }
     if diags
@@ -54,30 +54,39 @@ mod tests {
     #[test]
     fn warnings_only_returns_one() {
         assert_eq!(
-            compute(&[diag(Severity::Warning, "W02")], false),
+            compute(&[diag(Severity::Warning, "fapd-W02")], false),
             EXIT_WARNINGS
         );
     }
 
     #[test]
     fn error_returns_two() {
-        assert_eq!(compute(&[diag(Severity::Error, "E01")], false), EXIT_ERRORS);
+        assert_eq!(
+            compute(&[diag(Severity::Error, "fapd-E01")], false),
+            EXIT_ERRORS
+        );
     }
 
     #[test]
     fn fatal_non_f01_returns_two() {
-        assert_eq!(compute(&[diag(Severity::Fatal, "F02")], false), EXIT_ERRORS);
+        assert_eq!(
+            compute(&[diag(Severity::Fatal, "fapd-F02")], false),
+            EXIT_ERRORS
+        );
     }
 
     #[test]
     fn f01_returns_five_even_with_other_errors() {
-        let diags = [diag(Severity::Fatal, "F02"), diag(Severity::Fatal, "F01")];
+        let diags = [
+            diag(Severity::Fatal, "fapd-F02"),
+            diag(Severity::Fatal, "fapd-F01"),
+        ];
         assert_eq!(compute(&diags, false), EXIT_RULE_PARSE_ERROR);
     }
 
     #[test]
     fn tool_err_overrides_everything() {
-        let diags = [diag(Severity::Fatal, "F01")];
+        let diags = [diag(Severity::Fatal, "fapd-F01")];
         assert_eq!(compute(&diags, true), EXIT_TOOL_FAILURE);
     }
 }

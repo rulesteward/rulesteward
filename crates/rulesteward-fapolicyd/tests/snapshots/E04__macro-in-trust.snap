@@ -1,7 +1,0 @@
----
-source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
-expression: rendered
----
-parse=ok
-diagnostics=1
-[E04] sev=Error line=2 col=1 span=13..41 :: macro reference `%mymacro` not supported in `trust=` (fapolicyd does not substitute macros here)

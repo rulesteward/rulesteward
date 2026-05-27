@@ -1,14 +1,14 @@
 //! AST-driven lint passes - walk `&[Entry]` once and emit diagnostics for
-//! F03 (mixed-syntax), E01 (unknown attribute), and W02 (broad allow on
-//! execute).
+//! fapd-F03 (mixed-syntax), fapd-E01 (unknown attribute), and fapd-W02
+//! (broad allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
 //! `Rule.span` (set by the parser in session 3a). `source_id` is set to
 //! `file.display().to_string()` on every rule-level diagnostic so ariadne
 //! can key its Source cache.
 //!
-//! Sibling lint modules cover related families: `validation` (E02),
-//! `macros` (E03/E04/E05), `deprecation` (W07).
+//! Sibling lint modules cover related families: `validation` (fapd-E02),
+//! `macros` (fapd-E03/fapd-E04/fapd-E05), `deprecation` (fapd-W07).
 
 use std::path::Path;
 
@@ -17,7 +17,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
-/// Run F03, E01, and W02 over `entries` and return the merged diagnostics.
+/// Run fapd-F03, fapd-E01, and fapd-W02 over `entries` and return the merged
+/// diagnostics.
 pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     if let Some(d) = f03(entries, file) {
@@ -28,7 +29,7 @@ pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out
 }
 
-/// F03 - both `SyntaxFlavor::Modern` and `SyntaxFlavor::Legacy` present in
+/// fapd-F03 - both `SyntaxFlavor::Modern` and `SyntaxFlavor::Legacy` present in
 /// the same file. Reported on the line where the SECOND flavor first
 /// appears (whichever it is).
 fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
@@ -54,7 +55,7 @@ fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
             Some(
                 Diagnostic::new(
                     Severity::Fatal,
-                    "F03",
+                    "fapd-F03",
                     trigger.span.clone(),
                     "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
                     file,
@@ -68,7 +69,7 @@ fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
     }
 }
 
-/// E01 - attribute key not in `attrs::is_known`. Emitted once per offending
+/// fapd-E01 - attribute key not in `attrs::is_known`. Emitted once per offending
 /// attribute (so a rule with two unknown keys yields two diagnostics).
 fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -81,7 +82,7 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     diags.push(
                         Diagnostic::new(
                             Severity::Error,
-                            "E01",
+                            "fapd-E01",
                             r.span.clone(),
                             format!("unknown attribute `{key}`"),
                             file,
@@ -97,7 +98,7 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// W02 - broad allow on execute. Fires when the decision is one of the
+/// fapd-W02 - broad allow on execute. Fires when the decision is one of the
 /// `allow_*` family AND `perm` is `Execute` or `Any` AND both subject and
 /// object are exactly `[Attr::All]`.
 fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
@@ -116,7 +117,7 @@ fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             diags.push(
                 Diagnostic::new(
                     Severity::Warning,
-                    "W02",
+                    "fapd-W02",
                     r.span.clone(),
                     "broad allow on execute (subject=all, object=all) - every binary on the system can run",
                     file,
@@ -206,8 +207,8 @@ mod tests {
                 }],
             ),
         ];
-        let d = f03(&entries, &p()).expect("F03 fires");
-        assert_eq!(d.code.as_ref(), "F03");
+        let d = f03(&entries, &p()).expect("fapd-F03 fires");
+        assert_eq!(d.code.as_ref(), "fapd-F03");
         assert_eq!(d.line, 3);
         assert_eq!(d.source_id, Some("/tmp/test.rules".to_string()));
     }
@@ -229,7 +230,7 @@ mod tests {
         )];
         let diags = e01(&entries, &p());
         assert_eq!(diags.len(), 2);
-        assert!(diags.iter().all(|d| d.code.as_ref() == "E01"));
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E01"));
         assert!(
             diags
                 .iter()
@@ -248,7 +249,7 @@ mod tests {
         )];
         let diags = w02(&entries, &p());
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "W02");
+        assert_eq!(diags[0].code.as_ref(), "fapd-W02");
         assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
     }
 

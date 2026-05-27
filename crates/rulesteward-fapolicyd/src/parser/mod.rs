@@ -6,10 +6,10 @@
 //! whole file - first-failure-only is explicitly avoided (see the
 //! monotonicity proptest in `tests/proptest_test.rs`).
 //!
-//! W03 (inline trailing `# comment`) is emitted by [`crate::lints::lint`]
+//! fapd-W03 (inline trailing `# comment`) is emitted by [`crate::lints::lint`]
 //! via source re-scan, not by the parser. The parser strips inline `#` text
 //! before handing the line to chumsky so the grammar stays clean. A
-//! leading-whitespace `#` is rejected as F01 - fapolicyd itself only
+//! leading-whitespace `#` is rejected as fapd-F01 - fapolicyd itself only
 //! accepts `#` at column 0.
 
 mod error;
@@ -26,11 +26,11 @@ const UTF8_BOM: &str = "\u{feff}";
 
 /// Parse a fapolicyd rules file source into a sequence of entries.
 ///
-/// `Err(diagnostics)` carries one or more `F01` (Fatal) findings when any
+/// `Err(diagnostics)` carries one or more `fapd-F01` (Fatal) findings when any
 /// line fails. The parser collects diagnostics from every failing line.
 ///
-/// **Contract:** the parser emits ONLY `Severity::Fatal` (`F01`) diagnostics.
-/// Warning-tier findings such as `W03` (inline trailing `#`) live in
+/// **Contract:** the parser emits ONLY `Severity::Fatal` (`fapd-F01`) diagnostics.
+/// Warning-tier findings such as `fapd-W03` (inline trailing `#`) live in
 /// [`crate::lints::lint`] and are produced from a source re-scan. The Ok
 /// branch therefore intentionally carries no diagnostics. If a future change
 /// adds a non-Fatal pass to the parser, the return type must be widened to
@@ -101,7 +101,7 @@ fn parse_line(
     }
 
     // Column-0 comment ONLY. Leading-whitespace `#` falls through to the
-    // chumsky path below where every production fails - yielding an F01.
+    // chumsky path below where every production fails - yielding an fapd-F01.
     if let Some(text) = line.strip_prefix('#') {
         return (
             vec![Entry::Comment {
@@ -158,7 +158,7 @@ where
                 Vec::new(),
                 vec![Diagnostic::new(
                     Severity::Fatal,
-                    "F01",
+                    "fapd-F01",
                     0..body.len(),
                     "parser produced neither an entry nor an error",
                     "<source>",
@@ -264,8 +264,8 @@ mod tests {
     fn leading_whitespace_comment_is_f01() {
         let diags = parse_rules_file("   # leading ws\n").expect_err("must fail");
         assert!(
-            diags.iter().any(|d| d.code.as_ref() == "F01"),
-            "expected F01 for leading-ws comment, got {diags:?}"
+            diags.iter().any(|d| d.code.as_ref() == "fapd-F01"),
+            "expected fapd-F01 for leading-ws comment, got {diags:?}"
         );
     }
 
@@ -295,15 +295,19 @@ mod tests {
     fn accumulates_diagnostics_across_multiple_failing_lines() {
         let diags = parse_rules_file("!!!a\n!!!b\n!!!c\n").expect_err("three errors");
         assert!(
-            diags.iter().filter(|d| d.code.as_ref() == "F01").count() >= 3,
-            "expected ≥3 F01s, got {diags:?}"
+            diags
+                .iter()
+                .filter(|d| d.code.as_ref() == "fapd-F01")
+                .count()
+                >= 3,
+            "expected ≥3 fapd-F01s, got {diags:?}"
         );
     }
 
     #[test]
     fn inline_comment_is_stripped_before_chumsky() {
         // The trailing `# comment` is stripped so the line parses cleanly.
-        // W03 emission for this line is the lint walker's job - not the
+        // fapd-W03 emission for this line is the lint walker's job - not the
         // parser's.
         let entries =
             parse_rules_file("allow uid=0 : all # trailing\n").expect("parses after strip");

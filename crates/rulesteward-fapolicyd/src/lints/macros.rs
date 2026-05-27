@@ -1,5 +1,5 @@
-//! Macro-related lint passes. Currently E03 (undefined macro
-//! reference), E04 (macro reference in `trust=`/`pattern=`), E05
+//! Macro-related lint passes. Currently fapd-E03 (undefined macro
+//! reference), fapd-E04 (macro reference in `trust=`/`pattern=`), fapd-E05
 //! (macro values of mixed type). Future macro-system checks land
 //! here.
 
@@ -20,12 +20,12 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out
 }
 
-/// E03 - macro reference to an undefined `%setname`. Single-pass walk over
-/// `entries` in source order, maintaining a `HashSet<String>` of macro names
-/// seen so far. For each `Attr::Kv` with `AttrValue::SetRef(name)`, emit E03
-/// if `name` is not yet in the set. This naturally enforces "definition above
-/// reference" - a forward reference fires E03 because the definition has not
-/// been inserted yet when the single-pass walk checks the reference.
+/// fapd-E03 - macro reference to an undefined `%setname`. Single-pass walk
+/// over `entries` in source order, maintaining a `HashSet<String>` of macro
+/// names seen so far. For each `Attr::Kv` with `AttrValue::SetRef(name)`, emit
+/// fapd-E03 if `name` is not yet in the set. This naturally enforces "definition
+/// above reference" - a forward reference fires fapd-E03 because the definition
+/// has not been inserted yet when the single-pass walk checks the reference.
 ///
 /// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
 /// filters them out); only `AttrValue::SetRef(_)` participates.
@@ -53,7 +53,7 @@ fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                         diags.push(
                             Diagnostic::new(
                                 Severity::Error,
-                                "E03",
+                                "fapd-E03",
                                 r.span.clone(),
                                 format!("undefined macro reference `%{name}`"),
                                 file,
@@ -71,13 +71,14 @@ fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// E04 - macro reference (`%setname`) in a `trust=` or `pattern=` attribute
-/// value. fapolicyd does NOT substitute macros for these two attributes
-/// regardless of whether the macro is defined, so any such reference is a
-/// silent no-op at runtime. Independent of E03: a rule like
-/// `trust=%undefined` fires BOTH E03 (undefined macro) and E04 (macro in
-/// trust=) - the membership check in E03 and the key check in E04 operate
-/// on the same `Attr::Kv` without interfering with each other.
+/// fapd-E04 - macro reference (`%setname`) in a `trust=` or `pattern=`
+/// attribute value. fapolicyd does NOT substitute macros for these two
+/// attributes regardless of whether the macro is defined, so any such
+/// reference is a silent no-op at runtime. Independent of fapd-E03: a rule
+/// like `trust=%undefined` fires BOTH fapd-E03 (undefined macro) and
+/// fapd-E04 (macro in trust=) - the membership check in fapd-E03 and the
+/// key check in fapd-E04 operate on the same `Attr::Kv` without interfering
+/// with each other.
 ///
 /// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
 /// filters them out); only `AttrValue::SetRef(_)` participates.
@@ -100,7 +101,7 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 diags.push(
                     Diagnostic::new(
                         Severity::Error,
-                        "E04",
+                        "fapd-E04",
                         r.span.clone(),
                         format!(
                             "macro reference `%{name}` not supported in `{key}=` (fapolicyd does not substitute macros here)"
@@ -117,13 +118,13 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// E05 - macro values of mixed type. For each `Entry::SetDefinition`,
+/// fapd-E05 - macro values of mixed type. For each `Entry::SetDefinition`,
 /// classify each value as numeric (parses as `i64`) or string (everything
-/// else). Emit one E05 diagnostic per offending set definition whose values
-/// contain BOTH kinds. Single-value sets are trivially homogeneous; all-
-/// numeric and all-string sets are silent. Independent of E03/E04: the set
-/// definition pass runs over `Entry::SetDefinition` only, while E03/E04
-/// inspect `Entry::Rule` attrs.
+/// else). Emit one fapd-E05 diagnostic per offending set definition whose
+/// values contain BOTH kinds. Single-value sets are trivially homogeneous;
+/// all-numeric and all-string sets are silent. Independent of fapd-E03/
+/// fapd-E04: the set definition pass runs over `Entry::SetDefinition` only,
+/// while fapd-E03/fapd-E04 inspect `Entry::Rule` attrs.
 ///
 /// Numeric classification uses `str::parse::<i64>()`, which accepts signed
 /// integers (`-5`), unsigned (`42`), and leading-zero ints (`01` -> 1).
@@ -157,7 +158,7 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             diags.push(
                 Diagnostic::new(
                     Severity::Error,
-                    "E05",
+                    "fapd-E05",
                     span.clone(),
                     format!("macro `%{name}` mixes numeric and string values"),
                     file,
@@ -200,7 +201,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // E03 helper-level unit tests. Pins the single-pass walker so each
+    // fapd-E03 helper-level unit tests. Pins the single-pass walker so each
     // branch (defined-before, defined-after, Str-with-%, Int, multiple
     // undefined refs in one rule) is exercised independently of the
     // snapshot suite. A mutant that swaps `!defined.contains(name)` for
@@ -219,7 +220,7 @@ mod tests {
 
     #[test]
     fn e03_emits_when_ref_undefined() {
-        // No definitions; a single SetRef on the subject side fires E03.
+        // No definitions; a single SetRef on the subject side fires fapd-E03.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -232,7 +233,7 @@ mod tests {
         )];
         let diags = e03(&entries, &p());
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "E03");
+        assert_eq!(diags[0].code.as_ref(), "fapd-E03");
         assert_eq!(diags[0].severity, Severity::Error);
         assert!(
             diags[0].message.contains("nope"),
@@ -261,7 +262,7 @@ mod tests {
         let diags = e03(&entries, &p());
         assert!(
             diags.is_empty(),
-            "definition above reference must silence E03: {diags:?}",
+            "definition above reference must silence fapd-E03: {diags:?}",
         );
     }
 
@@ -269,7 +270,7 @@ mod tests {
     fn e03_fires_on_forward_reference() {
         // Reference on entry index 0, definition on entry index 1.
         // The single-pass walk has NOT yet seen the definition when it
-        // checks the reference, so E03 fires. Pins the forward-ref
+        // checks the reference, so fapd-E03 fires. Pins the forward-ref
         // decision (spec §4 Task 2).
         let entries = vec![
             modern_rule(
@@ -288,15 +289,15 @@ mod tests {
         assert_eq!(
             diags.len(),
             1,
-            "forward reference must fire E03 (definition below reference): {diags:?}",
+            "forward reference must fire fapd-E03 (definition below reference): {diags:?}",
         );
-        assert_eq!(diags[0].code.as_ref(), "E03");
+        assert_eq!(diags[0].code.as_ref(), "fapd-E03");
     }
 
     #[test]
     fn e03_skips_str_value_with_percent() {
         // The parser produces `AttrValue::Str` for `path=/var/%foo/x`
-        // because the leading char is not `%`. E03 must skip Str values
+        // because the leading char is not `%`. fapd-E03 must skip Str values
         // even if they contain a literal `%`.
         let entries = vec![modern_rule(
             1,
@@ -314,13 +315,13 @@ mod tests {
         let diags = e03(&entries, &p());
         assert!(
             diags.is_empty(),
-            "Str values are never E03's concern, even if they contain `%`: {diags:?}",
+            "Str values are never fapd-E03's concern, even if they contain `%`: {diags:?}",
         );
     }
 
     #[test]
     fn e03_skips_int_value() {
-        // `uid=0` is `AttrValue::Int(0)`; E03 only checks SetRef.
+        // `uid=0` is `AttrValue::Int(0)`; fapd-E03 only checks SetRef.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -334,7 +335,7 @@ mod tests {
         let diags = e03(&entries, &p());
         assert!(
             diags.is_empty(),
-            "Int values are never E03's concern: {diags:?}",
+            "Int values are never fapd-E03's concern: {diags:?}",
         );
     }
 
@@ -358,9 +359,9 @@ mod tests {
         assert_eq!(
             diags.len(),
             2,
-            "expected one E03 per undefined ref in the rule: {diags:?}",
+            "expected one fapd-E03 per undefined ref in the rule: {diags:?}",
         );
-        assert!(diags.iter().all(|d| d.code.as_ref() == "E03"));
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E03"));
         assert!(
             diags
                 .iter()
@@ -410,9 +411,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // E04 helper-level unit tests. Pins the per-attribute walker so each
-    // branch (trust/pattern key, SetRef value, non-SetRef value, other
-    // key, multi-offender rule, independence from macro definitions)
+    // fapd-E04 helper-level unit tests. Pins the per-attribute walker so
+    // each branch (trust/pattern key, SetRef value, non-SetRef value,
+    // other key, multi-offender rule, independence from macro definitions)
     // is exercised independently of the snapshot suite. A mutant that
     // swaps the key comparison (e.g. `==` -> `!=`), broadens the key
     // set to include unrelated attrs, or only matches on SetRef without
@@ -421,7 +422,7 @@ mod tests {
 
     #[test]
     fn e04_emits_on_trust_setref() {
-        // `trust=%mac` -> 1 E04 diagnostic naming the macro and the key.
+        // `trust=%mac` -> 1 fapd-E04 diagnostic naming the macro and the key.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -437,7 +438,7 @@ mod tests {
         )];
         let diags = e04(&entries, &p());
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "E04");
+        assert_eq!(diags[0].code.as_ref(), "fapd-E04");
         assert_eq!(diags[0].severity, Severity::Error);
         assert!(
             diags[0].message.contains("mac"),
@@ -454,7 +455,7 @@ mod tests {
 
     #[test]
     fn e04_emits_on_pattern_setref() {
-        // `pattern=%mac` -> 1 E04 diagnostic naming the macro and the key.
+        // `pattern=%mac` -> 1 fapd-E04 diagnostic naming the macro and the key.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -470,7 +471,7 @@ mod tests {
         )];
         let diags = e04(&entries, &p());
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "E04");
+        assert_eq!(diags[0].code.as_ref(), "fapd-E04");
         assert!(
             diags[0].message.contains("pattern"),
             "message must name the offending attribute key: {}",
@@ -480,7 +481,7 @@ mod tests {
 
     #[test]
     fn e04_silent_on_path_setref() {
-        // `path=%mac` is NOT an E04 offender; only `trust`/`pattern` qualify.
+        // `path=%mac` is NOT an fapd-E04 offender; only `trust`/`pattern` qualify.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -497,13 +498,13 @@ mod tests {
         let diags = e04(&entries, &p());
         assert!(
             diags.is_empty(),
-            "path= is not in the trust/pattern set; E04 must not fire: {diags:?}",
+            "path= is not in the trust/pattern set; fapd-E04 must not fire: {diags:?}",
         );
     }
 
     #[test]
     fn e04_silent_on_trust_str_value() {
-        // `trust=somestring` (parsed as Str, not SetRef) is not an E04 offender.
+        // `trust=somestring` (parsed as Str, not SetRef) is not an fapd-E04 offender.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -517,13 +518,13 @@ mod tests {
         let diags = e04(&entries, &p());
         assert!(
             diags.is_empty(),
-            "Str values are never E04's concern: {diags:?}",
+            "Str values are never fapd-E04's concern: {diags:?}",
         );
     }
 
     #[test]
     fn e04_silent_on_trust_int_value() {
-        // `trust=1` (parsed as Int) is not an E04 offender either.
+        // `trust=1` (parsed as Int) is not an fapd-E04 offender either.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -537,13 +538,13 @@ mod tests {
         let diags = e04(&entries, &p());
         assert!(
             diags.is_empty(),
-            "Int values are never E04's concern: {diags:?}",
+            "Int values are never fapd-E04's concern: {diags:?}",
         );
     }
 
     #[test]
     fn e04_walker_emits_one_per_offending_attr() {
-        // A rule with `trust=%a` AND `pattern=%b` -> 2 E04 diagnostics.
+        // A rule with `trust=%a` AND `pattern=%b` -> 2 fapd-E04 diagnostics.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -561,9 +562,9 @@ mod tests {
         assert_eq!(
             diags.len(),
             2,
-            "expected one E04 per offending attr in the rule: {diags:?}",
+            "expected one fapd-E04 per offending attr in the rule: {diags:?}",
         );
-        assert!(diags.iter().all(|d| d.code.as_ref() == "E04"));
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E04"));
         assert!(
             diags
                 .iter()
@@ -573,9 +574,9 @@ mod tests {
 
     #[test]
     fn e04_walker_independent_of_definitions() {
-        // E04 fires on `trust=%foo` whether or not `%foo` is defined.
-        // (The defined-above-reference machinery is E03's concern;
-        // E04 only cares about the key + SetRef value pairing.)
+        // fapd-E04 fires on `trust=%foo` whether or not `%foo` is defined.
+        // (The defined-above-reference machinery is fapd-E03's concern;
+        // fapd-E04 only cares about the key + SetRef value pairing.)
         let defined_entries = vec![
             setdef(1, "foo"),
             modern_rule(
@@ -602,18 +603,18 @@ mod tests {
         assert_eq!(
             e04(&defined_entries, &p()).len(),
             1,
-            "E04 must fire on `trust=%foo` even when `%foo` is defined above",
+            "fapd-E04 must fire on `trust=%foo` even when `%foo` is defined above",
         );
         assert_eq!(
             e04(&undefined_entries, &p()).len(),
             1,
-            "E04 must fire on `trust=%foo` when `%foo` is undefined",
+            "fapd-E04 must fire on `trust=%foo` when `%foo` is undefined",
         );
     }
 
     // -----------------------------------------------------------------
-    // E05 helper-level unit tests. Pin the per-SetDefinition walker so
-    // every branch (mixed -> fire, all-numeric -> silent, all-string ->
+    // fapd-E05 helper-level unit tests. Pin the per-SetDefinition walker
+    // so every branch (mixed -> fire, all-numeric -> silent, all-string ->
     // silent, single-value -> silent, leading-zero -> numeric, walker
     // skips Rule entries, multi-set independence) is exercised
     // independently of the snapshot + proptest suites. A mutant that
@@ -632,11 +633,11 @@ mod tests {
 
     #[test]
     fn e05_emits_on_mixed_int_and_string() {
-        // `%mymacro=1,2,foo,3` -> 1 E05 naming the macro.
+        // `%mymacro=1,2,foo,3` -> 1 fapd-E05 naming the macro.
         let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "foo", "3"])];
         let diags = e05(&entries, &p());
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "E05");
+        assert_eq!(diags[0].code.as_ref(), "fapd-E05");
         assert_eq!(diags[0].severity, Severity::Error);
         assert!(
             diags[0].message.contains("mymacro"),
@@ -648,18 +649,18 @@ mod tests {
 
     #[test]
     fn e05_silent_on_all_numeric() {
-        // `%mymacro=1,2,3,4` -> all values parse as i64; no E05.
+        // `%mymacro=1,2,3,4` -> all values parse as i64; no fapd-E05.
         let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "3", "4"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "all-numeric set must produce no E05: {diags:?}"
+            "all-numeric set must produce no fapd-E05: {diags:?}"
         );
     }
 
     #[test]
     fn e05_silent_on_all_string() {
-        // `%mymacro=/bin/bash,/usr/bin/zsh` -> all values are strings; no E05.
+        // `%mymacro=/bin/bash,/usr/bin/zsh` -> all values are strings; no fapd-E05.
         let entries = vec![setdef_with_values(
             1,
             "mymacro",
@@ -668,39 +669,39 @@ mod tests {
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "all-string set must produce no E05: {diags:?}"
+            "all-string set must produce no fapd-E05: {diags:?}"
         );
     }
 
     #[test]
     fn e05_silent_on_single_value() {
-        // `%mymacro=42` -> 1 value is trivially homogeneous; no E05.
+        // `%mymacro=42` -> 1 value is trivially homogeneous; no fapd-E05.
         // Pins the boundary case: a single value can't be mixed.
         let entries = vec![setdef_with_values(1, "mymacro", &["42"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "single-value set must produce no E05: {diags:?}"
+            "single-value set must produce no fapd-E05: {diags:?}"
         );
     }
 
     #[test]
     fn e05_treats_leading_zero_as_numeric() {
         // `%mymacro=01,02,03` -> `parse::<i64>()` accepts "01" -> 1, etc.
-        // All values are numeric; no E05. Pins the classification rule:
+        // All values are numeric; no fapd-E05. Pins the classification rule:
         // numeric = parses as i64, not "looks like a literal digit string".
         let entries = vec![setdef_with_values(1, "mymacro", &["01", "02", "03"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "leading-zero values must classify as numeric (no E05): {diags:?}",
+            "leading-zero values must classify as numeric (no fapd-E05): {diags:?}",
         );
     }
 
     #[test]
     fn e05_walker_skips_non_setdefinition_entries() {
-        // A Rule entry (no SetDefinition involved) must never fire E05.
-        // Kills a mutation that fires E05 on every Entry regardless of variant.
+        // A Rule entry (no SetDefinition involved) must never fire fapd-E05.
+        // Kills a mutation that fires fapd-E05 on every Entry regardless of variant.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -717,13 +718,13 @@ mod tests {
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "Rule entries are not E05's concern: {diags:?}",
+            "Rule entries are not fapd-E05's concern: {diags:?}",
         );
     }
 
     #[test]
     fn e05_walker_emits_one_per_mixed_setdefinition() {
-        // Two mixed sets in the same file -> 2 E05 diagnostics, one per
+        // Two mixed sets in the same file -> 2 fapd-E05 diagnostics, one per
         // SetDefinition. Kills a mutation that deduplicates by name or
         // short-circuits after the first hit.
         let entries = vec![
@@ -734,9 +735,9 @@ mod tests {
         assert_eq!(
             diags.len(),
             2,
-            "expected one E05 per mixed SetDefinition: {diags:?}",
+            "expected one fapd-E05 per mixed SetDefinition: {diags:?}",
         );
-        assert!(diags.iter().all(|d| d.code.as_ref() == "E05"));
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E05"));
         assert!(diags.iter().any(|d| d.message.contains("first")));
         assert!(diags.iter().any(|d| d.message.contains("second")));
     }
