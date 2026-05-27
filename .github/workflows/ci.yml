@@ -68,6 +68,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-fmt-clippy
+          # Save only on push events (main + tag pushes); PR runs restore
+          # the cache but skip the save phase. PR-save would re-snapshot
+          # an essentially-identical target/ on each PR push, costing ~28s
+          # per matrix entry for negligible incremental hit-rate gain.
+          # The push-event save still updates the cache on every merge.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -191,6 +197,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: rocky${{ matrix.rocky }}
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo test
         run: cargo test --workspace --locked
@@ -243,6 +251,9 @@ jobs:
             | bash -s -- -y --profile minimal --default-toolchain stable --component llvm-tools-preview
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
@@ -275,6 +286,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-musl
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo build --release --target x86_64-unknown-linux-musl
         env:
@@ -353,5 +366,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-msrv-1.85
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: cargo check (MSRV)
         run: cargo check --workspace --locked
