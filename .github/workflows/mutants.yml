@@ -35,6 +35,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants
+          # Pin to a known-good cargo-mutants release. taiki-e/install-action
+          # defaults to "latest" otherwise, which silently absorbs CLI surface
+          # changes (PR #12 fixed the --error-on-survival removal in 27.x;
+          # the pin keeps future major bumps from drifting in unobserved).
+          # Bump deliberately when reviewing the mutation baseline.
+          version: "27.0.0"
       # Baseline + scope live in crates/rulesteward-fapolicyd/MUTATION-BASELINE.md
       # and .cargo/mutants.toml respectively. cargo-mutants 27+ exits non-zero
       # by default when a genuine survivor exists (the old `--error-on-survival`

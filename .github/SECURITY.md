@@ -7,7 +7,7 @@
 Report privately via either channel:
 
 1. **GitHub Security Advisories** - preferred. Use the "Report a vulnerability" button on the [Security tab](https://github.com/rulesteward/rulesteward/security/advisories/new).
-2. **Email** - `rulesteward+security@rulesteward.com` (PGP key fingerprint to be published before v0.1.0 GA).
+2. **Email** - `rulesteward+security@gmail.com` (PGP key fingerprint to be published before v0.1.0 GA).
 
 Please include:
 - Affected version (`rulesteward --version`)
