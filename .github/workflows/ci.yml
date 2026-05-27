@@ -161,8 +161,17 @@ jobs:
         # /var/cache/dnf after install. The default behavior deletes them
         # post-install; with keepcache the cache action above can save
         # them for the next run's restore.
+        #
+        # `--setopt=install_weak_deps=False` skips recommended/suggested
+        # packages that dnf would otherwise pull in alongside the
+        # explicit list. The 10-package list above is intentional; weak
+        # deps would add a few more unneeded RPMs.
+        #
+        # `--setopt=tsflags=nodocs` skips installing documentation files
+        # (man pages, /usr/share/doc/*). Saves a small amount of disk
+        # I/O per package install with zero CI impact.
         run: |
-          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
       - uses: actions/checkout@v5
 
