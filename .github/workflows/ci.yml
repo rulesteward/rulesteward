@@ -336,14 +336,20 @@ jobs:
   # baseline run is observed. Independent of fmt-clippy: no toolchain
   # state shared.
   audit:
-    name: cargo-audit (warn-only)
+    name: cargo-audit
     runs-on: ubuntu-latest
     # PR-only + manual: every change on this repo goes through a PR before
     # landing on main, so push-event audit would duplicate the PR signal.
     # workflow_dispatch is included so a maintainer can manually verify
     # advisory state after a cargo update without opening a PR.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    continue-on-error: true
+    # Blocking: a baseline run against the merged main confirmed zero
+    # advisories (1098-entry DB, 120 deps, 0 vulnerabilities, 0 warnings).
+    # New advisories that land on the project's dep tree now fail the
+    # PR check rather than showing yellow. Reverting to warn-only is a
+    # one-line change (`continue-on-error: true`) if the advisory feed
+    # ever produces a false-positive that takes more than a day to
+    # mitigate.
     steps:
       - uses: actions/checkout@v5
       # Install cargo-audit from prebuilt binaries via taiki-e/install-action.
