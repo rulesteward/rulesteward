@@ -364,6 +364,26 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
+  # Cargo-deny: scan the workspace's Cargo.lock against the configured
+  # license allowlist, multi-version detection, and source registries
+  # via deny.toml at the workspace root. Blocking gate: a baseline run
+  # against the merged main confirmed zero issues (advisories ok, bans
+  # ok, licenses ok, sources ok with cargo-deny 0.19.7). New license
+  # entries / multiple-version regressions now fail the PR check.
+  # Same install-action pattern as the audit job above: prebuilt binary
+  # via taiki-e/install-action (~10-20s) instead of source-compile.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.7
+      - name: cargo deny check
+        run: cargo deny check --config deny.toml
+
   # MSRV verification: build the workspace on the declared minimum
   # supported Rust version. Cargo.toml's rust-version = "1.85" floor
   # is only meaningful if CI actually exercises that toolchain;
