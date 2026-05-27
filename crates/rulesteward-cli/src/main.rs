@@ -1,8 +1,8 @@
 //! `rulesteward` - top-level CLI binary.
 //!
 //! Thin shell: parse argv via clap, dispatch to the matching
-//! `commands::<ns>::run`, and use the returned `i32` as the
-//! process exit code.
+//! `commands::<ns>::run`, convert any `anyhow::Error` to an exit code
+//! via `report()`, and use that as the process exit code.
 //!
 //! Clap's default exit code on parse errors is `2`. Spec §9.4
 //! reserves `2` for "errors found in policy" (real lint findings),
@@ -30,10 +30,26 @@ fn main() {
     };
 
     let code = match cli.command {
-        TopCommand::Fapolicyd(cmd) => commands::fapolicyd::run(cmd),
-        TopCommand::Selinux(cmd) => commands::selinux::run(cmd),
-        TopCommand::Auditd(cmd) => commands::auditd::run(cmd),
-        TopCommand::Completions(args) => commands::completions::run(&args),
+        TopCommand::Fapolicyd(cmd) => report(commands::fapolicyd::run(cmd)),
+        TopCommand::Selinux(cmd) => report(commands::selinux::run(cmd)),
+        TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd)),
+        TopCommand::Completions(args) => report(commands::completions::run(&args)),
     };
     std::process::exit(code);
+}
+
+/// Convert a command's `anyhow::Result<i32>` to a process exit code.
+///
+/// On `Ok(code)` the command's own exit code is honored. On `Err(e)`
+/// the full anyhow cause chain is printed to stderr with an `"error: "`
+/// prefix (via the `{e:#}` alternate-format flag) and the process exits
+/// with `EXIT_TOOL_FAILURE` (3).
+fn report(result: anyhow::Result<i32>) -> i32 {
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            EXIT_TOOL_FAILURE
+        }
+    }
 }

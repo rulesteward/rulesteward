@@ -648,6 +648,7 @@ version = "0.1.0-dev"
 name = "rulesteward-cli"
 version = "0.1.0-dev"
 dependencies = [
+ "anyhow",
  "ariadne",
  "assert_cmd",
  "clap",

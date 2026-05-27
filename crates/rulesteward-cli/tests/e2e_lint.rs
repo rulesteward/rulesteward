@@ -124,6 +124,21 @@ fn unknown_subcommand_exits_three_not_two() {
         .code(3);
 }
 
+#[test]
+fn lint_nonexistent_dir_emits_error_prefix_on_stderr() {
+    // Phase B locks the "error: " stderr prefix that main.rs's report()
+    // helper attaches when an anyhow::Error bubbles out of a command body.
+    // Pre-Phase B this would fail: the bare eprintln!() in run_lint
+    // wrote the message without any prefix.
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "/definitely/not/a/real/dir/zzz"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::starts_with("error: "))
+        .stderr(predicate::str::contains("not a directory"));
+}
+
 // --- ariadne renderer tests (Task 4) ---
 
 /// When a diagnostic has `source_id` set (E01 from AST lints), the human

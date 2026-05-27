@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{check_layout, lint_file};
 
@@ -12,8 +13,7 @@ use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
 
-#[must_use]
-pub fn run(cmd: FapolicydCommand) -> i32 {
+pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
     match cmd {
         FapolicydCommand::Lint(args) => run_lint(&args),
         FapolicydCommand::Simulate
@@ -24,25 +24,18 @@ pub fn run(cmd: FapolicydCommand) -> i32 {
         | FapolicydCommand::Migrate
         | FapolicydCommand::Doctor => {
             eprintln!("rulesteward fapolicyd <subcommand>: not yet implemented in v0.1.0-dev");
-            EXIT_NO_OP
+            Ok(EXIT_NO_OP)
         }
     }
 }
 
-#[must_use]
-fn run_lint(args: &LintArgs) -> i32 {
+fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     if args.against_trustdb.is_some() {
         eprintln!("--against-trustdb is not yet implemented in v0.1.0-dev");
-        return EXIT_NO_OP;
+        return Ok(EXIT_NO_OP);
     }
 
-    let (target_files, layout_diag) = match resolve_targets(args) {
-        Ok(out) => out,
-        Err(msg) => {
-            eprintln!("{msg}");
-            return EXIT_TOOL_FAILURE;
-        }
-    };
+    let (target_files, layout_diag) = resolve_targets(args)?;
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
@@ -64,7 +57,12 @@ fn run_lint(args: &LintArgs) -> i32 {
                 }
             }
             Err(io) => {
-                eprintln!("{}: {}", path.display(), io);
+                // Per-file failure must not halt the loop; surface as a
+                // tool failure at the end after every other file has had
+                // its chance. Attach the path as anyhow context so the
+                // operator sees `error: linting <path>\n  Caused by: <io>`.
+                let err = anyhow::Error::new(io).context(format!("linting {}", path.display()));
+                eprintln!("error: {err:#}");
                 tool_err = true;
             }
         }
@@ -74,14 +72,14 @@ fn run_lint(args: &LintArgs) -> i32 {
         Ok(s) => s,
         Err(RenderError::SarifNotImplemented) => {
             println!("{{\"error\":\"sarif format not yet implemented in v0.1.0-dev\"}}");
-            return EXIT_TOOL_FAILURE;
+            return Ok(EXIT_TOOL_FAILURE);
         }
     };
     if !rendered.is_empty() {
         print!("{rendered}");
     }
 
-    exit_code::compute(&all_diags, tool_err)
+    Ok(exit_code::compute(&all_diags, tool_err))
 }
 
 // Returns `(files_to_lint, optional_layout_diagnostic)`.
@@ -89,7 +87,7 @@ fn run_lint(args: &LintArgs) -> i32 {
 // * `--file <FILE>` → lint exactly that file. No layout check.
 // * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run F02 against the parent of that dir.
 // * Default: `/etc/fapolicyd/rules.d/`.
-fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>), String> {
+fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diagnostic>)> {
     if let Some(file) = &args.file {
         return Ok((vec![file.clone()], None));
     }
@@ -98,12 +96,12 @@ fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>)
         .clone()
         .unwrap_or_else(|| PathBuf::from(DEFAULT_RULES_D));
     if !dir.is_dir() {
-        return Err(format!("{}: not a directory", dir.display()));
+        bail!("{}: not a directory", dir.display());
     }
     let rules_root = dir.parent().map_or_else(|| dir.clone(), Path::to_path_buf);
     let layout_diag = check_layout(&rules_root);
     let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .with_context(|| format!("reading directory {}", dir.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
@@ -178,9 +176,25 @@ mod tests {
         let args = lint_args(Some(PathBuf::from("/nonexistent/path/12345")), None);
         let result = resolve_targets(&args);
         let err = result.expect_err("expected Err for non-existent path");
+        let msg = format!("{err:#}");
         assert!(
-            err.contains("not a directory"),
-            "expected 'not a directory' in error, got {err}"
+            msg.contains("not a directory"),
+            "expected 'not a directory' in error chain, got {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_targets_file_as_dir_error_chain_includes_path() {
+        // Phase B: locks the anyhow::Error return type AND the fact that
+        // the bail!() carries the offending path through to the chain.
+        let f = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = f.path().to_path_buf();
+        let args = lint_args(Some(path.clone()), None);
+        let err: anyhow::Error = resolve_targets(&args).expect_err("file-as-dir must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(path.display().to_string().as_str()),
+            "error chain must mention the offending path, got {chain}",
         );
     }
 

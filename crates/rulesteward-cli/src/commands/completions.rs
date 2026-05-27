@@ -64,8 +64,7 @@ impl<W: io::Write> io::Write for EpipeSwallowingWriter<W> {
     }
 }
 
-#[must_use]
-pub fn run(args: &CompletionsArgs) -> i32 {
+pub fn run(args: &CompletionsArgs) -> anyhow::Result<i32> {
     let mut cmd = Cli::command();
     let bin_name = "rulesteward";
     let mut stdout = EpipeSwallowingWriter {
@@ -79,7 +78,7 @@ pub fn run(args: &CompletionsArgs) -> i32 {
         CompletionShell::Elvish => generate(Elvish, &mut cmd, bin_name, &mut stdout),
         CompletionShell::PowerShell => generate(PowerShell, &mut cmd, bin_name, &mut stdout),
     }
-    EXIT_CLEAN
+    Ok(EXIT_CLEAN)
 }
 
 #[cfg(test)]
