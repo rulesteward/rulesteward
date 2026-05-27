@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           # Block PRs that introduce critical/high-severity advisories.
           # Tighter than the cargo-audit baseline (which is warn-only on
