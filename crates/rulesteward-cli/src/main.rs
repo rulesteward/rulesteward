@@ -41,9 +41,11 @@ fn main() {
 /// Convert a command's `anyhow::Result<i32>` to a process exit code.
 ///
 /// On `Ok(code)` the command's own exit code is honored. On `Err(e)`
-/// the full anyhow cause chain is printed to stderr with an `"error: "`
-/// prefix (via the `{e:#}` alternate-format flag) and the process exits
-/// with `EXIT_TOOL_FAILURE` (3).
+/// the cause chain is printed to stderr as a single line in
+/// `"error: head: cause1: cause2"` form (via the `{e:#}`
+/// alternate-format flag - not the multi-line `Caused by:` block
+/// that `{e:?}` produces), and the process exits with
+/// `EXIT_TOOL_FAILURE` (3).
 fn report(result: anyhow::Result<i32>) -> i32 {
     match result {
         Ok(code) => code,
