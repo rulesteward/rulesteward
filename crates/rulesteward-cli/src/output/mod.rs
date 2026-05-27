@@ -17,9 +17,10 @@ use crate::cli::OutputFormat;
 
 /// Errors a renderer can return. Currently only used by the SARIF stub;
 /// human and JSON renderers cannot fail.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RenderError {
     /// SARIF rendering is stubbed in v0.1.0-dev - caller must map to exit 3.
+    #[error("sarif format not yet implemented in v0.1.0-dev")]
     SarifNotImplemented,
 }
 
@@ -66,5 +67,20 @@ mod tests {
             Err(RenderError::SarifNotImplemented) => {}
             other => panic!("expected SarifNotImplemented, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn render_error_implements_std_error_trait() {
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<RenderError>();
+    }
+
+    #[test]
+    fn render_error_display_matches_sarif_caller_message() {
+        let e = RenderError::SarifNotImplemented;
+        assert_eq!(
+            e.to_string(),
+            "sarif format not yet implemented in v0.1.0-dev",
+        );
     }
 }
