@@ -1,0 +1,46 @@
+# cargo-deny configuration for the RuleSteward workspace.
+# Run via the `deny` CI job (.github/workflows/ci.yml); also runnable
+# locally with `cargo deny check --config deny.toml`. The four checks
+# cargo-deny runs are: advisories, bans, licenses, sources. We rely on
+# cargo-audit for the advisories check (separate `audit` CI job), so
+# this config focuses on licenses + bans + sources.
+#
+# Schema tested against cargo-deny 0.19.7. Bump this comment and the
+# pin in .github/workflows/ci.yml together if cargo-deny ships a
+# config-format-affecting release.
+
+[licenses]
+# Allowlist of SPDX expressions permitted in the workspace dep tree.
+# Anything not on this list fails the licenses check. BSD-2-Clause,
+# BSD-3-Clause, and Apache-2.0 WITH LLVM-exception are pre-allowed for
+# the future -license crate (jsonwebtoken + ed25519-dalek pulls them
+# in); until those crates land, cargo-deny emits informational
+# `license-not-encountered` warnings on them, which do NOT fail the
+# gate.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unlicense",
+    "Apache-2.0 WITH LLVM-exception",
+]
+# 0.93 is cargo-deny's default-recommended detection confidence floor.
+confidence-threshold = 0.93
+
+[bans]
+# `warn` not `deny`: a future `cargo update` that pulls in a duplicate
+# version (e.g. two hashbrown majors via different transitives) should
+# emit visible noise, not block the PR. The gate's blocking categories
+# are licenses + sources; multi-version drift is informational.
+multiple-versions = "warn"
+deny = []
+
+[sources]
+# Reject any crate sourced from an unknown registry or unknown git
+# remote. The workspace pulls only from crates.io; anything else is a
+# supply-chain red flag.
+unknown-registry = "deny"
+unknown-git = "deny"

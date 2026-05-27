@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 rulesteward-core = { workspace = true }
-chumsky = { workspace = true }
+chumsky = { workspace = true, features = ["std"] }
 ariadne = { workspace = true }
 
 [dev-dependencies]
