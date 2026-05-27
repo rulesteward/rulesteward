@@ -330,11 +330,10 @@ jobs:
           if-no-files-found: error
 
   # Cargo-audit: scan the workspace's Cargo.lock against the RustSec
-  # advisory DB. First-iteration warn-only via continue-on-error so a
-  # brand-new advisory dropping the day this lands shows yellow rather
-  # than blocking main. A follow-up PR flips to blocking once a clean
-  # baseline run is observed. Independent of fmt-clippy: no toolchain
-  # state shared.
+  # advisory DB. Blocking gate: fails the PR check if any advisory
+  # matches a crate in the workspace's dep tree. Independent of
+  # fmt-clippy (no toolchain state shared); runs only on PR and
+  # workflow_dispatch events per the if: gate below.
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest
