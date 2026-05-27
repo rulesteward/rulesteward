@@ -287,6 +287,15 @@ jobs:
     name: cargo-audit (warn-only)
     runs-on: ubuntu-latest
     continue-on-error: true
+    # rustsec/audit-check creates GitHub Check Runs on pull_request events
+    # (and Issues on schedule/push events). Without checks: write the action
+    # falls back to stdout-only and no annotation appears in the PR checks
+    # column -- which defeats most of the continue-on-error UX. Grant the
+    # minimum required permissions explicitly so behaviour is deterministic
+    # regardless of the repo's default GITHUB_TOKEN permission setting.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v5
       - uses: rustsec/audit-check@v2
