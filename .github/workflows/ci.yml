@@ -132,10 +132,17 @@ jobs:
       # (the Bootstrap step below installs it as one of the 10 baseline
       # packages -- if it were already present, that install would be
       # redundant). Pre-install it via a tiny dnf call before the cache
-      # action runs. ~1-2s on a cold cache; harmless on a hit (dnf is a
-      # no-op when tar is already installed by a cached RPM).
+      # action runs.
+      #
+      # Same dnf flags as the main Bootstrap step below, plus
+      # --disablerepo=appstream: tar lives in BaseOS, so AppStream metadata
+      # isn't needed for this single-package install. Skipping it saves
+      # the AppStream repodata download on this preliminary step. The
+      # main Bootstrap step still needs AppStream for gcc/glibc-devel/
+      # make/git/ca-certificates so it can't disable that repo.
       - name: Pre-install tar (required by actions/cache)
-        run: dnf -y install tar
+        run: |
+          dnf --disablerepo=extras --disablerepo=appstream --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install tar
 
       # Cache /var/cache/dnf across runs so the second-and-later runs skip
       # the package download phase. The cache survives because the bootstrap
