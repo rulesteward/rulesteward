@@ -68,6 +68,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-fmt-clippy
+          # Save only on push events (main + tag pushes); PR runs restore
+          # the cache but skip the save phase. PR-save would re-snapshot
+          # an essentially-identical target/ on each PR push, costing ~28s
+          # per matrix entry for negligible incremental hit-rate gain.
+          # The push-event save still updates the cache on every merge.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -75,10 +81,23 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # rocky-suite: per-Rocky test + musl smoke in a single container.
+  # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
+  # matrix, the dnf bootstrap, the bash shell override, and the
+  # actions/checkout call. Merging eliminates 3 of the 6 matrix container
+  # starts per CI run and shortens the critical path (the smoke add-on is
+  # `./binary --help + grep`, dwarfed by the ~33 s dnf bootstrap and ~28 s
+  # rust-cache restore already happening for the test step).
+  #
+  # Tradeoff vs. the prior shape: `musl-build` no longer waits on Rocky
+  # tests, so a red push wastes ~38 s of musl-build compute that the prior
+  # `needs: check` short-circuit would have saved. This is a small cost
+  # in exchange for the wall-clock and CI-minutes win on the (common)
+  # green path.
   check:
-    name: rocky${{ matrix.rocky }} - test
+    name: rocky${{ matrix.rocky }} - test + musl smoke
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, musl-build]
     strategy:
       fail-fast: false
       matrix:
@@ -108,8 +127,45 @@ jobs:
       # aborts the entire transaction silently if any name fails to resolve,
       # which would leave the container without bash, tar, gcc, etc. Add
       # any of these back only with version-aware logic.
+      # actions/cache@v4 needs `tar` in PATH to extract the cache archive.
+      # The rockylinux/rockylinux base image does not reliably include tar
+      # (the Bootstrap step below installs it as one of the 10 baseline
+      # packages -- if it were already present, that install would be
+      # redundant). Pre-install it via a tiny dnf call before the cache
+      # action runs.
+      #
+      # Same dnf flags as the main Bootstrap step below, plus
+      # --disablerepo=appstream: tar lives in BaseOS, so AppStream metadata
+      # isn't needed for this single-package install. Skipping it saves
+      # the AppStream repodata download on this preliminary step. The
+      # main Bootstrap step still needs AppStream for gcc/glibc-devel/
+      # make/git/ca-certificates so it can't disable that repo.
+      - name: Pre-install tar (required by actions/cache)
+        run: |
+          dnf --disablerepo=extras --disablerepo=appstream --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install tar
+
+      # Cache /var/cache/dnf across runs so the second-and-later runs skip
+      # the package download phase. The cache survives because the bootstrap
+      # step below passes --setopt=keepcache=True; without that flag dnf
+      # deletes the RPMs after install and the cache is empty.
+      #
+      # Key strategy: any change to ci.yml invalidates the cache (the
+      # package list is here). The restore-keys fallback lets a partial
+      # cache from a prior ci.yml revision still seed most of the packages
+      # so the worst case is a partial-miss, not a full miss.
+      #
+      # Path is the in-container path; actions/cache runs inside the
+      # container when `container:` is set on the job, so this Just Works.
+      - name: Restore dnf cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/dnf
+          key: dnf-${{ matrix.rocky }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            dnf-${{ matrix.rocky }}-
+
       - name: Bootstrap (install bash, tar, gcc, ...)
-        # Two dnf tuning flags address slow CI installs:
+        # dnf tuning flags address slow CI installs:
         #
         # `--disablerepo=extras` skips the Extras repo's metadata download.
         # All 10 packages here live in BaseOS or AppStream (Extras carries
@@ -123,8 +179,22 @@ jobs:
         # one per repo. BaseOS has been observed at ~910 kB/s on the
         # default mirror; probing typically lands a CDN-backed mirror that
         # is 5-10x faster, saving another ~30-50 s per Rocky job.
+        #
+        # `--setopt=keepcache=True` preserves the downloaded RPMs in
+        # /var/cache/dnf after install. The default behavior deletes them
+        # post-install; with keepcache the cache action above can save
+        # them for the next run's restore.
+        #
+        # `--setopt=install_weak_deps=False` skips recommended/suggested
+        # packages that dnf would otherwise pull in alongside the
+        # explicit list. The 10-package list above is intentional; weak
+        # deps would add a few more unneeded RPMs.
+        #
+        # `--setopt=tsflags=nodocs` skips installing documentation files
+        # (man pages, /usr/share/doc/*). Saves a small amount of disk
+        # I/O per package install with zero CI impact.
         run: |
-          dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
       - uses: actions/checkout@v5
 
@@ -144,11 +214,46 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: rocky${{ matrix.rocky }}
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo test
         run: cargo test --workspace --locked
       # release-build step dropped: musl-build covers the release profile;
       # RuleSteward has no FFI / cfg-gated release-only paths that would surface a glibc-release-only bug.
+
+      # Smoke section: the steps below were previously a separate `musl-smoke`
+      # matrix job. Merged here so each Rocky container does test+smoke in one
+      # provisioning cycle (the dnf bootstrap above already covers the
+      # `bash + ca-certificates` superset that musl-smoke used to install
+      # separately).
+      - name: Download static musl binary from musl-build
+        uses: actions/download-artifact@v4
+        with:
+          name: rulesteward-x86_64-linux-musl
+          path: ./bin
+
+      - name: Smoke -- the static musl binary runs on this Rocky
+        run: |
+          chmod +x ./bin/rulesteward
+          ./bin/rulesteward --help
+          ./bin/rulesteward --version
+
+      - name: Smoke -- completions subcommand works on this Rocky
+        run: |
+          ./bin/rulesteward completions bash | head -5
+          ./bin/rulesteward completions bash | grep -q '_rulesteward'
+
+      - name: Functional smoke -- no placeholder leakage in --help
+        # Capture --help output to a file FIRST, so a binary crash (non-zero
+        # exit) fails the step under set -e instead of being masked by a
+        # `|| true` swallow on the grep no-match branch.
+        run: |
+          ./bin/rulesteward --help > /tmp/help_output
+          if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
+            grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
+            exit 1
+          fi
 
   coverage:
     name: cargo llvm-cov (floor 80%)
@@ -163,6 +268,9 @@ jobs:
             | bash -s -- -y --profile minimal --default-toolchain stable --component llvm-tools-preview
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
@@ -172,12 +280,12 @@ jobs:
   musl-build:
     name: build static musl binary (ubuntu)
     runs-on: ubuntu-latest
-    # Gate the entire musl chain on `check` passing. If a Rust regression
-    # breaks tests, we avoid burning ~3 min on musl-build plus ~3 min on
-    # the 3-way musl-smoke matrix. Costs ~3-5 min of wall-clock on green
-    # pushes (serialization); the minutes accounting is zero on green and
-    # net-positive on red.
-    needs: check
+    # Depends on fmt-clippy only. The merged `check` job (test + smoke)
+    # consumes this artifact and so depends on musl-build downstream; the
+    # prior gate `needs: check` would now be a dependency cycle. A red push
+    # wastes ~38 s of musl-build compute that the prior gate would have
+    # saved, in exchange for the wall-clock win on green pushes.
+    needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
 
@@ -195,6 +303,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-musl
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo build --release --target x86_64-unknown-linux-musl
         env:
@@ -219,88 +329,40 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  musl-smoke:
-    name: rocky${{ matrix.rocky }} - run static musl binary
-    needs: musl-build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rocky: ["8", "9", "10"]
-    container:
-      image: rockylinux/rockylinux:${{ matrix.rocky }}
-    defaults:
-      run:
-        shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
-    steps:
-      - name: Bootstrap minimum tooling (bash + ca-certificates)
-        # bash: required because defaults.run.shell points at /usr/bin/bash
-        # and that shell override fires before any step can install packages.
-        # The rockylinux/rockylinux minimal image already ships bash, but the
-        # explicit install guards against future image variations. Matches
-        # the check: job's pattern.
-        # ca-certificates: actions/download-artifact@v4 is a JS action; when
-        # a job declares container:, JS actions run INSIDE that container
-        # and need TLS root certs to fetch the artifact over HTTPS.
-        # `--disablerepo=extras` + `--setopt=fastestmirror=True`: same dnf
-        # tuning as the check job's bootstrap step above. Extras is unused
-        # here (both packages live in BaseOS) and the default mirror has
-        # been observed in the kB/s and B/s range; the fastestmirror probe
-        # picks a CDN-backed mirror for BaseOS instead.
-        run: dnf --disablerepo=extras --setopt=fastestmirror=True -y install bash ca-certificates
-
-      - name: Download the static binary from musl-build
-        uses: actions/download-artifact@v4
-        with:
-          name: rulesteward-x86_64-linux-musl
-          path: ./bin
-
-      - name: Smoke -- the binary actually runs on this Rocky
-        run: |
-          chmod +x ./bin/rulesteward
-          ./bin/rulesteward --help
-          ./bin/rulesteward --version
-
-      - name: Smoke -- completions subcommand works on this Rocky
-        run: |
-          ./bin/rulesteward completions bash | head -5
-          ./bin/rulesteward completions bash | grep -q '_rulesteward'
-
-      - name: Functional smoke -- no placeholder leakage in --help
-        # Capture --help output to a file FIRST, so a binary crash (non-zero
-        # exit) fails the step under set -e instead of being masked by a
-        # `|| true` swallow on the grep no-match branch.
-        run: |
-          ./bin/rulesteward --help > /tmp/help_output
-          if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
-            grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
-            exit 1
-          fi
-
   # Cargo-audit: scan the workspace's Cargo.lock against the RustSec
-  # advisory DB. First-iteration warn-only via continue-on-error so a
-  # brand-new advisory dropping the day this lands shows yellow rather
-  # than blocking main. A follow-up PR flips to blocking once a clean
-  # baseline run is observed. Independent of fmt-clippy: no toolchain
-  # state shared.
+  # advisory DB. Blocking gate: fails the PR check if any advisory
+  # matches a crate in the workspace's dep tree. Independent of
+  # fmt-clippy (no toolchain state shared); runs only on PR and
+  # workflow_dispatch events per the if: gate below.
   audit:
-    name: cargo-audit (warn-only)
+    name: cargo-audit
     runs-on: ubuntu-latest
-    continue-on-error: true
-    # rustsec/audit-check creates GitHub Check Runs on pull_request events
-    # (and Issues on schedule/push events). Without checks: write the action
-    # falls back to stdout-only and no annotation appears in the PR checks
-    # column -- which defeats most of the continue-on-error UX. Grant the
-    # minimum required permissions explicitly so behaviour is deterministic
-    # regardless of the repo's default GITHUB_TOKEN permission setting.
-    permissions:
-      contents: read
-      checks: write
+    # PR-only + manual: every change on this repo goes through a PR before
+    # landing on main, so push-event audit would duplicate the PR signal.
+    # workflow_dispatch is included so a maintainer can manually verify
+    # advisory state after a cargo update without opening a PR.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Blocking: a baseline run against the merged main confirmed zero
+    # advisories (1098-entry DB, 120 deps, 0 vulnerabilities, 0 warnings).
+    # New advisories that land on the project's dep tree now fail the
+    # PR check rather than showing yellow. Reverting to warn-only is a
+    # one-line change (`continue-on-error: true`) if the advisory feed
+    # ever produces a false-positive that takes more than a day to
+    # mitigate.
     steps:
       - uses: actions/checkout@v5
-      - uses: rustsec/audit-check@v2
+      # Install cargo-audit from prebuilt binaries via taiki-e/install-action.
+      # The previous rustsec/audit-check@v2 wrapper installed via
+      # `cargo install cargo-audit` which compiled the tool from source --
+      # observed at ~3-5 min on every PR run. The taiki-e action uses
+      # binstall + a published manifest to drop a prebuilt binary into
+      # ~/.cargo/bin in ~10-20s. Pinned to a specific version for the
+      # same drift-prevention reason cargo-mutants is pinned in mutants.yml.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit@0.22.1
+      - name: cargo audit
+        run: cargo audit
 
   # MSRV verification: build the workspace on the declared minimum
   # supported Rust version. Cargo.toml's rust-version = "1.85" floor
@@ -324,5 +386,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-msrv-1.85
+          # Save only on push events; see fmt-clippy comment above.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: cargo check (MSRV)
         run: cargo check --workspace --locked
