@@ -15,6 +15,14 @@ permissions:
 jobs:
   dependency-review:
     name: actions/dependency-review-action
+    # actions/dependency-review-action requires GitHub Advanced Security
+    # on private repos (the action's API call returns "not supported on
+    # this repository" otherwise). The repo is currently private without
+    # GHAS, so this job is gated to skip until the repo flips to public
+    # OR GHAS is enabled. The workflow file is retained so the wiring is
+    # ready the moment either condition becomes true; no per-PR yellow
+    # warning is emitted in the meantime.
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
