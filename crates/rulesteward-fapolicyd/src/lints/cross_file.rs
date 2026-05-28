@@ -348,4 +348,45 @@ mod tests {
         assert!(!has_tier_prefix("ab-x"));
         assert!(!has_tier_prefix("10"));
     }
+
+    #[test]
+    fn lint_cross_file_emits_both_w04_and_c01() {
+        // file 0 `10-deny.rules`: `deny all : all` (terminal, shadows everything later).
+        // file 1 `badname.rules`: `allow uid=0 : all` -> unreachable (fapd-W04) AND
+        //   the filename lacks the NN- prefix (fapd-C01). One lint_cross_file call
+        //   must surface BOTH codes.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/10-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![Attr::All],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/badname.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![Attr::All],
+                )],
+            ),
+        ];
+        let diags = crate::lints::lint_cross_file(&files);
+        let codes: std::collections::HashSet<&str> =
+            diags.iter().map(|d| d.code.as_ref()).collect();
+        assert!(
+            codes.contains("fapd-W04"),
+            "expected fapd-W04 (badname's allow shadowed by 10-deny's `deny all : all`): {diags:?}"
+        );
+        assert!(
+            codes.contains("fapd-C01"),
+            "expected fapd-C01 (badname.rules lacks the NN- prefix): {diags:?}"
+        );
+    }
 }
