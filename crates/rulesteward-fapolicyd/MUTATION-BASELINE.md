@@ -6,8 +6,8 @@
 |---|---|
 | Tool | `cargo-mutants` 27.0.0 |
 | Command | `cargo mutants --no-shuffle` (config: `.cargo/mutants.toml`) |
-| Mutants generated | 206 |
-| **Caught (killed by tests)** | **168** |
+| Mutants generated | 205 |
+| **Caught (killed by tests)** | **167** |
 | **Missed (survived - the regression-bait number)** | **0** |
 | Unviable (mutation produced uncompilable code) | 38 |
 | Timeouts | 0 |

@@ -9,8 +9,10 @@
 //! The subsume relation is built from four mechanisms, each grounded in
 //! fapolicyd's actual matching semantics, designed for zero false-positive risk:
 //!
-//! 1. Decision-terminal precondition: only a terminal-A can shadow B
-//!    (see [`crate::ast::Decision::is_terminal`]).
+//! 1. Decision-terminal assumption: fapolicyd treats every decision as
+//!    terminal (a matched rule ends evaluation per `rules.c:eval_action`), so
+//!    any earlier rule that subsumes B shadows it regardless of decision kind.
+//!    `shadows` documents this inline; no per-decision gate is needed today.
 //! 2. Perm subsume: A.perm covers B.perm.
 //! 3. Predicate-list subsume per side (subject and object treated symmetrically):
 //!    literal-equal subset, `Attr::All` shortcut, macro expansion.
@@ -88,12 +90,16 @@ fn build_macro_map(entries: &[Entry]) -> MacroMap {
     map
 }
 
-/// Whether earlier rule `a` shadows later rule `b`: `a` is terminal AND every
-/// event `b` matches is also matched by `a` (perm, subject, and object all
-/// subsumed).
+/// Whether earlier rule `a` shadows later rule `b`: every event `b` matches is
+/// also matched by `a` (perm, subject, and object all subsumed).
+///
+/// No decision-kind gate: fapolicyd treats every decision as terminal (a
+/// matched rule ends evaluation per `rules.c:eval_action`), so an earlier rule
+/// whose predicates subsume B's makes B unreachable regardless of A's decision.
+/// If a non-terminal decision is ever added to the spec, this fn must gain a
+/// terminal-check on `a` (only a terminal rule ends evaluation and shadows).
 fn shadows(a: &Rule, b: &Rule, macro_map: &MacroMap) -> bool {
-    a.decision.is_terminal()
-        && subsumes_perm(a.perm, b.perm)
+    subsumes_perm(a.perm, b.perm)
         && subsumes_predicate_list(&a.subject, &b.subject, macro_map)
         && subsumes_predicate_list(&a.object, &b.object, macro_map)
 }
