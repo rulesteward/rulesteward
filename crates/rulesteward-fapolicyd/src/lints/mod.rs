@@ -13,6 +13,7 @@
 
 mod cross_file;
 mod deprecation;
+mod dir_slash;
 mod layout;
 mod macros;
 mod reachability;
@@ -42,6 +43,7 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     diags.extend(macros::walk(entries, file));
     diags.extend(reachability::walk(entries, file));
     diags.extend(deprecation::walk(entries, file));
+    diags.extend(dir_slash::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
     diags
 }
@@ -110,6 +112,7 @@ mod tests {
         //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
         //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
         //                          so line 3 is unreachable (shadowed).
+        //   dir_slash::w08      -> `dir=/no/slash` on the object (no trailing slash)
         //
         // The parser strips the inline `# bad` BEFORE chumsky sees the line,
         // so the rule itself parses cleanly; fapd-W03 is then re-detected from
@@ -127,7 +130,7 @@ mod tests {
         // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
         // and its single string value is homogeneous (so no fapd-E05). Being
         // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
-        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+        let source = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -161,6 +164,10 @@ mod tests {
         assert!(
             codes.contains("fapd-S02"),
             "expected macros::s02 to fire (macro after first rule), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-W08"),
+            "expected dir_slash::w08 to fire (dir=/no/slash on the object has no trailing slash), got codes={codes:?} diags={diags:?}",
         );
     }
 
