@@ -167,14 +167,14 @@ fn subsumes_attr(a_attr: &Attr, b_attrs: &[Attr], macro_map: &MacroMap) -> bool 
 /// macro map; A covers B if ANY expanded prefix is a byte-prefix of B's value.
 /// A `SetRef` on B's side cannot be a filesystem path, so it never matches.
 fn dir_prefix_covers(prefix_av: &AttrValue, target_av: &AttrValue, macro_map: &MacroMap) -> bool {
-    let AttrValue::SetRef(_) = target_av else {
-        let target = value_as_string(target_av);
-        return dir_prefixes(prefix_av, macro_map)
-            .iter()
-            .any(|prefix| target.starts_with(prefix.as_str()));
-    };
     // A SetRef target is not a concrete path; no prefix relationship.
-    false
+    if matches!(target_av, AttrValue::SetRef(_)) {
+        return false;
+    }
+    let target = value_as_string(target_av);
+    dir_prefixes(prefix_av, macro_map)
+        .iter()
+        .any(|prefix| target.starts_with(prefix.as_str()))
 }
 
 /// Expand a `dir=` value to the concrete prefix strings it represents. A

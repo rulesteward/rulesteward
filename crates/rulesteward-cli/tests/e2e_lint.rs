@@ -346,3 +346,21 @@ fn lint_fires_w07_with_exit_one_and_code_in_stdout() {
         .code(1)
         .stdout(predicate::str::contains("[fapd-W07]"));
 }
+
+#[test]
+fn lint_fires_w01_with_exit_one_and_code_in_stdout() {
+    // Two identical rules: the second is unreachable (shadowed by the first).
+    // fapd-W01 is a Warning, so exit code is 1.
+    // TDD RED proof: with a NON-shadowing input (e.g. two rules whose object
+    // paths are unrelated, `path=/usr/bin/foo` vs `path=/usr/bin/bar`), no
+    // fapd-W01 fires, the exit code is 0, and this test fails - confirming
+    // it actually exercises the shadowing path rather than passing vacuously.
+    let f = write_tmp("allow uid=0 : all\nallow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W01]"));
+}

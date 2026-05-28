@@ -82,24 +82,31 @@ mod tests {
 
     #[test]
     fn lint_aggregator_calls_all_walks_and_merges_diagnostics() {
-        // Pins the invariant: `lint()` invokes ALL five walks (walker,
-        // validation, macros, deprecation, source_scan) and merges their
-        // diagnostics into the returned Vec. A mutant that drops one walk
-        // from the aggregator body silently loses the corresponding code
-        // from the output; this test fails fast in that case.
+        // Pins the invariant: `lint()` invokes ALL six walks (walker,
+        // validation, macros, reachability, deprecation, source_scan) and
+        // merges their diagnostics into the returned Vec. A mutant that drops
+        // one walk from the aggregator body silently loses the corresponding
+        // code from the output; this test fails fast in that case.
         //
         // The source is constructed so each walk fires on its own code:
-        //   walker::e01      -> `bogusattr=` (unknown attribute name)
-        //   validation::e02  -> `sha256hash=abc` (3 chars, not 64 hex)
-        //   macros::e03      -> `exe=%undefinedmacro` (unknown macro ref)
-        //   deprecation::w07 -> `sha256hash=` (deprecated attribute name)
-        //   source_scan::w03 -> trailing `# bad` (inline comment past tokens)
+        //   walker::e01         -> `bogusattr=` (unknown attribute name)
+        //   validation::e02     -> `sha256hash=abc` (3 chars, not 64 hex)
+        //   macros::e03         -> `exe=%undefinedmacro` (unknown macro ref)
+        //   deprecation::w07    -> `sha256hash=` (deprecated attribute name)
+        //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
+        //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
+        //                          so line 3 is unreachable (shadowed).
         //
         // The parser strips the inline `# bad` BEFORE chumsky sees the line,
         // so the rule itself parses cleanly; fapd-W03 is then re-detected from
         // the raw `source` string by the source_scan walk.
-        let source =
-            "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\n";
+        //
+        // Line 3 is an exact copy of line 2: `allow` is terminal and the
+        // predicates are identical, so line 2 shadows line 3 -> fapd-W01 on
+        // line 3. The duplicate also re-fires fapd-E03 (still an undefined
+        // macro), but `codes` is a set so that does not perturb the other
+        // assertions.
+        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n";
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -125,6 +132,10 @@ mod tests {
         assert!(
             codes.contains("fapd-W03"),
             "expected source_scan::w03 to fire (inline `# bad` comment), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-W01"),
+            "expected reachability::w01 to fire (line 3 duplicates line 2's terminal rule), got codes={codes:?} diags={diags:?}",
         );
     }
 
