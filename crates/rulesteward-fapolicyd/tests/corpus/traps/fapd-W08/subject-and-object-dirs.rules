@@ -1,0 +1,1 @@
+allow dir=/a : dir=/b

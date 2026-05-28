@@ -1,0 +1,1 @@
+allow uid=0 : dir=/usr/bin/
