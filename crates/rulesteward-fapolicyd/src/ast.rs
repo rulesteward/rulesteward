@@ -26,7 +26,7 @@ pub enum Perm {
     Any,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AttrValue {
     Str(String),
     Int(i64),
@@ -86,16 +86,4 @@ pub enum Entry {
     Blank {
         line: usize,
     },
-}
-
-impl Entry {
-    #[must_use]
-    pub fn line(&self) -> usize {
-        match self {
-            Entry::Rule(r) => r.line,
-            Entry::SetDefinition { line, .. }
-            | Entry::Comment { line, .. }
-            | Entry::Blank { line } => *line,
-        }
-    }
 }

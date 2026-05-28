@@ -3,14 +3,16 @@
 //! Code split:
 //! * `walker` - AST-driven passes (fapd-F03, fapd-E01, fapd-W02).
 //! * `validation` - AST-driven attribute-value validation (fapd-E02).
-//! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05).
+//! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05, fapd-S02).
 //! * `deprecation` - AST-driven deprecated-attribute-name passes (fapd-W07).
+//! * `reachability` - AST-driven rule-shadowing pass (fapd-W01).
 //! * `source_scan` - raw-source re-scan for fapd-W03.
 //! * `layout` - filesystem-driven fapd-F02 check.
 
 mod deprecation;
 mod layout;
 mod macros;
+mod reachability;
 mod source_scan;
 mod validation;
 mod walker;
@@ -34,6 +36,7 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     let mut diags = walker::walk(entries, file);
     diags.extend(validation::walk(entries, file));
     diags.extend(macros::walk(entries, file));
+    diags.extend(reachability::walk(entries, file));
     diags.extend(deprecation::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
     diags
@@ -79,24 +82,39 @@ mod tests {
 
     #[test]
     fn lint_aggregator_calls_all_walks_and_merges_diagnostics() {
-        // Pins the invariant: `lint()` invokes ALL five walks (walker,
-        // validation, macros, deprecation, source_scan) and merges their
-        // diagnostics into the returned Vec. A mutant that drops one walk
-        // from the aggregator body silently loses the corresponding code
-        // from the output; this test fails fast in that case.
+        // Pins the invariant: `lint()` invokes ALL six walks (walker,
+        // validation, macros, reachability, deprecation, source_scan) and
+        // merges their diagnostics into the returned Vec. A mutant that drops
+        // one walk from the aggregator body silently loses the corresponding
+        // code from the output; this test fails fast in that case.
         //
         // The source is constructed so each walk fires on its own code:
-        //   walker::e01      -> `bogusattr=` (unknown attribute name)
-        //   validation::e02  -> `sha256hash=abc` (3 chars, not 64 hex)
-        //   macros::e03      -> `exe=%undefinedmacro` (unknown macro ref)
-        //   deprecation::w07 -> `sha256hash=` (deprecated attribute name)
-        //   source_scan::w03 -> trailing `# bad` (inline comment past tokens)
+        //   walker::e01         -> `bogusattr=` (unknown attribute name)
+        //   validation::e02     -> `sha256hash=abc` (3 chars, not 64 hex)
+        //   macros::e03         -> `exe=%undefinedmacro` (unknown macro ref)
+        //   macros::s02         -> `%latemacro=` defined AFTER the first rule
+        //   deprecation::w07    -> `sha256hash=` (deprecated attribute name)
+        //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
+        //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
+        //                          so line 3 is unreachable (shadowed).
         //
         // The parser strips the inline `# bad` BEFORE chumsky sees the line,
         // so the rule itself parses cleanly; fapd-W03 is then re-detected from
         // the raw `source` string by the source_scan walk.
-        let source =
-            "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\n";
+        //
+        // Line 3 is an exact copy of line 2: `allow` is terminal and the
+        // predicates are identical, so line 2 shadows line 3 -> fapd-W01 on
+        // line 3. The duplicate also re-fires fapd-E03 (still an undefined
+        // macro), but `codes` is a set so that does not perturb the other
+        // assertions.
+        //
+        // Line 4 defines `%latemacro` AFTER the first rule, firing fapd-S02
+        // (definition not at file top). The name is distinct from
+        // `%undefinedmacro` (so it does not satisfy the line 2/3 reference,
+        // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
+        // and its single string value is homogeneous (so no fapd-E05). Being
+        // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
+        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -122,6 +140,14 @@ mod tests {
         assert!(
             codes.contains("fapd-W03"),
             "expected source_scan::w03 to fire (inline `# bad` comment), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-W01"),
+            "expected reachability::w01 to fire (line 3 duplicates line 2's terminal rule), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-S02"),
+            "expected macros::s02 to fire (macro after first rule), got codes={codes:?} diags={diags:?}",
         );
     }
 

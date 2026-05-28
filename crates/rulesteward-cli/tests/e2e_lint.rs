@@ -346,3 +346,45 @@ fn lint_fires_w07_with_exit_one_and_code_in_stdout() {
         .code(1)
         .stdout(predicate::str::contains("[fapd-W07]"));
 }
+
+#[test]
+fn lint_fires_w01_with_exit_one_and_code_in_stdout() {
+    // Two identical rules: the second is unreachable (shadowed by the first).
+    // fapd-W01 is a Warning, so exit code is 1.
+    // TDD RED proof: with a NON-shadowing input (e.g. two rules whose object
+    // paths are unrelated, `path=/usr/bin/foo` vs `path=/usr/bin/bar`), no
+    // fapd-W01 fires, the exit code is 0, and this test fails - confirming
+    // it actually exercises the shadowing path rather than passing vacuously.
+    let f = write_tmp("allow uid=0 : all\nallow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W01]"));
+}
+
+#[test]
+fn lint_fires_s02_with_exit_zero_and_code_in_stdout() {
+    // A rule followed by a macro definition: the macro is defined after the
+    // first rule, firing fapd-S02 (Style). Style severity falls through
+    // exit_code::compute to EXIT_CLEAN (0) - only Fatal/Error -> 2 and
+    // Warning -> 1; Style/Convention/Extra do not raise the exit code.
+    // The macro value is a single all-string path (no fapd-E05) and the macro
+    // is unreferenced (no fapd-E03), so fapd-S02 fires in isolation.
+    //
+    // TDD RED proof: with a macro-at-top input
+    // ("%trusted=/usr/bin/foo\nallow uid=0 : all\n") the macro precedes the
+    // rule, no fapd-S02 fires, and the `contains("[fapd-S02]")` assertion
+    // fails - confirming the test exercises the post-rule-macro path rather
+    // than passing vacuously.
+    let f = write_tmp("allow uid=0 : all\n%trusted=/usr/bin/foo\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-S02]"));
+}

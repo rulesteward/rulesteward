@@ -6,12 +6,12 @@
 |---|---|
 | Tool | `cargo-mutants` 27.0.0 |
 | Command | `cargo mutants --no-shuffle` (config: `.cargo/mutants.toml`) |
-| Mutants generated | 93 |
-| **Caught (killed by tests)** | **71** |
+| Mutants generated | 205 |
+| **Caught (killed by tests)** | **167** |
 | **Missed (survived - the regression-bait number)** | **0** |
-| Unviable (mutation produced uncompilable code) | 22 |
+| Unviable (mutation produced uncompilable code) | 38 |
 | Timeouts | 0 |
-| **CI gate** | `--error-on-survival 0` |
+| **CI gate** | non-zero exit on any survivor (cargo-mutants 27 default) |
 
 A CI build that surfaces even one new survivor will fail the mutants
 workflow (nightly cron + `run-mutants` PR label).
@@ -52,6 +52,16 @@ The first run produced 4 survivors:
 
 Three targeted unit tests were added; second run came back at 0 survivors.
 
+Session 3c-B added `lints/reachability.rs` (fapd-W01 rule shadowing); its
+mutants are all caught (three `subsumes_value` survivors were killed with
+targeted unit tests during initial development), so the baseline stays at 0
+missed.
+
+Session 3c-B also added fapd-S02 (`lints/macros.rs::s02`, macro definition
+not at file top). Its mutants - `replace s02 with vec![]`, `delete match arm
+Entry::Rule(_)`, and both `seen_rule` guard flips - are all caught by the
+inline `s02_*` unit tests, so the baseline stays at 0 missed.
+
 ## Re-running locally
 
 ```bash
@@ -70,8 +80,9 @@ The `.github/workflows/mutants.yml` workflow runs on three triggers:
 3. **Manual** - `workflow_dispatch`.
 
 It uses `taiki-e/install-action@v2` to install `cargo-mutants` from a
-prebuilt binary (seconds, not minutes), then runs the same command above
-with `--error-on-survival 0` so a regression fails the workflow.
+prebuilt binary (seconds, not minutes), then runs the same command above;
+cargo-mutants 27 exits non-zero by default on a genuine survivor, failing
+the workflow.
 
 ## When the baseline should change
 

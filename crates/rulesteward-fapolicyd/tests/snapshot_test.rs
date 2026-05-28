@@ -316,6 +316,27 @@ fn w07_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-W01 - rule shadowing (this rule unreachable due to earlier broader
+// rule). Lint-walker-driven; pairwise subsume check over `Entry::Rule`s.
+// 4 mechanisms: decision-terminal precondition, perm subsume, predicate-list
+// subsume (literal-equal + Attr::All shortcut + macro expansion), dir-prefix
+// cross-attribute hierarchy. Fixtures force each mechanism in turn.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w01_traps() {
+    let files = list_rules_files("fapd-W01");
+    assert!(
+        files.len() >= 8,
+        "fapd-W01 trap corpus must have >= 8 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-W01", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-W03 - inline trailing `# comment`. Parser pre-pass-driven.
 // ---------------------------------------------------------------------------
 
@@ -329,6 +350,26 @@ fn w03_traps() {
     );
     for path in &files {
         drive_file("fapd-W03", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fapd-S02 - macro `%name=` set definition appearing AFTER the first rule in
+// the file. Lint-walker-driven (Style severity). Single-pass walk: the
+// "file top" window is closed only by the first `Entry::Rule`; comments and
+// blank lines do NOT close it. One fapd-S02 per offending SetDefinition.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s02_traps() {
+    let files = list_rules_files("fapd-S02");
+    assert!(
+        files.len() >= 4,
+        "fapd-S02 trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-S02", path);
     }
 }
 

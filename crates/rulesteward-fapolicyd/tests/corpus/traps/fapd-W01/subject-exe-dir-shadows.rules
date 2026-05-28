@@ -1,0 +1,2 @@
+allow dir=/usr/bin/ : all
+allow exe=/usr/bin/python3 : all

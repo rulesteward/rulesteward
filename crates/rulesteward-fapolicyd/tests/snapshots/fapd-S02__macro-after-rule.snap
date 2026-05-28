@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-S02] sev=Style line=2 col=1 span=18..39 :: macro `%trusted` defined after the first rule (move to file top)

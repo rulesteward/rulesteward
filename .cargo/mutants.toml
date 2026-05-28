@@ -8,7 +8,7 @@
 #   * format.rs (Display impls - mutation-noise heavy; the round-trip proptest
 #     property catches semantic regressions there but cargo-mutants would
 #     emit many low-signal "delete this whitespace" candidates).
-#   * ast.rs (no behavior - just type defs).
+#   * ast.rs (type definitions only; no behavioral methods to mutate).
 #   * rulesteward-cli: mechanical glue (arg parsing, dispatch, format selection,
 #     exit-code mapping) whose paths are covered by end-to-end assert_cmd tests
 #     in tests/e2e_lint.rs.
