@@ -6,10 +6,10 @@
 |---|---|
 | Tool | `cargo-mutants` 27.0.0 |
 | Command | `cargo mutants --no-shuffle` (config: `.cargo/mutants.toml`) |
-| Mutants generated | 201 |
-| **Caught (killed by tests)** | **164** |
+| Mutants generated | 206 |
+| **Caught (killed by tests)** | **168** |
 | **Missed (survived - the regression-bait number)** | **0** |
-| Unviable (mutation produced uncompilable code) | 37 |
+| Unviable (mutation produced uncompilable code) | 38 |
 | Timeouts | 0 |
 | **CI gate** | non-zero exit on any survivor (cargo-mutants 27 default) |
 
@@ -56,6 +56,11 @@ Session 3c-B added `lints/reachability.rs` (fapd-W01 rule shadowing); its
 mutants are all caught (three `subsumes_value` survivors were killed with
 targeted unit tests during initial development), so the baseline stays at 0
 missed.
+
+Session 3c-B also added fapd-S02 (`lints/macros.rs::s02`, macro definition
+not at file top). Its mutants - `replace s02 with vec![]`, `delete match arm
+Entry::Rule(_)`, and both `seen_rule` guard flips - are all caught by the
+inline `s02_*` unit tests, so the baseline stays at 0 missed.
 
 ## Re-running locally
 

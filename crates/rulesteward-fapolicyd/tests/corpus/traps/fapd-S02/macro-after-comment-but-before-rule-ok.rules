@@ -1,0 +1,3 @@
+# header comment
+%trusted=/usr/bin/foo
+allow uid=0 : all

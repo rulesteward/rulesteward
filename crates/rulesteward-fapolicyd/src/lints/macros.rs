@@ -1,7 +1,7 @@
 //! Macro-related lint passes. Currently fapd-E03 (undefined macro
 //! reference), fapd-E04 (macro reference in `trust=`/`pattern=`), fapd-E05
-//! (macro values of mixed type). Future macro-system checks land
-//! here.
+//! (macro values of mixed type), fapd-S02 (macro definition not at file
+//! top). Future macro-system checks land here.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -17,6 +17,7 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     out.extend(e03(entries, file));
     out.extend(e04(entries, file));
     out.extend(e05(entries, file));
+    out.extend(s02(entries, file));
     out
 }
 
@@ -167,6 +168,50 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 )
                 .with_source_id(file.display().to_string()),
             );
+        }
+    }
+    diags
+}
+
+/// fapd-S02 - macro `%name=` set definition that appears AFTER the first rule
+/// in the file. fapolicyd imposes no order constraint between macros and rules
+/// (macros pre-expand before rules load), so this is purely a Style/readability
+/// concern: definitions read most clearly when they sit at the top of the file,
+/// above the rules that may reference them.
+///
+/// Single-pass walk maintaining `seen_rule`. The "file top" window is closed
+/// ONLY by the first `Entry::Rule`. Comments and blank lines do NOT close the
+/// window - this matches fapolicyd's own shipped rules.d/ conventions, where a
+/// header comment block (and blank separators) commonly precede the macro
+/// definitions. Other macro definitions before the first rule are tolerated
+/// too. After the first rule is seen, every subsequent `SetDefinition` emits
+/// one fapd-S02 at its own span/line.
+fn s02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    // `seen_rule` starts false and is closed exactly once, by the first
+    // `Entry::Rule`. Comments and blanks intentionally fall through the
+    // `_ => {}` arm so they never close the window.
+    let mut seen_rule = false;
+    for entry in entries {
+        match entry {
+            Entry::Rule(_) => seen_rule = true,
+            Entry::SetDefinition {
+                name, line, span, ..
+            } if seen_rule => {
+                diags.push(
+                    Diagnostic::new(
+                        Severity::Style,
+                        "fapd-S02",
+                        span.clone(),
+                        format!("macro `%{name}` defined after the first rule (move to file top)"),
+                        file,
+                        *line,
+                        1,
+                    )
+                    .with_source_id(file.display().to_string()),
+                );
+            }
+            _ => {}
         }
     }
     diags
@@ -740,5 +785,147 @@ mod tests {
         assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E05"));
         assert!(diags.iter().any(|d| d.message.contains("first")));
         assert!(diags.iter().any(|d| d.message.contains("second")));
+    }
+
+    // -----------------------------------------------------------------
+    // fapd-S02 helper-level unit tests. Pin the single-pass `seen_rule`
+    // walker so every branch (macro-before-rule -> silent, macro-after-rule
+    // -> fire, comment does not close the window, blank does not close the
+    // window, partial - only post-rule macros fire, one diag per offending
+    // macro) is exercised independently of the snapshot + proptest suites.
+    // A mutant that flips the `seen_rule` check, forgets to set `seen_rule`
+    // on Rule, or flips it on Comment/Blank dies here.
+    // -----------------------------------------------------------------
+
+    fn comment(line: usize) -> Entry {
+        Entry::Comment {
+            text: " header".to_string(),
+            line,
+        }
+    }
+
+    fn blank(line: usize) -> Entry {
+        Entry::Blank { line }
+    }
+
+    fn allow_all_rule(line: usize) -> Entry {
+        modern_rule(
+            line,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::All],
+        )
+    }
+
+    #[test]
+    fn s02_emits_when_macro_after_rule() {
+        // Rule on line 1, macro definition on line 2 -> 1 fapd-S02 at line 2.
+        let entries = vec![allow_all_rule(1), setdef(2, "trusted")];
+        let diags = s02(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "macro after a rule must fire fapd-S02: {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-S02");
+        assert_eq!(diags[0].severity, Severity::Style);
+        assert_eq!(diags[0].line, 2);
+        assert!(
+            diags[0].message.contains("trusted"),
+            "message must name the macro: {}",
+            diags[0].message,
+        );
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+    }
+
+    #[test]
+    fn s02_silent_when_macro_before_rule() {
+        // Macro definition on line 1, rule on line 2 -> no fapd-S02.
+        let entries = vec![setdef(1, "trusted"), allow_all_rule(2)];
+        let diags = s02(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "a macro defined before the first rule must not fire fapd-S02: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn s02_comment_does_not_close_the_window() {
+        // A leading comment must NOT close the file-top window. The macro is
+        // still before the first rule, so no fapd-S02.
+        let entries = vec![comment(1), setdef(2, "trusted"), allow_all_rule(3)];
+        let diags = s02(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "a comment before the first rule must not close the window: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn s02_blank_does_not_close_the_window() {
+        // Blank lines must NOT close the file-top window either.
+        let entries = vec![blank(1), setdef(2, "trusted"), blank(3), allow_all_rule(4)];
+        let diags = s02(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "blank lines before the first rule must not close the window: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn s02_fires_only_on_post_rule_macros() {
+        // Macro on line 1 (before rule = OK), rule on line 2, macro on line 3
+        // (after rule = fapd-S02). Exactly one fapd-S02, at line 3.
+        let entries = vec![setdef(1, "first"), allow_all_rule(2), setdef(3, "second")];
+        let diags = s02(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the post-rule macro must fire fapd-S02: {diags:?}",
+        );
+        assert_eq!(diags[0].line, 3);
+        // The diagnostic names the offending (post-rule) macro `%second`, not
+        // the OK (pre-rule) macro `%first`. The message phrase "the first
+        // rule" contains the substring "first", so we match on the macro
+        // sigil form `%first` / `%second` to disambiguate.
+        assert!(diags[0].message.contains("%second"));
+        assert!(!diags[0].message.contains("%first"));
+    }
+
+    #[test]
+    fn s02_emits_one_diag_per_post_rule_macro() {
+        // One rule followed by THREE macro definitions -> 3 fapd-S02
+        // diagnostics, one per definition. Kills a mutant that emits only
+        // the first (e.g. a `break`/`return` after the first hit).
+        let entries = vec![
+            allow_all_rule(1),
+            setdef(2, "a"),
+            setdef(3, "b"),
+            setdef(4, "c"),
+        ];
+        let diags = s02(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            3,
+            "expected one fapd-S02 per post-rule macro: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-S02"));
+        assert!(diags.iter().all(|d| d.severity == Severity::Style));
+        let lines: Vec<usize> = diags.iter().map(|d| d.line).collect();
+        assert_eq!(lines, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn s02_silent_with_no_rules() {
+        // A file of only macro definitions (no rule) never fires fapd-S02:
+        // the window is never closed. Kills a mutant that flips the initial
+        // `seen_rule` to `true`.
+        let entries = vec![setdef(1, "a"), setdef(2, "b")];
+        let diags = s02(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "no rule means the window never closes; no fapd-S02: {diags:?}",
+        );
     }
 }

@@ -1015,6 +1015,129 @@ proptest! {
             diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").collect::<Vec<_>>()
         );
     }
+
+    /// Invariant I1 (fapd-S02) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of the per-code never-panics properties; together
+    /// with `parse_never_panics`, covers the full pipeline for fapd-S02.
+    ///
+    /// TDD RED proof: temporarily inserting `panic!("boom")` at the top of
+    /// `macros::s02` makes this property fail with a shrunk counterexample.
+    /// Removing the injection restores the pass. Confirmed in the session-3c-B
+    /// Task-3 cycle.
+    #[test]
+    fn s02_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Invariant I2 (fapd-S02) - when every `%name=` macro definition precedes
+    /// every rule in source order, fapd-S02 emits zero diagnostics: no macro is
+    /// defined after the first rule, so the file-top window is never violated.
+    /// We generate N (1..=4) distinct macro definitions followed by M (1..=3)
+    /// rules, all in one source string with definitions first.
+    ///
+    /// TDD RED proof: temporarily flipping the emit guard in `macros::s02` from
+    /// `if seen_rule` to `if !seen_rule` makes every pre-rule macro fire,
+    /// over-firing and failing this invariant. Restoring the guard removes the
+    /// failure. Confirmed in the session-3c-B Task-3 cycle.
+    #[test]
+    fn s02_silent_when_all_macros_precede_all_rules(
+        names in prop::collection::vec(
+            "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            1..=4,
+        ).prop_filter(
+            "names must be unique",
+            |v| {
+                let mut sorted = v.clone();
+                sorted.sort();
+                sorted.dedup();
+                sorted.len() == v.len()
+            },
+        ),
+        rule_uids in prop::collection::vec(0u32..1_000_000u32, 1..=3),
+    ) {
+        // All macro definitions first, then all rules. Each macro is a single
+        // all-string value so fapd-E05 (mixed type) never fires; each macro is
+        // defined-but-unreferenced so fapd-E03 (undefined ref) never fires.
+        let mut source = String::new();
+        for name in &names {
+            let _ = writeln!(source, "%{name}=/usr/bin/foo");
+        }
+        for uid in &rule_uids {
+            let _ = writeln!(source, "allow uid={uid} : all");
+        }
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let s02_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-S02").count();
+        prop_assert_eq!(
+            s02_count,
+            0,
+            "all macros precede all rules; expected 0 fapd-S02, got {:?}",
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-S02").collect::<Vec<_>>()
+        );
+    }
+
+    /// Invariant I3 (fapd-S02) - one rule followed by K (1..=5) macro
+    /// definitions fires exactly K fapd-S02 diagnostics: every macro after the
+    /// first rule is an offender, one diagnostic each.
+    ///
+    /// TDD RED proof: temporarily inserting `break;` after the first push in
+    /// `macros::s02`'s loop makes it emit only one diagnostic regardless of K,
+    /// failing the `== k` count assertion for K >= 2. Restoring the loop
+    /// removes the failure. Confirmed in the session-3c-B Task-3 cycle.
+    #[test]
+    fn s02_fires_once_per_macro_after_first_rule(
+        names in prop::collection::vec(
+            "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            1..=5,
+        ).prop_filter(
+            "names must be unique",
+            |v| {
+                let mut sorted = v.clone();
+                sorted.sort();
+                sorted.dedup();
+                sorted.len() == v.len()
+            },
+        ),
+    ) {
+        let k = names.len();
+        // One rule first, then K macro definitions - all K are post-rule
+        // offenders. Single all-string values keep fapd-E05 silent; the macros
+        // are unreferenced so fapd-E03 stays silent.
+        let mut source = String::from("allow uid=0 : all\n");
+        for name in &names {
+            let _ = writeln!(source, "%{name}=/usr/bin/foo");
+        }
+        let entries = parse_rules_file(&source)
+            .map_err(|d| TestCaseError::fail(
+                format!("generated source failed to parse: source={source:?} diags={d:?}")
+            ))?;
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let s02_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-S02").count();
+        prop_assert_eq!(
+            s02_count,
+            k,
+            "expected exactly {} fapd-S02 (one per post-rule macro) but got {}; source={:?}",
+            k,
+            s02_count,
+            source
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

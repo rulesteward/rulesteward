@@ -1,0 +1,3 @@
+%first=/usr/bin/a
+allow uid=0 : all
+%second=/usr/bin/b

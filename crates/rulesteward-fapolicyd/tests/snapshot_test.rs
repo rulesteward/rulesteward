@@ -354,6 +354,26 @@ fn w03_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-S02 - macro `%name=` set definition appearing AFTER the first rule in
+// the file. Lint-walker-driven (Style severity). Single-pass walk: the
+// "file top" window is closed only by the first `Entry::Rule`; comments and
+// blank lines do NOT close it. One fapd-S02 per offending SetDefinition.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s02_traps() {
+    let files = list_rules_files("fapd-S02");
+    assert!(
+        files.len() >= 4,
+        "fapd-S02 trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-S02", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-F02 - file-layout coexistence. Filesystem-driven via `check_layout`.
 // ---------------------------------------------------------------------------
 
