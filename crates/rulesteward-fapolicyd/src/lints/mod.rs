@@ -9,6 +9,7 @@
 //! * `source_scan` - raw-source re-scan for fapd-W03.
 //! * `layout` - filesystem-driven fapd-F02 check.
 
+mod cross_file;
 mod deprecation;
 mod layout;
 mod macros;
@@ -41,6 +42,13 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     diags.extend(deprecation::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
     diags
+}
+
+/// Run cross-file lint passes over all rules.d files in fagenrules load order.
+/// Directory-mode only (a single `--file` has no cross-file relationships).
+#[must_use]
+pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    cross_file::w04(files)
 }
 
 /// Read a rules file, parse it, and run every per-file lint pass against it.
