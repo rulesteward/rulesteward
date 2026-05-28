@@ -14,6 +14,7 @@ mod layout;
 mod macros;
 mod reachability;
 mod source_scan;
+mod subsume;
 mod validation;
 mod walker;
 
