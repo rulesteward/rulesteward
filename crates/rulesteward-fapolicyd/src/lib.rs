@@ -10,8 +10,10 @@ pub mod ast;
 pub mod attrs;
 pub mod format;
 pub mod lints;
+pub mod load_order;
 pub mod parser;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 pub use lints::{check_layout, lint, lint_file};
+pub use load_order::fagenrules_cmp;
 pub use parser::{inline, parse_rules_file};

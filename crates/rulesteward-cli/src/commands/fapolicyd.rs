@@ -106,7 +106,7 @@ fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diag
         .map(|entry| entry.path())
         .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
         .collect();
-    files.sort();
+    files.sort_by(|a, b| rulesteward_fapolicyd::fagenrules_cmp(a, b));
     Ok((files, layout_diag))
 }
 
@@ -137,12 +137,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_directory_enumerates_rules_files_alphabetically() {
+    fn resolve_targets_directory_enumerates_rules_files_in_fagenrules_order() {
         let parent = tempfile::tempdir().expect("tempdir");
         let rules_d = parent.path().join("rules.d");
         std::fs::create_dir(&rules_d).expect("mkdir");
-        // Write in NON-alphabetical order to verify sorting.
-        for name in ["80-zzz.rules", "10-aaa.rules", "40-mmm.rules"] {
+        // Order where lexicographic != fagenrules natural sort (lexicographic
+        // would give 100, 10, 9; fagenrules `ls -v` gives 9, 10, 100).
+        for name in ["10-aaa.rules", "9-zzz.rules", "100-mmm.rules"] {
             std::fs::write(rules_d.join(name), "").expect("write");
         }
         let args = lint_args(Some(rules_d), None);
@@ -151,7 +152,7 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec!["10-aaa.rules", "40-mmm.rules", "80-zzz.rules"]);
+        assert_eq!(names, vec!["9-zzz.rules", "10-aaa.rules", "100-mmm.rules"]);
     }
 
     #[test]
