@@ -39,11 +39,15 @@ pub const SUBJECT_ONLY: &[&str] = &[
     "exe",
     "exe_dir",
     "exe_type",
+    // `pattern` is subject-only in fapolicyd: the C subject-attr.c tables
+    // carry PATTERN, object-attr.c does not, and rules.5 lists it under
+    // Subject only.
+    "pattern",
 ];
 
 pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash"];
 
-pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust", "pattern"];
+pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 
 #[must_use]
 pub fn classify(name: &str) -> Option<AttrSide> {
@@ -84,6 +88,14 @@ mod tests {
         assert_eq!(classify("dir"), Some(AttrSide::Either));
         assert_eq!(classify("trust"), Some(AttrSide::Either));
         assert_eq!(classify("all"), Some(AttrSide::Either));
+    }
+
+    #[test]
+    fn classify_pattern_is_subject_only() {
+        // pattern is subject-only: the C subject-attr.c tables contain PATTERN
+        // while object-attr.c does not, and rules.5 lists pattern under Subject
+        // only. It must NOT be Either.
+        assert_eq!(classify("pattern"), Some(AttrSide::Subject));
     }
 
     #[test]
