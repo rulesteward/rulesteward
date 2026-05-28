@@ -54,7 +54,7 @@ jobs:
   # common case).
   fmt-clippy:
     name: fmt + clippy (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v5
 
@@ -96,7 +96,7 @@ jobs:
   # green path.
   check:
     name: rocky${{ matrix.rocky }} - test + musl smoke
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs: [fmt-clippy, musl-build]
     strategy:
       fail-fast: false
@@ -257,7 +257,7 @@ jobs:
 
   coverage:
     name: cargo llvm-cov (floor 80%)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
@@ -279,7 +279,7 @@ jobs:
 
   musl-build:
     name: build static musl binary (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     # Depends on fmt-clippy only. The merged `check` job (test + smoke)
     # consumes this artifact and so depends on musl-build downstream; the
     # prior gate `needs: check` would now be a dependency cycle. A red push
@@ -336,7 +336,7 @@ jobs:
   # workflow_dispatch events per the if: gate below.
   audit:
     name: cargo-audit
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     # PR-only + manual: every change on this repo goes through a PR before
     # landing on main, so push-event audit would duplicate the PR signal.
     # workflow_dispatch is included so a maintainer can manually verify
@@ -374,7 +374,7 @@ jobs:
   # via taiki-e/install-action (~10-20s) instead of source-compile.
   deny:
     name: cargo-deny
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
@@ -393,7 +393,7 @@ jobs:
   # matrix covers per-distro behavior on stable.
   msrv:
     name: cargo check on MSRV (1.85)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
