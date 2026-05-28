@@ -316,6 +316,27 @@ fn w07_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-W01 - rule shadowing (this rule unreachable due to earlier broader
+// rule). Lint-walker-driven; pairwise subsume check over `Entry::Rule`s.
+// 4 mechanisms: decision-terminal precondition, perm subsume, predicate-list
+// subsume (literal-equal + Attr::All shortcut + macro expansion), dir-prefix
+// cross-attribute hierarchy. Fixtures force each mechanism in turn.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w01_traps() {
+    let files = list_rules_files("fapd-W01");
+    assert!(
+        files.len() >= 8,
+        "fapd-W01 trap corpus must have >= 8 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-W01", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-W03 - inline trailing `# comment`. Parser pre-pass-driven.
 // ---------------------------------------------------------------------------
 

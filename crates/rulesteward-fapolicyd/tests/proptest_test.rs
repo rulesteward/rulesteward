@@ -872,6 +872,149 @@ proptest! {
             diags
         );
     }
+
+    /// Invariant I1 (fapd-W01) - the lint walker never panics on any parser-
+    /// accepted input. Mirror of Property 5/7/9/11/13 for fapd-W01; together
+    /// with `parse_never_panics`, covers the full pipeline.
+    ///
+    /// TDD RED proof: temporarily injecting a panic guarded by
+    /// `if entries.iter().filter(|e| matches!(e, Entry::Rule(_))).count() >= 2`
+    /// at the top of `reachability::walk` makes this property fail with a
+    /// shrunk 2-rule counterexample. (A `len() == 7` guard would pass
+    /// vacuously here because `arb_valid_rule_text` emits only 1..=3 rules, so
+    /// the guard must be reachable by the generator.) Removing the injection
+    /// restores the pass. Confirmed in the session-3c-B Task-1 cycle.
+    #[test]
+    fn w01_never_panics_on_parser_accepted_input(
+        source in generators::arb_valid_rule_text()
+    ) {
+        // generator-induced parse failures are not our concern here
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let result = catch_unwind(AssertUnwindSafe(|| lint(&entries, &source, &path)));
+        prop_assert!(
+            result.is_ok(),
+            "lint panicked on parser-accepted input: {source:?}"
+        );
+    }
+
+    /// Invariant I2 (fapd-W01) - a single-rule file never produces fapd-W01:
+    /// shadowing requires a pair of rules, and one rule forms no pair.
+    ///
+    /// TDD RED proof: temporarily changing the outer pair loop bound in
+    /// `reachability::walk` from `for b_idx in 0..rules.len()` to
+    /// `for b_idx in 0..=rules.len()` (off-by-one) indexes out of bounds on a
+    /// single-rule file and panics; the invariant fails. Restoring the bound
+    /// removes the failure. (An alternative shadowing-against-self mutation
+    /// would also be caught here.) Confirmed in the session-3c-B cycle.
+    #[test]
+    fn w01_silent_on_single_rule_file(rule in generators::arb_modern_rule()) {
+        let source = format!("{}\n", Entry::Rule(rule));
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Ok(());
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let w01_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").count();
+        prop_assert_eq!(
+            w01_count,
+            0,
+            "a single rule cannot be shadowed (no pair); source={:?} diags={:?}",
+            source,
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").collect::<Vec<_>>()
+        );
+    }
+
+    /// Invariant I3 (fapd-W01) - when every rule's subject uses a distinct,
+    /// uniquely-keyed attribute that appears in no other rule's subject, no
+    /// rule can subsume another on the subject side, so fapd-W01 stays silent.
+    ///
+    /// We assign each rule the i-th distinct SUBJECT_ONLY key with a fixed
+    /// literal value, and give every rule the same broad `all` object (so the
+    /// object side never blocks subsume - the subject side is the sole
+    /// discriminator). Because each rule's lone subject constraint uses a key
+    /// no other rule's subject carries, the literal-equal-subset check fails
+    /// for every ordered pair.
+    ///
+    /// TDD RED proof: temporarily making `subsumes_attr` return `true`
+    /// unconditionally (ignoring the key/value check) makes every earlier
+    /// rule subsume every later rule, firing fapd-W01 and failing this
+    /// invariant. Restoring the real check removes the failure. Confirmed in
+    /// the session-3c-B cycle.
+    #[test]
+    fn w01_silent_when_all_rules_have_disjoint_subject_keys(
+        // 2..=8 rules, each pinned to a distinct subject key by index.
+        n in 2usize..=8usize,
+        vals in prop::collection::vec(0u32..1_000_000u32, 8),
+    ) {
+        // SUBJECT_ONLY keys that accept an arbitrary integer value cleanly.
+        const KEYS: &[&str] = &[
+            "auid", "uid", "gid", "sessionid", "pid", "ppid",
+        ];
+        let n = n.min(KEYS.len());
+        let mut source = String::new();
+        for i in 0..n {
+            // Each rule: `allow <key_i>=<val_i> : all`. Distinct subject key
+            // per rule guarantees no subject-side subsume across the pair set.
+            let _ = writeln!(source, "allow {}={} : all", KEYS[i], vals[i]);
+        }
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Err(TestCaseError::fail(format!(
+                "disjoint-key generator produced unparseable source: {source:?}"
+            )));
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let w01_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").count();
+        prop_assert_eq!(
+            w01_count,
+            0,
+            "disjoint subject keys cannot shadow; source={:?} diags={:?}",
+            source,
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").collect::<Vec<_>>()
+        );
+    }
+
+    /// Invariant I4 (fapd-W01) - with no `%name=` set definitions, no `dir=`
+    /// attribute, and no `Attr::All`, the only way fapd-W01 can fire is the
+    /// literal-equal-subset path. We generate rules whose subject is a single
+    /// `uid=<n>` with a value drawn from a wide range and whose object is a
+    /// single `path=<unique>` literal that differs across rules. With distinct
+    /// object paths, no rule subsumes another -> zero fapd-W01.
+    ///
+    /// TDD RED proof: temporarily making `subsumes_value` return `true`
+    /// unconditionally (over-firing literal-equal) makes every earlier rule
+    /// subsume every later rule via the object side, firing fapd-W01 and
+    /// failing this invariant. Restoring the equality check removes the
+    /// failure. Confirmed in the session-3c-B cycle.
+    #[test]
+    fn w01_silent_when_no_macros_and_distinct_path_objects(
+        uids in prop::collection::vec(0u32..1_000_000u32, 2..=6),
+    ) {
+        let mut source = String::new();
+        // Object path is `/p<index>` - unique per rule, so the object side
+        // never subsumes across any pair. No macros, no dir=, no Attr::All.
+        for (idx, uid) in uids.iter().enumerate() {
+            let _ = writeln!(source, "allow uid={uid} : path=/p{idx}");
+        }
+        let Ok(entries) = parse_rules_file(&source) else {
+            return Err(TestCaseError::fail(format!(
+                "no-macro generator produced unparseable source: {source:?}"
+            )));
+        };
+        let path = PathBuf::from("/tmp/proptest.rules");
+        let diags = lint(&entries, &source, &path);
+        let w01_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").count();
+        prop_assert_eq!(
+            w01_count,
+            0,
+            "distinct path objects with no macros cannot shadow; source={:?} diags={:?}",
+            source,
+            diags.iter().filter(|d| d.code.as_ref() == "fapd-W01").collect::<Vec<_>>()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

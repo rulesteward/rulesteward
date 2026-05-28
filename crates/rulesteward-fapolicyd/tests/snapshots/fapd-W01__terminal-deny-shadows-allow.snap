@@ -1,0 +1,8 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+assertion_line: 150
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-W01] sev=Warning line=2 col=1 span=15..41 :: rule unreachable: shadowed by the broader rule on line 1

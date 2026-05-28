@@ -1,0 +1,3 @@
+%admins=0,1000
+allow uid=%admins : all
+allow uid=0 : all

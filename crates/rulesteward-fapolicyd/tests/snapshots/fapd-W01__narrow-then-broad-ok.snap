@@ -1,0 +1,8 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+assertion_line: 150
+expression: rendered
+---
+parse=ok
+diagnostics=0
+(no diagnostics)
