@@ -8,7 +8,10 @@
 #   * format.rs (Display impls - mutation-noise heavy; the round-trip proptest
 #     property catches semantic regressions there but cargo-mutants would
 #     emit many low-signal "delete this whitespace" candidates).
-#   * ast.rs (no behavior - just type defs).
+#   * ast.rs (almost entirely type defs; the one behavioral method,
+#     Decision::is_terminal, is pinned by the exhaustive-variant unit test
+#     decision_is_terminal_for_every_variant. Bringing ast.rs into mutation
+#     scope is deferred to the fapd-W08 follow-up).
 #   * rulesteward-cli: mechanical glue (arg parsing, dispatch, format selection,
 #     exit-code mapping) whose paths are covered by end-to-end assert_cmd tests
 #     in tests/e2e_lint.rs.
