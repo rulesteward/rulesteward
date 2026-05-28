@@ -52,6 +52,20 @@ fn ident<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Rich<'a, char>>> +
         .labelled("identifier")
 }
 
+/// Set name (`%name`), matching fapolicyd's `parse_set_name`: any run of
+/// ASCII alphanumeric or `_` characters. Unlike [`ident`], a leading digit is
+/// allowed (`%1abc`), and there is no length cap. Distinct from `ident` so
+/// attribute-key parsing keeps its leading-letter rule.
+fn set_name<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Rich<'a, char>>> + Clone {
+    any()
+        .filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_')
+        .repeated()
+        .at_least(1)
+        .to_slice()
+        .map(|s: &str| s.to_string())
+        .labelled("set name")
+}
+
 fn attr_value<'a>() -> impl Parser<'a, &'a str, AttrValue, extra::Err<Rich<'a, char>>> + Clone {
     // SetRef branch is unambiguous (starts with `%`). The rest captures any
     // contiguous non-ws non-`:` slug as one token, then post-classifies it
@@ -60,7 +74,7 @@ fn attr_value<'a>() -> impl Parser<'a, &'a str, AttrValue, extra::Err<Rich<'a, c
     // combinator would consume `0` and leave `a` unparseable.
     choice((
         just('%')
-            .ignore_then(ident())
+            .ignore_then(set_name())
             .map(AttrValue::SetRef)
             .labelled("set reference"),
         any()
@@ -168,7 +182,7 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 
     ws0()
         .ignore_then(just('%'))
-        .ignore_then(ident())
+        .ignore_then(set_name())
         .then_ignore(just('='))
         .then(
             set_value
@@ -203,16 +217,15 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 /// "Object attributes" sections.
 fn legacy_classify(name: &str) -> Option<AttrSide> {
     match name {
-        // Subject-only in legacy
-        "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "exe_dir" | "exe_type" => {
-            Some(AttrSide::Subject)
-        }
+        // Subject-only in legacy (`pattern` is subject-only in both flavors)
+        "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "exe_dir" | "exe_type"
+        | "pattern" => Some(AttrSide::Subject),
         // Object-only in legacy (dir/ftype/trust differ from modern's Either)
         "path" | "device" | "filehash" | "sha256hash" | "dir" | "ftype" | "trust" => {
             Some(AttrSide::Object)
         }
         // Valid on either side in both flavors
-        "all" | "pattern" => Some(AttrSide::Either),
+        "all" => Some(AttrSide::Either),
         // Unknown attribute, or legacy-illegal attrs (gid, ppid) - not a valid split anchor
         _ => None,
     }
@@ -304,6 +317,40 @@ mod tests {
             assert_eq!(values, vec!["ruby", "perl", "bash"]);
         } else {
             panic!("expected SetDefinition");
+        }
+    }
+
+    #[test]
+    fn set_definition_accepts_leading_digit_name() {
+        // fapolicyd's parse_set_name validates chars as isalnum||'_' with no
+        // leading-letter requirement, so `%1abc` is a valid set name.
+        let parsed = set_definition()
+            .parse("%1abc=foo,bar")
+            .into_result()
+            .expect("leading-digit set name must parse");
+        if let Entry::SetDefinition { name, .. } = parsed {
+            assert_eq!(name, "1abc");
+        } else {
+            panic!("expected SetDefinition");
+        }
+    }
+
+    #[test]
+    fn set_ref_accepts_leading_digit_name() {
+        // A `%name` value with a leading-digit set name must parse as a
+        // SetRef, not fall through to a literal Str("%1abc").
+        let parsed = modern_rule()
+            .parse("allow uid=%1abc : all")
+            .into_result()
+            .expect("rule with leading-digit set ref must parse");
+        if let Entry::Rule(r) = parsed {
+            assert!(
+                matches!(&r.subject[0], Attr::Kv { value: AttrValue::SetRef(s), .. } if s == "1abc"),
+                "uid value should be SetRef(\"1abc\"), got {:?}",
+                r.subject[0]
+            );
+        } else {
+            panic!("expected Rule");
         }
     }
 
@@ -463,8 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_classify_pattern_is_either() {
-        assert_eq!(legacy_classify("pattern"), Some(AttrSide::Either));
+    fn legacy_classify_pattern_is_subject() {
+        // pattern is subject-only in BOTH flavors: the C subject tables
+        // (table1 ORIG + table2) contain PATTERN; object-attr.c does not.
+        assert_eq!(legacy_classify("pattern"), Some(AttrSide::Subject));
     }
 
     #[test]
