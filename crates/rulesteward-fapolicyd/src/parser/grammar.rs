@@ -56,6 +56,11 @@ fn ident<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Rich<'a, char>>> +
 /// ASCII alphanumeric or `_` characters. Unlike [`ident`], a leading digit is
 /// allowed (`%1abc`), and there is no length cap. Distinct from `ident` so
 /// attribute-key parsing keeps its leading-letter rule.
+///
+/// The `.at_least(1)` is a DELIBERATE divergence: fapolicyd's `parse_set_name`
+/// accepts an empty name (`%=...` yields a set literally named ""), but we
+/// reject it as a near-certain typo. Do not "fix" this toward fapolicyd's
+/// accept-empty behavior.
 fn set_name<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Rich<'a, char>>> + Clone {
     any()
         .filter(|c: &char| c.is_ascii_alphanumeric() || *c == '_')
