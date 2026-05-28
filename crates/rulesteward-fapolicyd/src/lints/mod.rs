@@ -3,7 +3,7 @@
 //! Code split:
 //! * `walker` - AST-driven passes (fapd-F03, fapd-E01, fapd-W02).
 //! * `validation` - AST-driven attribute-value validation (fapd-E02).
-//! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05).
+//! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05, fapd-S02).
 //! * `deprecation` - AST-driven deprecated-attribute-name passes (fapd-W07).
 //! * `reachability` - AST-driven rule-shadowing pass (fapd-W01).
 //! * `source_scan` - raw-source re-scan for fapd-W03.
@@ -92,6 +92,7 @@ mod tests {
         //   walker::e01         -> `bogusattr=` (unknown attribute name)
         //   validation::e02     -> `sha256hash=abc` (3 chars, not 64 hex)
         //   macros::e03         -> `exe=%undefinedmacro` (unknown macro ref)
+        //   macros::s02         -> `%latemacro=` defined AFTER the first rule
         //   deprecation::w07    -> `sha256hash=` (deprecated attribute name)
         //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
         //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
@@ -106,7 +107,14 @@ mod tests {
         // line 3. The duplicate also re-fires fapd-E03 (still an undefined
         // macro), but `codes` is a set so that does not perturb the other
         // assertions.
-        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n";
+        //
+        // Line 4 defines `%latemacro` AFTER the first rule, firing fapd-S02
+        // (definition not at file top). The name is distinct from
+        // `%undefinedmacro` (so it does not satisfy the line 2/3 reference,
+        // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
+        // and its single string value is homogeneous (so no fapd-E05). Being
+        // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
+        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -136,6 +144,10 @@ mod tests {
         assert!(
             codes.contains("fapd-W01"),
             "expected reachability::w01 to fire (line 3 duplicates line 2's terminal rule), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-S02"),
+            "expected macros::s02 to fire (macro after first rule), got codes={codes:?} diags={diags:?}",
         );
     }
 
