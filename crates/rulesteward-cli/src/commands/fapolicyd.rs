@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
-use rulesteward_fapolicyd::{check_layout, lint_file};
+use rulesteward_fapolicyd::{Entry, check_layout, lint_cross_file, lint_file};
 
 use crate::cli::{FapolicydCommand, LintArgs};
 use crate::exit_code::{self, EXIT_NO_OP, EXIT_TOOL_FAILURE};
@@ -44,10 +44,13 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     // once for parsing; we read again to populate the ariadne source cache.
     // For v0.1 single-file workloads the double-read cost is negligible.
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    // Parsed entries per file, preserved so the cross-file pass can run after
+    // every file is parsed. (Directory mode only - see below.)
+    let mut parsed: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
 
     for path in &target_files {
         match lint_file(path) {
-            Ok((_entries, diags)) => {
+            Ok((entries, diags)) => {
                 all_diags.extend(diags);
                 // Load source text for ariadne snippets. Failures are soft:
                 // the human renderer falls back to plain format if the entry
@@ -55,6 +58,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
                 if let Ok(text) = std::fs::read_to_string(path) {
                     sources.insert(path.display().to_string(), text);
                 }
+                parsed.push((path.clone(), entries));
             }
             Err(io) => {
                 // Per-file failure must not halt the loop; surface as a
@@ -66,6 +70,13 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
                 tool_err = true;
             }
         }
+    }
+
+    // Cross-file passes (fapd-W04 ordering, fapd-C01 filename convention) apply
+    // only in directory mode; a single `--file` has no cross-file relationships.
+    // `target_files` is already in fagenrules load order (resolve_targets).
+    if args.file.is_none() {
+        all_diags.extend(lint_cross_file(&parsed));
     }
 
     let rendered = match output::render(args.format, &all_diags, &sources) {
