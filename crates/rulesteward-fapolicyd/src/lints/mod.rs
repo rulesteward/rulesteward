@@ -6,8 +6,10 @@
 //! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05, fapd-S02).
 //! * `deprecation` - AST-driven deprecated-attribute-name passes (fapd-W07).
 //! * `reachability` - AST-driven rule-shadowing pass (fapd-W01).
+//! * `subsume` - shared rule-subsumption engine reused by fapd-W01 and fapd-W04.
 //! * `source_scan` - raw-source re-scan for fapd-W03.
 //! * `layout` - filesystem-driven fapd-F02 check.
+//! * `cross_file` - cross-`rules.d/` passes (fapd-W04 ordering, fapd-C01 filename convention).
 
 mod cross_file;
 mod deprecation;
@@ -48,7 +50,9 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
 /// Directory-mode only (a single `--file` has no cross-file relationships).
 #[must_use]
 pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
-    cross_file::w04(files)
+    let mut diags = cross_file::w04(files);
+    diags.extend(cross_file::c01(files));
+    diags
 }
 
 /// Read a rules file, parse it, and run every per-file lint pass against it.

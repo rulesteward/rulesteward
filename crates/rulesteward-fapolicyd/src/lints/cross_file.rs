@@ -78,6 +78,34 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     diags
 }
 
+/// True iff `name` begins with exactly two ASCII digits then a hyphen (the
+/// upstream rules.d tier convention: 10-, 20-, 30-, ..., 90-, 95-).
+fn has_tier_prefix(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b'-'
+}
+
+/// fapd-C01: a rules.d filename does not follow the `NN-` numeric-prefix
+/// convention. File-level finding (no source byte range), like fapd-F02.
+pub(crate) fn c01(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for (path, _entries) in files {
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !has_tier_prefix(name) {
+            diags.push(Diagnostic::new(
+                Severity::Convention,
+                "fapd-C01",
+                0..0,
+                "rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected",
+                path.as_path(),
+                0,
+                0,
+            ));
+        }
+    }
+    diags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +311,41 @@ mod tests {
             ),
         ];
         assert!(w04(&files).is_empty());
+    }
+
+    #[test]
+    fn missing_prefix_fires_c01() {
+        let files = vec![(PathBuf::from("rules.d/myapp.rules"), vec![])];
+        let d = c01(&files);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].code, "fapd-C01");
+        assert_eq!(d[0].severity, Severity::Convention);
+        assert!(d[0].file.ends_with("myapp.rules"));
+        assert!(d[0].source_id.is_none());
+    }
+    #[test]
+    fn one_and_three_digit_prefixes_fire() {
+        let files = vec![
+            (PathBuf::from("rules.d/5-foo.rules"), vec![]),
+            (PathBuf::from("rules.d/100-bar.rules"), vec![]),
+        ];
+        assert_eq!(c01(&files).len(), 2);
+    }
+    #[test]
+    fn conventional_two_digit_prefix_passes() {
+        let files = vec![
+            (PathBuf::from("rules.d/10-a.rules"), vec![]),
+            (PathBuf::from("rules.d/50-myapp.rules"), vec![]),
+            (PathBuf::from("rules.d/95-z.rules"), vec![]),
+        ];
+        assert!(c01(&files).is_empty());
+    }
+    #[test]
+    fn has_tier_prefix_boundaries() {
+        assert!(has_tier_prefix("10-x"));
+        assert!(!has_tier_prefix("5-x"));
+        assert!(!has_tier_prefix("100-x"));
+        assert!(!has_tier_prefix("ab-x"));
+        assert!(!has_tier_prefix("10"));
     }
 }
