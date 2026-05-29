@@ -1,8 +1,9 @@
-# cargo-mutants configuration - scope mutation testing to parser + lints.
+# cargo-mutants configuration - scope mutation testing to parser + lints + sink.
 #
 # Mutation testing is run against crates that contain business logic:
 #   * rulesteward-core (Diagnostic type)
 #   * rulesteward-fapolicyd (parser + lint walker)
+#   * rulesteward-sink (Event schema + EventSink trait + NDJSON sinks)
 #
 # Excludes:
 #   * format.rs (Display impls - mutation-noise heavy; the round-trip proptest
@@ -12,7 +13,7 @@
 #   * rulesteward-cli: mechanical glue (arg parsing, dispatch, format selection,
 #     exit-code mapping) whose paths are covered by end-to-end assert_cmd tests
 #     in tests/e2e_lint.rs.
-#   * rulesteward-auditd, -selinux, -license, -sink: stub crates.
+#   * rulesteward-auditd, -selinux, -license: stub crates.
 #   * every test file (mutating tests is meaningless).
 
 examine_globs = [
@@ -20,12 +21,24 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
+    "crates/rulesteward-sink/src/**/*.rs",
 ]
 
 exclude_globs = [
     "**/tests/**",
     "**/format.rs",
     "**/ast.rs",
+]
+
+# The two `NdjsonStdoutSink` trait-method delegations are equivalent mutants:
+# replacing their body with `Ok(())` cannot be observed by an in-process test
+# because the real `std::io::Stdout` byte stream is not capturable. The identical
+# write/flush logic IS killed via the generic `NdjsonSink<Vec<u8>>` path (the
+# stdout newtype only forwards to it), so the behaviour is covered; only the thin
+# real-stdout forwarding survives. Excluded by name (not `#[mutants::skip]`) so
+# the rationale stays here in reviewable config.
+exclude_re = [
+    "NdjsonStdoutSink>::(emit|flush)",
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially
