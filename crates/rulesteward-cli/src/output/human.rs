@@ -335,4 +335,74 @@ mod tests {
         assert_eq!(cspan.start, char_start, "char start must match");
         assert_eq!(cspan.end, char_end, "char end must match");
     }
+
+    // -----------------------------------------------------------------
+    // Layer-2 property tests for `byte_span_to_char_span`.
+    //
+    // Properties:
+    // 1. For ASCII-only source, the char span equals the byte span (identity).
+    // 2. For any source and char-boundary byte offsets, the char offset is
+    //    <= the byte offset (multibyte chars compress the char index).
+    // 3. For any source and char-boundary byte offset b, char offset ==
+    //    source[..b].chars().count().
+    // -----------------------------------------------------------------
+
+    mod proptest_byte_to_char {
+        use super::super::byte_span_to_char_span;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            // Property 1: ASCII-only source: byte span == char span.
+            // For any ASCII string and two in-bounds offsets, the conversion
+            // is identity. Kills mutations that apply char-index logic to ASCII.
+            #[test]
+            fn ascii_source_char_span_equals_byte_span(
+                src in "[a-zA-Z0-9 !:=]{1,40}",
+                start_idx in 0usize..40,
+                end_delta in 0usize..5,
+            ) {
+                let start = start_idx.min(src.len());
+                let end = (start + end_delta).min(src.len());
+                let span = start..end;
+                let cspan = byte_span_to_char_span(&span, &src);
+                prop_assert_eq!(cspan.start, start,
+                    "ASCII source: char start {} must equal byte start {}", cspan.start, start);
+                prop_assert_eq!(cspan.end, end,
+                    "ASCII source: char end {} must equal byte end {}", cspan.end, end);
+            }
+
+            // Property 2: char offset <= byte offset for any char-boundary
+            // offset in any source. In ASCII (1 byte/char) they are equal.
+            #[test]
+            fn char_offset_le_byte_offset(src in "[a-zA-Z0-9 \n]{1,60}") {
+                // For ASCII-only sources every offset is both a char and byte boundary.
+                for b in 0..=src.len() {
+                    let cspan = byte_span_to_char_span(&(b..b), &src);
+                    prop_assert!(
+                        cspan.start <= b,
+                        "char offset {} must be <= byte offset {} in {:?}",
+                        cspan.start, b, src
+                    );
+                }
+            }
+
+            // Property 3: char offset == source[..b].chars().count() for any
+            // char-boundary byte offset. Verifies that the conversion counts
+            // chars correctly, not just divides bytes.
+            #[test]
+            fn char_offset_equals_chars_count(
+                src in "[a-zA-Z0-9 ]{1,50}",
+                offset_idx in 0usize..51,
+            ) {
+                let b = offset_idx.min(src.len());
+                let expected_chars = src[..b].chars().count();
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(cspan.start, expected_chars,
+                    "char offset for byte {} must be {} in {:?}",
+                    b, expected_chars, src);
+            }
+        }
+    }
 }

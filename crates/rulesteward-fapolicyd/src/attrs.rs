@@ -24,9 +24,9 @@
 //! NOTE on removed names: `exe_dir` and `exe_type` were removed from
 //! `SUBJECT_ONLY` on 2026-05-29. Runtime testing against fapolicyd
 //! 1.3.2, 1.4.3, and 1.4.5 confirmed that both names are REJECTED with
-//! "Field type (exe_dir) is unknown" - they do not appear in the man page
+//! "Field type (`exe_dir`) is unknown" - they do not appear in the man page
 //! and are not valid fapolicyd attribute names. Their prior presence was a
-//! false negative for fapd-E01 (RuleSteward accepted rules fapolicyd rejects).
+//! false negative for `fapd-E01` (`RuleSteward` accepted rules fapolicyd rejects).
 //! The `dir=` value keywords `execdirs`/`systemdirs`/`untrusted` (handled
 //! by fapd-W08) are distinct and were not affected.
 

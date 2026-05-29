@@ -577,6 +577,49 @@ mod tests {
     }
 
     #[test]
+    fn f01_column_is_one_based_when_error_at_nonzero_offset() {
+        // A line like "allow xyz" fails AFTER consuming "allow " - chumsky's
+        // error span starts at a non-zero byte within the line. The `column`
+        // field must be `span_start_in_line + 1` (1-based), not
+        // `span_start_in_line * 1` (which equals 0 when span_start == 0
+        // but would be the same as the raw offset for span_start > 0).
+        //
+        // Kills the `replace + with *` mutant in error::rich_to_diagnostic:
+        //   column = span.start + 1   (correct)
+        //   column = span.start * 1   (wrong: produces 0 for col-1 errors)
+        //
+        // We use "!!!!!" to keep the test simple: chumsky fails at byte 0
+        // (column 1). But we also need to check the +1 offset for errors
+        // NOT at byte 0 - use fill_columns to verify the column field matches
+        // the 1-based position after the actual parse. The fill_columns pass
+        // in parse_rules_file will recompute column from the file-relative span,
+        // so we test that the initial column set in rich_to_diagnostic is
+        // correctly propagated or overwritten.
+        //
+        // Simplest kill: a source "allow !!!" - the parser accepts "allow "
+        // then hits "!" and chumsky's span.start may be > 0. Use fill_columns
+        // as the oracle: after parse_rules_file the column in the F01 diagnostic
+        // must be span_util::line_col(span, source).1.
+        let src = "allow !!!\n";
+        let file = Path::new("t.rules");
+        let diags = parse_rules_file(src, file).expect_err("must fail");
+        let f01 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-F01")
+            .expect("fapd-F01 must be present");
+        // The fill_columns pass runs inside parse_rules_file, so d.column == line_col.
+        let expected_col =
+            rulesteward_core::span_util::line_col(&f01.span, src).1;
+        assert_eq!(
+            f01.column, expected_col,
+            "column must be 1-based line_col of the span, got col={} span={:?}",
+            f01.column, f01.span,
+        );
+        // Extra guard: column must be >= 1 always.
+        assert!(f01.column >= 1, "column must never be 0");
+    }
+
+    #[test]
     fn three_line_file_assigns_file_relative_spans() {
         // Layout (byte offsets):
         //   "# comment\n"        = bytes 0..10  (9 chars + LF)

@@ -152,4 +152,93 @@ mod tests {
             std::cmp::Ordering::Less
         );
     }
+
+    // -----------------------------------------------------------------
+    // Layer-2 property tests for `cmp_digit_runs` and `strip_leading_zeros`.
+    //
+    // Properties:
+    // 1. For digit strings that both parse as u128, cmp_digit_runs(a, b) ==
+    //    a_u128.cmp(&b_u128). Oracle comparison via parsed unsigned integer.
+    //    Kills mutants that invert the length comparison or bytewise tiebreak.
+    // 2. Leading zeros do not change the result: cmp_digit_runs of
+    //    k zeros prepended to a digit string versus the original is Equal.
+    // 3. strip_leading_zeros produces a slice with no leading b'0' (unless
+    //    all-zeros -> empty slice).
+    // -----------------------------------------------------------------
+
+    mod proptest_digit_runs {
+        use super::super::{cmp_digit_runs, strip_leading_zeros};
+        use proptest::prelude::*;
+        use std::cmp::Ordering;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            // Property 1: for short enough digit strings (fit in u128), the
+            // result agrees with integer comparison. Uses strings up to 38
+            // decimal digits (u128::MAX has 39 digits) so both always parse.
+            #[test]
+            fn cmp_digit_runs_matches_u128_oracle(
+                a in "[0-9]{1,38}",
+                b in "[0-9]{1,38}"
+            ) {
+                let a_val: u128 = a.parse().unwrap();
+                let b_val: u128 = b.parse().unwrap();
+                let expected = a_val.cmp(&b_val);
+                let got = cmp_digit_runs(a.as_bytes(), b.as_bytes());
+                prop_assert_eq!(got, expected,
+                    "cmp_digit_runs mismatch: a={} b={} got={:?} expected={:?}",
+                    a, b, got, expected);
+            }
+
+            // Property 2: prepending k leading zeros does not change the
+            // cmp_digit_runs result. Tests the strip_leading_zeros path.
+            #[test]
+            fn cmp_digit_runs_leading_zeros_do_not_change_result(
+                a in "[0-9]{1,30}",
+                b in "[0-9]{1,30}",
+                k in 1usize..=10
+            ) {
+                let a_padded = format!("{:0>width$}", a, width = a.len() + k);
+                let b_padded = format!("{:0>width$}", b, width = b.len() + k);
+                // Canonical comparison (no extra zeros)
+                let expected = cmp_digit_runs(a.as_bytes(), b.as_bytes());
+                // With equal leading-zero padding on both sides
+                let with_zeros = cmp_digit_runs(a_padded.as_bytes(), b_padded.as_bytes());
+                prop_assert_eq!(with_zeros, expected,
+                    "leading zeros changed result: a={} b={} k={} expected={:?} got={:?}",
+                    a, b, k, expected, with_zeros);
+            }
+
+            // Property 3: strip_leading_zeros produces a slice with no b'0'
+            // prefix unless the result is empty (all-zeros input).
+            #[test]
+            fn strip_leading_zeros_no_leading_zero_unless_empty(s in "[0-9]{1,30}") {
+                let stripped = strip_leading_zeros(s.as_bytes());
+                if stripped.is_empty() {
+                    // All-zeros input gives empty result - every byte was b'0'
+                    prop_assert!(
+                        s.bytes().all(|b| b == b'0'),
+                        "only all-zeros input should produce empty result, got: {}",
+                        s
+                    );
+                } else {
+                    prop_assert_ne!(
+                        stripped[0], b'0',
+                        "strip_leading_zeros result must not start with b'0', got {:?}",
+                        std::str::from_utf8(stripped)
+                    );
+                }
+            }
+
+            // Property 4: cmp_digit_runs of a value vs itself is Always Equal.
+            // Kills mutations that produce a non-Equal result on identical inputs.
+            #[test]
+            fn cmp_digit_runs_reflexive(s in "[0-9]{1,40}") {
+                let result = cmp_digit_runs(s.as_bytes(), s.as_bytes());
+                prop_assert_eq!(result, Ordering::Equal,
+                    "cmp_digit_runs(s, s) must be Equal for s={}", s);
+            }
+        }
+    }
 }

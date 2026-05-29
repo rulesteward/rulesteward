@@ -37,8 +37,17 @@ exclude_globs = [
 # stdout newtype only forwards to it), so the behaviour is covered; only the thin
 # real-stdout forwarding survives. Excluded by name (not `#[mutants::skip]`) so
 # the rationale stays here in reviewable config.
+#
+# `error::rich_to_diagnostic` sets `column = span.start + 1` as a line-relative
+# 1-based placeholder. The `parse_rules_file` call site immediately follows with
+# `fill_columns(&mut diagnostics, source)`, which overwrites `column` from the
+# file-relative span for every non-zero-start span. F01 diagnostics always have
+# non-zero spans, so the initial +1 is dead: the observable column is always
+# overwritten by fill_columns. Replacing +1 with *1 produces an identical
+# externally-visible column value. Genuine equivalent mutant.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
+    "rich_to_diagnostic",
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

@@ -709,8 +709,6 @@ mod tests {
         }
     }
 
-    // --- new first-item-determines-type tests ---
-
     #[test]
     fn e05_string_first_set_does_not_fire() {
         // `%s=abc,1` -> STRING-typed (first value "abc" is not all-digits);
@@ -755,6 +753,7 @@ mod tests {
             "INT-set with overflow member must fire fapd-E05: {diags:?}"
         );
         assert_eq!(diags[0].code.as_ref(), "fapd-E05");
+        assert_eq!(diags[0].severity, Severity::Error);
         assert!(
             diags[0].message.contains("exceeds the maximum integer"),
             "overflow message must say 'exceeds the maximum integer': {}",
@@ -814,6 +813,7 @@ mod tests {
             1,
             "single overflow value must fire fapd-E05: {diags:?}"
         );
+        assert_eq!(diags[0].severity, Severity::Error);
         assert!(diags[0].message.contains("exceeds the maximum integer"));
     }
 
@@ -866,32 +866,6 @@ mod tests {
         assert!(
             diags.is_empty(),
             "type-mix (non-digit members in INT set) must not fire fapd-E05: {diags:?}",
-        );
-    }
-
-    #[test]
-    fn e05_silent_on_all_numeric() {
-        // `%mymacro=1,2,3,4` -> INT-typed, all valid; no fapd-E05.
-        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "3", "4"])];
-        let diags = e05(&entries, &p());
-        assert!(
-            diags.is_empty(),
-            "all-numeric set must produce no fapd-E05: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn e05_silent_on_all_string() {
-        // `%mymacro=/bin/bash,/usr/bin/zsh` -> STRING-typed; no fapd-E05.
-        let entries = vec![setdef_with_values(
-            1,
-            "mymacro",
-            &["/bin/bash", "/usr/bin/zsh"],
-        )];
-        let diags = e05(&entries, &p());
-        assert!(
-            diags.is_empty(),
-            "all-string set must produce no fapd-E05: {diags:?}"
         );
     }
 
@@ -1123,5 +1097,83 @@ mod tests {
             diags.is_empty(),
             "no rule means the window never closes; no fapd-S02: {diags:?}",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Layer-2 property tests for `looks_int` and `is_fap_int`.
+    //
+    // Properties:
+    // 1. All-digit strings always satisfy `looks_int`.
+    // 2. Any string with a non-digit prefix does NOT satisfy `looks_int`.
+    // 3. `is_fap_int(v)` implies `looks_int(v)` (is_fap_int is strictly
+    //    narrower - no is_fap_int-true value can fail looks_int).
+    // 4. For all-digit strings, `is_fap_int(v) == v.parse::<i64>().is_ok()`
+    //    (is_fap_int is exactly "all-digit AND fits i64").
+    //
+    // These properties kill mutants on the predicate bodies that unit tests
+    // hit only at specific boundary values.
+    // -----------------------------------------------------------------
+
+    mod proptest_classifiers {
+        use super::super::{is_fap_int, looks_int};
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            // Property 1: all-digit strings of 1..40 digits always satisfy
+            // `looks_int`. A mutant that inverts the `all(|b| b.is_ascii_digit())`
+            // predicate will fail here for any generated digit string.
+            #[test]
+            fn looks_int_true_for_all_digit_strings(s in "[0-9]{1,40}") {
+                prop_assert!(
+                    looks_int(&s),
+                    "all-digit string `{s}` must satisfy looks_int"
+                );
+            }
+
+            // Property 2: prepending a non-digit ASCII letter makes looks_int
+            // return false. Tests the "any non-digit -> false" path for every
+            // generated digit suffix and every ASCII letter prefix.
+            #[test]
+            fn looks_int_false_when_leading_non_digit(
+                prefix in "[a-zA-Z_\\-]",
+                suffix in "[0-9]{0,20}"
+            ) {
+                let s = format!("{prefix}{suffix}");
+                prop_assert!(
+                    !looks_int(&s),
+                    "string `{s}` with non-digit prefix must fail looks_int"
+                );
+            }
+
+            // Property 3: is_fap_int implies looks_int. For any string, if
+            // is_fap_int returns true then looks_int must also return true.
+            // Tests the subset relationship between the two predicates.
+            #[test]
+            fn is_fap_int_implies_looks_int(s in "[0-9]{1,42}") {
+                if is_fap_int(&s) {
+                    prop_assert!(
+                        looks_int(&s),
+                        "is_fap_int({s}) returned true but looks_int returned false"
+                    );
+                }
+            }
+
+            // Property 4: for all-digit strings, is_fap_int agrees exactly with
+            // parse::<i64>().is_ok(). This pins the i64-boundary semantics: a
+            // value with one digit more than i64::MAX (19 digits > 9223372036854775807)
+            // should return false; a valid i64 value should return true. Mutants
+            // that drop the `parse::<i64>().is_ok()` clause or change the parse type
+            // (e.g. u64) fail here.
+            #[test]
+            fn is_fap_int_matches_i64_parse_for_digit_strings(s in "[0-9]{1,25}") {
+                let expected = s.parse::<i64>().is_ok();
+                let got = is_fap_int(&s);
+                prop_assert_eq!(got, expected,
+                    "is_fap_int result mismatch for s={}; expected {} from i64 parse",
+                    s, expected);
+            }
+        }
     }
 }

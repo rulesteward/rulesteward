@@ -130,7 +130,7 @@ mod tests {
     fn set_def(name: &str, values: &[&str]) -> Entry {
         Entry::SetDefinition {
             name: name.to_string(),
-            values: values.iter().map(|s| s.to_string()).collect(),
+            values: values.iter().map(std::string::ToString::to_string).collect(),
             line: 1,
             span: rulesteward_core::span(0, 0),
         }
@@ -330,10 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn w08_silent_on_setref_expanding_to_keyword() {
-        // %d=execdirs ; dir=%d -> no W08
+    fn w08_silent_on_setref_expanding_to_all_three_keywords() {
+        // %d=execdirs,systemdirs,untrusted ; dir=%d -> no W08 for any keyword.
+        // Kills a mutant on the DIR_KEYWORDS slot for systemdirs or untrusted
+        // that is only exercised through the SetRef branch.
         let entries = vec![
-            set_def("d", &["execdirs"]),
+            set_def("d", &["execdirs", "systemdirs", "untrusted"]),
             rule(
                 2,
                 Decision::Allow,
@@ -344,7 +346,7 @@ mod tests {
         ];
         assert!(
             walk(&entries, &p()).is_empty(),
-            "a set expanding to a dir= keyword should not trigger W08"
+            "a set expanding to dir= keywords (execdirs/systemdirs/untrusted) must not trigger W08"
         );
     }
 

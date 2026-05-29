@@ -609,6 +609,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "predicates",
+ "proptest",
  "rulesteward-core",
  "rulesteward-fapolicyd",
  "serde_json",
@@ -620,6 +621,7 @@ dependencies = [
 name = "rulesteward-core"
 version = "0.1.0-dev"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
 ]

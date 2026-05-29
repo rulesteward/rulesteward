@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E01] sev=Error line=3 col=1 span=142..179 :: unknown attribute `exe_type`
