@@ -4,12 +4,22 @@
 //! recommends ending `dir=` values with `/`. Both literal string values and
 //! `%setref` expansions are checked; an undefined macro emits nothing (fapd-E03
 //! owns undefined-macro reporting).
+//!
+//! The three documented `dir=` keyword values (`execdirs`, `systemdirs`,
+//! `untrusted`) are NOT filesystem paths and are exempt from this check - see
+//! `DIR_KEYWORDS`.
 use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{Attr, AttrValue, Entry};
 use crate::lints::subsume::build_macro_map;
+
+/// fapolicyd's documented non-path `dir=` keyword values. These are not paths,
+/// so the "missing trailing slash" advice (fapd-W08) does not apply - appending
+/// `/` would turn the keyword into a literal path and change the rule's meaning.
+/// (man fapolicyd.rules: "3 keywords that dir supports: execdirs, systemdirs, untrusted".)
+const DIR_KEYWORDS: [&str; 3] = ["execdirs", "systemdirs", "untrusted"];
 
 pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let macro_map = build_macro_map(entries);
@@ -27,6 +37,12 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             }
             match value {
                 AttrValue::Str(s) => {
+                    // Skip the three documented dir= keywords; they are not
+                    // paths and adding a trailing slash would change their
+                    // meaning entirely.
+                    if DIR_KEYWORDS.contains(&s.as_str()) {
+                        continue;
+                    }
                     if !s.ends_with('/') {
                         diags.push(
                             Diagnostic::new(
@@ -49,6 +65,11 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // owns undefined-macro reporting.
                     if let Some(values) = macro_map.get(name) {
                         for v in values {
+                            // Skip keyword values that may legitimately appear
+                            // in a set used as a dir= operand.
+                            if DIR_KEYWORDS.contains(&v.as_str()) {
+                                continue;
+                            }
                             if !v.ends_with('/') {
                                 diags.push(
                                     Diagnostic::new(
@@ -267,5 +288,97 @@ mod tests {
             vec![kv("dir", "/usr/lib64")],
         )];
         assert_eq!(walk(&entries, &p()).len(), 1);
+    }
+
+    // --- dir= keyword exemption tests ---
+
+    #[test]
+    fn w08_silent_on_dir_keyword_execdirs() {
+        let entries = vec![rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![kv("dir", "execdirs")],
+        )];
+        assert!(
+            walk(&entries, &p()).is_empty(),
+            "execdirs is a keyword, not a path"
+        );
+    }
+
+    #[test]
+    fn w08_silent_on_all_three_dir_keywords_both_sides() {
+        // execdirs/systemdirs/untrusted on subject and/or object dir= -> no W08
+        let entries = vec![
+            rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![kv("dir", "execdirs")],
+                vec![kv("dir", "systemdirs")],
+            ),
+            rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![Attr::All],
+                vec![kv("dir", "untrusted")],
+            ),
+        ];
+        assert!(walk(&entries, &p()).is_empty());
+    }
+
+    #[test]
+    fn w08_silent_on_setref_expanding_to_keyword() {
+        // %d=execdirs ; dir=%d -> no W08
+        let entries = vec![
+            set_def("d", &["execdirs"]),
+            rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![Attr::All],
+                vec![kv_ref("dir", "d")],
+            ),
+        ];
+        assert!(
+            walk(&entries, &p()).is_empty(),
+            "a set expanding to a dir= keyword should not trigger W08"
+        );
+    }
+
+    #[test]
+    fn w08_still_fires_on_real_path_without_slash() {
+        // regression guard: a real path (not a keyword) still fires
+        let entries = vec![rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![kv("dir", "/usr/lib64")],
+        )];
+        assert_eq!(
+            walk(&entries, &p())
+                .iter()
+                .filter(|d| d.code == "fapd-W08")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn w08_keyword_with_slash_is_treated_as_path_no_panic() {
+        // sanity: dir=execdirs/ is NOT one of the exact keywords (it has a trailing
+        // slash) so it is treated as a path; it ends with slash so no W08 anyway.
+        let entries = vec![rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![kv("dir", "execdirs/")],
+        )];
+        // Ends with slash -> passes, and importantly doesn't panic
+        assert!(walk(&entries, &p()).is_empty());
     }
 }

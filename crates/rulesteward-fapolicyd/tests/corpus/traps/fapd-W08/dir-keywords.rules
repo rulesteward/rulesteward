@@ -1,0 +1,5 @@
+# fapolicyd.rules(5): "3 keywords that dir supports: execdirs, systemdirs, untrusted"
+# These are not filesystem paths; fapd-W08 must NOT fire on them.
+allow uid=0 : dir=execdirs
+allow uid=0 : dir=systemdirs
+allow uid=0 : dir=untrusted
