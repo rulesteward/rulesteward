@@ -89,4 +89,25 @@ mod tests {
         let diags = [diag(Severity::Fatal, "fapd-F01")];
         assert_eq!(compute(&diags, true), EXIT_TOOL_FAILURE);
     }
+
+    #[test]
+    fn convention_only_is_clean() {
+        // fapd-C01 is Convention: advisory, must NOT escalate the exit code.
+        // Pins the Convention -> EXIT_CLEAN fall-through against a mutant that
+        // re-tiers Convention as a Warning or Error.
+        assert_eq!(
+            compute(&[diag(Severity::Convention, "fapd-C01")], false),
+            EXIT_CLEAN
+        );
+    }
+
+    #[test]
+    fn w04_warning_returns_one() {
+        // fapd-W04 is Warning: must yield EXIT_WARNINGS (1), not be swallowed
+        // as advisory.
+        assert_eq!(
+            compute(&[diag(Severity::Warning, "fapd-W04")], false),
+            EXIT_WARNINGS
+        );
+    }
 }

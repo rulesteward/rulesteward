@@ -388,3 +388,57 @@ fn lint_fires_s02_with_exit_zero_and_code_in_stdout() {
         .code(0)
         .stdout(predicate::str::contains("[fapd-S02]"));
 }
+
+#[test]
+fn lint_directory_cross_file_w04_exits_one() {
+    // Cross-rules.d ordering: `deny all : all` in the earlier-loading file
+    // (10-) shadows the allow in the later file (50-), firing fapd-W04
+    // (Warning -> exit 1). This only happens once the cross-file pass runs
+    // in directory mode (positional path, no --file).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(rules_d.join("10-deny.rules"), "deny all : all\n").expect("write");
+    std::fs::write(rules_d.join("50-allow.rules"), "allow uid=0 : path=/x\n").expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&rules_d)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W04]"));
+}
+
+#[test]
+fn lint_directory_cross_file_c01_is_advisory_exits_zero() {
+    // A rules.d filename lacking the NN- prefix fires fapd-C01 (Convention).
+    // Convention does not escalate the exit code (lone C01 -> exit 0) but the
+    // finding is still rendered to stdout.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(rules_d.join("badname.rules"), "allow uid=0 : all\n").expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&rules_d)
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-C01]"));
+}
+
+#[test]
+fn lint_single_file_mode_skips_cross_file_c01() {
+    // In --file mode there are no cross-file relationships, so lint_cross_file
+    // (which includes the C01 filename-convention check) must NOT run - even
+    // though the random tempfile name lacks the NN- prefix. Pins the
+    // `args.file.is_none()` gate: exit 0 and NO fapd-C01 in output.
+    let f = write_tmp("allow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-C01]").not());
+}

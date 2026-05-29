@@ -1,0 +1,2 @@
+%dirs=/opt,/usr
+allow uid=0 : dir=%dirs

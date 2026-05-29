@@ -6,14 +6,20 @@
 //! * `macros` - AST-driven macro-system passes (fapd-E03, fapd-E04, fapd-E05, fapd-S02).
 //! * `deprecation` - AST-driven deprecated-attribute-name passes (fapd-W07).
 //! * `reachability` - AST-driven rule-shadowing pass (fapd-W01).
+//! * `subsume` - shared rule-subsumption engine reused by fapd-W01 and fapd-W04.
 //! * `source_scan` - raw-source re-scan for fapd-W03.
 //! * `layout` - filesystem-driven fapd-F02 check.
+//! * `cross_file` - cross-`rules.d/` passes (fapd-W04 ordering, fapd-C01 filename convention).
+//! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
 
+mod cross_file;
 mod deprecation;
+mod dir_slash;
 mod layout;
 mod macros;
 mod reachability;
 mod source_scan;
+mod subsume;
 mod validation;
 mod walker;
 
@@ -38,7 +44,17 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     diags.extend(macros::walk(entries, file));
     diags.extend(reachability::walk(entries, file));
     diags.extend(deprecation::walk(entries, file));
+    diags.extend(dir_slash::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
+    diags
+}
+
+/// Run cross-file lint passes over all rules.d files in fagenrules load order.
+/// Directory-mode only (a single `--file` has no cross-file relationships).
+#[must_use]
+pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    let mut diags = cross_file::w04(files);
+    diags.extend(cross_file::c01(files));
     diags
 }
 
@@ -82,8 +98,8 @@ mod tests {
 
     #[test]
     fn lint_aggregator_calls_all_walks_and_merges_diagnostics() {
-        // Pins the invariant: `lint()` invokes ALL six walks (walker,
-        // validation, macros, reachability, deprecation, source_scan) and
+        // Pins the invariant: `lint()` invokes ALL seven walks (walker,
+        // validation, macros, reachability, deprecation, dir_slash, source_scan) and
         // merges their diagnostics into the returned Vec. A mutant that drops
         // one walk from the aggregator body silently loses the corresponding
         // code from the output; this test fails fast in that case.
@@ -97,6 +113,7 @@ mod tests {
         //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
         //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
         //                          so line 3 is unreachable (shadowed).
+        //   dir_slash::w08      -> `dir=/no/slash` on the object (no trailing slash)
         //
         // The parser strips the inline `# bad` BEFORE chumsky sees the line,
         // so the rule itself parses cleanly; fapd-W03 is then re-detected from
@@ -114,7 +131,7 @@ mod tests {
         // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
         // and its single string value is homogeneous (so no fapd-E05). Being
         // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
-        let source = "allow uid=0 bogusattr=x : sha256hash=abc # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+        let source = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -148,6 +165,10 @@ mod tests {
         assert!(
             codes.contains("fapd-S02"),
             "expected macros::s02 to fire (macro after first rule), got codes={codes:?} diags={diags:?}",
+        );
+        assert!(
+            codes.contains("fapd-W08"),
+            "expected dir_slash::w08 to fire (dir=/no/slash on the object has no trailing slash), got codes={codes:?} diags={diags:?}",
         );
     }
 

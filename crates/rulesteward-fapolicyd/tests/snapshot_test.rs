@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
-use rulesteward_fapolicyd::{check_layout, lint, parse_rules_file};
+use rulesteward_fapolicyd::{
+    Entry, check_layout, fagenrules_cmp, lint, lint_cross_file, parse_rules_file,
+};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -374,6 +376,25 @@ fn s02_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-W08 - `dir=` literal value missing its trailing slash. Lint-walker-
+// driven (per-file). Fixtures: fires, clean (trailing slash), both sides, and
+// %setref dir (skipped).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w08_traps() {
+    let files = list_rules_files("fapd-W08");
+    assert!(
+        files.len() >= 4,
+        "fapd-W08 trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-W08", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-F02 - file-layout coexistence. Filesystem-driven via `check_layout`.
 // ---------------------------------------------------------------------------
 
@@ -438,5 +459,136 @@ fn f02_layout_traps() {
         settings.bind(|| {
             assert_snapshot!(snapshot_name, rendered);
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fapd-W04 / fapd-C01 - cross-`rules.d/` passes. Directory-scenario-driven via
+// `lint_cross_file` over `<scenario>/rules.d/*.rules` in fagenrules load order.
+// ---------------------------------------------------------------------------
+
+/// List immediate subdirectories (scenarios) of `<traps>/<code>/`, sorted.
+fn list_cross_file_scenarios(code: &str) -> Vec<PathBuf> {
+    let dir = traps_dir(code);
+    let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {code} traps dir {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Drive one cross-file scenario: enumerate `<scenario>/rules.d/*.rules` in
+/// fagenrules (`ls -v`) order, parse each using a host-independent
+/// `rules.d/<name>` path (so the snapshot is reproducible), run
+/// `lint_cross_file`, and snapshot. Snapshot name = `<code>__<scenario>`.
+fn drive_cross_file_scenario(code: &str, scenario_dir: &Path) {
+    let rules_d = scenario_dir.join("rules.d");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&rules_d)
+        .unwrap_or_else(|e| panic!("read rules.d {}: {e}", rules_d.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
+        .collect();
+    files.sort_by(|a, b| fagenrules_cmp(a, b));
+
+    let scenario_name = scenario_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("scenario {} has no UTF-8 name", scenario_dir.display()))
+        .to_owned();
+
+    let mut parsed: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+        let entries = match parse_rules_file(&src) {
+            Ok(entries) => entries,
+            Err(diags) => {
+                panic!(
+                    "cross-file fixture {} must parse cleanly: {diags:?}",
+                    path.display()
+                )
+            }
+        };
+        let rel = Path::new("rules.d").join(path.file_name().expect("rules file has a name"));
+        parsed.push((rel, entries));
+    }
+
+    let diags = lint_cross_file(&parsed);
+
+    // Cross-file snapshots span multiple files, so include `file=` (the
+    // per-file `render` omits it). Sort deterministically.
+    let mut sorted: Vec<&Diagnostic> = diags.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.span.start.cmp(&b.span.start))
+            .then(a.code.as_ref().cmp(b.code.as_ref()))
+    });
+
+    let mut rendered = String::new();
+    writeln!(
+        rendered,
+        "files={}\ndiagnostics={}",
+        files.len(),
+        diags.len()
+    )
+    .expect("write to String never fails");
+    if sorted.is_empty() {
+        rendered.push_str("(no diagnostics)\n");
+    } else {
+        for d in sorted {
+            writeln!(
+                rendered,
+                "[{code}] sev={sev:?} line={line} col={col} span={start}..{end} file={file} :: {msg}",
+                code = d.code,
+                sev = d.severity,
+                line = d.line,
+                col = d.column,
+                start = d.span.start,
+                end = d.span.end,
+                file = d.file.display(),
+                msg = d.message,
+            )
+            .expect("write to String never fails");
+        }
+    }
+
+    let snapshot_name = format!("{code}__{scenario_name}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn w04_cross_file_traps() {
+    let scenarios = list_cross_file_scenarios("fapd-W04");
+    assert!(
+        scenarios.len() >= 4,
+        "fapd-W04 scenarios must be >= 4 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_cross_file_scenario("fapd-W04", scenario);
+    }
+}
+
+#[test]
+fn c01_cross_file_traps() {
+    let scenarios = list_cross_file_scenarios("fapd-C01");
+    assert!(
+        scenarios.len() >= 2,
+        "fapd-C01 scenarios must be >= 2 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_cross_file_scenario("fapd-C01", scenario);
     }
 }

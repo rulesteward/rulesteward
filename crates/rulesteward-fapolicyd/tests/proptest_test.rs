@@ -34,17 +34,17 @@
 //! the explicit config below pins it so a future default change doesn't
 //! silently weaken the suite).
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
-
-use std::path::PathBuf;
 
 use rulesteward_core::{Severity, span};
 use rulesteward_fapolicyd::{
     ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor},
-    attrs, lint, parse_rules_file,
+    attrs, fagenrules_cmp, lint, lint_cross_file, parse_rules_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -1136,6 +1136,164 @@ proptest! {
             k,
             s02_count,
             source
+        );
+    }
+
+    /// Property (fapd-W04) - a `deny all : all` in the first file makes every
+    /// allow in every later file unreachable: lint_cross_file emits exactly one
+    /// fapd-W04 per later-file allow.
+    #[test]
+    fn w04_deny_all_shadows_every_later_allow(
+        n in 1usize..=5usize,
+        uids in prop::collection::vec(0u32..1_000_000u32, 5),
+    ) {
+        let mut files: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
+        files.push((
+            PathBuf::from("rules.d/00-deny.rules"),
+            parse_rules_file("deny all : all\n").expect("deny-all parses"),
+        ));
+        for (i, uid) in uids.iter().enumerate().take(n) {
+            let src = format!("allow uid={uid} : path=/p{i}\n");
+            files.push((
+                PathBuf::from(format!("rules.d/{:02}-allow.rules", 10 + i)),
+                parse_rules_file(&src).expect("allow parses"),
+            ));
+        }
+        let diags = lint_cross_file(&files);
+        let w04 = diags.iter().filter(|d| d.code.as_ref() == "fapd-W04").count();
+        prop_assert_eq!(
+            w04, n,
+            "deny all:all in file 0 must shadow all {} later allows; got {}",
+            n, w04
+        );
+    }
+
+    /// Property (fapd-W04) - with no deny anywhere, lint_cross_file emits zero
+    /// fapd-W04 (W04 requires an earlier-file deny to shadow an allow).
+    #[test]
+    fn w04_silent_when_no_deny(
+        uids in prop::collection::vec(0u32..1_000_000u32, 1..=5),
+    ) {
+        let mut files: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
+        for (i, uid) in uids.iter().enumerate() {
+            let src = format!("allow uid={uid} : path=/p{i}\n");
+            files.push((
+                PathBuf::from(format!("rules.d/{:02}-allow.rules", 10 + i)),
+                parse_rules_file(&src).expect("allow parses"),
+            ));
+        }
+        let diags = lint_cross_file(&files);
+        let w04 = diags.iter().filter(|d| d.code.as_ref() == "fapd-W04").count();
+        prop_assert_eq!(w04, 0, "no deny rule -> zero W04, got {}", w04);
+    }
+
+    /// Property (fapd-C01) - lint_cross_file emits fapd-C01 for a rules.d file
+    /// iff its filename does NOT begin with exactly two ASCII digits then `-`.
+    #[test]
+    fn c01_fires_iff_filename_lacks_two_digit_prefix(
+        stem in "[a-zA-Z0-9_.-]{1,20}",
+    ) {
+        let fname = format!("{stem}.rules");
+        let fb = fname.as_bytes();
+        let has_prefix =
+            fb.len() >= 3 && fb[0].is_ascii_digit() && fb[1].is_ascii_digit() && fb[2] == b'-';
+        let files = vec![(PathBuf::from(format!("rules.d/{fname}")), Vec::new())];
+        let diags = lint_cross_file(&files);
+        let c01 = diags.iter().filter(|d| d.code.as_ref() == "fapd-C01").count();
+        prop_assert_eq!(
+            c01,
+            usize::from(!has_prefix),
+            "C01 must fire iff `{}` lacks the NN- prefix (has_prefix={}); got {}",
+            fname, has_prefix, c01
+        );
+    }
+
+    /// Property (fapd-W08) - within one rule, fapd-W08 fires exactly once per
+    /// literal `dir=` value lacking a trailing slash (never for one that has it).
+    #[test]
+    fn w08_fires_once_per_slashless_literal_dir(
+        dirs in prop::collection::vec(("[a-z]{1,8}", any::<bool>()), 1..=5),
+    ) {
+        let expected = dirs.iter().filter(|(_, slash)| !slash).count();
+        let mut object = String::new();
+        for (i, (seg, slash)) in dirs.iter().enumerate() {
+            if i > 0 {
+                object.push(' ');
+            }
+            let _ = write!(object, "dir=/{seg}{}", if *slash { "/" } else { "" });
+        }
+        let source = format!("allow uid=0 : {object}\n");
+        let entries = parse_rules_file(&source).map_err(|d| {
+            TestCaseError::fail(format!("generated source must parse: {source:?} {d:?}"))
+        })?;
+        let diags = lint(&entries, &source, Path::new("/tmp/proptest.rules"));
+        let w08 = diags.iter().filter(|d| d.code.as_ref() == "fapd-W08").count();
+        prop_assert_eq!(
+            w08, expected,
+            "expected {} W08 (one per slashless literal dir) in {:?}; got {}",
+            expected, source, w08
+        );
+    }
+
+    /// Property (fagenrules_cmp) - the comparator is a strict total order:
+    /// reflexive, antisymmetric, and transitive. (Vec::sort_by requires this.)
+    #[test]
+    fn fagenrules_cmp_is_total_order(
+        names in prop::collection::vec("[a-zA-Z0-9_.-]{1,12}", 1..=6),
+    ) {
+        let paths: Vec<PathBuf> =
+            names.iter().map(|n| PathBuf::from(format!("{n}.rules"))).collect();
+        for a in &paths {
+            prop_assert_eq!(fagenrules_cmp(a, a), Ordering::Equal, "reflexivity on {:?}", a);
+            for b in &paths {
+                prop_assert_eq!(
+                    fagenrules_cmp(a, b),
+                    fagenrules_cmp(b, a).reverse(),
+                    "antisymmetry on {:?} vs {:?}", a, b
+                );
+            }
+        }
+        for a in &paths {
+            for b in &paths {
+                for c in &paths {
+                    if fagenrules_cmp(a, b) != Ordering::Greater
+                        && fagenrules_cmp(b, c) != Ordering::Greater
+                    {
+                        prop_assert_ne!(
+                            fagenrules_cmp(a, c),
+                            Ordering::Greater,
+                            "transitivity: {:?} <= {:?} <= {:?} but a > c", a, b, c
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Property (fagenrules_cmp) - sorting any permutation of
+    /// `[2-x, 9-x, 10-x, 100-x]` yields the natural (version) order that real
+    /// `ls -v` (and thus fagenrules) produces.
+    #[test]
+    fn fagenrules_cmp_sorts_numeric_prefixes_naturally(
+        mut perm in Just(vec![
+            PathBuf::from("2-x.rules"),
+            PathBuf::from("9-x.rules"),
+            PathBuf::from("10-x.rules"),
+            PathBuf::from("100-x.rules"),
+        ]).prop_shuffle(),
+    ) {
+        perm.sort_by(|a, b| fagenrules_cmp(a, b));
+        let got: Vec<String> =
+            perm.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        prop_assert_eq!(
+            got,
+            vec![
+                "2-x.rules".to_string(),
+                "9-x.rules".to_string(),
+                "10-x.rules".to_string(),
+                "100-x.rules".to_string(),
+            ],
+            "natural sort of a shuffled permutation must restore 2,9,10,100 order"
         );
     }
 }
