@@ -76,7 +76,19 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     // only in directory mode; a single `--file` has no cross-file relationships.
     // `target_files` is already in fagenrules load order (resolve_targets).
     if args.file.is_none() {
-        all_diags.extend(lint_cross_file(&parsed));
+        // Route cross-file diagnostics (fapd-W04/C01) through the same column
+        // backfill as the per-file lint() path, for uniformity. This is a no-op
+        // today: every rule span starts at its line's first byte (the grammar
+        // includes leading whitespace in the span), so W04 columns are already 1,
+        // and C01's 0..0 span is skipped by fill_columns. It future-proofs any
+        // later cross-file diagnostic that anchors mid-line.
+        let mut cross = lint_cross_file(&parsed);
+        for d in &mut cross {
+            if let Some(src) = sources.get(&d.file.display().to_string()) {
+                rulesteward_core::fill_columns(std::slice::from_mut(d), src);
+            }
+        }
+        all_diags.extend(cross);
     }
 
     let rendered = match output::render(args.format, &all_diags, &sources) {
@@ -115,7 +127,17 @@ fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diag
         .with_context(|| format!("reading directory {}", dir.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
+        // Skip hidden dotfiles: fagenrules enumerates via `ls -1v | grep '\.rules$'`
+        // (no -a), so a `.NN-x.rules` is never compiled - linting it would emit a
+        // phantom fapd-C01.
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|s| s.to_str()) == Some("rules")
+                && !p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+        })
         .collect();
     files.sort_by(|a, b| rulesteward_fapolicyd::fagenrules_cmp(a, b));
     Ok((files, layout_diag))
@@ -207,6 +229,34 @@ mod tests {
         assert!(
             chain.contains(path.display().to_string().as_str()),
             "error chain must mention the offending path, got {chain}",
+        );
+    }
+
+    #[test]
+    fn resolve_targets_directory_skips_hidden_dotfiles() {
+        // A normal NN-x.rules plus a hidden .NN-hidden.rules: only the former is
+        // linted. fagenrules excludes dotfiles (enumerates via `ls -1v | grep
+        // '\.rules$'`, no `-a`); linting a dotfile would emit a phantom fapd-C01.
+        let parent = tempfile::tempdir().expect("tempdir");
+        let rules_d = parent.path().join("rules.d");
+        std::fs::create_dir(&rules_d).expect("mkdir");
+        std::fs::write(rules_d.join("10-real.rules"), "allow perm=open all : all\n")
+            .expect("write");
+        std::fs::write(
+            rules_d.join(".50-hidden.rules"),
+            "allow perm=open all : all\n",
+        )
+        .expect("write");
+        let args = lint_args(Some(rules_d), None);
+        let (files, _layout) = resolve_targets(&args).expect("ok");
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["10-real.rules"],
+            "hidden dotfile must be skipped, got {names:?}"
         );
     }
 

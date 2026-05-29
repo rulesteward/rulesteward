@@ -1,1 +1,5 @@
+# type-mix (non-digit member in INT-typed set) is intentionally not flagged by
+# fapd-E05 - its validity is version-divergent (1.3.2/1.4.3/1.4.5 differ).
+# This fixture guards that type-mix does NOT regress to firing.
+# Expected: 0 diagnostics.
 %mymacro=1,2,foo,3

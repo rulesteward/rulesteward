@@ -1,0 +1,2 @@
+%appdirs=/opt/app/,/usr/local/
+allow uid=0 : dir=%appdirs

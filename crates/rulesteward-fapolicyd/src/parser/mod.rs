@@ -8,9 +8,10 @@
 //!
 //! fapd-W03 (inline trailing `# comment`) is emitted by [`crate::lints::lint`]
 //! via source re-scan, not by the parser. The parser strips inline `#` text
-//! before handing the line to chumsky so the grammar stays clean. A
-//! leading-whitespace `#` is rejected as fapd-F01 - fapolicyd itself only
-//! accepts `#` at column 0.
+//! before handing the line to chumsky so the grammar stays clean. A line whose
+//! first non-whitespace byte is `#` is recognized as a comment regardless of
+//! leading spaces or tabs - fapolicyd accepts indented comments and
+//! `fagenrules --check` exits 0 on them.
 
 mod error;
 mod grammar;
@@ -18,7 +19,7 @@ pub mod inline;
 
 use chumsky::extra;
 use chumsky::prelude::*;
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, fill_columns};
 use std::path::Path;
 
 use crate::ast::{Entry, Rule};
@@ -86,6 +87,11 @@ pub fn parse_rules_file(source: &str, file: &Path) -> Result<Vec<Entry>, Vec<Dia
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Fatal) {
+        // Backfill the column field from each diagnostic's byte span so
+        // JSON / plain output agrees with the ariadne caret. The parser
+        // builds diagnostics with source unavailable at parse_line; here
+        // `source` is in scope.
+        fill_columns(&mut diagnostics, source);
         Err(diagnostics)
     } else {
         Ok(entries)
@@ -102,9 +108,13 @@ fn parse_line(
         return (vec![Entry::Blank { line: lineno }], Vec::new());
     }
 
-    // Column-0 comment ONLY. Leading-whitespace `#` falls through to the
-    // chumsky path below where every production fails - yielding an fapd-F01.
-    if let Some(text) = line.strip_prefix('#') {
+    // A comment is any line whose first non-whitespace character is `#`, with
+    // optional leading spaces/tabs. fapolicyd accepts indented comments;
+    // treating only column-0 `#` as a comment (the old behavior) made indented
+    // comments a fatal fapd-F01, which also masked every later finding in the
+    // file.
+    let stripped = line.trim_start_matches([' ', '\t']);
+    if let Some(text) = stripped.strip_prefix('#') {
         return (
             vec![Entry::Comment {
                 text: text.to_string(),
@@ -285,13 +295,61 @@ mod tests {
         }
     }
 
+    // REMOVED: `leading_whitespace_comment_is_f01` -- that test encoded a bug.
+    // fapolicyd actually ACCEPTS comments with leading whitespace (spaces or
+    // tabs before `#`); `fagenrules --check` exits 0 on them. Emitting
+    // fapd-F01 for indented comments was incorrect and has been fixed by the
+    // leading-whitespace-tolerant comment recognition below.
+
     #[test]
-    fn leading_whitespace_comment_is_f01() {
-        let diags =
-            parse_rules_file("   # leading ws\n", Path::new("test.rules")).expect_err("must fail");
+    fn leading_space_comment_is_comment_not_f01() {
+        let entries =
+            parse_rules_file("   # indented\n", Path::new("t.rules")).expect("must parse");
         assert!(
-            diags.iter().any(|d| d.code.as_ref() == "fapd-F01"),
-            "expected fapd-F01 for leading-ws comment, got {diags:?}"
+            entries.iter().all(|e| !matches!(e, Entry::Blank { .. })),
+            "indented comment must not be blank"
+        );
+        // No F01 diagnostics - this would have panicked above if parse returned Err.
+        assert!(
+            matches!(entries.as_slice(), [Entry::Comment { .. }]),
+            "indented comment must produce exactly one Comment entry, got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn leading_tab_comment_is_comment_not_f01() {
+        let entries =
+            parse_rules_file("\t# tab-indented\n", Path::new("t.rules")).expect("must parse");
+        assert!(
+            matches!(entries.as_slice(), [Entry::Comment { .. }]),
+            "tab-indented comment must produce exactly one Comment entry, got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn column0_comment_still_comment() {
+        let entries = parse_rules_file("# col0\n", Path::new("t.rules")).expect("must parse");
+        assert!(
+            matches!(entries.as_slice(), [Entry::Comment { .. }]),
+            "column-0 comment must still be a Comment entry, got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn indented_comment_after_rule_does_not_mask_rule() {
+        let src = "allow perm=execute exe=/usr/bin/bash : all\n  # note\n";
+        let entries = parse_rules_file(src, Path::new("t.rules")).expect("must parse");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Rule(_)))
+                .count(),
+            1,
+            "must have exactly one Rule entry, got {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| matches!(e, Entry::Comment { .. })),
+            "must have a Comment entry, got {entries:?}"
         );
     }
 
@@ -518,6 +576,38 @@ mod tests {
         };
         assert_eq!(span.start, 3, "span.start accounts for 3-byte BOM");
         assert_eq!(span.end, 14, "span.end reaches past `ruby`");
+    }
+
+    #[test]
+    fn f01_column_is_one_based_when_error_at_nonzero_offset() {
+        // "allow !!!" parses "allow " then chumsky errors at the "!" (a non-zero
+        // byte offset within the line). This pins the OBSERVABLE F01 column:
+        // parse_rules_file runs fill_columns before returning, so the column is
+        // recomputed from the file-relative span via line_col - that is the value
+        // asserted here.
+        //
+        // Note on the `+ -> *` mutant in error::rich_to_diagnostic (column =
+        // span.start + 1): that placeholder is ALWAYS overwritten by the
+        // fill_columns pass (F01 spans are never 0..0), so the mutant is
+        // unobservable - a genuine EQUIVALENT mutant, excluded in
+        // .cargo/mutants.toml. This test does not (and cannot) kill it; it guards
+        // the post-fill column instead.
+        let src = "allow !!!\n";
+        let file = Path::new("t.rules");
+        let diags = parse_rules_file(src, file).expect_err("must fail");
+        let f01 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-F01")
+            .expect("fapd-F01 must be present");
+        // The fill_columns pass runs inside parse_rules_file, so d.column == line_col.
+        let expected_col = rulesteward_core::span_util::line_col(&f01.span, src).1;
+        assert_eq!(
+            f01.column, expected_col,
+            "column must be 1-based line_col of the span, got col={} span={:?}",
+            f01.column, f01.span,
+        );
+        // Extra guard: column must be >= 1 always.
+        assert!(f01.column >= 1, "column must never be 0");
     }
 
     #[test]

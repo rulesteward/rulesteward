@@ -376,9 +376,10 @@ fn s02_traps() {
 }
 
 // ---------------------------------------------------------------------------
-// fapd-W08 - `dir=` literal value missing its trailing slash. Lint-walker-
-// driven (per-file). Fixtures: fires, clean (trailing slash), both sides, and
-// %setref dir (skipped).
+// fapd-W08 - `dir=` value missing its trailing slash. Lint-walker-driven
+// (per-file); checks literal `dir=` values AND `dir=%setref` macro expansions.
+// Fixtures: fires, clean (trailing slash), both sides, and %setref dir (fires
+// per slash-less expanded value / clean when the expansion ends with `/`).
 // ---------------------------------------------------------------------------
 
 #[test]

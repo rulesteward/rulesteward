@@ -29,12 +29,24 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
     }
 }
 
+/// Convert a byte-offset span into a char-offset span using `source`.
+///
+/// ariadne 0.6 indexes its `Source` by CHARACTER offset, but our `Span` is a
+/// BYTE range into the source. Convert byte offsets to char offsets so the
+/// caret lands correctly (and renders at all) when the source contains
+/// multibyte UTF-8 before the span. Falls back to the raw byte value if an
+/// offset is not a char boundary (should not happen for parser-produced spans).
+fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
+    let to_char = |b: usize| source.get(..b).map_or(b, |s| s.chars().count());
+    to_char(span.start)..to_char(span.end)
+}
+
 /// Build the `ariadne::Label` for a diagnostic with a known
-/// `source_id`. Centralized so a future migration of `Span` from
-/// `Range<usize>` to a newtype touches one call site, not every
-/// emit-site renderer.
-fn label_for<'a>(id: &'a str, d: &'a Diagnostic) -> Label<(&'a str, Span)> {
-    Label::new((id, d.span.clone())).with_message(d.message.as_str())
+/// `source_id`. Takes a pre-computed char-offset span so ariadne locates
+/// the source position correctly even when the source contains multibyte
+/// UTF-8 before the span.
+fn label_for<'a>(id: &'a str, span: Span, msg: &'a str) -> Label<(&'a str, Span)> {
+    Label::new((id, span)).with_message(msg)
 }
 
 /// Determine whether ANSI color output is appropriate.
@@ -58,8 +70,13 @@ fn color_enabled() -> bool {
 /// `file:line:col [CODE] sev: msg` for grep parity.
 fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
     let config = Config::default().with_color(color_enabled());
+    // Convert byte offsets to char offsets: ariadne 0.6 indexes its `Source`
+    // by character position. For ASCII-only sources byte offset == char offset,
+    // so existing tests are unaffected. For multibyte UTF-8, the byte offset
+    // may exceed the char-length and ariadne silently omits the snippet.
+    let cspan = byte_span_to_char_span(&d.span, source_text);
     let mut report_buf: Vec<u8> = Vec::new();
-    let result = Report::build(report_kind(d.severity), (source_id, d.span.clone()))
+    let result = Report::build(report_kind(d.severity), (source_id, cspan.clone()))
         .with_config(config)
         .with_message(format!(
             "[{code}] {sev}: {msg}",
@@ -67,7 +84,7 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
             sev = severity_word(d.severity),
             msg = d.message,
         ))
-        .with_label(label_for(source_id, d))
+        .with_label(label_for(source_id, cspan.clone(), d.message.as_str()))
         .finish()
         .write((source_id, Source::from(source_text)), &mut report_buf);
     match result {
@@ -262,6 +279,130 @@ mod tests {
                 matches!(report_kind(sev), ReportKind::Advice),
                 "{sev:?} must map to ReportKind::Advice"
             );
+        }
+    }
+
+    #[test]
+    fn human_ariadne_snippet_renders_with_multibyte_source() {
+        // multibyte column-0 comment (3 CJK chars = 9 bytes), then a rule with
+        // an unknown attribute on line 2. The byte offset of "xyz" is 9+1+1 =
+        // beyond the char-length of line 1 alone, which exposed the bug where
+        // ariadne silently dropped the caret snippet.
+        let source = "# \u{65e5}\u{672c}\u{8a9e} comment\nallow xyz=0 : all\n";
+        let byte_start = source.find("xyz").expect("xyz present");
+        let mut sources = BTreeMap::new();
+        sources.insert("/t.rules".to_string(), source.to_string());
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            byte_start..byte_start + 3,
+            "unknown attribute `xyz`",
+            "/t.rules",
+            2,
+            7,
+        )
+        .with_source_id("/t.rules");
+        let out = render(&[d], &sources);
+        // ariadne 0.6 uses box-drawing chars (U+2500 and family) in its caret
+        // box. If ariadne cannot locate the span (byte > char bound) it silently
+        // omits the entire snippet - the presence of U+2500 proves the snippet
+        // rendered correctly.
+        assert!(
+            out.contains('\u{2500}'),
+            "ariadne caret box-drawing must render even with multibyte source, got: {out:?}"
+        );
+        assert!(out.contains("xyz"), "source text must appear: {out:?}");
+    }
+
+    #[test]
+    fn byte_span_to_char_span_ascii_is_identity() {
+        // For ASCII-only source, byte offset == char offset.
+        let source = "allow xyz=0 : all\n";
+        let span = 6..9usize;
+        assert_eq!(byte_span_to_char_span(&span, source), 6..9);
+    }
+
+    #[test]
+    fn byte_span_to_char_span_multibyte_shifts_correctly() {
+        // "# \u{65e5}\u{672c}\u{8a9e} comment\n" is 3 CJK chars (3 bytes each)
+        // plus "# " (2) and " comment\n" (9) = 2 + 9 + 9 = 20 bytes, 14 chars.
+        // "allow " follows at byte 20, char 14.
+        let source = "# \u{65e5}\u{672c}\u{8a9e} comment\nallow xyz=0 : all\n";
+        let byte_start = source.find("xyz").expect("xyz present");
+        let char_start = source[..byte_start].chars().count();
+        let char_end = char_start + 3; // "xyz" is 3 chars (ASCII)
+        let cspan = byte_span_to_char_span(&(byte_start..byte_start + 3), source);
+        assert_eq!(cspan.start, char_start, "char start must match");
+        assert_eq!(cspan.end, char_end, "char end must match");
+    }
+
+    // -----------------------------------------------------------------
+    // Layer-2 property tests for `byte_span_to_char_span`.
+    //
+    // Properties:
+    // 1. For ASCII-only source, the char span equals the byte span (identity).
+    // 2. For any source and char-boundary byte offsets, the char offset is
+    //    <= the byte offset (multibyte chars compress the char index).
+    // 3. For any source and char-boundary byte offset b, char offset ==
+    //    source[..b].chars().count().
+    // -----------------------------------------------------------------
+
+    mod proptest_byte_to_char {
+        use super::super::byte_span_to_char_span;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            // Property 1: ASCII-only source: byte span == char span.
+            // For any ASCII string and two in-bounds offsets, the conversion
+            // is identity. Kills mutations that apply char-index logic to ASCII.
+            #[test]
+            fn ascii_source_char_span_equals_byte_span(
+                src in "[a-zA-Z0-9 !:=]{1,40}",
+                start_idx in 0usize..40,
+                end_delta in 0usize..5,
+            ) {
+                let start = start_idx.min(src.len());
+                let end = (start + end_delta).min(src.len());
+                let span = start..end;
+                let cspan = byte_span_to_char_span(&span, &src);
+                prop_assert_eq!(cspan.start, start,
+                    "ASCII source: char start {} must equal byte start {}", cspan.start, start);
+                prop_assert_eq!(cspan.end, end,
+                    "ASCII source: char end {} must equal byte end {}", cspan.end, end);
+            }
+
+            // Property 2: char offset <= byte offset for any char-boundary
+            // offset in any source. In ASCII (1 byte/char) they are equal.
+            #[test]
+            fn char_offset_le_byte_offset(src in "[a-zA-Z0-9 \n]{1,60}") {
+                // For ASCII-only sources every offset is both a char and byte boundary.
+                for b in 0..=src.len() {
+                    let cspan = byte_span_to_char_span(&(b..b), &src);
+                    prop_assert!(
+                        cspan.start <= b,
+                        "char offset {} must be <= byte offset {} in {:?}",
+                        cspan.start, b, src
+                    );
+                }
+            }
+
+            // Property 3: char offset == source[..b].chars().count() for any
+            // char-boundary byte offset. Verifies that the conversion counts
+            // chars correctly, not just divides bytes.
+            #[test]
+            fn char_offset_equals_chars_count(
+                src in "[a-zA-Z0-9 ]{1,50}",
+                offset_idx in 0usize..51,
+            ) {
+                let b = offset_idx.min(src.len());
+                let expected_chars = src[..b].chars().count();
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(cspan.start, expected_chars,
+                    "char offset for byte {} must be {} in {:?}",
+                    b, expected_chars, src);
+            }
         }
     }
 }

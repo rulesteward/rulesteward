@@ -1,0 +1,8 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=2
+[fapd-W08] sev=Warning line=2 col=1 span=16..39 :: dir set `%dirs` value `/opt` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`
+[fapd-W08] sev=Warning line=2 col=1 span=16..39 :: dir set `%dirs` value `/usr` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`

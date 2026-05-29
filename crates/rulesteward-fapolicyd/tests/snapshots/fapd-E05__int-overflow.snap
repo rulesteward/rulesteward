@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E05] sev=Error line=1 col=1 span=0..27 :: integer-typed set `%s` contains value `99999999999999999999` that exceeds the maximum integer (fapolicyd stores set integers as i64)

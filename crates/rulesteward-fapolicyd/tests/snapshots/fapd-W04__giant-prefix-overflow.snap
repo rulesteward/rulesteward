@@ -1,0 +1,9 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+files=2
+diagnostics=3
+[fapd-C01] sev=Convention line=0 col=0 span=0..0 file=rules.d/100000000000000000000-allow.rules :: rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected
+[fapd-W04] sev=Warning line=1 col=1 span=0..21 file=rules.d/100000000000000000000-allow.rules :: allow rule unreachable: shadowed by the broader deny in rules.d/20000000000000000000-deny.rules on line 1
+[fapd-C01] sev=Convention line=0 col=0 span=0..0 file=rules.d/20000000000000000000-deny.rules :: rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected

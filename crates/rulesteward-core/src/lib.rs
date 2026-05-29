@@ -7,4 +7,5 @@ pub mod diagnostic;
 pub mod span;
 
 pub use diagnostic::{Diagnostic, Severity};
+pub use span::span_util::fill_columns;
 pub use span::{Span, span, span_util};

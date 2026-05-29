@@ -1,0 +1,2 @@
+	# indented comment with leading tab - fapolicyd accepts this
+allow perm=execute exe=/usr/bin/bash : all
