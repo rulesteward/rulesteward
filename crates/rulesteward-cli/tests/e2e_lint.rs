@@ -318,9 +318,12 @@ fn lint_fires_e04_with_exit_two_and_code_in_stdout() {
 
 #[test]
 fn lint_fires_e05_with_exit_two_and_code_in_stdout() {
-    // `%mymacro=1,2,foo` mixes numeric (`1`, `2`) and string (`foo`) values.
-    // fapd-E05 fires; no rule, so nothing else applies.
-    let f = write_tmp("%mymacro=1,2,foo\n");
+    // `%mymacro=123,99999999999999999999` is an integer-typed set (first value
+    // numeric) whose second value exceeds i64 - a non-portable integer fapolicyd
+    // 1.3.2/1.4.5 reject. fapd-E05 (overflow-only policy) fires; no rule, so
+    // nothing else applies. (Type-mix sets like `1,2,foo` no longer fire E05 -
+    // see the overflow-only redesign.)
+    let f = write_tmp("%mymacro=123,99999999999999999999\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
