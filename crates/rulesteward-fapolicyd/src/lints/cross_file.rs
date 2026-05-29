@@ -350,6 +350,41 @@ mod tests {
     }
 
     #[test]
+    fn deny_shadowed_by_earlier_deny_does_not_fire_w04() {
+        // W04 flags only unreachable ALLOWs. A deny shadowed by an earlier
+        // broader deny is NOT a W04 (nothing "allowed" became dead). This pins
+        // the `is_allow(b.decision)` guard: with is_allow mutated to always-true,
+        // the shadowed deny below would wrongly fire W04.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/10-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![Attr::All],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/50-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            w04(&files).is_empty(),
+            "a deny shadowed by an earlier deny must not fire W04: {:?}",
+            w04(&files)
+        );
+    }
+
+    #[test]
     fn lint_cross_file_emits_both_w04_and_c01() {
         // file 0 `10-deny.rules`: `deny all : all` (terminal, shadows everything later).
         // file 1 `badname.rules`: `allow uid=0 : all` -> unreachable (fapd-W04) AND

@@ -98,8 +98,8 @@ mod tests {
 
     #[test]
     fn lint_aggregator_calls_all_walks_and_merges_diagnostics() {
-        // Pins the invariant: `lint()` invokes ALL six walks (walker,
-        // validation, macros, reachability, deprecation, source_scan) and
+        // Pins the invariant: `lint()` invokes ALL seven walks (walker,
+        // validation, macros, reachability, deprecation, dir_slash, source_scan) and
         // merges their diagnostics into the returned Vec. A mutant that drops
         // one walk from the aggregator body silently loses the corresponding
         // code from the output; this test fails fast in that case.
