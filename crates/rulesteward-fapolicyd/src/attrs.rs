@@ -20,6 +20,15 @@
 //! intentionally kept that knowledge parser-internal because no public
 //! consumer exists yet; a future session may expose a public flavor-aware
 //! API when fapd-E02 / fapd-E03 lint codes give it a concrete consumer.
+//!
+//! NOTE on removed names: `exe_dir` and `exe_type` were removed from
+//! `SUBJECT_ONLY` on 2026-05-29. Runtime testing against fapolicyd
+//! 1.3.2, 1.4.3, and 1.4.5 confirmed that both names are REJECTED with
+//! "Field type (exe_dir) is unknown" - they do not appear in the man page
+//! and are not valid fapolicyd attribute names. Their prior presence was a
+//! false negative for fapd-E01 (RuleSteward accepted rules fapolicyd rejects).
+//! The `dir=` value keywords `execdirs`/`systemdirs`/`untrusted` (handled
+//! by fapd-W08) are distinct and were not affected.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrSide {
@@ -37,8 +46,6 @@ pub const SUBJECT_ONLY: &[&str] = &[
     "ppid",
     "comm",
     "exe",
-    "exe_dir",
-    "exe_type",
     // `pattern` is subject-only in fapolicyd: the C subject-attr.c tables
     // carry PATTERN, object-attr.c does not, and rules.5 lists it under
     // Subject only.
@@ -73,8 +80,20 @@ mod tests {
 
     #[test]
     fn classify_known_subject_only() {
+        // Regression guard: real subject attrs must still classify correctly.
         assert_eq!(classify("uid"), Some(AttrSide::Subject));
-        assert_eq!(classify("exe_dir"), Some(AttrSide::Subject));
+        assert_eq!(classify("exe"), Some(AttrSide::Subject));
+    }
+
+    #[test]
+    fn exe_dir_and_exe_type_are_not_known_attrs() {
+        // Neither is a real fapolicyd attribute - fapolicyd 1.3.2/1.4.3/1.4.5 all
+        // reject them ("Field type (exe_dir) is unknown"). RuleSteward must flag
+        // them via fapd-E01 (was a false negative).
+        assert_eq!(classify("exe_dir"), None);
+        assert_eq!(classify("exe_type"), None);
+        assert!(!is_known("exe_dir"));
+        assert!(!is_known("exe_type"));
     }
 
     #[test]
