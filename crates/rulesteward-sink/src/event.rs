@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct Event {
     /// fapolicyd rule number that produced this decision (aggregation key).
     pub rule_id: u32,
-    /// Decision keyword ("allow", "deny", "allow_audit", ...).
+    /// Decision keyword ("allow", "deny", "`allow_audit`", ...).
     pub decision: String,
     /// Object file type / MIME (aggregation key).
     pub ftype: String,
@@ -50,7 +50,14 @@ mod tests {
 
     #[test]
     fn event_serializes_to_expected_json_object() {
-        let ev = Event::new(42, "deny", "application/x-executable", "/usr/bin/ssh", "/tmp/x", "2026-05-28T00:00:00Z");
+        let ev = Event::new(
+            42,
+            "deny",
+            "application/x-executable",
+            "/usr/bin/ssh",
+            "/tmp/x",
+            "2026-05-28T00:00:00Z",
+        );
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains(r#""rule_id":42"#));
         assert!(json.contains(r#""decision":"deny""#));
@@ -60,7 +67,14 @@ mod tests {
 
     #[test]
     fn event_round_trips_through_json() {
-        let ev = Event::new(1, "allow", "text/plain", "/bin/sh", "/etc/hosts", "2026-05-28T00:00:00Z");
+        let ev = Event::new(
+            1,
+            "allow",
+            "text/plain",
+            "/bin/sh",
+            "/etc/hosts",
+            "2026-05-28T00:00:00Z",
+        );
         let json = serde_json::to_string(&ev).unwrap();
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
