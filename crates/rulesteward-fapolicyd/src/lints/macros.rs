@@ -1,7 +1,7 @@
 //! Macro-related lint passes. Currently fapd-E03 (undefined macro
 //! reference), fapd-E04 (macro reference in `trust=`/`pattern=`), fapd-E05
-//! (macro values of mixed type), fapd-S02 (macro definition not at file
-//! top). Future macro-system checks land here.
+//! (integer-typed set with an overflowing value), fapd-S02 (macro definition
+//! not at file top). Future macro-system checks land here.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -119,18 +119,38 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// fapd-E05 - macro values of mixed type. For each `Entry::SetDefinition`,
-/// classify each value as numeric (parses as `i64`) or string (everything
-/// else). Emit one fapd-E05 diagnostic per offending set definition whose
-/// values contain BOTH kinds. Single-value sets are trivially homogeneous;
-/// all-numeric and all-string sets are silent. Independent of fapd-E03/
-/// fapd-E04: the set definition pass runs over `Entry::SetDefinition` only,
-/// while fapd-E03/fapd-E04 inspect `Entry::Rule` attrs.
+/// A fapolicyd integer literal: plain ASCII digits (no sign) that fit in `i64`.
+/// fapolicyd types a set by its first value and stores INT sets as `i64`; a value
+/// with a leading sign is a STRING, and an all-digit value exceeding `i64::MAX`
+/// fails fapolicyd's conversion ("Error converting val").
+fn is_fap_int(v: &str) -> bool {
+    !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.parse::<i64>().is_ok()
+}
+
+/// A value that fapolicyd's type-inference reads as "looks like an integer"
+/// (all ASCII digits). Used to decide the SET's type from its first value;
+/// an all-digit-but-overflowing first value still types the set INT (and then
+/// fails conversion, which `is_fap_int` catches per-value).
+fn looks_int(v: &str) -> bool {
+    !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// fapd-E05 - integer-typed set containing an all-digit value that overflows
+/// `i64`. fapolicyd set-type validity is version-divergent: 1.3.2 rejects
+/// overflow values in INT-typed sets; 1.4.3 accepts everything; 1.4.5 types a
+/// set INT only if ALL values are valid i64. Because the linter cannot know the
+/// target version, fapd-E05 fires ONLY on the one genuinely non-portable case:
+/// a set whose first value is all-ASCII-digits (INT-typed) and that contains an
+/// all-digit value exceeding `i64::MAX` (rejected by 1.3.2 and 1.4.5; only
+/// 1.4.3 is lenient).
 ///
-/// Numeric classification uses `str::parse::<i64>()`, which accepts signed
-/// integers (`-5`), unsigned (`42`), and leading-zero ints (`01` -> 1).
-/// Everything else (paths, identifiers, mixed alpha-numeric) is treated as
-/// string.
+/// Type-mix (a non-digit member in an INT-typed set) is intentionally NOT
+/// flagged here because its validity depends on the attribute and target version
+/// - it is tracked as a future usage/version-aware check.
+///
+/// STRING-typed sets (first value is not all-ASCII-digits) are always silent.
+/// Independent of fapd-E03/fapd-E04: operates on `Entry::SetDefinition` only.
+/// One diagnostic per offending set, at the first overflowing value found.
 fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for entry in entries {
@@ -143,31 +163,35 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         else {
             continue;
         };
-        let mut has_numeric = false;
-        let mut has_string = false;
-        for v in values {
-            if v.parse::<i64>().is_ok() {
-                has_numeric = true;
-            } else {
-                has_string = true;
-            }
-            if has_numeric && has_string {
-                break;
-            }
+        // Empty value lists cannot be typed; skip.
+        let Some(first) = values.first() else {
+            continue;
+        };
+        // Set type is determined by the first value.
+        // If not all-digits, this is a STRING set; nothing to check.
+        if !looks_int(first) {
+            continue;
         }
-        if has_numeric && has_string {
-            diags.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    "fapd-E05",
-                    span.clone(),
-                    format!("macro `%{name}` mixes numeric and string values"),
-                    file,
-                    *line,
-                    1,
-                )
-                .with_source_id(file.display().to_string()),
-            );
+        // Overflow-only policy: fire ONLY on an all-digit value that exceeds i64
+        // (non-portable: rejected by fapolicyd 1.3.2 and 1.4.5; 1.4.3 is lenient).
+        // Type-mix (a non-digit member) is version-divergent and intentionally NOT
+        // flagged here - tracked as a future usage/version-aware check.
+        for bad in values {
+            if looks_int(bad) && !is_fap_int(bad) {
+                diags.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        "fapd-E05",
+                        span.clone(),
+                        format!("integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"),
+                        file,
+                        *line,
+                        1,
+                    )
+                    .with_source_id(file.display().to_string()),
+                );
+                break; // one diagnostic per set
+            }
         }
     }
     diags
@@ -659,12 +683,21 @@ mod tests {
 
     // -----------------------------------------------------------------
     // fapd-E05 helper-level unit tests. Pin the per-SetDefinition walker
-    // so every branch (mixed -> fire, all-numeric -> silent, all-string ->
-    // silent, single-value -> silent, leading-zero -> numeric, walker
-    // skips Rule entries, multi-set independence) is exercised
-    // independently of the snapshot + proptest suites. A mutant that
-    // swaps the `has_numeric && has_string` predicate, drops the
-    // `i64::parse` classification, or fires on Rule entries dies here.
+    // under the OVERFLOW-ONLY policy:
+    //
+    // - INT-typed set (first value all-ASCII-digits) fires ONLY if an
+    //   all-digit member exceeds i64::MAX. Non-digit members (type-mix)
+    //   are intentionally NOT flagged (version-divergent; future work).
+    // - STRING-typed set (first value not all-ASCII-digits) is always
+    //   silent regardless of later values.
+    //
+    // Mutations killed by this suite:
+    // - swapping the `looks_int(first)` gate (fires on string-first sets)
+    // - dropping the `looks_int(bad)` guard (fires on type-mix members)
+    // - dropping the `is_fap_int` per-value check (misses overflow)
+    // - using `parse::<i64>()` to determine set type (treats "-5" as INT)
+    // - firing on Rule entries instead of only SetDefinition
+    // - emitting more than one diagnostic per set
     // -----------------------------------------------------------------
 
     fn setdef_with_values(line: usize, name: &str, values: &[&str]) -> Entry {
@@ -676,25 +709,169 @@ mod tests {
         }
     }
 
+    // --- new first-item-determines-type tests ---
+
     #[test]
-    fn e05_emits_on_mixed_int_and_string() {
-        // `%mymacro=1,2,foo,3` -> 1 fapd-E05 naming the macro.
-        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "foo", "3"])];
+    fn e05_string_first_set_does_not_fire() {
+        // `%s=abc,1` -> STRING-typed (first value "abc" is not all-digits);
+        // fapolicyd accepts this with "Loaded 2 rules". E05 must NOT fire.
+        // This was the false positive in the old symmetric-mix check.
+        let entries = vec![setdef_with_values(1, "s", &["abc", "1"])];
         let diags = e05(&entries, &p());
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code.as_ref(), "fapd-E05");
-        assert_eq!(diags[0].severity, Severity::Error);
         assert!(
-            diags[0].message.contains("mymacro"),
-            "message must name the macro: {}",
+            diags.is_empty(),
+            "string-first set must not fire fapd-E05: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_int_set_with_string_member_does_not_fire() {
+        // `%s=1,abc` -> INT-typed (first value "1" is all-digits), but "abc"
+        // is a non-digit (type-mix) member. Under the overflow-only policy,
+        // type-mix is intentionally NOT flagged (version-divergent; future
+        // work). fapd-E05 must NOT fire here.
+        let entries = vec![setdef_with_values(1, "s", &["1", "abc"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "type-mix (non-digit member in INT set) must not fire fapd-E05: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_int_set_with_overflow_member_fires() {
+        // `%s=123,99999999999999999999` -> INT-typed; the 20-digit value
+        // overflows i64::MAX. fapolicyd: "Error converting val".
+        // fapd-E05 must fire with an "exceeds the maximum integer" message.
+        let entries = vec![setdef_with_values(
+            1,
+            "s",
+            &["123", "99999999999999999999"],
+        )];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "INT-set with overflow member must fire fapd-E05: {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E05");
+        assert!(
+            diags[0].message.contains("exceeds the maximum integer"),
+            "overflow message must say 'exceeds the maximum integer': {}",
             diags[0].message,
         );
-        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+        assert!(
+            diags[0].message.contains("99999999999999999999"),
+            "message must name the offending value: {}",
+            diags[0].message,
+        );
+    }
+
+    #[test]
+    fn e05_string_first_with_overflow_does_not_fire() {
+        // `%s=abc,99999999999999999999` -> STRING-typed (first value "abc" is
+        // not all-digits); fapd-E05 must NOT fire even though a later member
+        // looks like an overflowing integer. The big-digit value is simply a
+        // string member in a STRING-typed set.
+        let entries = vec![setdef_with_values(1, "s", &["abc", "99999999999999999999"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "string-first set must not fire fapd-E05 even with a large-digit member: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_homogeneous_int_does_not_fire() {
+        // `%s=1,2,3` -> INT-typed, all values valid; no fapd-E05.
+        let entries = vec![setdef_with_values(1, "s", &["1", "2", "3"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "homogeneous INT set must not fire fapd-E05: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_homogeneous_string_does_not_fire() {
+        // `%s=text/plain,text/x-c` -> STRING-typed; no fapd-E05.
+        let entries = vec![setdef_with_values(1, "s", &["text/plain", "text/x-c"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "homogeneous STRING set must not fire fapd-E05: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_single_overflow_value_fires() {
+        // `%s=99999999999999999999` -> INT-typed (all digits, single value),
+        // but the sole value overflows i64::MAX. fapd-E05 fires.
+        let entries = vec![setdef_with_values(1, "s", &["99999999999999999999"])];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "single overflow value must fire fapd-E05: {diags:?}"
+        );
+        assert!(diags[0].message.contains("exceeds the maximum integer"));
+    }
+
+    #[test]
+    fn e05_negative_first_is_string_set() {
+        // `%s=-5,abc` -> STRING-typed (leading sign; "-5" is not all-ASCII-
+        // digits); fapolicyd treats it as a string. No fapd-E05 regardless
+        // of later values.
+        let entries = vec![setdef_with_values(1, "s", &["-5", "abc"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "negative-first value is STRING-typed; fapd-E05 must not fire: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_i64_max_ok() {
+        // `%s=9223372036854775807,1` -> i64::MAX is valid; no fapd-E05.
+        let entries = vec![setdef_with_values(1, "s", &["9223372036854775807", "1"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "i64::MAX is a valid integer; fapd-E05 must not fire: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_i64_max_plus_one_fires() {
+        // `%s=9223372036854775808` -> i64::MAX+1, overflows; fapd-E05.
+        let entries = vec![setdef_with_values(1, "s", &["9223372036854775808"])];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "i64::MAX+1 must fire fapd-E05: {diags:?}"
+        );
+        assert!(diags[0].message.contains("exceeds the maximum integer"));
+    }
+
+    // --- retained tests updated for new semantics ---
+
+    #[test]
+    fn e05_int_set_with_multi_string_members_does_not_fire() {
+        // `%mymacro=1,2,foo,3` -> INT-typed, "foo" is a non-digit (type-mix)
+        // member. Under the overflow-only policy, type-mix is intentionally NOT
+        // flagged (version-divergent; future work). fapd-E05 must NOT fire.
+        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "foo", "3"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "type-mix (non-digit members in INT set) must not fire fapd-E05: {diags:?}",
+        );
     }
 
     #[test]
     fn e05_silent_on_all_numeric() {
-        // `%mymacro=1,2,3,4` -> all values parse as i64; no fapd-E05.
+        // `%mymacro=1,2,3,4` -> INT-typed, all valid; no fapd-E05.
         let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "3", "4"])];
         let diags = e05(&entries, &p());
         assert!(
@@ -705,7 +882,7 @@ mod tests {
 
     #[test]
     fn e05_silent_on_all_string() {
-        // `%mymacro=/bin/bash,/usr/bin/zsh` -> all values are strings; no fapd-E05.
+        // `%mymacro=/bin/bash,/usr/bin/zsh` -> STRING-typed; no fapd-E05.
         let entries = vec![setdef_with_values(
             1,
             "mymacro",
@@ -719,27 +896,25 @@ mod tests {
     }
 
     #[test]
-    fn e05_silent_on_single_value() {
-        // `%mymacro=42` -> 1 value is trivially homogeneous; no fapd-E05.
-        // Pins the boundary case: a single value can't be mixed.
+    fn e05_silent_on_single_int_value() {
+        // `%mymacro=42` -> INT-typed single value; valid; no fapd-E05.
         let entries = vec![setdef_with_values(1, "mymacro", &["42"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "single-value set must produce no fapd-E05: {diags:?}"
+            "single valid integer value must produce no fapd-E05: {diags:?}"
         );
     }
 
     #[test]
-    fn e05_treats_leading_zero_as_numeric() {
-        // `%mymacro=01,02,03` -> `parse::<i64>()` accepts "01" -> 1, etc.
-        // All values are numeric; no fapd-E05. Pins the classification rule:
-        // numeric = parses as i64, not "looks like a literal digit string".
+    fn e05_leading_zero_is_int_typed() {
+        // `%mymacro=01,02,03` -> INT-typed (all digits), all values parse as
+        // i64; no fapd-E05. Leading zeros fit in i64 via normal decimal parse.
         let entries = vec![setdef_with_values(1, "mymacro", &["01", "02", "03"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
-            "leading-zero values must classify as numeric (no fapd-E05): {diags:?}",
+            "leading-zero values are INT-typed and valid (no fapd-E05): {diags:?}",
         );
     }
 
@@ -768,23 +943,44 @@ mod tests {
     }
 
     #[test]
-    fn e05_walker_emits_one_per_mixed_setdefinition() {
-        // Two mixed sets in the same file -> 2 fapd-E05 diagnostics, one per
-        // SetDefinition. Kills a mutation that deduplicates by name or
-        // short-circuits after the first hit.
+    fn e05_walker_emits_one_per_int_typed_overflow_setdefinition() {
+        // Two INT-typed sets each with an overflow member -> 2 fapd-E05.
+        // Kills a mutation that deduplicates by name or short-circuits.
+        // Both sets start with an integer (all-digits) so both are INT-typed.
         let entries = vec![
-            setdef_with_values(1, "first", &["1", "alpha"]),
-            setdef_with_values(2, "second", &["beta", "2"]),
+            setdef_with_values(1, "first", &["1", "99999999999999999999"]),
+            setdef_with_values(2, "second", &["2", "99999999999999999998"]),
         ];
         let diags = e05(&entries, &p());
         assert_eq!(
             diags.len(),
             2,
-            "expected one fapd-E05 per mixed SetDefinition: {diags:?}",
+            "expected one fapd-E05 per overflow INT SetDefinition: {diags:?}",
         );
         assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-E05"));
         assert!(diags.iter().any(|d| d.message.contains("first")));
         assert!(diags.iter().any(|d| d.message.contains("second")));
+    }
+
+    #[test]
+    fn e05_only_one_diag_per_set_stops_at_first_overflow() {
+        // INT-typed set with TWO overflow values -> still only 1 fapd-E05 (first).
+        let entries = vec![setdef_with_values(
+            1,
+            "multi",
+            &["1", "99999999999999999999", "99999999999999999998"],
+        )];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "only one fapd-E05 per set even with multiple overflow values: {diags:?}",
+        );
+        assert!(
+            diags[0].message.contains("99999999999999999999"),
+            "stops at first overflow value: {}",
+            diags[0].message,
+        );
     }
 
     // -----------------------------------------------------------------
