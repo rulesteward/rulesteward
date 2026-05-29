@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn w03_silent_on_leading_whitespace_comment() {
-        // Leading-ws `#` is a parse failure (fapd-F01), not fapd-W03.
+        // Leading-ws `#` is a comment (accepted by the parser), not fapd-W03.
         assert!(w03_scan("   # leading ws\n", &p()).is_empty());
     }
 

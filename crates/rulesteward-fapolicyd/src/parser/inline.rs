@@ -7,7 +7,7 @@
 /// token earlier on the line), or `None` if no inline `#` is present.
 ///
 /// A leading-whitespace `#` is NOT inline - there's no preceding
-/// non-whitespace token. Such a line is rejected by the parser as fapd-F01,
+/// non-whitespace token. Such a line is a comment (accepted by the parser),
 /// not flagged by fapd-W03.
 #[must_use]
 pub fn inline_comment_index(line: &str) -> Option<usize> {
