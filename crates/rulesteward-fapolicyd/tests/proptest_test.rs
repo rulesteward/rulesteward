@@ -368,7 +368,8 @@ proptest! {
     /// "replace `Err(diags)` with `Err(vec![])`".
     #[test]
     fn parse_never_panics(s in proptest::string::string_regex(".{0,16384}").unwrap()) {
-        let result = catch_unwind(AssertUnwindSafe(|| parse_rules_file(&s)));
+        let result =
+            catch_unwind(AssertUnwindSafe(|| parse_rules_file(&s, Path::new("prop.rules"))));
         prop_assert!(
             result.is_ok(),
             "parse_rules_file panicked on input of len {}",
@@ -393,6 +394,82 @@ proptest! {
         }
     }
 
+    /// Property - no diagnostic emitted by the path-aware parser ever carries the
+    /// retired "<source>" placeholder or a None source_id. Regression guard for
+    /// G-spec-drift gap #3: a direct caller (simulate / trustdb cross-check / fuzz)
+    /// must never observe the placeholder that lint_file used to rewrite.
+    #[test]
+    fn parser_diagnostics_never_use_placeholder(
+        s in proptest::string::string_regex(".{0,4096}").unwrap()
+    ) {
+        let file = std::path::Path::new("prop.rules");
+        if let Err(diags) = parse_rules_file(&s, file) {
+            for d in &diags {
+                prop_assert_eq!(
+                    d.file.as_path(),
+                    file,
+                    "diagnostic file must be the supplied path, got {:?}",
+                    d.file
+                );
+                prop_assert_eq!(
+                    d.source_id.as_deref(),
+                    Some("prop.rules"),
+                    "diagnostic source_id must be populated, was {:?}",
+                    d.source_id
+                );
+            }
+        }
+    }
+
+    /// Property - every fapd-F01 diagnostic carries a FILE-relative span: the line
+    /// implied by counting newlines before span.start must equal the diagnostic's
+    /// own `line` field, and the span must be in-bounds. Guards the line-relative
+    /// span regression where a parse error on line N>1 rendered its ariadne caret
+    /// on line 1.
+    ///
+    /// The generator prepends 1..=4 cleanly-parsing lines before a guaranteed-
+    /// failing junk line so the error always lands on line >= 2. A purely-random
+    /// string almost always fails on line 1 (where line- and file-relative spans
+    /// coincide) and so never exercises this regression - the targeted shape is
+    /// what makes the property RED against the line-relative bug.
+    #[test]
+    fn f01_span_is_file_relative_and_consistent_with_line(
+        (lead, junk) in (1usize..=4, "!![^\r\n]{0,16}")
+    ) {
+        let mut s = String::new();
+        for _ in 0..lead {
+            s.push_str("allow uid=0 : all\n");
+        }
+        s.push_str(&junk);
+        s.push('\n');
+        let file = std::path::Path::new("prop.rules");
+        let diags = parse_rules_file(&s, file).expect_err("the junk line must fail to parse");
+        for d in &diags {
+            prop_assert!(d.span.start <= d.span.end, "span start..end inverted: {:?}", d.span);
+            prop_assert!(
+                d.span.end <= s.len(),
+                "span {:?} out of bounds for source len {}",
+                d.span,
+                s.len()
+            );
+            // A manual newline count is fine here: the `bytecount` crate's SIMD
+            // path that clippy::naive_bytecount suggests is not worth a dev-dep
+            // for a <=4 KiB proptest input. Byte-indexed (not `s[..]`) to stay
+            // panic-free on non-char-boundary offsets.
+            #[allow(clippy::naive_bytecount)]
+            let line_of_span_start =
+                s.as_bytes()[..d.span.start].iter().filter(|&&b| b == b'\n').count() + 1;
+            prop_assert_eq!(
+                line_of_span_start,
+                d.line,
+                "span.start {} sits on line {} but diagnostic claims line {}",
+                d.span.start,
+                line_of_span_start,
+                d.line
+            );
+        }
+    }
+
     /// Property 2 - every `Vec<Entry>` produced by `arb_program()` renders
     /// to a source string that re-parses to an equal `Vec<Entry>` (after
     /// line-normalization on both sides - see top-of-file contract).
@@ -406,7 +483,7 @@ proptest! {
     #[test]
     fn parsed_program_round_trips(original in generators::arb_program()) {
         let source = render_program(&original);
-        let reparsed = match parse_rules_file(&source) {
+        let reparsed = match parse_rules_file(&source, Path::new("prop.rules")) {
             Ok(entries) => entries,
             Err(diags) => {
                 return Err(TestCaseError::fail(format!(
@@ -462,11 +539,11 @@ proptest! {
         });
         let combined = format!("{garbage}{valid}");
 
-        let valid_diags = match parse_rules_file(&valid) {
+        let valid_diags = match parse_rules_file(&valid, Path::new("prop.rules")) {
             Ok(_) => Vec::new(),
             Err(d) => d,
         };
-        let combined_diags = match parse_rules_file(&combined) {
+        let combined_diags = match parse_rules_file(&combined, Path::new("prop.rules")) {
             Ok(_) => Vec::new(),
             Err(d) => d,
         };
@@ -518,7 +595,7 @@ proptest! {
     fn parsed_rule_spans_are_non_empty_subranges_of_source(
         source in generators::arb_valid_rule_text()
     ) {
-        if let Ok(entries) = parse_rules_file(&source) {
+        if let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) {
             for entry in &entries {
                 if let Entry::Rule(r) = entry {
                     prop_assert!(
@@ -555,7 +632,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -574,7 +651,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -620,7 +697,7 @@ proptest! {
         for name in &names {
             let _ = writeln!(source, "allow uid=%{name} : exe=/foo");
         }
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -643,7 +720,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -676,7 +753,7 @@ proptest! {
         for (uid, path) in &rules {
             let _ = writeln!(source, "allow uid={uid} : path={path}");
         }
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -699,7 +776,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -736,7 +813,7 @@ proptest! {
             strs.clone()
         };
         let source = format!("%mymacro={}\n", values.join(","));
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -760,7 +837,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -822,7 +899,7 @@ proptest! {
         };
 
         let source = format!("allow {subject} : {object}\n");
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -860,7 +937,7 @@ proptest! {
         prop_assert_eq!(hex.len(), 64, "generator must produce exactly 64 chars");
 
         let source = format!("allow filehash={hex} : exe=/foo\n");
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(format!("canonical filehash failed to parse: {d:?}")))?;
         let path = PathBuf::from("/tmp/proptest.rules");
         let diags = lint(&entries, &source, &path);
@@ -889,7 +966,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -912,7 +989,7 @@ proptest! {
     #[test]
     fn w01_silent_on_single_rule_file(rule in generators::arb_modern_rule()) {
         let source = format!("{}\n", Entry::Rule(rule));
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -960,7 +1037,7 @@ proptest! {
             // per rule guarantees no subject-side subsume across the pair set.
             let _ = writeln!(source, "allow {}={} : all", KEYS[i], vals[i]);
         }
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Err(TestCaseError::fail(format!(
                 "disjoint-key generator produced unparseable source: {source:?}"
             )));
@@ -999,7 +1076,7 @@ proptest! {
         for (idx, uid) in uids.iter().enumerate() {
             let _ = writeln!(source, "allow uid={uid} : path=/p{idx}");
         }
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Err(TestCaseError::fail(format!(
                 "no-macro generator produced unparseable source: {source:?}"
             )));
@@ -1029,7 +1106,7 @@ proptest! {
         source in generators::arb_valid_rule_text()
     ) {
         // generator-induced parse failures are not our concern here
-        let Ok(entries) = parse_rules_file(&source) else {
+        let Ok(entries) = parse_rules_file(&source, Path::new("prop.rules")) else {
             return Ok(());
         };
         let path = PathBuf::from("/tmp/proptest.rules");
@@ -1076,7 +1153,7 @@ proptest! {
         for uid in &rule_uids {
             let _ = writeln!(source, "allow uid={uid} : all");
         }
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -1122,7 +1199,7 @@ proptest! {
         for name in &names {
             let _ = writeln!(source, "%{name}=/usr/bin/foo");
         }
-        let entries = parse_rules_file(&source)
+        let entries = parse_rules_file(&source, Path::new("prop.rules"))
             .map_err(|d| TestCaseError::fail(
                 format!("generated source failed to parse: source={source:?} diags={d:?}")
             ))?;
@@ -1150,13 +1227,13 @@ proptest! {
         let mut files: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
         files.push((
             PathBuf::from("rules.d/00-deny.rules"),
-            parse_rules_file("deny all : all\n").expect("deny-all parses"),
+            parse_rules_file("deny all : all\n", Path::new("prop.rules")).expect("deny-all parses"),
         ));
         for (i, uid) in uids.iter().enumerate().take(n) {
             let src = format!("allow uid={uid} : path=/p{i}\n");
             files.push((
                 PathBuf::from(format!("rules.d/{:02}-allow.rules", 10 + i)),
-                parse_rules_file(&src).expect("allow parses"),
+                parse_rules_file(&src, Path::new("prop.rules")).expect("allow parses"),
             ));
         }
         let diags = lint_cross_file(&files);
@@ -1179,7 +1256,7 @@ proptest! {
             let src = format!("allow uid={uid} : path=/p{i}\n");
             files.push((
                 PathBuf::from(format!("rules.d/{:02}-allow.rules", 10 + i)),
-                parse_rules_file(&src).expect("allow parses"),
+                parse_rules_file(&src, Path::new("prop.rules")).expect("allow parses"),
             ));
         }
         let diags = lint_cross_file(&files);
@@ -1223,7 +1300,7 @@ proptest! {
             let _ = write!(object, "dir=/{seg}{}", if *slash { "/" } else { "" });
         }
         let source = format!("allow uid=0 : {object}\n");
-        let entries = parse_rules_file(&source).map_err(|d| {
+        let entries = parse_rules_file(&source, Path::new("prop.rules")).map_err(|d| {
             TestCaseError::fail(format!("generated source must parse: {source:?} {d:?}"))
         })?;
         let diags = lint(&entries, &source, Path::new("/tmp/proptest.rules"));
@@ -1340,7 +1417,8 @@ fn roundtrip_sentinel() {
     ];
 
     let source = render_program(&original);
-    let reparsed = parse_rules_file(&source).expect("hand-rolled sentinel must parse cleanly");
+    let reparsed = parse_rules_file(&source, Path::new("prop.rules"))
+        .expect("hand-rolled sentinel must parse cleanly");
 
     assert_eq!(
         normalize_lines(original),
@@ -1361,7 +1439,7 @@ fn monotonicity_sentinel() {
 allow perm=open uid=0 : all
 ";
 
-    let Err(diags) = parse_rules_file(source) else {
+    let Err(diags) = parse_rules_file(source, Path::new("prop.rules")) else {
         panic!(
             "sentinel input must produce parse errors (3 garbage lines), \
              but parse_rules_file returned Ok"

@@ -59,7 +59,7 @@ fn parses_full_corpus() {
 
     let mut any_failed = false;
     for (filename, body) in &corpus {
-        match parse_rules_file(body) {
+        match parse_rules_file(body, std::path::Path::new(filename)) {
             Ok(entries) => {
                 assert!(
                     !entries.is_empty(),
