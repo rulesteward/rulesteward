@@ -355,6 +355,34 @@ mod tests {
     }
 
     #[test]
+    fn f01_error_span_is_file_relative_on_a_later_line() {
+        use std::path::Path;
+        // Line 1 ("allow uid=0 : all") is 17 bytes + LF = 18 bytes total; line 2
+        // ("!!!x") starts at byte 18 and cannot parse -> fapd-F01. The error span
+        // must be FILE-relative (point into line 2 at byte 18), not line-relative
+        // (0..1), so ariadne renders the caret on line 2 instead of line 1.
+        let source = "allow uid=0 : all\n!!!x\n";
+        let file = Path::new("multi.rules");
+        let diags = parse_rules_file(source, file).expect_err("line 2 must fail to parse");
+        let f01 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-F01")
+            .expect("a fapd-F01 diagnostic");
+        assert_eq!(f01.line, 2, "diagnostic line must be the real line (2)");
+        assert_eq!(f01.column, 1, "column stays line-relative (col 1)");
+        assert_eq!(
+            f01.span.start, 18,
+            "span must be FILE-relative: line 2 starts at byte 18, got {}",
+            f01.span.start
+        );
+        assert_eq!(
+            &source[f01.span.start..f01.span.end],
+            "!",
+            "the file-relative span must slice the offending '!' on line 2"
+        );
+    }
+
+    #[test]
     fn inline_comment_is_stripped_before_chumsky() {
         // The trailing `# comment` is stripped so the line parses cleanly.
         // fapd-W03 emission for this line is the lint walker's job - not the

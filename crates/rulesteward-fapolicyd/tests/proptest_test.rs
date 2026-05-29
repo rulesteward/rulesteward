@@ -421,6 +421,50 @@ proptest! {
         }
     }
 
+    /// Property - every fapd-F01 diagnostic carries a FILE-relative span: the line
+    /// implied by counting newlines before span.start must equal the diagnostic's
+    /// own `line` field, and the span must be in-bounds. Guards the line-relative
+    /// span regression where a parse error on line N>1 rendered its ariadne caret
+    /// on line 1.
+    ///
+    /// The generator prepends 1..=4 cleanly-parsing lines before a guaranteed-
+    /// failing junk line so the error always lands on line >= 2. A purely-random
+    /// string almost always fails on line 1 (where line- and file-relative spans
+    /// coincide) and so never exercises this regression - the targeted shape is
+    /// what makes the property RED against the line-relative bug.
+    #[test]
+    fn f01_span_is_file_relative_and_consistent_with_line(
+        (lead, junk) in (1usize..=4, "!![^\r\n]{0,16}")
+    ) {
+        let mut s = String::new();
+        for _ in 0..lead {
+            s.push_str("allow uid=0 : all\n");
+        }
+        s.push_str(&junk);
+        s.push('\n');
+        let file = std::path::Path::new("prop.rules");
+        let diags = parse_rules_file(&s, file).expect_err("the junk line must fail to parse");
+        for d in &diags {
+            prop_assert!(d.span.start <= d.span.end, "span start..end inverted: {:?}", d.span);
+            prop_assert!(
+                d.span.end <= s.len(),
+                "span {:?} out of bounds for source len {}",
+                d.span,
+                s.len()
+            );
+            let line_of_span_start =
+                s.as_bytes()[..d.span.start].iter().filter(|&&b| b == b'\n').count() + 1;
+            prop_assert_eq!(
+                line_of_span_start,
+                d.line,
+                "span.start {} sits on line {} but diagnostic claims line {}",
+                d.span.start,
+                line_of_span_start,
+                d.line
+            );
+        }
+    }
+
     /// Property 2 - every `Vec<Entry>` produced by `arb_program()` renders
     /// to a source string that re-parses to an equal `Vec<Entry>` (after
     /// line-normalization on both sides - see top-of-file contract).
