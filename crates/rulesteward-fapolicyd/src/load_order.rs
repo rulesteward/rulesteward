@@ -4,8 +4,9 @@ use std::iter::Peekable;
 use std::path::Path;
 
 /// Order two rules.d entries the way `fagenrules` does: GNU `ls -v` style
-/// natural (version) sort on the file NAME. Digit runs compare as integers,
-/// non-digit runs compare bytewise. A bytewise tiebreak guarantees a total
+/// natural (version) sort on the file NAME. Digit runs compare as
+/// arbitrary-precision unsigned integers (overflow-proof for any prefix
+/// length), non-digit runs compare bytewise. A bytewise tiebreak guarantees a total
 /// order for distinct-but-numerically-equal names (e.g. `8-a` vs `08-a`).
 ///
 /// Targets the realistic `NN-name.rules` shape; not a bit-exact `strverscmp`
