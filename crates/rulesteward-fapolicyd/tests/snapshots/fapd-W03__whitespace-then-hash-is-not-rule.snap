@@ -2,6 +2,6 @@
 source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
 expression: rendered
 ---
-parse=err
+parse=ok
 diagnostics=1
-[fapd-F01] sev=Fatal line=1 col=4 span=3..4 :: found '#' expected ' ', '	', or decision keyword
+[fapd-W03] sev=Warning line=1 col=77 span=76..78 :: inline `# comment` after a rule line - fapolicyd silently drops this rule
