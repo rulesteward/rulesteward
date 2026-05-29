@@ -578,28 +578,18 @@ mod tests {
 
     #[test]
     fn f01_column_is_one_based_when_error_at_nonzero_offset() {
-        // A line like "allow xyz" fails AFTER consuming "allow " - chumsky's
-        // error span starts at a non-zero byte within the line. The `column`
-        // field must be `span_start_in_line + 1` (1-based), not
-        // `span_start_in_line * 1` (which equals 0 when span_start == 0
-        // but would be the same as the raw offset for span_start > 0).
+        // "allow !!!" parses "allow " then chumsky errors at the "!" (a non-zero
+        // byte offset within the line). This pins the OBSERVABLE F01 column:
+        // parse_rules_file runs fill_columns before returning, so the column is
+        // recomputed from the file-relative span via line_col - that is the value
+        // asserted here.
         //
-        // Kills the `replace + with *` mutant in error::rich_to_diagnostic:
-        //   column = span.start + 1   (correct)
-        //   column = span.start * 1   (wrong: produces 0 for col-1 errors)
-        //
-        // We use "!!!!!" to keep the test simple: chumsky fails at byte 0
-        // (column 1). But we also need to check the +1 offset for errors
-        // NOT at byte 0 - use fill_columns to verify the column field matches
-        // the 1-based position after the actual parse. The fill_columns pass
-        // in parse_rules_file will recompute column from the file-relative span,
-        // so we test that the initial column set in rich_to_diagnostic is
-        // correctly propagated or overwritten.
-        //
-        // Simplest kill: a source "allow !!!" - the parser accepts "allow "
-        // then hits "!" and chumsky's span.start may be > 0. Use fill_columns
-        // as the oracle: after parse_rules_file the column in the F01 diagnostic
-        // must be span_util::line_col(span, source).1.
+        // Note on the `+ -> *` mutant in error::rich_to_diagnostic (column =
+        // span.start + 1): that placeholder is ALWAYS overwritten by the
+        // fill_columns pass (F01 spans are never 0..0), so the mutant is
+        // unobservable - a genuine EQUIVALENT mutant, excluded in
+        // .cargo/mutants.toml. This test does not (and cannot) kill it; it guards
+        // the post-fill column instead.
         let src = "allow !!!\n";
         let file = Path::new("t.rules");
         let diags = parse_rules_file(src, file).expect_err("must fail");
