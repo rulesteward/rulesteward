@@ -1,0 +1,6 @@
+---
+source: crates/rulesteward-sink/tests/snapshot_test.rs
+expression: rendered
+---
+{"rule_id":42,"decision":"deny","ftype":"application/x-executable","exe":"/usr/bin/ssh","path":"/tmp/scan","timestamp":"2026-05-28T00:00:00Z"}
+{"rule_id":7,"decision":"allow","ftype":"text/plain","exe":"/bin/sh","path":"/etc/passwd","timestamp":"2026-05-28T01:00:00Z"}
