@@ -29,6 +29,13 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
         }
         let lineno = idx + 1;
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        // Skip comment lines: first non-whitespace character is `#`.
+        // Such lines are pure comments (fapolicyd accepts them), so
+        // a second `#` inside the comment text is not an inline comment.
+        if line.trim_start_matches([' ', '\t']).starts_with('#') {
+            line_byte_offset += raw_line.len() + 1;
+            continue;
+        }
         if let Some(hash_col_in_line) = inline::inline_comment_index(line) {
             // Column is 1-based; span captures `#` through end-of-line in
             // file-relative byte coords.
@@ -115,5 +122,39 @@ mod tests {
             "blank-then-fapd-W03 must still report fapd-W03"
         );
         assert_eq!(diags[0].line, 2);
+    }
+
+    #[test]
+    fn w03_not_emitted_on_comment_line_with_second_hash() {
+        // A comment line whose text contains a second `#` must NOT fire W03.
+        // The second `#` is part of the comment text, not an inline comment.
+        let src = "allow perm=open all : path=/etc/hosts\n   # note about # hashes\n";
+        let diags = w03_scan(src, &p());
+        assert!(
+            diags.iter().all(|d| d.code.as_ref() != "fapd-W03"),
+            "comment line must not fire fapd-W03, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn w03_column0_comment_with_hash_no_w03() {
+        // A column-0 comment line referencing a rule number must not fire W03.
+        let src = "# header referencing rule #5\nallow perm=open all : path=/x\n";
+        let diags = w03_scan(src, &p());
+        assert!(
+            diags.iter().all(|d| d.code.as_ref() != "fapd-W03"),
+            "column-0 comment with second # must not fire fapd-W03, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn w03_still_fires_on_real_inline_comment_after_rule() {
+        // Regression guard: a genuine rule with a trailing comment STILL warns.
+        let src = "allow perm=open all : all # trailing\n";
+        let diags = w03_scan(src, &p());
+        assert!(
+            diags.iter().any(|d| d.code.as_ref() == "fapd-W03"),
+            "real inline comment after rule must still fire fapd-W03, got {diags:?}"
+        );
     }
 }
