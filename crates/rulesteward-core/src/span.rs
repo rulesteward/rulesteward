@@ -183,7 +183,10 @@ mod tests {
             1, // hardcoded placeholder
         );
         span_util::fill_columns(std::slice::from_mut(&mut d), src);
-        assert_eq!(d.column, 4, "column should be 4 (byte 7 is 'd'+'e'+'f'+'g' = col 4)");
+        assert_eq!(
+            d.column, 4,
+            "column should be 4 (byte 7 is 'd'+'e'+'f'+'g' = col 4)"
+        );
     }
 
     #[test]

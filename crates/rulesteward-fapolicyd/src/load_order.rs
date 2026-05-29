@@ -38,8 +38,7 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
                 if ca.is_ascii_digit() && cb.is_ascii_digit() {
                     let ra = take_digit_run(&mut ai);
                     let rb = take_digit_run(&mut bi);
-                    if let non_eq @ (Ordering::Less | Ordering::Greater) =
-                        cmp_digit_runs(&ra, &rb)
+                    if let non_eq @ (Ordering::Less | Ordering::Greater) = cmp_digit_runs(&ra, &rb)
                     {
                         return non_eq;
                     }
@@ -102,7 +101,8 @@ mod tests {
         ];
         v.sort_by(|a, b| fagenrules_cmp(a, b));
         assert_eq!(
-            v[0], PathBuf::from("20000000000000000000-deny.rules"),
+            v[0],
+            PathBuf::from("20000000000000000000-deny.rules"),
             "the smaller 20-digit number must sort before the larger 21-digit one"
         );
     }

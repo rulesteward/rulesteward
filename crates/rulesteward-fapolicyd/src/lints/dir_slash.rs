@@ -130,7 +130,10 @@ mod tests {
     fn set_def(name: &str, values: &[&str]) -> Entry {
         Entry::SetDefinition {
             name: name.to_string(),
-            values: values.iter().map(std::string::ToString::to_string).collect(),
+            values: values
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             line: 1,
             span: rulesteward_core::span(0, 0),
         }

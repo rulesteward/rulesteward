@@ -741,11 +741,7 @@ mod tests {
         // `%s=123,99999999999999999999` -> INT-typed; the 20-digit value
         // overflows i64::MAX. fapolicyd: "Error converting val".
         // fapd-E05 must fire with an "exceeds the maximum integer" message.
-        let entries = vec![setdef_with_values(
-            1,
-            "s",
-            &["123", "99999999999999999999"],
-        )];
+        let entries = vec![setdef_with_values(1, "s", &["123", "99999999999999999999"])];
         let diags = e05(&entries, &p());
         assert_eq!(
             diags.len(),
@@ -846,11 +842,7 @@ mod tests {
         // `%s=9223372036854775808` -> i64::MAX+1, overflows; fapd-E05.
         let entries = vec![setdef_with_values(1, "s", &["9223372036854775808"])];
         let diags = e05(&entries, &p());
-        assert_eq!(
-            diags.len(),
-            1,
-            "i64::MAX+1 must fire fapd-E05: {diags:?}"
-        );
+        assert_eq!(diags.len(), 1, "i64::MAX+1 must fire fapd-E05: {diags:?}");
         assert!(diags[0].message.contains("exceeds the maximum integer"));
     }
 

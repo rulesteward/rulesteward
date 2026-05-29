@@ -248,17 +248,25 @@ mod tests {
             .iter()
             .find(|d| d.code.as_ref() == "fapd-E03")
             .unwrap_or_else(|| {
-                let summary: Vec<_> = diags.iter().map(|d| format!("[{}] col={} span={}..{}", d.code, d.column, d.span.start, d.span.end)).collect();
+                let summary: Vec<_> = diags
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "[{}] col={} span={}..{}",
+                            d.code, d.column, d.span.start, d.span.end
+                        )
+                    })
+                    .collect();
                 panic!("fapd-E03 expected for undefined macro %undef, diags={summary:?}")
             });
         // The E03 span should start at byte 18 (start of line 2).
         assert!(
             e03.span.start > 0,
             "E03 span.start must be non-zero (rule is on line 2): got span={}..{}",
-            e03.span.start, e03.span.end
+            e03.span.start,
+            e03.span.end
         );
-        let (expected_line, expected_col) =
-            rulesteward_core::span_util::line_col(&e03.span, src);
+        let (expected_line, expected_col) = rulesteward_core::span_util::line_col(&e03.span, src);
         assert_eq!(
             e03.line, expected_line,
             "line must match line_col: got {} expected {}",
@@ -286,8 +294,7 @@ mod tests {
             if d.span.start == 0 && d.span.end == 0 {
                 continue;
             }
-            let (expected_line, expected_col) =
-                rulesteward_core::span_util::line_col(&d.span, src);
+            let (expected_line, expected_col) = rulesteward_core::span_util::line_col(&d.span, src);
             assert_eq!(
                 d.column, expected_col,
                 "[{}] line={} span={}..{}: column {} != line_col column {}",

@@ -242,8 +242,11 @@ mod tests {
         std::fs::create_dir(&rules_d).expect("mkdir");
         std::fs::write(rules_d.join("10-real.rules"), "allow perm=open all : all\n")
             .expect("write");
-        std::fs::write(rules_d.join(".50-hidden.rules"), "allow perm=open all : all\n")
-            .expect("write");
+        std::fs::write(
+            rules_d.join(".50-hidden.rules"),
+            "allow perm=open all : all\n",
+        )
+        .expect("write");
         let args = lint_args(Some(rules_d), None);
         let (files, _layout) = resolve_targets(&args).expect("ok");
         let names: Vec<String> = files

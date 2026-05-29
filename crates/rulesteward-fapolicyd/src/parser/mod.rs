@@ -303,8 +303,8 @@ mod tests {
 
     #[test]
     fn leading_space_comment_is_comment_not_f01() {
-        let entries = parse_rules_file("   # indented\n", Path::new("t.rules"))
-            .expect("must parse");
+        let entries =
+            parse_rules_file("   # indented\n", Path::new("t.rules")).expect("must parse");
         assert!(
             entries.iter().all(|e| !matches!(e, Entry::Blank { .. })),
             "indented comment must not be blank"
@@ -318,8 +318,8 @@ mod tests {
 
     #[test]
     fn leading_tab_comment_is_comment_not_f01() {
-        let entries = parse_rules_file("\t# tab-indented\n", Path::new("t.rules"))
-            .expect("must parse");
+        let entries =
+            parse_rules_file("\t# tab-indented\n", Path::new("t.rules")).expect("must parse");
         assert!(
             matches!(entries.as_slice(), [Entry::Comment { .. }]),
             "tab-indented comment must produce exactly one Comment entry, got {entries:?}"
@@ -328,8 +328,7 @@ mod tests {
 
     #[test]
     fn column0_comment_still_comment() {
-        let entries = parse_rules_file("# col0\n", Path::new("t.rules"))
-            .expect("must parse");
+        let entries = parse_rules_file("# col0\n", Path::new("t.rules")).expect("must parse");
         assert!(
             matches!(entries.as_slice(), [Entry::Comment { .. }]),
             "column-0 comment must still be a Comment entry, got {entries:?}"
@@ -341,7 +340,10 @@ mod tests {
         let src = "allow perm=execute exe=/usr/bin/bash : all\n  # note\n";
         let entries = parse_rules_file(src, Path::new("t.rules")).expect("must parse");
         assert_eq!(
-            entries.iter().filter(|e| matches!(e, Entry::Rule(_))).count(),
+            entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Rule(_)))
+                .count(),
             1,
             "must have exactly one Rule entry, got {entries:?}"
         );
@@ -598,8 +600,7 @@ mod tests {
             .find(|d| d.code.as_ref() == "fapd-F01")
             .expect("fapd-F01 must be present");
         // The fill_columns pass runs inside parse_rules_file, so d.column == line_col.
-        let expected_col =
-            rulesteward_core::span_util::line_col(&f01.span, src).1;
+        let expected_col = rulesteward_core::span_util::line_col(&f01.span, src).1;
         assert_eq!(
             f01.column, expected_col,
             "column must be 1-based line_col of the span, got col={} span={:?}",

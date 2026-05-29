@@ -216,7 +216,8 @@ mod tests {
         let expected_hash_pos = header.len() + rule.find('#').expect("hash present");
         let diags = w03_scan(&src, &p());
         assert_eq!(
-            diags.len(), 1,
+            diags.len(),
+            1,
             "one W03 diagnostic expected, got: {diags:?}"
         );
         assert_eq!(
