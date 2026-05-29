@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct Event {
     /// fapolicyd rule number that produced this decision (aggregation key).
     pub rule_id: u32,
-    /// Decision keyword ("allow", "deny", "`allow_audit`", ...).
+    /// Decision keyword: `"allow"`, `"deny"`, `"allow_audit"`, etc.
     pub decision: String,
     /// Object file type / MIME (aggregation key).
     pub ftype: String,
@@ -63,6 +63,11 @@ mod tests {
         assert!(json.contains(r#""decision":"deny""#));
         assert!(json.contains(r#""ftype":"application/x-executable""#));
         assert!(json.contains(r#""exe":"/usr/bin/ssh""#));
+        // `path` and `timestamp` are part of the stable v0.1 wire schema (spec
+        // §9.3); assert their JSON names too so a silent `#[serde(rename)]` of
+        // either field is caught (the round-trip test alone would not catch it).
+        assert!(json.contains(r#""path":"/tmp/x""#));
+        assert!(json.contains(r#""timestamp":"2026-05-28T00:00:00Z""#));
     }
 
     #[test]

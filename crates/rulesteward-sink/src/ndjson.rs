@@ -115,7 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn emit_through_dyn_trait_object_works() {
+    fn dyn_trait_object_is_object_safe_and_emits_without_panic() {
+        // Structural assertion: `EventSink` is object-safe and `NdjsonSink<Vec<u8>>`
+        // satisfies the trait object's `Send + Sync` auto-trait bounds. (The bytes
+        // are not observable here because the writer is moved into the `Box`; the
+        // exact-bytes behavior is covered by the `Vec<u8>` tests above.)
         let sink: Box<dyn EventSink> = Box::new(NdjsonSink::new(Vec::<u8>::new()));
         sink.emit(&sample(7)).unwrap();
         sink.flush().unwrap();
@@ -134,7 +138,10 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         assert_eq!(text.lines().count(), 2);
         assert!(text.ends_with('\n'));
-        let _: Event = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        // Assert the first line round-trips to the SAME event emitted first, so a
+        // future refactor that reordered or dropped events would be caught.
+        let first: Event = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first, sample(1));
     }
 
     #[test]
