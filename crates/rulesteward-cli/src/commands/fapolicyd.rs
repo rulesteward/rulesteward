@@ -76,7 +76,19 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     // only in directory mode; a single `--file` has no cross-file relationships.
     // `target_files` is already in fagenrules load order (resolve_targets).
     if args.file.is_none() {
-        all_diags.extend(lint_cross_file(&parsed));
+        // Route cross-file diagnostics (fapd-W04/C01) through the same column
+        // backfill as the per-file lint() path, for uniformity. This is a no-op
+        // today: every rule span starts at its line's first byte (the grammar
+        // includes leading whitespace in the span), so W04 columns are already 1,
+        // and C01's 0..0 span is skipped by fill_columns. It future-proofs any
+        // later cross-file diagnostic that anchors mid-line.
+        let mut cross = lint_cross_file(&parsed);
+        for d in &mut cross {
+            if let Some(src) = sources.get(&d.file.display().to_string()) {
+                rulesteward_core::fill_columns(std::slice::from_mut(d), src);
+            }
+        }
+        all_diags.extend(cross);
     }
 
     let rendered = match output::render(args.format, &all_diags, &sources) {
