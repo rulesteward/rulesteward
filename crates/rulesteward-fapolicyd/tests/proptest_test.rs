@@ -452,6 +452,11 @@ proptest! {
                 d.span,
                 s.len()
             );
+            // A manual newline count is fine here: the `bytecount` crate's SIMD
+            // path that clippy::naive_bytecount suggests is not worth a dev-dep
+            // for a <=4 KiB proptest input. Byte-indexed (not `s[..]`) to stay
+            // panic-free on non-char-boundary offsets.
+            #[allow(clippy::naive_bytecount)]
             let line_of_span_start =
                 s.as_bytes()[..d.span.start].iter().filter(|&&b| b == b'\n').count() + 1;
             prop_assert_eq!(

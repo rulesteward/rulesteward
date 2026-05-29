@@ -179,7 +179,7 @@ where
                     Diagnostic::new(
                         Severity::Fatal,
                         "fapd-F01",
-                        0..body.len(),
+                        body_start_in_file..(body_start_in_file + body.len()),
                         "parser produced neither an entry nor an error",
                         file,
                         lineno,
@@ -192,7 +192,7 @@ where
     } else {
         let diags = errors
             .into_iter()
-            .map(|e| error::rich_to_diagnostic(&e, lineno, file))
+            .map(|e| error::rich_to_diagnostic(&e, lineno, body_start_in_file, file))
             .collect();
         (Vec::new(), diags)
     }
