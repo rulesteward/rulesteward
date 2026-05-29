@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
-use rulesteward_fapolicyd::{Entry, check_layout, fagenrules_cmp, lint, lint_cross_file, parse_rules_file};
+use rulesteward_fapolicyd::{
+    Entry, check_layout, fagenrules_cmp, lint, lint_cross_file, parse_rules_file,
+};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -505,7 +507,10 @@ fn drive_cross_file_scenario(code: &str, scenario_dir: &Path) {
         let entries = match parse_rules_file(&src) {
             Ok(entries) => entries,
             Err(diags) => {
-                panic!("cross-file fixture {} must parse cleanly: {diags:?}", path.display())
+                panic!(
+                    "cross-file fixture {} must parse cleanly: {diags:?}",
+                    path.display()
+                )
             }
         };
         let rel = Path::new("rules.d").join(path.file_name().expect("rules file has a name"));
@@ -526,8 +531,13 @@ fn drive_cross_file_scenario(code: &str, scenario_dir: &Path) {
     });
 
     let mut rendered = String::new();
-    writeln!(rendered, "files={}\ndiagnostics={}", files.len(), diags.len())
-        .expect("write to String never fails");
+    writeln!(
+        rendered,
+        "files={}\ndiagnostics={}",
+        files.len(),
+        diags.len()
+    )
+    .expect("write to String never fails");
     if sorted.is_empty() {
         rendered.push_str("(no diagnostics)\n");
     } else {
