@@ -431,6 +431,29 @@ fn lint_directory_cross_file_c01_is_advisory_exits_zero() {
 }
 
 #[test]
+fn lint_directory_dotfile_never_emits_phantom_c01() {
+    // A rules.d with a visible `10-real.rules` plus a hidden `.50-hidden.rules`.
+    // fagenrules enumerates with `ls -1v | grep '\.rules$'` (no -a), so the
+    // dotfile is never compiled. RuleSteward must NOT lint it and must NOT emit a
+    // phantom fapd-C01 referencing `.50-hidden.rules`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(rules_d.join("10-real.rules"), "allow uid=0 : all\n").expect("write");
+    std::fs::write(rules_d.join(".50-hidden.rules"), "allow uid=0 : all\n").expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&rules_d)
+        .assert()
+        .code(0)
+        // The hidden dotfile must not appear in any diagnostic output.
+        .stdout(predicate::str::contains(".50-hidden.rules").not())
+        // Specifically, no phantom fapd-C01 must be emitted for the dotfile.
+        .stdout(predicate::str::contains("[fapd-C01]").not());
+}
+
+#[test]
 fn lint_single_file_mode_skips_cross_file_c01() {
     // In --file mode there are no cross-file relationships, so lint_cross_file
     // (which includes the C01 filename-convention check) must NOT run - even
