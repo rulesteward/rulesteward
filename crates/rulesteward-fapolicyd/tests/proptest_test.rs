@@ -393,6 +393,33 @@ proptest! {
         }
     }
 
+    /// Property - no diagnostic emitted by the path-aware parser ever carries the
+    /// retired "<source>" placeholder or a None source_id. Regression guard for
+    /// G-spec-drift gap #3: a direct caller (simulate / trustdb cross-check / fuzz)
+    /// must never observe the placeholder that lint_file used to rewrite.
+    #[test]
+    fn parser_diagnostics_never_use_placeholder(
+        s in proptest::string::string_regex(".{0,4096}").unwrap()
+    ) {
+        let file = std::path::Path::new("prop.rules");
+        if let Err(diags) = parse_rules_file(&s, file) {
+            for d in &diags {
+                prop_assert_eq!(
+                    d.file.as_path(),
+                    file,
+                    "diagnostic file must be the supplied path, got {:?}",
+                    d.file
+                );
+                prop_assert_eq!(
+                    d.source_id.as_deref(),
+                    Some("prop.rules"),
+                    "diagnostic source_id must be populated, was {:?}",
+                    d.source_id
+                );
+            }
+        }
+    }
+
     /// Property 2 - every `Vec<Entry>` produced by `arb_program()` renders
     /// to a source string that re-parses to an equal `Vec<Entry>` (after
     /// line-normalization on both sides - see top-of-file contract).

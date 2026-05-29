@@ -305,6 +305,28 @@ mod tests {
     }
 
     #[test]
+    fn f01_diagnostic_carries_real_file_and_source_id() {
+        use std::path::Path;
+        // A line that cannot parse under any grammar -> fapd-F01.
+        let file = Path::new("rules.d/40-bad.rules");
+        let diags = parse_rules_file("!!!nonsense\n", file).expect_err("must fail to parse");
+        let f01 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-F01")
+            .expect("a fapd-F01 diagnostic");
+        assert_eq!(
+            f01.file.as_path(),
+            file,
+            "parser must label the diagnostic with the real path, not the <source> placeholder",
+        );
+        assert_eq!(
+            f01.source_id.as_deref(),
+            Some("rules.d/40-bad.rules"),
+            "source_id must be set at the parser so direct callers get the fapd-F01 ariadne snippet",
+        );
+    }
+
+    #[test]
     fn inline_comment_is_stripped_before_chumsky() {
         // The trailing `# comment` is stripped so the line parses cleanly.
         // fapd-W03 emission for this line is the lint walker's job - not the
