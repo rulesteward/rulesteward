@@ -19,7 +19,7 @@ pub mod inline;
 
 use chumsky::extra;
 use chumsky::prelude::*;
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, fill_columns};
 use std::path::Path;
 
 use crate::ast::{Entry, Rule};
@@ -87,6 +87,11 @@ pub fn parse_rules_file(source: &str, file: &Path) -> Result<Vec<Entry>, Vec<Dia
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Fatal) {
+        // Backfill the column field from each diagnostic's byte span so
+        // JSON / plain output agrees with the ariadne caret. The parser
+        // builds diagnostics with source unavailable at parse_line; here
+        // `source` is in scope.
+        fill_columns(&mut diagnostics, source);
         Err(diagnostics)
     } else {
         Ok(entries)

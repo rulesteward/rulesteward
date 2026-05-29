@@ -27,7 +27,7 @@ pub use layout::check_layout;
 
 use std::path::Path;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, fill_columns};
 
 use crate::ast::Entry;
 use crate::parser;
@@ -46,6 +46,11 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
     diags.extend(deprecation::walk(entries, file));
     diags.extend(dir_slash::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
+    // Backfill column from each diagnostic's byte span. Lint passes and the
+    // parser historically hardcoded column = 1; this makes the column field
+    // agree with the byte span the human renderer uses for its caret, so
+    // JSON / plain / snapshot columns are consistent with the ariadne display.
+    fill_columns(&mut diags, source);
     diags
 }
 
@@ -212,5 +217,104 @@ mod tests {
         let result = lint_file(std::path::Path::new("/nonexistent/path/to/nothing"));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    // --- column backfill tests (A5: derive column from span) ---
+
+    #[test]
+    fn diagnostic_column_is_derived_from_span() {
+        // Two-line file. Line 1 is a clean rule; line 2 references an undefined
+        // macro. The E03 diagnostic's span.start is the byte offset of line 2's
+        // rule start within the whole file (non-zero). Before the column backfill,
+        // d.column was hardcoded to 1. After the backfill, it must equal
+        // line_col(d.span, src).1.
+        //
+        // Line 1: "allow uid=0 : all\n"     = 18 bytes (line 1, col 1..17)
+        // Line 2: "allow uid=0 : exe=%undef\n"  starts at byte offset 18 -> col 1
+        //         BUT its span.start = 18, so line_col(18, src) = (2, 1).
+        //
+        // To get a non-1 column on a rule, we need a finding that anchors to a
+        // mid-rule span, OR we use fapd-W03 (already anchors to the `#` position).
+        // Here we use the `all_lint_diagnostics_have_column_matching_line_col`
+        // test for the universal check, and this test specifically verifies the
+        // key invariant: column == line_col(span, source).1 for at least one
+        // non-trivially-placed diagnostic (E03 on line 2).
+        let src = "allow uid=0 : all\nallow uid=0 : exe=%undef\n";
+        let p = std::path::Path::new("t.rules");
+        let entries = parser::parse_rules_file(src, p)
+            .unwrap_or_else(|diags| panic!("fixture must parse, got parse errors: {diags:?}"));
+        let diags = lint(&entries, src, p);
+        let e03 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-E03")
+            .unwrap_or_else(|| {
+                let summary: Vec<_> = diags.iter().map(|d| format!("[{}] col={} span={}..{}", d.code, d.column, d.span.start, d.span.end)).collect();
+                panic!("fapd-E03 expected for undefined macro %undef, diags={summary:?}")
+            });
+        // The E03 span should start at byte 18 (start of line 2).
+        assert!(
+            e03.span.start > 0,
+            "E03 span.start must be non-zero (rule is on line 2): got span={}..{}",
+            e03.span.start, e03.span.end
+        );
+        let (expected_line, expected_col) =
+            rulesteward_core::span_util::line_col(&e03.span, src);
+        assert_eq!(
+            e03.line, expected_line,
+            "line must match line_col: got {} expected {}",
+            e03.line, expected_line
+        );
+        assert_eq!(
+            e03.column, expected_col,
+            "column must be span-derived (not hardcoded 1): got {} expected {} (span={}..{})",
+            e03.column, expected_col, e03.span.start, e03.span.end
+        );
+    }
+
+    #[test]
+    fn all_lint_diagnostics_have_column_matching_line_col() {
+        // Smoke test: every diagnostic returned by lint() must have d.column ==
+        // line_col(d.span, source).1, confirming the backfill is universal.
+        // Uses the same multi-code fixture as lint_aggregator_calls_all_walks.
+        let src = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+        let p = std::path::Path::new("t.rules");
+        let entries = parser::parse_rules_file(src, p).expect("should parse");
+        let diags = lint(&entries, src, p);
+        for d in &diags {
+            // Skip unanchored diagnostics (0..0 span) - these are file-layout
+            // fatals with no source byte range.
+            if d.span.start == 0 && d.span.end == 0 {
+                continue;
+            }
+            let (expected_line, expected_col) =
+                rulesteward_core::span_util::line_col(&d.span, src);
+            assert_eq!(
+                d.column, expected_col,
+                "[{}] line={} span={}..{}: column {} != line_col column {}",
+                d.code, d.line, d.span.start, d.span.end, d.column, expected_col
+            );
+            let _ = expected_line; // line correctness is pre-existing
+        }
+    }
+
+    #[test]
+    fn parse_f01_column_matches_line_col() {
+        // F01 parse errors should also have column == line_col(span, source).1
+        // after the parse backfill. Uses a multi-line source where the failure
+        // is on line 2 at a non-trivial column offset.
+        let src = "allow uid=0 : all\n!!!garbage\n";
+        let p = std::path::Path::new("t.rules");
+        let diags = parser::parse_rules_file(src, p).expect_err("line 2 must fail");
+        for d in &diags {
+            if d.span.start == 0 && d.span.end == 0 {
+                continue;
+            }
+            let (_, expected_col) = rulesteward_core::span_util::line_col(&d.span, src);
+            assert_eq!(
+                d.column, expected_col,
+                "[{}] line={} span={}..{}: column {} != line_col column {}",
+                d.code, d.line, d.span.start, d.span.end, d.column, expected_col
+            );
+        }
     }
 }

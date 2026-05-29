@@ -80,6 +80,35 @@ pub mod span_util {
         }
         (line, col)
     }
+
+    /// Backfill each diagnostic's 1-based `column` from its byte `span`
+    /// against `source`, using [`line_col`].
+    ///
+    /// Diagnostics with an unanchored `0..0` span (file-layout fatals with no
+    /// source byte range) are left untouched.
+    ///
+    /// Lint passes and the parser historically hardcoded `column = 1`; this
+    /// makes the `column` field agree with the byte span the human renderer
+    /// already uses for its caret position, so JSON / plain / snapshot columns
+    /// match the ariadne caret.
+    ///
+    /// A `debug_assert` fires if the span-derived line disagrees with the
+    /// diagnostic's stored line (which would indicate a span/line inconsistency
+    /// introduced at the emit site). The assert is silent in release builds.
+    pub fn fill_columns(diags: &mut [crate::diagnostic::Diagnostic], source: &str) {
+        for d in diags.iter_mut() {
+            if d.span.start == 0 && d.span.end == 0 {
+                continue;
+            }
+            let (span_line, col) = line_col(&d.span, source);
+            debug_assert_eq!(
+                d.line, span_line,
+                "fill_columns: line_col line {span_line} disagrees with diagnostic line {} for {}",
+                d.line, d.code
+            );
+            d.column = col;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +163,61 @@ mod tests {
         // Source "\n\na" - byte 2 (the `a`) sits on line 3 at column 1.
         // Kills mutations that change `col = 1` reset to `col = 0`.
         assert_eq!(span_util::line_col(&span(2, 2), "\n\na"), (3, 1));
+    }
+
+    // fill_columns tests
+
+    #[test]
+    fn fill_columns_backfills_column_from_span() {
+        use crate::diagnostic::{Diagnostic, Severity};
+        // Source "abc\ndefgh\n": byte 7 is `g` on line 2 at column 4.
+        // A diagnostic with span=7..8 and hardcoded column=1 should get column=4.
+        let src = "abc\ndefgh\n";
+        let mut d = Diagnostic::new(
+            Severity::Warning,
+            "test-W01",
+            7..8, // byte `g` on line 2, col 4
+            "test message",
+            "test.rules",
+            2,
+            1, // hardcoded placeholder
+        );
+        span_util::fill_columns(std::slice::from_mut(&mut d), src);
+        assert_eq!(d.column, 4, "column should be 4 (byte 7 is 'd'+'e'+'f'+'g' = col 4)");
+    }
+
+    #[test]
+    fn fill_columns_skips_zero_zero_span() {
+        use crate::diagnostic::{Diagnostic, Severity};
+        // A file-layout fatal with 0..0 span should be left untouched.
+        let mut d = Diagnostic::new(
+            Severity::Fatal,
+            "test-F02",
+            0..0,
+            "unanchored fatal",
+            "test.rules",
+            0,
+            0,
+        );
+        span_util::fill_columns(std::slice::from_mut(&mut d), "anything");
+        assert_eq!(d.column, 0, "0..0 span must not be modified");
+    }
+
+    #[test]
+    fn fill_columns_column_one_preserved_for_line_start_span() {
+        use crate::diagnostic::{Diagnostic, Severity};
+        // A span starting at the beginning of its line gives column 1.
+        let src = "first line\nsecond line\n";
+        let mut d = Diagnostic::new(
+            Severity::Warning,
+            "test-W01",
+            11..22, // byte 11 = start of "second line"
+            "second line diagnostic",
+            "t.rules",
+            2,
+            99, // wrong placeholder value; backfill must set to 1
+        );
+        span_util::fill_columns(std::slice::from_mut(&mut d), src);
+        assert_eq!(d.column, 1, "start-of-line span gives column 1");
     }
 }
