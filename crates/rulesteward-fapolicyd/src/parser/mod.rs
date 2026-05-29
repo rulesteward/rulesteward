@@ -19,6 +19,7 @@ pub mod inline;
 use chumsky::extra;
 use chumsky::prelude::*;
 use rulesteward_core::{Diagnostic, Severity};
+use std::path::Path;
 
 use crate::ast::{Entry, Rule};
 
@@ -35,7 +36,7 @@ const UTF8_BOM: &str = "\u{feff}";
 /// branch therefore intentionally carries no diagnostics. If a future change
 /// adds a non-Fatal pass to the parser, the return type must be widened to
 /// `(Vec<Entry>, Vec<Diagnostic>)` so warnings on the Ok path are not lost.
-pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
+pub fn parse_rules_file(source: &str, file: &Path) -> Result<Vec<Entry>, Vec<Diagnostic>> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -76,7 +77,7 @@ pub fn parse_rules_file(source: &str) -> Result<Vec<Entry>, Vec<Diagnostic>> {
             line_byte_offset
         };
 
-        let (line_entries, line_diags) = parse_line(no_bom, lineno, body_start_in_file);
+        let (line_entries, line_diags) = parse_line(no_bom, lineno, body_start_in_file, file);
         entries.extend(line_entries);
         diagnostics.extend(line_diags);
 
@@ -95,6 +96,7 @@ fn parse_line(
     line: &str,
     lineno: usize,
     body_start_in_file: usize,
+    file: &Path,
 ) -> (Vec<Entry>, Vec<Diagnostic>) {
     if line.bytes().all(|b| b == b' ' || b == b'\t') {
         return (vec![Entry::Blank { line: lineno }], Vec::new());
@@ -116,15 +118,31 @@ fn parse_line(
     let first_nonws = body.trim_start_matches([' ', '\t']).chars().next();
 
     if first_nonws == Some('%') {
-        run_chumsky(grammar::set_definition(), body, lineno, body_start_in_file)
+        run_chumsky(
+            grammar::set_definition(),
+            body,
+            lineno,
+            body_start_in_file,
+            file,
+        )
     } else {
-        let (entries, modern_diags) =
-            run_chumsky(grammar::modern_rule(), body, lineno, body_start_in_file);
+        let (entries, modern_diags) = run_chumsky(
+            grammar::modern_rule(),
+            body,
+            lineno,
+            body_start_in_file,
+            file,
+        );
         if modern_diags.is_empty() {
             (entries, modern_diags)
         } else {
-            let (legacy_entries, legacy_diags) =
-                run_chumsky(grammar::legacy_rule(), body, lineno, body_start_in_file);
+            let (legacy_entries, legacy_diags) = run_chumsky(
+                grammar::legacy_rule(),
+                body,
+                lineno,
+                body_start_in_file,
+                file,
+            );
             if legacy_diags.is_empty() {
                 (legacy_entries, legacy_diags)
             } else {
@@ -142,6 +160,7 @@ fn run_chumsky<'a, P>(
     body: &'a str,
     lineno: usize,
     body_start_in_file: usize,
+    file: &Path,
 ) -> (Vec<Entry>, Vec<Diagnostic>)
 where
     P: Parser<'a, &'a str, Entry, extra::Err<Rich<'a, char>>>,
@@ -156,21 +175,24 @@ where
         } else {
             (
                 Vec::new(),
-                vec![Diagnostic::new(
-                    Severity::Fatal,
-                    "fapd-F01",
-                    0..body.len(),
-                    "parser produced neither an entry nor an error",
-                    "<source>",
-                    lineno,
-                    1,
-                )],
+                vec![
+                    Diagnostic::new(
+                        Severity::Fatal,
+                        "fapd-F01",
+                        0..body.len(),
+                        "parser produced neither an entry nor an error",
+                        file,
+                        lineno,
+                        1,
+                    )
+                    .with_source_id(file.display().to_string()),
+                ],
             )
         }
     } else {
         let diags = errors
             .into_iter()
-            .map(|e| error::rich_to_diagnostic(&e, lineno))
+            .map(|e| error::rich_to_diagnostic(&e, lineno, file))
             .collect();
         (Vec::new(), diags)
     }
@@ -224,16 +246,17 @@ fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry 
 mod tests {
     use super::*;
     use crate::ast::{Attr, Decision, SyntaxFlavor};
+    use std::path::Path;
 
     #[test]
     fn empty_source_parses_to_no_entries() {
-        let entries = parse_rules_file("").expect("empty parses");
+        let entries = parse_rules_file("", Path::new("test.rules")).expect("empty parses");
         assert!(entries.is_empty());
     }
 
     #[test]
     fn single_lf_yields_one_blank_entry() {
-        let entries = parse_rules_file("\n").expect("blank parses");
+        let entries = parse_rules_file("\n", Path::new("test.rules")).expect("blank parses");
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0], Entry::Blank { line: 1 }));
     }
@@ -242,14 +265,16 @@ mod tests {
     fn whitespace_only_line_is_blank_entry() {
         // Mixed space and tab - the blank detector must accept any line
         // composed of only space-or-tab bytes, not only fully-empty lines.
-        let entries = parse_rules_file("  \t  \n").expect("ws-only line is blank");
+        let entries =
+            parse_rules_file("  \t  \n", Path::new("test.rules")).expect("ws-only line is blank");
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0], Entry::Blank { line: 1 }));
     }
 
     #[test]
     fn col0_comment_yields_comment_entry() {
-        let entries = parse_rules_file("# hello\n").expect("comment parses");
+        let entries =
+            parse_rules_file("# hello\n", Path::new("test.rules")).expect("comment parses");
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             Entry::Comment { text, line } => {
@@ -262,7 +287,8 @@ mod tests {
 
     #[test]
     fn leading_whitespace_comment_is_f01() {
-        let diags = parse_rules_file("   # leading ws\n").expect_err("must fail");
+        let diags =
+            parse_rules_file("   # leading ws\n", Path::new("test.rules")).expect_err("must fail");
         assert!(
             diags.iter().any(|d| d.code.as_ref() == "fapd-F01"),
             "expected fapd-F01 for leading-ws comment, got {diags:?}"
@@ -271,7 +297,8 @@ mod tests {
 
     #[test]
     fn modern_rule_assigns_modern_flavor_and_line() {
-        let entries = parse_rules_file("allow uid=0 : all\n").expect("parses");
+        let entries =
+            parse_rules_file("allow uid=0 : all\n", Path::new("test.rules")).expect("parses");
         match &entries[0] {
             Entry::Rule(r) => {
                 assert_eq!(r.decision, Decision::Allow);
@@ -284,7 +311,8 @@ mod tests {
 
     #[test]
     fn legacy_rule_assigns_legacy_flavor() {
-        let entries = parse_rules_file("allow uid=0 path=/usr/bin/sh\n").expect("parses");
+        let entries = parse_rules_file("allow uid=0 path=/usr/bin/sh\n", Path::new("test.rules"))
+            .expect("parses");
         match &entries[0] {
             Entry::Rule(r) => assert_eq!(r.syntax, SyntaxFlavor::Legacy),
             other => panic!("expected Rule, got {other:?}"),
@@ -293,7 +321,8 @@ mod tests {
 
     #[test]
     fn accumulates_diagnostics_across_multiple_failing_lines() {
-        let diags = parse_rules_file("!!!a\n!!!b\n!!!c\n").expect_err("three errors");
+        let diags = parse_rules_file("!!!a\n!!!b\n!!!c\n", Path::new("test.rules"))
+            .expect_err("three errors");
         assert!(
             diags
                 .iter()
@@ -306,7 +335,6 @@ mod tests {
 
     #[test]
     fn f01_diagnostic_carries_real_file_and_source_id() {
-        use std::path::Path;
         // A line that cannot parse under any grammar -> fapd-F01.
         let file = Path::new("rules.d/40-bad.rules");
         let diags = parse_rules_file("!!!nonsense\n", file).expect_err("must fail to parse");
@@ -331,14 +359,15 @@ mod tests {
         // The trailing `# comment` is stripped so the line parses cleanly.
         // fapd-W03 emission for this line is the lint walker's job - not the
         // parser's.
-        let entries =
-            parse_rules_file("allow uid=0 : all # trailing\n").expect("parses after strip");
+        let entries = parse_rules_file("allow uid=0 : all # trailing\n", Path::new("test.rules"))
+            .expect("parses after strip");
         assert!(matches!(entries[0], Entry::Rule(_)));
     }
 
     #[test]
     fn crlf_terminated_line_parses() {
-        let entries = parse_rules_file("allow uid=0 : all\r\n").expect("crlf parses");
+        let entries = parse_rules_file("allow uid=0 : all\r\n", Path::new("test.rules"))
+            .expect("crlf parses");
         assert!(matches!(entries[0], Entry::Rule(_)));
     }
 
@@ -348,7 +377,8 @@ mod tests {
         // (1 byte) = 21 bytes total. Rule body lives at bytes 3..20; the span
         // must be file-relative, NOT line-relative (which would be 0..17).
         // This assertion locks the BOM accounting in `body_start_in_file`.
-        let entries = parse_rules_file("\u{feff}allow uid=0 : all\n").expect("bom parses");
+        let entries = parse_rules_file("\u{feff}allow uid=0 : all\n", Path::new("test.rules"))
+            .expect("bom parses");
         let Entry::Rule(rule) = &entries[0] else {
             panic!("entries[0] expected Rule, got {:?}", entries[0])
         };
@@ -370,7 +400,7 @@ mod tests {
         // could not find an object-only attribute to anchor the legacy subject/object
         // split. The rule failed to parse. After Task 5: trust is legacy-classified
         // as Object, so the split fires at the `trust` attribute.
-        let entries = parse_rules_file("allow uid=0 trust=1\n")
+        let entries = parse_rules_file("allow uid=0 trust=1\n", Path::new("test.rules"))
             .expect("legacy rule with trust as object anchor must parse");
         let Entry::Rule(r) = &entries[0] else {
             panic!("entries[0] expected Rule, got {:?}", entries[0])
@@ -392,7 +422,7 @@ mod tests {
 
     #[test]
     fn legacy_rule_with_dir_object_anchor_parses() {
-        let entries = parse_rules_file("allow uid=0 dir=/usr\n")
+        let entries = parse_rules_file("allow uid=0 dir=/usr\n", Path::new("test.rules"))
             .expect("legacy rule with dir as object anchor must parse");
         let Entry::Rule(r) = &entries[0] else {
             panic!("entries[0] expected Rule")
@@ -407,8 +437,11 @@ mod tests {
 
     #[test]
     fn legacy_rule_with_ftype_object_anchor_parses() {
-        let entries = parse_rules_file("allow uid=0 ftype=application/x-executable\n")
-            .expect("legacy rule with ftype as object anchor must parse");
+        let entries = parse_rules_file(
+            "allow uid=0 ftype=application/x-executable\n",
+            Path::new("test.rules"),
+        )
+        .expect("legacy rule with ftype as object anchor must parse");
         let Entry::Rule(r) = &entries[0] else {
             panic!("entries[0] expected Rule")
         };
@@ -426,7 +459,7 @@ mod tests {
         //   "# header\n"               = bytes 0..9   (8 chars + LF)
         //   "%langs=ruby,perl,bash\n"  = bytes 9..31  (21 chars + LF)
         let source = "# header\n%langs=ruby,perl,bash\n";
-        let entries = parse_rules_file(source).expect("parses");
+        let entries = parse_rules_file(source, Path::new("test.rules")).expect("parses");
         // entries[0] = Comment (line 1), entries[1] = SetDefinition (line 2)
         let Entry::SetDefinition {
             name, span, line, ..
@@ -450,7 +483,8 @@ mod tests {
     fn set_definition_bom_accounting_on_first_line() {
         // Source: BOM (3 bytes) + "%langs=ruby" (11 bytes) + LF = 15 bytes total.
         // SetDefinition body lives at bytes 3..14; span must be file-relative.
-        let entries = parse_rules_file("\u{feff}%langs=ruby\n").expect("bom parses");
+        let entries =
+            parse_rules_file("\u{feff}%langs=ruby\n", Path::new("test.rules")).expect("bom parses");
         let Entry::SetDefinition { span, .. } = &entries[0] else {
             panic!("entries[0] expected SetDefinition")
         };
@@ -465,7 +499,7 @@ mod tests {
         //   "allow uid=0 : all\n" = bytes 10..28 (17 chars + LF)
         //   "allow uid=1 : all\n" = bytes 28..46 (17 chars + LF)
         let source = "# comment\nallow uid=0 : all\nallow uid=1 : all\n";
-        let entries = parse_rules_file(source).expect("parses");
+        let entries = parse_rules_file(source, Path::new("test.rules")).expect("parses");
         // entries[0] = Comment (line 1), entries[1] = Rule (line 2), entries[2] = Rule (line 3)
         let Entry::Rule(rule1) = &entries[1] else {
             panic!("entries[1] expected Rule")

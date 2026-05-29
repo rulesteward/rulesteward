@@ -134,7 +134,7 @@ fn drive_file(code: &str, path: &Path) {
         .join(code)
         .join(path.file_name().expect("trap file has a name"));
 
-    let rendered = match parse_rules_file(&src) {
+    let rendered = match parse_rules_file(&src, &rel_path) {
         Ok(entries) => {
             let diags = lint(&entries, &src, &rel_path);
             render("parse=ok", &diags)
@@ -504,7 +504,7 @@ fn drive_cross_file_scenario(code: &str, scenario_dir: &Path) {
     for path in &files {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-        let entries = match parse_rules_file(&src) {
+        let entries = match parse_rules_file(&src, path) {
             Ok(entries) => entries,
             Err(diags) => {
                 panic!(

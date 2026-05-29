@@ -67,24 +67,12 @@ pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagno
 #[must_use = "lint results contain parse and lint diagnostics that should be checked"]
 pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
     let source = std::fs::read_to_string(path)?;
-    let (entries, mut parse_diags) = match parser::parse_rules_file(&source) {
+    let (entries, parse_diags) = match parser::parse_rules_file(&source, path) {
         Ok(entries) => (entries, Vec::new()),
         Err(diags) => (Vec::new(), diags),
     };
-    // The parser emits diagnostics with file = "<source>" placeholder
-    // (the parser doesn't know the path). Rewrite to the real path so
-    // CI tooling that greps `file:line:col` sees the actual file.
-    //
-    // Also set `source_id` to the same path string the CLI uses as the
-    // key in its `BTreeMap<String, String>` source cache (`Path::display`
-    // formatting). With both `source_id` set and a real byte-range span
-    // from the chumsky `Rich::span()`, fapd-F01 diagnostics now render with
-    // an ariadne snippet just like fapd-E01 / fapd-F03 / fapd-W02 / fapd-W03.
-    let source_id = path.display().to_string();
-    for d in &mut parse_diags {
-        d.file = path.to_path_buf();
-        d.source_id = Some(source_id.clone());
-    }
+    // The parser now anchors fapd-F01 diagnostics to `path` (file + source_id)
+    // at their origin, so no post-pass rewrite is needed here.
     let mut diags = parse_diags;
     diags.extend(lint(&entries, &source, path));
     Ok((entries, diags))
@@ -135,7 +123,7 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
-        let entries = parser::parse_rules_file(source).expect("source must parse");
+        let entries = parser::parse_rules_file(source, &path).expect("source must parse");
         let diags = lint(&entries, source, &path);
         let codes: HashSet<&str> = diags.iter().map(|d| d.code.as_ref()).collect();
         assert!(
@@ -207,10 +195,11 @@ mod tests {
             "fapd-F01 diagnostic file should match input path, got {:?}",
             f01.file
         );
-        // The lint_file post-emission rewrite must also set source_id so the
-        // ariadne renderer can find the source text in the CLI's source map.
-        // Without this, fapd-F01 silently falls back to plain rendering even
-        // though its span is a real byte range.
+        // The parser anchors fapd-F01 to `path` (source_id = path.display()),
+        // so the ariadne renderer can find the source text in the CLI's source
+        // map without any post-pass rewrite. Without source_id, fapd-F01 would
+        // silently fall back to plain rendering even though its span is a real
+        // byte range.
         assert_eq!(
             f01.source_id.as_deref(),
             Some(f.path().display().to_string().as_str()),
