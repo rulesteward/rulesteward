@@ -199,9 +199,10 @@ mod tests {
             ),
         ];
         let d = walk(&entries, &p());
-        assert!(
-            d.iter().any(|x| x.code.as_ref() == "fapd-W08"),
-            "expected fapd-W08 but got: {d:?}"
+        assert_eq!(
+            d.iter().filter(|x| x.code.as_ref() == "fapd-W08").count(),
+            1,
+            "expected exactly one fapd-W08 for the single slash-less setref value, got: {d:?}"
         );
     }
 
