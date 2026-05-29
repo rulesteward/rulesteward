@@ -10,6 +10,7 @@
 //! * `source_scan` - raw-source re-scan for fapd-W03.
 //! * `layout` - filesystem-driven fapd-F02 check.
 //! * `cross_file` - cross-`rules.d/` passes (fapd-W04 ordering, fapd-C01 filename convention).
+//! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
 
 mod cross_file;
 mod deprecation;

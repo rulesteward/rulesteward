@@ -1,5 +1,6 @@
 //! Shared rule-subsumption engine behind fapd-W01 (within-file, `reachability`)
 //! and fapd-W04 (cross-file, `cross_file`): predicate/perm/dir-prefix coverage.
+
 use std::collections::HashMap;
 
 use crate::ast::{Attr, AttrValue, Perm, Rule};
