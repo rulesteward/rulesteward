@@ -27,6 +27,18 @@ allow = [
     "Unlicense",
     "Apache-2.0 WITH LLVM-exception",
 ]
+# Vendored liblmdb (via the LOCKED `heed` dep -> `lmdb-master-sys`, compiled by
+# a `cc` build script): `lmdb-master-sys` DECLARES its crate license as
+# `Apache-2.0` (allowed above), so the metadata-based licenses check passes with
+# NO dedicated allowance. The vendored C itself (lmdb/libraries/liblmdb/LICENSE)
+# is the OpenLDAP Public License v2.8 (SPDX OLDAP-2.8): permissive, BSD-style,
+# Apache-2.0-compatible. We deliberately do NOT add OLDAP-2.8 to `allow` - no
+# crate declares it, so it would only produce an unmatched-allowance warning.
+# Its real obligation is attribution: the distributed musl binary's third-party
+# license notice must retain liblmdb's OpenLDAP copyright (packaging follow-up,
+# tracked in the session 3c-trustdb plan). Reintroducing a cc build script
+# partially reverses session 3-hardening's build-script removal - a deliberate,
+# documented tradeoff for the LOCKED heed trust-DB reader.
 # 0.93 is cargo-deny's default-recommended detection confidence floor.
 confidence-threshold = 0.93
 
