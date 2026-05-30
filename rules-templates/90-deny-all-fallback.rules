@@ -1,0 +1,27 @@
+#
+# 90-deny-all-fallback.rules
+#
+# Terminal fallback rules. These are the last rules evaluated in fagenrules
+# load order. Any subject/object combination not matched by an earlier
+# allow rule is denied here.
+#
+# IMPORTANT: Do not add allow rules below these deny-all lines. An allow
+# rule placed after a deny-all that subsumes it will be unreachable and
+# will trigger the fapd-W01 (same file) or fapd-W04 (cross-file) lint
+# codes. All allow carve-outs belong in earlier-loading files (10-xx
+# through 80-xx).
+#
+# Tier: 90 - terminal fallback deny rules (load last).
+#
+# License: BSD-3-Clause (see LICENSE in this directory)
+#
+
+# Deny and audit any execution attempt not matched by an earlier allow.
+# This produces an audit log entry for every blocked execution so that
+# administrators can identify processes that need a carve-out.
+deny_audit perm=execute all : all
+
+# Deny all remaining open operations that have not been explicitly allowed.
+# This is the strictest posture; comment out or replace with allow perm=open
+# if you want a default-open policy for file reads.
+deny perm=open all : all
