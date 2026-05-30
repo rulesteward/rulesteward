@@ -12,6 +12,7 @@ pub mod format;
 pub mod lints;
 pub mod load_order;
 pub mod parser;
+pub mod trustdb;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 pub use lints::{check_layout, lint, lint_cross_file, lint_file};
