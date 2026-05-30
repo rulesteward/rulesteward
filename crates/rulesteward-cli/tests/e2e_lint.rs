@@ -67,16 +67,81 @@ fn lint_json_format_emits_array() {
         .stdout(predicate::str::starts_with("["));
 }
 
+/// Feature 3e: SARIF rendering now SUCCEEDS. A clean file linted with
+/// `--format sarif` must exit 0 and emit a SARIF 2.1.0 log on stdout that
+/// parses as JSON and declares `"version": "2.1.0"`. No internal placeholder
+/// strings may leak into the output.
+///
+/// RED state: the stub still returns `Err(SarifNotImplemented)`, which the CLI
+/// maps to exit 3 (and prints "sarif format not yet implemented"), so the
+/// `.code(0)` and `"version": "2.1.0"` assertions fail until the renderer lands.
+/// The retired `lint_sarif_format_exits_three_with_not_implemented_error` test
+/// (which pinned the OLD stub behavior) is intentionally removed by this change.
 #[test]
-fn lint_sarif_format_exits_three_with_not_implemented_error() {
+fn lint_sarif_format_clean_file_exits_zero_with_sarif_json() {
     let f = write_tmp("allow uid=0 : all\n");
-    Command::cargo_bin("rulesteward")
+    let output = Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--format", "sarif", "--file"])
         .arg(f.path())
         .assert()
-        .code(3)
-        .stdout(predicate::str::contains("sarif format not yet implemented"));
+        .code(0)
+        .stdout(predicate::str::contains("\"version\": \"2.1.0\""))
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf-8 stdout");
+
+    // stdout must be valid JSON.
+    let _: serde_json::Value =
+        serde_json::from_str(&stdout).expect("SARIF stdout must parse as JSON");
+
+    // No internal placeholder strings may leak into shipped output.
+    for needle in ["<source>", "<unknown>", "TODO"] {
+        assert!(
+            !stdout.contains(needle),
+            "SARIF stdout leaked placeholder {needle:?}:\n{stdout}"
+        );
+    }
+}
+
+/// Feature 3e: result-level SARIF rendering through the full CLI pipeline.
+/// The clean-file SARIF test above pins only the top-level log shape (empty
+/// `results`); this one fires a KNOWN code so a wrong impl that emits SARIF
+/// with no per-result `ruleId`/`level` (or the wrong level mapping) fails.
+///
+/// `"allow uid=0 : all # bad comment\n"` triggers `fapd-W03` (Warning), whose
+/// mapped SARIF level is `"warning"` (exit 1). RED state: the stub returns
+/// `Err(SarifNotImplemented)`, so the `.code(1)` + `"ruleId"`/`"warning"`
+/// assertions fail until the renderer lands. The structural unit test in
+/// `tests/sarif_render.rs` carries the full six-arm level discrimination; this
+/// e2e check confirms one mapped result survives the real argv -> render path.
+#[test]
+fn lint_sarif_format_warning_file_carries_ruleid_and_level() {
+    let f = write_tmp("allow uid=0 : all # bad comment\n");
+    let output = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--format", "sarif", "--file"])
+        .arg(f.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"ruleId\": \"fapd-W03\""))
+        .stdout(predicate::str::contains("\"level\": \"warning\""))
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf-8 stdout");
+
+    // stdout must still be valid SARIF JSON declaring version 2.1.0.
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("SARIF stdout must parse as JSON");
+    assert_eq!(
+        v.get("version").and_then(serde_json::Value::as_str),
+        Some("2.1.0"),
+        "SARIF stdout must declare version 2.1.0"
+    );
 }
 
 #[test]
