@@ -30,31 +30,51 @@ pub(crate) fn walk(
     out
 }
 
-/// fapd-E03 - macro reference to an undefined `%setname`. Single-pass walk
-/// over `entries` in source order, maintaining a `HashSet<String>` of macro
-/// names seen so far. For each `Attr::Kv` with `AttrValue::SetRef(name)`, emit
-/// fapd-E03 if `name` is not yet in the set. This naturally enforces "definition
-/// above reference" - a forward reference fires fapd-E03 because the definition
-/// has not been inserted yet when the single-pass walk checks the reference.
+/// fapd-E03 / fapd-W09 - macro reference to an undefined `%setname`.
+///
+/// Implements cross-file define-before-use + single-file W09 downgrade:
+///
+/// - `earlier`: macro names defined in strictly-earlier-loading `rules.d/`
+///   files. Seeded into `defined` before the walk so that a reference to a
+///   macro defined in an earlier file is silent (the concatenated load-order
+///   stream already saw the definition). `None` = per-file resolution only.
+///
+/// - `single_file`: when `true` (CLI `--file` mode), a reference to a macro
+///   that is NOT defined anywhere in this file becomes fapd-W09 (Warning)
+///   instead of fapd-E03, because an unseen sibling file might define it.
+///   A within-file FORWARD reference stays fapd-E03: the definition IS present
+///   in the file (just below the use), so the violation is certain.
+///
+/// Single-pass walk: `defined` starts as a clone of `earlier` (empty when
+/// `None`) and grows as `SetDefinitions` are encountered. At each `SetRef`:
+///   1. `defined.contains(name)` -> in scope (earlier file or earlier line) -> silent.
+///   2. `all_local.contains(name)` -> within-file forward ref -> fapd-E03 always.
+///   3. `single_file` and name not in `all_local` -> fapd-W09.
+///   4. otherwise -> fapd-E03.
 ///
 /// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
 /// filters them out); only `AttrValue::SetRef(_)` participates.
 ///
-/// Span is the enclosing rule's span (per-attribute spans deferred per
-/// spec §3f).
+/// Span is the enclosing rule's span (per-attribute spans deferred per spec §3f).
 fn e03(
     entries: &[Entry],
     file: &Path,
-    _earlier: Option<&HashSet<String>>,
-    _single_file: bool,
+    earlier: Option<&HashSet<String>>,
+    single_file: bool,
 ) -> Vec<Diagnostic> {
-    // Phase 0 (frozen foundation): the cross-file `_earlier` set and the
-    // `_single_file` flag are threaded through but NOT yet consulted, so e03
-    // behaves exactly as the pre-refactor per-file walk. The real logic
-    // (cross-file define-before-use + fapd-W09 single-file downgrade) lands in
-    // the implement phase against the barrier tests.
+    // Seed the running set from `earlier` (macros defined in earlier-loading files).
+    let mut defined: HashSet<String> = earlier.cloned().unwrap_or_default();
+    // Precompute ALL macro names defined anywhere in THIS file (for the W09-vs-E03 split).
+    // A within-file forward reference has `all_local.contains(name)` == true even when
+    // the single-pass walk hasn't reached the SetDefinition yet.
+    let all_local: HashSet<&str> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::SetDefinition { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut diags = Vec::new();
-    let mut defined: HashSet<String> = HashSet::new();
     for entry in entries {
         match entry {
             Entry::SetDefinition { name, .. } => {
@@ -69,7 +89,33 @@ fn e03(
                     else {
                         continue;
                     };
-                    if !defined.contains(name) {
+                    if defined.contains(name) {
+                        // Defined in an earlier file (via seed) or earlier line -> silent.
+                        continue;
+                    }
+                    // Unresolved at this point in the single-pass walk.
+                    if single_file && !all_local.contains(name.as_str()) {
+                        // Single-file mode and macro is absent from the whole file:
+                        // it may be defined in an unseen sibling -> W09 (Warning).
+                        diags.push(
+                            Diagnostic::new(
+                                Severity::Warning,
+                                "fapd-W09",
+                                r.span.clone(),
+                                format!(
+                                    "macro reference `%{name}` not defined in this file \
+                                     (may be defined in a sibling rules.d/ file; \
+                                     lint the directory to resolve)"
+                                ),
+                                file,
+                                r.line,
+                                1,
+                            )
+                            .with_source_id(file.display().to_string()),
+                        );
+                    } else {
+                        // Either directory mode, or a within-file forward reference
+                        // (defined below in this file) in single-file mode: E03.
                         diags.push(
                             Diagnostic::new(
                                 Severity::Error,
