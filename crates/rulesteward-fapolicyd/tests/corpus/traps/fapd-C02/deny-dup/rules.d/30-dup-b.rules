@@ -1,0 +1,2 @@
+# Identical deny rule in a later-loading file (cross-file duplicate).
+deny_audit perm=execute all : ftype=text/x-php

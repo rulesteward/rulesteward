@@ -1,0 +1,4 @@
+# Earlier-loading deny. This direction (deny-then-allow) is fapd-W04's job, NOT
+# W10. The fixture exists to prove W10 stays silent here (no double-fire), while
+# the W04 pass flags the later allow as unreachable.
+deny uid=0 : path=/usr/bin/myapp

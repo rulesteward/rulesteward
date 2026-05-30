@@ -1,0 +1,3 @@
+# Earlier-loading allow. The deny with the same match predicates in
+# 30-deny.rules is unreachable (first match wins) -> fapd-W10.
+allow uid=0 : path=/usr/bin/myapp

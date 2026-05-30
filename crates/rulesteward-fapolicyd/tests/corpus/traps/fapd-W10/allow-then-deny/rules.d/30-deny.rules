@@ -1,0 +1,3 @@
+# Later-loading deny with predicates equal to the earlier allow's. Unreachable
+# (the earlier allow already matched and terminated evaluation) -> fapd-W10.
+deny uid=0 : path=/usr/bin/myapp
