@@ -1,0 +1,28 @@
+#
+# 50-deny-untrusted-exec.rules
+#
+# Deny execution of ELF binaries and other executable content that is NOT
+# in the trust database. This is the core enforcement tier: anything that
+# was not explicitly allowed in lower-numbered files and is not trusted
+# will be denied execution here.
+#
+# Deny rules in this tier must come AFTER allow rules in lower tiers
+# (10-xx, 20-xx, 30-xx, 40-xx) so that known-good binaries are matched
+# before hitting the deny-all fallback below.
+#
+# Tier: 50 - mid-tier deny for untrusted executable content.
+#
+# License: BSD-3-Clause (see LICENSE in this directory)
+#
+
+# Deny execution of malformed ELF files regardless of trust status.
+# Malformed ELF should never execute; this is a hard safety boundary.
+deny perm=execute all : ftype=application/x-bad-elf
+
+# Deny execution of any ELF binary that is not in the trust database.
+# Trusted ELF binaries should have been allowed in an earlier-loading file.
+deny_audit perm=execute all : ftype=application/x-executable trust=0
+
+# Deny execution of untrusted shared object files to prevent injection
+# of rogue libraries through LD_PRELOAD or direct dlopen.
+deny_audit perm=execute all : ftype=application/x-sharedlib trust=0
