@@ -162,9 +162,9 @@ fn sides_equal(a: &[Attr], b: &[Attr], macro_map: &MacroMap) -> bool {
 /// copy is redundant; the diagnostic is anchored at the LATER rule and names the
 /// earlier file and line in prose (the zero-core-change pattern fapd-W04 uses).
 ///
-/// STUB (RED): returns no diagnostics so the test-author's C02 tests fail. The
-/// implementer fills the real detection. Reuses (do NOT add a new macro-map
-/// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
+/// Reuses `build_global_macro_map` and `scoped_rules`; the match test is
+/// `predicate_sides_equal` (strict AST-equality, NOT `subsume::shadows`
+/// subsumption), so it never double-fires with fapd-W04.
 pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     let macro_map = build_global_macro_map(files);
     let scoped = scoped_rules(files);
@@ -204,9 +204,9 @@ pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
 /// allow-then-deny ONLY (earlier file `allow`, later file `deny`); the
 /// deny-then-allow direction is fapd-W04, so W10 and W04 never double-fire.
 ///
-/// STUB (RED): returns no diagnostics so the test-author's W10 tests fail. The
-/// implementer fills the real detection. Reuses (do NOT add a new macro-map
-/// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
+/// Reuses `build_global_macro_map`, `scoped_rules`, and `is_allow`/`is_deny`; the
+/// match test is `predicate_sides_equal` (strict AST-equality, NOT
+/// `subsume::shadows`), gated to earlier-allow then later-deny.
 pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     let macro_map = build_global_macro_map(files);
     let scoped = scoped_rules(files);
