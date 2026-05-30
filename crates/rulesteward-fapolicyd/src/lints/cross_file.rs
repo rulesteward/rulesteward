@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::subsume::{MacroMap, build_macro_map, shadows};
-use crate::ast::{Decision, Entry, Rule};
+use crate::ast::{Attr, AttrValue, Decision, Entry, Rule};
 
 fn is_allow(d: Decision) -> bool {
     matches!(
@@ -79,6 +79,82 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     diags
 }
 
+/// Canonical, macro-expanded, order-insensitive form of one attribute value.
+/// A `SetRef` is expanded to its sorted member strings; a literal renders to its
+/// single string token (`Int(0)` -> `"0"`), so `uid=%admins` (={0}) and `uid=0`
+/// produce the SAME canonical form. The result is a SORTED `Vec<String>` so two
+/// equal-but-differently-ordered sets compare equal.
+fn canonical_value(value: &AttrValue, macro_map: &MacroMap) -> Vec<String> {
+    let mut members = match value {
+        AttrValue::SetRef(name) => macro_map.get(name).cloned().unwrap_or_default(),
+        AttrValue::Str(s) => vec![s.clone()],
+        AttrValue::Int(n) => vec![n.to_string()],
+    };
+    members.sort();
+    members
+}
+
+/// Canonical, order-insensitive, macro-expanded form of one predicate side
+/// (subject or object). `[Attr::All]` is its own distinct sentinel; otherwise a
+/// list of `Attr::Kv` becomes a SORTED `Vec<(key, canonical_value)>`. Sorting by
+/// the whole `(key, value)` tuple makes the comparison insensitive to the order
+/// the attributes appear in the rule (a predicate list is a conjunction, so
+/// order is insignificant). Returns `None` for any shape we do not treat as
+/// comparable (an empty side, or a list mixing `Attr::All` with `Kv`s), which
+/// makes those rules never compare equal under [`predicate_sides_equal`].
+fn canonical_side(attrs: &[Attr], macro_map: &MacroMap) -> Option<CanonicalSide> {
+    if attrs == [Attr::All] {
+        return Some(CanonicalSide::All);
+    }
+    let mut pairs = Vec::with_capacity(attrs.len());
+    for attr in attrs {
+        match attr {
+            Attr::Kv { key, value } => {
+                pairs.push((key.clone(), canonical_value(value, macro_map)));
+            }
+            // A bare `Attr::All` mixed with other attrs, or any other shape, is
+            // not a form we treat as a comparable predicate set.
+            Attr::All => return None,
+        }
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    pairs.sort();
+    Some(CanonicalSide::Kvs(pairs))
+}
+
+/// Canonical form of one predicate side, used only for equality comparison.
+#[derive(PartialEq, Eq)]
+enum CanonicalSide {
+    /// The `all` keyword on this side (matches everything).
+    All,
+    /// A sorted list of `(key, sorted-expanded-values)` pairs.
+    Kvs(Vec<(String, Vec<String>)>),
+}
+
+/// True iff rules `a` and `b` have AST-EQUAL match predicates (perm + subject +
+/// object), comparing macro-expanded values order-insensitively. This is strict
+/// EQUALITY, not subsumption: `allow all : all` does NOT equal
+/// `allow uid=0 : path=/x`. Used by both fapd-C02 (with an added decision-equal
+/// check) and fapd-W10 (with an added allow-then-deny decision check).
+fn predicate_sides_equal(a: &Rule, b: &Rule, macro_map: &MacroMap) -> bool {
+    if a.perm != b.perm {
+        return false;
+    }
+    sides_equal(&a.subject, &b.subject, macro_map) && sides_equal(&a.object, &b.object, macro_map)
+}
+
+/// Equality of one predicate side. A side whose canonical form is `None` (an
+/// empty or mixed-shape list we do not treat as comparable) is never equal to
+/// anything, including another `None`.
+fn sides_equal(a: &[Attr], b: &[Attr], macro_map: &MacroMap) -> bool {
+    match (canonical_side(a, macro_map), canonical_side(b, macro_map)) {
+        (Some(ca), Some(cb)) => ca == cb,
+        _ => false,
+    }
+}
+
 /// fapd-C02 (Convention): a CROSS-FILE DUPLICATE rule. Two rules in DIFFERENT
 /// rules.d files are AST-equal (same decision, same perm, same subject attrs,
 /// same object attrs, with `SetRef` macros expanded via the global macro map and
@@ -89,8 +165,37 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
 /// STUB (RED): returns no diagnostics so the test-author's C02 tests fail. The
 /// implementer fills the real detection. Reuses (do NOT add a new macro-map
 /// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
-pub(crate) fn c02(_files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
-    Vec::new()
+pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    let macro_map = build_global_macro_map(files);
+    let scoped = scoped_rules(files);
+    let mut diags = Vec::new();
+    for j in 0..scoped.len() {
+        let (bf, bpath, b) = scoped[j];
+        for &(af, apath, a) in scoped.iter().take(j) {
+            // Cross-file only (same-file dups are fapd-W01), SAME decision, and
+            // AST-equal match predicates (NOT subsumption).
+            if af < bf && a.decision == b.decision && predicate_sides_equal(a, b, &macro_map) {
+                diags.push(
+                    Diagnostic::new(
+                        Severity::Convention,
+                        "fapd-C02",
+                        b.span.clone(),
+                        format!(
+                            "duplicate rule: identical to the rule in {} on line {}",
+                            apath.display(),
+                            a.line,
+                        ),
+                        bpath.as_path(),
+                        b.line,
+                        1,
+                    )
+                    .with_source_id(bpath.display().to_string()),
+                );
+                break;
+            }
+        }
+    }
+    diags
 }
 
 /// fapd-W10 (Warning): a CROSS-FILE DECISION-SHADOW. Two rules in different files
@@ -102,8 +207,55 @@ pub(crate) fn c02(_files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
 /// STUB (RED): returns no diagnostics so the test-author's W10 tests fail. The
 /// implementer fills the real detection. Reuses (do NOT add a new macro-map
 /// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
-pub(crate) fn w10(_files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
-    Vec::new()
+pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    let macro_map = build_global_macro_map(files);
+    let scoped = scoped_rules(files);
+    let mut diags = Vec::new();
+    for j in 0..scoped.len() {
+        let (bf, bpath, b) = scoped[j];
+        // W10 is scoped to allow-then-deny ONLY: the LATER rule must be a deny.
+        if !is_deny(b.decision) {
+            continue;
+        }
+        for &(af, apath, a) in scoped.iter().take(j) {
+            // Cross-file only, earlier rule is an allow, AST-equal match
+            // predicates (NOT subsumption). deny-then-allow is fapd-W04's job.
+            if af < bf && is_allow(a.decision) && predicate_sides_equal(a, b, &macro_map) {
+                diags.push(
+                    Diagnostic::new(
+                        Severity::Warning,
+                        "fapd-W10",
+                        b.span.clone(),
+                        format!(
+                            "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
+                            apath.display(),
+                            a.line,
+                        ),
+                        bpath.as_path(),
+                        b.line,
+                        1,
+                    )
+                    .with_source_id(bpath.display().to_string()),
+                );
+                break;
+            }
+        }
+    }
+    diags
+}
+
+/// Flatten all files into `(file_index, path, &Rule)` in load order, skipping
+/// non-rule entries. Shared by the cross-file equal-predicate passes (C02, W10).
+fn scoped_rules(files: &[(PathBuf, Vec<Entry>)]) -> Vec<(usize, &PathBuf, &Rule)> {
+    let mut scoped = Vec::new();
+    for (fi, (path, entries)) in files.iter().enumerate() {
+        for e in entries {
+            if let Entry::Rule(r) = e {
+                scoped.push((fi, path, r));
+            }
+        }
+    }
+    scoped
 }
 
 /// True iff `name` begins with exactly two ASCII digits then a hyphen (the

@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+files=2
+diagnostics=1
+[fapd-W04] sev=Warning line=3 col=1 span=163..196 file=rules.d/30-allow.rules :: allow rule unreachable: shadowed by the broader deny in rules.d/20-deny.rules on line 4

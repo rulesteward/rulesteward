@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+files=2
+diagnostics=1
+[fapd-C02] sev=Convention line=2 col=1 span=81..114 file=rules.d/30-cross-b.rules :: duplicate rule: identical to the rule in rules.d/20-cross-a.rules on line 2
