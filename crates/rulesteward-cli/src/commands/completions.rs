@@ -6,13 +6,32 @@
 
 use clap::CommandFactory;
 use clap_complete::{
-    generate,
+    Generator, generate,
     shells::{Bash, Elvish, Fish, PowerShell, Zsh},
 };
 use std::io;
 
 use crate::cli::{Cli, CompletionShell, CompletionsArgs};
 use crate::exit_code::EXIT_CLEAN;
+
+/// Stub tcsh generator. Emits an empty string.
+///
+/// This is a compile-only placeholder so that `CompletionShell::Tcsh` can be
+/// wired into the match arm. The real implementation must emit a valid tcsh
+/// `complete` script; this stub is intentionally wrong so that the structural
+/// tests remain RED until a real generator is provided.
+pub(crate) struct TcshStub;
+
+impl Generator for TcshStub {
+    fn file_name(&self, name: &str) -> String {
+        format!("{name}.tcsh")
+    }
+
+    fn generate(&self, _cmd: &clap::Command, _buf: &mut dyn io::Write) {
+        // Stub: intentionally emits nothing. Tests asserting non-empty output
+        // and presence of `complete`/`rulesteward`/`fapolicyd` will be RED.
+    }
+}
 
 /// A writer that swallows `io::ErrorKind::BrokenPipe` errors and pretends
 /// success, while propagating all other error kinds unchanged.
@@ -77,6 +96,7 @@ pub fn run(args: &CompletionsArgs) -> anyhow::Result<i32> {
         CompletionShell::Fish => generate(Fish, &mut cmd, bin_name, &mut stdout),
         CompletionShell::Elvish => generate(Elvish, &mut cmd, bin_name, &mut stdout),
         CompletionShell::PowerShell => generate(PowerShell, &mut cmd, bin_name, &mut stdout),
+        CompletionShell::Tcsh => generate(TcshStub, &mut cmd, bin_name, &mut stdout),
     }
     Ok(EXIT_CLEAN)
 }
