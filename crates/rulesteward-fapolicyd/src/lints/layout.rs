@@ -116,22 +116,26 @@ mod tests {
     #[test]
     fn directory_has_rules_files_ignores_dotfile_rules() {
         // A dotfile like `.40-x.rules` must NOT count as a rules file because
-        // `fagenrules` uses the shell glob `rules.d/*.rules`, and POSIX pathname
-        // expansion with `*` does not match a leading dot. So a directory whose
-        // only `.rules`-extension entry is a dotfile has zero effective rules.
+        // fagenrules enumerates rules via:
+        //   for rules in $(/bin/ls -1v ${SourceRulesDir} | grep "\.rules$")
+        // `ls` without `-a` does not list entries whose names start with `.`,
+        // so `.40-x.rules` is never passed to `grep` and never reaches
+        // fapolicyd. A directory whose only `.rules`-extension entry is a
+        // dotfile therefore has zero effective rules from fapolicyd's view.
         //
         // Current buggy behavior: `directory_has_rules_files` returns TRUE  (RED).
         // Correct behavior after fix: returns FALSE.
         let dir = tempdir();
         let rulesd = dir.path().join("rules.d");
         fs::create_dir(&rulesd).unwrap();
-        // create dotfile only - the * glob in fagenrules would skip this
+        // create dotfile only - `ls` without -a omits it, so fagenrules never sees it
         fs::write(rulesd.join(".40-x.rules"), b"deny perm=execute all : all").unwrap();
         assert!(
             !directory_has_rules_files(&rulesd),
             "directory_has_rules_files must return false when the only \
-             .rules entry is a dotfile (.40-x.rules); fagenrules globs \
-             rules.d/*.rules and POSIX * does not match a leading dot"
+             .rules entry is a dotfile (.40-x.rules); fagenrules enumerates \
+             via `/bin/ls -1v | grep '\\.rules$'` and `ls` without `-a` \
+             omits leading-dot filenames"
         );
     }
 
@@ -139,6 +143,9 @@ mod tests {
     fn directory_has_rules_files_ignores_hidden_dotfile_rules() {
         // Same invariant as above but with a different dotfile name to ensure
         // the check covers the general leading-dot case, not just `.40-x.rules`.
+        // fagenrules uses `/bin/ls -1v <dir> | grep '\.rules$'`; `ls` without
+        // `-a` silently omits any filename that starts with `.`, so dotfiles
+        // never reach fapolicyd regardless of their suffix.
         let dir = tempdir();
         let rulesd = dir.path().join("rules.d");
         fs::create_dir(&rulesd).unwrap();
@@ -146,7 +153,8 @@ mod tests {
         assert!(
             !directory_has_rules_files(&rulesd),
             "directory_has_rules_files must return false when the only \
-             .rules entry is a dotfile (.hidden.rules)"
+             .rules entry is a dotfile (.hidden.rules); `ls` without `-a` \
+             omits leading-dot filenames so fagenrules never sees it"
         );
     }
 
@@ -154,8 +162,12 @@ mod tests {
     fn check_layout_silent_when_rules_d_only_has_dotfile_rules() {
         // `check_layout` must return None (no fapd-F02) when `fapolicyd.rules`
         // exists alongside a `rules.d/` whose sole `.rules` entry is a dotfile.
-        // fapolicyd's fagenrules would see zero effective rules in `rules.d/`
-        // (the glob `*.rules` skips dotfiles), so there is no real conflict.
+        // fagenrules enumerates rules via:
+        //   for rules in $(/bin/ls -1v ${SourceRulesDir} | grep "\.rules$")
+        // `ls` without `-a` omits leading-dot filenames, so the dotfile
+        // `.40-x.rules` never reaches fapolicyd. From fapolicyd's perspective
+        // `rules.d/` is empty, meaning there is no real conflict with the
+        // legacy `fapolicyd.rules` file and fapd-F02 must NOT fire.
         //
         // Current buggy behavior: check_layout fires F02 (RED).
         // Correct behavior after fix: returns None.
@@ -171,7 +183,8 @@ mod tests {
         assert!(
             check_layout(dir.path()).is_none(),
             "check_layout must not fire fapd-F02 when rules.d/ contains \
-             only dotfile .rules entries; fagenrules ignores them via glob"
+             only dotfile .rules entries; fagenrules uses `ls` without `-a` \
+             so dotfiles are never seen and there is no effective conflict"
         );
     }
 }
