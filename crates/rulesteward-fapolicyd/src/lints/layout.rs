@@ -39,7 +39,12 @@ fn directory_has_rules_files(dir: &Path) -> bool {
     };
     read.filter_map(Result::ok).any(|e| {
         let p = e.path();
-        p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules")
+        // fagenrules enumerates rules via `ls -1v <dir> | grep '\.rules$'`.
+        // `ls` without `-a` omits entries whose name starts with `.`, so
+        // dotfiles are never loaded by fapolicyd regardless of their suffix.
+        let name = e.file_name();
+        let starts_with_dot = name.to_string_lossy().starts_with('.');
+        !starts_with_dot && p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules")
     })
 }
 
