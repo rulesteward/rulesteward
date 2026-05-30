@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, TrustDb, check_layout, fagenrules_cmp, lint, lint_cross_file, lint_orphans,
-    lint_with_context, parse_rules_file,
+    Entry, LintContext, TrustDb, check_layout, collect_macro_names, fagenrules_cmp, lint,
+    lint_cross_file, lint_orphans, lint_with_context, parse_rules_file,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -593,6 +593,246 @@ fn c01_cross_file_traps() {
     for scenario in &scenarios {
         drive_cross_file_scenario("fapd-C01", scenario);
     }
+}
+
+// ---------------------------------------------------------------------------
+// B.3 - fapd-E03 cross-file (E03-xfile) and fapd-W09 single-file snapshot drivers.
+//
+// `drive_cross_file_e03_scenario` mirrors the CLI two-phase loop:
+//   - enumerate rules.d/*.rules in fagenrules_cmp order
+//   - for each file: lint_with_context with earlier_macros=Some(&union_so_far),
+//     single_file=false
+//   - collect diagnostics, then extend union with this file's macro names
+//
+// `drive_file_w09` is the single-file driver: lint_with_context with
+// single_file=true, earlier_macros=None.
+//
+// NO .snap files are generated here. The tests are RED on missing snapshots
+// until the implement phase runs `INSTA_UPDATE=always cargo test`. That is the
+// intended TDD-RED state.
+// ---------------------------------------------------------------------------
+
+/// Drive one cross-file E03 scenario: enumerate `<scenario>/rules.d/*.rules` in
+/// fagenrules order, run the two-phase per-file lint (maintaining a running
+/// `earlier` set), and snapshot. Snapshot name = `fapd-E03-xfile__<scenario>`.
+fn drive_cross_file_e03_scenario(scenario_dir: &Path) {
+    let code = "fapd-E03-xfile";
+    let rules_d = scenario_dir.join("rules.d");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&rules_d)
+        .unwrap_or_else(|e| panic!("read rules.d {}: {e}", rules_d.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
+        .collect();
+    files.sort_by(|a, b| fagenrules_cmp(a, b));
+
+    let scenario_name = scenario_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("scenario {} has no UTF-8 name", scenario_dir.display()))
+        .to_owned();
+
+    let mut all_diags: Vec<rulesteward_core::Diagnostic> = Vec::new();
+    let mut earlier: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+        let entries = match parse_rules_file(&src, path) {
+            Ok(entries) => entries,
+            Err(diags) => {
+                panic!(
+                    "cross-file E03 fixture {} must parse cleanly: {diags:?}",
+                    path.display()
+                )
+            }
+        };
+        let rel = Path::new("rules.d").join(path.file_name().expect("rules file has a name"));
+        let ctx = LintContext {
+            earlier_macros: Some(&earlier),
+            single_file: false,
+            ..Default::default()
+        };
+        let file_diags = lint_with_context(&entries, &src, &rel, &ctx);
+        all_diags.extend(file_diags);
+        // Fold this file's macro definitions into the running earlier set.
+        earlier.extend(collect_macro_names(&entries));
+    }
+
+    // Sort deterministically: file, then line, then span.start, then code.
+    let mut sorted: Vec<&rulesteward_core::Diagnostic> = all_diags.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.span.start.cmp(&b.span.start))
+            .then(a.code.as_ref().cmp(b.code.as_ref()))
+    });
+
+    let mut rendered = String::new();
+    writeln!(rendered, "files={}", files.len()).expect("write to String never fails");
+    writeln!(rendered, "diagnostics={}", all_diags.len()).expect("write to String never fails");
+    if sorted.is_empty() {
+        rendered.push_str("(no diagnostics)\n");
+    } else {
+        for d in sorted {
+            writeln!(
+                rendered,
+                "[{code}] sev={sev:?} line={line} col={col} span={start}..{end} file={file} :: {msg}",
+                code = d.code,
+                sev = d.severity,
+                line = d.line,
+                col = d.column,
+                start = d.span.start,
+                end = d.span.end,
+                file = d.file.display(),
+                msg = d.message,
+            )
+            .expect("write to String never fails");
+        }
+    }
+
+    let snapshot_name = format!("{code}__{scenario_name}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+/// Single-file W09 driver: parse `path`, run `lint_with_context` with
+/// `single_file=true, earlier_macros=None`, and snapshot.
+/// Snapshot name = `fapd-W09__<stem>`.
+fn drive_file_w09(path: &Path) {
+    let code = "fapd-W09";
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read trap input {}: {e}", path.display()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("trap input {} has no UTF-8 file stem", path.display()))
+        .to_owned();
+    let rel_path = Path::new("tests/corpus/traps")
+        .join(code)
+        .join(path.file_name().expect("trap file has a name"));
+
+    let rendered = match parse_rules_file(&src, &rel_path) {
+        Ok(entries) => {
+            let ctx = LintContext {
+                single_file: true,
+                ..Default::default()
+            };
+            let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
+            render("parse=ok", &diags)
+        }
+        Err(diags) => render("parse=err", &diags),
+    };
+
+    let snapshot_name = format!("{code}__{stem}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn e03_xfile_traps() {
+    let scenarios = list_cross_file_scenarios("fapd-E03-xfile");
+    assert!(
+        scenarios.len() >= 2,
+        "fapd-E03-xfile scenarios must be >= 2 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_cross_file_e03_scenario(scenario);
+    }
+}
+
+#[test]
+fn w09_traps() {
+    let files = list_rules_files("fapd-W09");
+    assert!(
+        files.len() >= 4,
+        "fapd-W09 trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file_w09(path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B.5 - Stock-ruleset regression pin.
+//
+// Runs the cross-file-aware two-phase lint over the REAL happy corpus
+// (`tests/corpus/happy/*.rules`) in fagenrules load order, and asserts ZERO
+// diagnostics with code fapd-E03.
+//
+// The stock ruleset has `10-languages.rules` defining `%languages` and
+// `70-trusted-lang.rules` referencing it - a cross-file backward reference that
+// the current per-file resolution incorrectly flags as fapd-E03.
+//
+// This test is RED now and GREEN after the implement phase.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stock_ruleset_happy_corpus_zero_e03_cross_file() {
+    let happy = manifest_dir().join("tests/corpus/happy");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&happy)
+        .unwrap_or_else(|e| panic!("read happy corpus dir {}: {e}", happy.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
+        .collect();
+    files.sort_by(|a, b| fagenrules_cmp(a, b));
+
+    // Sanity: the corpus must contain the two cross-file files we care about.
+    let names: Vec<&str> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|s| s.to_str()))
+        .collect();
+    assert!(
+        names.contains(&"10-languages.rules"),
+        "happy corpus must contain 10-languages.rules (defines %%languages): found {names:?}",
+    );
+    assert!(
+        names.contains(&"70-trusted-lang.rules"),
+        "happy corpus must contain 70-trusted-lang.rules (references %%languages): found {names:?}",
+    );
+
+    let mut all_e03: Vec<rulesteward_core::Diagnostic> = Vec::new();
+    let mut earlier: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read happy corpus file {}: {e}", path.display()));
+        let rel =
+            Path::new("tests/corpus/happy").join(path.file_name().expect("rules file has a name"));
+        let entries = match parse_rules_file(&src, &rel) {
+            Ok(entries) => entries,
+            Err(diags) => panic!(
+                "happy corpus file {} must parse cleanly: {diags:?}",
+                path.display()
+            ),
+        };
+        let ctx = LintContext {
+            earlier_macros: Some(&earlier),
+            single_file: false,
+            ..Default::default()
+        };
+        let diags = lint_with_context(&entries, &src, &rel, &ctx);
+        all_e03.extend(diags.into_iter().filter(|d| d.code.as_ref() == "fapd-E03"));
+        earlier.extend(collect_macro_names(&entries));
+    }
+
+    assert!(
+        all_e03.is_empty(),
+        "stock ruleset happy corpus must have ZERO fapd-E03 with cross-file-aware lint; \
+         fapd-E03 false positives: {all_e03:#?}",
+    );
 }
 
 // ---------------------------------------------------------------------------

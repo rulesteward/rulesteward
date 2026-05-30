@@ -1,0 +1,2 @@
+%m=foo
+allow uid=0 : exe=%m

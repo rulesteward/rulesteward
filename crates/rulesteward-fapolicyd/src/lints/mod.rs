@@ -319,6 +319,50 @@ mod tests {
         );
     }
 
+    // --- B.2: LintContext.earlier_macros behavior ---
+
+    #[test]
+    fn earlier_macros_context_suppresses_e03_vs_default() {
+        // Parse `allow uid=0 : exe=%langs\n` (a reference to `%langs` with no
+        // local definition) and assert:
+        //
+        //   1. With a default (empty) context, lint_with_context returns a Vec
+        //      that CONTAINS at least one fapd-E03 (undefined macro reference).
+        //
+        //   2. With a context whose `earlier_macros` set contains "langs",
+        //      lint_with_context returns a Vec that does NOT contain any fapd-E03
+        //      (the macro is satisfied by the earlier-file context).
+        //
+        // RED against the frozen foundation: `e03` ignores `ctx.earlier_macros`,
+        // so BOTH contexts produce fapd-E03, and assertion 2 fails.
+        let src = "allow uid=0 : exe=%langs\n";
+        let path = std::path::Path::new("rules.d/70-x.rules");
+        let entries = parser::parse_rules_file(src, path)
+            .unwrap_or_else(|diags| panic!("fixture must parse cleanly: {diags:?}"));
+
+        // 1. Default context must contain fapd-E03.
+        let default_diags = lint_with_context(&entries, src, path, &LintContext::default());
+        assert!(
+            default_diags.iter().any(|d| d.code.as_ref() == "fapd-E03"),
+            "default context: expected at least one fapd-E03 for undefined %%langs, \
+             got: {default_diags:?}",
+        );
+
+        // 2. Context with earlier_macros = {"langs"} must NOT contain fapd-E03.
+        let mut earlier = HashSet::new();
+        earlier.insert("langs".to_string());
+        let ctx_with_earlier = LintContext {
+            earlier_macros: Some(&earlier),
+            ..Default::default()
+        };
+        let earlier_diags = lint_with_context(&entries, src, path, &ctx_with_earlier);
+        assert!(
+            !earlier_diags.iter().any(|d| d.code.as_ref() == "fapd-E03"),
+            "context with earlier_macros={{\"langs\"}}: fapd-E03 must be suppressed \
+             (macro defined in earlier-loading file), got: {earlier_diags:?}",
+        );
+    }
+
     // --- column backfill tests (A5: derive column from span) ---
 
     #[test]
