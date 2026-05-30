@@ -271,9 +271,17 @@ fn lint_fires_e02_with_exit_two_and_code_in_stdout() {
 
 #[test]
 fn lint_fires_e03_with_exit_two_and_code_in_stdout() {
-    // `exe=%undef` references an undefined macro. fapd-E03 fires; fapd-E04
-    // does not (key is `exe`, not `trust`/`pattern`).
-    let f = write_tmp("allow uid=0 : exe=%undef\n");
+    // Within-file forward reference: `exe=%fwd` on line 1, `%fwd=foo` defined
+    // on line 2. The macro IS defined in this file, just below the reference,
+    // so this is a certain violation regardless of mode. fapd-E03 fires (not
+    // fapd-W09), exit code is 2. fapd-E04 does not fire (key is `exe`, not
+    // `trust`/`pattern`).
+    //
+    // RETARGETED (B.4.3): previously used `allow uid=0 : exe=%undef\n` with no
+    // local definition, which in single-file `--file` mode will correctly become
+    // fapd-W09 (exit 1) after the implement phase. The within-file forward-ref
+    // fixture stays fapd-E03 in all modes because the definition is visible.
+    let f = write_tmp("allow uid=0 : exe=%fwd\n%fwd=foo\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
@@ -627,4 +635,94 @@ fn report_orphans_without_against_trustdb_warns_and_does_not_crash() {
         // Plain lint of a clean file -> exit 0.
         // Currently RED: --report-orphans is unknown -> clap exits 3.
         .code(0);
+}
+
+// --- B.4 - Cross-file E03 and single-file W09 e2e tests ---
+//
+// These tests are RED until the CLI two-phase loop and single-file-mode
+// downgrade land in the implement phase.
+
+/// B.4.1 - Directory mode with a backward cross-file macro reference must NOT
+/// fire fapd-E03 and must NOT fire fapd-W09.
+///
+/// Fixture: `10-languages.rules` defines `%languages`; `70-trusted-lang.rules`
+/// references it. In directory mode with the two-phase loop, the definition
+/// from `10-` is in scope for `70-` via the `earlier_macros` accumulator.
+///
+/// RED now: the CLI does not yet run the two-phase loop, so `70-trusted-lang.rules`
+/// sees an empty earlier set and fires fapd-E03.
+#[test]
+fn lint_directory_cross_file_macro_no_e03() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir rules.d");
+    std::fs::write(
+        rules_d.join("10-languages.rules"),
+        "%languages=text/x-ruby,text/x-perl\n",
+    )
+    .expect("write 10-languages.rules");
+    std::fs::write(
+        rules_d.join("70-trusted-lang.rules"),
+        "allow perm=open all : ftype=%languages\n",
+    )
+    .expect("write 70-trusted-lang.rules");
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&rules_d)
+        .assert()
+        // A backward cross-file macro reference must be clean: no fapd-E03 and
+        // no fapd-W09. Exit 0.
+        // RED until two-phase CLI loop lands.
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-E03]").not())
+        .stdout(predicate::str::contains("[fapd-W09]").not());
+}
+
+/// B.4.2 - Single-file `--file` mode with a macro reference to an undefined
+/// macro must emit fapd-W09 (Warning, exit 1), NOT fapd-E03.
+///
+/// RED now: the CLI passes `single_file=false` (the default) for both directory
+/// and single-file mode; after the implement phase, `--file` sets `single_file=true`
+/// and `e03` emits fapd-W09 instead of fapd-E03 for the undefined case.
+#[test]
+fn lint_single_file_undefined_macro_is_w09_exit_one() {
+    let f = write_tmp("allow uid=0 : exe=%missingmacro\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        // exit 1: Warning severity (fapd-W09), not Error (fapd-E03).
+        // RED until the single-file mode downgrade lands.
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W09]"))
+        .stdout(predicate::str::contains("[fapd-E03]").not());
+}
+
+// --- B.4.4 - GAP 3 (adversarial-reviewer finding): directory mode with a macro
+// undefined in EVERY file must be a hard fapd-E03 (Error, exit 2), NOT
+// downgraded to fapd-W09. Kills a wrong CLI that passes single_file=true in
+// directory mode, which would produce W09 (exit 1) instead of E03 (exit 2).
+//
+// This test is GREEN against the current frozen foundation (which always emits
+// fapd-E03 regardless of mode). It is a regression pin: the implement phase
+// must keep it green. A wrong impl that sets single_file=true in directory mode
+// would downgrade to W09 and break this test.
+
+#[test]
+fn lint_directory_undefined_macro_is_e03_exit_two() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(rules_d.join("10-x.rules"), "allow uid=0 : exe=%nowhere\n").expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&rules_d)
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("[fapd-E03]"))
+        .stdout(predicate::str::contains("[fapd-W09]").not());
 }

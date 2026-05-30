@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+files=2
+diagnostics=1
+[fapd-E03] sev=Error line=1 col=1 span=0..38 file=rules.d/10-use.rules :: undefined macro reference `%languages`

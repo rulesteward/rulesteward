@@ -37,34 +37,37 @@ use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
 
-/// Optional external resources for the trust-DB-aware lint passes. `Default` is
-/// "no resources", which reproduces the plain `lint()` behavior exactly. (A
-/// `system_ids` field is intentionally absent: fapd-W05 is deferred this session.)
+/// Optional external resources + mode flags for the context-gated lint passes.
+/// `Default` is "no trust DB, no earlier-file macros, directory mode", which
+/// reproduces the plain per-file `lint()` behavior exactly. (A `system_ids`
+/// field is intentionally absent: fapd-W05 is deferred this session.)
 #[derive(Default)]
 pub struct LintContext<'a> {
+    /// Trust DB for fapd-W06 (`path=`/`exe=` literal not in the trust DB).
     pub trustdb: Option<&'a TrustDb>,
+    /// Macro names defined in EARLIER-loading `rules.d/` files (the post-fagenrules
+    /// concatenated stream up to but excluding the current file). A `%setname`
+    /// reference whose name is in this set is in scope for fapd-E03 (cross-file
+    /// define-before-use). `None` reproduces per-file resolution and is used by
+    /// `lint()` and by single-file `--file` mode, which have no earlier-file context.
+    pub earlier_macros: Option<&'a std::collections::HashSet<String>>,
+    /// True for single-file `--file` lint: a `%setname` reference not defined
+    /// anywhere in the lone file becomes fapd-W09 (it may be defined in an unseen
+    /// sibling) rather than fapd-E03. A within-file forward reference stays E03.
+    pub single_file: bool,
 }
 
-/// Run every per-file lint pass and return the merged diagnostic list.
+/// Run every per-file lint pass with a default (empty) context and return the
+/// merged diagnostic list. Thin wrapper over
+/// [`lint_with_context`]`(.., &LintContext::default())` so the context-free
+/// callers (snapshot driver, proptests, downstream consumers) are unaffected.
 ///
 /// `source` is the raw rules-file text, needed for fapd-W03 (inline trailing
 /// `# comment`) re-scan. `file` is the path used in every emitted
 /// `Diagnostic::file`.
 #[must_use]
 pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
-    let mut diags = walker::walk(entries, file);
-    diags.extend(validation::walk(entries, file));
-    diags.extend(macros::walk(entries, file));
-    diags.extend(reachability::walk(entries, file));
-    diags.extend(deprecation::walk(entries, file));
-    diags.extend(dir_slash::walk(entries, file));
-    diags.extend(source_scan::w03_scan(source, file));
-    // Backfill column from each diagnostic's byte span. Lint passes and the
-    // parser historically hardcoded column = 1; this makes the column field
-    // agree with the byte span the human renderer uses for its caret, so
-    // JSON / plain / snapshot columns are consistent with the ariadne display.
-    fill_columns(&mut diags, source);
-    diags
+    lint_with_context(entries, source, file, &LintContext::default())
 }
 
 /// Run cross-file lint passes over all rules.d files in fagenrules load order.
@@ -76,9 +79,15 @@ pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagno
     diags
 }
 
-/// `lint()` plus the context-gated passes. `lint()` itself is UNCHANGED, so the
-/// existing passes and the snapshot driver keep compiling verbatim. With a
-/// default (empty) context this returns exactly `lint(..)`.
+/// The single implementation of the per-file pass list, honoring the
+/// `LintContext`. The context-free [`lint`] delegates here with a default
+/// context, so a default context returns exactly what `lint()` returns.
+///
+/// Pass ordering is load-bearing and MUST be preserved: the AST/source passes
+/// run first, then `fill_columns` backfills their columns from byte spans, and
+/// `trust_path::w06` runs LAST so its column stays as emitted (matching the
+/// pre-context behavior where W06 was appended after `lint()` had already
+/// filled columns). Do not move `fill_columns` after the W06 append.
 #[must_use]
 pub fn lint_with_context(
     entries: &[Entry],
@@ -86,7 +95,23 @@ pub fn lint_with_context(
     file: &Path,
     ctx: &LintContext,
 ) -> Vec<Diagnostic> {
-    let mut diags = lint(entries, source, file);
+    let mut diags = walker::walk(entries, file);
+    diags.extend(validation::walk(entries, file));
+    diags.extend(macros::walk(
+        entries,
+        file,
+        ctx.earlier_macros,
+        ctx.single_file,
+    ));
+    diags.extend(reachability::walk(entries, file));
+    diags.extend(deprecation::walk(entries, file));
+    diags.extend(dir_slash::walk(entries, file));
+    diags.extend(source_scan::w03_scan(source, file));
+    // Backfill column from each diagnostic's byte span. Lint passes and the
+    // parser historically hardcoded column = 1; this makes the column field
+    // agree with the byte span the human renderer uses for its caret, so
+    // JSON / plain / snapshot columns are consistent with the ariadne display.
+    fill_columns(&mut diags, source);
     if let Some(db) = ctx.trustdb {
         diags.extend(trust_path::w06(entries, file, db));
     }
@@ -119,6 +144,27 @@ pub fn lint_file_with_context(
 #[must_use = "lint results contain parse and lint diagnostics that should be checked"]
 pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
     lint_file_with_context(path, &LintContext::default())
+}
+
+/// Names of every `%name=` set definition in `entries`, in source order
+/// (duplicates preserved; callers dedup via a `HashSet`). Rules, comments, and
+/// blanks contribute nothing.
+///
+/// Used to seed the cross-file "earlier macros" set for fapd-E03 in directory
+/// mode: a macro defined in an earlier-loading `rules.d/` file is in scope for
+/// later files (the post-fagenrules concatenated stream). Names-only by design,
+/// distinct from `subsume::build_macro_map` (which expands `name -> values` for
+/// rule subsumption); fapd-E03 needs only the set of defined names. `pub` so the
+/// CLI two-phase loop can accumulate it across files in load order.
+#[must_use]
+pub fn collect_macro_names(entries: &[Entry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::SetDefinition { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -255,6 +301,66 @@ mod tests {
         let result = lint_file(std::path::Path::new("/nonexistent/path/to/nothing"));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn collect_macro_names_returns_setdefinition_names_in_source_order() {
+        // Every `%name=` set definition, in source order, duplicates PRESERVED
+        // (the caller dedups via a HashSet). Rules, comments, and blanks
+        // contribute nothing. The two `%a` definitions both appear so a caller
+        // building the cross-file "earlier macros" set sees every definition.
+        let src = "%a=1\nallow uid=0 : all\n%b=2,3\n# c\n%a=9\n";
+        let p = std::path::Path::new("t.rules");
+        let entries = parser::parse_rules_file(src, p)
+            .unwrap_or_else(|diags| panic!("fixture must parse: {diags:?}"));
+        assert_eq!(
+            collect_macro_names(&entries),
+            vec!["a".to_string(), "b".to_string(), "a".to_string()],
+        );
+    }
+
+    // --- B.2: LintContext.earlier_macros behavior ---
+
+    #[test]
+    fn earlier_macros_context_suppresses_e03_vs_default() {
+        // Parse `allow uid=0 : exe=%langs\n` (a reference to `%langs` with no
+        // local definition) and assert:
+        //
+        //   1. With a default (empty) context, lint_with_context returns a Vec
+        //      that CONTAINS at least one fapd-E03 (undefined macro reference).
+        //
+        //   2. With a context whose `earlier_macros` set contains "langs",
+        //      lint_with_context returns a Vec that does NOT contain any fapd-E03
+        //      (the macro is satisfied by the earlier-file context).
+        //
+        // RED against the frozen foundation: `e03` ignores `ctx.earlier_macros`,
+        // so BOTH contexts produce fapd-E03, and assertion 2 fails.
+        let src = "allow uid=0 : exe=%langs\n";
+        let path = std::path::Path::new("rules.d/70-x.rules");
+        let entries = parser::parse_rules_file(src, path)
+            .unwrap_or_else(|diags| panic!("fixture must parse cleanly: {diags:?}"));
+
+        // 1. Default context must contain fapd-E03.
+        let default_diags = lint_with_context(&entries, src, path, &LintContext::default());
+        assert!(
+            default_diags.iter().any(|d| d.code.as_ref() == "fapd-E03"),
+            "default context: expected at least one fapd-E03 for undefined %%langs, \
+             got: {default_diags:?}",
+        );
+
+        // 2. Context with earlier_macros = {"langs"} must NOT contain fapd-E03.
+        let mut earlier = HashSet::new();
+        earlier.insert("langs".to_string());
+        let ctx_with_earlier = LintContext {
+            earlier_macros: Some(&earlier),
+            ..Default::default()
+        };
+        let earlier_diags = lint_with_context(&entries, src, path, &ctx_with_earlier);
+        assert!(
+            !earlier_diags.iter().any(|d| d.code.as_ref() == "fapd-E03"),
+            "context with earlier_macros={{\"langs\"}}: fapd-E03 must be suppressed \
+             (macro defined in earlier-loading file), got: {earlier_diags:?}",
+        );
     }
 
     // --- column backfill tests (A5: derive column from span) ---

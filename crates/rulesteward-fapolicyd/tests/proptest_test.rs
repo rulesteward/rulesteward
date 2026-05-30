@@ -1580,7 +1580,10 @@ proptest! {
         let entries = parse_rules_file(&source, &rule_file)
             .map_err(|d| TestCaseError::fail(format!("W06 proptest source must parse: {d:?}")))?;
 
-        let ctx = LintContext { trustdb: Some(&db) };
+        let ctx = LintContext {
+            trustdb: Some(&db),
+            ..Default::default()
+        };
         let diags = lint_with_context(&entries, &source, &rule_file, &ctx);
         let w06_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W06").count();
 

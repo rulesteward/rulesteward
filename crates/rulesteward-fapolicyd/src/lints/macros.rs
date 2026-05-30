@@ -11,31 +11,70 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, AttrValue, Entry};
 
 /// Run every macro-related lint pass over `entries` and return the
-/// merged diagnostics.
-pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+/// merged diagnostics. `earlier` is the set of macro names defined in
+/// earlier-loading files (cross-file scope for fapd-E03; `None` = per-file
+/// resolution); `single_file` selects fapd-W09 over fapd-E03 for an unresolved
+/// reference in single-file `--file` mode. Only fapd-E03 consults these;
+/// fapd-E04/E05/S02 are independent of macro definedness and ignore them.
+pub(crate) fn walk(
+    entries: &[Entry],
+    file: &Path,
+    earlier: Option<&HashSet<String>>,
+    single_file: bool,
+) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    out.extend(e03(entries, file));
+    out.extend(e03(entries, file, earlier, single_file));
     out.extend(e04(entries, file));
     out.extend(e05(entries, file));
     out.extend(s02(entries, file));
     out
 }
 
-/// fapd-E03 - macro reference to an undefined `%setname`. Single-pass walk
-/// over `entries` in source order, maintaining a `HashSet<String>` of macro
-/// names seen so far. For each `Attr::Kv` with `AttrValue::SetRef(name)`, emit
-/// fapd-E03 if `name` is not yet in the set. This naturally enforces "definition
-/// above reference" - a forward reference fires fapd-E03 because the definition
-/// has not been inserted yet when the single-pass walk checks the reference.
+/// fapd-E03 / fapd-W09 - macro reference to an undefined `%setname`.
+///
+/// Implements cross-file define-before-use + single-file W09 downgrade:
+///
+/// - `earlier`: macro names defined in strictly-earlier-loading `rules.d/`
+///   files. Seeded into `defined` before the walk so that a reference to a
+///   macro defined in an earlier file is silent (the concatenated load-order
+///   stream already saw the definition). `None` = per-file resolution only.
+///
+/// - `single_file`: when `true` (CLI `--file` mode), a reference to a macro
+///   that is NOT defined anywhere in this file becomes fapd-W09 (Warning)
+///   instead of fapd-E03, because an unseen sibling file might define it.
+///   A within-file FORWARD reference stays fapd-E03: the definition IS present
+///   in the file (just below the use), so the violation is certain.
+///
+/// Single-pass walk: `defined` starts as a clone of `earlier` (empty when
+/// `None`) and grows as `SetDefinitions` are encountered. At each `SetRef`:
+///   1. `defined.contains(name)` -> in scope (earlier file or earlier line) -> silent.
+///   2. `all_local.contains(name)` -> within-file forward ref -> fapd-E03 always.
+///   3. `single_file` and name not in `all_local` -> fapd-W09.
+///   4. otherwise -> fapd-E03.
 ///
 /// `AttrValue::Int(_)` and `AttrValue::Str(_)` are skipped (the `let-else`
 /// filters them out); only `AttrValue::SetRef(_)` participates.
 ///
-/// Span is the enclosing rule's span (per-attribute spans deferred per
-/// spec §3f).
-fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+/// Span is the enclosing rule's span (per-attribute spans deferred per spec §3f).
+fn e03(
+    entries: &[Entry],
+    file: &Path,
+    earlier: Option<&HashSet<String>>,
+    single_file: bool,
+) -> Vec<Diagnostic> {
+    // Seed the running set from `earlier` (macros defined in earlier-loading files).
+    let mut defined: HashSet<String> = earlier.cloned().unwrap_or_default();
+    // Precompute ALL macro names defined anywhere in THIS file (for the W09-vs-E03 split).
+    // A within-file forward reference has `all_local.contains(name)` == true even when
+    // the single-pass walk hasn't reached the SetDefinition yet.
+    let all_local: HashSet<&str> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::SetDefinition { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut diags = Vec::new();
-    let mut defined: HashSet<String> = HashSet::new();
     for entry in entries {
         match entry {
             Entry::SetDefinition { name, .. } => {
@@ -50,7 +89,33 @@ fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     else {
                         continue;
                     };
-                    if !defined.contains(name) {
+                    if defined.contains(name) {
+                        // Defined in an earlier file (via seed) or earlier line -> silent.
+                        continue;
+                    }
+                    // Unresolved at this point in the single-pass walk.
+                    if single_file && !all_local.contains(name.as_str()) {
+                        // Single-file mode and macro is absent from the whole file:
+                        // it may be defined in an unseen sibling -> W09 (Warning).
+                        diags.push(
+                            Diagnostic::new(
+                                Severity::Warning,
+                                "fapd-W09",
+                                r.span.clone(),
+                                format!(
+                                    "macro reference `%{name}` not defined in this file \
+                                     (may be defined in a sibling rules.d/ file; \
+                                     lint the directory to resolve)"
+                                ),
+                                file,
+                                r.line,
+                                1,
+                            )
+                            .with_source_id(file.display().to_string()),
+                        );
+                    } else {
+                        // Either directory mode, or a within-file forward reference
+                        // (defined below in this file) in single-file mode: E03.
                         diags.push(
                             Diagnostic::new(
                                 Severity::Error,
@@ -300,7 +365,7 @@ mod tests {
             }],
             vec![Attr::All],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.as_ref(), "fapd-E03");
         assert_eq!(diags[0].severity, Severity::Error);
@@ -328,7 +393,7 @@ mod tests {
                 vec![Attr::All],
             ),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "definition above reference must silence fapd-E03: {diags:?}",
@@ -354,7 +419,7 @@ mod tests {
             ),
             setdef(2, "langs"),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             1,
@@ -381,7 +446,7 @@ mod tests {
                 value: AttrValue::Str("/var/%foo/bar".into()),
             }],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "Str values are never fapd-E03's concern, even if they contain `%`: {diags:?}",
@@ -401,7 +466,7 @@ mod tests {
             }],
             vec![Attr::All],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "Int values are never fapd-E03's concern: {diags:?}",
@@ -424,7 +489,7 @@ mod tests {
                 value: AttrValue::SetRef("undef_b".into()),
             }],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             2,
@@ -470,13 +535,224 @@ mod tests {
                 ],
             ),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             1,
             "only the undefined SetRef should fire: {diags:?}"
         );
         assert!(diags[0].message.contains("bad_macro"));
+    }
+
+    // -----------------------------------------------------------------
+    // B.1 - Cross-file and single-file mode barrier tests for fapd-E03/fapd-W09.
+    //
+    // These tests call `e03` with the 4-arg signature introduced in the frozen
+    // foundation. They will be RED against the current frozen foundation because
+    // `e03` ignores `_earlier` and `_single_file`. After the implement phase lands
+    // the real logic, they must turn GREEN.
+    //
+    // Test plan:
+    //   B.1.1 - earlier-file def suppresses E03
+    //   B.1.2 - within-file forward ref still E03 with empty earlier set
+    //   B.1.3 - single-file undefined-anywhere -> W09
+    //   B.1.4 - single-file within-file forward ref stays E03
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e03_earlier_file_def_suppresses_error() {
+        // A rule referencing `%langs` with NO local definition, but `earlier`
+        // contains "langs" (from an earlier-loading file). In directory mode
+        // (`single_file=false`) this MUST produce ZERO diagnostics: the macro is
+        // in scope via the earlier-file context.
+        //
+        // RED against the frozen foundation: `e03` ignores `_earlier`, so it fires
+        // fapd-E03 unconditionally for any undefined local reference.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::SetRef("langs".into()),
+            }],
+        )];
+        let mut earlier_set = std::collections::HashSet::new();
+        earlier_set.insert("langs".to_string());
+        let diags = e03(&entries, &p(), Some(&earlier_set), false);
+        assert!(
+            diags.is_empty(),
+            "a macro defined in an earlier-loading file (in `earlier`) must \
+             suppress fapd-E03 in directory mode: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e03_within_file_forward_ref_still_errors_with_empty_earlier() {
+        // Rule references `%local` (line 1), then a SetDefinition of `local`
+        // appears below it (line 2). `earlier` is an EMPTY set (not None).
+        // In directory mode (`single_file=false`) this MUST fire exactly 1 fapd-E03:
+        // the macro IS in this file, but below the reference (forward ref).
+        //
+        // RED against the frozen foundation: `e03` ignores `_earlier` and treats
+        // this the same as the pre-existing forward-reference case (already
+        // covered by `e03_fires_on_forward_reference`), so this is actually GREEN
+        // in the existing code. However, the test pins that passing an empty-set
+        // `earlier` does not accidentally suppress the error (a mutation of `None`
+        // vs `Some(&empty)` must not change behavior for forward refs).
+        let entries = vec![
+            modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![Attr::Kv {
+                    key: "uid".into(),
+                    value: AttrValue::Int(0),
+                }],
+                vec![Attr::Kv {
+                    key: "exe".into(),
+                    value: AttrValue::SetRef("local".into()),
+                }],
+            ),
+            setdef(2, "local"),
+        ];
+        let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let diags = e03(&entries, &p(), Some(&empty), false);
+        assert_eq!(
+            diags.len(),
+            1,
+            "within-file forward reference with an empty `earlier` set \
+             must still fire fapd-E03: {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E03");
+        assert_eq!(diags[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn e03_single_file_undefined_anywhere_emits_w09_not_e03() {
+        // Single-file mode (`single_file=true`, `earlier=None`): a reference to
+        // `%nope` with no local definition anywhere in the file. Because we cannot
+        // tell whether the macro is defined in a sibling file we have not seen, the
+        // correct code is fapd-W09 (Warning), NOT fapd-E03.
+        //
+        // RED against the frozen foundation: `e03` ignores `_single_file` and emits
+        // fapd-E03 (Error) for any undefined reference, whether single-file or not.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::SetRef("nope".into()),
+            }],
+        )];
+        let diags = e03(&entries, &p(), None, true);
+        assert_eq!(
+            diags.len(),
+            1,
+            "single-file mode with undefined macro must produce exactly 1 diagnostic: {diags:?}",
+        );
+        assert_eq!(
+            diags[0].code.as_ref(),
+            "fapd-W09",
+            "single-file undefined-anywhere must emit fapd-W09 (not fapd-E03): {diags:?}",
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "fapd-W09 must have Warning severity: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e03_single_file_within_file_forward_ref_stays_e03() {
+        // Single-file mode (`single_file=true`, `earlier=None`): a reference to
+        // `%fwd` on line 1, then a SetDefinition of `fwd` on line 2. The macro IS
+        // defined in this file, just below the reference. This is a within-file
+        // forward reference, which remains fapd-E03 even in single-file mode (we
+        // CAN see the definition; the violation is certain).
+        //
+        // RED against the frozen foundation: `e03` ignores `_single_file`, so it
+        // already emits fapd-E03 here (same as directory mode). But the test is
+        // still valuable as a mutation-killing pin: an implementation that upgrades
+        // ALL single-file undefined refs to W09 (including forward refs) would fail
+        // here.
+        let entries = vec![
+            modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![Attr::Kv {
+                    key: "uid".into(),
+                    value: AttrValue::Int(0),
+                }],
+                vec![Attr::Kv {
+                    key: "exe".into(),
+                    value: AttrValue::SetRef("fwd".into()),
+                }],
+            ),
+            setdef(2, "fwd"),
+        ];
+        let diags = e03(&entries, &p(), None, true);
+        assert_eq!(
+            diags.len(),
+            1,
+            "single-file within-file forward reference must still fire fapd-E03: {diags:?}",
+        );
+        assert_eq!(
+            diags[0].code.as_ref(),
+            "fapd-E03",
+            "within-file forward ref stays fapd-E03 even in single-file mode: {diags:?}",
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+    }
+
+    // -----------------------------------------------------------------
+    // B.2 - GAP 1 (adversarial-reviewer finding): non-empty `earlier` that
+    // does NOT contain the referenced name must still fire fapd-E03.
+    //
+    // Kills a wrong impl that suppresses E03 whenever `earlier` is non-empty
+    // regardless of whether the specific name is present.
+    //
+    // This test is GREEN against the frozen foundation (which ignores `earlier`
+    // entirely, so E03 always fires for any undefined reference). It is a
+    // regression pin: the implement phase must keep it green, because a
+    // correct impl must check name membership, not just presence of a
+    // non-empty set.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e03_directory_mode_nonmatching_earlier_still_errors() {
+        // earlier={langs} but the rule references %other (NOT in the set) ->
+        // directory mode must still fire exactly one fapd-E03. A wrong impl that
+        // suppresses E03 whenever `earlier` is non-empty (ignoring the name) fails here.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+            }],
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::SetRef("other".into()),
+            }],
+        )];
+        let mut earlier = std::collections::HashSet::new();
+        earlier.insert("langs".to_string());
+        let diags = e03(&entries, &p(), Some(&earlier), false);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code.as_ref(), "fapd-E03");
+        assert_eq!(diags[0].severity, Severity::Error);
     }
 
     // -----------------------------------------------------------------

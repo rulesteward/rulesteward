@@ -1,0 +1,2 @@
+allow perm=open all : ftype=%a
+deny_audit perm=any all : ftype=%b

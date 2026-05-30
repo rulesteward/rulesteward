@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, check_layout, lint_cross_file, lint_file_with_context, lint_orphans,
-    open_trustdb_readonly,
+    Entry, LintContext, check_layout, collect_macro_names, lint_cross_file, lint_orphans,
+    lint_with_context, open_trustdb_readonly, parse_rules_file,
 };
 
 use crate::cli::{FapolicydCommand, LintArgs};
@@ -43,40 +43,39 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
         },
         None => None,
     };
-    let ctx = LintContext {
-        trustdb: trustdb.as_ref(),
-    };
 
     let (target_files, layout_diag) = resolve_targets(args)?;
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
-    // Build source map: source_id (file path string) -> raw file content.
-    // Re-reading each file here is intentional: lint_file_with_context already read it
-    // once for parsing; we read again to populate the ariadne source cache.
-    // For v0.1 single-file workloads the double-read cost is negligible.
+    // Build source map: source_id (file path string) -> raw file content for ariadne.
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
-    // Parsed entries per file, preserved so the cross-file pass can run after
-    // every file is parsed. (Directory mode only - see below.)
+    // Parsed entries per file, preserved for the cross-file (W04/C01) and
+    // orphan (X01) passes that run after all per-file lints complete.
     let mut parsed: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
 
+    // `single_file=true` when the operator passes `--file <FILE>`: one file,
+    // no earlier-file context; a missing macro becomes fapd-W09 instead of E03.
+    let single_file = args.file.is_some();
+
+    // Phase 1 - read + parse every target file in fagenrules load order into a
+    // staging vec (path, source, entries). Parse errors (fapd-F01) are emitted
+    // immediately; IO errors are surfaced but do not stop the other files.
+    let mut staged: Vec<(PathBuf, String, Vec<Entry>)> = Vec::new();
     for path in &target_files {
-        match lint_file_with_context(path, &ctx) {
-            Ok((entries, diags)) => {
-                all_diags.extend(diags);
-                // Load source text for ariadne snippets. Failures are soft:
-                // the human renderer falls back to plain format if the entry
-                // is absent from `sources`.
-                if let Ok(text) = std::fs::read_to_string(path) {
-                    sources.insert(path.display().to_string(), text);
-                }
-                parsed.push((path.clone(), entries));
+        match std::fs::read_to_string(path) {
+            Ok(source) => {
+                let (entries, parse_diags) = match parse_rules_file(&source, path) {
+                    Ok(e) => (e, Vec::new()),
+                    Err(d) => (Vec::new(), d),
+                };
+                all_diags.extend(parse_diags);
+                staged.push((path.clone(), source, entries));
             }
             Err(io) => {
-                // Per-file failure must not halt the loop; surface as a
-                // tool failure at the end after every other file has had
-                // its chance. Attach the path as anyhow context so the
-                // operator sees `error: linting <path>\n  Caused by: <io>`.
+                // Per-file IO failure must not halt the loop. Attach the path
+                // as anyhow context so the operator sees
+                // `error: linting <path>\n  Caused by: <io>`.
                 let err = anyhow::Error::new(io).context(format!("linting {}", path.display()));
                 eprintln!("error: {err:#}");
                 tool_err = true;
@@ -84,10 +83,35 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
         }
     }
 
+    // Phase 2 - lint each file in load order, threading a running set of macro
+    // names from earlier-loading files (for cross-file fapd-E03 resolution).
+    // `earlier.extend(...)` MUST come AFTER lint_with_context: own-file
+    // SetDefinitions are NOT in scope for own-file forward references.
+    let mut earlier: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (path, source, entries) in &staged {
+        let ctx = LintContext {
+            trustdb: trustdb.as_ref(),
+            earlier_macros: if single_file { None } else { Some(&earlier) },
+            single_file,
+        };
+        all_diags.extend(lint_with_context(entries, source, path, &ctx));
+        // Populate the ariadne source cache from the already-read source text.
+        sources.insert(path.display().to_string(), source.clone());
+        if !single_file {
+            earlier.extend(collect_macro_names(entries));
+        }
+    }
+
+    // Consume staged into the per-path structures needed by the cross-file
+    // and orphan passes.
+    for (path, _source, entries) in staged {
+        parsed.push((path, entries));
+    }
+
     // Cross-file passes (fapd-W04 ordering, fapd-C01 filename convention) apply
     // only in directory mode; a single `--file` has no cross-file relationships.
     // `target_files` is already in fagenrules load order (resolve_targets).
-    if args.file.is_none() {
+    if !single_file {
         // Route cross-file diagnostics (fapd-W04/C01) through the same column
         // backfill as the per-file lint() path, for uniformity. This is a no-op
         // today: every rule span starts at its line's first byte (the grammar
