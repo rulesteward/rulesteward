@@ -1,5 +1,6 @@
-//! Cross-`rules.d/` lints: fapd-W04 (ordering) + fapd-C01 (filename convention).
-//! Run AFTER per-file lints, over all files in fagenrules load order.
+//! Cross-`rules.d/` lints: fapd-W04 (ordering), fapd-C01 (filename convention),
+//! fapd-C02 (cross-file duplicate), and fapd-W10 (cross-file allow-then-deny
+//! shadow). Run AFTER per-file lints, over all files in fagenrules load order.
 use std::path::PathBuf;
 
 use rulesteward_core::{Diagnostic, Severity};
@@ -76,6 +77,33 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
         }
     }
     diags
+}
+
+/// fapd-C02 (Convention): a CROSS-FILE DUPLICATE rule. Two rules in DIFFERENT
+/// rules.d files are AST-equal (same decision, same perm, same subject attrs,
+/// same object attrs, with `SetRef` macros expanded via the global macro map and
+/// attribute order treated as insignificant within a side). The later-loading
+/// copy is redundant; the diagnostic is anchored at the LATER rule and names the
+/// earlier file and line in prose (the zero-core-change pattern fapd-W04 uses).
+///
+/// STUB (RED): returns no diagnostics so the test-author's C02 tests fail. The
+/// implementer fills the real detection. Reuses (do NOT add a new macro-map
+/// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
+pub(crate) fn c02(_files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    Vec::new()
+}
+
+/// fapd-W10 (Warning): a CROSS-FILE DECISION-SHADOW. Two rules in different files
+/// have AST-equal MATCH predicates (perm + subject + object) but a conflicting
+/// outcome where the later is unreachable (first match wins). SCOPED TO
+/// allow-then-deny ONLY (earlier file `allow`, later file `deny`); the
+/// deny-then-allow direction is fapd-W04, so W10 and W04 never double-fire.
+///
+/// STUB (RED): returns no diagnostics so the test-author's W10 tests fail. The
+/// implementer fills the real detection. Reuses (do NOT add a new macro-map
+/// helper): `build_global_macro_map`, `subsume::shadows`, `is_allow`, `is_deny`.
+pub(crate) fn w10(_files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
+    Vec::new()
 }
 
 /// True iff `name` begins with exactly two ASCII digits then a hyphen (the
@@ -381,6 +409,581 @@ mod tests {
             w04(&files).is_empty(),
             "a deny shadowed by an earlier deny must not fire W04: {:?}",
             w04(&files)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // fapd-C02 - cross-file DUPLICATE (same decision + same match predicates).
+    // -----------------------------------------------------------------------
+
+    fn codes(diags: &[Diagnostic]) -> std::collections::HashSet<&str> {
+        diags.iter().map(|d| d.code.as_ref()).collect()
+    }
+
+    #[test]
+    fn c02_fires_on_byte_identical_allow_dup() {
+        // Two files, byte-identical `allow uid=0 : path=/x`. The later copy is a
+        // redundant cross-file duplicate -> exactly one fapd-C02, anchored at the
+        // LATER rule and naming the earlier file in prose.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let d = c02(&files);
+        assert_eq!(d.len(), 1, "exactly one C02 for the later duplicate: {d:?}");
+        assert_eq!(d[0].code.as_ref(), "fapd-C02");
+        assert_eq!(d[0].severity, Severity::Convention);
+        // Anchored at the LATER file (30-b), naming the EARLIER file (20-a).
+        assert!(
+            d[0].file.ends_with("30-b.rules"),
+            "C02 anchors the later copy: {:?}",
+            d[0].file
+        );
+        assert!(
+            d[0].message.contains("20-a.rules"),
+            "C02 prose names the earlier file: {}",
+            d[0].message
+        );
+        assert_eq!(d[0].source_id.as_deref(), Some("rules.d/30-b.rules"));
+    }
+
+    #[test]
+    fn c02_fires_on_byte_identical_deny_dup() {
+        // Mirror of the allow case for deny->deny: same-decision dup still fires
+        // C02 (the duplicate is redundant regardless of allow vs deny).
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    Some(Perm::Execute),
+                    vec![Attr::All],
+                    vec![kv("ftype", "text/x-php")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    Some(Perm::Execute),
+                    vec![Attr::All],
+                    vec![kv("ftype", "text/x-php")],
+                )],
+            ),
+        ];
+        let d = c02(&files);
+        assert_eq!(d.len(), 1, "deny->deny dup fires one C02: {d:?}");
+        assert_eq!(d[0].code.as_ref(), "fapd-C02");
+        assert!(d[0].file.ends_with("30-b.rules"));
+        assert!(d[0].message.contains("20-a.rules"));
+    }
+
+    #[test]
+    fn c02_fires_when_macro_ref_equals_expansion() {
+        // Earlier file: `%admins=0` then `allow uid=%admins : all`.
+        // Later file:   `allow uid=0 : all`.
+        // With the macro expanded, the predicate sets are EQUAL -> C02. A wrong
+        // impl that compares raw AST (SetRef vs Int) without expanding the macro
+        // map would MISS this and fail.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![
+                    setdef(1, "admins", &["0"]),
+                    rule(
+                        2,
+                        Decision::Allow,
+                        None,
+                        vec![kv_ref("uid", "admins")],
+                        vec![Attr::All],
+                    ),
+                ],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![Attr::All],
+                )],
+            ),
+        ];
+        let d = c02(&files);
+        assert_eq!(
+            d.len(),
+            1,
+            "uid=%admins (={{0}}) equals uid=0 after expansion -> C02: {d:?}"
+        );
+        assert_eq!(d[0].code.as_ref(), "fapd-C02");
+        assert!(d[0].file.ends_with("30-b.rules"));
+    }
+
+    #[test]
+    fn c02_is_order_insensitive_on_attrs() {
+        // Same predicate SET, different attribute ORDER across the two files.
+        // A rule's predicate list is a conjunction, so order is insignificant;
+        // C02 must still fire. A wrong impl using `Vec`-equality (order-sensitive)
+        // would MISS this and fail.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0), kv_int("gid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    // gid before uid - reversed order, same set.
+                    vec![kv_int("gid", 0), kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let d = c02(&files);
+        assert_eq!(
+            d.len(),
+            1,
+            "reordered-but-equal attr sets are a duplicate -> C02: {d:?}"
+        );
+        assert_eq!(d[0].code.as_ref(), "fapd-C02");
+    }
+
+    #[test]
+    fn c02_does_not_fire_on_same_file_pair() {
+        // Two identical rules in the SAME file are fapd-W01's job (within-file),
+        // never C02. A wrong impl missing the cross-file (different-file) guard
+        // would wrongly fire here.
+        let files = vec![(
+            PathBuf::from("rules.d/20-a.rules"),
+            vec![
+                rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                ),
+                rule(
+                    2,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                ),
+            ],
+        )];
+        assert!(
+            c02(&files).is_empty(),
+            "same-file duplicate is W01, not C02: {:?}",
+            c02(&files)
+        );
+    }
+
+    #[test]
+    fn c02_does_not_fire_on_distinct_decisions() {
+        // allow-then-deny with equal predicates is a SHADOW (W10), not a
+        // duplicate. C02 requires the SAME decision; a wrong impl ignoring the
+        // decision-equality guard would wrongly emit C02 here.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            c02(&files).is_empty(),
+            "different decisions are W10, not a C02 duplicate: {:?}",
+            c02(&files)
+        );
+    }
+
+    #[test]
+    fn c02_does_not_fire_on_unrelated_rules() {
+        // Genuinely different predicates -> neither a duplicate nor a shadow.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/foo")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/bar")],
+                )],
+            ),
+        ];
+        assert!(
+            c02(&files).is_empty(),
+            "distinct path predicates are not a duplicate: {:?}",
+            c02(&files)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // fapd-W10 - cross-file allow-then-deny DECISION-SHADOW (later is dead).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn w10_fires_on_allow_then_deny_same_match() {
+        // Earlier file `allow`, later file `deny` with EQUAL match predicates:
+        // the deny is unreachable (first match wins) -> exactly one W10,
+        // anchored at the later (dead) deny, naming the earlier allow's file.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let d = w10(&files);
+        assert_eq!(
+            d.len(),
+            1,
+            "allow-then-deny same-match fires one W10: {d:?}"
+        );
+        assert_eq!(d[0].code.as_ref(), "fapd-W10");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert!(
+            d[0].file.ends_with("30-deny.rules"),
+            "W10 anchors the later dead deny: {:?}",
+            d[0].file
+        );
+        assert!(
+            d[0].message.contains("20-allow.rules"),
+            "W10 prose names the earlier allow's file: {}",
+            d[0].message
+        );
+        assert_eq!(d[0].source_id.as_deref(), Some("rules.d/30-deny.rules"));
+    }
+
+    #[test]
+    fn w10_does_not_fire_on_deny_then_allow() {
+        // deny-then-allow is fapd-W04's direction. W10 is SCOPED to
+        // allow-then-deny ONLY, so it must NOT fire here (no double-fire with
+        // W04). A wrong impl that is direction-agnostic would wrongly emit W10.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            w10(&files).is_empty(),
+            "deny-then-allow is W04's job, not W10: {:?}",
+            w10(&files)
+        );
+    }
+
+    #[test]
+    fn w10_does_not_fire_on_same_file_pair() {
+        // An allow then a deny in the SAME file is within-file reachability
+        // (fapd-W01), not the cross-file W10.
+        let files = vec![(
+            PathBuf::from("rules.d/20-x.rules"),
+            vec![
+                rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                ),
+                rule(
+                    2,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                ),
+            ],
+        )];
+        assert!(
+            w10(&files).is_empty(),
+            "same-file allow-then-deny is W01, not W10: {:?}",
+            w10(&files)
+        );
+    }
+
+    #[test]
+    fn w10_does_not_fire_on_allow_then_allow() {
+        // Equal-predicate allow-then-allow is a DUPLICATE (C02), not a shadow.
+        // W10 requires a conflicting allow-vs-deny outcome.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            w10(&files).is_empty(),
+            "allow-then-allow is a C02 duplicate, not a W10 shadow: {:?}",
+            w10(&files)
+        );
+    }
+
+    #[test]
+    fn w10_does_not_fire_on_unrelated_rules() {
+        // Different predicates -> the deny is reachable, no shadow.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/foo")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/bar")],
+                )],
+            ),
+        ];
+        assert!(
+            w10(&files).is_empty(),
+            "distinct predicates: deny is reachable, no W10: {:?}",
+            w10(&files)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Non-overlap + aggregator wiring: the three cross-file equal-predicate
+    // codes (C02 / W04 / W10) must NEVER double-fire on the same pair, and
+    // `lint_cross_file` must surface C02 and W10 end to end.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn aggregator_surfaces_c02_on_allow_dup() {
+        // End-to-end: lint_cross_file must reach the new C02 pass.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let diags = crate::lints::lint_cross_file(&files);
+        let c = codes(&diags);
+        assert!(
+            c.contains("fapd-C02"),
+            "lint_cross_file reaches C02: {diags:?}"
+        );
+        // A duplicate (same decision) is NOT a W10 shadow and NOT a W04.
+        assert!(
+            !c.contains("fapd-W10"),
+            "no W10 on a same-decision dup: {diags:?}"
+        );
+        assert!(
+            !c.contains("fapd-W04"),
+            "no W04 on a same-decision dup: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn aggregator_surfaces_w10_on_allow_then_deny() {
+        // End-to-end: lint_cross_file must reach the new W10 pass, and the
+        // allow-then-deny pair must NOT also trigger W04 (that is deny-then-allow)
+        // or C02 (that is same-decision). Locks the full non-overlap table.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let diags = crate::lints::lint_cross_file(&files);
+        let c = codes(&diags);
+        assert!(
+            c.contains("fapd-W10"),
+            "lint_cross_file reaches W10: {diags:?}"
+        );
+        assert!(
+            !c.contains("fapd-C02"),
+            "no C02 on conflicting decisions: {diags:?}"
+        );
+        assert!(
+            !c.contains("fapd-W04"),
+            "no W04 on allow-then-deny: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn deny_then_allow_is_w04_only_not_w10_not_c02() {
+        // The third row of the non-overlap table: deny-then-allow equal-match is
+        // fapd-W04 EXCLUSIVELY. Locks that adding C02/W10 did not disturb W04 and
+        // that neither new code poaches W04's direction.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        let diags = crate::lints::lint_cross_file(&files);
+        let c = codes(&diags);
+        assert!(c.contains("fapd-W04"), "deny-then-allow is W04: {diags:?}");
+        assert!(
+            !c.contains("fapd-W10"),
+            "deny-then-allow is not W10: {diags:?}"
+        );
+        assert!(
+            !c.contains("fapd-C02"),
+            "deny-then-allow is not a C02 dup: {diags:?}"
         );
     }
 

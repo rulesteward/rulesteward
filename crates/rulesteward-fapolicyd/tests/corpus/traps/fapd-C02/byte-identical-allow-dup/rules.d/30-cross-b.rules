@@ -1,0 +1,2 @@
+# Verbatim duplicate of the rule in 20-cross-a.rules (the redundant later copy).
+allow uid=0 : path=/usr/bin/myapp

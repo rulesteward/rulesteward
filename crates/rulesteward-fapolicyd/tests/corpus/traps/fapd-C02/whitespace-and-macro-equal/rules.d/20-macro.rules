@@ -1,0 +1,5 @@
+# Defines %admins={0}; the allow below references it. AST-equal (after macro
+# expansion) to the literal `uid=0` rule in 30-literal.rules despite the macro
+# indirection and the differing whitespace.
+%admins=0
+allow uid=%admins : path=/usr/bin/admintool

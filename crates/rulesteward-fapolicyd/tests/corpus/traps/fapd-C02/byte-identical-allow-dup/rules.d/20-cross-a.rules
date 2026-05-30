@@ -1,0 +1,2 @@
+# First copy of an allow rule (cross-file duplicate; mirrors rocky8/rocky9 corpus).
+allow uid=0 : path=/usr/bin/myapp
