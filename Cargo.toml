@@ -31,7 +31,13 @@ tempfile = "3"
 thiserror = "2"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny`, not `forbid`, so the single audited heed FFI boundary in
+# rulesteward-fapolicyd/src/trustdb.rs can carry a scoped `#[allow(unsafe_code)]`
+# with a `// SAFETY:` comment. heed's `EnvOpenOptions::open` is unavoidably
+# `unsafe` (LMDB mmap aliasing contract); it is the ONLY unsafe in the workspace.
+# Every other crate stays effectively unsafe-free (deny errors unless explicitly
+# allowed). See .private-docs/session-3c-trustdb-plan.md + the session retro.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

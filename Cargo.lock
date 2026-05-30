@@ -954,6 +954,7 @@ dependencies = [
  "proptest",
  "rulesteward-core",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

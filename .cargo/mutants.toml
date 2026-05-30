@@ -21,6 +21,7 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
+    "crates/rulesteward-fapolicyd/src/trustdb.rs",
     "crates/rulesteward-sink/src/**/*.rs",
 ]
 
@@ -45,9 +46,19 @@ exclude_globs = [
 # non-zero spans, so the initial +1 is dead: the observable column is always
 # overwritten by fill_columns. Replacing +1 with *1 produces an identical
 # externally-visible column value. Genuine equivalent mutant.
+#
+# `open_trustdb_readonly` opens with `EnvFlags::READ_ONLY | EnvFlags::NO_LOCK`.
+# READ_ONLY = MDB_RDONLY = 0x20000 and NO_LOCK = MDB_NOLOCK = 0x400000 are
+# DISJOINT bits (verified in lmdb-master-sys lmdb.h), so `READ_ONLY ^ NO_LOCK`
+# == `READ_ONLY | NO_LOCK` == 0x420000. The `| -> ^` mutant is therefore a
+# genuine equivalent mutant: behaviourally identical, unkillable by any test.
+# (The sibling `| -> &` mutant yields 0x0, dropping NO_LOCK, and IS killed by
+# the `open_does_not_create_lock_mdb` test.) Excluded by name, not
+# `#[mutants::skip]`, so the rationale stays here in reviewable config.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
+    'replace \| with \^ in open_trustdb_readonly',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

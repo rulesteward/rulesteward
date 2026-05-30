@@ -13,6 +13,7 @@ rulesteward-core = { workspace = true }
 chumsky = { workspace = true, features = ["std"] }
 ariadne = { workspace = true }
 heed = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
