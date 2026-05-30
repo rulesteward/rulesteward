@@ -55,9 +55,9 @@ fn fish_completions_emit_non_empty_script() {
 fn unknown_shell_value_exits_three() {
     Command::cargo_bin("rulesteward")
         .expect("binary")
-        .args(["completions", "tcsh"])
+        .args(["completions", "nushell"])
         .assert()
         .code(3);
-    // `tcsh` is not in `CompletionShell`; clap rejects it as a usage
+    // `nushell` is not in `CompletionShell`; clap rejects it as a usage
     // error, main.rs remaps to `EXIT_TOOL_FAILURE` = 3.
 }
