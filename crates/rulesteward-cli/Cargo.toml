@@ -22,12 +22,14 @@ rulesteward-fapolicyd = { workspace = true }
 clap = { workspace = true }
 ariadne = { workspace = true }
 serde_json = { workspace = true }
+serde-sarif = { workspace = true }
 clap_complete = { workspace = true }
 thiserror = { workspace = true }
 anyhow = "1"
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+boon = { workspace = true }
 heed = { workspace = true }
 predicates = { workspace = true }
 proptest = { workspace = true }
