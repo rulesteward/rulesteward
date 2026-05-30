@@ -644,6 +644,71 @@ mod tests {
     }
 
     #[test]
+    fn c02_does_not_fire_on_subsumption_not_equality() {
+        // EQUALITY-vs-SUBSUMPTION boundary. Earlier file `allow all : all`
+        // STRICTLY SUBSUMES the later `allow uid=0 : path=/x` (same decision),
+        // but the two rules are NOT AST-equal. C02 is a DUPLICATE check
+        // (AST-equality), not a shadow check (subsumption). It must NOT fire.
+        //
+        // This is the adversarial pin: a wrong impl defined as
+        // `same_decision && shadows(earlier, later)` (subsumption via
+        // `subsume::shadows`, which the stub doc steers toward) would WRONGLY
+        // emit C02 here, because `shadows(allow_all_all, allow_uid0_pathx)` is
+        // true. The correct AST-equality impl passes (no C02). The empty stub
+        // also passes, so this test does NOT change RED status.
+        //
+        // This relationship is a W01/W04-style subsumption, not a duplicate:
+        // W04 covers the deny-then-allow direction; an allow-subsumes-later-
+        // allow within load order is at most a W01 same-file concern, never a
+        // cross-file C02 duplicate. So neither C02 nor W10 nor W04 fires here.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-a.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![Attr::All],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-b.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            c02(&files).is_empty(),
+            "earlier `allow all : all` strictly SUBSUMES but is not AST-equal to \
+             the later `allow uid=0 : path=/x`; C02 is equality not subsumption, \
+             so it must NOT fire: {:?}",
+            c02(&files)
+        );
+        // Belt-and-braces: the same subsumption pair must not leak into the
+        // other two cross-file codes via the aggregator either.
+        let diags = crate::lints::lint_cross_file(&files);
+        let c = codes(&diags);
+        assert!(
+            !c.contains("fapd-C02"),
+            "no C02 on allow-subsumes-allow (subsumption, not equality)"
+        );
+        assert!(
+            !c.contains("fapd-W10"),
+            "no W10 on a same-decision (allow-allow) pair"
+        );
+        assert!(
+            !c.contains("fapd-W04"),
+            "no W04 on allow-then-allow (W04 is deny-then-allow)"
+        );
+    }
+
+    #[test]
     fn c02_does_not_fire_on_unrelated_rules() {
         // Genuinely different predicates -> neither a duplicate nor a shadow.
         let files = vec![
@@ -821,6 +886,68 @@ mod tests {
             w10(&files).is_empty(),
             "allow-then-allow is a C02 duplicate, not a W10 shadow: {:?}",
             w10(&files)
+        );
+    }
+
+    #[test]
+    fn w10_does_not_fire_on_subsumption_not_equality() {
+        // EQUALITY-vs-SUBSUMPTION boundary for W10. Earlier file `allow all : all`,
+        // later file `deny uid=0 : path=/x`. The decisions DO conflict
+        // (allow -> deny), and the earlier allow STRICTLY SUBSUMES the later deny,
+        // but the MATCH predicates are NOT equal. Per the locked design, W10 is
+        // an EQUAL-match allow-then-deny shadow ONLY. It must NOT fire on mere
+        // subsumption.
+        //
+        // The adversarial pin: a wrong impl defined as
+        // `is_allow(earlier) && is_deny(later) && shadows(earlier, later)`
+        // (subsumption via `subsume::shadows`) would WRONGLY emit W10 here,
+        // because `shadows(allow_all_all, deny_uid0_pathx)` is true. The correct
+        // EQUAL-match impl passes (no W10). The empty stub also passes, so this
+        // test does NOT change RED status.
+        //
+        // (Per the locked design W10 is equal-match allow->deny only, so this
+        // allow-subsumes-later-deny case is intentionally NOT flagged by any
+        // cross-file code; it is not a gap.)
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-allow.rules"),
+                vec![rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![Attr::All],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-deny.rules"),
+                vec![rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
+        assert!(
+            w10(&files).is_empty(),
+            "earlier `allow all : all` SUBSUMES but is not equal to the later \
+             `deny uid=0 : path=/x`; W10 requires EQUAL match predicates, not \
+             subsumption, so it must NOT fire: {:?}",
+            w10(&files)
+        );
+        // Belt-and-braces via the aggregator: the subsumption pair must not leak
+        // into W10 (nor masquerade as a C02 duplicate; decisions differ).
+        let diags = crate::lints::lint_cross_file(&files);
+        let c = codes(&diags);
+        assert!(
+            !c.contains("fapd-W10"),
+            "no W10 on allow-subsumes-deny (subsumption, not equal match)"
+        );
+        assert!(
+            !c.contains("fapd-C02"),
+            "no C02 on conflicting decisions (allow vs deny)"
         );
     }
 
