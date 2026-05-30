@@ -61,3 +61,37 @@ Make use of /superpowers skills whenever feasible.
 - **License:** Engine Apache-2.0; rule templates BSD-3-Clause (separate repo).
 - **Commits are user-authored only. Never add `Co-Authored-By: Claude` or any AI-attribution trailer.** Branch + PR for every change; no commits to `main` directly.
 - **No telemetry. Read-only by default.** Every write/mutation flag must be opt-in.
+
+# Parallel Development Protocol + reusable artifacts
+
+The project's parallel-development discipline is now captured as reusable artifacts
+(built 2026-05-29). Note: the `.claude/` artifacts below are LOCAL-ONLY (`.claude` is
+gitignored), so a fresh clone or CI run will not have them; they live on the working
+machine. The protocol doc lives in the gitignored docs tree (its own repo). Load these
+when a milestone fans out 2+ independent features:
+
+- **Protocol (frozen design):** `.private-docs/orchestration/parallel-orchestration-protocol.md`
+  (in the gitignored docs tree). The source of truth for the barrier / HALT / Phase-0
+  foundation / dedup / adversarial-test / model-tiering design.
+- **Always-loaded rule:** `~/.claude/rules/parallel-orchestration.md` (global), with the
+  `[ARCHITECTURE-HALT]` tier in `subagent-bubble-up.md` and the per-pipeline-vs-global
+  skills mapping + mutation-adequacy gate in `engineering-chain.md`.
+- **Session plans:** run `/rs-session-plan` to scaffold a new plan pre-wired to the
+  protocol (do not hand-write the skeleton).
+- **Reviewer subagents** (`.claude/agents/`): `spec-reviewer`, `idiomatic-rust-reviewer`,
+  `adversarial-test-reviewer`. Each bakes in the bubble-up preamble and runs on `opus`.
+- **Workflow binding:** `.claude/workflows/rs-milestone-fanout.js` (+ `README.md`) is the
+  accelerator binding (`parallel()` barrier, `pipeline()` impl->mutation->review,
+  structured HALT early-return). The manual binding is always the floor.
+
+**Mutation gate, two layers:** the per-pipeline LOCAL gate (`cargo mutants` after GREEN,
+survivors route back to the test-author) is the adversarial-adequacy measure during a
+milestone; the CI `mutants.yml` nightly run remains the project-wide net. They are
+complementary, not redundant.
+
+**MCP servers (context7 + serena):** these back the "prefer Context7 over training
+recall" guidance and Rust symbol navigation. They are currently installed as Claude
+plugins (`enabledPlugins`), NOT as a committed repo `.mcp.json`. A repo `.mcp.json`
+(the deferred Task 3) is tracked as a follow-up pending a fresh-clone test of whether
+the plugin form survives a clone/CI without the plugins; do not assume a committed
+`.mcp.json` exists yet.
