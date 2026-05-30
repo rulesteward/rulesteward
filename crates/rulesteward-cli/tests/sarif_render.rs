@@ -24,13 +24,30 @@ use rulesteward_cli::output::render;
 use rulesteward_core::{Diagnostic, Severity};
 use serde_json::Value;
 
-/// A small, known set of diagnostics covering three severity tiers so the
-/// level-mapping assertions below are non-vacuous:
-///   Error   -> SARIF level "error"
-///   Warning -> SARIF level "warning"
-///   Style   -> SARIF level "note"
+/// A known set of diagnostics covering ALL SIX severity tiers so the
+/// level-mapping assertions below are non-vacuous and every arm of the
+/// severity -> SARIF-level map is independently pinned:
+///   Fatal      -> SARIF level "error"
+///   Error      -> SARIF level "error"
+///   Warning    -> SARIF level "warning"
+///   Style      -> SARIF level "note"
+///   Convention -> SARIF level "note"
+///   Extra      -> SARIF level "note"
+///
+/// Distinct expected levels per arm let a wrong mapping fail: e.g. a
+/// `Fatal -> "note"`, `Convention -> "warning"`, or `Extra -> "warning"`
+/// regression is caught by the per-result `level` assertions below.
 fn sample_diags() -> Vec<Diagnostic> {
     vec![
+        Diagnostic::new(
+            Severity::Fatal,
+            "fapd-F01",
+            0..1,
+            "rules file does not parse",
+            "/etc/fapolicyd/rules.d/10-fatal.rules",
+            1,
+            1,
+        ),
         Diagnostic::new(
             Severity::Error,
             "fapd-E02",
@@ -57,6 +74,72 @@ fn sample_diags() -> Vec<Diagnostic> {
             "/etc/fapolicyd/rules.d/50-style.rules",
             2,
             1,
+        ),
+        Diagnostic::new(
+            Severity::Convention,
+            "fapd-C01",
+            0..0,
+            "rule ordering does not follow recommended convention",
+            "/etc/fapolicyd/rules.d/60-conv.rules",
+            4,
+            1,
+        ),
+        Diagnostic::new(
+            Severity::Extra,
+            "fapd-X01",
+            0..0,
+            "extra informational note",
+            "/etc/fapolicyd/rules.d/70-extra.rules",
+            5,
+            1,
+        ),
+    ]
+}
+
+/// The expected `(ruleId, level, uri, startLine)` row for each `sample_diags()`
+/// entry, in order. Pins all six severity -> SARIF-level arms:
+///   Fatal/Error -> "error"; Warning -> "warning";
+///   Style/Convention/Extra -> "note".
+/// A wrong mapping (e.g. `Fatal -> "note"`, `Convention -> "warning"`,
+/// `Extra -> "warning"`) fails the per-result `level` assertion that consumes
+/// this table.
+fn expected_results() -> [(&'static str, &'static str, &'static str, u64); 6] {
+    [
+        (
+            "fapd-F01",
+            "error",
+            "/etc/fapolicyd/rules.d/10-fatal.rules",
+            1,
+        ),
+        (
+            "fapd-E02",
+            "error",
+            "/etc/fapolicyd/rules.d/30-bad.rules",
+            3,
+        ),
+        (
+            "fapd-W03",
+            "warning",
+            "/etc/fapolicyd/rules.d/40-warn.rules",
+            7,
+        ),
+        (
+            "fapd-S02",
+            "note",
+            "/etc/fapolicyd/rules.d/50-style.rules",
+            2,
+        ),
+        (
+            "fapd-C01",
+            "note",
+            "/etc/fapolicyd/rules.d/60-conv.rules",
+            4,
+        ),
+        (
+            "fapd-X01",
+            "note",
+            "/etc/fapolicyd/rules.d/70-extra.rules",
+            5,
         ),
     ]
 }
@@ -156,30 +239,9 @@ fn sarif_render_has_expected_structure() {
         "one SARIF result per input diagnostic"
     );
 
-    // Expected per-result (ruleId, level) derived from the diagnostics.
-    // Severity -> level map under test:
-    //   Fatal/Error -> "error"; Warning -> "warning";
-    //   Style/Convention/Extra -> "note".
-    let expected: [(&str, &str, &str, u64); 3] = [
-        (
-            "fapd-E02",
-            "error",
-            "/etc/fapolicyd/rules.d/30-bad.rules",
-            3,
-        ),
-        (
-            "fapd-W03",
-            "warning",
-            "/etc/fapolicyd/rules.d/40-warn.rules",
-            7,
-        ),
-        (
-            "fapd-S02",
-            "note",
-            "/etc/fapolicyd/rules.d/50-style.rules",
-            2,
-        ),
-    ];
+    // Expected per-result (ruleId, level, uri, startLine), one row per
+    // `sample_diags()` entry, pinning all six severity -> level arms.
+    let expected = expected_results();
 
     for (i, (code, level, uri, start_line)) in expected.iter().enumerate() {
         let r = &results[i];
