@@ -11,10 +11,19 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, AttrValue, Entry};
 
 /// Run every macro-related lint pass over `entries` and return the
-/// merged diagnostics.
-pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+/// merged diagnostics. `earlier` is the set of macro names defined in
+/// earlier-loading files (cross-file scope for fapd-E03; `None` = per-file
+/// resolution); `single_file` selects fapd-W09 over fapd-E03 for an unresolved
+/// reference in single-file `--file` mode. Only fapd-E03 consults these;
+/// fapd-E04/E05/S02 are independent of macro definedness and ignore them.
+pub(crate) fn walk(
+    entries: &[Entry],
+    file: &Path,
+    earlier: Option<&HashSet<String>>,
+    single_file: bool,
+) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    out.extend(e03(entries, file));
+    out.extend(e03(entries, file, earlier, single_file));
     out.extend(e04(entries, file));
     out.extend(e05(entries, file));
     out.extend(s02(entries, file));
@@ -33,7 +42,17 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 ///
 /// Span is the enclosing rule's span (per-attribute spans deferred per
 /// spec §3f).
-fn e03(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+fn e03(
+    entries: &[Entry],
+    file: &Path,
+    _earlier: Option<&HashSet<String>>,
+    _single_file: bool,
+) -> Vec<Diagnostic> {
+    // Phase 0 (frozen foundation): the cross-file `_earlier` set and the
+    // `_single_file` flag are threaded through but NOT yet consulted, so e03
+    // behaves exactly as the pre-refactor per-file walk. The real logic
+    // (cross-file define-before-use + fapd-W09 single-file downgrade) lands in
+    // the implement phase against the barrier tests.
     let mut diags = Vec::new();
     let mut defined: HashSet<String> = HashSet::new();
     for entry in entries {
@@ -300,7 +319,7 @@ mod tests {
             }],
             vec![Attr::All],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.as_ref(), "fapd-E03");
         assert_eq!(diags[0].severity, Severity::Error);
@@ -328,7 +347,7 @@ mod tests {
                 vec![Attr::All],
             ),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "definition above reference must silence fapd-E03: {diags:?}",
@@ -354,7 +373,7 @@ mod tests {
             ),
             setdef(2, "langs"),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             1,
@@ -381,7 +400,7 @@ mod tests {
                 value: AttrValue::Str("/var/%foo/bar".into()),
             }],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "Str values are never fapd-E03's concern, even if they contain `%`: {diags:?}",
@@ -401,7 +420,7 @@ mod tests {
             }],
             vec![Attr::All],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert!(
             diags.is_empty(),
             "Int values are never fapd-E03's concern: {diags:?}",
@@ -424,7 +443,7 @@ mod tests {
                 value: AttrValue::SetRef("undef_b".into()),
             }],
         )];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             2,
@@ -470,7 +489,7 @@ mod tests {
                 ],
             ),
         ];
-        let diags = e03(&entries, &p());
+        let diags = e03(&entries, &p(), None, false);
         assert_eq!(
             diags.len(),
             1,

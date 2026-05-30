@@ -673,7 +673,10 @@ fn drive_file_with_trustdb_w06(path: &Path) {
 
     let rendered = match parse_rules_file(&src, &rel_path) {
         Ok(entries) => {
-            let ctx = LintContext { trustdb: Some(&db) };
+            let ctx = LintContext {
+                trustdb: Some(&db),
+                ..Default::default()
+            };
             let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
             render("parse=ok", &diags)
         }

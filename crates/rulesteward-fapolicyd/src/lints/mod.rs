@@ -37,34 +37,37 @@ use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
 
-/// Optional external resources for the trust-DB-aware lint passes. `Default` is
-/// "no resources", which reproduces the plain `lint()` behavior exactly. (A
-/// `system_ids` field is intentionally absent: fapd-W05 is deferred this session.)
+/// Optional external resources + mode flags for the context-gated lint passes.
+/// `Default` is "no trust DB, no earlier-file macros, directory mode", which
+/// reproduces the plain per-file `lint()` behavior exactly. (A `system_ids`
+/// field is intentionally absent: fapd-W05 is deferred this session.)
 #[derive(Default)]
 pub struct LintContext<'a> {
+    /// Trust DB for fapd-W06 (`path=`/`exe=` literal not in the trust DB).
     pub trustdb: Option<&'a TrustDb>,
+    /// Macro names defined in EARLIER-loading `rules.d/` files (the post-fagenrules
+    /// concatenated stream up to but excluding the current file). A `%setname`
+    /// reference whose name is in this set is in scope for fapd-E03 (cross-file
+    /// define-before-use). `None` reproduces per-file resolution and is used by
+    /// `lint()` and by single-file `--file` mode, which have no earlier-file context.
+    pub earlier_macros: Option<&'a std::collections::HashSet<String>>,
+    /// True for single-file `--file` lint: a `%setname` reference not defined
+    /// anywhere in the lone file becomes fapd-W09 (it may be defined in an unseen
+    /// sibling) rather than fapd-E03. A within-file forward reference stays E03.
+    pub single_file: bool,
 }
 
-/// Run every per-file lint pass and return the merged diagnostic list.
+/// Run every per-file lint pass with a default (empty) context and return the
+/// merged diagnostic list. Thin wrapper over
+/// [`lint_with_context`]`(.., &LintContext::default())` so the context-free
+/// callers (snapshot driver, proptests, downstream consumers) are unaffected.
 ///
 /// `source` is the raw rules-file text, needed for fapd-W03 (inline trailing
 /// `# comment`) re-scan. `file` is the path used in every emitted
 /// `Diagnostic::file`.
 #[must_use]
 pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
-    let mut diags = walker::walk(entries, file);
-    diags.extend(validation::walk(entries, file));
-    diags.extend(macros::walk(entries, file));
-    diags.extend(reachability::walk(entries, file));
-    diags.extend(deprecation::walk(entries, file));
-    diags.extend(dir_slash::walk(entries, file));
-    diags.extend(source_scan::w03_scan(source, file));
-    // Backfill column from each diagnostic's byte span. Lint passes and the
-    // parser historically hardcoded column = 1; this makes the column field
-    // agree with the byte span the human renderer uses for its caret, so
-    // JSON / plain / snapshot columns are consistent with the ariadne display.
-    fill_columns(&mut diags, source);
-    diags
+    lint_with_context(entries, source, file, &LintContext::default())
 }
 
 /// Run cross-file lint passes over all rules.d files in fagenrules load order.
@@ -76,9 +79,15 @@ pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagno
     diags
 }
 
-/// `lint()` plus the context-gated passes. `lint()` itself is UNCHANGED, so the
-/// existing passes and the snapshot driver keep compiling verbatim. With a
-/// default (empty) context this returns exactly `lint(..)`.
+/// The single implementation of the per-file pass list, honoring the
+/// `LintContext`. The context-free [`lint`] delegates here with a default
+/// context, so a default context returns exactly what `lint()` returns.
+///
+/// Pass ordering is load-bearing and MUST be preserved: the AST/source passes
+/// run first, then `fill_columns` backfills their columns from byte spans, and
+/// `trust_path::w06` runs LAST so its column stays as emitted (matching the
+/// pre-context behavior where W06 was appended after `lint()` had already
+/// filled columns). Do not move `fill_columns` after the W06 append.
 #[must_use]
 pub fn lint_with_context(
     entries: &[Entry],
@@ -86,7 +95,23 @@ pub fn lint_with_context(
     file: &Path,
     ctx: &LintContext,
 ) -> Vec<Diagnostic> {
-    let mut diags = lint(entries, source, file);
+    let mut diags = walker::walk(entries, file);
+    diags.extend(validation::walk(entries, file));
+    diags.extend(macros::walk(
+        entries,
+        file,
+        ctx.earlier_macros,
+        ctx.single_file,
+    ));
+    diags.extend(reachability::walk(entries, file));
+    diags.extend(deprecation::walk(entries, file));
+    diags.extend(dir_slash::walk(entries, file));
+    diags.extend(source_scan::w03_scan(source, file));
+    // Backfill column from each diagnostic's byte span. Lint passes and the
+    // parser historically hardcoded column = 1; this makes the column field
+    // agree with the byte span the human renderer uses for its caret, so
+    // JSON / plain / snapshot columns are consistent with the ariadne display.
+    fill_columns(&mut diags, source);
     if let Some(db) = ctx.trustdb {
         diags.extend(trust_path::w06(entries, file, db));
     }

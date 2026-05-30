@@ -45,6 +45,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     };
     let ctx = LintContext {
         trustdb: trustdb.as_ref(),
+        ..Default::default()
     };
 
     let (target_files, layout_diag) = resolve_targets(args)?;
