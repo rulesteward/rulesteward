@@ -121,6 +121,27 @@ pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::
     lint_file_with_context(path, &LintContext::default())
 }
 
+/// Names of every `%name=` set definition in `entries`, in source order
+/// (duplicates preserved; callers dedup via a `HashSet`). Rules, comments, and
+/// blanks contribute nothing.
+///
+/// Used to seed the cross-file "earlier macros" set for fapd-E03 in directory
+/// mode: a macro defined in an earlier-loading `rules.d/` file is in scope for
+/// later files (the post-fagenrules concatenated stream). Names-only by design,
+/// distinct from `subsume::build_macro_map` (which expands `name -> values` for
+/// rule subsumption); fapd-E03 needs only the set of defined names. `pub` so the
+/// CLI two-phase loop can accumulate it across files in load order.
+#[must_use]
+pub fn collect_macro_names(entries: &[Entry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::SetDefinition { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +276,22 @@ mod tests {
         let result = lint_file(std::path::Path::new("/nonexistent/path/to/nothing"));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn collect_macro_names_returns_setdefinition_names_in_source_order() {
+        // Every `%name=` set definition, in source order, duplicates PRESERVED
+        // (the caller dedups via a HashSet). Rules, comments, and blanks
+        // contribute nothing. The two `%a` definitions both appear so a caller
+        // building the cross-file "earlier macros" set sees every definition.
+        let src = "%a=1\nallow uid=0 : all\n%b=2,3\n# c\n%a=9\n";
+        let p = std::path::Path::new("t.rules");
+        let entries = parser::parse_rules_file(src, p)
+            .unwrap_or_else(|diags| panic!("fixture must parse: {diags:?}"));
+        assert_eq!(
+            collect_macro_names(&entries),
+            vec!["a".to_string(), "b".to_string(), "a".to_string()],
+        );
     }
 
     // --- column backfill tests (A5: derive column from span) ---
