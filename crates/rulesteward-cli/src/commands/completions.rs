@@ -106,7 +106,7 @@ impl Generator for Tcsh {
 /// auto-generated `help` command, which clap reports via `get_subcommands`).
 fn subcommand_names(cmd: &clap::Command) -> Vec<String> {
     cmd.get_subcommands()
-        .filter(|sc| !sc.is_hide_set())
+        .filter(|sc| !sc.is_hide_set() && sc.get_name() != "help")
         .map(|sc| sc.get_name().to_owned())
         .collect()
 }
@@ -123,7 +123,10 @@ fn long_flags(cmd: &clap::Command) -> Vec<String> {
 /// `n/<name>/(children + flags)/` rule when there is anything to complete
 /// after that word. Recurses into subcommands so nested levels are covered.
 fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
-    for sub in cmd.get_subcommands().filter(|sc| !sc.is_hide_set()) {
+    for sub in cmd
+        .get_subcommands()
+        .filter(|sc| !sc.is_hide_set() && sc.get_name() != "help")
+    {
         let mut list = subcommand_names(sub);
         list.extend(long_flags(sub));
         if !list.is_empty() {
