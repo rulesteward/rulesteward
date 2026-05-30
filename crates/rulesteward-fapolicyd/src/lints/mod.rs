@@ -11,8 +11,11 @@
 //! * `layout` - filesystem-driven fapd-F02 check.
 //! * `cross_file` - cross-`rules.d/` passes (fapd-W04 ordering, fapd-C01 filename convention).
 //! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
+//! * `trust_path` - trust-DB-aware per-file pass (fapd-W06, stub until Task 4).
+//! * `cross_db` - trust-DB cross-pass (fapd-X01, stub until Task 5).
 
 mod cross_file;
+pub(crate) mod cross_db;
 mod deprecation;
 mod dir_slash;
 mod layout;
@@ -20,6 +23,7 @@ mod macros;
 mod reachability;
 mod source_scan;
 mod subsume;
+mod trust_path;
 mod validation;
 mod walker;
 
@@ -31,6 +35,15 @@ use rulesteward_core::{Diagnostic, fill_columns};
 
 use crate::ast::Entry;
 use crate::parser;
+use crate::trustdb::TrustDb;
+
+/// Optional external resources for the trust-DB-aware lint passes. `Default` is
+/// "no resources", which reproduces the plain `lint()` behavior exactly. (A
+/// `system_ids` field is intentionally absent: fapd-W05 is deferred this session.)
+#[derive(Default)]
+pub struct LintContext<'a> {
+    pub trustdb: Option<&'a TrustDb>,
+}
 
 /// Run every per-file lint pass and return the merged diagnostic list.
 ///
@@ -63,6 +76,40 @@ pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagno
     diags
 }
 
+/// `lint()` plus the context-gated passes. `lint()` itself is UNCHANGED, so the
+/// existing passes and the snapshot driver keep compiling verbatim. With a
+/// default (empty) context this returns exactly `lint(..)`.
+#[must_use]
+pub fn lint_with_context(
+    entries: &[Entry],
+    source: &str,
+    file: &Path,
+    ctx: &LintContext,
+) -> Vec<Diagnostic> {
+    let mut diags = lint(entries, source, file);
+    if let Some(db) = ctx.trustdb {
+        diags.extend(trust_path::w06(entries, file, db));
+    }
+    diags
+}
+
+/// Read + parse + lint a file with a `LintContext`. Mirrors `lint_file`; the
+/// no-context `lint_file` now delegates here with a default context.
+#[must_use = "lint results contain parse and lint diagnostics that should be checked"]
+pub fn lint_file_with_context(
+    path: &Path,
+    ctx: &LintContext,
+) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
+    let source = std::fs::read_to_string(path)?;
+    let (entries, parse_diags) = match parser::parse_rules_file(&source, path) {
+        Ok(entries) => (entries, Vec::new()),
+        Err(diags) => (Vec::new(), diags),
+    };
+    let mut diags = parse_diags;
+    diags.extend(lint_with_context(&entries, &source, path, ctx));
+    Ok((entries, diags))
+}
+
 /// Read a rules file, parse it, and run every per-file lint pass against it.
 ///
 /// Returns `(entries, diagnostics)` on read success. `entries` is empty when
@@ -71,16 +118,7 @@ pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagno
 /// can map it to exit code 3 (tool failure).
 #[must_use = "lint results contain parse and lint diagnostics that should be checked"]
 pub fn lint_file(path: &Path) -> Result<(Vec<Entry>, Vec<Diagnostic>), std::io::Error> {
-    let source = std::fs::read_to_string(path)?;
-    let (entries, parse_diags) = match parser::parse_rules_file(&source, path) {
-        Ok(entries) => (entries, Vec::new()),
-        Err(diags) => (Vec::new(), diags),
-    };
-    // The parser now anchors fapd-F01 diagnostics to `path` (file + source_id)
-    // at their origin, so no post-pass rewrite is needed here.
-    let mut diags = parse_diags;
-    diags.extend(lint(&entries, &source, path));
-    Ok((entries, diags))
+    lint_file_with_context(path, &LintContext::default())
 }
 
 #[cfg(test)]
@@ -323,5 +361,43 @@ mod tests {
                 d.code, d.line, d.span.start, d.span.end, d.column, expected_col
             );
         }
+    }
+
+    // --- Task 3: lint_with_context / LintContext contract ---
+
+    #[test]
+    fn empty_context_matches_plain_lint() {
+        // Pins the KEY invariant: lint_with_context with a default (empty)
+        // context must produce BYTE-IDENTICAL output to the existing lint().
+        //
+        // Non-vacuity: the source references an undefined macro (%undefinedmacro)
+        // so lint() returns a NON-EMPTY Vec (at minimum fapd-E03). The comparison
+        // is therefore meaningful: both paths must agree on real diagnostics, not
+        // just both-empty.
+        //
+        // This test will NOT compile until the impl lands LintContext +
+        // lint_with_context (Task 3). That compile failure is the expected RED.
+        // The symbols are re-exported from the crate root (lib.rs pub use), so we
+        // import them from `super::` (same module) where they will be added.
+        let src = "allow uid=0 : exe=%undefinedmacro\n";
+        let path = std::path::Path::new("rules.d/10-x.rules");
+        let entries = parser::parse_rules_file(src, path).unwrap_or_default();
+
+        // Confirm non-vacuity: plain lint must return at least one diagnostic.
+        let plain = lint(&entries, src, path);
+        assert!(
+            !plain.is_empty(),
+            "fixture must fire at least one lint (expected fapd-E03 for %undefinedmacro), \
+             got empty vec - the non-vacuity guarantee is broken"
+        );
+
+        // THE INVARIANT: lint_with_context with a default context == plain lint.
+        // lint_with_context and LintContext do not exist yet; this line causes
+        // the compile error that marks this test RED.
+        assert_eq!(
+            lint_with_context(&entries, src, path, &LintContext::default()),
+            plain,
+            "lint_with_context with a default (empty) context must equal plain lint()"
+        );
     }
 }
