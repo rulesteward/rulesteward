@@ -80,24 +80,6 @@ fn lint_sarif_format_exits_three_with_not_implemented_error() {
 }
 
 #[test]
-fn against_trustdb_stub_exits_nine() {
-    let f = write_tmp("allow uid=0 : all\n");
-    Command::cargo_bin("rulesteward")
-        .expect("binary")
-        .args([
-            "fapolicyd",
-            "lint",
-            "--against-trustdb",
-            "/var/lib/fapolicyd/data.mdb",
-            "--file",
-        ])
-        .arg(f.path())
-        .assert()
-        .code(9)
-        .stderr(predicate::str::contains("not yet implemented"));
-}
-
-#[test]
 fn selinux_triage_stub_exits_nine() {
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -467,4 +449,182 @@ fn lint_single_file_mode_skips_cross_file_c01() {
         .assert()
         .code(0)
         .stdout(predicate::str::contains("[fapd-C01]").not());
+}
+
+// --- trustdb e2e tests (Tasks 6+7: --against-trustdb and --report-orphans) ---
+//
+// These tests are intentionally RED until the production wiring lands.
+// RED mode: the current stub in run_lint() returns EXIT_NO_OP (9) for any
+// --against-trustdb invocation; these tests assert the CORRECT exit codes
+// and output that the real impl must produce.
+
+/// Build a real LMDB trust.db fixture in `dir` containing `keys` as path entries.
+///
+/// # Safety (scoped allow)
+/// Opens a fresh tempdir LMDB env RW to build an e2e fixture; no other process
+/// touches it. heed's open is unsafe (mmap aliasing contract). This fixture
+/// helper is the ONLY unsafe in the cli crate's test code; it mirrors the
+/// `write_fixture` helper in rulesteward-fapolicyd which is `#[cfg(test)]`
+/// and `pub(crate)` (not accessible from here).
+#[allow(unsafe_code)]
+fn write_trustdb_fixture(dir: &std::path::Path, keys: &[&str]) {
+    // SAFETY: opens a freshly-created tempdir LMDB env RW to build an e2e
+    // fixture; no other process touches it. heed's open is unsafe (mmap).
+    let env = unsafe {
+        heed::EnvOpenOptions::new()
+            .max_dbs(1)
+            .open(dir)
+            .expect("write_trustdb_fixture: open LMDB env")
+    };
+    let mut wtxn = env.write_txn().expect("write_trustdb_fixture: write_txn");
+    let db: heed::Database<heed::types::Bytes, heed::types::Bytes> = env
+        .create_database(&mut wtxn, Some("trust.db"))
+        .expect("write_trustdb_fixture: create_database");
+    for k in keys {
+        db.put(&mut wtxn, k.as_bytes(), b"1 100 deadbeef")
+            .expect("write_trustdb_fixture: put");
+    }
+    wtxn.commit().expect("write_trustdb_fixture: commit");
+    // env is dropped here - LMDB file is flushed and closed.
+}
+
+/// Helper: create a minimal rules.d/ directory with a single rules file.
+fn write_rules_d(parent: &std::path::Path, filename: &str, content: &str) -> std::path::PathBuf {
+    let rules_d = parent.join("rules.d");
+    std::fs::create_dir_all(&rules_d).expect("create rules.d");
+    std::fs::write(rules_d.join(filename), content).expect("write rules file");
+    rules_d
+}
+
+/// Passing a nonexistent directory as --against-trustdb must fail with exit 3
+/// (`EXIT_TOOL_FAILURE`). The stub currently exits 9; this test is RED.
+#[test]
+fn against_trustdb_missing_db_exits_tool_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "lint",
+            "--against-trustdb",
+            "/nonexistent/trustdb/dir/zzz9999",
+        ])
+        .arg(&rules_d)
+        .assert()
+        // EXIT_TOOL_FAILURE = 3. The stub exits 9 -> RED.
+        .code(3);
+}
+
+/// W06 fires when a rule's path= value is NOT a key in the trust DB.
+/// The fixture DB does not contain /nonexistent/rs-trap/x, so fapd-W06 must
+/// appear in stdout, and exit must be 1 (Warning). The stub exits 9 -> RED.
+#[test]
+fn against_trustdb_w06_fires_for_unlisted_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_dir = dir.path().join("trustdb");
+    std::fs::create_dir_all(&db_dir).expect("create db_dir");
+    // DB contains /usr/bin/ls but NOT /nonexistent/rs-trap/x.
+    write_trustdb_fixture(&db_dir, &["/usr/bin/ls"]);
+
+    let rules_d = write_rules_d(
+        dir.path(),
+        "10-trap.rules",
+        "allow perm=open all : path=/nonexistent/rs-trap/x\n",
+    );
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&db_dir)
+        .arg(&rules_d)
+        .assert()
+        // EXIT_WARNINGS = 1, fapd-W06 present. Stub exits 9 -> RED.
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W06]"));
+}
+
+/// W06 is CLEAN when the rule's path= value IS a key in the trust DB.
+/// A rule pointing at /usr/bin/ls, a DB containing /usr/bin/ls -> no fapd-W06.
+/// Exit must be 0 and stdout must NOT contain [fapd-W06]. Stub exits 9 -> RED.
+#[test]
+fn against_trustdb_w06_clean_for_listed_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_dir = dir.path().join("trustdb");
+    std::fs::create_dir_all(&db_dir).expect("create db_dir");
+    // DB contains exactly the path the rule references.
+    write_trustdb_fixture(&db_dir, &["/usr/bin/ls"]);
+
+    let rules_d = write_rules_d(
+        dir.path(),
+        "10-ok.rules",
+        // path=/usr/bin/ls is a DB key -> W06 must NOT fire.
+        "allow perm=open all : path=/usr/bin/ls\n",
+    );
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&db_dir)
+        .arg(&rules_d)
+        .assert()
+        // Exit 0 (no warnings) and absolutely no fapd-W06. Stub exits 9 -> RED.
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-W06]").not());
+}
+
+/// X01 fires (as Extra / advisory) when --report-orphans is passed and the DB
+/// contains keys that no rule references. Exit must be 0 (Extra does NOT raise
+/// the exit code). Stub exits 9 and the --report-orphans flag does not exist
+/// yet -> RED at compile time for the flag + runtime wrong exit.
+#[test]
+fn report_orphans_x01_fires_and_exit_is_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_dir = dir.path().join("trustdb");
+    std::fs::create_dir_all(&db_dir).expect("create db_dir");
+    // DB keys are unreferenced by any rule in the rules.d below.
+    write_trustdb_fixture(
+        &db_dir,
+        &["/usr/bin/unreferenced-a", "/usr/bin/unreferenced-b"],
+    );
+
+    // The rule uses `all` as the object (no path= attr) so neither DB key is referenced.
+    let rules_d = write_rules_d(dir.path(), "10-norefs.rules", "allow uid=0 : all\n");
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&db_dir)
+        // --report-orphans does not exist yet (field not added) -> compile/parse error -> RED.
+        .arg("--report-orphans")
+        .arg(&rules_d)
+        .assert()
+        // EXIT_CLEAN = 0 (Extra severity never raises exit code).
+        // Stub exits 9. Also --report-orphans is an unknown flag -> RED.
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-X01]"));
+}
+
+/// --report-orphans WITHOUT --against-trustdb must not crash and must not
+/// exit with an error code that differs from a plain lint result. The CLI
+/// should warn on stderr that the flag has no effect, then behave as a plain
+/// lint. A clean rules.d -> exit 0.
+///
+/// This test is RED because --report-orphans does not exist yet (unknown flag
+/// -> clap exits 3, not 0). After the flag is added and the warning is wired,
+/// the exit will be 0 for a clean input.
+#[test]
+fn report_orphans_without_against_trustdb_warns_and_does_not_crash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        // --report-orphans present but no --against-trustdb.
+        .args(["fapolicyd", "lint", "--report-orphans"])
+        .arg(&rules_d)
+        .assert()
+        // Plain lint of a clean file -> exit 0.
+        // Currently RED: --report-orphans is unknown -> clap exits 3.
+        .code(0);
 }

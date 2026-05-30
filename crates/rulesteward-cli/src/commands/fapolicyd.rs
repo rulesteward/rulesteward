@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
-use rulesteward_fapolicyd::{Entry, check_layout, lint_cross_file, lint_file};
+use rulesteward_fapolicyd::{
+    Entry, LintContext, check_layout, lint_cross_file, lint_file_with_context, lint_orphans,
+    open_trustdb_readonly,
+};
 
 use crate::cli::{FapolicydCommand, LintArgs};
 use crate::exit_code::{self, EXIT_NO_OP, EXIT_TOOL_FAILURE};
@@ -30,17 +33,26 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
 }
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
-    if args.against_trustdb.is_some() {
-        eprintln!("--against-trustdb is not yet implemented in v0.1.0-dev");
-        return Ok(EXIT_NO_OP);
-    }
+    let trustdb = match &args.against_trustdb {
+        Some(p) => match open_trustdb_readonly(p) {
+            Ok(db) => Some(db),
+            Err(e) => {
+                eprintln!("error: opening trust DB {}: {e}", p.display());
+                return Ok(EXIT_TOOL_FAILURE);
+            }
+        },
+        None => None,
+    };
+    let ctx = LintContext {
+        trustdb: trustdb.as_ref(),
+    };
 
     let (target_files, layout_diag) = resolve_targets(args)?;
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
     // Build source map: source_id (file path string) -> raw file content.
-    // Re-reading each file here is intentional: lint_file already read it
+    // Re-reading each file here is intentional: lint_file_with_context already read it
     // once for parsing; we read again to populate the ariadne source cache.
     // For v0.1 single-file workloads the double-read cost is negligible.
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
@@ -49,7 +61,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     let mut parsed: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
 
     for path in &target_files {
-        match lint_file(path) {
+        match lint_file_with_context(path, &ctx) {
             Ok((entries, diags)) => {
                 all_diags.extend(diags);
                 // Load source text for ariadne snippets. Failures are soft:
@@ -89,6 +101,13 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
             }
         }
         all_diags.extend(cross);
+    }
+
+    if args.report_orphans {
+        match trustdb.as_ref() {
+            Some(db) => all_diags.extend(lint_orphans(&parsed, db)),
+            None => eprintln!("warning: --report-orphans has no effect without --against-trustdb"),
+        }
     }
 
     let rendered = match output::render(args.format, &all_diags, &sources) {
@@ -155,6 +174,7 @@ mod tests {
             file,
             format: OutputFormat::Human,
             against_trustdb: None,
+            report_orphans: false,
         }
     }
 

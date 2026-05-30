@@ -1,0 +1,3 @@
+# X01 suppressed: an allow all:all rule makes every DB key reachable.
+# The presence of allow all:all causes X01 to fully suppress its output.
+allow all : all

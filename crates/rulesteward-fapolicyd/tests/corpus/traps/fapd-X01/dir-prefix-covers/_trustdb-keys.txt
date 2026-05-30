@@ -1,0 +1,3 @@
+/nonexistent/rs-trap/dir-a
+/nonexistent/rs-trap/dir-b
+/nonexistent/rs-trap/dir-c

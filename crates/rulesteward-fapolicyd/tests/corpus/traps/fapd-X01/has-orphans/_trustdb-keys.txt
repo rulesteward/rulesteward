@@ -1,0 +1,3 @@
+/nonexistent/rs-trap/referenced-key
+/nonexistent/rs-trap/orphan-key-a
+/nonexistent/rs-trap/orphan-key-b

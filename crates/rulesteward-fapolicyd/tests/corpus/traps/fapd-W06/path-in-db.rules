@@ -1,0 +1,4 @@
+# W06 clean: path= value is listed in _trustdb-keys.txt (present in the fixture DB).
+# The path /nonexistent/rs-trap/trusted-path is absent on disk but IS in the trust DB,
+# so W06 must NOT fire (trust DB membership is sufficient).
+allow all : path=/nonexistent/rs-trap/trusted-path

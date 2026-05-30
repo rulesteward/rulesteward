@@ -43,8 +43,10 @@ use proptest::prelude::*;
 
 use rulesteward_core::{Severity, span};
 use rulesteward_fapolicyd::{
+    LintContext, TrustDb,
     ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor},
-    attrs, fagenrules_cmp, lint, lint_cross_file, parse_rules_file,
+    attrs, fagenrules_cmp, lint, lint_cross_file, lint_orphans, lint_with_context,
+    parse_rules_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -1454,13 +1456,320 @@ allow perm=open uid=0 : all
     );
 
     // Spot-check the structure: every Fatal should have a code starting
-    // with "fapd-F". Catches a mutation that downgrades Fatal → Error or
+    // with "fapd-F". Catches a mutation that downgrades Fatal -> Error or
     // emits Fatals without an F-code.
     for d in diags.iter().filter(|d| d.severity == Severity::Fatal) {
         assert!(
             d.code.as_ref().starts_with("fapd-F"),
             "Fatal diagnostic with non-F code: {:?}",
             d.code
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trust-DB proptest helpers
+// ---------------------------------------------------------------------------
+
+/// Build a temporary LMDB trust.db fixture from a key slice and return the
+/// `TrustDb` handle plus the `TempDir` that keeps the directory alive.
+///
+/// # Panics
+///
+/// Panics on any LMDB error (the fixture is under our full control).
+#[allow(unsafe_code)]
+fn build_proptest_trustdb(keys: &[&str]) -> (TrustDb, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("proptest tempdir");
+    // SAFETY: opens a freshly-created tempdir LMDB env RW to build a
+    // proptest fixture; no other process touches it.
+    let env = unsafe {
+        heed::EnvOpenOptions::new()
+            .max_dbs(1)
+            .open(tmp.path())
+            .expect("build_proptest_trustdb: open env failed")
+    };
+    let mut wtxn = env.write_txn().expect("build_proptest_trustdb: write_txn");
+    let db: heed::Database<heed::types::Bytes, heed::types::Bytes> = env
+        .create_database(&mut wtxn, Some("trust.db"))
+        .expect("build_proptest_trustdb: create_database");
+    for key in keys {
+        let value = b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
+        db.put(&mut wtxn, key.as_bytes(), value)
+            .expect("build_proptest_trustdb: put");
+    }
+    wtxn.commit().expect("build_proptest_trustdb: commit");
+    drop(env);
+    let trust_db = rulesteward_fapolicyd::open_trustdb_readonly(tmp.path()).expect("open ro");
+    (trust_db, tmp)
+}
+
+// ---------------------------------------------------------------------------
+// fapd-W06 + fapd-X01 proptest properties
+// Keep case counts modest: each case builds an LMDB fixture (heed I/O is not free).
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        .. ProptestConfig::default()
+    })]
+
+    /// W06 both-absent predicate: for any (path, db-key-set, disk-present-set)
+    /// triple, W06 fires iff the path is NOT in the db-key-set AND NOT in the
+    /// disk-present-set. We model the disk side with real tempfiles so
+    /// Path::exists() is exercised, but keep the path count small to avoid
+    /// test-suite I/O overhead.
+    ///
+    /// Generator: N (1..=4) unique guaranteed-absent base paths under
+    /// /nonexistent/rs-trap/prop/<idx>; each is independently in-db (bool) or
+    /// on-disk (bool). We build the DB from the in-db subset, create real temp
+    /// files for the on-disk subset, then run lint_with_context on a file that
+    /// references all N paths via path= attrs. W06 must fire exactly once per
+    /// path that is NEITHER in-db NOR on-disk.
+    ///
+    /// Kills mutations that:
+    /// - Drop the !db.contains_path check -> fires when path is in DB (over-fires).
+    /// - Drop the !Path::exists() check -> fires when path exists on disk (over-fires).
+    /// - Invert the conjunction -> fires when EITHER is true (over-fires).
+    #[test]
+    fn w06_fires_iff_absent_from_db_and_disk(
+        cases in prop::collection::vec(
+            (any::<bool>(), any::<bool>()),
+            1usize..=4usize,
+        )
+    ) {
+        let tmp_disk = tempfile::tempdir().expect("tempdir for disk files");
+
+        // Build per-case paths: index-addressed under /nonexistent/rs-trap/prop/<i>
+        // for "truly absent" and under tmp_disk for "disk-present".
+        let mut db_keys: Vec<String> = Vec::new();
+        let mut disk_paths: Vec<PathBuf> = Vec::new();
+        let mut all_paths: Vec<String> = Vec::new();
+        let mut expected_fires: usize = 0;
+
+        for (idx, (in_db, on_disk)) in cases.iter().enumerate() {
+            let absent_path = format!("/nonexistent/rs-trap/prop/{idx}");
+            if *in_db {
+                db_keys.push(absent_path.clone());
+                all_paths.push(absent_path);
+                // in_db -> no fire
+            } else if *on_disk {
+                // Create a real tempfile so Path::exists() returns true.
+                let disk_path = tmp_disk.path().join(format!("present_{idx}"));
+                std::fs::write(&disk_path, b"").expect("create disk file");
+                let disk_str = disk_path.to_str().expect("utf8").to_owned();
+                disk_paths.push(disk_path);
+                all_paths.push(disk_str);
+                // on_disk but not in_db -> no fire (on-disk presence is sufficient)
+            } else {
+                // Neither in DB nor on disk -> fire.
+                all_paths.push(absent_path);
+                expected_fires += 1;
+            }
+        }
+
+        let db_key_refs: Vec<&str> = db_keys.iter().map(String::as_str).collect();
+        let (db, _tmp_db) = build_proptest_trustdb(&db_key_refs);
+
+        // Build a rules source: one rule per path using path= attr.
+        let mut source = String::new();
+        for p in &all_paths {
+            let _ = writeln!(source, "allow all : path={p}");
+        }
+        let rule_file = PathBuf::from("/tmp/prop_w06.rules");
+        let entries = parse_rules_file(&source, &rule_file)
+            .map_err(|d| TestCaseError::fail(format!("W06 proptest source must parse: {d:?}")))?;
+
+        let ctx = LintContext { trustdb: Some(&db) };
+        let diags = lint_with_context(&entries, &source, &rule_file, &ctx);
+        let w06_count = diags.iter().filter(|d| d.code.as_ref() == "fapd-W06").count();
+
+        prop_assert_eq!(
+            w06_count,
+            expected_fires,
+            "W06 must fire exactly once per path absent from BOTH DB and disk; \
+             source={:?} db_keys={:?} expected={} got={}",
+            source, db_keys, expected_fires, w06_count
+        );
+
+        // Disk paths are kept alive via disk_paths vec until here.
+        drop(disk_paths);
+    }
+
+    /// X01 exact-reference invariant: any key that is exactly referenced by a
+    /// path=/exe= rule is NEVER an orphan (regardless of what other keys exist).
+    ///
+    /// Generator: N (1..=4) keys; a random subset (1..=N) is referenced by
+    /// exact path= rules. Only the unreferenced keys should appear as orphans.
+    /// Asserts the count matches exactly.
+    ///
+    /// Kills mutations that:
+    /// - Treat path= as prefix-match -> over-covers -> fewer orphans reported.
+    /// - Ignore exact matches entirely -> all keys are orphans (under-reports).
+    #[test]
+    fn x01_exact_reference_never_orphan(
+        keys_and_refs in prop::collection::vec(
+            (any::<bool>(), 0u32..=999_999u32),
+            1usize..=4usize,
+        )
+    ) {
+        let base_keys: Vec<String> = keys_and_refs
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("/nonexistent/rs-trap/xprop/{i}"))
+            .collect();
+        let db_key_refs: Vec<&str> = base_keys.iter().map(String::as_str).collect();
+        let (db, _tmp_db) = build_proptest_trustdb(&db_key_refs);
+
+        // For each key, the bool says whether it's referenced by an exact path= rule.
+        let referenced_count = keys_and_refs.iter().filter(|(referenced, _)| *referenced).count();
+        let unreferenced_count = base_keys.len() - referenced_count;
+
+        let mut source = String::new();
+        for (i, (referenced, uid)) in keys_and_refs.iter().enumerate() {
+            if *referenced {
+                let _ = writeln!(source, "allow uid={uid} : path=/nonexistent/rs-trap/xprop/{i}");
+            }
+        }
+        // If no references at all, add a dummy allow with a non-matching path
+        // so the file parses (at least one rule).
+        if referenced_count == 0 {
+            let _ = writeln!(source, "allow uid=0 : path=/nonexistent/rs-trap/xprop/dummy");
+        }
+
+        let rule_file = PathBuf::from("rules.d/10-x.rules");
+        let entries = parse_rules_file(&source, &rule_file)
+            .map_err(|d| TestCaseError::fail(format!("X01 exact-ref proptest must parse: {d:?}")))?;
+
+        let files = vec![(rule_file, entries)];
+        let diags = lint_orphans(&files, &db);
+
+        if unreferenced_count == 0 {
+            prop_assert!(
+                diags.is_empty(),
+                "all keys referenced -> zero orphans; got {} diags; source={:?}",
+                diags.len(), source
+            );
+        } else {
+            prop_assert_eq!(
+                diags.len(),
+                1,
+                "unreferenced keys exist -> exactly 1 X01 summary; got {} diags; source={:?}",
+                diags.len(), source
+            );
+            // The summary message must mention the orphan count.
+            let msg = &diags[0].message;
+            let count_token = if unreferenced_count == 1 {
+                "1 entry".to_string()
+            } else {
+                format!("{unreferenced_count} entries")
+            };
+            prop_assert!(
+                msg.contains(&count_token),
+                "X01 message must mention orphan count \"{count_token}\"; got: {msg:?}"
+            );
+        }
+    }
+
+    /// X01 dir-prefix invariant: any key that starts with a referenced dir=
+    /// prefix is NEVER an orphan.
+    ///
+    /// Generator: a prefix string (under /nonexistent/rs-trap/xdir/), N (1..=4)
+    /// keys under that prefix, and M (1..=4) keys with a different prefix that
+    /// are unreferenced. The dir= rule covers the N under-prefix keys;
+    /// the M outside-prefix keys are orphans.
+    ///
+    /// Kills mutations that:
+    /// - Treat dir= as exact-match -> all prefixed keys become orphans.
+    /// - Use contains() instead of starts_with() -> prefix check is wrong.
+    #[test]
+    fn x01_dir_prefix_covers_keys(
+        n in 1usize..=4usize,
+        m in 0usize..=4usize,
+    ) {
+        let prefix = "/nonexistent/rs-trap/xdir/covered/";
+        let other = "/nonexistent/rs-trap/xdir/other/";
+
+        let mut all_keys: Vec<String> = Vec::new();
+        for i in 0..n {
+            all_keys.push(format!("{prefix}key{i}"));
+        }
+        for j in 0..m {
+            all_keys.push(format!("{other}key{j}"));
+        }
+
+        let db_key_refs: Vec<&str> = all_keys.iter().map(String::as_str).collect();
+        let (db, _tmp_db) = build_proptest_trustdb(&db_key_refs);
+
+        // One rule: dir= references the covered prefix (with trailing slash).
+        let source = format!("allow all : dir={prefix}\n");
+        let rule_file = PathBuf::from("rules.d/10-dir.rules");
+        let entries = parse_rules_file(&source, &rule_file)
+            .map_err(|d| TestCaseError::fail(format!("X01 dir-prefix proptest must parse: {d:?}")))?;
+
+        let files = vec![(rule_file, entries)];
+        let diags = lint_orphans(&files, &db);
+
+        // The "other" keys are orphans. n covered keys are NOT orphans.
+        if m == 0 {
+            prop_assert!(
+                diags.is_empty(),
+                "dir= covers all keys -> zero orphans; got {} diags",
+                diags.len()
+            );
+        } else {
+            prop_assert_eq!(
+                diags.len(),
+                1,
+                "m={} other keys are orphans -> exactly 1 X01 summary; got {} diags; source={:?}",
+                m, diags.len(), source
+            );
+            let msg = &diags[0].message;
+            let count_token = if m == 1 {
+                "1 entry".to_string()
+            } else {
+                format!("{m} entries")
+            };
+            prop_assert!(
+                msg.contains(&count_token),
+                "X01 message must mention orphan count \"{count_token}\"; got: {msg:?}"
+            );
+        }
+    }
+
+    /// X01 all-all suppression invariant: when any allow all:all rule is present,
+    /// lint_orphans returns zero diagnostics regardless of how many DB keys are
+    /// orphaned.
+    ///
+    /// Generator: N (1..=6) DB keys, none referenced explicitly, plus the
+    /// all:all allow rule. The presence of allow all:all must fully suppress X01.
+    ///
+    /// Kills the mutation `is_allow -> true unconditionally` combined with
+    /// `is_all -> false` (the two must both hold). More directly kills
+    /// mutations that skip the suppression check.
+    #[test]
+    fn x01_allow_all_all_suppresses(
+        n in 1usize..=6usize,
+    ) {
+        let keys: Vec<String> = (0..n)
+            .map(|i| format!("/nonexistent/rs-trap/xall/{i}"))
+            .collect();
+        let db_key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let (db, _tmp_db) = build_proptest_trustdb(&db_key_refs);
+
+        let source = "allow all : all\n";
+        let rule_file = PathBuf::from("rules.d/10-allow-all.rules");
+        let entries = parse_rules_file(source, &rule_file)
+            .map_err(|d| TestCaseError::fail(format!("all:all source must parse: {d:?}")))?;
+
+        let files = vec![(rule_file, entries)];
+        let diags = lint_orphans(&files, &db);
+
+        prop_assert!(
+            diags.is_empty(),
+            "allow all:all must fully suppress X01 regardless of orphan count; \
+             n={n} keys={:?} got {} diags: {diags:?}",
+            keys, diags.len()
         );
     }
 }
