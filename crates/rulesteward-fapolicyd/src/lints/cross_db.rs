@@ -29,13 +29,10 @@ fn is_allow_all(r: &Rule) -> bool {
 #[must_use]
 pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagnostic> {
     let rules = || {
-        files
-            .iter()
-            .flat_map(|(_, es)| es)
-            .filter_map(|e| match e {
-                Entry::Rule(r) => Some(r),
-                _ => None,
-            })
+        files.iter().flat_map(|(_, es)| es).filter_map(|e| match e {
+            Entry::Rule(r) => Some(r),
+            _ => None,
+        })
     };
     // Suppress: an all:all allow reaches everything.
     if rules().any(is_allow_all) {
@@ -67,9 +64,7 @@ pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagno
     };
     let mut orphans: Vec<&String> = keys
         .iter()
-        .filter(|k| {
-            !exact.contains(k.as_str()) && !prefixes.iter().any(|pre| k.starts_with(pre))
-        })
+        .filter(|k| !exact.contains(k.as_str()) && !prefixes.iter().any(|pre| k.starts_with(pre)))
         .collect();
     if orphans.is_empty() {
         return Vec::new();
@@ -77,7 +72,11 @@ pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagno
 
     orphans.sort();
     let n = orphans.len();
-    let sample: Vec<&str> = orphans.iter().take(SAMPLE_CAP).map(|s| s.as_str()).collect();
+    let sample: Vec<&str> = orphans
+        .iter()
+        .take(SAMPLE_CAP)
+        .map(|s| s.as_str())
+        .collect();
     let plural = if n == 1 { "entry" } else { "entries" };
     vec![Diagnostic::new(
         Severity::Extra,
@@ -102,18 +101,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::lint_orphans;
-    use crate::ast::{Attr, AttrValue, Decision, Rule, SyntaxFlavor};
     use crate::ast::Entry;
+    use crate::ast::{Attr, AttrValue, Decision, Rule, SyntaxFlavor};
     use crate::trustdb::{open_trustdb_readonly, write_fixture};
 
     // -- local AST helpers (codebase convention: per-module, NOT promoted) --------
 
-    fn rule(
-        line: usize,
-        decision: Decision,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
+    fn rule(line: usize, decision: Decision, subj: Vec<Attr>, obj: Vec<Attr>) -> Entry {
         Entry::Rule(Rule {
             decision,
             perm: None,
@@ -239,12 +233,7 @@ mod tests {
         // allow all : all -- every DB key is reachable.
         let files = vec![(
             PathBuf::from("rules.d/10-allow.rules"),
-            vec![rule(
-                1,
-                Decision::Allow,
-                vec![Attr::All],
-                vec![Attr::All],
-            )],
+            vec![rule(1, Decision::Allow, vec![Attr::All], vec![Attr::All])],
         )];
 
         let diags = lint_orphans(&files, &db);
@@ -386,12 +375,7 @@ mod tests {
         // deny all : all -- does NOT make every DB entry reachable.
         let files = vec![(
             PathBuf::from("rules.d/90-deny.rules"),
-            vec![rule(
-                1,
-                Decision::Deny,
-                vec![Attr::All],
-                vec![Attr::All],
-            )],
+            vec![rule(1, Decision::Deny, vec![Attr::All], vec![Attr::All])],
         )];
 
         let d = lint_orphans(&files, &db);

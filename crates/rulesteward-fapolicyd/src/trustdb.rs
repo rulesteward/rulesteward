@@ -45,7 +45,11 @@ pub fn open_trustdb_readonly(path: &Path) -> Result<TrustDb, TrustDbError> {
     // handle, so that metadata is synchronized with the global env handle. Without this,
     // subsequent read transactions raise EINVAL (code 22). See heed's RoTxn::commit docs.
     rtxn.commit()?;
-    Ok(TrustDb { env, db, path: path.to_path_buf() })
+    Ok(TrustDb {
+        env,
+        db,
+        path: path.to_path_buf(),
+    })
 }
 
 impl TrustDb {
@@ -178,7 +182,10 @@ mod tests {
         // tmp is freshly empty - no data.mdb / lock.mdb present.
         let result = open_trustdb_readonly(tmp.path());
         assert!(
-            matches!(result, Err(TrustDbError::Open(_) | TrustDbError::Missing(_))),
+            matches!(
+                result,
+                Err(TrustDbError::Open(_) | TrustDbError::Missing(_))
+            ),
             "expected Err(Open|Missing), got: {result:?}"
         );
     }

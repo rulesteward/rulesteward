@@ -1493,15 +1493,13 @@ fn build_proptest_trustdb(keys: &[&str]) -> (TrustDb, tempfile::TempDir) {
         .create_database(&mut wtxn, Some("trust.db"))
         .expect("build_proptest_trustdb: create_database");
     for key in keys {
-        let value =
-            b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
+        let value = b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
         db.put(&mut wtxn, key.as_bytes(), value)
             .expect("build_proptest_trustdb: put");
     }
     wtxn.commit().expect("build_proptest_trustdb: commit");
     drop(env);
-    let trust_db =
-        rulesteward_fapolicyd::open_trustdb_readonly(tmp.path()).expect("open ro");
+    let trust_db = rulesteward_fapolicyd::open_trustdb_readonly(tmp.path()).expect("open ro");
     (trust_db, tmp)
 }
 

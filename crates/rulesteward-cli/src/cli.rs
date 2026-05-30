@@ -133,7 +133,10 @@ mod tests {
             cli.is_ok(),
             "--against-trustdb must parse successfully, got: {cli:?}"
         );
-        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+        }) = cli
+        {
             assert_eq!(
                 args.against_trustdb.as_deref(),
                 Some(std::path::Path::new("/var/lib/fapolicyd")),
@@ -167,7 +170,10 @@ mod tests {
         // GREEN (compile-coupled): verify the field value after parse succeeds.
         // NOTE: this arm does NOT compile until `report_orphans` is added to LintArgs.
         // The compile error is an acceptable RED signal.
-        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+        }) = cli
+        {
             assert!(
                 args.report_orphans,
                 "--report-orphans flag must set report_orphans = true"
@@ -184,7 +190,10 @@ mod tests {
         let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "lint", "somedir"]);
         assert!(cli.is_ok(), "plain lint parse must succeed: {cli:?}");
         // Compile-coupled: will not compile until `report_orphans` is in LintArgs.
-        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+        }) = cli
+        {
             assert!(
                 !args.report_orphans,
                 "report_orphans must default to false when flag is absent"

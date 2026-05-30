@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, TrustDb, check_layout, fagenrules_cmp, lint, lint_cross_file,
-    lint_orphans, lint_with_context, parse_rules_file,
+    Entry, LintContext, TrustDb, check_layout, fagenrules_cmp, lint, lint_cross_file, lint_orphans,
+    lint_with_context, parse_rules_file,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -635,8 +635,7 @@ fn build_fixture_trustdb(dir: &Path) -> (TrustDb, tempfile::TempDir) {
         .expect("build_fixture_trustdb: create_database failed");
     for key in &keys {
         // Value mimics fapolicyd: "<src_int> <size> <sha256_hex>"
-        let value =
-            b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
+        let value = b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
         db.put(&mut wtxn, key.as_bytes(), value)
             .expect("build_fixture_trustdb: put failed");
     }
@@ -674,9 +673,7 @@ fn drive_file_with_trustdb_w06(path: &Path) {
 
     let rendered = match parse_rules_file(&src, &rel_path) {
         Ok(entries) => {
-            let ctx = LintContext {
-                trustdb: Some(&db),
-            };
+            let ctx = LintContext { trustdb: Some(&db) };
             let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
             render("parse=ok", &diags)
         }

@@ -271,7 +271,10 @@ mod tests {
         std::fs::write(&real_path, b"").expect("create real temp file");
         assert!(real_path.exists(), "sanity: temp file must exist on disk");
 
-        let path_str = real_path.to_str().expect("temp path is valid UTF-8").to_string();
+        let path_str = real_path
+            .to_str()
+            .expect("temp path is valid UTF-8")
+            .to_string();
         let entries = vec![rule(
             1,
             Decision::Allow,

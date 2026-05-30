@@ -583,7 +583,10 @@ fn report_orphans_x01_fires_and_exit_is_zero() {
     let db_dir = dir.path().join("trustdb");
     std::fs::create_dir_all(&db_dir).expect("create db_dir");
     // DB keys are unreferenced by any rule in the rules.d below.
-    write_trustdb_fixture(&db_dir, &["/usr/bin/unreferenced-a", "/usr/bin/unreferenced-b"]);
+    write_trustdb_fixture(
+        &db_dir,
+        &["/usr/bin/unreferenced-a", "/usr/bin/unreferenced-b"],
+    );
 
     // The rule uses `all` as the object (no path= attr) so neither DB key is referenced.
     let rules_d = write_rules_d(dir.path(), "10-norefs.rules", "allow uid=0 : all\n");

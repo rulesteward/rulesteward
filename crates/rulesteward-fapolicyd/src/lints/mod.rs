@@ -14,8 +14,8 @@
 //! * `trust_path` - trust-DB-aware per-file pass (fapd-W06, stub until Task 4).
 //! * `cross_db` - trust-DB cross-pass (fapd-X01, stub until Task 5).
 
-mod cross_file;
 pub(crate) mod cross_db;
+mod cross_file;
 mod deprecation;
 mod dir_slash;
 mod layout;

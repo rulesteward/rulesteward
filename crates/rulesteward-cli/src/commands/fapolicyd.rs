@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
-use rulesteward_fapolicyd::{Entry, LintContext, check_layout, lint_cross_file, lint_file_with_context, lint_orphans, open_trustdb_readonly};
+use rulesteward_fapolicyd::{
+    Entry, LintContext, check_layout, lint_cross_file, lint_file_with_context, lint_orphans,
+    open_trustdb_readonly,
+};
 
 use crate::cli::{FapolicydCommand, LintArgs};
 use crate::exit_code::{self, EXIT_NO_OP, EXIT_TOOL_FAILURE};
@@ -40,7 +43,9 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
         },
         None => None,
     };
-    let ctx = LintContext { trustdb: trustdb.as_ref() };
+    let ctx = LintContext {
+        trustdb: trustdb.as_ref(),
+    };
 
     let (target_files, layout_diag) = resolve_targets(args)?;
 
