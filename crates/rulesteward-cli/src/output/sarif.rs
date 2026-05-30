@@ -104,7 +104,14 @@ pub fn render(diags: &[Diagnostic]) -> Result<String, RenderError> {
         .runs(vec![run])
         .build();
 
-    serde_json::to_string_pretty(&log).map_err(|e| RenderError::Serialization(e.to_string()))
+    // Append a trailing newline so machine-readable SARIF is shell-pipeline-safe
+    // and consistent with the JSON renderer (output/json.rs).
+    serde_json::to_string_pretty(&log)
+        .map(|mut s| {
+            s.push('\n');
+            s
+        })
+        .map_err(|e| RenderError::Serialization(e.to_string()))
 }
 
 #[cfg(test)]
@@ -120,6 +127,14 @@ mod tests {
         assert_eq!(severity_to_level(Severity::Style), ResultLevel::Note);
         assert_eq!(severity_to_level(Severity::Convention), ResultLevel::Note);
         assert_eq!(severity_to_level(Severity::Extra), ResultLevel::Note);
+    }
+
+    #[test]
+    fn render_output_ends_with_trailing_newline() {
+        // Machine-readable output must end with a newline for shell-pipeline
+        // safety, matching the JSON renderer (output/json.rs).
+        let out = render(&[]).expect("render empty");
+        assert!(out.ends_with('\n'), "SARIF output must end with a newline");
     }
 
     #[test]
