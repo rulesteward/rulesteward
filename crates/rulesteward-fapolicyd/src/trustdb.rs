@@ -29,7 +29,8 @@ pub fn open_trustdb_readonly(path: &Path) -> Result<TrustDb, TrustDbError> {
     // SAFETY: read-only mmap of an LMDB dir we open with READ_ONLY|NO_LOCK; the
     // CLI is the only in-process accessor and never writes. heed marks open
     // unsafe due to the mmap aliasing contract (file mutated out-of-process).
-    // This is the ONLY unsafe in the workspace (unsafe_code = "deny").
+    // This is the ONLY unsafe in shipped (non-test) code (unsafe_code = "deny";
+    // the cfg(test) write_fixture below carries its own audited allow).
     #[allow(unsafe_code)]
     let env = unsafe {
         EnvOpenOptions::new()

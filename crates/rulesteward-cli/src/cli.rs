@@ -69,7 +69,8 @@ pub struct LintArgs {
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
 
-    /// (stub) Cross-check rules against this trust DB
+    /// Cross-check path=/exe= literals against this fapolicyd trust DB
+    /// (read-only); enables fapd-W06 (path in neither trust DB nor on disk)
     #[arg(long, value_name = "PATH")]
     pub against_trustdb: Option<PathBuf>,
 
