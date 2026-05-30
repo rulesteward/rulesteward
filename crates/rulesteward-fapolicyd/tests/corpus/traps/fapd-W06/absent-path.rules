@@ -1,0 +1,4 @@
+# W06 fires: path= value absent from trust DB and absent on disk.
+# The path /nonexistent/rs-trap/absent is guaranteed to not exist on any host
+# and is not listed in _trustdb-keys.txt, so W06 must fire.
+allow all : path=/nonexistent/rs-trap/absent

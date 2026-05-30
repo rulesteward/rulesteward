@@ -1,0 +1,3 @@
+# X01 clean: a dir= prefix covers all three DB keys.
+# All three keys start with /nonexistent/rs-trap/ so the prefix covers all of them.
+allow all : dir=/nonexistent/rs-trap/

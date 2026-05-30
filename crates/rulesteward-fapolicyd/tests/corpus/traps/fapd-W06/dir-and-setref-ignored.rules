@@ -1,0 +1,5 @@
+# W06 clean: dir= values and %setref values are excluded from W06 checking.
+# dir= is a prefix attribute (not an exact path), and %setref has no static
+# path to resolve. Neither triggers W06 even when the values are absent.
+%MY_EXES=/nonexistent/rs-trap/absent-exe
+allow exe=%MY_EXES : dir=/nonexistent/rs-trap/

@@ -39,7 +39,8 @@ use std::path::{Path, PathBuf};
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, check_layout, fagenrules_cmp, lint, lint_cross_file, parse_rules_file,
+    Entry, LintContext, TrustDb, check_layout, fagenrules_cmp, lint, lint_cross_file,
+    lint_orphans, lint_with_context, parse_rules_file,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -591,5 +592,221 @@ fn c01_cross_file_traps() {
     );
     for scenario in &scenarios {
         drive_cross_file_scenario("fapd-C01", scenario);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trust-DB fixture builder helpers
+//
+// REPRODUCIBILITY: W06 traps use guaranteed-absent /nonexistent/rs-trap/...
+// paths so Path::exists() is stable across CI hosts.
+// ---------------------------------------------------------------------------
+
+/// Read the newline-separated keys from a `_trustdb-keys.txt` file in `dir`
+/// and build a tempfile LMDB trust.db fixture from them. Returns the `TrustDb`
+/// handle (read-only) and the `tempfile::TempDir` whose lifetime keeps the dir
+/// alive.
+///
+/// # Panics
+///
+/// Panics if the keys file is missing, the LMDB env cannot be created, or any
+/// key cannot be inserted.
+#[allow(unsafe_code)]
+fn build_fixture_trustdb(dir: &Path) -> (TrustDb, tempfile::TempDir) {
+    let keys_path = dir.join("_trustdb-keys.txt");
+    let keys_text = std::fs::read_to_string(&keys_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", keys_path.display()));
+    let keys: Vec<&str> = keys_text.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    let tmp = tempfile::tempdir().expect("tempdir for fixture trustdb");
+    // SAFETY: opens a freshly-created tempdir LMDB env RW to build a test
+    // fixture; no other process touches it. heed's open is unsafe (mmap).
+    let env = unsafe {
+        heed::EnvOpenOptions::new()
+            .max_dbs(1)
+            .open(tmp.path())
+            .expect("build_fixture_trustdb: failed to open LMDB env")
+    };
+    let mut wtxn = env
+        .write_txn()
+        .expect("build_fixture_trustdb: write_txn failed");
+    let db: heed::Database<heed::types::Bytes, heed::types::Bytes> = env
+        .create_database(&mut wtxn, Some("trust.db"))
+        .expect("build_fixture_trustdb: create_database failed");
+    for key in &keys {
+        // Value mimics fapolicyd: "<src_int> <size> <sha256_hex>"
+        let value =
+            b"1 12345 aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb";
+        db.put(&mut wtxn, key.as_bytes(), value)
+            .expect("build_fixture_trustdb: put failed");
+    }
+    wtxn.commit().expect("build_fixture_trustdb: commit failed");
+    drop(env); // flush + close before re-opening read-only
+
+    let trust_db =
+        rulesteward_fapolicyd::open_trustdb_readonly(tmp.path()).expect("open_trustdb_readonly");
+    (trust_db, tmp)
+}
+
+// ---------------------------------------------------------------------------
+// fapd-W06 - path=/exe= literal not in trust DB and not on disk.
+// Trust-DB-aware per-file snapshot driver.
+// ---------------------------------------------------------------------------
+
+/// Parse one `.rules` file, open the W06 fixture trust.db, run
+/// `lint_with_context` with `LintContext{ trustdb: Some(&db) }`, and snapshot
+/// under `fapd-W06__<stem>`. The fixture DB is built from the shared
+/// `_trustdb-keys.txt` in the `fapd-W06/` trap directory.
+fn drive_file_with_trustdb_w06(path: &Path) {
+    let code = "fapd-W06";
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read trap input {}: {e}", path.display()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("trap input {} has no UTF-8 file stem", path.display()))
+        .to_owned();
+    let rel_path = Path::new("tests/corpus/traps")
+        .join(code)
+        .join(path.file_name().expect("trap file has a name"));
+
+    let (db, _tmp) = build_fixture_trustdb(&traps_dir(code));
+
+    let rendered = match parse_rules_file(&src, &rel_path) {
+        Ok(entries) => {
+            let ctx = LintContext {
+                trustdb: Some(&db),
+            };
+            let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
+            render("parse=ok", &diags)
+        }
+        Err(diags) => render("parse=err", &diags),
+    };
+
+    let snapshot_name = format!("{code}__{stem}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn w06_traps() {
+    let files = list_rules_files("fapd-W06");
+    assert!(
+        files.len() >= 4,
+        "fapd-W06 trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file_with_trustdb_w06(path);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fapd-X01 - trust DB entries not referenced by any rule (orphan summary).
+// Scenario-driven snapshot driver using lint_orphans.
+// ---------------------------------------------------------------------------
+
+/// List immediate subdirectories (scenarios) of `<traps>/fapd-X01/`, sorted.
+fn list_x01_scenarios() -> Vec<PathBuf> {
+    let dir = traps_dir("fapd-X01");
+    let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read fapd-X01 traps dir {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Drive one X01 scenario: enumerate `<scenario>/rules.d/*.rules` in
+/// fagenrules order, parse each, build the fixture DB from
+/// `<scenario>/_trustdb-keys.txt`, run `lint_orphans`, and snapshot.
+/// Snapshot name = `fapd-X01__<scenario>`.
+fn drive_scenario_x01(scenario_dir: &Path) {
+    let code = "fapd-X01";
+    let rules_d = scenario_dir.join("rules.d");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&rules_d)
+        .unwrap_or_else(|e| panic!("read rules.d {}: {e}", rules_d.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules"))
+        .collect();
+    files.sort_by(|a, b| fagenrules_cmp(a, b));
+
+    let scenario_name = scenario_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("scenario {} has no UTF-8 name", scenario_dir.display()))
+        .to_owned();
+
+    let mut parsed: Vec<(PathBuf, Vec<Entry>)> = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+        let entries = match parse_rules_file(&src, path) {
+            Ok(entries) => entries,
+            Err(diags) => {
+                panic!(
+                    "X01 scenario fixture {} must parse cleanly: {diags:?}",
+                    path.display()
+                )
+            }
+        };
+        let rel = Path::new("rules.d").join(path.file_name().expect("rules file has a name"));
+        parsed.push((rel, entries));
+    }
+
+    let (db, _tmp) = build_fixture_trustdb(scenario_dir);
+    let diags = lint_orphans(&parsed, &db);
+
+    // X01 emits at most one summary diagnostic. Render with a db= line so the
+    // snapshot pins the scenario path shape without using the absolute tempdir.
+    let mut rendered = String::new();
+    writeln!(rendered, "files={}", files.len()).expect("write to String never fails");
+    writeln!(rendered, "diagnostics={}", diags.len()).expect("write to String never fails");
+    if diags.is_empty() {
+        rendered.push_str("(no diagnostics)\n");
+    } else {
+        for d in &diags {
+            // db.path() is the tempdir - render the diagnostic without it to
+            // keep the snapshot host-independent. We use file= "<trustdb>" as
+            // a stable placeholder.
+            writeln!(
+                rendered,
+                "[{code}] sev={sev:?} span={start}..{end} :: {msg}",
+                code = d.code,
+                sev = d.severity,
+                start = d.span.start,
+                end = d.span.end,
+                msg = d.message,
+            )
+            .expect("write to String never fails");
+        }
+    }
+
+    let snapshot_name = format!("{code}__{scenario_name}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn x01_traps() {
+    let scenarios = list_x01_scenarios();
+    assert!(
+        scenarios.len() >= 3,
+        "fapd-X01 scenario corpus must have >= 3 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_scenario_x01(scenario);
     }
 }

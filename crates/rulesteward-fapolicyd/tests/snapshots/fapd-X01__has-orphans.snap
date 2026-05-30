@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+files=1
+diagnostics=1
+[fapd-X01] sev=Extra span=0..0 :: trust DB has 2 entries not referenced by any rule (showing first 2: /nonexistent/rs-trap/orphan-key-a, /nonexistent/rs-trap/orphan-key-b)

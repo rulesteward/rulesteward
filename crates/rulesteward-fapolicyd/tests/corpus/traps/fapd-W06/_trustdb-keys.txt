@@ -1,0 +1,2 @@
+/nonexistent/rs-trap/trusted-path
+/nonexistent/rs-trap/trusted-exe

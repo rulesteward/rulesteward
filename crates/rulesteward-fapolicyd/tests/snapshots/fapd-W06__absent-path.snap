@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-W06] sev=Warning line=4 col=1 span=204..248 :: `path=/nonexistent/rs-trap/absent` is in neither the trust DB nor present on disk

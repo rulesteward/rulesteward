@@ -1,0 +1,2 @@
+/nonexistent/rs-trap/suppressed-a
+/nonexistent/rs-trap/suppressed-b
