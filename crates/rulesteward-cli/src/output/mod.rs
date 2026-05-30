@@ -15,13 +15,15 @@ use rulesteward_core::Diagnostic;
 
 use crate::cli::OutputFormat;
 
-/// Errors a renderer can return. Currently only used by the SARIF stub;
-/// human and JSON renderers cannot fail.
+/// Errors a renderer can return. The human and JSON renderers are infallible;
+/// only the SARIF renderer can fail, and only at the final `serde_json`
+/// serialization step (which in practice cannot fail for the value built, but
+/// the API is fallible so the error is surfaced rather than `expect`-ed).
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
-    /// SARIF rendering is stubbed in v0.1.0-dev - caller must map to exit 3.
-    #[error("sarif format not yet implemented in v0.1.0-dev")]
-    SarifNotImplemented,
+    /// Serializing the rendered output to a string failed.
+    #[error("serializing output: {0}")]
+    Serialization(String),
 }
 
 /// Render diagnostics in the requested format.
