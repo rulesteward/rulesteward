@@ -72,6 +72,11 @@ pub struct LintArgs {
     /// (stub) Cross-check rules against this trust DB
     #[arg(long, value_name = "PATH")]
     pub against_trustdb: Option<PathBuf>,
+
+    /// Report trust-DB entries not referenced by any rule (fapd-X01). Requires
+    /// `--against-trustdb`; off by default (a real trust DB lists ~every system file).
+    #[arg(long)]
+    pub report_orphans: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -107,4 +112,85 @@ pub enum CompletionShell {
     Fish,
     Elvish,
     PowerShell,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// --against-trustdb <PATH> must still parse correctly (existing field, no regression).
+    #[test]
+    fn lint_args_against_trustdb_parses() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "lint",
+            "somedir",
+            "--against-trustdb",
+            "/var/lib/fapolicyd",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "--against-trustdb must parse successfully, got: {cli:?}"
+        );
+        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+            assert_eq!(
+                args.against_trustdb.as_deref(),
+                Some(std::path::Path::new("/var/lib/fapolicyd")),
+                "--against-trustdb value must round-trip"
+            );
+        } else {
+            panic!("expected Fapolicyd(Lint(_))");
+        }
+    }
+
+    /// --report-orphans must parse (field does not exist yet -> clap rejects the
+    /// unknown flag -> `try_parse_from` returns Err -> `is_ok()` is FALSE -> RED at runtime).
+    ///
+    /// After the implementer adds `report_orphans: bool` to `LintArgs`, the
+    /// `try_parse_from` call will succeed and `is_ok()` will be TRUE -> GREEN.
+    #[test]
+    fn lint_args_report_orphans_parses_and_defaults_false() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "lint",
+            "somedir",
+            "--report-orphans",
+        ]);
+        // RED: --report-orphans is an unknown flag until the field is added.
+        assert!(
+            cli.is_ok(),
+            "--report-orphans must parse successfully once the field is added to LintArgs; \
+             got: {cli:?}"
+        );
+        // GREEN (compile-coupled): verify the field value after parse succeeds.
+        // NOTE: this arm does NOT compile until `report_orphans` is added to LintArgs.
+        // The compile error is an acceptable RED signal.
+        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+            assert!(
+                args.report_orphans,
+                "--report-orphans flag must set report_orphans = true"
+            );
+        } else {
+            panic!("expected Fapolicyd(Lint(_))");
+        }
+    }
+
+    /// Default parse (no --report-orphans) must leave `report_orphans` = false.
+    /// NOTE: compile-coupled to the `report_orphans` field existing on `LintArgs`.
+    #[test]
+    fn lint_args_report_orphans_defaults_false() {
+        let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "lint", "somedir"]);
+        assert!(cli.is_ok(), "plain lint parse must succeed: {cli:?}");
+        // Compile-coupled: will not compile until `report_orphans` is in LintArgs.
+        if let Ok(Cli { command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)) }) = cli {
+            assert!(
+                !args.report_orphans,
+                "report_orphans must default to false when flag is absent"
+            );
+        } else {
+            panic!("expected Fapolicyd(Lint(_))");
+        }
+    }
 }

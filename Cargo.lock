@@ -912,6 +912,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "clap_complete",
+ "heed",
  "predicates",
  "proptest",
  "rulesteward-core",
