@@ -16,12 +16,12 @@
 # License: BSD-3-Clause (see LICENSE in this directory)
 #
 
-# Deny and audit any execution attempt not matched by an earlier allow.
-# This produces an audit log entry for every blocked execution so that
-# administrators can identify processes that need a carve-out.
-deny_audit perm=execute all : all
-
-# Deny all remaining open operations that have not been explicitly allowed.
-# This is the strictest posture; comment out or replace with allow perm=open
-# if you want a default-open policy for file reads.
-deny perm=open all : all
+# Deny and audit any operation (open or execute) not matched by an earlier
+# allow rule. perm=any covers both access modes in a single terminal rule, and
+# the audit variant logs every blocked attempt so administrators can identify
+# processes that need a carve-out.
+#
+# For a default-OPEN posture (deny execution but allow file reads), narrow this
+# to perm=execute and add the corresponding allow perm=open carve-out in an
+# earlier-loading file (10-xx through 80-xx), never below this line.
+deny_audit perm=any all : all

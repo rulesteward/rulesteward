@@ -27,6 +27,8 @@ allow perm=execute exe=/usr/bin/bash : all
 allow perm=execute exe=/usr/bin/sh : all
 allow perm=execute exe=/usr/bin/dash : all
 
-# Allow trusted ELF binaries and shared libraries in the trust database to
-# be opened for linking. This is required for the dynamic linker to function.
-allow perm=open all : ftype=application/x-sharedlib trust=1
+# Allow shared libraries in the trust database to be opened for linking. The
+# dynamic linker needs this. Object-side predicates form a conjunction and are
+# order-insensitive, so trust=1 is listed first here to read as "trusted, and a
+# shared library".
+allow perm=open all : trust=1 ftype=application/x-sharedlib
