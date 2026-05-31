@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use heed::types::Bytes;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions};
+use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustDbError {
@@ -11,6 +12,71 @@ pub enum TrustDbError {
     Missing(PathBuf),
     #[error("heed error: {0}")]
     Open(#[from] heed::Error),
+    #[error("malformed trust-DB value for key {key:?}: {raw:?}")]
+    MalformedValue { key: String, raw: String },
+}
+
+/// Which database populated a trust-DB entry (fapolicyd source integer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum TrustSource {
+    FileDb,
+    RpmDb,
+    Unknown,
+}
+
+impl TrustSource {
+    /// Map the on-disk source integer to a `TrustSource` variant.
+    ///
+    /// fapolicyd encodes the origin of each trust entry as a small integer
+    /// in the value field. The exact mapping is filled by the 3d impl pipeline.
+    #[must_use]
+    pub fn from_int(_n: u32) -> Self {
+        todo!() // stub: filled by 3d impl pipeline
+    }
+}
+
+/// A single entry read from the fapolicyd trust DB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrustEntry {
+    pub path: String,
+    pub source: TrustSource,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// Result of comparing a `TrustEntry`'s recorded metadata against the file
+/// currently on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum DiskVerdict {
+    /// File exists on disk and both size and hash match.
+    Match,
+    /// File is absent from disk (or is a dangling symlink).
+    Missing,
+    /// File exists but its on-disk size differs from the recorded size.
+    SizeMismatch { recorded: u64, actual: u64 },
+    /// File exists and size matches, but the SHA-256 digest differs.
+    HashMismatch { recorded: String, actual: String },
+    /// The file could not be read; contains the OS error message.
+    ReadError(String),
+}
+
+/// Parse the raw bytes of a trust-DB value (`"<src_int> <size> <sha256_hex>"`).
+///
+/// Returns `(source, size, sha256_hex)` on success. Body filled by the 3d
+/// impl pipeline; the parse logic belongs to fapolicyd's on-disk format.
+#[allow(dead_code)] // stub: called by iter_entries/get_entry once filled by 3d impl pipeline
+pub(crate) fn parse_trust_value(_raw: &[u8]) -> Result<(TrustSource, u64, String), TrustDbError> {
+    todo!() // stub: filled by 3d impl pipeline
+}
+
+/// Verify a single `TrustEntry` against the file currently on disk.
+///
+/// Reads the file at `entry.path`, computes its size and SHA-256, and
+/// returns a `DiskVerdict` describing the comparison result. Body filled
+/// by the 3d impl pipeline.
+#[must_use]
+pub fn verify_entry(_entry: &TrustEntry) -> DiskVerdict {
+    todo!() // stub: filled by 3d impl pipeline
 }
 
 /// Read-only handle on a fapolicyd trust DB. Owns the heed `Env`; each query
@@ -57,6 +123,20 @@ impl TrustDb {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Return all entries in the trust DB as a flat `Vec<TrustEntry>`.
+    ///
+    /// Each distinct key may have multiple value rows (fapolicyd uses DUPSORT).
+    /// Body filled by the 3d impl pipeline.
+    pub fn iter_entries(&self) -> Result<Vec<TrustEntry>, TrustDbError> {
+        todo!() // stub: filled by 3d impl pipeline
+    }
+
+    /// Return all `TrustEntry` rows for the given absolute path, or `None` if
+    /// the path is not present in the DB. Body filled by the 3d impl pipeline.
+    pub fn get_entry(&self, _p: &str) -> Result<Option<Vec<TrustEntry>>, TrustDbError> {
+        todo!() // stub: filled by 3d impl pipeline
     }
 
     /// True iff `p` is an exact key in the trust DB.

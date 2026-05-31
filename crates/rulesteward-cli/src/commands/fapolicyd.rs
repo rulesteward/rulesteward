@@ -10,26 +10,32 @@ use rulesteward_fapolicyd::{
     lint_with_context, open_trustdb_readonly, parse_rules_file,
 };
 
-use crate::cli::{FapolicydCommand, LintArgs};
+use crate::cli::{FapolicydCommand, LintArgs, TrustdbCommand};
 use crate::exit_code::{self, EXIT_NO_OP, EXIT_TOOL_FAILURE};
 use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
+#[allow(dead_code)] // stub: used by run_trustdb once filled by 3d impl pipeline
+const DEFAULT_TRUSTDB_DIR: &str = "/var/lib/fapolicyd/";
 
 pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
     match cmd {
         FapolicydCommand::Lint(args) => run_lint(&args),
+        FapolicydCommand::Trustdb(cmd) => run_trustdb(cmd),
         FapolicydCommand::Simulate
         | FapolicydCommand::Explain
         | FapolicydCommand::Report
         | FapolicydCommand::ContainerCheck
-        | FapolicydCommand::Trustdb
         | FapolicydCommand::Migrate
         | FapolicydCommand::Doctor => {
             eprintln!("rulesteward fapolicyd <subcommand>: not yet implemented in v0.1.0-dev");
             Ok(EXIT_NO_OP)
         }
     }
+}
+
+fn run_trustdb(_cmd: TrustdbCommand) -> anyhow::Result<i32> {
+    todo!() // stub: filled by 3d impl pipeline
 }
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {

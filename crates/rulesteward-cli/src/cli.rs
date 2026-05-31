@@ -6,6 +6,26 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+// ---- Trust-DB subcommand format and filter enums ----
+
+/// Output format for trust-DB subcommands.
+///
+/// Intentionally separate from `OutputFormat` (which carries a `Sarif` arm
+/// that has no meaning for trust-DB operations).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TrustdbFormat {
+    Human,
+    Json,
+}
+
+/// Filter trust-DB entries by their source database.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TrustSourceFilter {
+    Rpm,
+    File,
+    Unknown,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rulesteward",
@@ -47,8 +67,9 @@ pub enum FapolicydCommand {
     Report,
     /// (stub) Container-runtime detection
     ContainerCheck,
-    /// (stub) Trust database operations
-    Trustdb,
+    /// Trust database operations (read-only)
+    #[command(subcommand)]
+    Trustdb(TrustdbCommand),
     /// (stub) Migrate legacy fapolicyd.rules to rules.d/
     Migrate,
     /// (stub) Daemon health + config sanity check
@@ -85,6 +106,79 @@ pub enum OutputFormat {
     Human,
     Json,
     Sarif,
+}
+
+/// Trust-DB subcommands.
+#[derive(Debug, Subcommand)]
+pub enum TrustdbCommand {
+    /// List entries from the trust DB
+    List(TrustdbListArgs),
+    /// Check whether specific paths match the trust DB
+    Check(TrustdbCheckArgs),
+    /// Diff trust-DB entries against on-disk reality or a second DB
+    Diff(TrustdbDiffArgs),
+    /// Report trust-DB entries whose paths no longer exist on disk
+    Stale(TrustdbStaleArgs),
+}
+
+/// Arguments for `rulesteward fapolicyd trustdb list`.
+#[derive(Debug, Parser)]
+pub struct TrustdbListArgs {
+    /// Path to the fapolicyd trust-DB directory (defaults to /var/lib/fapolicyd/)
+    #[arg(value_name = "DIR")]
+    pub db: Option<PathBuf>,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
+    pub format: TrustdbFormat,
+
+    /// Filter entries by source database
+    #[arg(long, value_enum)]
+    pub source: Option<TrustSourceFilter>,
+}
+
+/// Arguments for `rulesteward fapolicyd trustdb check`.
+#[derive(Debug, Parser)]
+pub struct TrustdbCheckArgs {
+    /// Path to the fapolicyd trust-DB directory
+    #[arg(long, value_name = "DIR")]
+    pub db: Option<PathBuf>,
+
+    /// Paths to check against the trust DB
+    #[arg(value_name = "PATH", required = true, num_args = 1..)]
+    pub paths: Vec<PathBuf>,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
+    pub format: TrustdbFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd trustdb diff`.
+#[derive(Debug, Parser)]
+pub struct TrustdbDiffArgs {
+    /// Path to the fapolicyd trust-DB directory
+    #[arg(long, value_name = "DIR")]
+    pub db: Option<PathBuf>,
+
+    /// Compare against a second trust DB instead of on-disk reality
+    #[arg(long, value_name = "DIR")]
+    pub against: Option<PathBuf>,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
+    pub format: TrustdbFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd trustdb stale`.
+#[derive(Debug, Parser)]
+pub struct TrustdbStaleArgs {
+    /// Path to the fapolicyd trust-DB directory
+    #[arg(long, value_name = "DIR")]
+    pub db: Option<PathBuf>,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
+    pub format: TrustdbFormat,
 }
 
 #[derive(Debug, Subcommand)]
