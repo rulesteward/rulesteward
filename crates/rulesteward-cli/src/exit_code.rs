@@ -7,7 +7,20 @@ pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_WARNINGS: i32 = 1;
 pub const EXIT_ERRORS: i32 = 2;
 pub const EXIT_TOOL_FAILURE: i32 = 3;
+/// LMDB / trust-DB engine error (could not open or read the trust DB).
+pub const EXIT_LMDB_ERROR: i32 = 4;
 pub const EXIT_RULE_PARSE_ERROR: i32 = 5;
+/// Daemon IPC error. RESERVED: `RuleSteward` is a read-only linter with no daemon connection
+/// today; defined so the code space matches spec section 9.4 and a future daemon-query mode
+/// has a stable code. Not currently emitted.
+#[allow(dead_code)]
+pub const EXIT_DAEMON_IPC: i32 = 6;
+/// Filesystem error (a path that exists but could not be read as expected).
+#[allow(dead_code)]
+pub const EXIT_FS_ERROR: i32 = 7;
+/// Out-of-memory. RESERVED: no graceful OOM path in a read-only linter today.
+#[allow(dead_code)]
+pub const EXIT_OOM: i32 = 8;
 pub const EXIT_NO_OP: i32 = 9;
 
 /// Compute the exit code for a finished lint run.
