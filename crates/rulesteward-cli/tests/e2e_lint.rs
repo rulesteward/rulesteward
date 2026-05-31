@@ -838,12 +838,12 @@ fn against_trustdb_lmdb_open_error_exits_4() {
 
 /// CLEAN-4c preservation guard: `--against-trustdb` pointing at a REGULAR FILE
 /// (not a directory) must continue to exit 3 (`EXIT_TOOL_FAILURE`) after
-/// CLEAN-4c wires the is_dir() pre-check. A regular file fails is_dir() -> the
+/// CLEAN-4c wires the `is_dir()` pre-check. A regular file fails `is_dir()` -> the
 /// "not a directory" arm fires -> exit 3.
 ///
 /// This test is GREEN today (currently exits 3 via the heed error path because
-/// no is_dir() check exists yet). After the implementer adds the is_dir() check
-/// it will remain GREEN via the new is_dir() -> exit 3 arm. Documents the
+/// no `is_dir()` check exists yet). After the implementer adds the `is_dir()` check
+/// it will remain GREEN via the new `is_dir()` -> exit 3 arm. Documents the
 /// preservation contract: "not a directory" stays 3, not 4.
 #[test]
 fn against_trustdb_not_a_directory_exits_3() {
