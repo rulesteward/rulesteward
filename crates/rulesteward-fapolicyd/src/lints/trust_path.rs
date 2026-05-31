@@ -6,6 +6,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
 use crate::trustdb::TrustDb;
 
@@ -26,18 +27,14 @@ pub(crate) fn w06(entries: &[Entry], file: &Path, db: &TrustDb) -> Vec<Diagnosti
                 continue;
             };
             if !db.contains_path(p) && !Path::new(p).exists() {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W06",
-                        r.span.clone(),
-                        format!("`{key}={p}` is in neither the trust DB nor present on disk"),
-                        file,
-                        r.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W06",
+                    r.span.clone(),
+                    format!("`{key}={p}` is in neither the trust DB nor present on disk"),
+                    file,
+                    r.line,
+                ));
             }
         }
     }

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use super::subsume::{MacroMap, build_macro_map, shadows};
 use crate::ast::{Attr, AttrValue, Decision, Entry, Rule};
 
@@ -56,22 +57,18 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
         }
         for &(af, apath, a) in scoped.iter().take(j) {
             if af < bf && is_deny(a.decision) && shadows(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W04",
-                        b.span.clone(),
-                        format!(
-                            "allow rule unreachable: shadowed by the broader deny in {} on line {}",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W04",
+                    b.span.clone(),
+                    format!(
+                        "allow rule unreachable: shadowed by the broader deny in {} on line {}",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }
@@ -175,22 +172,18 @@ pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
             // Cross-file only (same-file dups are fapd-W01), SAME decision, and
             // AST-equal match predicates (NOT subsumption).
             if af < bf && a.decision == b.decision && predicate_sides_equal(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Convention,
-                        "fapd-C02",
-                        b.span.clone(),
-                        format!(
-                            "duplicate rule: identical to the rule in {} on line {}",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Convention,
+                    "fapd-C02",
+                    b.span.clone(),
+                    format!(
+                        "duplicate rule: identical to the rule in {} on line {}",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }
@@ -221,22 +214,18 @@ pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
             // Cross-file only, earlier rule is an allow, AST-equal match
             // predicates (NOT subsumption). deny-then-allow is fapd-W04's job.
             if af < bf && is_allow(a.decision) && predicate_sides_equal(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W10",
-                        b.span.clone(),
-                        format!(
-                            "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W10",
+                    b.span.clone(),
+                    format!(
+                        "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }

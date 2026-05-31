@@ -45,9 +45,6 @@ use crate::trustdb::TrustDb;
 /// Used by the ~17 anchored lint sites (migrated in Task 2 / CLEAN-2). The 3
 /// unanchored (`0..0`, no source-id) sites and the 3 explicit-column sites do
 /// NOT use this helper.
-// `#[allow(dead_code)]` is temporary: no call site uses `anchored` until Task 2
-// migrates the emission sites. Removed there.
-#[allow(dead_code)]
 fn anchored(
     sev: Severity,
     code: &'static str,

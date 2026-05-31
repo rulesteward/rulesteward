@@ -17,6 +17,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{Attr, Decision, Entry, Perm, Rule, SyntaxFlavor};
 use crate::attrs;
 
+use super::anchored;
+
 /// Run fapd-F03, fapd-E01, and fapd-W02 over `entries` and return the merged
 /// diagnostics.
 pub fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
@@ -52,18 +54,14 @@ fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
             // The trigger is the rule with the higher line number (i.e. the
             // second flavor to appear).
             let trigger = if m.line >= l.line { m } else { l };
-            Some(
-                Diagnostic::new(
-                    Severity::Fatal,
-                    "fapd-F03",
-                    trigger.span.clone(),
-                    "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
-                    file,
-                    trigger.line,
-                    1,
-                )
-                .with_source_id(file.display().to_string()),
-            )
+            Some(anchored(
+                Severity::Fatal,
+                "fapd-F03",
+                trigger.span.clone(),
+                "file mixes modern (`:`) and legacy (no `:`) rule syntaxes - pick one",
+                file,
+                trigger.line,
+            ))
         }
         _ => None,
     }
@@ -129,18 +127,14 @@ fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         let object_is_all = matches!(r.object.as_slice(), [Attr::All]);
 
         if is_allow_class && is_execute_or_any && subject_is_all && object_is_all {
-            diags.push(
-                Diagnostic::new(
-                    Severity::Warning,
-                    "fapd-W02",
-                    r.span.clone(),
-                    "broad allow on execute (subject=all, object=all) - every binary on the system can run",
-                    file,
-                    r.line,
-                    1,
-                )
-                .with_source_id(file.display().to_string()),
-            );
+            diags.push(anchored(
+                Severity::Warning,
+                "fapd-W02",
+                r.span.clone(),
+                "broad allow on execute (subject=all, object=all) - every binary on the system can run",
+                file,
+                r.line,
+            ));
         }
     }
     diags

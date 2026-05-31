@@ -9,6 +9,8 @@ use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{Attr, AttrValue, Entry};
 
+use super::anchored;
+
 /// Run every validation lint pass over `entries` and return the merged
 /// diagnostics.
 pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
@@ -74,18 +76,14 @@ fn e02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             let Some(detail) = e02_failure_detail(category, value) else {
                 continue;
             };
-            diags.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    "fapd-E02",
-                    r.span.clone(),
-                    format!("invalid value for `{key}=`: {detail}"),
-                    file,
-                    r.line,
-                    1,
-                )
-                .with_source_id(file.display().to_string()),
-            );
+            diags.push(anchored(
+                Severity::Error,
+                "fapd-E02",
+                r.span.clone(),
+                format!("invalid value for `{key}=`: {detail}"),
+                file,
+                r.line,
+            ));
         }
     }
     diags

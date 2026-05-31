@@ -25,6 +25,7 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::Entry;
 use crate::ast::Rule;
 
+use super::anchored;
 use super::subsume::{build_macro_map, shadows};
 
 /// Run the fapd-W01 rule-shadowing pass over `entries` and return the
@@ -49,21 +50,17 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         let b = rules[b_idx];
         for a in rules.iter().take(b_idx) {
             if shadows(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W01",
-                        b.span.clone(),
-                        format!(
-                            "rule unreachable: shadowed by the broader rule on line {}",
-                            a.line
-                        ),
-                        file,
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W01",
+                    b.span.clone(),
+                    format!(
+                        "rule unreachable: shadowed by the broader rule on line {}",
+                        a.line
+                    ),
+                    file,
+                    b.line,
+                ));
                 break;
             }
         }

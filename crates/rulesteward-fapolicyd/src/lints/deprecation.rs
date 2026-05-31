@@ -6,6 +6,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use crate::ast::{Attr, Entry};
 
 /// Run every deprecation lint pass over `entries` and return the merged
@@ -36,18 +37,14 @@ fn w07(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             // parser is case-sensitive on attribute names. Confirmed via
             // fapd-E01__sha256hash-uppercase trap.
             if key == "sha256hash" {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W07",
-                        r.span.clone(),
-                        "deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)".to_string(),
-                        file,
-                        r.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W07",
+                    r.span.clone(),
+                    "deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)",
+                    file,
+                    r.line,
+                ));
             }
         }
     }

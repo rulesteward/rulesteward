@@ -8,6 +8,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
 
 /// Run every macro-related lint pass over `entries` and return the
@@ -97,37 +98,29 @@ fn e03(
                     if single_file && !all_local.contains(name.as_str()) {
                         // Single-file mode and macro is absent from the whole file:
                         // it may be defined in an unseen sibling -> W09 (Warning).
-                        diags.push(
-                            Diagnostic::new(
-                                Severity::Warning,
-                                "fapd-W09",
-                                r.span.clone(),
-                                format!(
-                                    "macro reference `%{name}` not defined in this file \
-                                     (may be defined in a sibling rules.d/ file; \
-                                     lint the directory to resolve)"
-                                ),
-                                file,
-                                r.line,
-                                1,
-                            )
-                            .with_source_id(file.display().to_string()),
-                        );
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "fapd-W09",
+                            r.span.clone(),
+                            format!(
+                                "macro reference `%{name}` not defined in this file \
+                                 (may be defined in a sibling rules.d/ file; \
+                                 lint the directory to resolve)"
+                            ),
+                            file,
+                            r.line,
+                        ));
                     } else {
                         // Either directory mode, or a within-file forward reference
                         // (defined below in this file) in single-file mode: E03.
-                        diags.push(
-                            Diagnostic::new(
-                                Severity::Error,
-                                "fapd-E03",
-                                r.span.clone(),
-                                format!("undefined macro reference `%{name}`"),
-                                file,
-                                r.line,
-                                1,
-                            )
-                            .with_source_id(file.display().to_string()),
-                        );
+                        diags.push(anchored(
+                            Severity::Error,
+                            "fapd-E03",
+                            r.span.clone(),
+                            format!("undefined macro reference `%{name}`"),
+                            file,
+                            r.line,
+                        ));
                     }
                 }
             }
@@ -165,20 +158,16 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                 continue;
             };
             if key == "trust" || key == "pattern" {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        "fapd-E04",
-                        r.span.clone(),
-                        format!(
-                            "macro reference `%{name}` not supported in `{key}=` (fapolicyd does not substitute macros here)"
-                        ),
-                        file,
-                        r.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Error,
+                    "fapd-E04",
+                    r.span.clone(),
+                    format!(
+                        "macro reference `%{name}` not supported in `{key}=` (fapolicyd does not substitute macros here)"
+                    ),
+                    file,
+                    r.line,
+                ));
             }
         }
     }
@@ -244,18 +233,14 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         // flagged here - tracked as a future usage/version-aware check.
         for bad in values {
             if looks_int(bad) && !is_fap_int(bad) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        "fapd-E05",
-                        span.clone(),
-                        format!("integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"),
-                        file,
-                        *line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Error,
+                    "fapd-E05",
+                    span.clone(),
+                    format!("integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"),
+                    file,
+                    *line,
+                ));
                 break; // one diagnostic per set
             }
         }
@@ -288,18 +273,14 @@ fn s02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             Entry::SetDefinition {
                 name, line, span, ..
             } if seen_rule => {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Style,
-                        "fapd-S02",
-                        span.clone(),
-                        format!("macro `%{name}` defined after the first rule (move to file top)"),
-                        file,
-                        *line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Style,
+                    "fapd-S02",
+                    span.clone(),
+                    format!("macro `%{name}` defined after the first rule (move to file top)"),
+                    file,
+                    *line,
+                ));
             }
             _ => {}
         }

@@ -12,6 +12,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
 use crate::lints::subsume::build_macro_map;
 
@@ -44,20 +45,16 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                         continue;
                     }
                     if !s.ends_with('/') {
-                        diags.push(
-                            Diagnostic::new(
-                                Severity::Warning,
-                                "fapd-W08",
-                                r.span.clone(),
-                                format!(
-                                    "`dir={s}` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`"
-                                ),
-                                file,
-                                r.line,
-                                1,
-                            )
-                            .with_source_id(file.display().to_string()),
-                        );
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "fapd-W08",
+                            r.span.clone(),
+                            format!(
+                                "`dir={s}` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`"
+                            ),
+                            file,
+                            r.line,
+                        ));
                     }
                 }
                 AttrValue::SetRef(name) => {
@@ -71,20 +68,16 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                                 continue;
                             }
                             if !v.ends_with('/') {
-                                diags.push(
-                                    Diagnostic::new(
-                                        Severity::Warning,
-                                        "fapd-W08",
-                                        r.span.clone(),
-                                        format!(
-                                            "dir set `%{name}` value `{v}` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`"
-                                        ),
-                                        file,
-                                        r.line,
-                                        1,
-                                    )
-                                    .with_source_id(file.display().to_string()),
-                                );
+                                diags.push(anchored(
+                                    Severity::Warning,
+                                    "fapd-W08",
+                                    r.span.clone(),
+                                    format!(
+                                        "dir set `%{name}` value `{v}` has no trailing slash; fapolicyd matches by byte-prefix, so it can over-match siblings - end the value with `/`"
+                                    ),
+                                    file,
+                                    r.line,
+                                ));
                             }
                         }
                     }
