@@ -245,13 +245,15 @@ mod tests {
     fn e02_hash_accepts_canonical_64_hex_both_cases() {
         // Renamed from e02_hex64_accepts_canonical_64_hex_both_cases.
         // After CLEAN-3a the variant is HashDigest; use classify_hash_value instead.
-        // RED until implementation introduces classify_hash_value (HashVerdict).
+        // This test is a CLEAN-2 preservation anchor (GREEN before and after CLEAN-3a).
         let lower = "0123456789abcdef".repeat(4);
         let upper = "0123456789ABCDEF".repeat(4);
         let mixed = "AbCdEf0123456789".repeat(4);
         for s in [&lower, &upper, &mixed] {
             assert_eq!(s.len(), 64);
-            // 64-hex is a strong digest -> HashVerdict::Ok -> no E02.
+            // 64-hex is a strong digest (SHA256) -> HashVerdict::Ok -> NO diagnostic at all.
+            // This assertion guards against a wrong impl that classifies 64-hex as
+            // Weak -> fapd-W11: a valid SHA256 hash must produce neither E02 nor W11.
             let diags = walk(
                 &[modern_rule(
                     1,
@@ -263,8 +265,8 @@ mod tests {
                 &p(),
             );
             assert!(
-                diags.iter().all(|d| d.code.as_ref() != "fapd-E02"),
-                "valid 64-hex must not produce fapd-E02: {diags:?}",
+                diags.is_empty(),
+                "valid 64-hex (SHA256) must produce NO diagnostic at all (no fapd-E02, no fapd-W11): {diags:?}",
             );
         }
     }
@@ -427,23 +429,19 @@ mod tests {
     // -----------------------------------------------------------------
     // CLEAN-3a: RED barrier tests for fapd-E02 widen + new fapd-W11
     //
-    // All four tests below are RED today because:
+    // Three of the four tests below are RED today (assertion failures):
     //   - e02_accepts_128_hex_sha512:  current len!=64 check fires E02 on 128.
     //   - w11_warns_on_md5_length_not_e02: W11 does not exist; E02 fires on 32.
     //   - w11_warns_on_sha1_length:    W11 does not exist; E02 fires on 40.
-    //   - e02_still_errors_on_off_length_and_non_hex: see note below.
     //
-    // Note on e02_still_errors_on_off_length_and_non_hex: careful code reading
-    // shows this test is GREEN today (current code fires E02 for both 50-hex
-    // and 64-non-hex). The original plan claimed the 64-non-hex case was RED,
-    // but that is incorrect: the current code checks length FIRST (fires on
-    // 50 since 50!=64) and non-hex SECOND (fires on 64 non-hex since z is not
-    // a hex digit). This test is therefore a PRESERVATION ANCHOR, not a RED
-    // barrier. It is included here to prevent a regression where the new
-    // implementation accidentally accepts malformed values. The test module as
-    // a whole compiles with compile errors for e02_classify_hash_digest_keys
-    // (unknown variant HashDigest) and assertion failures for the three above,
-    // so the RED state of the module is real.
+    // Note on e02_still_errors_on_off_length_and_non_hex: this test is GREEN
+    // today (current code fires E02 for both 50-hex and 64-non-hex). The original
+    // plan claimed the 64-non-hex case was RED, but that is incorrect: the current
+    // code checks length FIRST (fires on 50 since 50!=64) and non-hex SECOND
+    // (fires on 64 non-hex since z is not a hex digit). This test is therefore a
+    // PRESERVATION ANCHOR, not a RED barrier. It is included to prevent the
+    // CLEAN-3a implementation from accidentally accepting malformed values.
+    // The RED state of the module comes from the three assertion failures above.
     // -----------------------------------------------------------------
 
     #[test]
@@ -507,6 +505,11 @@ mod tests {
             diags[0].message,
         );
         assert!(
+            !diags[0].message.contains("SHA1"),
+            "fapd-W11 for MD5-length must NOT mention SHA1 (algo-specificity guard); got: {}",
+            diags[0].message,
+        );
+        assert!(
             diags.iter().all(|d| d.code.as_ref() != "fapd-E02"),
             "MD5-length digest must not fire fapd-E02; got: {diags:?}",
         );
@@ -549,6 +552,11 @@ mod tests {
             diags[0].message,
         );
         assert!(
+            !diags[0].message.contains("MD5"),
+            "fapd-W11 for SHA1-length must NOT mention MD5 (algo-specificity guard); got: {}",
+            diags[0].message,
+        );
+        assert!(
             diags.iter().all(|d| d.code.as_ref() != "fapd-E02"),
             "SHA1-length digest must not fire fapd-E02; got: {diags:?}",
         );
@@ -584,8 +592,7 @@ mod tests {
         assert_eq!(
             e02_count, 2,
             "both 50-hex (off-length) and 64-non-hex (non-hex) must produce fapd-E02 each; \
-             got {} fapd-E02 diagnostics: {diags:?}",
-            e02_count,
+             got {e02_count} fapd-E02 diagnostics: {diags:?}",
         );
     }
 }
