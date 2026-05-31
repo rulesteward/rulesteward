@@ -1131,4 +1131,98 @@ mod tests {
             "SHA-512 digest must verify as Match; current impl only does SHA-256 so this is RED"
         );
     }
+
+    /// The verifier must compute MD5 and return `DiskVerdict::Match` when the
+    /// trust entry records a 32-hex (MD5) digest that matches the file.
+    ///
+    /// The expected digest is grounded in coreutils `md5sum`:
+    ///   `printf 'hello' | md5sum` => `5d41402abc4b2a76b9719d911017c592`
+    /// The md-5 crate is not yet a dependency (the implementer adds it), so the
+    /// expected value is a verified literal constant, not computed in the test.
+    ///
+    /// RED today: `verify_entry` length-dispatches on `entry.digest.len()`. The
+    /// MD5 arm (`len == 32`) does not exist yet, so a 32-hex digest compared
+    /// against the 64-char SHA-256 actual hex yields `HashMismatch`, not `Match`.
+    /// A mutant that swaps or deletes the 32/MD5 arm would also survive without
+    /// this test.
+    #[test]
+    fn verify_matches_md5_file() {
+        use std::io::Write as _;
+
+        // MD5 of b"hello" (5 bytes, no newline), grounded in coreutils md5sum:
+        //   printf 'hello' | md5sum  =>  5d41402abc4b2a76b9719d911017c592
+        const MD5_OF_HELLO: &str = "5d41402abc4b2a76b9719d911017c592";
+        assert_eq!(MD5_OF_HELLO.len(), 32, "MD5 hex must be 32 chars");
+        assert!(
+            MD5_OF_HELLO
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "MD5 hex must be lowercase hex only"
+        );
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("blob_md5");
+        let mut f = std::fs::File::create(&path).expect("create blob file");
+        f.write_all(b"hello").expect("write blob");
+        drop(f);
+
+        let entry = TrustEntry {
+            path: path.to_string_lossy().into_owned(),
+            source: TrustSource::FileDb,
+            size: 5, // b"hello" is 5 bytes
+            digest: MD5_OF_HELLO.to_owned(),
+        };
+        assert_eq!(
+            verify_entry(&entry),
+            DiskVerdict::Match,
+            "MD5 digest (32-hex) must verify as Match; current impl only does SHA-256 so this is RED"
+        );
+    }
+
+    /// The verifier must compute SHA-1 and return `DiskVerdict::Match` when the
+    /// trust entry records a 40-hex (SHA-1) digest that matches the file.
+    ///
+    /// The expected digest is grounded in coreutils `sha1sum`:
+    ///   `printf 'hello' | sha1sum` => `aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d`
+    /// The sha-1 crate is not yet a dependency (the implementer adds it), so the
+    /// expected value is a verified literal constant, not computed in the test.
+    ///
+    /// RED today: `verify_entry` length-dispatches on `entry.digest.len()`. The
+    /// SHA-1 arm (`len == 40`) does not exist yet, so a 40-hex digest compared
+    /// against the 64-char SHA-256 actual hex yields `HashMismatch`, not `Match`.
+    /// A mutant that swaps or deletes the 40/SHA-1 arm would also survive without
+    /// this test.
+    #[test]
+    fn verify_matches_sha1_file() {
+        use std::io::Write as _;
+
+        // SHA-1 of b"hello" (5 bytes, no newline), grounded in coreutils sha1sum:
+        //   printf 'hello' | sha1sum  =>  aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+        const SHA1_OF_HELLO: &str = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+        assert_eq!(SHA1_OF_HELLO.len(), 40, "SHA-1 hex must be 40 chars");
+        assert!(
+            SHA1_OF_HELLO
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "SHA-1 hex must be lowercase hex only"
+        );
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("blob_sha1");
+        let mut f = std::fs::File::create(&path).expect("create blob file");
+        f.write_all(b"hello").expect("write blob");
+        drop(f);
+
+        let entry = TrustEntry {
+            path: path.to_string_lossy().into_owned(),
+            source: TrustSource::FileDb,
+            size: 5, // b"hello" is 5 bytes
+            digest: SHA1_OF_HELLO.to_owned(),
+        };
+        assert_eq!(
+            verify_entry(&entry),
+            DiskVerdict::Match,
+            "SHA-1 digest (40-hex) must verify as Match; current impl only does SHA-256 so this is RED"
+        );
+    }
 }
