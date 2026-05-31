@@ -176,7 +176,7 @@ fn group_by_path(entries: &[TrustEntry]) -> BTreeMap<String, Vec<(TrustSource, u
     for e in entries {
         m.entry(e.path.clone())
             .or_default()
-            .push((e.source, e.size, e.sha256.clone()));
+            .push((e.source, e.size, e.digest.clone()));
     }
     for v in m.values_mut() {
         v.sort_by(|x, y| (source_rank(x.0), x.1, &x.2).cmp(&(source_rank(y.0), y.1, &y.2)));

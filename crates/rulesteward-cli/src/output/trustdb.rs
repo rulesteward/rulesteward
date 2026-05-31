@@ -24,7 +24,7 @@ impl From<&TrustEntry> for ListRow {
             path: e.path.clone(),
             source: e.source,
             size: e.size,
-            sha256: e.sha256.clone(),
+            sha256: e.digest.clone(),
         }
     }
 }
