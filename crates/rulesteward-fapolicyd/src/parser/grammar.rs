@@ -100,10 +100,17 @@ fn attr<'a>() -> impl Parser<'a, &'a str, Attr, extra::Err<Rich<'a, char>>> + Cl
     let attr_kv = ident()
         .then_ignore(just('='))
         .then(attr_value())
-        .map(|(key, value)| Attr::Kv {
-            key,
-            value,
-            span: 0..0, // placeholder: filled by 3f impl pipeline
+        .map_with(|(key, value), e| {
+            // Capture the line-relative byte range of the full `key=value`
+            // token. `fixup_entry` in parser/mod.rs will shift this by
+            // `body_start_in_file` to make it file-relative, matching the
+            // convention used for Rule.span and SetDefinition.span.
+            let s = e.span();
+            Attr::Kv {
+                key,
+                value,
+                span: s.start..s.end,
+            }
         });
     let attr_all = just("all").to(Attr::All);
     attr_all.or(attr_kv).labelled("attribute")

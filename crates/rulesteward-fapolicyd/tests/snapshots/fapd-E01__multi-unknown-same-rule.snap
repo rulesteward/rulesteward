@@ -4,5 +4,5 @@ expression: rendered
 ---
 parse=ok
 diagnostics=2
-[fapd-E01] sev=Error line=1 col=1 span=0..37 :: unknown attribute `foo`
-[fapd-E01] sev=Error line=1 col=1 span=0..37 :: unknown attribute `baz`
+[fapd-E01] sev=Error line=1 col=17 span=16..23 :: unknown attribute `foo`
+[fapd-E01] sev=Error line=1 col=25 span=24..31 :: unknown attribute `baz`

@@ -39,12 +39,13 @@ pub enum Attr {
     Kv {
         key: String,
         value: AttrValue,
-        /// Byte range of this attribute within the source file.
+        /// File-relative byte range of this `key=value` attribute token.
         ///
-        /// Populated with `0..0` placeholder at all construction sites (parser
-        /// and test helpers). The 3f impl pipeline will wire real per-attribute
-        /// spans from the chumsky `map_with` extractor; until then every consumer
-        /// must read `Rule.span` for diagnostic positioning (existing behavior).
+        /// Captured line-relative by the chumsky `map_with` extractor in
+        /// `grammar.rs::attr()` and shifted to file-relative by
+        /// `parser::fixup_attr`. Used by fapd-E01 to point its caret at the
+        /// offending attribute. Test and layout constructions may use a `0..0`
+        /// placeholder where positioning is not asserted.
         span: Span,
     },
 }
