@@ -474,6 +474,24 @@ mod tests {
         }
     }
 
+    // --- CLEAN-2: anchored() equality anchor ---
+    //
+    // This test is GREEN immediately (anchored() exists in Phase 0). It acts
+    // as a behavior-preservation anchor: if any refactor changes anchored()'s
+    // output shape (column, source_id, etc.) relative to the hand-written
+    // Diagnostic::new(...).with_source_id(...) form, this test fails fast.
+
+    #[test]
+    fn anchored_equals_handwritten_diagnostic() {
+        use std::path::Path;
+        let file = Path::new("/tmp/x.rules");
+        let span = 3..9;
+        let got = super::anchored(Severity::Error, "fapd-E02", span.clone(), "boom", file, 7);
+        let want = Diagnostic::new(Severity::Error, "fapd-E02", span, "boom", file, 7, 1)
+            .with_source_id(file.display().to_string());
+        assert_eq!(got, want);
+    }
+
     #[test]
     fn parse_f01_column_matches_line_col() {
         // F01 parse errors should also have column == line_col(span, source).1
