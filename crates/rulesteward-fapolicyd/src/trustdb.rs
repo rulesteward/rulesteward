@@ -526,11 +526,11 @@ mod tests {
             KNOWN_SIZE,
             "KNOWN_SIZE must equal the byte length of KNOWN_BYTES"
         );
-        // Defend the "exactly 64 lowercase hex" invariant the parser relies on.
+        // SHA-256 digests are 64 lowercase hex chars - one of the accepted lengths.
         assert_eq!(
             KNOWN_SHA256.len(),
             64,
-            "sha256 hex must be exactly 64 chars"
+            "sha256 hex must be 64 chars (the SHA-256 accepted digest length)"
         );
         assert!(
             KNOWN_SHA256
@@ -659,8 +659,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_trust_value_short_hex_is_malformed() {
-        // 63 hex chars: one short of the required 64.
+    fn parse_trust_value_off_length_hex_is_malformed() {
+        // 63 hex chars: not in the accepted set {32, 40, 64, 128}.
         let short = &KNOWN_SHA256[..63];
         let raw = format!("1 12345 {short}").into_bytes();
         assert!(
@@ -668,23 +668,32 @@ mod tests {
                 parse_trust_value(&raw),
                 Err(TrustDbError::MalformedValue { .. })
             ),
-            "63-char hex must be MalformedValue, got {:?}",
+            "63-char hex must be MalformedValue (not in accepted lengths 32/40/64/128), got {:?}",
             parse_trust_value(&raw)
         );
-    }
 
-    #[test]
-    fn parse_trust_value_long_hex_is_malformed() {
-        // 65 hex chars: one over the required 64.
+        // 65 hex chars: also not in the accepted set.
         let long = format!("{KNOWN_SHA256}a");
-        let raw = format!("1 12345 {long}").into_bytes();
+        let raw_long = format!("1 12345 {long}").into_bytes();
         assert!(
             matches!(
-                parse_trust_value(&raw),
+                parse_trust_value(&raw_long),
                 Err(TrustDbError::MalformedValue { .. })
             ),
-            "65-char hex must be MalformedValue, got {:?}",
-            parse_trust_value(&raw)
+            "65-char hex must be MalformedValue (not in accepted lengths 32/40/64/128), got {:?}",
+            parse_trust_value(&raw_long)
+        );
+
+        // 50 hex chars: also not in the accepted set.
+        let fifty = "a".repeat(50);
+        let raw_50 = format!("1 12345 {fifty}").into_bytes();
+        assert!(
+            matches!(
+                parse_trust_value(&raw_50),
+                Err(TrustDbError::MalformedValue { .. })
+            ),
+            "50-char hex must be MalformedValue (not in accepted lengths 32/40/64/128), got {:?}",
+            parse_trust_value(&raw_50)
         );
     }
 
@@ -705,18 +714,22 @@ mod tests {
 
     proptest! {
         /// Round-trip property: for any src in 0..=3, any u64 size, and any
-        /// 64-char lowercase-hex string, `parse_trust_value` recovers the same
-        /// fields. The hex strategy emits exactly 64 chars from [0-9a-f].
+        /// lowercase-hex string whose length is one of {32, 40, 64, 128},
+        /// `parse_trust_value` recovers the same fields.
+        /// The hex strategy emits chars from [0-9a-f] at each accepted length.
         #[test]
         fn parse_trust_value_roundtrip_prop(
             src_int in 0u32..=3,
             size in any::<u64>(),
+            len_idx in 0usize..4,
             hex in proptest::collection::vec(
                 proptest::sample::select(b"0123456789abcdef".as_slice()),
-                64..=64,
+                128..=128,
             ),
         ) {
-            let hex: String = hex.into_iter().map(char::from).collect();
+            let accepted_lens = [32usize, 40, 64, 128];
+            let len = accepted_lens[len_idx];
+            let hex: String = hex.into_iter().take(len).map(char::from).collect();
             let raw = value_bytes(src_int, size, &hex);
             let (got_src, got_size, got_hex) =
                 parse_trust_value(&raw).expect("well-formed value must parse");
@@ -777,8 +790,8 @@ mod tests {
         );
         for e in &py {
             assert_eq!(
-                e.sha256, KNOWN_SHA256,
-                "each row's sha256 field must round-trip from the fixture value"
+                e.digest, KNOWN_SHA256,
+                "each row's digest field must round-trip from the fixture value"
             );
         }
     }
@@ -833,7 +846,7 @@ mod tests {
             path: f.path().display().to_string(),
             source: TrustSource::FileDb,
             size: KNOWN_SIZE,
-            sha256: KNOWN_SHA256.to_owned(),
+            digest: KNOWN_SHA256.to_owned(),
         };
         assert_eq!(verify_entry(&entry), DiskVerdict::Match);
     }
@@ -858,7 +871,7 @@ mod tests {
             path: f.path().display().to_string(),
             source: TrustSource::FileDb,
             size: KNOWN_SIZE,
-            sha256: wrong.clone(),
+            digest: wrong.clone(),
         };
         match verify_entry(&entry) {
             DiskVerdict::HashMismatch { recorded, actual } => {
@@ -886,7 +899,7 @@ mod tests {
             path: f.path().display().to_string(),
             source: TrustSource::FileDb,
             size: recorded_size,
-            sha256: bogus_hash,
+            digest: bogus_hash,
         };
         match verify_entry(&entry) {
             DiskVerdict::SizeMismatch { recorded, actual } => {
@@ -909,7 +922,7 @@ mod tests {
             path: "/nonexistent/path/rs-3d-trustdb/zzz".to_owned(),
             source: TrustSource::FileDb,
             size: KNOWN_SIZE,
-            sha256: KNOWN_SHA256.to_owned(),
+            digest: KNOWN_SHA256.to_owned(),
         };
         assert_eq!(verify_entry(&entry), DiskVerdict::Missing);
     }
@@ -935,7 +948,7 @@ mod tests {
             path: impossible_child,
             source: TrustSource::FileDb,
             size: KNOWN_SIZE,
-            sha256: KNOWN_SHA256.to_owned(),
+            digest: KNOWN_SHA256.to_owned(),
         };
         match verify_entry(&entry) {
             DiskVerdict::ReadError(msg) => {
@@ -1006,7 +1019,7 @@ mod tests {
             path: file_path.display().to_string(),
             source: TrustSource::FileDb,
             size: real_size,
-            sha256: KNOWN_SHA256.to_owned(),
+            digest: KNOWN_SHA256.to_owned(),
         };
 
         match verify_entry(&entry) {
@@ -1025,5 +1038,97 @@ mod tests {
         let _ = std::process::Command::new("chmod")
             .args(["644", file_path.to_str().expect("utf8 path")])
             .status();
+    }
+
+    // ---- CLEAN-3b RED tests: 4-length parse + SHA-512 verify ----------------
+
+    /// Parser must accept all four fapolicyd digest lengths: MD5 (32), SHA1 (40),
+    /// SHA256 (64), SHA512 (128). Each well-formed line must parse Ok and the
+    /// returned digest must round-trip exactly.
+    ///
+    /// RED today: the parser's `hex_field.len() != 64` guard rejects lengths 32,
+    /// 40, and 128 with `MalformedValue`.
+    #[test]
+    fn parse_accepts_all_four_digest_lengths() {
+        for len in [32usize, 40, 64, 128] {
+            let hex = "a".repeat(len);
+            let raw = format!("2 100 {hex}");
+            let (src, size, got_hex) = parse_trust_value(raw.as_bytes())
+                .unwrap_or_else(|e| panic!("len {len} should parse Ok, got Err: {e:?}"));
+            assert_eq!(
+                src,
+                TrustSource::FileDb,
+                "len {len}: src int 2 must map to FileDb"
+            );
+            assert_eq!(size, 100u64, "len {len}: size must round-trip");
+            assert_eq!(got_hex, hex, "len {len}: digest must round-trip exactly");
+        }
+    }
+
+    /// Parser must still reject off-length hex (e.g. 4 chars) and uppercase hex
+    /// (even when the length is accepted). This is a preservation guard - the
+    /// rejection of non-hex and off-length is expected both before and after the
+    /// widening. It will likely PASS today (current code rejects both); it
+    /// confirms no regression.
+    ///
+    /// Note: this test is a guard, not a RED test. The implementer must not weaken it.
+    #[test]
+    fn parse_rejects_off_length_and_uppercase() {
+        // 4-char hex: not in accepted set {32, 40, 64, 128}.
+        assert!(
+            parse_trust_value(b"2 100 abcd").is_err(),
+            "4-char hex must be rejected (not in accepted lengths 32/40/64/128)"
+        );
+        // 64 uppercase hex chars: uppercase is not lowercase-hex.
+        let upper64 = "A".repeat(64);
+        let raw_upper = format!("2 100 {upper64}");
+        assert!(
+            parse_trust_value(raw_upper.as_bytes()).is_err(),
+            "64 uppercase hex chars must be rejected (not lowercase)"
+        );
+    }
+
+    /// The verifier must compute SHA-512 and return `DiskVerdict::Match` when the
+    /// trust entry records a 128-hex (SHA-512) digest that matches the file.
+    ///
+    /// The expected digest is computed with the same `sha2::Sha512` the impl will
+    /// use, so the test is self-consistent (not grounded in an external `sha512sum`
+    /// value - a note for future grounding if the impl changes).
+    ///
+    /// RED today: `verify_entry` only calls `Sha256`; a 128-hex digest will compare
+    /// against a 64-char actual hex and return `HashMismatch` instead of `Match`.
+    #[test]
+    fn verify_matches_sha512_file() {
+        use sha2::Sha512;
+        use std::io::Write as _;
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("blob");
+        let mut f = std::fs::File::create(&path).expect("create blob file");
+        f.write_all(b"hello").expect("write blob");
+        drop(f);
+
+        // Compute SHA-512 of b"hello" using sha2::Sha512, so the expected value
+        // is derived from the same crate the impl will use. Both the test and the
+        // impl call sha2::Sha512 - a future grounding pass could pin against
+        // coreutils sha512sum output.
+        let want: String = {
+            let mut h = Sha512::new();
+            h.update(b"hello");
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        };
+        assert_eq!(want.len(), 128, "SHA-512 hex must be 128 chars");
+
+        let entry = TrustEntry {
+            path: path.to_string_lossy().into_owned(),
+            source: TrustSource::FileDb,
+            size: 5, // b"hello" is 5 bytes
+            digest: want.clone(),
+        };
+        assert_eq!(
+            verify_entry(&entry),
+            DiskVerdict::Match,
+            "SHA-512 digest must verify as Match; current impl only does SHA-256 so this is RED"
+        );
     }
 }
