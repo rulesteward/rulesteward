@@ -1063,6 +1063,7 @@ dependencies = [
  "proptest",
  "rulesteward-core",
  "rulesteward-fapolicyd",
+ "serde",
  "serde-sarif",
  "serde_json",
  "tempfile",

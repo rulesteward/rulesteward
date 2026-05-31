@@ -1,10 +1,12 @@
 //! fapolicyd trust-DB reader (heed, read-only).
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use heed::types::Bytes;
 use heed::{Database, Env, EnvFlags, EnvOpenOptions};
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustDbError {
@@ -33,11 +35,16 @@ impl TrustSource {
     ///
     /// fapolicyd encodes the origin of each trust entry as a small integer
     /// in the value field (`SRC_UNKNOWN = 0`, `SRC_RPM = 1`, `SRC_FILE_DB = 2`,
-    /// `SRC_DEB = 3`; any other value maps to `Unknown`). The exact mapping is
-    /// filled by the 3d impl pipeline.
+    /// `SRC_DEB = 3`; any other value maps to `Unknown`).
     #[must_use]
-    pub fn from_int(_n: u32) -> Self {
-        todo!() // stub: filled by 3d impl pipeline
+    pub fn from_int(n: u32) -> Self {
+        match n {
+            1 => Self::RpmDb,
+            2 => Self::FileDb,
+            3 => Self::Deb,
+            // 0 (SRC_UNKNOWN) and any unrecognized value both map to Unknown.
+            _ => Self::Unknown,
+        }
     }
 }
 
@@ -68,21 +75,101 @@ pub enum DiskVerdict {
 
 /// Parse the raw bytes of a trust-DB value (`"<src_int> <size> <sha256_hex>"`).
 ///
-/// Returns `(source, size, sha256_hex)` on success. Body filled by the 3d
-/// impl pipeline; the parse logic belongs to fapolicyd's on-disk format.
-#[allow(dead_code)] // stub: called by iter_entries/get_entry once filled by 3d impl pipeline
-pub(crate) fn parse_trust_value(_raw: &[u8]) -> Result<(TrustSource, u64, String), TrustDbError> {
-    todo!() // stub: filled by 3d impl pipeline
+/// Returns `(source, size, sha256_hex)` on success. The value must be EXACTLY
+/// three ASCII-space-separated fields: a u32 source integer, a u64 size, and a
+/// 64-char lowercase-hex SHA-256 digest. Any deviation (wrong field count,
+/// non-numeric src/size, non-64-char or non-lowercase-hex digest) is a
+/// `MalformedValue` error. The fn does not know the entry key, so both `key`
+/// and `raw` carry the lossy-decoded raw value bytes.
+pub(crate) fn parse_trust_value(raw: &[u8]) -> Result<(TrustSource, u64, String), TrustDbError> {
+    let raw_str = String::from_utf8_lossy(raw);
+    let malformed = || TrustDbError::MalformedValue {
+        key: raw_str.clone().into_owned(),
+        raw: raw_str.clone().into_owned(),
+    };
+
+    // Split on ASCII space into EXACTLY three fields. `splitn(4, ' ')` lets a
+    // 4th-and-beyond field surface as a single trailing element so a four-field
+    // value is rejected (the trailing element would be non-empty).
+    let mut fields = raw_str.split(' ');
+    let (Some(src_field), Some(size_field), Some(hex_field), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Err(malformed());
+    };
+
+    let src_int: u32 = src_field.parse().map_err(|_| malformed())?;
+    let size: u64 = size_field.parse().map_err(|_| malformed())?;
+
+    // Exactly 64 lowercase-hex chars.
+    if hex_field.len() != 64
+        || !hex_field
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(malformed());
+    }
+
+    Ok((TrustSource::from_int(src_int), size, hex_field.to_owned()))
 }
 
 /// Verify a single `TrustEntry` against the file currently on disk.
 ///
 /// Reads the file at `entry.path`, computes its size and SHA-256, and
-/// returns a `DiskVerdict` describing the comparison result. Body filled
-/// by the 3d impl pipeline.
+/// returns a `DiskVerdict` describing the comparison result.
+///
+/// Order is load-bearing: `Missing` (no file) -> `SizeMismatch` (size differs,
+/// checked BEFORE hashing) -> hash compare (`Match` / `HashMismatch`). A file
+/// whose size already differs is never hashed.
 #[must_use]
-pub fn verify_entry(_entry: &TrustEntry) -> DiskVerdict {
-    todo!() // stub: filled by 3d impl pipeline
+pub fn verify_entry(entry: &TrustEntry) -> DiskVerdict {
+    let metadata = match std::fs::metadata(&entry.path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskVerdict::Missing,
+        Err(e) => return DiskVerdict::ReadError(e.to_string()),
+    };
+
+    let actual_size = metadata.len();
+    if actual_size != entry.size {
+        return DiskVerdict::SizeMismatch {
+            recorded: entry.size,
+            actual: actual_size,
+        };
+    }
+
+    // Stream the file through SHA-256 in fixed-size chunks: never slurp the
+    // whole file into memory (trust DBs reference arbitrarily large binaries).
+    let mut file = match std::fs::File::open(&entry.path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskVerdict::Missing,
+        Err(e) => return DiskVerdict::ReadError(e.to_string()),
+    };
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) => return DiskVerdict::ReadError(e.to_string()),
+        }
+    }
+    let digest = hasher.finalize();
+    // Lowercase hex via a {:02x} loop (no `hex` crate dependency).
+    let mut actual_hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        // Writing to a String is infallible.
+        let _ = write!(actual_hex, "{byte:02x}");
+    }
+
+    if actual_hex == entry.sha256 {
+        DiskVerdict::Match
+    } else {
+        DiskVerdict::HashMismatch {
+            recorded: entry.sha256.clone(),
+            actual: actual_hex,
+        }
+    }
 }
 
 /// Read-only handle on a fapolicyd trust DB. Owns the heed `Env`; each query
@@ -133,16 +220,51 @@ impl TrustDb {
 
     /// Return all entries in the trust DB as a flat `Vec<TrustEntry>`.
     ///
-    /// Each distinct key may have multiple value rows (fapolicyd uses DUPSORT).
-    /// Body filled by the 3d impl pipeline.
+    /// Each distinct key may have multiple value rows (fapolicyd uses DUPSORT);
+    /// every value-row surfaces as its own `TrustEntry` (no key dedup).
     pub fn iter_entries(&self) -> Result<Vec<TrustEntry>, TrustDbError> {
-        todo!() // stub: filled by 3d impl pipeline
+        let rtxn = self.env.read_txn()?;
+        let mut out: Vec<TrustEntry> = Vec::new();
+        for item in self.db.iter(&rtxn)? {
+            let (k, v) = item?;
+            let path = String::from_utf8_lossy(k).into_owned();
+            let (source, size, sha256) = parse_trust_value(v)?;
+            out.push(TrustEntry {
+                path,
+                source,
+                size,
+                sha256,
+            });
+        }
+        Ok(out)
     }
 
     /// Return all `TrustEntry` rows for the given absolute path, or `None` if
-    /// the path is not present in the DB. Body filled by the 3d impl pipeline.
-    pub fn get_entry(&self, _p: &str) -> Result<Option<Vec<TrustEntry>>, TrustDbError> {
-        todo!() // stub: filled by 3d impl pipeline
+    /// the path is not present in the DB. DUPSORT keys surface every value-row.
+    pub fn get_entry(&self, p: &str) -> Result<Option<Vec<TrustEntry>>, TrustDbError> {
+        let rtxn = self.env.read_txn()?;
+        let mut rows: Vec<TrustEntry> = Vec::new();
+        // `get_duplicates` yields every value-row stored under the key (or None
+        // if the key is absent). For a non-DUPSORT db it still yields the single
+        // row, so this is correct for both fixture shapes.
+        let Some(iter) = self.db.get_duplicates(&rtxn, p.as_bytes())? else {
+            return Ok(None);
+        };
+        for item in iter {
+            let (_k, v) = item?;
+            let (source, size, sha256) = parse_trust_value(v)?;
+            rows.push(TrustEntry {
+                path: p.to_owned(),
+                source,
+                size,
+                sha256,
+            });
+        }
+        if rows.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(rows))
+        }
     }
 
     /// True iff `p` is an exact key in the trust DB.
