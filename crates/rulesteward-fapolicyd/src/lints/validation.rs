@@ -26,18 +26,59 @@ enum E02Category {
     /// `uid`, `gid`, `auid`, `pid`, `ppid`, `sessionid` - accept a u32
     /// decimal, a name token (alnum / `_` / `-`), or the literal `unset`.
     NumericId,
-    /// `filehash`, `sha256hash` - require exactly 64 ASCII hex chars.
-    Hex64,
+    /// `filehash`, `sha256hash` - accept 32 (MD5), 40 (SHA1), 64 (SHA256),
+    /// or 128 (SHA512) ASCII hex chars. 32/40-hex are valid but weak (fapd-W11).
+    HashDigest,
 }
 
-/// Look up `key` in the fapd-E02 validation table. Returns `None` if the key
-/// is out of scope for fapd-E02 (either unknown - fapd-E01 territory - or
+/// Look up `key` in the fapd-E02 / fapd-W11 validation table. Returns `None`
+/// if the key is out of scope (either unknown - fapd-E01 territory - or
 /// known but with no value-shape we lint).
 fn classify_e02_key(key: &str) -> Option<E02Category> {
     match key {
         "uid" | "gid" | "auid" | "pid" | "ppid" | "sessionid" => Some(E02Category::NumericId),
-        "filehash" | "sha256hash" => Some(E02Category::Hex64),
+        "filehash" | "sha256hash" => Some(E02Category::HashDigest),
         _ => None,
+    }
+}
+
+/// Verdict for a hash-attribute value (`filehash=` / `sha256hash=`).
+enum HashVerdict {
+    /// 64-hex (SHA256) or 128-hex (SHA512): strong digest, no diagnostic.
+    Ok,
+    /// 32-hex (MD5) or 40-hex (SHA1): valid length, weak algorithm -> fapd-W11.
+    Weak(&'static str),
+    /// Wrong shape -> fapd-E02 (detail is the second half of the message).
+    Invalid(String),
+}
+
+/// Classify a hash-attribute value into Ok/Weak/Invalid for the fapd-E02/W11
+/// split. Upstream fapolicyd dispatches on digest length (32/40/64/128) and
+/// accepts all four as `file_hash_alg_fast` candidates; `RuleSteward` mirrors
+/// this by accepting the same four lengths as syntactically valid, then
+/// warning on the weak algorithms (MD5 at 32-hex, SHA1 at 40-hex).
+fn classify_hash_value(value: &AttrValue) -> HashVerdict {
+    match value {
+        AttrValue::Int(_) => {
+            HashVerdict::Invalid("expected 32/40/64/128 hex chars, got numeric value".into())
+        }
+        AttrValue::Str(s) => {
+            if !s.chars().all(|c| c.is_ascii_hexdigit()) {
+                return HashVerdict::Invalid(
+                    "expected a hex digest, contains non-hex character".into(),
+                );
+            }
+            match s.chars().count() {
+                64 | 128 => HashVerdict::Ok,
+                32 => HashVerdict::Weak("MD5"),
+                40 => HashVerdict::Weak("SHA1"),
+                n => HashVerdict::Invalid(format!(
+                    "expected 32, 40, 64, or 128 hex chars, got {n} chars"
+                )),
+            }
+        }
+        // SetRef is filtered out before reaching this fn.
+        AttrValue::SetRef(_) => HashVerdict::Ok,
     }
 }
 
@@ -52,8 +93,9 @@ fn is_valid_numeric_id_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// fapd-E02 - invalid attribute value. Per-attribute scan; emits one
-/// diagnostic per offending `Attr::Kv`. `SetRef` values (macros) are skipped -
+/// fapd-E02 / fapd-W11 - attribute value validation. Per-attribute scan;
+/// emits fapd-E02 (Error) for invalid values, fapd-W11 (Warning) for
+/// valid-but-weak hash digests. `SetRef` values (macros) are skipped -
 /// they are checked by fapd-E03/fapd-E04/fapd-E05 in later milestones.
 ///
 /// Span is the enclosing rule's span (per-attribute spans deferred per
@@ -73,26 +115,53 @@ fn e02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             let Some(category) = classify_e02_key(key) else {
                 continue;
             };
-            let Some(detail) = e02_failure_detail(category, value) else {
-                continue;
-            };
-            diags.push(anchored(
-                Severity::Error,
-                "fapd-E02",
-                r.span.clone(),
-                format!("invalid value for `{key}=`: {detail}"),
-                file,
-                r.line,
-            ));
+            match category {
+                E02Category::NumericId => {
+                    if let Some(detail) = e02_failure_detail(category, value) {
+                        diags.push(anchored(
+                            Severity::Error,
+                            "fapd-E02",
+                            r.span.clone(),
+                            format!("invalid value for `{key}=`: {detail}"),
+                            file,
+                            r.line,
+                        ));
+                    }
+                }
+                E02Category::HashDigest => match classify_hash_value(value) {
+                    HashVerdict::Ok => {}
+                    HashVerdict::Invalid(detail) => diags.push(anchored(
+                        Severity::Error,
+                        "fapd-E02",
+                        r.span.clone(),
+                        format!("invalid value for `{key}=`: {detail}"),
+                        file,
+                        r.line,
+                    )),
+                    HashVerdict::Weak(alg) => diags.push(anchored(
+                        Severity::Warning,
+                        "fapd-W11",
+                        r.span.clone(),
+                        format!(
+                            "weak hash algorithm for `{key}=`: {alg}; prefer SHA256 (64-hex) or SHA512 (128-hex)"
+                        ),
+                        file,
+                        r.line,
+                    )),
+                },
+            }
         }
     }
     diags
 }
 
-/// Predicate adapter: returns `Some(detail)` when `value` fails the
-/// validation for `category`, or `None` when it passes. The returned
-/// detail string is the second half of the user-facing message; it
-/// names the specific reason the value was rejected.
+/// Returns `Some(detail)` when `value` fails the validation for `category`,
+/// or `None` when it passes.
+///
+/// For `NumericId`: checks u32 range and name-form validity.
+/// For `HashDigest`: always returns `None` (the `HashDigest` branch of the
+/// main validation loop calls `classify_hash_value` directly and may emit
+/// either fapd-E02 or fapd-W11 depending on the verdict).
 fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String> {
     match (category, value) {
         // NumericId - Int branch: must fit in u32 (0..=u32::MAX).
@@ -111,26 +180,8 @@ fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String
                 Some("expected u32 decimal, name, or `unset`".to_string())
             }
         }
-        // Hex64 - Int branch: numeric values are never valid hash values
-        // (a parser-`Int` filehash means the user typed only digits, which
-        // can't reach 64 characters in any realistic scenario, but is
-        // still wrong-shape).
-        (E02Category::Hex64, AttrValue::Int(_)) => {
-            Some("expected 64 hex chars, got numeric value".to_string())
-        }
-        // Hex64 - Str branch: 64 chars, all ASCII hex.
-        (E02Category::Hex64, AttrValue::Str(s)) => {
-            let len = s.chars().count();
-            if len != 64 {
-                Some(format!("expected 64 hex chars, got {len} chars"))
-            } else if !s.chars().all(|c| c.is_ascii_hexdigit()) {
-                Some("expected 64 hex chars, contains non-hex character".to_string())
-            } else {
-                None
-            }
-        }
-        // SetRef is filtered out before reaching this fn.
-        (_, AttrValue::SetRef(_)) => None,
+        // HashDigest is handled by classify_hash_value in the main loop.
+        (E02Category::HashDigest, _) | (_, AttrValue::SetRef(_)) => None,
     }
 }
 
