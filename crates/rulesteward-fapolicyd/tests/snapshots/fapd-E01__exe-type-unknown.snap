@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[fapd-E01] sev=Error line=3 col=1 span=142..179 :: unknown attribute `exe_type`
+[fapd-E01] sev=Error line=3 col=20 span=161..173 :: unknown attribute `exe_type`
