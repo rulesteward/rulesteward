@@ -205,6 +205,37 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Q2b: the W05 diagnostic LINE is derived from the offending rule's line, not
+    // hardcoded. Every other unit-test rule sits on line 1, so a wrong impl that
+    // hardcodes `line = 1` survives them; this rule sits on line 7. RED against
+    // the empty stub (0 diagnostics) AND against any line=1 hardcode. Closes the
+    // adversarial-review CONCERN that line correctness was pinned only by the
+    // self-baked snapshot.
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn uid_not_found_diagnostic_line_matches_rule_line() {
+        let entries = vec![modern_rule(
+            7,
+            Decision::Allow,
+            None,
+            vec![kv("uid", "4294967294")],
+            vec![Attr::All],
+        )];
+        let diags = w05_with_resolver(&entries, &p(), resolver_not_found());
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 fapd-W05 for the unresolved uid, got {}: {diags:?}",
+            diags.len()
+        );
+        assert_eq!(
+            diags[0].line, 7,
+            "W05 line must be the offending rule's line (7), not a hardcoded 1, got {}",
+            diags[0].line
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Q3: name-form uid resolves -> no W05.
     //
     // Adversarial: a numeric-only impl would fail to resolve "alice" and falsely fire.
