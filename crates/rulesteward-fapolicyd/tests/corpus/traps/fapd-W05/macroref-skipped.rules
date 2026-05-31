@@ -1,0 +1,5 @@
+# W05 clean: %macroref uid= values are skipped (not literal strings).
+# W05 only fires for literal string values; SetRef values have no static
+# identity to check against getent.
+%MY_USERS=/usr/bin/trusted
+allow uid=%MY_USERS : all
