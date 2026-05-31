@@ -15,7 +15,9 @@ use crate::cli::{
     FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
     TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbStaleArgs,
 };
-use crate::exit_code::{self, EXIT_CLEAN, EXIT_NO_OP, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
+use crate::exit_code::{
+    self, EXIT_CLEAN, EXIT_LMDB_ERROR, EXIT_NO_OP, EXIT_TOOL_FAILURE, EXIT_WARNINGS,
+};
 use crate::output::trustdb as trustdb_out;
 use crate::output::trustdb::{CheckRow, CheckVerdict, DbDiffKind, DbDiffRow, ListRow};
 use crate::output::{self, RenderError};
@@ -240,13 +242,19 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     let trustdb = match &args.against_trustdb {
-        Some(p) => match open_trustdb_readonly(p) {
-            Ok(db) => Some(db),
-            Err(e) => {
-                eprintln!("error: opening trust DB {}: {e}", p.display());
+        Some(p) => {
+            if !p.is_dir() {
+                eprintln!("error: opening trust DB {}: not a directory", p.display());
                 return Ok(EXIT_TOOL_FAILURE);
             }
-        },
+            match open_trustdb_readonly(p) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    eprintln!("error: opening trust DB {}: {e}", p.display());
+                    return Ok(EXIT_LMDB_ERROR);
+                }
+            }
+        }
         None => None,
     };
 

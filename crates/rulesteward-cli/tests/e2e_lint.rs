@@ -791,3 +791,74 @@ fn lint_directory_undefined_macro_is_e03_exit_two() {
         .stdout(predicate::str::contains("[fapd-E03]"))
         .stdout(predicate::str::contains("[fapd-W09]").not());
 }
+
+// --- CLEAN-4c: exit-code 4 for LMDB/trust-DB open error vs exit-code 3 for
+// not-a-directory (CLEAN-4c barrier tests). ---
+//
+// Background: `run_lint` passes `--against-trustdb <PATH>` directly to
+// `open_trustdb_readonly`. Post-CLEAN-4c the implementer will add a `is_dir()`
+// pre-check: if PATH is not a directory -> exit 3 (stays EXIT_TOOL_FAILURE);
+// if PATH IS a directory but heed/LMDB fails to open it -> exit 4
+// (new EXIT_LMDB_ERROR). Today BOTH arms still exit 3, so:
+//   - `against_trustdb_lmdb_open_error_exits_4` is RED (expects 4, gets 3).
+//   - `against_trustdb_not_a_directory_exits_3` is GREEN today (expects 3,
+//     gets 3 via the heed error path); it becomes a preservation guard after
+//     impl adds the is_dir() check that separates the two arms.
+
+/// CLEAN-4c RED test: `--against-trustdb` pointing at an EXISTING DIRECTORY
+/// that contains no valid LMDB env (empty temp dir, no `data.mdb`) triggers a
+/// genuine heed/LMDB open error. Post-CLEAN-4c this must exit 4
+/// (`EXIT_LMDB_ERROR`). Currently exits 3 (`EXIT_TOOL_FAILURE`) because the
+/// two failure arms are not yet distinguished.
+///
+/// Fixture grounding: `open_trustdb_readonly` on an empty dir returns
+/// `Err(TrustDbError::Open(_) | TrustDbError::Missing(_))` (confirmed by the
+/// `missing_db_is_error_not_panic` test in trustdb.rs). An empty directory is
+/// the canonical fixture for a heed-error arm because `is_dir()` returns true
+/// (so the future `is_dir()` check passes) but LMDB has nothing to open.
+///
+/// Asserts the literal value 4, not a not-yet-existing `EXIT_LMDB_ERROR`
+/// constant, so the test compiles today.
+#[test]
+fn against_trustdb_lmdb_open_error_exits_4() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Empty sub-directory: is_dir() = true, no data.mdb -> heed returns Err.
+    let empty_db_dir = dir.path().join("empty_lmdb_dir");
+    std::fs::create_dir(&empty_db_dir).expect("create empty lmdb dir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&empty_db_dir)
+        .arg(&rules_d)
+        .assert()
+        // EXIT_LMDB_ERROR = 4 (post-CLEAN-4c). Currently exits 3 -> RED.
+        .code(4);
+}
+
+/// CLEAN-4c preservation guard: `--against-trustdb` pointing at a REGULAR FILE
+/// (not a directory) must continue to exit 3 (`EXIT_TOOL_FAILURE`) after
+/// CLEAN-4c wires the `is_dir()` pre-check. A regular file fails `is_dir()` -> the
+/// "not a directory" arm fires -> exit 3.
+///
+/// This test is GREEN today (currently exits 3 via the heed error path because
+/// no `is_dir()` check exists yet). After the implementer adds the `is_dir()` check
+/// it will remain GREEN via the new `is_dir()` -> exit 3 arm. Documents the
+/// preservation contract: "not a directory" stays 3, not 4.
+#[test]
+fn against_trustdb_not_a_directory_exits_3() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A real file: is_dir() = false -> "not a directory" arm -> exit 3.
+    let regular_file = dir.path().join("not_a_dir.txt");
+    std::fs::write(&regular_file, b"I am a file, not a directory").expect("write file");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&regular_file)
+        .arg(&rules_d)
+        .assert()
+        // EXIT_TOOL_FAILURE = 3. GREEN today (heed error path); preserved after
+        // is_dir() check lands as the "not a directory" arm.
+        .code(3);
+}
