@@ -61,7 +61,7 @@ fn e02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     for entry in entries {
         let Entry::Rule(r) = entry else { continue };
         for attr in r.subject.iter().chain(r.object.iter()) {
-            let Attr::Kv { key, value } = attr else {
+            let Attr::Kv { key, value, .. } = attr else {
                 continue;
             };
             if let AttrValue::SetRef(_) = value {
@@ -307,10 +307,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(-1),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "filehash".into(),
                 value: AttrValue::Str("abc".into()),
+                span: 0..0,
             }],
         )];
         let diags = e02(&entries, &p());
@@ -334,10 +336,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::SetRef("my_uids".into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "filehash".into(),
                 value: AttrValue::SetRef("my_hashes".into()),
+                span: 0..0,
             }],
         )];
         let diags = e02(&entries, &p());

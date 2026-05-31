@@ -109,7 +109,7 @@ fn canonical_side(attrs: &[Attr], macro_map: &MacroMap) -> Option<CanonicalSide>
     let mut pairs = Vec::with_capacity(attrs.len());
     for attr in attrs {
         match attr {
-            Attr::Kv { key, value } => {
+            Attr::Kv { key, value, .. } => {
                 pairs.push((key.clone(), canonical_value(value, macro_map)));
             }
             // A bare `Attr::All` mixed with other attrs, or any other shape, is
@@ -321,18 +321,21 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Str(value.to_string()),
+            span: 0..0,
         }
     }
     fn kv_int(key: &str, value: i64) -> Attr {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Int(value),
+            span: 0..0,
         }
     }
     fn kv_ref(key: &str, set: &str) -> Attr {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::SetRef(set.to_string()),
+            span: 0..0,
         }
     }
 

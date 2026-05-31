@@ -48,7 +48,7 @@ impl fmt::Display for Attr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Attr::All => f.write_str("all"),
-            Attr::Kv { key, value } => write!(f, "{key}={value}"),
+            Attr::Kv { key, value, .. } => write!(f, "{key}={value}"),
         }
     }
 }
@@ -99,6 +99,7 @@ mod tests {
             subject: vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: span(0, 0),
             }],
             object: vec![Attr::All],
             syntax: SyntaxFlavor::Modern,
@@ -116,10 +117,12 @@ mod tests {
             subject: vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: span(0, 0),
             }],
             object: vec![Attr::Kv {
                 key: "path".into(),
                 value: AttrValue::Str("/x".into()),
+                span: span(0, 0),
             }],
             syntax: SyntaxFlavor::Legacy,
             line: 1,

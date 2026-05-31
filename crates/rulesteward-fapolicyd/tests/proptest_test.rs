@@ -125,7 +125,11 @@ mod generators {
             (0..keys.len()).prop_map(move |idx| keys[idx].to_string()),
             arb_attr_value(),
         )
-            .prop_map(|(key, value)| Attr::Kv { key, value })
+            .prop_map(|(key, value)| Attr::Kv {
+                key,
+                value,
+                span: 0..0,
+            })
     }
 
     /// Strict subject keys (legacy positional classifier guarantees these
@@ -1395,6 +1399,7 @@ fn roundtrip_sentinel() {
             subject: vec![Attr::Kv {
                 key: "uid".to_string(),
                 value: AttrValue::Int(0),
+                span: span(0, 0),
             }],
             object: vec![Attr::All],
             syntax: SyntaxFlavor::Modern,
@@ -1407,10 +1412,12 @@ fn roundtrip_sentinel() {
             subject: vec![Attr::Kv {
                 key: "exe".to_string(),
                 value: AttrValue::Str("/usr/bin/foo".to_string()),
+                span: span(0, 0),
             }],
             object: vec![Attr::Kv {
                 key: "path".to_string(),
                 value: AttrValue::Str("/etc/passwd".to_string()),
+                span: span(0, 0),
             }],
             syntax: SyntaxFlavor::Modern,
             line: 2,

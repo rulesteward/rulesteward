@@ -43,7 +43,7 @@ pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagno
     let mut prefixes: Vec<&str> = Vec::new();
     for r in rules() {
         for attr in r.subject.iter().chain(r.object.iter()) {
-            let Attr::Kv { key, value } = attr else {
+            let Attr::Kv { key, value, .. } = attr else {
                 continue;
             };
             let AttrValue::Str(v) = value else {
@@ -123,6 +123,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Str(value.to_string()),
+            span: 0..0,
         }
     }
 

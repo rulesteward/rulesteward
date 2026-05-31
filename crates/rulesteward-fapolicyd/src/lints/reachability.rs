@@ -103,6 +103,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Str(value.to_string()),
+            span: 0..0,
         }
     }
 
@@ -110,6 +111,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Int(value),
+            span: 0..0,
         }
     }
 
@@ -117,6 +119,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::SetRef(set.to_string()),
+            span: 0..0,
         }
     }
 

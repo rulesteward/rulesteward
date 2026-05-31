@@ -36,7 +36,17 @@ pub enum AttrValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attr {
     All,
-    Kv { key: String, value: AttrValue },
+    Kv {
+        key: String,
+        value: AttrValue,
+        /// Byte range of this attribute within the source file.
+        ///
+        /// Populated with `0..0` placeholder at all construction sites (parser
+        /// and test helpers). The 3f impl pipeline will wire real per-attribute
+        /// spans from the chumsky `map_with` extractor; until then every consumer
+        /// must read `Rule.span` for diagnostic positioning (existing behavior).
+        span: Span,
+    },
 }
 
 /// Which front-end production produced a given `Rule`.

@@ -74,13 +74,14 @@ fn subsumes_predicate_list(a_attrs: &[Attr], b_attrs: &[Attr], macro_map: &Macro
 /// - cross-attribute `dir=` prefix hierarchy (Mechanism 3d): a `dir=` in A can
 ///   cover a `path=` (object side) or `exe=` (subject side) in B.
 fn subsumes_attr(a_attr: &Attr, b_attrs: &[Attr], macro_map: &MacroMap) -> bool {
-    let Attr::Kv { key, value } = a_attr else {
+    let Attr::Kv { key, value, .. } = a_attr else {
         return false;
     };
     b_attrs.iter().any(|b_attr| {
         let Attr::Kv {
             key: b_key,
             value: b_value,
+            ..
         } = b_attr
         else {
             return false;
@@ -189,6 +190,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Str(value.to_string()),
+            span: 0..0,
         }
     }
 
@@ -196,6 +198,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Int(value),
+            span: 0..0,
         }
     }
 
@@ -203,6 +206,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::SetRef(set.to_string()),
+            span: 0..0,
         }
     }
 

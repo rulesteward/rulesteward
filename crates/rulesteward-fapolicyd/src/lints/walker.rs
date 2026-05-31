@@ -200,10 +200,12 @@ mod tests {
                 vec![Attr::Kv {
                     key: "uid".into(),
                     value: AttrValue::Int(0),
+                    span: 0..0,
                 }],
                 vec![Attr::Kv {
                     key: "path".into(),
                     value: AttrValue::Str("/x".into()),
+                    span: 0..0,
                 }],
             ),
         ];
@@ -222,10 +224,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "bogus_subj".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "bogus_obj".into(),
                 value: AttrValue::Str("/x".into()),
+                span: 0..0,
             }],
         )];
         let diags = e01(&entries, &p());
@@ -299,6 +303,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::All],
         )];

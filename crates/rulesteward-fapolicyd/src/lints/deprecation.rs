@@ -106,10 +106,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "sha256hash".into(),
                 value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::Str("/foo".into()),
+                span: 0..0,
             }],
         )];
         let diags = w07(&entries, &p());
@@ -140,10 +142,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "filehash".into(),
                 value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::Str("/foo".into()),
+                span: 0..0,
             }],
         )];
         let diags = w07(&entries, &p());
@@ -165,10 +169,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "sha256hash".into(),
                 value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "sha256hash".into(),
                 value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
             }],
         )];
         let diags = w07(&entries, &p());
@@ -199,6 +205,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "sha256hash".into(),
                     value: AttrValue::Str("abc".into()), // bogus 3-char value
+                    span: 0..0,
                 }],
                 vec![Attr::All],
             ),
@@ -209,6 +216,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "sha256hash".into(),
                     value: AttrValue::Int(12_345), // numeric value
+                    span: 0..0,
                 }],
                 vec![Attr::All],
             ),
@@ -219,6 +227,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "sha256hash".into(),
                     value: AttrValue::SetRef("my_hashes".into()), // macro ref
+                    span: 0..0,
                 }],
                 vec![Attr::All],
             ),
@@ -242,6 +251,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "sha256hash".into(),
                 value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
             }],
             vec![Attr::All],
         )];
