@@ -309,4 +309,77 @@ mod tests {
         )];
         assert!(w02(&entries, &p()).is_empty());
     }
+
+    // RED test for 3f: fapd-E01 caret must point at the offending attribute,
+    // not the whole rule.
+    //
+    // Fixture (notional source line, byte offsets):
+    //   "allow uid=0 badkey=foo : all\n"
+    //    ^           ^         ^
+    //    byte 0      byte 12   byte 22
+    //
+    // rule.span  = 0..28  (the full rule)
+    // uid=0 attr = 0..0   (valid, placeholder span is fine - not the lint target)
+    // badkey=foo  = 12..22 (unknown key, the offending attr)
+    //
+    // After 3f impl:
+    //   e01 reads attr.span from Attr::Kv and emits Diagnostic { span: 12..22, column: 13 }.
+    //
+    // Today (placeholder spans + rule-level span in e01):
+    //   e01 emits Diagnostic { span: 0..28, column: 1 }.
+    //   -> test is RED.
+    //
+    // The test asserts EXACT byte range (12..22) and column (13 = 1-based position
+    // of byte 12 on a line that starts at byte 0: 12 bytes before it -> col 13).
+    // Neither "use rule span (0..28)" nor "use 0..0 placeholder" passes.
+    #[test]
+    fn e01_caret_points_at_offending_attribute_not_rule_start() {
+        // Construct a rule whose span covers bytes 0..28 (the whole rule line).
+        // Subject: one valid attr (uid=0) with a placeholder span.
+        // Object: one UNKNOWN attr (badkey=foo) with a precise span at bytes 12..22.
+        // Column 13 = byte 12 on a line starting at byte 0 (1-based: 12+1 = 13).
+        let rule_span = 0..28usize;
+        let attr_span = 12..22usize; // "badkey=foo" within the fixture string
+        let expected_col = 13usize; // 1 + 12 bytes before the attr on its line
+
+        let entries = vec![Entry::Rule(Rule {
+            decision: Decision::Allow,
+            perm: None,
+            subject: vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0, // valid attr; placeholder span is intentional
+            }],
+            object: vec![Attr::Kv {
+                key: "badkey".into(), // unknown - triggers fapd-E01
+                value: AttrValue::Str("foo".into()),
+                span: attr_span.clone(),
+            }],
+            syntax: SyntaxFlavor::Modern,
+            line: 1,
+            span: rule_span.clone(),
+        })];
+
+        let diags = e01(&entries, &p());
+        assert_eq!(diags.len(), 1, "exactly one fapd-E01 diagnostic");
+        let d = &diags[0];
+        assert_eq!(d.code.as_ref(), "fapd-E01");
+
+        // The span must be the ATTRIBUTE span, not the rule span.
+        // Today e01 emits r.span (0..28); this assertion is RED.
+        assert_eq!(
+            d.span, attr_span,
+            "fapd-E01 span must point at the offending attribute (12..22), \
+             not the whole rule (0..28)"
+        );
+
+        // The column must correspond to the attribute's byte offset within
+        // its source line. Column is 1-based: byte 12 from line-start -> col 13.
+        // Today e01 hardcodes column 1; this assertion is also RED.
+        assert_eq!(
+            d.column, expected_col,
+            "fapd-E01 column must be 13 (byte 12 from line start, 1-based), \
+             not 1 (rule start)"
+        );
+    }
 }
