@@ -208,20 +208,10 @@ where
     }
 }
 
-/// Set the line number and convert the span from line-relative to
-/// file-relative coordinates. `body_start_in_file` is the byte offset of the
-/// first character of the parsed body within the original source string.
-///
-/// `Entry::Rule` and `Entry::SetDefinition` both carry a span; `Comment`
-/// and `Blank` keep only the line adjustment.
-///
-/// **Invariant:** `modern_rule()`, `legacy_rule()`, and `set_definition()`
-/// in `grammar.rs` all open with `ws0()`, so chumsky's `e.span().start` is
-/// always 0 within the parsed body. We therefore offset only the end, not
-/// the start. The `debug_assert`s below catch future grammar changes that
-/// violate this (and would silently produce incorrectly-shifted spans).
 /// Shift a single `Attr::Kv.span` from line-relative to file-relative
-/// coordinates by adding `body_start_in_file`. `Attr::All` has no span field.
+/// coordinates by adding `body_start_in_file`. Unlike `Rule`/`SetDefinition`
+/// spans (which start at 0 within the body), an attribute sits mid-line, so
+/// BOTH `start` and `end` are shifted. `Attr::All` has no span field.
 fn fixup_attr(attr: Attr, body_start_in_file: usize) -> Attr {
     match attr {
         Attr::Kv { key, value, span } => Attr::Kv {
@@ -233,6 +223,20 @@ fn fixup_attr(attr: Attr, body_start_in_file: usize) -> Attr {
     }
 }
 
+/// Set the line number and convert the span from line-relative to
+/// file-relative coordinates. `body_start_in_file` is the byte offset of the
+/// first character of the parsed body within the original source string.
+///
+/// `Entry::Rule` and `Entry::SetDefinition` both carry a span; `Comment`
+/// and `Blank` keep only the line adjustment. Any `Attr::Kv` spans inside a
+/// rule are shifted via `fixup_attr`.
+///
+/// **Invariant:** `modern_rule()`, `legacy_rule()`, and `set_definition()`
+/// in `grammar.rs` all open with `ws0()`, so chumsky's `e.span().start` is
+/// always 0 within the parsed body. We therefore offset only the end, not
+/// the start, for the entry span. The `debug_assert`s below catch future
+/// grammar changes that violate this (and would silently produce
+/// incorrectly-shifted spans).
 fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry {
     match entry {
         Entry::Rule(r) => {

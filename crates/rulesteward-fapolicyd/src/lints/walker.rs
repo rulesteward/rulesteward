@@ -88,6 +88,11 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // the attribute from the start of the rule line, plus 1.
                     // This assumes the rule starts at column 1 (true for all
                     // fapolicyd rules; an indented rule would diverge).
+                    // NOTE: the normal lint pipeline runs `fill_columns`, which
+                    // recomputes `column` from the file-relative span, so this
+                    // value is observed only by direct `e01()` unit calls (and
+                    // any future caller that skips fill_columns); retained so
+                    // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
                     diags.push(
                         Diagnostic::new(
