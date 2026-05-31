@@ -913,4 +913,117 @@ mod tests {
         };
         assert_eq!(verify_entry(&entry), DiskVerdict::Missing);
     }
+
+    /// A `TrustEntry` whose path traverses through a REGULAR FILE as if it
+    /// were a directory (e.g. `/tmp/realfile/child`) causes `std::fs::metadata`
+    /// to return `ErrorKind::NotADirectory` (POSIX ENOTDIR, errno 20). This is
+    /// NOT `NotFound`, so the correct verdict is `ReadError`, not `Missing`.
+    ///
+    /// Kills the `trustdb.rs:128:19` mutation survivor that replaces the
+    /// `e.kind() == ErrorKind::NotFound` guard with `true`, which would
+    /// incorrectly return `Missing` for any metadata error regardless of kind.
+    ///
+    /// Platform note: on Linux `metadata("file/child")` always returns
+    /// `ErrorKind::NotADirectory`; confirmed empirically on the build host.
+    #[test]
+    fn verify_entry_metadata_not_a_directory_is_read_error() {
+        let f = known_temp_file();
+        // Build a path whose parent component IS the regular file above.
+        // metadata() will fail with NotADirectory (ENOTDIR), not NotFound.
+        let impossible_child = format!("{}/child", f.path().display());
+        let entry = TrustEntry {
+            path: impossible_child,
+            source: TrustSource::FileDb,
+            size: KNOWN_SIZE,
+            sha256: KNOWN_SHA256.to_owned(),
+        };
+        match verify_entry(&entry) {
+            DiskVerdict::ReadError(msg) => {
+                // The OS message must mention ENOTDIR, not ENOENT.
+                assert!(
+                    !msg.contains("No such file or directory"),
+                    "verdict must be ReadError(ENOTDIR), not a NotFound proxy; got: {msg:?}"
+                );
+            }
+            other => panic!("expected ReadError for metadata NotADirectory path, got {other:?}"),
+        }
+    }
+
+    /// A `TrustEntry` whose metadata succeeds (file exists, size matches) but
+    /// whose `File::open` is refused with `PermissionDenied` yields `ReadError`,
+    /// not `Missing`. This distinguishes the two error-kind arms at line 144.
+    ///
+    /// Setup: write a file, record its real size, then `chmod 000` it. After
+    /// that, `std::fs::metadata` still succeeds (the parent directory is
+    /// accessible and metadata does not require read permission on the file
+    /// itself), the size passes the equality check, and then `File::open`
+    /// returns `ErrorKind::PermissionDenied`.
+    ///
+    /// Kills two mutation survivors at `trustdb.rs:144`:
+    /// - `guard -> true`: would return `Missing` for ANY open error (wrong for
+    ///   `PermissionDenied`).
+    /// - `== -> !=`: `PermissionDenied != NotFound` is `true`, so the mutant
+    ///   would also return `Missing` (wrong).
+    ///
+    /// The third survivor at line 144 (`guard -> false`, which returns `ReadError`
+    /// even for `NotFound`) is a genuine equivalent mutant: reaching it requires
+    /// `File::open` to return `NotFound` after `metadata` already succeeded, which
+    /// is only possible via a TOCTOU race (file deleted between the two calls).
+    /// That case is excluded in `.cargo/mutants.toml` with a precise rationale.
+    ///
+    /// Skipped if running as root (root bypasses DAC; `chmod 000` has no effect).
+    #[test]
+    fn verify_entry_open_permission_denied_is_read_error() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("no_perm");
+        std::fs::write(&file_path, KNOWN_BYTES).expect("write known bytes");
+
+        // Confirm real size before locking down permissions.
+        let real_size = std::fs::metadata(&file_path)
+            .expect("metadata before chmod")
+            .len();
+        assert_eq!(real_size, KNOWN_SIZE, "fixture size must match KNOWN_SIZE");
+
+        // Remove all permissions so File::open returns PermissionDenied.
+        let status = std::process::Command::new("chmod")
+            .args(["000", file_path.to_str().expect("utf8 path")])
+            .status()
+            .expect("chmod");
+        assert!(status.success(), "chmod 000 failed");
+
+        // Skip under root: DAC checks are bypassed and chmod 000 has no effect.
+        // Probe by attempting to open the file; if it succeeds, we are root and
+        // the test cannot observe PermissionDenied at all.
+        if std::fs::File::open(&file_path).is_ok() {
+            // Restore and skip; root bypasses DAC.
+            let _ = std::process::Command::new("chmod")
+                .args(["644", file_path.to_str().expect("utf8 path")])
+                .status();
+            return;
+        }
+
+        let entry = TrustEntry {
+            path: file_path.display().to_string(),
+            source: TrustSource::FileDb,
+            size: real_size,
+            sha256: KNOWN_SHA256.to_owned(),
+        };
+
+        match verify_entry(&entry) {
+            DiskVerdict::ReadError(msg) => {
+                assert!(
+                    msg.contains("ermission") || msg.contains("EPERM") || msg.contains("13"),
+                    "expected PermissionDenied message, got: {msg:?}"
+                );
+            }
+            other => {
+                panic!("expected ReadError(PermissionDenied) for chmod-000 file, got {other:?}")
+            }
+        }
+
+        // Restore permissions so tempdir cleanup succeeds.
+        let _ = std::process::Command::new("chmod")
+            .args(["644", file_path.to_str().expect("utf8 path")])
+            .status();
+    }
 }

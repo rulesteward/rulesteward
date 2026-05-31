@@ -55,10 +55,23 @@ exclude_globs = [
 # (The sibling `| -> &` mutant yields 0x0, dropping NO_LOCK, and IS killed by
 # the `open_does_not_create_lock_mdb` test.) Excluded by name, not
 # `#[mutants::skip]`, so the rationale stays here in reviewable config.
+#
+# `verify_entry` line 144: the `guard -> false` mutant replaces the
+# `e.kind() == ErrorKind::NotFound` guard on the `File::open` error arm with
+# `false`, which would return `ReadError` even when `File::open` returns
+# `NotFound`. Reaching this arm with `NotFound` requires `File::open` to fail
+# with `NotFound` AFTER `std::fs::metadata` on the same path already succeeded.
+# On Linux, this is only possible via a TOCTOU race: the file must be deleted
+# (or its directory unlinked) in the window between the `metadata()` call and
+# the `File::open()` call. There is no static (non-racy) construction that
+# deterministically produces this outcome. The mutant therefore cannot be killed
+# by any reliable, non-flaky test. It is a genuine unreachable-in-practice
+# equivalent mutant: the branch it guards is dead code under normal usage.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
     'replace \| with \^ in open_trustdb_readonly',
+    'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially
