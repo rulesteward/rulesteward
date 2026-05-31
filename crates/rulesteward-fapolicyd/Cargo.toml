@@ -8,6 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+# `test-fixtures` exposes `write_trustdb_fixture_kv`, a public builder that writes
+# arbitrary (key, raw-value) rows into a trust-DB-shaped LMDB env. Enabled by the
+# CLI crate's `[dev-dependencies]` so e2e + DUPSORT tests can control the exact
+# value bytes. Off by default; the shipped binary never links it.
+test-fixtures = []
+
 [dependencies]
 rulesteward-core = { workspace = true }
 chumsky = { workspace = true, features = ["std"] }
