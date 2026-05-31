@@ -392,4 +392,57 @@ mod tests {
              not 1 (rule start)"
         );
     }
+
+    // Mutation guard for walker.rs:91 `col = attr_span.start - r.span.start + 1`.
+    //
+    // The `-`/`+` mutant (`attr_span.start + r.span.start + 1`) is
+    // INDISTINGUISHABLE whenever `r.span.start == 0` (line-1 rules), because
+    // `x - 0 == x + 0`. The sibling test above
+    // (`e01_caret_points_at_offending_attribute_not_rule_start`) uses a
+    // rule starting at byte 0, so it cannot catch the mutant. The full-pipeline
+    // and snapshot paths run `fill_columns`, which OVERWRITES this manual column
+    // from the file-relative span, so they also cannot catch it.
+    //
+    // The only observable surface for the walker's manual column is a DIRECT
+    // `e01(...)` call (pre-`fill_columns`), exactly as the tests here do. This
+    // test pins that surface with a rule whose `span.start > 0`, so the correct
+    // `-` and the mutated `+` diverge sharply:
+    //   correct: col = 52 - 40 + 1 = 13
+    //   mutant : col = 52 + 40 + 1 = 93
+    #[test]
+    fn e01_column_subtracts_rule_start_for_rule_not_on_line_one() {
+        // A rule that begins at byte 40 (e.g. line 3 of a multi-line file),
+        // with the unknown attribute at byte 52 on that same line.
+        let rule_span = 40..68usize;
+        let attr_span = 52..62usize; // "badkey=foo" at byte 52
+        let expected_col = 13usize; // 52 - 40 + 1; the `+` mutant yields 93
+
+        let entries = vec![Entry::Rule(Rule {
+            decision: Decision::Allow,
+            perm: None,
+            subject: vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 40..45, // valid attr; not the lint target
+            }],
+            object: vec![Attr::Kv {
+                key: "badkey".into(), // unknown - triggers fapd-E01
+                value: AttrValue::Str("foo".into()),
+                span: attr_span.clone(),
+            }],
+            syntax: SyntaxFlavor::Modern,
+            line: 3,
+            span: rule_span,
+        })];
+
+        let diags = e01(&entries, &p());
+        assert_eq!(diags.len(), 1, "exactly one fapd-E01 diagnostic");
+        let d = &diags[0];
+        assert_eq!(d.code.as_ref(), "fapd-E01");
+        assert_eq!(
+            d.column, expected_col,
+            "fapd-E01 column must subtract the rule's byte-start from the \
+             attribute's byte-start (52 - 40 + 1 = 13); the `+` mutant yields 93"
+        );
+    }
 }
