@@ -23,6 +23,8 @@ mod macros;
 mod reachability;
 mod source_scan;
 mod subsume;
+#[cfg(test)]
+pub(crate) mod testkit;
 mod trust_path;
 mod validation;
 mod walker;
@@ -31,11 +33,33 @@ pub use layout::check_layout;
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, fill_columns};
+use rulesteward_core::{Diagnostic, Severity, Span, fill_columns};
 
 use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
+
+/// Build a byte-anchored `Diagnostic` with the fapolicyd emission convention:
+/// column defaults to 1 and the source-id is the file path's display string.
+///
+/// Used by the ~17 anchored lint sites (migrated in Task 2 / CLEAN-2). The 3
+/// unanchored (`0..0`, no source-id) sites and the 3 explicit-column sites do
+/// NOT use this helper.
+// `#[allow(dead_code)]` is temporary: no call site uses `anchored` until Task 2
+// migrates the emission sites. Removed there.
+#[allow(dead_code)]
+fn anchored(
+    sev: Severity,
+    code: &'static str,
+    span: Span,
+    msg: impl Into<String>,
+    file: impl Into<std::path::PathBuf>,
+    line: usize,
+) -> Diagnostic {
+    let file = file.into();
+    let source_id = file.display().to_string();
+    Diagnostic::new(sev, code, span, msg, file, line, 1).with_source_id(source_id)
+}
 
 /// Optional external resources + mode flags for the context-gated lint passes.
 /// `Default` is "no trust DB, no earlier-file macros, directory mode", which
