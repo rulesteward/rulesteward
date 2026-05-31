@@ -18,6 +18,7 @@ pub(crate) mod cross_db;
 mod cross_file;
 mod deprecation;
 mod dir_slash;
+mod identity;
 mod layout;
 mod macros;
 mod reachability;
@@ -27,6 +28,7 @@ mod subsume;
 pub(crate) mod testkit;
 mod trust_path;
 mod validation;
+mod version_target;
 mod walker;
 
 pub use layout::check_layout;
@@ -38,6 +40,7 @@ use rulesteward_core::{Diagnostic, Severity, Span, fill_columns};
 use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
+use crate::version::TargetVersion;
 
 /// Build a byte-anchored `Diagnostic` with the fapolicyd emission convention:
 /// column defaults to 1 and the source-id is the file path's display string.
@@ -59,9 +62,9 @@ fn anchored(
 }
 
 /// Optional external resources + mode flags for the context-gated lint passes.
-/// `Default` is "no trust DB, no earlier-file macros, directory mode", which
-/// reproduces the plain per-file `lint()` behavior exactly. (A `system_ids`
-/// field is intentionally absent: fapd-W05 is deferred this session.)
+/// `Default` is "no trust DB, no earlier-file macros, directory mode, no version
+/// target, no identity check", which reproduces the plain per-file `lint()`
+/// behavior exactly.
 #[derive(Default)]
 pub struct LintContext<'a> {
     /// Trust DB for fapd-W06 (`path=`/`exe=` literal not in the trust DB).
@@ -76,6 +79,14 @@ pub struct LintContext<'a> {
     /// anywhere in the lone file becomes fapd-W09 (it may be defined in an unseen
     /// sibling) rather than fapd-E03. A within-file forward reference stays E03.
     pub single_file: bool,
+    /// Selected RHEL target for version-aware checks (`--target`). `None` is the
+    /// implicit 1.4.x dialect and suppresses every version-divergent diagnostic,
+    /// so a default context preserves today's version-agnostic behavior.
+    pub target: Option<TargetVersion>,
+    /// True when `--check-identities` is set: enable the opt-in fapd-W05 `uid=` /
+    /// `gid=` getent check. Off by default (read-only-by-default; the check spawns
+    /// a `getent` subprocess that may query SSSD/LDAP/AD).
+    pub check_identities: bool,
 }
 
 /// Run every per-file lint pass with a default (empty) context and return the
@@ -130,6 +141,14 @@ pub fn lint_with_context(
     diags.extend(deprecation::walk(entries, file));
     diags.extend(dir_slash::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
+    // Version-aware checks: no-op when ctx.target is None (implicit 1.4.x), so a
+    // default context is byte-identical to the pre-version-target behavior.
+    diags.extend(version_target::walk(entries, file, ctx.target));
+    // fapd-W05 uid=/gid= getent check: opt-in via --check-identities. Runs among
+    // the AST passes (before fill_columns) so its column backfills from the span.
+    if ctx.check_identities {
+        diags.extend(identity::walk(entries, file));
+    }
     // Backfill column from each diagnostic's byte span. Lint passes and the
     // parser historically hardcoded column = 1; this makes the column field
     // agree with the byte span the human renderer uses for its caret, so
@@ -508,6 +527,26 @@ mod tests {
                 d.code, d.line, d.span.start, d.span.end, d.column, expected_col
             );
         }
+    }
+
+    // --- Phase 0 (version-target): LintContext gains `target` + `check_identities` ---
+
+    #[test]
+    fn context_default_has_no_target_and_no_identity_check() {
+        // The Phase-0 freeze adds two fields that BOTH default to "off" so a
+        // default context reproduces today's behavior exactly:
+        //   * `target: Option<TargetVersion>` = None (no --target, implicit 1.4.x)
+        //   * `check_identities: bool` = false (fapd-W05 getent check is opt-in)
+        // RED until the fields exist (compile-coupled).
+        let ctx = LintContext::default();
+        assert!(
+            ctx.target.is_none(),
+            "default LintContext.target must be None (no version target selected)"
+        );
+        assert!(
+            !ctx.check_identities,
+            "default LintContext.check_identities must be false (W05 is opt-in)"
+        );
     }
 
     // --- Task 3: lint_with_context / LintContext contract ---

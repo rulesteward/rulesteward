@@ -307,6 +307,8 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
             trustdb: trustdb.as_ref(),
             earlier_macros: if single_file { None } else { Some(&earlier) },
             single_file,
+            target: args.target.map(Into::into),
+            check_identities: args.check_identities,
         };
         all_diags.extend(lint_with_context(entries, source, path, &ctx));
         // Populate the ariadne source cache from the already-read source text.
@@ -413,6 +415,8 @@ mod tests {
             format: OutputFormat::Human,
             against_trustdb: None,
             report_orphans: false,
+            target: None,
+            check_identities: false,
         }
     }
 

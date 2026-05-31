@@ -13,6 +13,7 @@ pub mod lints;
 pub mod load_order;
 pub mod parser;
 pub mod trustdb;
+pub mod version;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 pub use lints::cross_db::lint_orphans;
@@ -26,3 +27,4 @@ pub use trustdb::{
     DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
     verify_entry,
 };
+pub use version::TargetVersion;
