@@ -76,18 +76,28 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     for entry in entries {
         if let Entry::Rule(r) = entry {
             for attr in r.subject.iter().chain(r.object.iter()) {
-                if let Attr::Kv { key, .. } = attr
+                if let Attr::Kv {
+                    key,
+                    span: attr_span,
+                    ..
+                } = attr
                     && !attrs::is_known(key)
                 {
+                    // Point the caret at the offending `key=value` attribute,
+                    // not at the whole rule. Column is 1-based: byte offset of
+                    // the attribute from the start of the rule line, plus 1.
+                    // This assumes the rule starts at column 1 (true for all
+                    // fapolicyd rules; an indented rule would diverge).
+                    let col = attr_span.start - r.span.start + 1;
                     diags.push(
                         Diagnostic::new(
                             Severity::Error,
                             "fapd-E01",
-                            r.span.clone(),
+                            attr_span.clone(),
                             format!("unknown attribute `{key}`"),
                             file,
                             r.line,
-                            1,
+                            col,
                         )
                         .with_source_id(file.display().to_string()),
                     );

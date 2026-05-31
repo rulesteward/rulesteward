@@ -307,9 +307,22 @@ mod generators {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Zero the span field of a single `Attr` so round-trip comparison focuses on
+/// AST shape, not byte offsets. `Attr::All` has no span field.
+fn zero_attr_span(attr: Attr) -> Attr {
+    match attr {
+        Attr::Kv { key, value, .. } => Attr::Kv {
+            key,
+            value,
+            span: span(0, 0),
+        },
+        Attr::All => Attr::All,
+    }
+}
+
 /// Normalize a `Vec<Entry>` so its `line` fields are 1..=N in index order
-/// and span fields on `Rule` and `SetDefinition` are zeroed out. Both sides
-/// of the round-trip equality go through this:
+/// and all span fields (on `Rule`, `SetDefinition`, and `Attr::Kv`) are
+/// zeroed out. Both sides of the round-trip equality go through this:
 /// - `line` normalization: the source-text construction guarantees line
 ///   numbers agree, but being explicit prevents a future Display change
 ///   from silently breaking the property.
@@ -317,7 +330,9 @@ mod generators {
 ///   while the parser produces real file-relative spans. We zero both
 ///   sides so the round-trip property stays focused on AST shape, not
 ///   byte offsets. Span correctness is verified by dedicated unit tests
-///   in `parser/mod.rs`.
+///   in `parser/mod.rs`. `Attr::Kv.span` is also zeroed here since the
+///   3f impl pipeline populates per-attribute byte ranges that the
+///   generator does not synthesize.
 fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
     entries
         .into_iter()
@@ -328,6 +343,8 @@ fn normalize_lines(entries: Vec<Entry>) -> Vec<Entry> {
                 Entry::Rule(r) => Entry::Rule(Rule {
                     line,
                     span: span(0, 0),
+                    subject: r.subject.into_iter().map(zero_attr_span).collect(),
+                    object: r.object.into_iter().map(zero_attr_span).collect(),
                     ..r
                 }),
                 Entry::SetDefinition { name, values, .. } => Entry::SetDefinition {

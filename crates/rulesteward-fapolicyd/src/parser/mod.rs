@@ -22,7 +22,7 @@ use chumsky::prelude::*;
 use rulesteward_core::{Diagnostic, Severity, fill_columns};
 use std::path::Path;
 
-use crate::ast::{Entry, Rule};
+use crate::ast::{Attr, Entry, Rule};
 
 const UTF8_BOM: &str = "\u{feff}";
 
@@ -220,6 +220,19 @@ where
 /// always 0 within the parsed body. We therefore offset only the end, not
 /// the start. The `debug_assert`s below catch future grammar changes that
 /// violate this (and would silently produce incorrectly-shifted spans).
+/// Shift a single `Attr::Kv.span` from line-relative to file-relative
+/// coordinates by adding `body_start_in_file`. `Attr::All` has no span field.
+fn fixup_attr(attr: Attr, body_start_in_file: usize) -> Attr {
+    match attr {
+        Attr::Kv { key, value, span } => Attr::Kv {
+            key,
+            value,
+            span: (body_start_in_file + span.start)..(body_start_in_file + span.end),
+        },
+        Attr::All => Attr::All,
+    }
+}
+
 fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry {
     match entry {
         Entry::Rule(r) => {
@@ -227,9 +240,21 @@ fn fixup_entry(entry: Entry, lineno: usize, body_start_in_file: usize) -> Entry 
                 r.span.start, 0,
                 "chumsky grammar invariant: Rule.span.start must be 0 within parsed body",
             );
+            let subject = r
+                .subject
+                .into_iter()
+                .map(|a| fixup_attr(a, body_start_in_file))
+                .collect();
+            let object = r
+                .object
+                .into_iter()
+                .map(|a| fixup_attr(a, body_start_in_file))
+                .collect();
             Entry::Rule(Rule {
                 line: lineno,
                 span: body_start_in_file..(body_start_in_file + r.span.end),
+                subject,
+                object,
                 ..r
             })
         }
