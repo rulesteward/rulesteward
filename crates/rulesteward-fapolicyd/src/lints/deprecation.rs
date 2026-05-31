@@ -57,30 +57,8 @@ fn w07(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{AttrValue, Decision, Perm, Rule, SyntaxFlavor};
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn modern_rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
+    use crate::ast::{AttrValue, Decision};
+    use crate::lints::testkit::{modern_rule, p};
 
     // -----------------------------------------------------------------
     // fapd-W07 helper-level unit tests. Pin the per-attribute walker so

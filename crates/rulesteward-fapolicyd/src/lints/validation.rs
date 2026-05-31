@@ -139,30 +139,8 @@ fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{AttrValue, Decision, Perm, Rule, SyntaxFlavor};
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn modern_rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
+    use crate::ast::{AttrValue, Decision};
+    use crate::lints::testkit::{modern_rule, p};
 
     // -----------------------------------------------------------------
     // fapd-E02 helper-level unit tests. Snapshot tests cover the integrated

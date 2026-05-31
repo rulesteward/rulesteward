@@ -101,31 +101,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::lint_orphans;
-    use crate::ast::Entry;
-    use crate::ast::{Attr, AttrValue, Decision, Rule, SyntaxFlavor};
+    use crate::ast::{Attr, Decision};
+    use crate::lints::testkit::{kv, modern_rule};
     use crate::trustdb::{open_trustdb_readonly, write_fixture};
-
-    // -- local AST helpers (codebase convention: per-module, NOT promoted) --------
-
-    fn rule(line: usize, decision: Decision, subj: Vec<Attr>, obj: Vec<Attr>) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm: None,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
-
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
 
     // -- tests -------------------------------------------------------------------
 
@@ -147,9 +125,10 @@ mod tests {
         // One file; references only /usr/bin/ls via exact path= match.
         let files = vec![(
             PathBuf::from("rules.d/10-allow.rules"),
-            vec![rule(
+            vec![modern_rule(
                 1,
                 Decision::Allow,
+                None,
                 vec![Attr::All],
                 vec![kv("path", "/usr/bin/ls")],
             )],
@@ -201,9 +180,10 @@ mod tests {
 
         let files = vec![(
             PathBuf::from("rules.d/10-allow.rules"),
-            vec![rule(
+            vec![modern_rule(
                 1,
                 Decision::Allow,
+                None,
                 vec![Attr::All],
                 vec![kv("dir", "/usr/bin/")],
             )],
@@ -234,7 +214,13 @@ mod tests {
         // allow all : all -- every DB key is reachable.
         let files = vec![(
             PathBuf::from("rules.d/10-allow.rules"),
-            vec![rule(1, Decision::Allow, vec![Attr::All], vec![Attr::All])],
+            vec![modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![Attr::All],
+                vec![Attr::All],
+            )],
         )];
 
         let diags = lint_orphans(&files, &db);
@@ -261,9 +247,10 @@ mod tests {
 
         let files = vec![(
             PathBuf::from("rules.d/10-allow.rules"),
-            vec![rule(
+            vec![modern_rule(
                 1,
                 Decision::Allow,
+                None,
                 vec![Attr::All],
                 vec![kv("path", "/usr/bin/ls")],
             )],
@@ -297,9 +284,10 @@ mod tests {
         // /usr/bin/lsof shares the /usr/bin/ls prefix but is a DISTINCT key.
         let files = vec![(
             PathBuf::from("rules.d/10-a.rules"),
-            vec![rule(
+            vec![modern_rule(
                 1,
                 Decision::Allow,
+                None,
                 vec![Attr::All],
                 vec![kv("path", "/usr/bin/ls")],
             )],
@@ -338,9 +326,10 @@ mod tests {
         // Subject exe=/usr/bin/ls references /usr/bin/ls as an exact key.
         let files = vec![(
             PathBuf::from("rules.d/10-a.rules"),
-            vec![rule(
+            vec![modern_rule(
                 1,
                 Decision::Allow,
+                None,
                 vec![kv("exe", "/usr/bin/ls")],
                 vec![Attr::All],
             )],
@@ -376,7 +365,13 @@ mod tests {
         // deny all : all -- does NOT make every DB entry reachable.
         let files = vec![(
             PathBuf::from("rules.d/90-deny.rules"),
-            vec![rule(1, Decision::Deny, vec![Attr::All], vec![Attr::All])],
+            vec![modern_rule(
+                1,
+                Decision::Deny,
+                None,
+                vec![Attr::All],
+                vec![Attr::All],
+            )],
         )];
 
         let d = lint_orphans(&files, &db);

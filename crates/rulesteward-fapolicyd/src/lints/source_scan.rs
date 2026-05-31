@@ -63,11 +63,7 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
+    use crate::lints::testkit::p;
 
     #[test]
     fn w03_fires_on_canonical_inline_comment() {

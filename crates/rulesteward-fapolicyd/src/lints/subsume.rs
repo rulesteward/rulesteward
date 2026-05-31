@@ -179,44 +179,12 @@ fn value_as_string(value: &AttrValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, AttrValue, Perm};
+    use crate::ast::Perm;
+    use crate::lints::testkit::{kv, kv_int, kv_ref, set_def};
 
     /// An empty macro map for helper tests that exercise no `%name=` sets.
     fn no_macros() -> MacroMap {
         MacroMap::new()
-    }
-
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn kv_int(key: &str, value: i64) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Int(value),
-            span: 0..0,
-        }
-    }
-
-    fn kv_ref(key: &str, set: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::SetRef(set.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn setdef(line: usize, name: &str, values: &[&str]) -> crate::ast::Entry {
-        crate::ast::Entry::SetDefinition {
-            name: name.to_string(),
-            values: values.iter().map(|s| (*s).to_string()).collect(),
-            line,
-            span: rulesteward_core::span(0, 0),
-        }
     }
 
     // --- subsumes_perm (Mechanism 2) ---
@@ -305,7 +273,7 @@ mod tests {
     #[test]
     fn value_subsume_setref_covers_literal_member() {
         // A=SetRef{0,1000} subsumes literal Int(0) and Int(1000), not Int(7).
-        let map = build_macro_map(&[setdef(1, "admins", &["0", "1000"])]);
+        let map = build_macro_map(&[set_def(1, "admins", &["0", "1000"])]);
         assert!(subsumes_value(
             &AttrValue::SetRef("admins".into()),
             &AttrValue::Int(0),
@@ -327,8 +295,8 @@ mod tests {
     fn value_subsume_setref_to_setref_superset() {
         // A's set must be a superset of B's set.
         let map = build_macro_map(&[
-            setdef(1, "big", &["a", "b", "c"]),
-            setdef(2, "small", &["a", "b"]),
+            set_def(1, "big", &["a", "b", "c"]),
+            set_def(2, "small", &["a", "b"]),
         ]);
         assert!(subsumes_value(
             &AttrValue::SetRef("big".into()),
@@ -358,7 +326,7 @@ mod tests {
         // A literal `uid=0` subsumes a SetRef B whose expansion is exactly
         // {0}: every member of B equals A, so the narrower-looking B-set is
         // actually identical to A. (Mechanism 3c "B SetRef, A literal" case.)
-        let map = build_macro_map(&[setdef(1, "justzero", &["0"])]);
+        let map = build_macro_map(&[set_def(1, "justzero", &["0"])]);
         assert!(subsumes_value(
             &AttrValue::Int(0),
             &AttrValue::SetRef("justzero".into()),
@@ -372,7 +340,7 @@ mod tests {
         // uid=1000 which A (only uid=0) cannot. Kills the `&& -> ||` mutant
         // (non-empty AND not-all-equal must stay false) and the `== -> !=`
         // mutant (0 == 1000 is false, so `all(== )` is false here).
-        let map = build_macro_map(&[setdef(1, "admins", &["0", "1000"])]);
+        let map = build_macro_map(&[set_def(1, "admins", &["0", "1000"])]);
         assert!(!subsumes_value(
             &AttrValue::Int(0),
             &AttrValue::SetRef("admins".into()),
@@ -398,7 +366,7 @@ mod tests {
     fn value_subsume_literal_a_mismatch_singleton_b_set() {
         // A literal `uid=0` does NOT subsume a singleton SetRef B = {7}.
         // Reinforces the `== -> !=` kill: 0 == 7 is false -> not covered.
-        let map = build_macro_map(&[setdef(1, "seven", &["7"])]);
+        let map = build_macro_map(&[set_def(1, "seven", &["7"])]);
         assert!(!subsumes_value(
             &AttrValue::Int(0),
             &AttrValue::SetRef("seven".into()),
@@ -430,7 +398,7 @@ mod tests {
     fn dir_prefix_covers_object_path_with_setref_dir() {
         // A's dir is a SetRef expanding to multiple prefixes; ANY covering
         // prefix is enough.
-        let map = build_macro_map(&[setdef(1, "bindirs", &["/opt/", "/usr/bin/"])]);
+        let map = build_macro_map(&[set_def(1, "bindirs", &["/opt/", "/usr/bin/"])]);
         let a = kv_ref("dir", "bindirs");
         let b = vec![kv("path", "/usr/bin/ls")];
         assert!(subsumes_attr(&a, &b, &map));

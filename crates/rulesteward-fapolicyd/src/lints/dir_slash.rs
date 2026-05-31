@@ -101,65 +101,15 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+    use crate::ast::{Attr, Decision};
+    use crate::lints::testkit::{kv, kv_ref, modern_rule, p, set_def};
     use rulesteward_core::Severity;
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
-
-    fn set_def(name: &str, values: &[&str]) -> Entry {
-        Entry::SetDefinition {
-            name: name.to_string(),
-            values: values
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            line: 1,
-            span: rulesteward_core::span(0, 0),
-        }
-    }
-
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn kv_ref(key: &str, set: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::SetRef(set.to_string()),
-            span: 0..0,
-        }
-    }
 
     // --- existing tests (regression guards) ---
 
     #[test]
     fn dir_without_trailing_slash_fires() {
-        let e = vec![rule(
+        let e = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -175,7 +125,7 @@ mod tests {
 
     #[test]
     fn dir_with_trailing_slash_passes() {
-        let e = vec![rule(
+        let e = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -187,7 +137,7 @@ mod tests {
 
     #[test]
     fn fires_on_subject_and_object_sides_independently() {
-        let e = vec![rule(
+        let e = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -199,7 +149,7 @@ mod tests {
 
     #[test]
     fn non_dir_attrs_are_ignored() {
-        let e = vec![rule(
+        let e = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -215,8 +165,8 @@ mod tests {
     fn w08_fires_on_setref_dir_without_slash() {
         // %appdirs=/opt/app (no slash), used as dir=%appdirs
         let entries = vec![
-            set_def("appdirs", &["/opt/app"]),
-            rule(
+            set_def(1, "appdirs", &["/opt/app"]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -236,8 +186,8 @@ mod tests {
     fn w08_silent_on_setref_dir_with_slash() {
         // %appdirs=/opt/app/ -> no warning
         let entries = vec![
-            set_def("appdirs", &["/opt/app/"]),
-            rule(
+            set_def(1, "appdirs", &["/opt/app/"]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -252,8 +202,8 @@ mod tests {
     fn w08_setref_multiple_values_warns_each_slashless() {
         // %dirs=/opt/a,/opt/b/,/opt/c -> warns on /opt/a and /opt/c (2 diags)
         let entries = vec![
-            set_def("dirs", &["/opt/a", "/opt/b/", "/opt/c"]),
-            rule(
+            set_def(1, "dirs", &["/opt/a", "/opt/b/", "/opt/c"]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -272,7 +222,7 @@ mod tests {
     #[test]
     fn w08_undefined_setref_emits_nothing() {
         // dir=%missing with no definition -> W08 emits nothing (fapd-E03 owns undefined)
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -285,7 +235,7 @@ mod tests {
     #[test]
     fn w08_literal_str_still_fires() {
         // regression guard: literal str path without trailing slash still triggers
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -299,7 +249,7 @@ mod tests {
 
     #[test]
     fn w08_silent_on_dir_keyword_execdirs() {
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -316,14 +266,14 @@ mod tests {
     fn w08_silent_on_all_three_dir_keywords_both_sides() {
         // execdirs/systemdirs/untrusted on subject and/or object dir= -> no W08
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv("dir", "execdirs")],
                 vec![kv("dir", "systemdirs")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -340,8 +290,8 @@ mod tests {
         // Kills a mutant on the DIR_KEYWORDS slot for systemdirs or untrusted
         // that is only exercised through the SetRef branch.
         let entries = vec![
-            set_def("d", &["execdirs", "systemdirs", "untrusted"]),
-            rule(
+            set_def(1, "d", &["execdirs", "systemdirs", "untrusted"]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -358,7 +308,7 @@ mod tests {
     #[test]
     fn w08_still_fires_on_real_path_without_slash() {
         // regression guard: a real path (not a keyword) still fires
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -378,7 +328,7 @@ mod tests {
     fn w08_keyword_with_slash_is_treated_as_path_no_panic() {
         // sanity: dir=execdirs/ is NOT one of the exact keywords (it has a trailing
         // slash) so it is treated as a path; it ends with slash so no W08 anyway.
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,

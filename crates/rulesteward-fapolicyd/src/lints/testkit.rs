@@ -3,14 +3,73 @@
 //! Each lint's `mod tests` previously defined byte-identical private copies of
 //! these builders. This is the single source. Compiled only under `#[cfg(test)]`
 //! and `pub(crate)`, so sibling unit-test modules reach it without leaking into
-//! the public API. Bodies are filled in Task 1 (CLEAN-1).
+//! the public API.
 #![cfg(test)]
-// Transitional: the imports below are unused until Task 1 (CLEAN-1) fills the
-// builder bodies. Kept here (not removed) so the Phase-0 stub matches the plan
-// and every lane worktree branches off a warning-clean foundation. Task 1
-// removes this `allow` once the builders consume every import.
-#![allow(unused_imports)]
 
 use std::path::PathBuf;
 
 use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+
+/// Canonical rules-file path used by the lint tests.
+pub(crate) fn p() -> PathBuf {
+    PathBuf::from("/tmp/test.rules")
+}
+
+/// `key=value` string attribute.
+pub(crate) fn kv(key: &str, value: &str) -> Attr {
+    Attr::Kv {
+        key: key.to_string(),
+        value: AttrValue::Str(value.to_string()),
+        span: 0..0,
+    }
+}
+
+/// `key=<int>` integer attribute.
+pub(crate) fn kv_int(key: &str, value: i64) -> Attr {
+    Attr::Kv {
+        key: key.to_string(),
+        value: AttrValue::Int(value),
+        span: 0..0,
+    }
+}
+
+/// `key=%set` macro-reference attribute.
+pub(crate) fn kv_ref(key: &str, set: &str) -> Attr {
+    Attr::Kv {
+        key: key.to_string(),
+        value: AttrValue::SetRef(set.to_string()),
+        span: 0..0,
+    }
+}
+
+/// A Modern-flavor rule entry. Named `modern_rule` to disambiguate from
+/// `walker.rs`'s `legacy_rule`. The 4-arg `cross_db` variant folds in here by
+/// passing `perm = None`.
+pub(crate) fn modern_rule(
+    line: usize,
+    decision: Decision,
+    perm: Option<Perm>,
+    subj: Vec<Attr>,
+    obj: Vec<Attr>,
+) -> Entry {
+    Entry::Rule(Rule {
+        decision,
+        perm,
+        subject: subj,
+        object: obj,
+        syntax: SyntaxFlavor::Modern,
+        line,
+        span: rulesteward_core::span(0, 0),
+    })
+}
+
+/// A set-definition entry. Canonical superset of the four pre-existing
+/// `setdef`/`set_def` shapes.
+pub(crate) fn set_def(line: usize, name: &str, values: &[&str]) -> Entry {
+    Entry::SetDefinition {
+        name: name.to_string(),
+        values: values.iter().map(|s| (*s).to_string()).collect(),
+        line,
+        span: rulesteward_core::span(0, 0),
+    }
+}

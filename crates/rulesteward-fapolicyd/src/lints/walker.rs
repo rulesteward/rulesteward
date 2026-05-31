@@ -150,29 +150,7 @@ fn w02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 mod tests {
     use super::*;
     use crate::ast::{AttrValue, Rule};
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn modern_rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
+    use crate::lints::testkit::{modern_rule, p};
 
     fn legacy_rule(
         line: usize,

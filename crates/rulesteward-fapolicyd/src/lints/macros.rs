@@ -310,30 +310,8 @@ fn s02(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{AttrValue, Decision, Perm, Rule, SyntaxFlavor};
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn modern_rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
+    use crate::ast::{AttrValue, Decision};
+    use crate::lints::testkit::{modern_rule, p, set_def};
 
     // -----------------------------------------------------------------
     // fapd-E03 helper-level unit tests. Pins the single-pass walker so each
@@ -343,15 +321,6 @@ mod tests {
     // `defined.contains(name)`, or moves the `defined.insert(name)` from
     // before the rule-check to after, will die here.
     // -----------------------------------------------------------------
-
-    fn setdef(line: usize, name: &str) -> Entry {
-        Entry::SetDefinition {
-            name: name.to_string(),
-            values: vec!["foo".to_string()],
-            line,
-            span: rulesteward_core::span(0, 0),
-        }
-    }
 
     #[test]
     fn e03_emits_when_ref_undefined() {
@@ -383,7 +352,7 @@ mod tests {
     fn e03_silent_when_ref_defined_first() {
         // Definition on entry index 0, reference on entry index 1.
         let entries = vec![
-            setdef(1, "langs"),
+            set_def(1, "langs", &["foo"]),
             modern_rule(
                 2,
                 Decision::Allow,
@@ -421,7 +390,7 @@ mod tests {
                 }],
                 vec![Attr::All],
             ),
-            setdef(2, "langs"),
+            set_def(2, "langs", &["foo"]),
         ];
         let diags = e03(&entries, &p(), None, false);
         assert_eq!(
@@ -517,7 +486,7 @@ mod tests {
         // Mixed rule: Str, Int, defined SetRef, undefined SetRef.
         // Only the undefined SetRef should fire.
         let entries = vec![
-            setdef(1, "ok_macro"),
+            set_def(1, "ok_macro", &["foo"]),
             modern_rule(
                 2,
                 Decision::Allow,
@@ -635,7 +604,7 @@ mod tests {
                     span: 0..0,
                 }],
             ),
-            setdef(2, "local"),
+            set_def(2, "local", &["foo"]),
         ];
         let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
         let diags = e03(&entries, &p(), Some(&empty), false);
@@ -720,7 +689,7 @@ mod tests {
                     span: 0..0,
                 }],
             ),
-            setdef(2, "fwd"),
+            set_def(2, "fwd", &["foo"]),
         ];
         let diags = e03(&entries, &p(), None, true);
         assert_eq!(
@@ -956,7 +925,7 @@ mod tests {
         // (The defined-above-reference machinery is fapd-E03's concern;
         // fapd-E04 only cares about the key + SetRef value pairing.)
         let defined_entries = vec![
-            setdef(1, "foo"),
+            set_def(1, "foo", &["foo"]),
             modern_rule(
                 2,
                 Decision::Allow,
@@ -1011,21 +980,12 @@ mod tests {
     // - emitting more than one diagnostic per set
     // -----------------------------------------------------------------
 
-    fn setdef_with_values(line: usize, name: &str, values: &[&str]) -> Entry {
-        Entry::SetDefinition {
-            name: name.to_string(),
-            values: values.iter().map(|s| (*s).to_string()).collect(),
-            line,
-            span: rulesteward_core::span(0, 0),
-        }
-    }
-
     #[test]
     fn e05_string_first_set_does_not_fire() {
         // `%s=abc,1` -> STRING-typed (first value "abc" is not all-digits);
         // fapolicyd accepts this with "Loaded 2 rules". E05 must NOT fire.
         // This was the false positive in the old symmetric-mix check.
-        let entries = vec![setdef_with_values(1, "s", &["abc", "1"])];
+        let entries = vec![set_def(1, "s", &["abc", "1"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1039,7 +999,7 @@ mod tests {
         // is a non-digit (type-mix) member. Under the overflow-only policy,
         // type-mix is intentionally NOT flagged (version-divergent; future
         // work). fapd-E05 must NOT fire here.
-        let entries = vec![setdef_with_values(1, "s", &["1", "abc"])];
+        let entries = vec![set_def(1, "s", &["1", "abc"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1052,7 +1012,7 @@ mod tests {
         // `%s=123,99999999999999999999` -> INT-typed; the 20-digit value
         // overflows i64::MAX. fapolicyd: "Error converting val".
         // fapd-E05 must fire with an "exceeds the maximum integer" message.
-        let entries = vec![setdef_with_values(1, "s", &["123", "99999999999999999999"])];
+        let entries = vec![set_def(1, "s", &["123", "99999999999999999999"])];
         let diags = e05(&entries, &p());
         assert_eq!(
             diags.len(),
@@ -1079,7 +1039,7 @@ mod tests {
         // not all-digits); fapd-E05 must NOT fire even though a later member
         // looks like an overflowing integer. The big-digit value is simply a
         // string member in a STRING-typed set.
-        let entries = vec![setdef_with_values(1, "s", &["abc", "99999999999999999999"])];
+        let entries = vec![set_def(1, "s", &["abc", "99999999999999999999"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1090,7 +1050,7 @@ mod tests {
     #[test]
     fn e05_homogeneous_int_does_not_fire() {
         // `%s=1,2,3` -> INT-typed, all values valid; no fapd-E05.
-        let entries = vec![setdef_with_values(1, "s", &["1", "2", "3"])];
+        let entries = vec![set_def(1, "s", &["1", "2", "3"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1101,7 +1061,7 @@ mod tests {
     #[test]
     fn e05_homogeneous_string_does_not_fire() {
         // `%s=text/plain,text/x-c` -> STRING-typed; no fapd-E05.
-        let entries = vec![setdef_with_values(1, "s", &["text/plain", "text/x-c"])];
+        let entries = vec![set_def(1, "s", &["text/plain", "text/x-c"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1113,7 +1073,7 @@ mod tests {
     fn e05_single_overflow_value_fires() {
         // `%s=99999999999999999999` -> INT-typed (all digits, single value),
         // but the sole value overflows i64::MAX. fapd-E05 fires.
-        let entries = vec![setdef_with_values(1, "s", &["99999999999999999999"])];
+        let entries = vec![set_def(1, "s", &["99999999999999999999"])];
         let diags = e05(&entries, &p());
         assert_eq!(
             diags.len(),
@@ -1129,7 +1089,7 @@ mod tests {
         // `%s=-5,abc` -> STRING-typed (leading sign; "-5" is not all-ASCII-
         // digits); fapolicyd treats it as a string. No fapd-E05 regardless
         // of later values.
-        let entries = vec![setdef_with_values(1, "s", &["-5", "abc"])];
+        let entries = vec![set_def(1, "s", &["-5", "abc"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1140,7 +1100,7 @@ mod tests {
     #[test]
     fn e05_i64_max_ok() {
         // `%s=9223372036854775807,1` -> i64::MAX is valid; no fapd-E05.
-        let entries = vec![setdef_with_values(1, "s", &["9223372036854775807", "1"])];
+        let entries = vec![set_def(1, "s", &["9223372036854775807", "1"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1151,7 +1111,7 @@ mod tests {
     #[test]
     fn e05_i64_max_plus_one_fires() {
         // `%s=9223372036854775808` -> i64::MAX+1, overflows; fapd-E05.
-        let entries = vec![setdef_with_values(1, "s", &["9223372036854775808"])];
+        let entries = vec![set_def(1, "s", &["9223372036854775808"])];
         let diags = e05(&entries, &p());
         assert_eq!(diags.len(), 1, "i64::MAX+1 must fire fapd-E05: {diags:?}");
         assert!(diags[0].message.contains("exceeds the maximum integer"));
@@ -1164,7 +1124,7 @@ mod tests {
         // `%mymacro=1,2,foo,3` -> INT-typed, "foo" is a non-digit (type-mix)
         // member. Under the overflow-only policy, type-mix is intentionally NOT
         // flagged (version-divergent; future work). fapd-E05 must NOT fire.
-        let entries = vec![setdef_with_values(1, "mymacro", &["1", "2", "foo", "3"])];
+        let entries = vec![set_def(1, "mymacro", &["1", "2", "foo", "3"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1175,7 +1135,7 @@ mod tests {
     #[test]
     fn e05_silent_on_single_int_value() {
         // `%mymacro=42` -> INT-typed single value; valid; no fapd-E05.
-        let entries = vec![setdef_with_values(1, "mymacro", &["42"])];
+        let entries = vec![set_def(1, "mymacro", &["42"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1187,7 +1147,7 @@ mod tests {
     fn e05_leading_zero_is_int_typed() {
         // `%mymacro=01,02,03` -> INT-typed (all digits), all values parse as
         // i64; no fapd-E05. Leading zeros fit in i64 via normal decimal parse.
-        let entries = vec![setdef_with_values(1, "mymacro", &["01", "02", "03"])];
+        let entries = vec![set_def(1, "mymacro", &["01", "02", "03"])];
         let diags = e05(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1227,8 +1187,8 @@ mod tests {
         // Kills a mutation that deduplicates by name or short-circuits.
         // Both sets start with an integer (all-digits) so both are INT-typed.
         let entries = vec![
-            setdef_with_values(1, "first", &["1", "99999999999999999999"]),
-            setdef_with_values(2, "second", &["2", "99999999999999999998"]),
+            set_def(1, "first", &["1", "99999999999999999999"]),
+            set_def(2, "second", &["2", "99999999999999999998"]),
         ];
         let diags = e05(&entries, &p());
         assert_eq!(
@@ -1244,7 +1204,7 @@ mod tests {
     #[test]
     fn e05_only_one_diag_per_set_stops_at_first_overflow() {
         // INT-typed set with TWO overflow values -> still only 1 fapd-E05 (first).
-        let entries = vec![setdef_with_values(
+        let entries = vec![set_def(
             1,
             "multi",
             &["1", "99999999999999999999", "99999999999999999998"],
@@ -1296,7 +1256,7 @@ mod tests {
     #[test]
     fn s02_emits_when_macro_after_rule() {
         // Rule on line 1, macro definition on line 2 -> 1 fapd-S02 at line 2.
-        let entries = vec![allow_all_rule(1), setdef(2, "trusted")];
+        let entries = vec![allow_all_rule(1), set_def(2, "trusted", &["foo"])];
         let diags = s02(&entries, &p());
         assert_eq!(
             diags.len(),
@@ -1317,7 +1277,7 @@ mod tests {
     #[test]
     fn s02_silent_when_macro_before_rule() {
         // Macro definition on line 1, rule on line 2 -> no fapd-S02.
-        let entries = vec![setdef(1, "trusted"), allow_all_rule(2)];
+        let entries = vec![set_def(1, "trusted", &["foo"]), allow_all_rule(2)];
         let diags = s02(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1329,7 +1289,11 @@ mod tests {
     fn s02_comment_does_not_close_the_window() {
         // A leading comment must NOT close the file-top window. The macro is
         // still before the first rule, so no fapd-S02.
-        let entries = vec![comment(1), setdef(2, "trusted"), allow_all_rule(3)];
+        let entries = vec![
+            comment(1),
+            set_def(2, "trusted", &["foo"]),
+            allow_all_rule(3),
+        ];
         let diags = s02(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1340,7 +1304,12 @@ mod tests {
     #[test]
     fn s02_blank_does_not_close_the_window() {
         // Blank lines must NOT close the file-top window either.
-        let entries = vec![blank(1), setdef(2, "trusted"), blank(3), allow_all_rule(4)];
+        let entries = vec![
+            blank(1),
+            set_def(2, "trusted", &["foo"]),
+            blank(3),
+            allow_all_rule(4),
+        ];
         let diags = s02(&entries, &p());
         assert!(
             diags.is_empty(),
@@ -1352,7 +1321,11 @@ mod tests {
     fn s02_fires_only_on_post_rule_macros() {
         // Macro on line 1 (before rule = OK), rule on line 2, macro on line 3
         // (after rule = fapd-S02). Exactly one fapd-S02, at line 3.
-        let entries = vec![setdef(1, "first"), allow_all_rule(2), setdef(3, "second")];
+        let entries = vec![
+            set_def(1, "first", &["foo"]),
+            allow_all_rule(2),
+            set_def(3, "second", &["foo"]),
+        ];
         let diags = s02(&entries, &p());
         assert_eq!(
             diags.len(),
@@ -1375,9 +1348,9 @@ mod tests {
         // the first (e.g. a `break`/`return` after the first hit).
         let entries = vec![
             allow_all_rule(1),
-            setdef(2, "a"),
-            setdef(3, "b"),
-            setdef(4, "c"),
+            set_def(2, "a", &["foo"]),
+            set_def(3, "b", &["foo"]),
+            set_def(4, "c", &["foo"]),
         ];
         let diags = s02(&entries, &p());
         assert_eq!(
@@ -1396,7 +1369,7 @@ mod tests {
         // A file of only macro definitions (no rule) never fires fapd-S02:
         // the window is never closed. Kills a mutant that flips the initial
         // `seen_rule` to `true`.
-        let entries = vec![setdef(1, "a"), setdef(2, "b")];
+        let entries = vec![set_def(1, "a", &["foo"]), set_def(2, "b", &["foo"])];
         let diags = s02(&entries, &p());
         assert!(
             diags.is_empty(),
