@@ -259,3 +259,55 @@ fn tcsh_completions_references_completions_subcommand() {
         "tcsh completion script must reference the `completions` subcommand; got:\n{s}"
     );
 }
+
+#[test]
+fn tcsh_completions_completes_help_subcommand() {
+    // Parity with the bash/zsh/fish backends, which all complete `help`.
+    // There must be a consolidated `n/help/(...)/` rule whose list offers real
+    // subcommand names so `rulesteward help <TAB>` suggests a subcommand.
+    let s = tcsh_output();
+    assert!(
+        s.contains("'n/help/("),
+        "tcsh completion must offer `help` argument completion via an n/help/ rule; got:\n{s}"
+    );
+    // The help rule's list must contain at least one real subcommand.
+    let help_rule = s
+        .lines()
+        .find(|l| l.contains("'n/help/("))
+        .expect("an n/help/ rule line");
+    assert!(
+        help_rule.contains("fapolicyd"),
+        "the n/help/ rule must list subcommands (e.g. fapolicyd); got:\n{help_rule}"
+    );
+    // `help` should also be offered as a top-level completable word (it is a
+    // real subcommand), like the other shells list it.
+    assert!(
+        s.contains("'p/1/(")
+            && s.lines()
+                .any(|l| l.contains("'p/1/(") && l.contains("help")),
+        "tcsh top-level completion (p/1) must include `help`; got:\n{s}"
+    );
+}
+
+#[test]
+fn tcsh_completions_has_no_duplicate_next_word_rules() {
+    // Regression guard: clap's synthetic `help` subtree (flag-less shadow copies
+    // of every sibling) must NOT be recursed into, or it emits duplicate
+    // `n/<word>/` rules that shadow the real ones in tcsh's flat model. Assert
+    // each `n/<word>/` key appears at most once.
+    let s = tcsh_output();
+    let mut keys: Vec<String> = Vec::new();
+    for line in s.lines() {
+        if let Some(rest) = line.split("'n/").nth(1) {
+            if let Some(word) = rest.split('/').next() {
+                keys.push(word.to_owned());
+            }
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let dups: Vec<&String> = keys.iter().filter(|k| !seen.insert((*k).clone())).collect();
+    assert!(
+        dups.is_empty(),
+        "duplicate n/<word>/ rules would shadow each other in tcsh; dups: {dups:?}\nfull output:\n{s}"
+    );
+}

@@ -9,6 +9,7 @@ use clap_complete::{
     Generator, generate,
     shells::{Bash, Elvish, Fish, PowerShell, Zsh},
 };
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io;
 
@@ -80,6 +81,17 @@ impl Generator for Tcsh {
         // `rulesteward fapolicyd lint <TAB>` useful.
         collect_next_word_rules(cmd, &mut rules);
 
+        // Single consolidated `help` rule so `rulesteward help <TAB>` completes a
+        // subcommand name (parity with the bash/zsh/fish backends, which all
+        // complete `help`). One rule, not one per level, so tcsh's flat model
+        // does not shadow them against each other.
+        let mut help_targets = BTreeSet::new();
+        all_subcommand_names(cmd, &mut help_targets);
+        if !help_targets.is_empty() {
+            let list: Vec<String> = help_targets.into_iter().collect();
+            rules.push(format!("'n/help/({})/'", list.join(" ")));
+        }
+
         // Emit the directive. Use line continuations so a long rule set stays
         // readable in the generated file. tcsh treats a trailing `\` as a
         // continuation inside the builtin.
@@ -102,11 +114,14 @@ impl Generator for Tcsh {
     }
 }
 
-/// Visible subcommand names of `cmd` (skips hidden commands and the
-/// auto-generated `help` command, which clap reports via `get_subcommands`).
+/// Visible subcommand names of `cmd`, INCLUDING clap's auto-generated `help`
+/// command, so `help` is offered as a completable word (matching the bash/zsh/
+/// fish backends, which all complete `help`). The `help` command's own synthetic
+/// subtree is handled specially in `collect_next_word_rules` / the consolidated
+/// `n/help/` rule, never recursed into.
 fn subcommand_names(cmd: &clap::Command) -> Vec<String> {
     cmd.get_subcommands()
-        .filter(|sc| !sc.is_hide_set() && sc.get_name() != "help")
+        .filter(|sc| !sc.is_hide_set())
         .map(|sc| sc.get_name().to_owned())
         .collect()
 }
@@ -122,11 +137,17 @@ fn long_flags(cmd: &clap::Command) -> Vec<String> {
 /// Depth-first: for `cmd` and every descendant, push an
 /// `n/<name>/(children + flags)/` rule when there is anything to complete
 /// after that word. Recurses into subcommands so nested levels are covered.
+///
+/// clap's auto-generated `help` command is NOT recursed into: its children are
+/// flag-less shadow copies of every sibling, so walking it would emit duplicate
+/// and conflicting `n/<word>/` rules (in tcsh's flat model the later duplicate
+/// shadows the real one). The single consolidated `n/help/(...)/` rule is added
+/// by the caller instead.
 fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
-    for sub in cmd
-        .get_subcommands()
-        .filter(|sc| !sc.is_hide_set() && sc.get_name() != "help")
-    {
+    for sub in cmd.get_subcommands().filter(|sc| !sc.is_hide_set()) {
+        if sub.get_name() == "help" {
+            continue;
+        }
         let mut list = subcommand_names(sub);
         list.extend(long_flags(sub));
         if !list.is_empty() {
@@ -135,6 +156,22 @@ fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
         // Recurse so e.g. `fapolicyd`'s child `lint` also gets its own
         // `n/lint/(--format --file ...)/` rule.
         collect_next_word_rules(sub, rules);
+    }
+}
+
+/// Collect every non-`help` subcommand name anywhere in the tree (deduped and
+/// sorted via `BTreeSet`). Used to build ONE consolidated `n/help/(...)/` rule:
+/// `rulesteward help <TAB>` (or `rulesteward <group> help <TAB>`) completes a
+/// subcommand name. tcsh's flat model cannot disambiguate `help`'s context per
+/// level, so a single rule offering every subcommand name is the useful
+/// approximation, and it avoids the multi-`n/help/` shadowing.
+fn all_subcommand_names(cmd: &clap::Command, acc: &mut BTreeSet<String>) {
+    for sub in cmd.get_subcommands().filter(|sc| !sc.is_hide_set()) {
+        if sub.get_name() == "help" {
+            continue;
+        }
+        acc.insert(sub.get_name().to_owned());
+        all_subcommand_names(sub, acc);
     }
 }
 
