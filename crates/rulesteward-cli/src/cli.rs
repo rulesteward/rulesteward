@@ -113,6 +113,7 @@ pub enum CompletionShell {
     Fish,
     Elvish,
     PowerShell,
+    Tcsh,
 }
 
 #[cfg(test)]

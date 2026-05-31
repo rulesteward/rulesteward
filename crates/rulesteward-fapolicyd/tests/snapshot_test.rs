@@ -595,6 +595,32 @@ fn c01_cross_file_traps() {
     }
 }
 
+#[test]
+fn c02_cross_file_traps() {
+    let scenarios = list_cross_file_scenarios("fapd-C02");
+    assert!(
+        scenarios.len() >= 3,
+        "fapd-C02 scenarios must be >= 3 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_cross_file_scenario("fapd-C02", scenario);
+    }
+}
+
+#[test]
+fn w10_cross_file_traps() {
+    let scenarios = list_cross_file_scenarios("fapd-W10");
+    assert!(
+        scenarios.len() >= 2,
+        "fapd-W10 scenarios must be >= 2 directories, found {}",
+        scenarios.len(),
+    );
+    for scenario in &scenarios {
+        drive_cross_file_scenario("fapd-W10", scenario);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // B.3 - fapd-E03 cross-file (E03-xfile) and fapd-W09 single-file snapshot drivers.
 //

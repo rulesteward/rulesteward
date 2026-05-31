@@ -1,0 +1,4 @@
+# Literal `uid=0` with extra interior whitespace. Same match predicate set as
+# 20-macro.rules's `uid=%admins` (= {0}); the later copy is the redundant
+# cross-file duplicate (fapd-C02).
+allow   uid=0   :   path=/usr/bin/admintool

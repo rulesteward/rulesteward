@@ -3,5 +3,5 @@ source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
 expression: rendered
 ---
 files=2
-diagnostics=0
-(no diagnostics)
+diagnostics=1
+[fapd-C02] sev=Convention line=1 col=1 span=0..17 file=rules.d/50-b.rules :: duplicate rule: identical to the rule in rules.d/10-a.rules on line 1

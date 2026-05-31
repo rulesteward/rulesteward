@@ -1,0 +1,2 @@
+# First copy of a deny rule (mirrors rocky9-broad-allows-extra3 cross pair).
+deny_audit perm=execute all : ftype=text/x-php

@@ -3,7 +3,9 @@ source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
 expression: rendered
 ---
 files=3
-diagnostics=3
+diagnostics=5
 [fapd-C01] sev=Convention line=0 col=0 span=0..0 file=rules.d/100-bar.rules :: rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected
+[fapd-C02] sev=Convention line=1 col=1 span=0..17 file=rules.d/100-bar.rules :: duplicate rule: identical to the rule in rules.d/5-foo.rules on line 1
 [fapd-C01] sev=Convention line=0 col=0 span=0..0 file=rules.d/5-foo.rules :: rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected
 [fapd-C01] sev=Convention line=0 col=0 span=0..0 file=rules.d/myapp.rules :: rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected
+[fapd-C02] sev=Convention line=1 col=1 span=0..17 file=rules.d/myapp.rules :: duplicate rule: identical to the rule in rules.d/5-foo.rules on line 1

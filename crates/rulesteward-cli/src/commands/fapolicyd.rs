@@ -136,8 +136,8 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
 
     let rendered = match output::render(args.format, &all_diags, &sources) {
         Ok(s) => s,
-        Err(RenderError::SarifNotImplemented) => {
-            println!("{{\"error\":\"sarif format not yet implemented in v0.1.0-dev\"}}");
+        Err(RenderError::Serialization(msg)) => {
+            eprintln!("error: rendering {:?} output: {msg}", args.format);
             return Ok(EXIT_TOOL_FAILURE);
         }
     };

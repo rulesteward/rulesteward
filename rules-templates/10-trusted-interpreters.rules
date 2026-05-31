@@ -1,0 +1,34 @@
+#
+# 10-trusted-interpreters.rules
+#
+# Allow execution and script-opening for language runtimes that are present
+# in the trust database. Each line below allows a specific, known interpreter
+# binary to execute or open files freely. Restrict further by adding
+# additional subject predicates (e.g. uid=, gid=) if your deployment requires
+# stricter controls.
+#
+# Tier: 10 - early allow carve-outs for trusted system interpreters.
+#
+# License: BSD-3-Clause (see LICENSE in this directory)
+#
+
+# Allow Python 3 interpreters to execute from their canonical system paths.
+allow perm=execute exe=/usr/bin/python3 : all
+allow perm=execute exe=/usr/bin/python3.12 : all
+
+# Allow the system Ruby interpreter to execute.
+allow perm=execute exe=/usr/bin/ruby : all
+
+# Allow Perl to execute - required for many system administration scripts.
+allow perm=execute exe=/usr/bin/perl : all
+
+# Allow trusted shell interpreters to execute.
+allow perm=execute exe=/usr/bin/bash : all
+allow perm=execute exe=/usr/bin/sh : all
+allow perm=execute exe=/usr/bin/dash : all
+
+# Allow shared libraries in the trust database to be opened for linking. The
+# dynamic linker needs this. Object-side predicates form a conjunction and are
+# order-insensitive, so trust=1 is listed first here to read as "trusted, and a
+# shared library".
+allow perm=open all : trust=1 ftype=application/x-sharedlib

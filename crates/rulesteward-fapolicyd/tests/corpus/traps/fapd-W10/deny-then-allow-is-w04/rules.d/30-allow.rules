@@ -1,0 +1,3 @@
+# Later-loading allow shadowed by the earlier deny -> fapd-W04 (deny-then-allow),
+# never fapd-W10. Locks the W10/W04 non-overlap at the directory-snapshot level.
+allow uid=0 : path=/usr/bin/myapp

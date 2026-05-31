@@ -76,6 +76,8 @@ pub fn lint(entries: &[Entry], source: &str, file: &Path) -> Vec<Diagnostic> {
 pub fn lint_cross_file(files: &[(std::path::PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     let mut diags = cross_file::w04(files);
     diags.extend(cross_file::c01(files));
+    diags.extend(cross_file::c02(files));
+    diags.extend(cross_file::w10(files));
     diags
 }
 
