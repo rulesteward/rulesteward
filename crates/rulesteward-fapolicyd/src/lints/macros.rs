@@ -159,6 +159,7 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             let Attr::Kv {
                 key,
                 value: AttrValue::SetRef(name),
+                ..
             } = attr
             else {
                 continue;
@@ -362,6 +363,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::SetRef("nope".into()),
+                span: 0..0,
             }],
             vec![Attr::All],
         )];
@@ -389,6 +391,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "uid".into(),
                     value: AttrValue::SetRef("langs".into()),
+                    span: 0..0,
                 }],
                 vec![Attr::All],
             ),
@@ -414,6 +417,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "uid".into(),
                     value: AttrValue::SetRef("langs".into()),
+                    span: 0..0,
                 }],
                 vec![Attr::All],
             ),
@@ -440,10 +444,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "path".into(),
                 value: AttrValue::Str("/var/%foo/bar".into()),
+                span: 0..0,
             }],
         )];
         let diags = e03(&entries, &p(), None, false);
@@ -463,6 +469,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::All],
         )];
@@ -483,10 +490,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::SetRef("undef_a".into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::SetRef("undef_b".into()),
+                span: 0..0,
             }],
         )];
         let diags = e03(&entries, &p(), None, false);
@@ -517,20 +526,24 @@ mod tests {
                     Attr::Kv {
                         key: "uid".into(),
                         value: AttrValue::Int(0),
+                        span: 0..0,
                     },
                     Attr::Kv {
                         key: "auid".into(),
                         value: AttrValue::SetRef("ok_macro".into()),
+                        span: 0..0,
                     },
                 ],
                 vec![
                     Attr::Kv {
                         key: "path".into(),
                         value: AttrValue::Str("/etc/passwd".into()),
+                        span: 0..0,
                     },
                     Attr::Kv {
                         key: "exe".into(),
                         value: AttrValue::SetRef("bad_macro".into()),
+                        span: 0..0,
                     },
                 ],
             ),
@@ -575,10 +588,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::SetRef("langs".into()),
+                span: 0..0,
             }],
         )];
         let mut earlier_set = std::collections::HashSet::new();
@@ -612,10 +627,12 @@ mod tests {
                 vec![Attr::Kv {
                     key: "uid".into(),
                     value: AttrValue::Int(0),
+                    span: 0..0,
                 }],
                 vec![Attr::Kv {
                     key: "exe".into(),
                     value: AttrValue::SetRef("local".into()),
+                    span: 0..0,
                 }],
             ),
             setdef(2, "local"),
@@ -648,10 +665,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::SetRef("nope".into()),
+                span: 0..0,
             }],
         )];
         let diags = e03(&entries, &p(), None, true);
@@ -693,10 +712,12 @@ mod tests {
                 vec![Attr::Kv {
                     key: "uid".into(),
                     value: AttrValue::Int(0),
+                    span: 0..0,
                 }],
                 vec![Attr::Kv {
                     key: "exe".into(),
                     value: AttrValue::SetRef("fwd".into()),
+                    span: 0..0,
                 }],
             ),
             setdef(2, "fwd"),
@@ -741,10 +762,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "exe".into(),
                 value: AttrValue::SetRef("other".into()),
+                span: 0..0,
             }],
         )];
         let mut earlier = std::collections::HashSet::new();
@@ -775,10 +798,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "trust".into(),
                 value: AttrValue::SetRef("mac".into()),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -808,10 +833,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "pattern".into(),
                 value: AttrValue::SetRef("mac".into()),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -834,10 +861,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "path".into(),
                 value: AttrValue::SetRef("mac".into()),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -858,6 +887,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "trust".into(),
                 value: AttrValue::Str("yes".into()),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -878,6 +908,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "trust".into(),
                 value: AttrValue::Int(1),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -897,10 +928,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "trust".into(),
                 value: AttrValue::SetRef("a".into()),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "pattern".into(),
                 value: AttrValue::SetRef("b".into()),
+                span: 0..0,
             }],
         )];
         let diags = e04(&entries, &p());
@@ -932,6 +965,7 @@ mod tests {
                 vec![Attr::Kv {
                     key: "trust".into(),
                     value: AttrValue::SetRef("foo".into()),
+                    span: 0..0,
                 }],
             ),
         ];
@@ -943,6 +977,7 @@ mod tests {
             vec![Attr::Kv {
                 key: "trust".into(),
                 value: AttrValue::SetRef("foo".into()),
+                span: 0..0,
             }],
         )];
         assert_eq!(
@@ -1171,10 +1206,12 @@ mod tests {
             vec![Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             }],
             vec![Attr::Kv {
                 key: "path".into(),
                 value: AttrValue::Str("/etc/passwd".into()),
+                span: 0..0,
             }],
         )];
         let diags = e05(&entries, &p());

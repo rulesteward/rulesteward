@@ -100,7 +100,18 @@ fn attr<'a>() -> impl Parser<'a, &'a str, Attr, extra::Err<Rich<'a, char>>> + Cl
     let attr_kv = ident()
         .then_ignore(just('='))
         .then(attr_value())
-        .map(|(key, value)| Attr::Kv { key, value });
+        .map_with(|(key, value), e| {
+            // Capture the line-relative byte range of the full `key=value`
+            // token. `fixup_entry` in parser/mod.rs will shift this by
+            // `body_start_in_file` to make it file-relative, matching the
+            // convention used for Rule.span and SetDefinition.span.
+            let s = e.span();
+            Attr::Kv {
+                key,
+                value,
+                span: s.start..s.end,
+            }
+        });
     let attr_all = just("all").to(Attr::All);
     attr_all.or(attr_kv).labelled("attribute")
 }
@@ -365,10 +376,12 @@ mod tests {
             Attr::Kv {
                 key: "uid".into(),
                 value: AttrValue::Int(0),
+                span: 0..0,
             },
             Attr::Kv {
                 key: "path".into(),
                 value: AttrValue::Str("/x".into()),
+                span: 0..0,
             },
         ];
         let (subject, object) = positional_split(&attrs_flat).expect("splits");
@@ -381,6 +394,7 @@ mod tests {
         let attrs_flat = vec![Attr::Kv {
             key: "path".into(),
             value: AttrValue::Str("/x".into()),
+            span: 0..0,
         }];
         // Subject would be empty - error.
         assert!(positional_split(&attrs_flat).is_err());

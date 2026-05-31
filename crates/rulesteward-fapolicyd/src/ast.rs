@@ -36,7 +36,18 @@ pub enum AttrValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attr {
     All,
-    Kv { key: String, value: AttrValue },
+    Kv {
+        key: String,
+        value: AttrValue,
+        /// File-relative byte range of this `key=value` attribute token.
+        ///
+        /// Captured line-relative by the chumsky `map_with` extractor in
+        /// `grammar.rs::attr()` and shifted to file-relative by
+        /// `parser::fixup_attr`. Used by fapd-E01 to point its caret at the
+        /// offending attribute. Test and layout constructions may use a `0..0`
+        /// placeholder where positioning is not asserted.
+        span: Span,
+    },
 }
 
 /// Which front-end production produced a given `Rule`.

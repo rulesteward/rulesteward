@@ -22,4 +22,7 @@ pub use lints::{
 };
 pub use load_order::fagenrules_cmp;
 pub use parser::{inline, parse_rules_file};
-pub use trustdb::{TrustDb, TrustDbError, open_trustdb_readonly};
+pub use trustdb::{
+    DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
+    verify_entry,
+};

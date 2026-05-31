@@ -95,17 +95,25 @@ jobs:
   # in exchange for the wall-clock and CI-minutes win on the (common)
   # green path.
   check:
-    name: rocky${{ matrix.rocky }} - test + musl smoke
+    name: ${{ matrix.label }} - test + musl smoke
     runs-on: [self-hosted, Linux, X64]
     needs: [fmt-clippy, musl-build]
     strategy:
       fail-fast: false
       matrix:
-        rocky: ["8", "9", "10"]
+        # Tier-1 RHEL-family distros (spec sections 5.3 / 14.2). Rocky uses the
+        # rockylinux/rockylinux namespace (the legacy `rockylinux:10` tag does
+        # not exist on Docker Hub); AlmaLinux uses the official `almalinux`
+        # image. Both are RHEL-ABI-compatible, so the same dnf bootstrap works.
+        include:
+          - { label: rocky8, image: "rockylinux/rockylinux:8" }
+          - { label: rocky9, image: "rockylinux/rockylinux:9" }
+          - { label: rocky10, image: "rockylinux/rockylinux:10" }
+          - { label: alma8, image: "almalinux:8" }
+          - { label: alma9, image: "almalinux:9" }
+          - { label: alma10, image: "almalinux:10" }
     container:
-      # Use the rockylinux/rockylinux namespace - the legacy `rockylinux:10`
-      # tag doesn't exist on Docker Hub. The new namespace works for 8/9/10.
-      image: rockylinux/rockylinux:${{ matrix.rocky }}
+      image: ${{ matrix.image }}
     defaults:
       run:
         # Absolute path: don't depend on /bin/bash symlink or PATH in the
@@ -160,9 +168,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/dnf
-          key: dnf-${{ matrix.rocky }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: dnf-${{ matrix.label }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            dnf-${{ matrix.rocky }}-
+            dnf-${{ matrix.label }}-
 
       - name: Bootstrap (install bash, tar, gcc, ...)
         # dnf tuning flags address slow CI installs:
@@ -208,12 +216,12 @@ jobs:
           # always find gcc, regardless of how GitHub re-assembles PATH.
           echo "/usr/bin" >> "$GITHUB_PATH"
 
-      # Per-Rocky cache key - without this all three matrix entries race
-      # to save the same key, so two of them log "Failed to save: Unable to
-      # reserve cache" and only one Rocky version's cache survives.
+      # Per-distro cache key - without this all six matrix entries race
+      # to save the same key, so five of them log "Failed to save: Unable to
+      # reserve cache" and only one distro/version's cache survives.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: rocky${{ matrix.rocky }}
+          key: ${{ matrix.label }}
           # Save only on push events; see fmt-clippy comment above.
           save-if: ${{ github.event_name != 'pull_request' }}
 

@@ -29,7 +29,7 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
             continue;
         };
         for attr in r.subject.iter().chain(r.object.iter()) {
-            let Attr::Kv { key, value } = attr else {
+            let Attr::Kv { key, value, .. } = attr else {
                 continue;
             };
             if key != "dir" {
@@ -143,6 +143,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::Str(value.to_string()),
+            span: 0..0,
         }
     }
 
@@ -150,6 +151,7 @@ mod tests {
         Attr::Kv {
             key: key.to_string(),
             value: AttrValue::SetRef(set.to_string()),
+            span: 0..0,
         }
     }
 

@@ -6,30 +6,236 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, check_layout, collect_macro_names, lint_cross_file, lint_orphans,
-    lint_with_context, open_trustdb_readonly, parse_rules_file,
+    Entry, LintContext, TrustDb, TrustEntry, TrustSource, check_layout, collect_macro_names,
+    lint_cross_file, lint_orphans, lint_with_context, open_trustdb_readonly, parse_rules_file,
+    verify_entry,
 };
 
-use crate::cli::{FapolicydCommand, LintArgs};
-use crate::exit_code::{self, EXIT_NO_OP, EXIT_TOOL_FAILURE};
+use crate::cli::{
+    FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
+    TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbStaleArgs,
+};
+use crate::exit_code::{self, EXIT_CLEAN, EXIT_NO_OP, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
+use crate::output::trustdb as trustdb_out;
+use crate::output::trustdb::{CheckRow, CheckVerdict, DbDiffKind, DbDiffRow, ListRow};
 use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
+const DEFAULT_TRUSTDB_DIR: &str = "/var/lib/fapolicyd/";
 
 pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
     match cmd {
         FapolicydCommand::Lint(args) => run_lint(&args),
+        FapolicydCommand::Trustdb(cmd) => run_trustdb(cmd),
         FapolicydCommand::Simulate
         | FapolicydCommand::Explain
         | FapolicydCommand::Report
         | FapolicydCommand::ContainerCheck
-        | FapolicydCommand::Trustdb
         | FapolicydCommand::Migrate
         | FapolicydCommand::Doctor => {
             eprintln!("rulesteward fapolicyd <subcommand>: not yet implemented in v0.1.0-dev");
             Ok(EXIT_NO_OP)
         }
     }
+}
+
+fn run_trustdb(cmd: TrustdbCommand) -> anyhow::Result<i32> {
+    match cmd {
+        TrustdbCommand::List(args) => run_list(&args),
+        TrustdbCommand::Check(args) => run_check(&args),
+        TrustdbCommand::Diff(args) => run_diff(&args),
+        TrustdbCommand::Stale(args) => run_stale(&args),
+    }
+}
+
+/// Resolve the trust-DB directory (positional/`--db` arg, else the default) and
+/// open it read-only. On a missing/not-a-dir path or an open error, print
+/// `error: ...` to stderr and return `Err`-as-an-exit-code via the `Result`
+/// caller mapping (here surfaced as `Ok(Err(EXIT_TOOL_FAILURE))`-style).
+fn open_db(db: Option<&Path>) -> Result<TrustDb, i32> {
+    let dir = db.map_or_else(|| PathBuf::from(DEFAULT_TRUSTDB_DIR), Path::to_path_buf);
+    if !dir.is_dir() {
+        eprintln!("error: trust DB {}: not a directory", dir.display());
+        return Err(EXIT_TOOL_FAILURE);
+    }
+    match open_trustdb_readonly(&dir) {
+        Ok(db) => Ok(db),
+        Err(e) => {
+            eprintln!("error: opening trust DB {}: {e}", dir.display());
+            Err(EXIT_TOOL_FAILURE)
+        }
+    }
+}
+
+fn json(format: TrustdbFormat) -> bool {
+    matches!(format, TrustdbFormat::Json)
+}
+
+/// A stable total order over `TrustSource` (which is not `Ord`) for sorting the
+/// per-path value multisets in a DB-vs-DB diff.
+fn source_rank(source: TrustSource) -> u8 {
+    match source {
+        TrustSource::Unknown => 0,
+        TrustSource::RpmDb => 1,
+        TrustSource::FileDb => 2,
+        TrustSource::Deb => 3,
+    }
+}
+
+fn source_matches(filter: TrustSourceFilter, source: TrustSource) -> bool {
+    matches!(
+        (filter, source),
+        (TrustSourceFilter::Rpm, TrustSource::RpmDb)
+            | (TrustSourceFilter::File, TrustSource::FileDb)
+            | (TrustSourceFilter::Deb, TrustSource::Deb)
+            | (TrustSourceFilter::Unknown, TrustSource::Unknown)
+    )
+}
+
+fn run_list(args: &TrustdbListArgs) -> anyhow::Result<i32> {
+    let db = match open_db(args.db.as_deref()) {
+        Ok(db) => db,
+        Err(code) => return Ok(code),
+    };
+    let entries = db.iter_entries()?;
+    let rows: Vec<ListRow> = entries
+        .iter()
+        .filter(|e| args.source.is_none_or(|f| source_matches(f, e.source)))
+        .map(ListRow::from)
+        .collect();
+    print!("{}", trustdb_out::render_list(&rows, json(args.format)));
+    Ok(EXIT_CLEAN)
+}
+
+fn run_check(args: &TrustdbCheckArgs) -> anyhow::Result<i32> {
+    let db = match open_db(args.db.as_deref()) {
+        Ok(db) => db,
+        Err(code) => return Ok(code),
+    };
+    let mut rows: Vec<CheckRow> = Vec::new();
+    for path in &args.paths {
+        let key = path.to_string_lossy();
+        match db.get_entry(&key)? {
+            None => rows.push(CheckRow {
+                path: key.into_owned(),
+                verdict: CheckVerdict::NotInDb,
+            }),
+            Some(entries) => {
+                for entry in &entries {
+                    rows.push(CheckRow {
+                        path: entry.path.clone(),
+                        verdict: CheckVerdict::from(&verify_entry(entry)),
+                    });
+                }
+            }
+        }
+    }
+    let diverged = rows.iter().any(|r| r.verdict.is_divergence());
+    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
+    Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
+}
+
+fn run_diff(args: &TrustdbDiffArgs) -> anyhow::Result<i32> {
+    let db = match open_db(args.db.as_deref()) {
+        Ok(db) => db,
+        Err(code) => return Ok(code),
+    };
+    if let Some(against) = &args.against {
+        let other = match open_db(Some(against.as_path())) {
+            Ok(db) => db,
+            Err(code) => return Ok(code),
+        };
+        return run_diff_db(&db, &other, json(args.format));
+    }
+    // DB-vs-on-disk: verify every entry.
+    let entries = db.iter_entries()?;
+    let rows: Vec<CheckRow> = entries
+        .iter()
+        .map(|e| CheckRow {
+            path: e.path.clone(),
+            verdict: CheckVerdict::from(&verify_entry(e)),
+        })
+        .collect();
+    let diverged = rows.iter().any(|r| r.verdict.is_divergence());
+    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
+    Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
+}
+
+/// DB-vs-DB diff: compare the two `(path, value)` row sets. A row that appears
+/// in only one DB, or under a shared key with a differing value-multiset, is a
+/// divergence. Rather than treat a value change on a shared path as a pair of
+/// only-in-A / only-in-B rows, we group both DBs by path and compare the sorted
+/// multiset of value-tuples per path, classifying each path as only-in-db,
+/// only-in-against, or value-differs.
+/// Group trust-DB entries by path into a sorted multiset of value-tuples per
+/// path, so a value difference on a shared path is detected without spurious
+/// only-in-X rows. `TrustSource` is not `Ord` (frozen foundation type), so the
+/// per-path sort uses `source_rank` for a stable total order.
+fn group_by_path(entries: &[TrustEntry]) -> BTreeMap<String, Vec<(TrustSource, u64, String)>> {
+    let mut m: BTreeMap<String, Vec<(TrustSource, u64, String)>> = BTreeMap::new();
+    for e in entries {
+        m.entry(e.path.clone())
+            .or_default()
+            .push((e.source, e.size, e.sha256.clone()));
+    }
+    for v in m.values_mut() {
+        v.sort_by(|x, y| (source_rank(x.0), x.1, &x.2).cmp(&(source_rank(y.0), y.1, &y.2)));
+    }
+    m
+}
+
+fn run_diff_db(db: &TrustDb, other: &TrustDb, json: bool) -> anyhow::Result<i32> {
+    let a = db.iter_entries()?;
+    let b = other.iter_entries()?;
+
+    let ga = group_by_path(&a);
+    let gb = group_by_path(&b);
+
+    let mut rows: Vec<DbDiffRow> = Vec::new();
+    let mut paths: Vec<&String> = ga.keys().chain(gb.keys()).collect();
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        match (ga.get(path), gb.get(path)) {
+            (Some(_), None) => rows.push(DbDiffRow {
+                path: path.clone(),
+                kind: DbDiffKind::OnlyInDb,
+            }),
+            (None, Some(_)) => rows.push(DbDiffRow {
+                path: path.clone(),
+                kind: DbDiffKind::OnlyInAgainst,
+            }),
+            (Some(va), Some(vb)) if va != vb => rows.push(DbDiffRow {
+                path: path.clone(),
+                kind: DbDiffKind::ValueDiffers,
+            }),
+            _ => {}
+        }
+    }
+
+    let diverged = !rows.is_empty();
+    print!("{}", trustdb_out::render_db_diff(&rows, json));
+    Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
+}
+
+fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
+    let db = match open_db(args.db.as_deref()) {
+        Ok(db) => db,
+        Err(code) => return Ok(code),
+    };
+    let entries = db.iter_entries()?;
+    let rows: Vec<CheckRow> = entries
+        .iter()
+        .map(|e| CheckRow {
+            path: e.path.clone(),
+            verdict: CheckVerdict::from(&verify_entry(e)),
+        })
+        // stale = filtered to non-Match rows only.
+        .filter(|r| r.verdict.is_divergence())
+        .collect();
+    let any_stale = !rows.is_empty();
+    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
+    Ok(if any_stale { EXIT_WARNINGS } else { EXIT_CLEAN })
 }
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {

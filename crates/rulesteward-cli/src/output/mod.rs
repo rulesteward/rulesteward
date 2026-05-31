@@ -8,6 +8,7 @@
 pub mod human;
 pub mod json;
 pub mod sarif;
+pub mod trustdb;
 
 use std::collections::BTreeMap;
 
