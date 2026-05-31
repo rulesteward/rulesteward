@@ -25,6 +25,7 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::Entry;
 use crate::ast::Rule;
 
+use super::anchored;
 use super::subsume::{build_macro_map, shadows};
 
 /// Run the fapd-W01 rule-shadowing pass over `entries` and return the
@@ -49,21 +50,17 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         let b = rules[b_idx];
         for a in rules.iter().take(b_idx) {
             if shadows(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W01",
-                        b.span.clone(),
-                        format!(
-                            "rule unreachable: shadowed by the broader rule on line {}",
-                            a.line
-                        ),
-                        file,
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W01",
+                    b.span.clone(),
+                    format!(
+                        "rule unreachable: shadowed by the broader rule on line {}",
+                        a.line
+                    ),
+                    file,
+                    b.line,
+                ));
                 break;
             }
         }
@@ -74,76 +71,21 @@ pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, AttrValue, Decision, Perm, SyntaxFlavor};
-    use std::path::PathBuf;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/test.rules")
-    }
-
-    fn rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
-
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn kv_int(key: &str, value: i64) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Int(value),
-            span: 0..0,
-        }
-    }
-
-    fn kv_ref(key: &str, set: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::SetRef(set.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn setdef(line: usize, name: &str, values: &[&str]) -> Entry {
-        Entry::SetDefinition {
-            name: name.to_string(),
-            values: values.iter().map(|s| (*s).to_string()).collect(),
-            line,
-            span: rulesteward_core::span(0, 0),
-        }
-    }
+    use crate::ast::{Attr, Decision, Perm};
+    use crate::lints::testkit::{kv, kv_int, kv_ref, modern_rule, p, set_def};
 
     #[test]
     fn f1_identical_rules_b_shadowed() {
         // F1: `allow uid=0 : path=/bin/sh` twice -> line 2 shadowed.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv_int("uid", 0)],
                 vec![kv("path", "/bin/sh")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -172,14 +114,14 @@ mod tests {
         // rule is later so we never check "broad shadows narrow"; the narrow
         // rule's perm=execute means it does not subsume the broad rule anyway.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 Some(Perm::Execute),
                 vec![kv_int("uid", 0)],
                 vec![kv("path", "/bin/sh")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -199,14 +141,14 @@ mod tests {
         // F4: `allow uid=0 : all` then `allow perm=execute uid=0 : path=/bin/sh`.
         // A's object is [Attr::All], which subsumes any concrete object.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv_int("uid", 0)],
                 vec![Attr::All],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 Some(Perm::Execute),
@@ -229,8 +171,8 @@ mod tests {
         // terminal, and `all : all` subsumes any later rule. Exercises the
         // decision-terminal precondition with a non-Allow decision.
         let entries = vec![
-            rule(1, Decision::Deny, None, vec![Attr::All], vec![Attr::All]),
-            rule(
+            modern_rule(1, Decision::Deny, None, vec![Attr::All], vec![Attr::All]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -252,15 +194,15 @@ mod tests {
         // F6: `%admins=0,1000` ; `allow uid=%admins : all` ; `allow uid=0 : all`.
         // The earlier rule's `uid=%admins` ({0,1000}) covers the literal `0`.
         let entries = vec![
-            setdef(1, "admins", &["0", "1000"]),
-            rule(
+            set_def(1, "admins", &["0", "1000"]),
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
                 vec![kv_ref("uid", "admins")],
                 vec![Attr::All],
             ),
-            rule(
+            modern_rule(
                 3,
                 Decision::Allow,
                 None,
@@ -283,14 +225,14 @@ mod tests {
         // The earlier rule's object `dir=/usr/bin/` is a byte-prefix of the
         // later rule's `path=/usr/bin/ls`.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv_int("uid", 0)],
                 vec![kv("dir", "/usr/bin/")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -311,14 +253,14 @@ mod tests {
     fn f7_dir_not_prefix_does_not_shadow() {
         // Same shape, but the dir is NOT a prefix of the path -> no shadow.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv_int("uid", 0)],
                 vec![kv("dir", "/opt/")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -339,14 +281,14 @@ mod tests {
         // The earlier rule's subject `dir=/usr/bin/` is a byte-prefix of the
         // later rule's subject `exe=/usr/bin/python3`.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv("dir", "/usr/bin/")],
                 vec![Attr::All],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,
@@ -367,14 +309,14 @@ mod tests {
     fn f3_unrelated_paths_not_shadowed() {
         // F3: two rules with different object path literals -> no subsume.
         let entries = vec![
-            rule(
+            modern_rule(
                 1,
                 Decision::Allow,
                 None,
                 vec![kv_int("uid", 0)],
                 vec![kv("path", "/usr/bin/foo")],
             ),
-            rule(
+            modern_rule(
                 2,
                 Decision::Allow,
                 None,

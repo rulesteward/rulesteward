@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use super::subsume::{MacroMap, build_macro_map, shadows};
 use crate::ast::{Attr, AttrValue, Decision, Entry, Rule};
 
@@ -56,22 +57,18 @@ pub(crate) fn w04(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
         }
         for &(af, apath, a) in scoped.iter().take(j) {
             if af < bf && is_deny(a.decision) && shadows(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W04",
-                        b.span.clone(),
-                        format!(
-                            "allow rule unreachable: shadowed by the broader deny in {} on line {}",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W04",
+                    b.span.clone(),
+                    format!(
+                        "allow rule unreachable: shadowed by the broader deny in {} on line {}",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }
@@ -175,22 +172,18 @@ pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
             // Cross-file only (same-file dups are fapd-W01), SAME decision, and
             // AST-equal match predicates (NOT subsumption).
             if af < bf && a.decision == b.decision && predicate_sides_equal(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Convention,
-                        "fapd-C02",
-                        b.span.clone(),
-                        format!(
-                            "duplicate rule: identical to the rule in {} on line {}",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Convention,
+                    "fapd-C02",
+                    b.span.clone(),
+                    format!(
+                        "duplicate rule: identical to the rule in {} on line {}",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }
@@ -221,22 +214,18 @@ pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
             // Cross-file only, earlier rule is an allow, AST-equal match
             // predicates (NOT subsumption). deny-then-allow is fapd-W04's job.
             if af < bf && is_allow(a.decision) && predicate_sides_equal(a, b, &macro_map) {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W10",
-                        b.span.clone(),
-                        format!(
-                            "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
-                            apath.display(),
-                            a.line,
-                        ),
-                        bpath.as_path(),
-                        b.line,
-                        1,
-                    )
-                    .with_source_id(bpath.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W10",
+                    b.span.clone(),
+                    format!(
+                        "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
+                        apath.display(),
+                        a.line,
+                    ),
+                    bpath.as_path(),
+                    b.line,
+                ));
                 break;
             }
         }
@@ -289,62 +278,16 @@ pub(crate) fn c01(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, AttrValue, Decision, Perm, Rule, SyntaxFlavor};
+    use crate::ast::{Attr, Decision, Perm};
+    use crate::lints::testkit::{kv, kv_int, kv_ref, modern_rule, set_def};
     use rulesteward_core::Severity;
-
-    fn rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
-    fn setdef(line: usize, name: &str, values: &[&str]) -> Entry {
-        Entry::SetDefinition {
-            name: name.to_string(),
-            values: values.iter().map(|s| (*s).to_string()).collect(),
-            line,
-            span: rulesteward_core::span(0, 0),
-        }
-    }
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
-    fn kv_int(key: &str, value: i64) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Int(value),
-            span: 0..0,
-        }
-    }
-    fn kv_ref(key: &str, set: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::SetRef(set.to_string()),
-            span: 0..0,
-        }
-    }
 
     #[test]
     fn deny_all_in_earlier_file_shadows_later_allow() {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -354,7 +297,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/50-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -376,7 +319,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -386,7 +329,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/90-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -402,8 +345,8 @@ mod tests {
         let files = vec![(
             PathBuf::from("rules.d/10-x.rules"),
             vec![
-                rule(1, Decision::Deny, None, vec![Attr::All], vec![Attr::All]),
-                rule(
+                modern_rule(1, Decision::Deny, None, vec![Attr::All], vec![Attr::All]),
+                modern_rule(
                     2,
                     Decision::Allow,
                     None,
@@ -419,7 +362,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -429,7 +372,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/50-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -446,8 +389,8 @@ mod tests {
             (
                 PathBuf::from("rules.d/10-deny.rules"),
                 vec![
-                    setdef(1, "admins", &["0", "1000"]),
-                    rule(
+                    set_def(1, "admins", &["0", "1000"]),
+                    modern_rule(
                         2,
                         Decision::Deny,
                         None,
@@ -458,7 +401,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/50-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -474,7 +417,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -484,7 +427,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/50-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -541,7 +484,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -551,7 +494,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/50-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -583,7 +526,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -593,7 +536,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -627,7 +570,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     Some(Perm::Execute),
@@ -637,7 +580,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     Some(Perm::Execute),
@@ -664,8 +607,8 @@ mod tests {
             (
                 PathBuf::from("rules.d/20-a.rules"),
                 vec![
-                    setdef(1, "admins", &["0"]),
-                    rule(
+                    set_def(1, "admins", &["0"]),
+                    modern_rule(
                         2,
                         Decision::Allow,
                         None,
@@ -676,7 +619,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -704,7 +647,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -714,7 +657,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -741,14 +684,14 @@ mod tests {
         let files = vec![(
             PathBuf::from("rules.d/20-a.rules"),
             vec![
-                rule(
+                modern_rule(
                     1,
                     Decision::Allow,
                     None,
                     vec![kv_int("uid", 0)],
                     vec![kv("path", "/x")],
                 ),
-                rule(
+                modern_rule(
                     2,
                     Decision::Allow,
                     None,
@@ -772,7 +715,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -782,7 +725,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -819,7 +762,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -829,7 +772,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -869,7 +812,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -879,7 +822,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -907,7 +850,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -917,7 +860,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -955,7 +898,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -965,7 +908,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -988,14 +931,14 @@ mod tests {
         let files = vec![(
             PathBuf::from("rules.d/20-x.rules"),
             vec![
-                rule(
+                modern_rule(
                     1,
                     Decision::Allow,
                     None,
                     vec![kv_int("uid", 0)],
                     vec![kv("path", "/x")],
                 ),
-                rule(
+                modern_rule(
                     2,
                     Decision::Deny,
                     None,
@@ -1018,7 +961,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1028,7 +971,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1066,7 +1009,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1076,7 +1019,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -1112,7 +1055,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1122,7 +1065,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -1150,7 +1093,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-a.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1160,7 +1103,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-b.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1194,7 +1137,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1204,7 +1147,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -1237,7 +1180,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/20-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -1247,7 +1190,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/30-allow.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,
@@ -1278,7 +1221,7 @@ mod tests {
         let files = vec![
             (
                 PathBuf::from("rules.d/10-deny.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Deny,
                     None,
@@ -1288,7 +1231,7 @@ mod tests {
             ),
             (
                 PathBuf::from("rules.d/badname.rules"),
-                vec![rule(
+                vec![modern_rule(
                     1,
                     Decision::Allow,
                     None,

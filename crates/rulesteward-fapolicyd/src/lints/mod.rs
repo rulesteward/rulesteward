@@ -23,6 +23,8 @@ mod macros;
 mod reachability;
 mod source_scan;
 mod subsume;
+#[cfg(test)]
+pub(crate) mod testkit;
 mod trust_path;
 mod validation;
 mod walker;
@@ -31,11 +33,30 @@ pub use layout::check_layout;
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, fill_columns};
+use rulesteward_core::{Diagnostic, Severity, Span, fill_columns};
 
 use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
+
+/// Build a byte-anchored `Diagnostic` with the fapolicyd emission convention:
+/// column defaults to 1 and the source-id is the file path's display string.
+///
+/// Used by the ~17 anchored lint sites (migrated in Task 2 / CLEAN-2). The 3
+/// unanchored (`0..0`, no source-id) sites and the 3 explicit-column sites do
+/// NOT use this helper.
+fn anchored(
+    sev: Severity,
+    code: &'static str,
+    span: Span,
+    msg: impl Into<String>,
+    file: impl Into<std::path::PathBuf>,
+    line: usize,
+) -> Diagnostic {
+    let file = file.into();
+    let source_id = file.display().to_string();
+    Diagnostic::new(sev, code, span, msg, file, line, 1).with_source_id(source_id)
+}
 
 /// Optional external resources + mode flags for the context-gated lint passes.
 /// `Default` is "no trust DB, no earlier-file macros, directory mode", which
@@ -448,6 +469,24 @@ mod tests {
             );
             let _ = expected_line; // line correctness is pre-existing
         }
+    }
+
+    // --- CLEAN-2: anchored() equality anchor ---
+    //
+    // This test is GREEN immediately (anchored() exists in Phase 0). It acts
+    // as a behavior-preservation anchor: if any refactor changes anchored()'s
+    // output shape (column, source_id, etc.) relative to the hand-written
+    // Diagnostic::new(...).with_source_id(...) form, this test fails fast.
+
+    #[test]
+    fn anchored_equals_handwritten_diagnostic() {
+        use std::path::Path;
+        let file = Path::new("/tmp/x.rules");
+        let span = 3..9;
+        let got = super::anchored(Severity::Error, "fapd-E02", span.clone(), "boom", file, 7);
+        let want = Diagnostic::new(Severity::Error, "fapd-E02", span, "boom", file, 7, 1)
+            .with_source_id(file.display().to_string());
+        assert_eq!(got, want);
     }
 
     #[test]

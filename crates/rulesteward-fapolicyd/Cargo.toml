@@ -22,6 +22,8 @@ ariadne = { workspace = true }
 heed = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
+md-5 = { workspace = true }
+sha1 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

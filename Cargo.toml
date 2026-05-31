@@ -31,6 +31,8 @@ proptest = "1"
 rand = ">=0.9.3"  # documentary floor (RUSTSEC-2026-0097); only constrains a crate that opts in via `workspace = true`
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+md-5 = "0.10"
+sha1 = "0.10"
 serde-jsonlines = "0.7"
 # SARIF 2.1.0 typed model + builders (3e `--format sarif` renderer). Pure-Rust
 # (serde + serde_json), musl-clean. Do not hand-roll the SARIF object.

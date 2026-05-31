@@ -6,6 +6,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
+use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
 use crate::trustdb::TrustDb;
 
@@ -26,18 +27,14 @@ pub(crate) fn w06(entries: &[Entry], file: &Path, db: &TrustDb) -> Vec<Diagnosti
                 continue;
             };
             if !db.contains_path(p) && !Path::new(p).exists() {
-                diags.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        "fapd-W06",
-                        r.span.clone(),
-                        format!("`{key}={p}` is in neither the trust DB nor present on disk"),
-                        file,
-                        r.line,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                );
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W06",
+                    r.span.clone(),
+                    format!("`{key}={p}` is in neither the trust DB nor present on disk"),
+                    file,
+                    r.line,
+                ));
             }
         }
     }
@@ -47,49 +44,11 @@ pub(crate) fn w06(entries: &[Entry], file: &Path, db: &TrustDb) -> Vec<Diagnosti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+    use crate::ast::{Attr, Decision};
+    use crate::lints::testkit::{kv, kv_ref, modern_rule, p};
     use crate::trustdb::{open_trustdb_readonly, write_fixture};
     use rulesteward_core::Severity;
-    use std::path::PathBuf;
     use tempfile::tempdir;
-
-    fn p() -> PathBuf {
-        PathBuf::from("/tmp/trust_path_test.rules")
-    }
-
-    fn rule(
-        line: usize,
-        decision: Decision,
-        perm: Option<Perm>,
-        subj: Vec<Attr>,
-        obj: Vec<Attr>,
-    ) -> Entry {
-        Entry::Rule(Rule {
-            decision,
-            perm,
-            subject: subj,
-            object: obj,
-            syntax: SyntaxFlavor::Modern,
-            line,
-            span: rulesteward_core::span(0, 0),
-        })
-    }
-
-    fn kv(key: &str, value: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::Str(value.to_string()),
-            span: 0..0,
-        }
-    }
-
-    fn kv_ref(key: &str, set: &str) -> Attr {
-        Attr::Kv {
-            key: key.to_string(),
-            value: AttrValue::SetRef(set.to_string()),
-            span: 0..0,
-        }
-    }
 
     // Quadrant 1: path= absent from both trust DB and disk -> 1 Warning fapd-W06.
     // RED against the empty stub (stub returns [], expect 1 diagnostic).
@@ -100,7 +59,7 @@ mod tests {
         write_fixture(tmp.path(), &["/usr/bin/ls"]);
         let db = open_trustdb_readonly(tmp.path()).expect("open_trustdb_readonly");
 
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -143,7 +102,7 @@ mod tests {
         write_fixture(tmp.path(), &["/usr/bin/ls"]);
         let db = open_trustdb_readonly(tmp.path()).expect("open_trustdb_readonly");
 
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -167,7 +126,7 @@ mod tests {
         write_fixture(tmp.path(), &[]); // empty fixture - nothing trusted
         let db = open_trustdb_readonly(tmp.path()).expect("open_trustdb_readonly");
 
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -210,7 +169,7 @@ mod tests {
         write_fixture(tmp.path(), &[]); // empty - nothing trusted
         let db = open_trustdb_readonly(tmp.path()).expect("open_trustdb_readonly");
 
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -243,7 +202,7 @@ mod tests {
         write_fixture(tmp.path(), &["/nonexistent/rs-trap/trusted"]);
         let db = open_trustdb_readonly(tmp.path()).expect("open ro");
 
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
@@ -277,7 +236,7 @@ mod tests {
             .to_str()
             .expect("temp path is valid UTF-8")
             .to_string();
-        let entries = vec![rule(
+        let entries = vec![modern_rule(
             1,
             Decision::Allow,
             None,
