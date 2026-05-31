@@ -34,6 +34,11 @@ heed = { workspace = true }
 predicates = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
+# Enable the fapolicyd crate's `test-fixtures` feature for dev/test builds only,
+# so e2e tests can call `write_trustdb_fixture_kv` to build trust-DB-shaped LMDB
+# fixtures. The feature is off in the shipped binary (the non-dev dependency at
+# the top of this file does not enable it), so this never leaks into release.
+rulesteward-fapolicyd = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

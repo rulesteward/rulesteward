@@ -299,4 +299,216 @@ mod tests {
             panic!("expected Fapolicyd(Lint(_))");
         }
     }
+
+    // -- Section 3d: trustdb clap-contract tests (GREEN; the tree is frozen) --
+    // These pin the frozen subcommand surface: a future edit that drops a verb,
+    // renames a flag, or relaxes a required-arg constraint breaks them.
+
+    /// `trustdb list <DIR> --format json --source rpm` parses, the positional
+    /// DIR round-trips, and `--source` maps to the Rpm filter.
+    #[test]
+    fn trustdb_list_parses_positional_db_format_and_source() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "list",
+            "/var/lib/fapolicyd",
+            "--format",
+            "json",
+            "--source",
+            "rpm",
+        ])
+        .expect("trustdb list must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(List(_))");
+        };
+        assert_eq!(
+            args.db.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd")),
+            "positional DIR must round-trip"
+        );
+        assert!(
+            matches!(args.format, TrustdbFormat::Json),
+            "--format json must select Json"
+        );
+        assert!(
+            matches!(args.source, Some(TrustSourceFilter::Rpm)),
+            "--source rpm must select Rpm"
+        );
+    }
+
+    /// `trustdb list` with no positional DIR parses (db is optional) and
+    /// defaults `--format` to Human, `--source` to None.
+    #[test]
+    fn trustdb_list_defaults_when_args_absent() {
+        let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "trustdb", "list"])
+            .expect("trustdb list with no args must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(List(_))");
+        };
+        assert!(
+            args.db.is_none(),
+            "DIR must be optional and default to None"
+        );
+        assert!(
+            matches!(args.format, TrustdbFormat::Human),
+            "--format must default to Human"
+        );
+        assert!(args.source.is_none(), "--source must default to None");
+    }
+
+    /// `--source` rejects a value not in {rpm,file,deb,unknown}.
+    #[test]
+    fn trustdb_list_rejects_unknown_source_value() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "list",
+            "--source",
+            "bogus",
+        ]);
+        assert!(cli.is_err(), "an invalid --source value must be rejected");
+    }
+
+    /// `trustdb check --db <DIR> <PATH>...` parses with multiple paths.
+    #[test]
+    fn trustdb_check_parses_db_and_multiple_paths() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "check",
+            "--db",
+            "/var/lib/fapolicyd",
+            "/usr/bin/ls",
+            "/usr/bin/cat",
+        ])
+        .expect("trustdb check must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Check(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(Check(_))");
+        };
+        assert_eq!(
+            args.db.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd")),
+            "--db value must round-trip"
+        );
+        assert_eq!(
+            args.paths,
+            vec![
+                std::path::PathBuf::from("/usr/bin/ls"),
+                std::path::PathBuf::from("/usr/bin/cat"),
+            ],
+            "all positional paths must be collected in order"
+        );
+    }
+
+    /// `trustdb check` with ZERO paths must fail (`paths` is `required = true`,
+    /// `num_args = 1..`). Pins the required-arg constraint.
+    #[test]
+    fn trustdb_check_requires_at_least_one_path() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "check",
+            "--db",
+            "/var/lib/fapolicyd",
+        ]);
+        assert!(
+            cli.is_err(),
+            "trustdb check with no paths must be a parse error"
+        );
+    }
+
+    /// `trustdb diff --db <A> --against <B>` parses both DB dirs.
+    #[test]
+    fn trustdb_diff_parses_db_and_against() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "diff",
+            "--db",
+            "/a",
+            "--against",
+            "/b",
+        ])
+        .expect("trustdb diff must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Diff(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(Diff(_))");
+        };
+        assert_eq!(args.db.as_deref(), Some(std::path::Path::new("/a")));
+        assert_eq!(
+            args.against.as_deref(),
+            Some(std::path::Path::new("/b")),
+            "--against must round-trip"
+        );
+    }
+
+    /// `trustdb diff` with no `--against` parses (DB-vs-disk mode); `against`
+    /// is None.
+    #[test]
+    fn trustdb_diff_against_is_optional() {
+        let cli =
+            Cli::try_parse_from(["rulesteward", "fapolicyd", "trustdb", "diff", "--db", "/a"])
+                .expect("trustdb diff without --against must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Diff(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(Diff(_))");
+        };
+        assert!(
+            args.against.is_none(),
+            "--against must be optional (DB-vs-disk mode)"
+        );
+    }
+
+    /// `trustdb stale --db <DIR> --format json` parses.
+    #[test]
+    fn trustdb_stale_parses_db_and_format() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "stale",
+            "--db",
+            "/var/lib/fapolicyd",
+            "--format",
+            "json",
+        ])
+        .expect("trustdb stale must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Stale(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(Stale(_))");
+        };
+        assert_eq!(
+            args.db.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd"))
+        );
+        assert!(matches!(args.format, TrustdbFormat::Json));
+    }
+
+    /// An unknown trustdb verb is rejected (pins the closed verb set).
+    #[test]
+    fn trustdb_rejects_unknown_subcommand() {
+        let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "trustdb", "frobnicate"]);
+        assert!(cli.is_err(), "unknown trustdb subcommand must be rejected");
+    }
 }
