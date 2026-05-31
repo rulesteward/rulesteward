@@ -17,10 +17,14 @@ pub enum TrustDbError {
 }
 
 /// Which database populated a trust-DB entry (fapolicyd source integer).
+///
+/// Mirrors fapolicyd's `trust_src_t` enum (`fapolicyd-backend.h`):
+/// `SRC_UNKNOWN = 0`, `SRC_RPM = 1`, `SRC_FILE_DB = 2`, `SRC_DEB = 3`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TrustSource {
     FileDb,
     RpmDb,
+    Deb,
     Unknown,
 }
 
@@ -28,7 +32,9 @@ impl TrustSource {
     /// Map the on-disk source integer to a `TrustSource` variant.
     ///
     /// fapolicyd encodes the origin of each trust entry as a small integer
-    /// in the value field. The exact mapping is filled by the 3d impl pipeline.
+    /// in the value field (`SRC_UNKNOWN = 0`, `SRC_RPM = 1`, `SRC_FILE_DB = 2`,
+    /// `SRC_DEB = 3`; any other value maps to `Unknown`). The exact mapping is
+    /// filled by the 3d impl pipeline.
     #[must_use]
     pub fn from_int(_n: u32) -> Self {
         todo!() // stub: filled by 3d impl pipeline

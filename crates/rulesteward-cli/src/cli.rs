@@ -23,6 +23,7 @@ pub enum TrustdbFormat {
 pub enum TrustSourceFilter {
     Rpm,
     File,
+    Deb,
     Unknown,
 }
 
