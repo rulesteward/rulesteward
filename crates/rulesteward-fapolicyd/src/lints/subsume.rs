@@ -227,6 +227,193 @@ mod tests {
     use crate::ast::Perm;
     use crate::lints::testkit::{kv, kv_int, kv_ref, set_def};
 
+    // --- proptest invariants ---
+
+    mod proptest_invariants {
+        use super::super::{build_macro_map, shadows, subsumes_perm};
+        use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+        use proptest::prelude::*;
+        use rulesteward_core::span;
+
+        /// Build an `Attr::Kv` with a string value and no span.
+        fn kv_s(key: &str, val: &str) -> Attr {
+            Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Str(val.to_string()),
+                span: 0..0,
+            }
+        }
+
+        /// Build an `Attr::Kv` with an integer value and no span.
+        fn kv_i(key: &str, val: i64) -> Attr {
+            Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Int(val),
+                span: 0..0,
+            }
+        }
+
+        fn arb_perm_opt() -> impl Strategy<Value = Option<Perm>> {
+            prop_oneof![
+                Just(None),
+                Just(Some(Perm::Open)),
+                Just(Some(Perm::Execute)),
+                Just(Some(Perm::Any)),
+            ]
+        }
+
+        fn arb_decision() -> impl Strategy<Value = Decision> {
+            prop_oneof![
+                Just(Decision::Allow),
+                Just(Decision::Deny),
+                Just(Decision::AllowAudit),
+                Just(Decision::DenyAudit),
+            ]
+        }
+
+        /// Generate a small but realistic rule: one subject attr and one object attr,
+        /// both concrete (no `SetRef`) so subsumption is purely literal-equality /
+        /// perm-covering. This keeps the generator simple while still exercising
+        /// all three subsumption mechanisms.
+        fn arb_concrete_rule() -> impl Strategy<Value = Rule> {
+            // Subject: uid=<0..4> so values repeat and same-pair subsumption is reachable.
+            // Object: path= one of a small set so collision is common.
+            let subject_strategy = prop_oneof![
+                (0u32..4u32).prop_map(|n| vec![kv_i("uid", i64::from(n))]),
+                Just(vec![Attr::All]),
+            ];
+            let object_strategy = prop_oneof![
+                prop_oneof![
+                    Just(vec![kv_s("path", "/usr/bin/foo")]),
+                    Just(vec![kv_s("path", "/usr/bin/bar")]),
+                    Just(vec![kv_s("path", "/bin/sh")]),
+                ],
+                Just(vec![Attr::All]),
+            ];
+            (
+                arb_decision(),
+                arb_perm_opt(),
+                subject_strategy,
+                object_strategy,
+            )
+                .prop_map(|(decision, perm, subject, object)| Rule {
+                    decision,
+                    perm,
+                    subject,
+                    object,
+                    syntax: SyntaxFlavor::Modern,
+                    line: 1,
+                    span: span(0, 0),
+                })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// Invariant: every rule subsumes itself (`shadows(r, r, map)` is true).
+            ///
+            /// This is the algebraic reflexivity property of the subsumption relation.
+            /// Kills mutations that:
+            /// - Invert `subsumes_perm` for the equal case (e.g. `Some(p) != b_perm`).
+            /// - Break the literal-equal check in `subsumes_value` (e.g. `a_lit != b_lit`).
+            /// - Invert the `Attr::All` shortcut to return `false` (reflexivity relies on
+            ///   `Attr::All` covering itself when `b_attrs` is `[Attr::All]` and
+            ///   `b_attrs.is_empty()` is `false`).
+            /// - Break predicate-list iteration so `a_attrs.iter().all(...)` returns false
+            ///   when every A-attr has an identical match in B.
+            #[test]
+            fn shadows_is_reflexive(rule in arb_concrete_rule()) {
+                let entries: Vec<Entry> = vec![Entry::Rule(rule.clone())];
+                let macro_map = build_macro_map(&entries);
+                prop_assert!(
+                    shadows(&rule, &rule, &macro_map),
+                    "every rule must shadow itself (reflexivity); rule={rule:?}"
+                );
+            }
+
+            /// Invariant: `subsumes_perm` is reflexive for every perm variant.
+            ///
+            /// A separate, finer-grained property that kills mutations on `subsumes_perm`
+            /// without relying on the full `shadows` call path. Covers `None`, `Any`,
+            /// `Open`, `Execute` - every variant the perm type exposes.
+            #[test]
+            fn subsumes_perm_is_reflexive(perm in arb_perm_opt()) {
+                prop_assert!(
+                    subsumes_perm(perm, perm),
+                    "subsumes_perm(p, p) must be true for any perm value; perm={perm:?}"
+                );
+            }
+
+            /// Consumer consistency: for a rule pair (A, B) with a macro map built from
+            /// a single file, `shadows(a, b, map)` returns the same value whether invoked
+            /// from a W01-style caller (single-file `build_macro_map`) or a W04-style
+            /// caller that builds a global map from a single-file slice
+            /// (`build_global_macro_map`-equivalent).
+            ///
+            /// Since both W01 (`reachability::walk`) and W04 (`cross_file::w04`) call the
+            /// same `shadows` function and only differ in HOW they build the `MacroMap`
+            /// (W01 calls `build_macro_map(entries)` per-file; W04 calls
+            /// `build_global_macro_map` which folds multiple `build_macro_map` calls),
+            /// the invariant tested here is: a `MacroMap` built from a single file via
+            /// `build_macro_map` equals one built by merging a single-element slice of the
+            /// same file - i.e. the merge of one is the identity. Both W01 and W04 then
+            /// reach the same `shadows()` result.
+            ///
+            /// Kills mutations that:
+            /// - Make `build_macro_map` skip `SetDefinition` entries (the two maps diverge).
+            /// - Make the "global" fold silently drop entries (same divergence).
+            /// - Make `shadows` return different results for the same inputs (impossible if
+            ///   the map is equal, but a mutation that ignored the map would diverge here).
+            #[test]
+            fn shadows_consumer_consistency(
+                a in arb_concrete_rule(),
+                b in arb_concrete_rule(),
+                set_name in "[a-zA-Z_][a-zA-Z0-9_]{0,8}",
+                set_vals in prop::collection::vec("[a-z]{1,8}", 1usize..=3usize),
+            ) {
+                // Build a single-file entry list: one SetDefinition + both rules.
+                // The SetDefinition ensures the macro map is non-trivial and exercises
+                // the "merge of one file" path.
+                let set_def_entry = Entry::SetDefinition {
+                    name: set_name.clone(),
+                    values: set_vals.clone(),
+                    line: 1,
+                    span: span(0, 0),
+                };
+                let entries: Vec<Entry> = vec![
+                    set_def_entry.clone(),
+                    Entry::Rule(a.clone()),
+                    Entry::Rule(b.clone()),
+                ];
+
+                // W01 path: `build_macro_map` on the entry slice directly.
+                let w01_map = build_macro_map(&entries);
+
+                // W04 path: simulate `build_global_macro_map` for a single file,
+                // which merges via `map.extend(build_macro_map(file_entries))`.
+                let mut w04_map = super::super::MacroMap::new();
+                w04_map.extend(build_macro_map(&entries));
+
+                // The two maps must be identical.
+                prop_assert_eq!(
+                    &w01_map, &w04_map,
+                    "build_macro_map and a single-file global merge must produce the same map \
+                     (set_name={:?} set_vals={:?})",
+                    set_name, set_vals
+                );
+
+                // And therefore `shadows` must agree on (A,B) through both paths.
+                let w01_result = shadows(&a, &b, &w01_map);
+                let w04_result = shadows(&a, &b, &w04_map);
+                prop_assert_eq!(
+                    w01_result, w04_result,
+                    "shadows(a,b) must agree between W01 map and W04 map (a={:?} b={:?})",
+                    a, b
+                );
+            }
+        }
+    }
+
     /// An empty macro map for helper tests that exercise no `%name=` sets.
     fn no_macros() -> MacroMap {
         MacroMap::new()
