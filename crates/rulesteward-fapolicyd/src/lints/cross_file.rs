@@ -191,15 +191,20 @@ pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     diags
 }
 
-/// fapd-W10 (Warning): a CROSS-FILE DECISION-SHADOW. Two rules in different files
-/// have AST-equal MATCH predicates (perm + subject + object) but a conflicting
-/// outcome where the later is unreachable (first match wins). SCOPED TO
+/// fapd-W10 (Warning): a CROSS-FILE DECISION-SHADOW. An earlier-loading `allow`
+/// whose match predicates (perm + subject + object) SUBSUME a later-loading
+/// `deny` makes that deny unreachable (fapolicyd is first-match-wins and every
+/// decision is terminal, so the broader earlier allow fires first). SCOPED TO
 /// allow-then-deny ONLY (earlier file `allow`, later file `deny`); the
-/// deny-then-allow direction is fapd-W04, so W10 and W04 never double-fire.
+/// deny-then-allow direction is fapd-W04, so W10 and W04 never double-fire (the
+/// direction guard, not the match test, is what prevents the overlap).
 ///
-/// Reuses `build_global_macro_map`, `scoped_rules`, and `is_allow`/`is_deny`; the
-/// match test is `predicate_sides_equal` (strict AST-equality, NOT
-/// `subsume::shadows`), gated to earlier-allow then later-deny.
+/// Uses `subsume::shadows` (subsumption), mirroring fapd-W04 - the same
+/// reachability relation with the decisions swapped. (Supersedes the original
+/// equality-only W10 from spec §6.1 / PR #33: equality strictly under-reported,
+/// missing dead denies like `allow dir=execdirs` shadowing `deny path=/usr/bin/nc`.
+/// Verified against fapolicyd.rules(5): first-match-wins + terminal decisions.)
+/// Reuses `build_global_macro_map`, `scoped_rules`, and `is_allow`/`is_deny`.
 pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     let macro_map = build_global_macro_map(files);
     let scoped = scoped_rules(files);
@@ -211,15 +216,17 @@ pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
             continue;
         }
         for &(af, apath, a) in scoped.iter().take(j) {
-            // Cross-file only, earlier rule is an allow, AST-equal match
-            // predicates (NOT subsumption). deny-then-allow is fapd-W04's job.
-            if af < bf && is_allow(a.decision) && predicate_sides_equal(a, b, &macro_map) {
+            // Cross-file only, earlier rule is an allow whose predicates SUBSUME
+            // the later deny's (first-match-wins: the broader earlier allow fires
+            // first and terminates, so the deny is unreachable). Mirror of W04;
+            // deny-then-allow is fapd-W04's job (direction guard prevents double-fire).
+            if af < bf && is_allow(a.decision) && shadows(a, b, &macro_map) {
                 diags.push(anchored(
                     Severity::Warning,
                     "fapd-W10",
                     b.span.clone(),
                     format!(
-                        "deny rule unreachable: the allow with the same match predicates in {} on line {} already matched and terminated evaluation",
+                        "deny rule unreachable: shadowed by the broader allow in {} on line {}",
                         apath.display(),
                         a.line,
                     ),
@@ -985,24 +992,18 @@ mod tests {
     }
 
     #[test]
-    fn w10_does_not_fire_on_subsumption_not_equality() {
-        // EQUALITY-vs-SUBSUMPTION boundary for W10. Earlier file `allow all : all`,
-        // later file `deny uid=0 : path=/x`. The decisions DO conflict
-        // (allow -> deny), and the earlier allow STRICTLY SUBSUMES the later deny,
-        // but the MATCH predicates are NOT equal. Per the locked design, W10 is
-        // an EQUAL-match allow-then-deny shadow ONLY. It must NOT fire on mere
-        // subsumption.
+    fn w10_fires_on_subsumption_broad_allow_shadows_narrower_deny() {
+        // SUBSUMPTION semantics for W10 (spec §6.1; mirror of fapd-W04). fapolicyd
+        // is first-match-wins and every decision is terminal (fapolicyd.rules(5)
+        // line 14 + lines 19-26), so an earlier `allow` whose predicates SUBSUME a
+        // later `deny` makes that deny unreachable - the same reachability relation
+        // W04 already uses, decisions swapped. Earlier `allow all : all` strictly
+        // subsumes `deny uid=0 : path=/x`, so the deny is dead -> exactly one W10.
         //
-        // The adversarial pin: a wrong impl defined as
-        // `is_allow(earlier) && is_deny(later) && shadows(earlier, later)`
-        // (subsumption via `subsume::shadows`) would WRONGLY emit W10 here,
-        // because `shadows(allow_all_all, deny_uid0_pathx)` is true. The correct
-        // EQUAL-match impl passes (no W10). The empty stub also passes, so this
-        // test does NOT change RED status.
-        //
-        // (Per the locked design W10 is equal-match allow->deny only, so this
-        // allow-subsumes-later-deny case is intentionally NOT flagged by any
-        // cross-file code; it is not a gap.)
+        // Adversarial pin: the WRONG (old equality-only) impl
+        // `predicate_sides_equal(earlier, later)` would emit NOTHING here (the
+        // predicates are not equal), so it FAILS this test. The empty stub also
+        // fails. Only the correct subsumption impl passes.
         let files = vec![
             (
                 PathBuf::from("rules.d/20-allow.rules"),
@@ -1025,25 +1026,134 @@ mod tests {
                 )],
             ),
         ];
+        let d = w10(&files);
+        assert_eq!(
+            d.len(),
+            1,
+            "broad allow shadows narrower deny -> one W10: {d:?}"
+        );
+        assert_eq!(d[0].code.as_ref(), "fapd-W10");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert!(
+            d[0].file.ends_with("30-deny.rules"),
+            "W10 anchors the later dead deny: {:?}",
+            d[0].file
+        );
+        assert!(
+            d[0].message.contains("20-allow.rules"),
+            "W10 prose names the earlier broader allow's file: {}",
+            d[0].message
+        );
+        // No C02 on conflicting decisions (allow vs deny).
+        assert!(
+            !codes(&crate::lints::lint_cross_file(&files)).contains("fapd-C02"),
+            "no C02 on conflicting decisions"
+        );
+    }
+
+    #[test]
+    fn w10_fires_on_dir_keyword_allow_shadowing_path_deny() {
+        // The execdirs keyword (/usr/ /bin/ /sbin/ /lib/ /lib64/ /usr/libexec/,
+        // verified compiled-in to fapolicyd 1.3.2/1.4.3/1.4.5) byte-prefix-covers
+        // /usr/bin/nc, so `allow uid=0 : dir=execdirs` shadows the later
+        // `deny uid=0 : path=/usr/bin/nc`. This pins the keyword-expansion + W10
+        // subsumption together (the headline corpus finding a3-w10-numeric-order).
+        let files = vec![
+            (
+                PathBuf::from("rules.d/05-allow.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    Some(Perm::Execute),
+                    vec![kv_int("uid", 0)],
+                    vec![kv("dir", "execdirs")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/50-deny.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Deny,
+                    Some(Perm::Execute),
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/nc")],
+                )],
+            ),
+        ];
+        let d = w10(&files);
+        assert_eq!(d.len(), 1, "execdirs allow shadows path deny -> W10: {d:?}");
+        assert_eq!(d[0].code.as_ref(), "fapd-W10");
+    }
+
+    #[test]
+    fn w10_does_not_fire_when_earlier_allow_is_narrower_than_deny() {
+        // CRITICAL false-positive guard for the subsumption widening. An earlier
+        // `allow` that is NARROWER than the later `deny` does NOT make the deny
+        // unreachable: events matching the deny but not the narrow allow still
+        // reach the deny. Earlier `allow uid=1000 : path=/x` does not subsume
+        // `deny all : path=/x` (uid!=1000 events reach the deny) -> NO W10.
+        // A wrong impl that fires on ANY decision-conflict pair (ignoring the
+        // subsumption direction) would wrongly emit W10 here.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/20-allow.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 1000)],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/30-deny.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Deny,
+                    None,
+                    vec![Attr::All],
+                    vec![kv("path", "/x")],
+                )],
+            ),
+        ];
         assert!(
             w10(&files).is_empty(),
-            "earlier `allow all : all` SUBSUMES but is not equal to the later \
-             `deny uid=0 : path=/x`; W10 requires EQUAL match predicates, not \
-             subsumption, so it must NOT fire: {:?}",
+            "narrower earlier allow must NOT shadow a broader later deny: {:?}",
             w10(&files)
         );
-        // Belt-and-braces via the aggregator: the subsumption pair must not leak
-        // into W10 (nor masquerade as a C02 duplicate; decisions differ).
-        let diags = crate::lints::lint_cross_file(&files);
-        let c = codes(&diags);
-        assert!(
-            !c.contains("fapd-W10"),
-            "no W10 on allow-subsumes-deny (subsumption, not equal match)"
-        );
-        assert!(
-            !c.contains("fapd-C02"),
-            "no C02 on conflicting decisions (allow vs deny)"
-        );
+    }
+
+    #[test]
+    fn w04_fires_on_dir_keyword_deny_shadowing_path_allow() {
+        // Mirror direction for the keyword expansion: an earlier `deny dir=execdirs`
+        // covers a later `allow path=/usr/bin/nc` (nc is under execdirs), so the
+        // allow is unreachable -> fapd-W04. Pins that the keyword expansion also
+        // benefits W04 (both route through `subsume::shadows` + `dir_prefix_covers`).
+        let files = vec![
+            (
+                PathBuf::from("rules.d/05-deny.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Deny,
+                    Some(Perm::Execute),
+                    vec![kv_int("uid", 0)],
+                    vec![kv("dir", "execdirs")],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/50-allow.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    Some(Perm::Execute),
+                    vec![kv_int("uid", 0)],
+                    vec![kv("path", "/usr/bin/nc")],
+                )],
+            ),
+        ];
+        let d = w04(&files);
+        assert_eq!(d.len(), 1, "execdirs deny shadows path allow -> W04: {d:?}");
+        assert_eq!(d[0].code.as_ref(), "fapd-W04");
     }
 
     #[test]

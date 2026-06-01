@@ -4,4 +4,4 @@ expression: rendered
 ---
 files=2
 diagnostics=1
-[fapd-W10] sev=Warning line=3 col=1 span=156..188 file=rules.d/30-deny.rules :: deny rule unreachable: the allow with the same match predicates in rules.d/20-allow.rules on line 3 already matched and terminated evaluation
+[fapd-W10] sev=Warning line=3 col=1 span=156..188 file=rules.d/30-deny.rules :: deny rule unreachable: shadowed by the broader allow in rules.d/20-allow.rules on line 3
