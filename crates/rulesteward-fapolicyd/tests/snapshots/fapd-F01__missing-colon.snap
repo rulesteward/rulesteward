@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=err
 diagnostics=1
-[fapd-F01] sev=Fatal line=1 col=16 span=15..15 :: found end of input expected ' ', '	', or colon separator
+[fapd-F01] sev=Fatal line=1 col=16 span=15..15 :: malformed rule syntax: found end of input expected ' ', '	', or colon separator
