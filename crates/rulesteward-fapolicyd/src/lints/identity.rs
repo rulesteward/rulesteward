@@ -49,9 +49,10 @@ pub(crate) enum Resolution {
 ///
 /// `resolve(kind, value) -> Resolution` is called once per `uid=` / `gid=`
 /// literal attribute encountered. Non-literal values (`SetRef`) are skipped.
-/// Integer (`Int`) values are coerced to their decimal string form and resolved.
-/// Non-uid/gid keys are skipped. A `Resolution::Error` conservatively suppresses
-/// the diagnostic.
+/// Non-negative integer (`Int`) values are coerced to their decimal string form
+/// and resolved; negative integers are skipped (they are invalid ids owned by
+/// fapd-E02). Non-uid/gid keys are skipped. A `Resolution::Error` conservatively
+/// suppresses the diagnostic.
 pub(crate) fn w05_with_resolver(
     entries: &[Entry],
     file: &Path,
@@ -72,10 +73,15 @@ pub(crate) fn w05_with_resolver(
                 "gid" => IdKind::Group,
                 _ => continue,
             };
-            // Extract the string value to check: Str as-is, Int coerced to decimal,
-            // SetRef (macro reference) skipped entirely.
+            // Extract the string value to check: Str as-is, non-negative Int
+            // coerced to decimal, SetRef (macro reference) skipped entirely.
+            // A negative Int (e.g. `uid=-1`) is never a valid id and is owned by
+            // fapd-E02 (out of the u32 id range); skip it here so W05 does not
+            // coerce `-1` into "-1" and fire a redundant "unknown identity"
+            // warning alongside the E02 error.
             let val_str: String = match value {
                 AttrValue::Str(s) => s.clone(),
+                AttrValue::Int(n) if *n < 0 => continue,
                 AttrValue::Int(n) => n.to_string(),
                 AttrValue::SetRef(_) => continue,
             };
@@ -703,6 +709,129 @@ mod tests {
         assert_eq!(
             getent_resolve(IdKind::Group, "4294967294"),
             Resolution::NotFound
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Task-1: a negative `uid=` literal parses as AttrValue::Int(-1) and is NOT a
+    // valid identity - it is owned by fapd-E02 (out of the u32 id range). W05 must
+    // SKIP negative integers rather than coerce `-1` to the string "-1" and shell
+    // out to getent (which would fire a spurious, redundant W05 alongside the E02).
+    //
+    // RED against the current impl: it coerces Int(-1) -> "-1" -> resolver NotFound
+    // -> 1 spurious W05. The fix skips negative Int values entirely.
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn negative_int_uid_is_skipped_no_w05() {
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", -1)],
+            vec![Attr::All],
+        )];
+        // Even a NotFound resolver must not produce a W05: negative ids are E02's.
+        let diags = w05_with_resolver(&entries, &p(), resolver_not_found());
+        assert!(
+            diags.is_empty(),
+            "uid=-1 is an invalid (negative) id owned by fapd-E02; W05 must skip it, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn negative_int_gid_is_skipped_no_w05() {
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("gid", -5)],
+            vec![Attr::All],
+        )];
+        let diags = w05_with_resolver(&entries, &p(), resolver_not_found());
+        assert!(
+            diags.is_empty(),
+            "gid=-5 is an invalid (negative) id owned by fapd-E02; W05 must skip it, got: {diags:?}"
+        );
+    }
+
+    // Boundary: n=0 is a valid non-negative id and must go through the resolver,
+    // NOT the negative-skip path. With a NotFound resolver it therefore fires one
+    // W05. Pins the skip boundary at strictly `< 0` (only negatives skip) and
+    // kills the `< -> <=` mutant that would also skip uid=0.
+    #[test]
+    fn zero_int_uid_is_resolved_not_skipped() {
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", 0)],
+            vec![Attr::All],
+        )];
+        let diags = w05_with_resolver(&entries, &p(), resolver_not_found());
+        assert_eq!(
+            diags.len(),
+            1,
+            "uid=0 (Int) must be resolved, not skipped; NotFound -> 1 W05, got {}: {diags:?}",
+            diags.len()
+        );
+        assert_eq!(diags[0].code, "fapd-W05");
+    }
+
+    // A non-negative Int that the resolver cannot find STILL fires W05 (this is
+    // not changed by Task 1). Guards against an over-broad fix that skips all
+    // Int values, which would silently drop the legitimate Q8-style coercion path.
+    #[test]
+    fn nonnegative_int_uid_not_found_still_fires_w05() {
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", 4_294_967_294)],
+            vec![Attr::All],
+        )];
+        let diags = w05_with_resolver(&entries, &p(), resolver_not_found());
+        assert_eq!(
+            diags.len(),
+            1,
+            "a non-negative unresolved Int uid must still fire W05, got {}: {diags:?}",
+            diags.len()
+        );
+        assert_eq!(diags[0].code, "fapd-W05");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Task-1 integration: `uid=-1` under --check-identities yields fapd-E02
+    // (invalid numeric value - negative is out of the u32 id range) and NOT
+    // fapd-W05. Pins the precedence end-to-end: a negative numeric id is a hard
+    // E02 error, not a soft W05 "unknown identity" warning. RED against the
+    // current impl (both fire).
+    // ---------------------------------------------------------------------------
+    #[test]
+    fn negative_uid_is_e02_not_w05_end_to_end() {
+        let src = "allow uid=-1 : all\n";
+        let path = std::path::Path::new("tests/corpus/traps/fapd-W05/uid-negative.rules");
+        let entries = crate::parser::parse_rules_file(src, path)
+            .unwrap_or_else(|diags| panic!("fixture must parse: {diags:?}"));
+        let ctx = LintContext {
+            check_identities: true,
+            ..Default::default()
+        };
+        let diags = lint_with_context(&entries, src, path, &ctx);
+        let e02 = diags
+            .iter()
+            .filter(|d| d.code.as_ref() == "fapd-E02")
+            .count();
+        let w05 = diags
+            .iter()
+            .filter(|d| d.code.as_ref() == "fapd-W05")
+            .count();
+        assert_eq!(
+            e02, 1,
+            "uid=-1 must fire exactly one fapd-E02 (invalid numeric id), got {e02}: {diags:?}"
+        );
+        assert_eq!(
+            w05, 0,
+            "uid=-1 must NOT fire fapd-W05 (E02 owns the negative id), got {w05}: {diags:?}"
         );
     }
 }
