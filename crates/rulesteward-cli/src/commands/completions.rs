@@ -134,6 +134,20 @@ fn long_flags(cmd: &clap::Command) -> Vec<String> {
         .collect()
 }
 
+/// Possible values of `cmd`'s positional value-enum arguments, as completion
+/// tokens. For `completions <shell>` this yields the shell value set
+/// (`bash`, `zsh`, `fish`, `elvish`, `power-shell`, `tcsh`) - parity with the
+/// bash/zsh backends, which complete the positional's `ValueEnum` set
+/// automatically. Path-style positionals (no possible values) contribute
+/// nothing, and hidden values are skipped.
+fn positional_value_names(cmd: &clap::Command) -> Vec<String> {
+    cmd.get_positionals()
+        .flat_map(clap::Arg::get_possible_values)
+        .filter(|pv| !pv.is_hide_set())
+        .map(|pv| pv.get_name().to_owned())
+        .collect()
+}
+
 /// Depth-first: for `cmd` and every descendant, push an
 /// `n/<name>/(children + flags)/` rule when there is anything to complete
 /// after that word. Recurses into subcommands so nested levels are covered.
@@ -150,6 +164,9 @@ fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
         }
         let mut list = subcommand_names(sub);
         list.extend(long_flags(sub));
+        // A leaf command with a positional value-enum (e.g. `completions <shell>`)
+        // completes from its value set, mirroring the bash/zsh backends.
+        list.extend(positional_value_names(sub));
         if !list.is_empty() {
             rules.push(format!("'n/{}/({})/'", sub.get_name(), list.join(" ")));
         }

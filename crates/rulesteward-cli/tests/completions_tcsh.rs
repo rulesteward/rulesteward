@@ -162,6 +162,30 @@ fn tcsh_completions_contains_slash_pattern_selector() {
 // generator latitude in which flags it surfaces.
 // ---------------------------------------------------------------------------
 
+/// Task 5: the `completions <shell>` positional must offer its `ValueEnum` set
+/// (the shell names), at parity with the bash/zsh backends (which complete it
+/// automatically). The flat tcsh model surfaces it as an `n/completions/(...)/`
+/// next-word rule. RED today: the generator lists only a command's child
+/// subcommands + long flags, so `completions` shows just its `--help` flag.
+#[test]
+fn tcsh_completes_completions_shell_value_set() {
+    let s = tcsh_output();
+    let line = s
+        .lines()
+        .find(|l| l.contains("n/completions/"))
+        .unwrap_or_else(|| {
+            panic!("tcsh script must emit an `n/completions/(...)/` rule for the shell value set;\nGot:\n{s}")
+        });
+    // clap renders the PowerShell variant in kebab-case (`power-shell`), so the
+    // emitted value set matches the literal `rulesteward completions <value>` tokens.
+    for shell in ["bash", "zsh", "fish", "elvish", "power-shell", "tcsh"] {
+        assert!(
+            line.contains(shell),
+            "the n/completions/ rule must list the `{shell}` value; got: {line}"
+        );
+    }
+}
+
 /// The output must reference at least one real flag from `LintArgs` so the
 /// generator is proven to have walked the clap arg tree.
 /// Verified against cli.rs: `--format`, `--file`, `--against-trustdb`,
