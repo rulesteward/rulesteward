@@ -685,4 +685,24 @@ mod tests {
             "fapd-W05 must be Warning severity"
         );
     }
+
+    // Pins the real getent exit-code mapping DIRECTLY. The output-level tests
+    // cannot distinguish Found from Error (both suppress W05), so the
+    // `Some(0) => Found` arm in getent_resolve is unconstrained by them - a
+    // mutation that deletes it survives. This asserts exit-0 -> Found (uid/gid 0
+    // always resolve) and exit-2 -> NotFound (a reserved-high id is always
+    // absent), killing the surviving mutant. Host-stable per the W05 grounding.
+    #[test]
+    fn getent_resolve_maps_real_exit_codes() {
+        assert_eq!(getent_resolve(IdKind::User, "0"), Resolution::Found);
+        assert_eq!(getent_resolve(IdKind::Group, "0"), Resolution::Found);
+        assert_eq!(
+            getent_resolve(IdKind::User, "4294967294"),
+            Resolution::NotFound
+        );
+        assert_eq!(
+            getent_resolve(IdKind::Group, "4294967294"),
+            Resolution::NotFound
+        );
+    }
 }
