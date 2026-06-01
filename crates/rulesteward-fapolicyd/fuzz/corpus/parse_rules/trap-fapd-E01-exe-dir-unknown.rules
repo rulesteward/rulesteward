@@ -1,0 +1,3 @@
+# exe_dir= is not a valid fapolicyd attribute (rejected by 1.3.2/1.4.3/1.4.5
+# with "Field type (exe_dir) is unknown"). Must fire fapd-E01.
+allow perm=execute exe_dir=/usr/bin : all

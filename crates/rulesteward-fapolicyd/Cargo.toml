@@ -14,6 +14,10 @@ rust-version.workspace = true
 # CLI crate's `[dev-dependencies]` so e2e + DUPSORT tests can control the exact
 # value bytes. Off by default; the shipped binary never links it.
 test-fixtures = []
+# `fuzz-targets` lifts `parse_trust_value` to a `#[doc(hidden)]` pub shim so the
+# fuzz crate (nightly-only, excluded from the stable workspace) can reach it.
+# Off by default; never linked in the shipped binary or any stable crate.
+fuzz-targets = []
 
 [dependencies]
 rulesteward-core = { workspace = true }

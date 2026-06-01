@@ -1,0 +1,1 @@
+allow perm=open foo=bar baz=qux : all

@@ -1,0 +1,1 @@
+allow perm=open uid=0 weirdo=1 : path=/etc/hosts wat=ok

@@ -1272,3 +1272,26 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// fuzz-targets shim
+// ---------------------------------------------------------------------------
+// This block is compiled ONLY when the `fuzz-targets` feature is enabled.
+// It re-exports `parse_trust_value` as a hidden public symbol so the fuzz
+// crate (nightly-only, excluded from the stable workspace) can call it
+// without requiring the fuzzer to recreate the parsing logic.  Nothing in
+// the default feature set or the shipped binary activates this feature.
+
+#[cfg(feature = "fuzz-targets")]
+#[doc(hidden)]
+pub mod fuzz_hooks {
+    /// Public shim over the crate-private [`super::parse_trust_value`].
+    ///
+    /// **Not part of the stable public API.** Enabled only under the
+    /// `fuzz-targets` Cargo feature; do not depend on it from non-fuzz code.
+    pub fn parse_trust_value_fuzz(
+        raw: &[u8],
+    ) -> Result<(super::TrustSource, u64, String), super::TrustDbError> {
+        super::parse_trust_value(raw)
+    }
+}

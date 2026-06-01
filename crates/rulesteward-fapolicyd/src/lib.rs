@@ -29,3 +29,6 @@ pub use trustdb::{
     verify_entry, weak_digest_algorithm,
 };
 pub use version::TargetVersion;
+
+#[cfg(feature = "fuzz-targets")]
+pub use trustdb::fuzz_hooks;

@@ -1,0 +1,1 @@
+allow_audit perm=execute all : all
