@@ -972,6 +972,71 @@ fn w06_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-W05 - uid=/gid= literal not found in the host identity database.
+// Identity-check-aware per-file snapshot driver.
+//
+// Corpus fixtures may only use universally-stable identities:
+//   - uid=0 is guaranteed to resolve on every POSIX host (getent passwd 0 -> root)
+//   - uid=4294967294 is guaranteed ABSENT on any real host (getent exit 2)
+//   - %macroref values are skipped (no literal to check)
+//
+// The driver builds a LintContext with check_identities=true and uses the REAL
+// getent path (walk()), so snapshot output is stable only for the
+// universally-stable fixtures above. Hermetically untestable cases (e.g.,
+// a specific username that exists on one CI host but not another) are covered
+// by the unit tests in identity.rs via the injectable mock resolver.
+// ---------------------------------------------------------------------------
+
+/// Parse one `.rules` file, run `lint_with_context` with
+/// `LintContext{ check_identities: true }`, and snapshot under `fapd-W05__<stem>`.
+fn drive_file_w05(path: &Path) {
+    let code = "fapd-W05";
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read trap input {}: {e}", path.display()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("trap input {} has no UTF-8 file stem", path.display()))
+        .to_owned();
+    let rel_path = Path::new("tests/corpus/traps")
+        .join(code)
+        .join(path.file_name().expect("trap file has a name"));
+
+    let rendered = match parse_rules_file(&src, &rel_path) {
+        Ok(entries) => {
+            let ctx = LintContext {
+                check_identities: true,
+                ..Default::default()
+            };
+            let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
+            render("parse=ok", &diags)
+        }
+        Err(diags) => render("parse=err", &diags),
+    };
+
+    let snapshot_name = format!("{code}__{stem}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn w05_traps() {
+    let files = list_rules_files("fapd-W05");
+    assert!(
+        files.len() >= 3,
+        "fapd-W05 trap corpus must have >= 3 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file_w05(path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-X01 - trust DB entries not referenced by any rule (orphan summary).
 // Scenario-driven snapshot driver using lint_orphans.
 // ---------------------------------------------------------------------------

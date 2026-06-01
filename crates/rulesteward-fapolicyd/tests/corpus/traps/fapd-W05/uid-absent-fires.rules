@@ -1,0 +1,5 @@
+# W05 fires: uid= value absent from the host identity database.
+# uid=4294967294 is confirmed absent on any standard host:
+#   getent passwd 4294967294 -> (no output), exit 2  (GNU libc 2.43)
+# W05 must fire with check_identities=true.
+allow uid=4294967294 : all
