@@ -1,0 +1,1 @@
+allow filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef : exe=/usr/bin/foo
