@@ -104,6 +104,85 @@ fn trustdb_list_json_emits_array_of_objects_exit_zero() {
     }
 }
 
+/// `trustdb list` annotates a weak (MD5 32-hex) digest entry on both the human
+/// and JSON surfaces, and leaves a strong (SHA256 64-hex) entry unannotated.
+/// Functional smoke for the report side of the fapd-W11 weak-hash surfacing.
+#[test]
+fn trustdb_list_annotates_weak_digest_entry() {
+    // 32-hex = MD5 (weak); KNOWN_SHA256 is 64-hex (strong).
+    const MD5_LEN_DIGEST: &str = "0123456789abcdef0123456789abcdef";
+    let db_dir = tempfile::tempdir().expect("tempdir");
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[
+            (
+                "/usr/bin/weak",
+                value_bytes(1, 111, MD5_LEN_DIGEST).as_slice(),
+            ),
+            (
+                "/usr/bin/strong",
+                value_bytes(1, 222, KNOWN_SHA256).as_slice(),
+            ),
+        ],
+    );
+
+    // Human surface: the MD5 line is annotated, the SHA256 line is not.
+    let human = bin()
+        .args(["fapolicyd", "trustdb", "list"])
+        .arg(db_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(human).expect("utf8 stdout");
+    let weak_line = human
+        .lines()
+        .find(|l| l.contains("/usr/bin/weak"))
+        .expect("weak line present");
+    let strong_line = human
+        .lines()
+        .find(|l| l.contains("/usr/bin/strong"))
+        .expect("strong line present");
+    assert!(
+        weak_line.contains("weak: MD5"),
+        "the MD5 list line must be annotated 'weak: MD5'; got: {weak_line}"
+    );
+    assert!(
+        !strong_line.contains("weak:"),
+        "the SHA256 list line must NOT be annotated; got: {strong_line}"
+    );
+
+    // JSON surface: weak row carries "weak":"MD5"; strong row omits the key.
+    let json = bin()
+        .args(["fapolicyd", "trustdb", "list", "--format", "json"])
+        .arg(db_dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(json).expect("utf8")).expect("valid json");
+    let arr = json.as_array().expect("array");
+    let weak = arr
+        .iter()
+        .find(|o| o["path"] == "/usr/bin/weak")
+        .expect("weak obj");
+    assert_eq!(
+        weak["weak"], "MD5",
+        "weak row must serialize \"weak\":\"MD5\""
+    );
+    let strong = arr
+        .iter()
+        .find(|o| o["path"] == "/usr/bin/strong")
+        .expect("strong obj");
+    assert!(
+        strong.as_object().expect("obj").get("weak").is_none(),
+        "strong row must omit the \"weak\" key; got: {strong}"
+    );
+}
+
 /// `trustdb list --source rpm` over a fixture whose rows are src=1 (`RpmDb`)
 /// keeps those rows (exit 0, non-empty JSON array). Pins the source filter to
 /// the resolved Rpm == `src_int` 1 mapping.

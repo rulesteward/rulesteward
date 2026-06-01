@@ -561,6 +561,85 @@ fn write_trustdb_fixture(dir: &std::path::Path, keys: &[&str]) {
     // env is dropped here - LMDB file is flushed and closed.
 }
 
+/// Build a trust.db fixture with one `(key, raw-value)` row, letting the caller
+/// control the exact `"<src> <size> <hexdigest>"` value bytes (so a weak MD5/SHA1
+/// digest length can be exercised). Mirrors `write_trustdb_fixture`.
+#[allow(unsafe_code)]
+fn write_trustdb_fixture_val(dir: &std::path::Path, key: &str, value: &[u8]) {
+    // SAFETY: fresh tempdir LMDB env, RW, no other process touches it.
+    let env = unsafe {
+        heed::EnvOpenOptions::new()
+            .max_dbs(1)
+            .open(dir)
+            .expect("write_trustdb_fixture_val: open LMDB env")
+    };
+    let mut wtxn = env
+        .write_txn()
+        .expect("write_trustdb_fixture_val: write_txn");
+    let db: heed::Database<heed::types::Bytes, heed::types::Bytes> = env
+        .create_database(&mut wtxn, Some("trust.db"))
+        .expect("write_trustdb_fixture_val: create_database");
+    db.put(&mut wtxn, key.as_bytes(), value)
+        .expect("write_trustdb_fixture_val: put");
+    wtxn.commit().expect("write_trustdb_fixture_val: commit");
+}
+
+/// fapd-W11 fires on the `--against-trustdb` lint path when the trust DB holds a
+/// weak (MD5 32-hex) digest. The rule references the DB key so W06 stays clean;
+/// the only diagnostic is the W11 weak-hash summary -> exit 1 (Warning).
+#[test]
+fn against_trustdb_w11_fires_for_weak_digest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_dir = dir.path().join("trustdb");
+    std::fs::create_dir_all(&db_dir).expect("create db_dir");
+    // "1 100 <32-hex>" -> a valid-length but weak (MD5) digest for /usr/bin/ls.
+    let md5 = "a".repeat(32);
+    write_trustdb_fixture_val(&db_dir, "/usr/bin/ls", format!("1 100 {md5}").as_bytes());
+
+    // path=/usr/bin/ls IS a DB key -> W06 clean; only W11 should fire.
+    let rules_d = write_rules_d(
+        dir.path(),
+        "10-ok.rules",
+        "allow perm=open all : path=/usr/bin/ls\n",
+    );
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&db_dir)
+        .arg(&rules_d)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W11]"))
+        .stdout(predicate::str::contains("weak hash algorithm"));
+}
+
+/// A strong (SHA256 64-hex) trust DB produces NO fapd-W11 on the lint path.
+/// Same clean rule; exit 0, no W11.
+#[test]
+fn against_trustdb_no_w11_for_strong_digest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_dir = dir.path().join("trustdb");
+    std::fs::create_dir_all(&db_dir).expect("create db_dir");
+    let sha256 = "b".repeat(64);
+    write_trustdb_fixture_val(&db_dir, "/usr/bin/ls", format!("1 100 {sha256}").as_bytes());
+
+    let rules_d = write_rules_d(
+        dir.path(),
+        "10-ok.rules",
+        "allow perm=open all : path=/usr/bin/ls\n",
+    );
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--against-trustdb"])
+        .arg(&db_dir)
+        .arg(&rules_d)
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-W11]").not());
+}
+
 /// Helper: create a minimal rules.d/ directory with a single rules file.
 fn write_rules_d(parent: &std::path::Path, filename: &str, content: &str) -> std::path::PathBuf {
     let rules_d = parent.join("rules.d");

@@ -13,6 +13,7 @@
 //! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
 //! * `trust_path` - trust-DB-aware per-file pass (fapd-W06, stub until Task 4).
 //! * `cross_db` - trust-DB cross-pass (fapd-X01, stub until Task 5).
+//! * `trust_hash` - trust-DB weak-digest surfacing (fapd-W11), CLI-invoked.
 
 pub(crate) mod cross_db;
 mod cross_file;
@@ -26,6 +27,7 @@ mod source_scan;
 mod subsume;
 #[cfg(test)]
 pub(crate) mod testkit;
+pub(crate) mod trust_hash;
 mod trust_path;
 mod validation;
 mod version_target;

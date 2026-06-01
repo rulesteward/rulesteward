@@ -21,6 +21,10 @@ pub struct ListRow {
     pub source: TrustSource,
     pub size: u64,
     pub digest: String,
+    /// Weak hash algorithm implied by the digest length (MD5/SHA1), if any.
+    /// `None` for strong SHA256/SHA512 digests; omitted from JSON when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weak: Option<&'static str>,
 }
 
 impl From<&TrustEntry> for ListRow {
@@ -30,6 +34,7 @@ impl From<&TrustEntry> for ListRow {
             source: e.source,
             size: e.size,
             digest: e.digest.clone(),
+            weak: rulesteward_fapolicyd::weak_digest_algorithm(&e.digest),
         }
     }
 }
@@ -117,7 +122,7 @@ pub fn render_list(rows: &[ListRow], json: bool) -> String {
         let mut out = String::new();
         for r in rows {
             // Writing to a String is infallible.
-            let _ = writeln!(
+            let _ = write!(
                 out,
                 "{:<8} {:>12} {} {}",
                 source_label(r.source),
@@ -125,6 +130,10 @@ pub fn render_list(rows: &[ListRow], json: bool) -> String {
                 r.digest,
                 r.path
             );
+            if let Some(alg) = r.weak {
+                let _ = write!(out, " (weak: {alg})");
+            }
+            let _ = writeln!(out);
         }
         out
     }
@@ -214,6 +223,7 @@ mod tests {
             source: TrustSource::RpmDb,
             size: 111,
             digest: "a".repeat(64),
+            weak: None,
         }];
         let out = render_list(&rows, true);
         assert!(out.ends_with('\n'), "json output must end with newline");
@@ -226,6 +236,74 @@ mod tests {
         }
     }
 
+    /// A row built from a weak (MD5 32-hex) trust entry must carry the weak algo,
+    /// surfaced in both human and JSON output; a strong (SHA256) row carries none.
+    /// RED: the stub `From` sets `weak: None` and `render_list` does not annotate.
+    #[test]
+    fn list_annotates_weak_md5_entry_human_and_json() {
+        use rulesteward_fapolicyd::{TrustEntry, TrustSource};
+        let weak_entry = TrustEntry {
+            path: "/usr/bin/weak".to_owned(),
+            source: TrustSource::FileDb,
+            size: 10,
+            digest: "a".repeat(32), // MD5 length
+        };
+        let strong_entry = TrustEntry {
+            path: "/usr/bin/strong".to_owned(),
+            source: TrustSource::FileDb,
+            size: 20,
+            digest: "b".repeat(64), // SHA256 length
+        };
+        let rows: Vec<ListRow> = [&weak_entry, &strong_entry]
+            .iter()
+            .map(|e| ListRow::from(*e))
+            .collect();
+
+        // Human output marks the weak row, leaves the strong row unmarked.
+        let human = render_list(&rows, false);
+        assert!(
+            human.contains("weak: MD5"),
+            "human list must annotate the MD5 entry with 'weak: MD5'; got:\n{human}",
+        );
+        let weak_line = human
+            .lines()
+            .find(|l| l.contains("/usr/bin/weak"))
+            .expect("weak line present");
+        let strong_line = human
+            .lines()
+            .find(|l| l.contains("/usr/bin/strong"))
+            .expect("strong line present");
+        assert!(
+            weak_line.contains("weak:"),
+            "the MD5 line must be annotated; got: {weak_line}",
+        );
+        assert!(
+            !strong_line.contains("weak:"),
+            "the SHA256 line must NOT be annotated; got: {strong_line}",
+        );
+
+        // JSON: weak row has "weak":"MD5"; strong row omits the key.
+        let json = render_list(&rows, true);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let arr = v.as_array().expect("array");
+        let weak_obj = arr
+            .iter()
+            .find(|o| o["path"] == "/usr/bin/weak")
+            .expect("weak obj");
+        assert_eq!(
+            weak_obj["weak"], "MD5",
+            "weak row must serialize \"weak\":\"MD5\""
+        );
+        let strong_obj = arr
+            .iter()
+            .find(|o| o["path"] == "/usr/bin/strong")
+            .expect("strong obj");
+        assert!(
+            strong_obj.as_object().expect("obj").get("weak").is_none(),
+            "strong row must omit the \"weak\" key; got: {strong_obj}",
+        );
+    }
+
     /// The JSON key for the hash field must be `"digest"` (not `"sha256"`).
     /// The field holds any hash algorithm fapolicyd may record (MD5/SHA1/SHA256/SHA512).
     #[test]
@@ -235,6 +313,7 @@ mod tests {
             source: TrustSource::RpmDb,
             size: 111,
             digest: "a".repeat(64),
+            weak: None,
         }];
         let out = render_list(&rows, true);
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
