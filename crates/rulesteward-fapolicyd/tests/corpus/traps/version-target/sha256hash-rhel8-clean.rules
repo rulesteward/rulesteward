@@ -1,1 +1,1 @@
-allow sha256hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef : exe=/usr/bin/foo
+allow perm=any exe=/usr/bin/foo : sha256hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
