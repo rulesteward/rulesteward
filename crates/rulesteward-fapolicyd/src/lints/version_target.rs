@@ -2,9 +2,9 @@
 //! release (fapd-W07 hash-keyword advice, `device=` subject-side validity,
 //! `pattern=` value set, hash-value length).
 //!
-//! Phase-0 stub: the version-target impl pipeline fills the per-check logic. The
-//! signature is frozen here so the fan-out edits only this file's body, not the
-//! shared `lints/mod.rs` dispatcher.
+//! Runs only when a `--target` release is supplied (see `LintContext.target`);
+//! each per-check helper emits fapd-E06 when the rule uses a construct invalid
+//! for that release.
 
 use std::path::Path;
 
