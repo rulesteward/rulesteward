@@ -11,18 +11,17 @@
 //! `LintContext.check_identities`.
 
 use std::path::Path;
+use std::process::Command;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Entry;
+use super::anchored;
+use crate::ast::{Attr, AttrValue, Entry};
 
 /// The kind of identity being checked: user (passwd) or group.
 ///
 /// Passed to the injected resolver so mock closures can distinguish the two
 /// lookup databases without knowing getent command details.
-// Stub phase: used only in #[cfg(test)] w05_with_resolver; the impl will use
-// these in the non-test walk body and should remove this allow then.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdKind {
     User,
@@ -35,9 +34,6 @@ pub(crate) enum IdKind {
 /// - `NotFound`: exit 2 from getent - the value is unknown (fire W05).
 /// - `Error`: getent exited with a code other than 0 or 2 (NSS error, timeout,
 ///   etc.) - be conservative and do NOT fire W05.
-// Stub phase: used only in #[cfg(test)] w05_with_resolver; the impl will use
-// these in the non-test walk body and should remove this allow then.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Resolution {
     Found,
@@ -52,26 +48,94 @@ pub(crate) enum Resolution {
 /// `walk` function wraps this with a real getent resolver.
 ///
 /// `resolve(kind, value) -> Resolution` is called once per `uid=` / `gid=`
-/// literal attribute encountered. Non-literal values (`SetRef` / `Int`) are skipped.
+/// literal attribute encountered. Non-literal values (`SetRef`) are skipped.
+/// Integer (`Int`) values are coerced to their decimal string form and resolved.
 /// Non-uid/gid keys are skipped. A `Resolution::Error` conservatively suppresses
 /// the diagnostic.
-#[cfg(test)]
 pub(crate) fn w05_with_resolver(
     entries: &[Entry],
     file: &Path,
     resolve: impl Fn(IdKind, &str) -> Resolution,
 ) -> Vec<Diagnostic> {
-    let _ = (entries, file, resolve);
-    // Implementer fills this. The stub returns empty (RED for all unit tests
-    // that expect diagnostics to be emitted).
-    Vec::new()
+    let mut diags = Vec::new();
+    for entry in entries {
+        let Entry::Rule(rule) = entry else {
+            continue;
+        };
+        for attr in rule.subject.iter().chain(rule.object.iter()) {
+            let Attr::Kv { key, value, .. } = attr else {
+                continue;
+            };
+            // Only check uid= and gid= attributes.
+            let kind = match key.as_str() {
+                "uid" => IdKind::User,
+                "gid" => IdKind::Group,
+                _ => continue,
+            };
+            // Extract the string value to check: Str as-is, Int coerced to decimal,
+            // SetRef (macro reference) skipped entirely.
+            let val_str: String = match value {
+                AttrValue::Str(s) => s.clone(),
+                AttrValue::Int(n) => n.to_string(),
+                AttrValue::SetRef(_) => continue,
+            };
+            match resolve(kind, &val_str) {
+                Resolution::NotFound => {
+                    let db_name = match kind {
+                        IdKind::User => "passwd",
+                        IdKind::Group => "group",
+                    };
+                    diags.push(anchored(
+                        Severity::Warning,
+                        "fapd-W05",
+                        rule.span.clone(),
+                        format!(
+                            "`{key}={val_str}` does not resolve in the host `{db_name}` database \
+                             (`getent {db_name} {val_str}` exited 2 - not found)"
+                        ),
+                        file,
+                        rule.line,
+                    ));
+                }
+                // Found: clean, no diagnostic.
+                // Error: conservative no-fire.
+                Resolution::Found | Resolution::Error => {}
+            }
+        }
+    }
+    diags
+}
+
+/// Real getent-backed resolver. Shells out to `getent passwd <value>` for
+/// `IdKind::User` and `getent group <value>` for `IdKind::Group`.
+///
+/// Exit code mapping (POSIX / glibc getent convention):
+///   0  -> Found (entry printed to stdout)
+///   2  -> `NotFound` (key absent in the database)
+///   other -> Error (NSS error, missing binary, timeout - conservative no-fire)
+fn getent_resolve(kind: IdKind, value: &str) -> Resolution {
+    let database = match kind {
+        IdKind::User => "passwd",
+        IdKind::Group => "group",
+    };
+    let result = Command::new("getent").arg(database).arg(value).status();
+    match result {
+        Ok(status) => match status.code() {
+            Some(0) => Resolution::Found,
+            Some(2) => Resolution::NotFound,
+            _ => Resolution::Error,
+        },
+        // Spawn failure (getent not found, permission denied, etc.) - conservative.
+        Err(_) => Resolution::Error,
+    }
 }
 
 /// Validate `uid=` / `gid=` literals against the host identity database.
-/// Phase-0 stub returns no diagnostics; the impl fills the getent-backed check.
+/// Uses `getent` to resolve through the host NSS stack (SSSD/LDAP/AD included).
+/// Gated by `LintContext.check_identities` in the caller (`lints/mod.rs`).
 #[must_use]
-pub(crate) fn walk(_entries: &[Entry], _file: &Path) -> Vec<Diagnostic> {
-    Vec::new()
+pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    w05_with_resolver(entries, file, getent_resolve)
 }
 
 // ---------------------------------------------------------------------------

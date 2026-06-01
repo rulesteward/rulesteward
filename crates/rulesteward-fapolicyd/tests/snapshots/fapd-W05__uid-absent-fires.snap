@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-W05] sev=Warning line=5 col=1 span=236..262 :: `uid=4294967294` does not resolve in the host `passwd` database (`getent passwd 4294967294` exited 2 - not found)
