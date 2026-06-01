@@ -328,7 +328,8 @@ impl TrustDb {
 /// hex-validated by fapd-E02 before this is consulted for the weak/strong split.
 #[must_use]
 pub fn weak_digest_algorithm(digest: &str) -> Option<&'static str> {
-    match digest.chars().count() {
+    // Digests are ASCII hex, so byte length (O(1)) equals char count.
+    match digest.len() {
         32 => Some("MD5"),
         40 => Some("SHA1"),
         _ => None,

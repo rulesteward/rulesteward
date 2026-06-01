@@ -38,19 +38,27 @@ pub fn lint_weak_digests(db: &TrustDb) -> Vec<Diagnostic> {
     let n = weak.len();
     let sample: Vec<&str> = weak.iter().take(SAMPLE_CAP).copied().collect();
     let plural = if n == 1 { "entry" } else { "entries" };
-    vec![Diagnostic::new(
+    // Only claim "showing first K of N" when the sample is actually truncated;
+    // otherwise the listing IS the whole set and a "showing first" clause would
+    // misstate it (mirrors fapd-X01's listing shape).
+    let listing = if n > SAMPLE_CAP {
+        format!(
+            " (showing first {SAMPLE_CAP} of {n}): {}",
+            sample.join(", ")
+        )
+    } else {
+        format!(": {}", sample.join(", "))
+    };
+    // Trust-DB-level diagnostic: span 0..0, no source_id, keyed to the DB path
+    // (same shape as fapd-X01 via the shared `file_level` helper).
+    vec![super::file_level(
         Severity::Warning,
         "fapd-W11",
-        0..0,
         format!(
             "trust DB has {n} {plural} using a weak hash algorithm (MD5/SHA1); \
-             prefer SHA256 (64-hex) or SHA512 (128-hex) (showing first {}: {})",
-            sample.len(),
-            sample.join(", ")
+             prefer SHA256 (64-hex) or SHA512 (128-hex){listing}"
         ),
         db.path(),
-        0,
-        0,
     )]
 }
 
@@ -158,6 +166,95 @@ mod tests {
             diags[0].message.contains("2 entries"),
             "summary must count both weak entries (\"2 entries\"); got: {}",
             diags[0].message,
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Truncation wording: with MORE than SAMPLE_CAP weak entries, the summary
+    // must state the total ("showing first 10 of 12") and must NOT imply the
+    // sample is the whole set. With n <= SAMPLE_CAP there is no truncation, so
+    // the message must NOT carry a "showing first" clause at all. RED against
+    // the prior wording ("showing first {sample.len()}: ...") which omits the
+    // total when truncating and falsely says "showing first N" when N == n.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn over_cap_weak_entries_name_the_total_when_truncating() {
+        let tmp = tempdir().expect("tempdir");
+        // 12 distinct MD5 (32-hex) entries > SAMPLE_CAP (10).
+        let entries: Vec<(String, Vec<u8>)> = (0..12)
+            .map(|i| {
+                let md5 = format!("{i:032x}");
+                (format!("/bin/weak{i:02}"), value(1, 10, &md5))
+            })
+            .collect();
+        let kv: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(p, v)| (p.as_str(), v.as_slice()))
+            .collect();
+        write_trustdb_fixture_kv(tmp.path(), &kv);
+        let db = open_trustdb_readonly(tmp.path()).expect("open db");
+
+        let diags = lint_weak_digests(&db);
+        assert_eq!(diags.len(), 1, "still exactly one summary; got {diags:?}");
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("12 entries"),
+            "summary must name the total count; got: {msg}",
+        );
+        assert!(
+            msg.contains("showing first 10 of 12"),
+            "truncated summary must state the total omitted; got: {msg}",
+        );
+    }
+
+    // n <= SAMPLE_CAP must NOT carry a "showing first" clause (no truncation).
+    #[test]
+    fn at_or_under_cap_has_no_showing_first_clause() {
+        let tmp = tempdir().expect("tempdir");
+        let md5 = "a".repeat(32);
+        write_trustdb_fixture_kv(tmp.path(), &[("/usr/bin/weak", &value(1, 10, &md5))]);
+        let db = open_trustdb_readonly(tmp.path()).expect("open db");
+
+        let diags = lint_weak_digests(&db);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            !diags[0].message.contains("showing first"),
+            "no truncation -> no 'showing first' clause; got: {}",
+            diags[0].message,
+        );
+    }
+
+    // Boundary: EXACTLY SAMPLE_CAP weak entries is the whole set (no truncation),
+    // so still no "showing first" clause. Pins the `>` in `n > SAMPLE_CAP` against
+    // `>=`/`==` mutants (which would truncate at n == SAMPLE_CAP).
+    #[test]
+    fn exactly_cap_weak_entries_has_no_showing_first_clause() {
+        let tmp = tempdir().expect("tempdir");
+        let entries: Vec<(String, Vec<u8>)> = (0..SAMPLE_CAP)
+            .map(|i| {
+                (
+                    format!("/bin/weak{i:02}"),
+                    value(1, 10, &format!("{i:032x}")),
+                )
+            })
+            .collect();
+        let kv: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(p, v)| (p.as_str(), v.as_slice()))
+            .collect();
+        write_trustdb_fixture_kv(tmp.path(), &kv);
+        let db = open_trustdb_readonly(tmp.path()).expect("open db");
+
+        let diags = lint_weak_digests(&db);
+        assert_eq!(diags.len(), 1);
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("10 entries"),
+            "summary must name the count; got: {msg}",
+        );
+        assert!(
+            !msg.contains("showing first"),
+            "n == SAMPLE_CAP is the whole set -> no 'showing first' clause; got: {msg}",
         );
     }
 
