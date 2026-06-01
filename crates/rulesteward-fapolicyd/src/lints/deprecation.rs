@@ -22,11 +22,10 @@ pub(crate) fn walk(
     file: &Path,
     target: Option<TargetVersion>,
 ) -> Vec<Diagnostic> {
-    // sha256hash= is canonical (not deprecated) on 1.3.2: suppress W07 on rhel8.
-    if target == Some(TargetVersion::Rhel8) {
-        return Vec::new();
-    }
-    w07(entries, file)
+    // The rhel8 suppression is W07-SPECIFIC (sha256hash= is canonical there), so
+    // it is gated inside w07, NOT here: a future deprecation lint added to this
+    // dispatcher must not be silently suppressed under --target rhel8.
+    w07(entries, file, target)
 }
 
 /// fapd-W07 - deprecated `sha256hash=` attribute name. fapolicyd 1.4.2
@@ -37,7 +36,12 @@ pub(crate) fn walk(
 /// two such attrs emits two fapd-W07s. The value is NOT inspected here -
 /// value-shape validation (64 hex chars) is fapd-E02's concern and runs
 /// independently.
-fn w07(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+fn w07(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
+    // sha256hash= is canonical (not deprecated) on fapolicyd 1.3.2, and filehash=
+    // does not exist there, so W07 must not fire under --target rhel8.
+    if target == Some(TargetVersion::Rhel8) {
+        return Vec::new();
+    }
     let mut diags = Vec::new();
     for entry in entries {
         let Entry::Rule(r) = entry else { continue };
@@ -103,7 +107,7 @@ mod tests {
                 span: 0..0,
             }],
         )];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code.as_ref(), "fapd-W07");
         assert!(
@@ -139,7 +143,7 @@ mod tests {
                 span: 0..0,
             }],
         )];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert!(
             diags.is_empty(),
             "filehash= is the modern spelling; fapd-W07 must not fire: {diags:?}",
@@ -166,7 +170,7 @@ mod tests {
                 span: 0..0,
             }],
         )];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert_eq!(
             diags.len(),
             2,
@@ -221,7 +225,7 @@ mod tests {
                 vec![Attr::All],
             ),
         ];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert_eq!(
             diags.len(),
             3,
@@ -244,7 +248,7 @@ mod tests {
             }],
             vec![Attr::All],
         )];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert_eq!(diags.len(), 1);
         assert_eq!(
             diags[0].severity,
@@ -265,7 +269,7 @@ mod tests {
             line: 1,
             span: rulesteward_core::span(0, 0),
         }];
-        let diags = w07(&entries, &p());
+        let diags = w07(&entries, &p(), None);
         assert!(
             diags.is_empty(),
             "SetDefinition entries are never fapd-W07's concern: {diags:?}",
