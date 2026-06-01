@@ -344,73 +344,15 @@ mod tests {
                 );
             }
 
-            /// Consumer consistency: for a rule pair (A, B) with a macro map built from
-            /// a single file, `shadows(a, b, map)` returns the same value whether invoked
-            /// from a W01-style caller (single-file `build_macro_map`) or a W04-style
-            /// caller that builds a global map from a single-file slice
-            /// (`build_global_macro_map`-equivalent).
-            ///
-            /// Since both W01 (`reachability::walk`) and W04 (`cross_file::w04`) call the
-            /// same `shadows` function and only differ in HOW they build the `MacroMap`
-            /// (W01 calls `build_macro_map(entries)` per-file; W04 calls
-            /// `build_global_macro_map` which folds multiple `build_macro_map` calls),
-            /// the invariant tested here is: a `MacroMap` built from a single file via
-            /// `build_macro_map` equals one built by merging a single-element slice of the
-            /// same file - i.e. the merge of one is the identity. Both W01 and W04 then
-            /// reach the same `shadows()` result.
-            ///
-            /// Kills mutations that:
-            /// - Make `build_macro_map` skip `SetDefinition` entries (the two maps diverge).
-            /// - Make the "global" fold silently drop entries (same divergence).
-            /// - Make `shadows` return different results for the same inputs (impossible if
-            ///   the map is equal, but a mutation that ignored the map would diverge here).
-            #[test]
-            fn shadows_consumer_consistency(
-                a in arb_concrete_rule(),
-                b in arb_concrete_rule(),
-                set_name in "[a-zA-Z_][a-zA-Z0-9_]{0,8}",
-                set_vals in prop::collection::vec("[a-z]{1,8}", 1usize..=3usize),
-            ) {
-                // Build a single-file entry list: one SetDefinition + both rules.
-                // The SetDefinition ensures the macro map is non-trivial and exercises
-                // the "merge of one file" path.
-                let set_def_entry = Entry::SetDefinition {
-                    name: set_name.clone(),
-                    values: set_vals.clone(),
-                    line: 1,
-                    span: span(0, 0),
-                };
-                let entries: Vec<Entry> = vec![
-                    set_def_entry.clone(),
-                    Entry::Rule(a.clone()),
-                    Entry::Rule(b.clone()),
-                ];
-
-                // W01 path: `build_macro_map` on the entry slice directly.
-                let w01_map = build_macro_map(&entries);
-
-                // W04 path: simulate `build_global_macro_map` for a single file,
-                // which merges via `map.extend(build_macro_map(file_entries))`.
-                let mut w04_map = super::super::MacroMap::new();
-                w04_map.extend(build_macro_map(&entries));
-
-                // The two maps must be identical.
-                prop_assert_eq!(
-                    &w01_map, &w04_map,
-                    "build_macro_map and a single-file global merge must produce the same map \
-                     (set_name={:?} set_vals={:?})",
-                    set_name, set_vals
-                );
-
-                // And therefore `shadows` must agree on (A,B) through both paths.
-                let w01_result = shadows(&a, &b, &w01_map);
-                let w04_result = shadows(&a, &b, &w04_map);
-                prop_assert_eq!(
-                    w01_result, w04_result,
-                    "shadows(a,b) must agree between W01 map and W04 map (a={:?} b={:?})",
-                    a, b
-                );
-            }
+            // NOTE: the `shadows_consumer_consistency` property test was relocated
+            // to `cross_file::tests::proptest_invariants` (its natural home) because
+            // the real W04 map-builder `build_global_macro_map` is a private fn in
+            // `cross_file.rs`. Placing the test there lets it call the REAL builder
+            // directly (same module) without any visibility change, making the test
+            // non-vacuous. The old version here simulated the global merge inline
+            // via `w04_map.extend(build_macro_map(&entries))` - equivalent to calling
+            // `build_global_macro_map` but NOT invoking that function - so mutations
+            // to `build_global_macro_map`'s fold body survived. See cross_file.rs.
         }
     }
 

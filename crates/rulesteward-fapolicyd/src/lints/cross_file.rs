@@ -286,6 +286,166 @@ mod tests {
     use crate::lints::testkit::{kv, kv_int, kv_ref, modern_rule, set_def};
     use rulesteward_core::Severity;
 
+    // --- proptest invariants ---
+
+    mod proptest_invariants {
+        use super::super::{build_global_macro_map, build_macro_map, shadows};
+        use crate::ast::{AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+        use proptest::prelude::*;
+        use rulesteward_core::span;
+
+        fn kv_s(key: &str, val: &str) -> crate::ast::Attr {
+            crate::ast::Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Str(val.to_string()),
+                span: 0..0,
+            }
+        }
+
+        fn kv_i(key: &str, val: i64) -> crate::ast::Attr {
+            crate::ast::Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Int(val),
+                span: 0..0,
+            }
+        }
+
+        fn arb_perm_opt() -> impl Strategy<Value = Option<Perm>> {
+            prop_oneof![
+                Just(None),
+                Just(Some(Perm::Open)),
+                Just(Some(Perm::Execute)),
+                Just(Some(Perm::Any)),
+            ]
+        }
+
+        fn arb_decision() -> impl Strategy<Value = Decision> {
+            prop_oneof![
+                Just(Decision::Allow),
+                Just(Decision::Deny),
+                Just(Decision::AllowAudit),
+                Just(Decision::DenyAudit),
+            ]
+        }
+
+        /// Generate a small but realistic rule: one subject attr and one object attr,
+        /// both concrete (no `SetRef`) so subsumption is purely literal-equality /
+        /// perm-covering. Mirrors the same strategy in `subsume::tests::proptest_invariants`.
+        fn arb_concrete_rule() -> impl Strategy<Value = Rule> {
+            let subject_strategy = prop_oneof![
+                (0u32..4u32).prop_map(|n| vec![kv_i("uid", i64::from(n))]),
+                Just(vec![crate::ast::Attr::All]),
+            ];
+            let object_strategy = prop_oneof![
+                prop_oneof![
+                    Just(vec![kv_s("path", "/usr/bin/foo")]),
+                    Just(vec![kv_s("path", "/usr/bin/bar")]),
+                    Just(vec![kv_s("path", "/bin/sh")]),
+                ],
+                Just(vec![crate::ast::Attr::All]),
+            ];
+            (
+                arb_decision(),
+                arb_perm_opt(),
+                subject_strategy,
+                object_strategy,
+            )
+                .prop_map(|(decision, perm, subject, object)| Rule {
+                    decision,
+                    perm,
+                    subject,
+                    object,
+                    syntax: SyntaxFlavor::Modern,
+                    line: 1,
+                    span: span(0, 0),
+                })
+        }
+
+        proptest! {
+            #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+            /// Consumer consistency: for a rule pair (A, B) derived from a single-file
+            /// entry list, `shadows(a, b, map)` returns the SAME result whether the map
+            /// is built via the W01 path (`build_macro_map` on the entry slice) or the
+            /// W04 path (the REAL `build_global_macro_map` with a single-file slice).
+            ///
+            /// This test lives in `cross_file.rs` because `build_global_macro_map` is a
+            /// private fn in this module; calling it directly (not simulating it inline)
+            /// is what gives the test its teeth. A mutation to `build_global_macro_map`'s
+            /// fold body - e.g. not extending the map, or dropping entries from the fold
+            /// loop - makes the global map diverge from the single-file map and FAILS
+            /// the `prop_assert_eq!(&w01_map, &w04_map, ...)` assertion below.
+            ///
+            /// Kills mutations that:
+            /// - Make `build_global_macro_map` skip the `map.extend(...)` call (global map
+            ///   stays empty; diverges from w01_map which contains the set definition).
+            /// - Make `build_global_macro_map` drop the loop body (same result as above).
+            /// - Make `build_macro_map` skip `SetDefinition` entries (both maps become
+            ///   empty, but the set_name/set_vals parameters expose the mismatch via
+            ///   the `w01 == w04` check when we also assert `w04_map.contains_key(set_name)`).
+            /// - Make `shadows` return different results for equal inputs (impossible for
+            ///   a deterministic fn with equal maps, but a map-ignoring mutation diverges).
+            #[test]
+            fn shadows_consumer_consistency(
+                a in arb_concrete_rule(),
+                b in arb_concrete_rule(),
+                set_name in "[a-zA-Z_][a-zA-Z0-9_]{0,8}",
+                set_vals in prop::collection::vec("[a-z]{1,8}", 1usize..=3usize),
+            ) {
+                // Build a single-file entry list: one SetDefinition + both rules.
+                let entries: Vec<Entry> = vec![
+                    Entry::SetDefinition {
+                        name: set_name.clone(),
+                        values: set_vals.clone(),
+                        line: 1,
+                        span: span(0, 0),
+                    },
+                    Entry::Rule(a.clone()),
+                    Entry::Rule(b.clone()),
+                ];
+
+                // W01 path: `build_macro_map` on the entry slice directly.
+                let w01_map = build_macro_map(&entries);
+
+                // W04 path: the REAL `build_global_macro_map` on a single-file slice.
+                // This is the key difference from the old test: we call the actual W04
+                // builder rather than simulating its body inline. Any mutation to the
+                // fold loop inside `build_global_macro_map` makes w04_map diverge here.
+                let files = vec![(std::path::PathBuf::from("f.rules"), entries.clone())];
+                let w04_map = build_global_macro_map(&files);
+
+                // The single-file global map must equal the per-file map: "merge of one
+                // is identity." If build_global_macro_map's fold body is mutated (e.g.
+                // no-op body), w04_map is empty while w01_map contains the set definition
+                // -> this assertion fails.
+                prop_assert_eq!(
+                    &w01_map, &w04_map,
+                    "build_macro_map and build_global_macro_map on a single file must produce \
+                     the same map (set_name={:?} set_vals={:?})",
+                    set_name, set_vals
+                );
+
+                // Belt: the set name we generated must be in both maps. This is a
+                // redundant check given the equality above, but it makes the failure
+                // message more specific when a mutation drops only the set definition.
+                prop_assert!(
+                    w01_map.contains_key(&set_name),
+                    "w01_map must contain set {:?} (set_vals={:?})",
+                    set_name, set_vals
+                );
+
+                // `shadows` must agree through both paths on the same (A, B) pair.
+                let w01 = shadows(&a, &b, &w01_map);
+                let w04 = shadows(&a, &b, &w04_map);
+                prop_assert_eq!(
+                    w01, w04,
+                    "shadows(a,b) must agree between W01 map and W04 map (a={:?} b={:?})",
+                    a, b
+                );
+            }
+        }
+    }
+
     #[test]
     fn deny_all_in_earlier_file_shadows_later_allow() {
         let files = vec![
