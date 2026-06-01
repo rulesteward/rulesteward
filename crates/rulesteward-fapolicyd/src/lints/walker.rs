@@ -92,18 +92,15 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // any future caller that skips fill_columns); retained so
                     // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
-                    diags.push(
-                        Diagnostic::new(
-                            Severity::Error,
-                            "fapd-E01",
-                            attr_span.clone(),
-                            format!("unknown attribute `{key}`"),
-                            file,
-                            r.line,
-                            col,
-                        )
-                        .with_source_id(file.display().to_string()),
-                    );
+                    diags.push(super::anchored_at(
+                        Severity::Error,
+                        "fapd-E01",
+                        attr_span.clone(),
+                        format!("unknown attribute `{key}`"),
+                        file,
+                        r.line,
+                        col,
+                    ));
                 }
             }
         }

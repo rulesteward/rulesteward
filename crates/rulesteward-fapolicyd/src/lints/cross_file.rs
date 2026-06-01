@@ -261,14 +261,11 @@ pub(crate) fn c01(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     for (path, _entries) in files {
         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if !has_tier_prefix(name) {
-            diags.push(Diagnostic::new(
+            diags.push(super::file_level(
                 Severity::Convention,
                 "fapd-C01",
-                0..0,
                 "rules.d filename does not follow the NN- numeric-prefix convention (e.g. 10-, 20-, 30-); fagenrules load order may be unexpected",
                 path.as_path(),
-                0,
-                0,
             ));
         }
     }

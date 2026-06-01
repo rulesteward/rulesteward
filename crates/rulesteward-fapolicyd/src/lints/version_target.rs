@@ -80,16 +80,23 @@ fn check_filehash(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut V
     if target != TargetVersion::Rhel8 {
         return;
     }
-    for attr in rule.subject.iter().chain(rule.object.iter()) {
-        if let Attr::Kv { key, .. } = attr
-            && key == "filehash"
-        {
-            diags.push(e06(
-                rule,
-                file,
-                target,
-                "attribute `filehash=` (use `sha256hash=` instead)",
-            ));
+    // Name the offending side so the operator can locate it in a multi-attribute
+    // rule (`filehash` is normally an object attr, but is rejected on either side).
+    for (side, attrs) in [
+        ("subject-side", &rule.subject),
+        ("object-side", &rule.object),
+    ] {
+        for attr in attrs {
+            if let Attr::Kv { key, .. } = attr
+                && key == "filehash"
+            {
+                diags.push(e06(
+                    rule,
+                    file,
+                    target,
+                    &format!("{side} attribute `filehash=` (use `sha256hash=` instead)"),
+                ));
+            }
         }
     }
 }
@@ -352,6 +359,51 @@ mod tests {
                 "filehash=<64hex> must be CLEAN under target {t:?} (no E06, no W07); got {diags:?}",
             );
         }
+    }
+
+    #[test]
+    fn check1_filehash_e06_message_names_the_offending_side() {
+        // Task-2 (senior-review nit): the fapd-E06 message for a rejected
+        // `filehash=` must name WHICH side carried it so the operator can locate
+        // it in a multi-attribute rule. subject-side and object-side messages
+        // must each say their side and must differ from each other. RED: today's
+        // message is the side-agnostic "attribute `filehash=` ..." for both.
+        let subj = run(
+            1,
+            vec![kv("filehash", HEX64)],
+            vec![Attr::All],
+            Some(TargetVersion::Rhel8),
+        );
+        let subj_e06 = subj
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-E06")
+            .expect("subject-side filehash= must fire fapd-E06 on rhel8");
+        let obj = run(
+            1,
+            vec![],
+            vec![kv("filehash", HEX64)],
+            Some(TargetVersion::Rhel8),
+        );
+        let obj_e06 = obj
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-E06")
+            .expect("object-side filehash= must fire fapd-E06 on rhel8");
+        assert!(
+            subj_e06.message.contains("subject-side"),
+            "subject-side filehash= E06 must say 'subject-side', got: {}",
+            subj_e06.message,
+        );
+        assert!(
+            obj_e06.message.contains("object-side"),
+            "object-side filehash= E06 must say 'object-side', got: {}",
+            obj_e06.message,
+        );
+        assert_ne!(
+            subj_e06.message, obj_e06.message,
+            "subject- vs object-side filehash= E06 messages must be distinguishable",
+        );
+        // Both must still name the offending construct.
+        assert!(subj_e06.message.contains("filehash") && obj_e06.message.contains("filehash"));
     }
 
     // ===================================================================

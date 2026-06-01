@@ -78,18 +78,21 @@ pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagno
         .map(|s| s.as_str())
         .collect();
     let plural = if n == 1 { "entry" } else { "entries" };
-    vec![Diagnostic::new(
+    // Only claim "showing first K of N" when the sample is actually truncated;
+    // otherwise the listing IS the whole set (mirrors fapd-W11's listing shape).
+    let listing = if n > SAMPLE_CAP {
+        format!(
+            " (showing first {SAMPLE_CAP} of {n}): {}",
+            sample.join(", ")
+        )
+    } else {
+        format!(": {}", sample.join(", "))
+    };
+    vec![super::file_level(
         Severity::Extra,
         "fapd-X01",
-        0..0,
-        format!(
-            "trust DB has {n} {plural} not referenced by any rule (showing first {}: {})",
-            sample.len(),
-            sample.join(", ")
-        ),
+        format!("trust DB has {n} {plural} not referenced by any rule{listing}"),
         db.path(),
-        0,
-        0,
     )]
 }
 
@@ -262,6 +265,59 @@ mod tests {
             diags.is_empty(),
             "all DB keys are referenced; expected 0 diagnostics, got {}: {diags:?}",
             diags.len(),
+        );
+    }
+
+    /// Truncation wording: MORE than `SAMPLE_CAP` (10) orphans -> the summary names
+    /// the total ("showing first 10 of 11") and does NOT imply the sample is the
+    /// whole set. Pins the truncation branch (previously had zero coverage).
+    #[test]
+    fn over_cap_orphans_name_the_total() {
+        let tmp = tempdir().expect("tempdir");
+        let paths: Vec<String> = (0..11).map(|i| format!("/orphan/k{i:02}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        write_fixture(tmp.path(), &refs);
+        let db = open_trustdb_readonly(tmp.path()).expect("open db");
+
+        // No rules reference anything -> all 11 keys are orphans.
+        let files: Vec<(PathBuf, Vec<crate::ast::Entry>)> =
+            vec![(PathBuf::from("rules.d/10-empty.rules"), vec![])];
+        let diags = lint_orphans(&files, &db);
+        assert_eq!(diags.len(), 1, "one summary; got {diags:?}");
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("11 entries"),
+            "summary must name the total count; got: {msg}",
+        );
+        assert!(
+            msg.contains("showing first 10 of 11"),
+            "truncated summary must state the total omitted; got: {msg}",
+        );
+    }
+
+    /// Boundary: EXACTLY `SAMPLE_CAP` (10) orphans is the whole set (no truncation),
+    /// so no "showing first" clause. Pins the `>` in `n > SAMPLE_CAP` against
+    /// `>=`/`==` mutants (which would truncate at `n == SAMPLE_CAP`).
+    #[test]
+    fn exactly_cap_orphans_has_no_showing_first_clause() {
+        let tmp = tempdir().expect("tempdir");
+        let paths: Vec<String> = (0..10).map(|i| format!("/orphan/k{i:02}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        write_fixture(tmp.path(), &refs);
+        let db = open_trustdb_readonly(tmp.path()).expect("open db");
+
+        let files: Vec<(PathBuf, Vec<crate::ast::Entry>)> =
+            vec![(PathBuf::from("rules.d/10-empty.rules"), vec![])];
+        let diags = lint_orphans(&files, &db);
+        assert_eq!(diags.len(), 1, "one summary; got {diags:?}");
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("10 entries"),
+            "summary must name the count; got: {msg}",
+        );
+        assert!(
+            !msg.contains("showing first"),
+            "n == SAMPLE_CAP is the whole set -> no 'showing first' clause; got: {msg}",
         );
     }
 

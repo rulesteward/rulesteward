@@ -68,13 +68,16 @@ fn classify_hash_value(value: &AttrValue) -> HashVerdict {
                     "expected a hex digest, contains non-hex character".into(),
                 );
             }
-            match s.chars().count() {
-                64 | 128 => HashVerdict::Ok,
-                32 => HashVerdict::Weak("MD5"),
-                40 => HashVerdict::Weak("SHA1"),
-                n => HashVerdict::Invalid(format!(
+            let n = s.chars().count();
+            if n == 64 || n == 128 {
+                HashVerdict::Ok
+            } else if let Some(alg) = crate::trustdb::weak_digest_algorithm(s) {
+                // 32-hex (MD5) / 40-hex (SHA1): valid length, weak algorithm.
+                HashVerdict::Weak(alg)
+            } else {
+                HashVerdict::Invalid(format!(
                     "expected 32, 40, 64, or 128 hex chars, got {n} chars"
-                )),
+                ))
             }
         }
         // SetRef is filtered out before reaching this fn.

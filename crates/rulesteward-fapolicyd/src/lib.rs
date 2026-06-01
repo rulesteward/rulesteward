@@ -17,6 +17,7 @@ pub mod version;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 pub use lints::cross_db::lint_orphans;
+pub use lints::trust_hash::lint_weak_digests;
 pub use lints::{
     LintContext, check_layout, collect_macro_names, lint, lint_cross_file, lint_file,
     lint_file_with_context, lint_with_context,
@@ -25,6 +26,6 @@ pub use load_order::fagenrules_cmp;
 pub use parser::{inline, parse_rules_file};
 pub use trustdb::{
     DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
-    verify_entry,
+    verify_entry, weak_digest_algorithm,
 };
 pub use version::TargetVersion;

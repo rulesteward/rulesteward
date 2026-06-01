@@ -318,6 +318,24 @@ impl TrustDb {
     }
 }
 
+/// Weak hash algorithm implied by a hex digest's length, if any.
+///
+/// 32 hex chars = MD5, 40 = SHA1 (both cryptographically weak). 64 (SHA256),
+/// 128 (SHA512), and any other length return `None`. Shared by the fapd-W11
+/// surfaces: rule `filehash=`/`sha256hash=` value validation, the trust-DB
+/// weak-digest lint, and the `trustdb list` report annotation. The trust DB
+/// stores already-length-validated hex (32/40/64/128); rule values are
+/// hex-validated by fapd-E02 before this is consulted for the weak/strong split.
+#[must_use]
+pub fn weak_digest_algorithm(digest: &str) -> Option<&'static str> {
+    // Digests are ASCII hex, so byte length (O(1)) equals char count.
+    match digest.len() {
+        32 => Some("MD5"),
+        40 => Some("SHA1"),
+        _ => None,
+    }
+}
+
 /// Shared trust-DB test fixture. Used by `trustdb`, `trust_path` (W06), and
 /// `cross_db` (X01) unit tests - do not duplicate; import via
 /// `crate::trustdb::write_fixture`.

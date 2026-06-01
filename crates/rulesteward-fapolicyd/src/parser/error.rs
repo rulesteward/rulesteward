@@ -26,7 +26,7 @@ pub fn rich_to_diagnostic(
     file: &Path,
 ) -> Diagnostic {
     let span = err.span();
-    Diagnostic::new(
+    crate::lints::anchored_at(
         Severity::Fatal,
         "fapd-F01",
         (body_start_in_file + span.start)..(body_start_in_file + span.end),
@@ -35,7 +35,6 @@ pub fn rich_to_diagnostic(
         lineno,
         span.start + 1,
     )
-    .with_source_id(file.display().to_string())
 }
 
 #[cfg(test)]

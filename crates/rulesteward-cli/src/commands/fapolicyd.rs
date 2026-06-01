@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
     Entry, LintContext, TrustDb, TrustEntry, TrustSource, check_layout, collect_macro_names,
-    lint_cross_file, lint_orphans, lint_with_context, open_trustdb_readonly, parse_rules_file,
-    verify_entry,
+    lint_cross_file, lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly,
+    parse_rules_file, verify_entry,
 };
 use thiserror::Error;
 
@@ -366,6 +366,12 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
             Some(db) => all_diags.extend(lint_orphans(&parsed, db)),
             None => eprintln!("warning: --report-orphans has no effect without --against-trustdb"),
         }
+    }
+
+    // Weak trust-DB digests (fapd-W11): surfaced whenever a trust DB is attached
+    // (no opt-in flag - a weak digest is a genuine Warning, capped to one summary).
+    if let Some(db) = trustdb.as_ref() {
+        all_diags.extend(lint_weak_digests(db));
     }
 
     let rendered = match output::render(args.format, &all_diags, &sources) {

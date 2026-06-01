@@ -185,18 +185,14 @@ where
         } else {
             (
                 Vec::new(),
-                vec![
-                    Diagnostic::new(
-                        Severity::Fatal,
-                        "fapd-F01",
-                        body_start_in_file..(body_start_in_file + body.len()),
-                        "parser produced neither an entry nor an error",
-                        file,
-                        lineno,
-                        1,
-                    )
-                    .with_source_id(file.display().to_string()),
-                ],
+                vec![crate::lints::anchored(
+                    Severity::Fatal,
+                    "fapd-F01",
+                    body_start_in_file..(body_start_in_file + body.len()),
+                    "parser produced neither an entry nor an error",
+                    file,
+                    lineno,
+                )],
             )
         }
     } else {
