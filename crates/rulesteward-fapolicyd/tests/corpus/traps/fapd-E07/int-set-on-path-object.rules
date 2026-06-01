@@ -1,0 +1,5 @@
+# fapd-E07 (object-side STRING attr): `path=` is object-only and STRING-typed.
+# A numeric set on it is rejected on every version. Exercises the OBJECT-side
+# code path (a subject-only impl would miss this).
+%t=1,2,3
+allow all : path=%t

@@ -186,7 +186,10 @@ fn is_fap_int(v: &str) -> bool {
 /// (all ASCII digits). Used to decide the SET's type from its first value;
 /// an all-digit-but-overflowing first value still types the set INT (and then
 /// fails conversion, which `is_fap_int` catches per-value).
-fn looks_int(v: &str) -> bool {
+///
+/// Shared with fapd-E07 (`lints::type_compat`), which uses the same per-value
+/// "looks numeric" test to infer a set's type against an attribute's category.
+pub(crate) fn looks_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
 }
 

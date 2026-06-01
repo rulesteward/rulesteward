@@ -1,0 +1,4 @@
+# fapd-E07 (SIGNED quirk): `pid=` is SIGNED, but a positive-int set types
+# UNSIGNED on the subject side, so even `1,2,3` is rejected on every version.
+%t=1,2,3
+allow pid=%t : all

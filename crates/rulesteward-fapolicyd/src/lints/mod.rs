@@ -11,6 +11,8 @@
 //! * `layout` - filesystem-driven fapd-F02 check.
 //! * `cross_file` - cross-`rules.d/` passes (fapd-W04 ordering, fapd-C01 filename convention).
 //! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
+//! * `version_target` - version-divergent checks gated on `--target` (fapd-E06).
+//! * `type_compat` - set/attribute value-type compatibility (fapd-E07).
 //! * `trust_path` - trust-DB-aware per-file pass (fapd-W06, stub until Task 4).
 //! * `cross_db` - trust-DB cross-pass (fapd-X01, stub until Task 5).
 //! * `trust_hash` - trust-DB weak-digest surfacing (fapd-W11), CLI-invoked.
@@ -29,6 +31,7 @@ mod subsume;
 pub(crate) mod testkit;
 pub(crate) mod trust_hash;
 mod trust_path;
+mod type_compat;
 mod validation;
 mod version_target;
 mod walker;
@@ -176,6 +179,10 @@ pub fn lint_with_context(
     // Version-aware checks: no-op when ctx.target is None (implicit 1.4.x), so a
     // default context is byte-identical to the pre-version-target behavior.
     diags.extend(version_target::walk(entries, file, ctx.target));
+    // fapd-E07 set/attribute type-compatibility. Unlike version_target, this is
+    // NOT fully gated on `ctx.target`: universal mismatches (wrong on every
+    // version) fire under `None`, version-divergent ones only under a target.
+    diags.extend(type_compat::walk(entries, file, ctx.target));
     // fapd-W05 uid=/gid= getent check: opt-in via --check-identities. Runs among
     // the AST passes (before fill_columns) so its column backfills from the span.
     if ctx.check_identities {

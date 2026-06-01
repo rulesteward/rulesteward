@@ -282,6 +282,26 @@ fn e05_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-E07 - set / attribute type-compatibility. Driven here under the default
+// (None) context, so only the UNIVERSAL mismatches (wrong on every version)
+// fire. Version-divergent E07 cases live under traps/version-target/ and are
+// swept across all four targets by `version_target_traps`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e07_traps() {
+    let files = list_rules_files("fapd-E07");
+    assert!(
+        files.len() >= 4,
+        "fapd-E07 trap corpus must have ≥4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file("fapd-E07", path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-W02 - broad allow on execute / any with `all : all`. Lint-walker-driven.
 // ---------------------------------------------------------------------------
 

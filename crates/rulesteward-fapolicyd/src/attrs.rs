@@ -56,6 +56,76 @@ pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash"];
 
 pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 
+/// fapolicyd's value-TYPE category for an attribute, used by fapd-E07 to predict
+/// load-time type rejection of a `%set` assigned to it.
+///
+/// Derived from the runtime behavior of fapolicyd 1.3.2 / 1.4.3 / 1.4.5 (cited
+/// `fapolicyd --debug --permissive` output in
+/// `.private-docs/fapd-e07-grounding.md`), cross-checked against the type columns
+/// in upstream `src/library/{subject,object}-attr.c`. The CATEGORY here is
+/// version-INVARIANT; only the per-set TYPE INFERENCE (which fapd-E07 computes
+/// separately) diverges across versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttrTypeCategory {
+    /// Unsigned integer (`uid`, `auid`, `sessionid`): accepts a numeric set,
+    /// rejects a string set.
+    Unsigned,
+    /// Signed integer (`pid`, `ppid`): fapolicyd types a positive-int set as
+    /// UNSIGNED on the subject side, so EVEN `1,2,3` is rejected here - no normal
+    /// set ever satisfies a signed attribute (a grounded fapolicyd quirk).
+    Signed,
+    /// String (`comm`, `exe` subject; `dir`, `ftype`, `path`, `device`,
+    /// `filehash`, `sha256hash` object/either): accepts a string set, rejects a
+    /// numeric set.
+    Str,
+    /// Permissive (`gid`): accepts group NAMES as well as numbers, so string,
+    /// numeric, and mixed sets all load - fapd-E07 never flags it.
+    Permissive,
+    /// No set accepted (`pattern`, `trust`): a `%set` here is already an Error via
+    /// fapd-E04 (macro in `pattern=`/`trust=`), so fapd-E07 DEFERS to fapd-E04
+    /// rather than double-reporting the same defect.
+    NoSet,
+}
+
+/// Attributes fapolicyd types as an unsigned integer.
+const UNSIGNED_ATTRS: &[&str] = &["uid", "auid", "sessionid"];
+/// Attributes fapolicyd types as a signed integer (the `pid`/`ppid` quirk).
+const SIGNED_ATTRS: &[&str] = &["pid", "ppid"];
+/// Attributes fapolicyd types as a string.
+const STRING_ATTRS: &[&str] = &[
+    "comm",
+    "exe",
+    "dir",
+    "ftype",
+    "path",
+    "device",
+    "filehash",
+    "sha256hash",
+];
+/// Attributes that accept names as well as numbers (no type rejection).
+const PERMISSIVE_ATTRS: &[&str] = &["gid"];
+/// Attributes that accept no set at all (owned by fapd-E04).
+const NO_SET_ATTRS: &[&str] = &["pattern", "trust"];
+
+/// The fapolicyd value-type category for `name`, or `None` for an unknown
+/// attribute (unknown names are fapd-E01's concern) or the special `all` token.
+#[must_use]
+pub fn type_category(name: &str) -> Option<AttrTypeCategory> {
+    if UNSIGNED_ATTRS.contains(&name) {
+        Some(AttrTypeCategory::Unsigned)
+    } else if SIGNED_ATTRS.contains(&name) {
+        Some(AttrTypeCategory::Signed)
+    } else if STRING_ATTRS.contains(&name) {
+        Some(AttrTypeCategory::Str)
+    } else if PERMISSIVE_ATTRS.contains(&name) {
+        Some(AttrTypeCategory::Permissive)
+    } else if NO_SET_ATTRS.contains(&name) {
+        Some(AttrTypeCategory::NoSet)
+    } else {
+        None
+    }
+}
+
 #[must_use]
 pub fn classify(name: &str) -> Option<AttrSide> {
     if SUBJECT_ONLY.contains(&name) {
@@ -128,5 +198,62 @@ mod tests {
         assert!(is_known("uid"));
         assert!(is_known("dir"));
         assert!(!is_known("xyz"));
+    }
+
+    #[test]
+    fn type_category_maps_each_category() {
+        // One representative per category, grounded in fapd-e07-grounding.md.
+        assert_eq!(type_category("uid"), Some(AttrTypeCategory::Unsigned));
+        assert_eq!(type_category("auid"), Some(AttrTypeCategory::Unsigned));
+        assert_eq!(type_category("sessionid"), Some(AttrTypeCategory::Unsigned));
+        assert_eq!(type_category("pid"), Some(AttrTypeCategory::Signed));
+        assert_eq!(type_category("ppid"), Some(AttrTypeCategory::Signed));
+        assert_eq!(type_category("exe"), Some(AttrTypeCategory::Str));
+        assert_eq!(type_category("path"), Some(AttrTypeCategory::Str));
+        assert_eq!(type_category("dir"), Some(AttrTypeCategory::Str));
+        assert_eq!(type_category("filehash"), Some(AttrTypeCategory::Str));
+    }
+
+    #[test]
+    fn type_category_gid_is_permissive_not_unsigned() {
+        // Grounding contradiction #1: gid accepts group NAMES, so it is PERMISSIVE,
+        // NOT a numeric attribute. A wrong map that types gid Unsigned would make
+        // fapd-E07 fire on a valid `gid=%groupnames` set.
+        assert_eq!(type_category("gid"), Some(AttrTypeCategory::Permissive));
+    }
+
+    #[test]
+    fn type_category_pattern_and_trust_are_no_set() {
+        assert_eq!(type_category("pattern"), Some(AttrTypeCategory::NoSet));
+        assert_eq!(type_category("trust"), Some(AttrTypeCategory::NoSet));
+    }
+
+    #[test]
+    fn type_category_unknown_and_all_are_none() {
+        assert_eq!(type_category("xyz"), None);
+        assert_eq!(type_category(""), None);
+        // `all` is the bare Attr::All token, never a `key=value`, so it has no
+        // value-type category.
+        assert_eq!(type_category("all"), None);
+    }
+
+    #[test]
+    fn every_known_kv_attr_has_a_type_category() {
+        // Completeness invariant: every attribute that `classify` knows - except
+        // the special `all` token - must have a value-type category, or fapd-E07
+        // would silently skip a real attribute. Kills "forgot to add attr X".
+        for &name in SUBJECT_ONLY
+            .iter()
+            .chain(OBJECT_ONLY.iter())
+            .chain(BOTH_SIDES.iter())
+        {
+            if name == "all" {
+                continue;
+            }
+            assert!(
+                type_category(name).is_some(),
+                "known attribute `{name}` has no fapd-E07 type category",
+            );
+        }
     }
 }

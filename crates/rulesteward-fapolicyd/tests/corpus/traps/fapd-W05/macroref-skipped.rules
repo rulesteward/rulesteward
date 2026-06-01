@@ -1,5 +1,6 @@
 # W05 clean: %macroref uid= values are skipped (not literal strings).
 # W05 only fires for literal string values; SetRef values have no static
-# identity to check against getent.
-%MY_USERS=/usr/bin/trusted
+# identity to check against getent. Numeric uids keep this trap focused on
+# W05 (a string set here would correctly trip fapd-E07 type-compatibility).
+%MY_USERS=1000,1001
 allow uid=%MY_USERS : all
