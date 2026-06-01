@@ -1,5 +1,6 @@
 //! Shared rule-subsumption engine behind fapd-W01 (within-file, `reachability`)
-//! and fapd-W04 (cross-file, `cross_file`): predicate/perm/dir-prefix coverage.
+//! and fapd-W04 + fapd-W10 (cross-file, `cross_file`): predicate/perm/dir-prefix
+//! coverage, including the `dir=execdirs`/`systemdirs` keyword directory lists.
 
 use std::collections::HashMap;
 
@@ -119,12 +120,56 @@ fn dir_prefix_covers(prefix_av: &AttrValue, target_av: &AttrValue, macro_map: &M
         .any(|prefix| target.starts_with(prefix.as_str()))
 }
 
+/// The fixed directory list the `dir=execdirs` keyword matches against
+/// (fapolicyd.rules(5); verified compiled-in identically across fapolicyd
+/// 1.3.2/1.4.3/1.4.5). fapolicyd `dir=` matching is byte-prefix, so these are
+/// stored slash-terminated.
+const EXECDIRS: &[&str] = &[
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/lib/",
+    "/lib64/",
+    "/usr/libexec/",
+];
+
+/// `systemdirs` matches the same list as `execdirs` plus `/etc/`
+/// (fapolicyd.rules(5)).
+const SYSTEMDIRS: &[&str] = &[
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/lib/",
+    "/lib64/",
+    "/usr/libexec/",
+    "/etc/",
+];
+
+/// Expand a single `dir=` token to the byte-prefix string(s) it represents.
+/// The keywords `execdirs`/`systemdirs` expand to their fixed directory lists;
+/// `untrusted` is a runtime rpm-database lookup (NOT a static prefix set), so it
+/// stays opaque and matches no concrete path. Any other token is a literal
+/// prefix.
+fn dir_keyword_prefixes(token: &str) -> Vec<String> {
+    match token {
+        "execdirs" => EXECDIRS.iter().map(|&s| s.to_string()).collect(),
+        "systemdirs" => SYSTEMDIRS.iter().map(|&s| s.to_string()).collect(),
+        // "untrusted" + literal paths: opaque single prefix. ("untrusted" never
+        // byte-prefixes a real "/..." path, so it correctly covers nothing.)
+        other => vec![other.to_string()],
+    }
+}
+
 /// Expand a `dir=` value to the concrete prefix strings it represents. A
-/// literal yields a single prefix; a `SetRef` yields its expanded members.
+/// literal yields its prefix(es) (a keyword expands to its directory list); a
+/// `SetRef` yields each expanded member, itself keyword-expanded.
 fn dir_prefixes(prefix_av: &AttrValue, macro_map: &MacroMap) -> Vec<String> {
     match prefix_av {
-        AttrValue::SetRef(name) => expand_set(name, macro_map),
-        other => vec![value_as_string(other)],
+        AttrValue::SetRef(name) => expand_set(name, macro_map)
+            .iter()
+            .flat_map(|m| dir_keyword_prefixes(m))
+            .collect(),
+        other => dir_keyword_prefixes(&value_as_string(other)),
     }
 }
 
@@ -428,5 +473,103 @@ mod tests {
         let a = vec![kv_int("uid", 0), Attr::All];
         let b = vec![kv("path", "/bin/sh")];
         assert!(!subsumes_predicate_list(&a, &b, &no_macros()));
+    }
+
+    // --- dir= keyword expansion (Mechanism 3d, keyword arm) ---
+    // fapolicyd.rules(5): `execdirs` matches /usr/ /bin/ /sbin/ /lib/ /lib64/
+    // /usr/libexec/; `systemdirs` = execdirs + /etc/; `untrusted` is a runtime
+    // rpm-db lookup (NOT a static directory list, so it stays opaque).
+    // Verified compiled-in identically across fapolicyd 1.3.2/1.4.3/1.4.5.
+
+    #[test]
+    fn dir_keyword_execdirs_covers_paths_under_its_dirs() {
+        // `dir=execdirs` covers a path under EVERY one of its six member
+        // directories (fapolicyd.rules(5): /usr/ /bin/ /sbin/ /lib/ /lib64/
+        // /usr/libexec/). One assertion per member so a const that DROPS a member
+        // (e.g. /bin/, /lib/, /lib64/ - none of which are subsets of /usr/) is
+        // caught; cargo-mutants does not mutate array elements, so these unit
+        // assertions are the sole backstop for the const's contents.
+        let map = no_macros();
+        for path in [
+            "/usr/sbin/nc",                // /usr/
+            "/bin/sh",                     // /bin/
+            "/sbin/ip",                    // /sbin/
+            "/lib/libc.so.6",              // /lib/
+            "/lib64/ld-linux-x86-64.so.2", // /lib64/
+            "/usr/libexec/foo", // /usr/libexec/ (subset of /usr/, asserted for documentation)
+        ] {
+            assert!(
+                subsumes_attr(&kv("dir", "execdirs"), &[kv("path", path)], &map),
+                "execdirs must cover {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_keyword_execdirs_does_not_cover_paths_outside_its_dirs() {
+        // /etc/ and /opt/ are not execdirs members -> no coverage. Guards
+        // against an over-broad keyword expansion.
+        let map = no_macros();
+        assert!(!subsumes_attr(
+            &kv("dir", "execdirs"),
+            &[kv("path", "/etc/passwd")],
+            &map
+        ));
+        assert!(!subsumes_attr(
+            &kv("dir", "execdirs"),
+            &[kv("path", "/opt/app/run")],
+            &map
+        ));
+    }
+
+    #[test]
+    fn dir_keyword_systemdirs_covers_etc_but_execdirs_does_not() {
+        // systemdirs = execdirs + /etc/. The /etc/ member is the distinguishing
+        // difference between the two keywords.
+        let map = no_macros();
+        assert!(subsumes_attr(
+            &kv("dir", "systemdirs"),
+            &[kv("path", "/etc/passwd")],
+            &map
+        ));
+        assert!(subsumes_attr(
+            &kv("dir", "systemdirs"),
+            &[kv("path", "/usr/bin/nc")],
+            &map
+        ));
+        // execdirs lacks /etc/ -> this asserts the two keywords are NOT
+        // collapsed to the same list.
+        assert!(!subsumes_attr(
+            &kv("dir", "execdirs"),
+            &[kv("path", "/etc/passwd")],
+            &map
+        ));
+    }
+
+    #[test]
+    fn dir_keyword_untrusted_stays_opaque() {
+        // `untrusted` is a runtime rpm-db lookup, NOT a static prefix set.
+        // It must never be treated as covering a concrete path (false-positive
+        // trap). Guards against expanding it to a directory list.
+        let map = no_macros();
+        assert!(!subsumes_attr(
+            &kv("dir", "untrusted"),
+            &[kv("path", "/usr/bin/nc")],
+            &map
+        ));
+    }
+
+    #[test]
+    fn dir_keyword_inside_setref_expands() {
+        // A keyword appearing as a member of a `%set` used on a `dir=` value
+        // still expands to its directory list. %d = {execdirs, /opt/}.
+        let map = build_macro_map(&[set_def(1, "d", &["execdirs", "/opt/"])]);
+        let a = kv_ref("dir", "d");
+        // covered via the execdirs member
+        assert!(subsumes_attr(&a, &[kv("path", "/usr/bin/nc")], &map));
+        // covered via the literal /opt/ member
+        assert!(subsumes_attr(&a, &[kv("path", "/opt/app/run")], &map));
+        // /etc/ is in neither -> not covered
+        assert!(!subsumes_attr(&a, &[kv("path", "/etc/passwd")], &map));
     }
 }
