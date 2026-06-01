@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E07] sev=Error line=5 col=7 span=206..212 :: set `%t` is type-incompatible with `uid=` (expects an unsigned integer) on every supported fapolicyd version

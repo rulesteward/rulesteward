@@ -1,0 +1,4 @@
+# fapd-E07 non-vacuity: a numeric set on `uid=` (UNSIGNED) is VALID on every
+# version -> no fapd-E07. Expected: 0 diagnostics.
+%t=1,2,3
+allow uid=%t : all

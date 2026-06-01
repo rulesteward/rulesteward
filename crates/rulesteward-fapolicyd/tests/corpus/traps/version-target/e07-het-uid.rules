@@ -1,0 +1,6 @@
+# fapd-E07 version-divergent: a heterogeneous set (first element numeric, a
+# later element non-numeric) on `uid=` (UNSIGNED). rhel8 (1.3.2) types by the
+# FIRST element -> numeric -> ACCEPT (clean). rhel9/rhel10 (1.4.x) type STRING
+# if ANY element is non-numeric -> REJECT (fapd-E07). Suppressed under None.
+%s=1,abc
+allow uid=%s : all

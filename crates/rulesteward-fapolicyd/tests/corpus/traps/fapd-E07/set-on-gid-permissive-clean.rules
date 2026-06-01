@@ -1,0 +1,5 @@
+# fapd-E07 non-vacuity: `gid=` is PERMISSIVE (accepts group NAMES), so even a
+# string set loads on every version -> fapd-E07 must NEVER fire. Expected: 0
+# diagnostics.
+%t=abc,def
+allow gid=%t : all

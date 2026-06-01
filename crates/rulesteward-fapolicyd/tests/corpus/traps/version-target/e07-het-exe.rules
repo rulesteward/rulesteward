@@ -1,0 +1,6 @@
+# fapd-E07 version-divergent (opposite direction): a heterogeneous set on the
+# STRING attribute `exe=`. rhel8 types it numeric (first element) -> numeric on
+# a STRING attr -> REJECT (fapd-E07). rhel9/rhel10 type it STRING -> valid on a
+# STRING attr -> clean. Suppressed under None.
+%s=1,abc
+allow exe=%s : all

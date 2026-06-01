@@ -1,0 +1,4 @@
+# fapd-E07: `sessionid=` is UNSIGNED like `uid=`/`auid=`. A string set is
+# rejected on every version. Guards against an impl that special-cases `uid`.
+%t=abc,def
+allow sessionid=%t : all

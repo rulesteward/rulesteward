@@ -1,0 +1,5 @@
+# fapd-E07 boundary: a `%set` in `pattern=` is already an Error via fapd-E04
+# (macro in pattern=). E07 DEFERS to E04 - the snapshot must show fapd-E04 and
+# NOT a duplicate fapd-E07.
+%t=abc,def
+allow pattern=%t : all

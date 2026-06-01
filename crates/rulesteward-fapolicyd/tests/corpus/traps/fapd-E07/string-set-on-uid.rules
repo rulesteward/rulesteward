@@ -1,0 +1,5 @@
+# fapd-E07: a homogeneous STRING set on `uid=` (UNSIGNED) is rejected by
+# fapolicyd on every supported version, so it fires under the default (None)
+# context. The headline security case.
+%t=abc,def
+allow uid=%t : all

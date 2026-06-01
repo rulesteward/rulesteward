@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E04] sev=Error line=5 col=1 span=195..217 :: macro reference `%t` not supported in `pattern=` (fapolicyd does not substitute macros here)

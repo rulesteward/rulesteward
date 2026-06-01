@@ -1,0 +1,4 @@
+# fapd-E07 (bidirectional): a numeric set on the STRING attribute `exe=` is
+# rejected on every version. Proves the check is bidirectional, not one-way.
+%t=1,2,3
+allow exe=%t : all
