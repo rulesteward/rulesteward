@@ -78,18 +78,15 @@ pub fn lint_orphans(files: &[(PathBuf, Vec<Entry>)], db: &TrustDb) -> Vec<Diagno
         .map(|s| s.as_str())
         .collect();
     let plural = if n == 1 { "entry" } else { "entries" };
-    vec![Diagnostic::new(
+    vec![super::file_level(
         Severity::Extra,
         "fapd-X01",
-        0..0,
         format!(
             "trust DB has {n} {plural} not referenced by any rule (showing first {}: {})",
             sample.len(),
             sample.join(", ")
         ),
         db.path(),
-        0,
-        0,
     )]
 }
 

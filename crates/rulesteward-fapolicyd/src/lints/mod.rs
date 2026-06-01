@@ -47,10 +47,9 @@ use crate::version::TargetVersion;
 /// Build a byte-anchored `Diagnostic` with the fapolicyd emission convention:
 /// column defaults to 1 and the source-id is the file path's display string.
 ///
-/// Used by the ~17 anchored lint sites (migrated in Task 2 / CLEAN-2). The 3
-/// unanchored (`0..0`, no source-id) sites and the 3 explicit-column sites do
-/// NOT use this helper.
-fn anchored(
+/// Thin wrapper over [`anchored_at`] with `column = 1`. Used by the bulk of the
+/// anchored lint sites whose caret sits at the start of the line.
+pub(crate) fn anchored(
     sev: Severity,
     code: &'static str,
     span: Span,
@@ -58,9 +57,40 @@ fn anchored(
     file: impl Into<std::path::PathBuf>,
     line: usize,
 ) -> Diagnostic {
+    anchored_at(sev, code, span, msg, file, line, 1)
+}
+
+/// Build a byte-anchored `Diagnostic` at an explicit 1-based `column`, with the
+/// source-id set to the file path's display string. Used by the sites that point
+/// the caret at a sub-rule token rather than the rule's first column: fapd-E01
+/// (the offending attribute), fapd-W03 (the inline `#`), and fapd-F01 (the parse
+/// offset within the line body).
+pub(crate) fn anchored_at(
+    sev: Severity,
+    code: &'static str,
+    span: Span,
+    msg: impl Into<String>,
+    file: impl Into<std::path::PathBuf>,
+    line: usize,
+    column: usize,
+) -> Diagnostic {
     let file = file.into();
     let source_id = file.display().to_string();
-    Diagnostic::new(sev, code, span, msg, file, line, 1).with_source_id(source_id)
+    Diagnostic::new(sev, code, span, msg, file, line, column).with_source_id(source_id)
+}
+
+/// Build a file-level `Diagnostic` NOT anchored to a source byte range: empty
+/// span `0..0`, line and column `0`, and NO source-id. Used by findings about a
+/// file's existence or name rather than its contents - fapd-F02 (layout
+/// coexistence), fapd-C01 (filename convention), and fapd-X01 (trust-DB orphans)
+/// - which the renderer shows as a bare message with no source snippet.
+pub(crate) fn file_level(
+    sev: Severity,
+    code: &'static str,
+    msg: impl Into<String>,
+    file: impl Into<std::path::PathBuf>,
+) -> Diagnostic {
+    Diagnostic::new(sev, code, 0..0, msg, file, 0, 0)
 }
 
 /// Optional external resources + mode flags for the context-gated lint passes.
@@ -508,6 +538,56 @@ mod tests {
         let want = Diagnostic::new(Severity::Error, "fapd-E02", span, "boom", file, 7, 1)
             .with_source_id(file.display().to_string());
         assert_eq!(got, want);
+    }
+
+    // --- Task 4: anchored_at() / file_level() equality anchors ---
+    //
+    // Parity guards for the two new helpers introduced by the raw-Diagnostic::new
+    // migration. They must reproduce the hand-written forms EXACTLY so the
+    // migrated sites (walker E01, source_scan W03, parser F01; layout F02,
+    // cross_db X01, cross_file C01) are byte-for-byte behavior-preserving.
+
+    #[test]
+    fn anchored_at_equals_handwritten_diagnostic() {
+        use std::path::Path;
+        let file = Path::new("/tmp/x.rules");
+        let span = 3..9;
+        let got = super::anchored_at(
+            Severity::Error,
+            "fapd-E01",
+            span.clone(),
+            "boom",
+            file,
+            7,
+            4,
+        );
+        let want = Diagnostic::new(Severity::Error, "fapd-E01", span, "boom", file, 7, 4)
+            .with_source_id(file.display().to_string());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn anchored_is_anchored_at_column_one() {
+        use std::path::Path;
+        let file = Path::new("/tmp/x.rules");
+        let span = 0..2;
+        assert_eq!(
+            super::anchored(Severity::Warning, "fapd-W03", span.clone(), "m", file, 5),
+            super::anchored_at(Severity::Warning, "fapd-W03", span, "m", file, 5, 1),
+        );
+    }
+
+    #[test]
+    fn file_level_equals_handwritten_diagnostic() {
+        use std::path::Path;
+        let file = Path::new("/tmp/x.rules");
+        let got = super::file_level(Severity::Fatal, "fapd-F02", "boom", file);
+        let want = Diagnostic::new(Severity::Fatal, "fapd-F02", 0..0, "boom", file, 0, 0);
+        assert_eq!(got, want);
+        assert!(
+            got.source_id.is_none(),
+            "file_level must NOT set a source_id (renders as a bare message)",
+        );
     }
 
     #[test]

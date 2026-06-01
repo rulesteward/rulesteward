@@ -22,14 +22,11 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
         return None;
     }
 
-    Some(Diagnostic::new(
+    Some(super::file_level(
         Severity::Fatal,
         "fapd-F02",
-        0..0,
         "fapolicyd refuses to start when both `fapolicyd.rules` and `rules.d/` contain rules - remove one",
         legacy,
-        0,
-        0,
     ))
 }
 

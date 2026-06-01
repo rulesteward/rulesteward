@@ -41,18 +41,15 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
             // file-relative byte coords.
             let span_start = line_byte_offset + hash_col_in_line;
             let span_end = line_byte_offset + line.len();
-            diags.push(
-                Diagnostic::new(
-                    Severity::Warning,
-                    "fapd-W03",
-                    span_start..span_end,
-                    "inline `# comment` after a rule line - fapolicyd silently drops this rule",
-                    file,
-                    lineno,
-                    hash_col_in_line + 1,
-                )
-                .with_source_id(file.display().to_string()),
-            );
+            diags.push(super::anchored_at(
+                Severity::Warning,
+                "fapd-W03",
+                span_start..span_end,
+                "inline `# comment` after a rule line - fapolicyd silently drops this rule",
+                file,
+                lineno,
+                hash_col_in_line + 1,
+            ));
         }
         line_byte_offset += raw_line.len() + 1;
     }
