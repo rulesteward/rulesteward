@@ -138,7 +138,7 @@ pub fn lint_with_context(
         ctx.single_file,
     ));
     diags.extend(reachability::walk(entries, file));
-    diags.extend(deprecation::walk(entries, file));
+    diags.extend(deprecation::walk(entries, file, ctx.target));
     diags.extend(dir_slash::walk(entries, file));
     diags.extend(source_scan::w03_scan(source, file));
     // Version-aware checks: no-op when ctx.target is None (implicit 1.4.x), so a

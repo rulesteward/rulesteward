@@ -8,10 +8,24 @@ use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
 use crate::ast::{Attr, Entry};
+use crate::version::TargetVersion;
 
 /// Run every deprecation lint pass over `entries` and return the merged
 /// diagnostics.
-pub(crate) fn walk(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+///
+/// `target` makes fapd-W07 version-aware: on `--target rhel8` (fapolicyd 1.3.2)
+/// `sha256hash=` is the canonical, NON-deprecated spelling (`filehash=` does not
+/// exist there), so W07 is suppressed. Under `None` (implicit 1.4.x) and
+/// rhel9/rhel10, the 1.4.2+ deprecation NOTICE applies and W07 still fires.
+pub(crate) fn walk(
+    entries: &[Entry],
+    file: &Path,
+    target: Option<TargetVersion>,
+) -> Vec<Diagnostic> {
+    // sha256hash= is canonical (not deprecated) on 1.3.2: suppress W07 on rhel8.
+    if target == Some(TargetVersion::Rhel8) {
+        return Vec::new();
+    }
     w07(entries, file)
 }
 

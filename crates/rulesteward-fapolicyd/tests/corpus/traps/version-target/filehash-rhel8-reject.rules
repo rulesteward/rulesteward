@@ -1,0 +1,1 @@
+allow perm=any exe=/usr/bin/foo : filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

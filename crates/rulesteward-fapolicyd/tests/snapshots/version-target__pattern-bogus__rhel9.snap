@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=ok
+diagnostics=1
+[fapd-E06] sev=Error line=1 col=1 span=0..37 :: pattern value `bogusxyz` is not valid on the selected --target rhel9 (fapolicyd 1.4.3)
