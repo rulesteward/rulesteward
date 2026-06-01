@@ -8,21 +8,136 @@
 
 use std::path::Path;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Entry;
+use super::anchored;
+use crate::ast::{Attr, AttrValue, Entry, Rule};
 use crate::version::TargetVersion;
+
+/// `pattern=` values accepted by fapolicyd on the rhel8 dialect (1.3.2). The
+/// `normal` value was introduced later, so it is absent here. Empirically
+/// confirmed on the img8 container (A3 wave-2 matrix).
+const RHEL8_PATTERN_VALUES: &[&str] = &["ld_so", "ld_preload", "static"];
+
+/// `pattern=` values accepted by fapolicyd on the rhel9/rhel10 dialect (1.4.x).
+/// The 1.4.x line adds `normal` to the rhel8 set.
+const RHEL9_PLUS_PATTERN_VALUES: &[&str] = &["normal", "ld_so", "ld_preload", "static"];
+
+/// The accepted `pattern=` value set for `target`.
+fn accepted_pattern_values(target: TargetVersion) -> &'static [&'static str] {
+    match target {
+        TargetVersion::Rhel8 => RHEL8_PATTERN_VALUES,
+        TargetVersion::Rhel9 | TargetVersion::Rhel10 => RHEL9_PLUS_PATTERN_VALUES,
+    }
+}
 
 /// Run the version-divergent checks for `target`. Returns no diagnostics when
 /// `target` is `None` (the implicit 1.4.x dialect, i.e. no `--target`) so a
 /// default lint reproduces today's behavior exactly.
 #[must_use]
 pub(crate) fn walk(
-    _entries: &[Entry],
-    _file: &Path,
-    _target: Option<TargetVersion>,
+    entries: &[Entry],
+    file: &Path,
+    target: Option<TargetVersion>,
 ) -> Vec<Diagnostic> {
-    Vec::new()
+    // The whole pass is gated on an explicit `--target`; the implicit 1.4.x
+    // dialect (`None`) emits nothing, preserving today's behavior byte-for-byte.
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    let mut diags = Vec::new();
+    for entry in entries {
+        let Entry::Rule(rule) = entry else { continue };
+        check_filehash(rule, file, target, &mut diags);
+        check_subject_device(rule, file, target, &mut diags);
+        check_pattern(rule, file, target, &mut diags);
+    }
+    diags
+}
+
+/// Emit a fapd-E06 anchored to `rule`, naming the offending construct, the
+/// concrete fapolicyd version, and the rhel target so the operator can see all
+/// three facts in one line.
+fn e06(rule: &Rule, file: &Path, target: TargetVersion, what: &str) -> Diagnostic {
+    let message = format!(
+        "{what} is not valid on the selected --target {target} (fapolicyd {})",
+        target.fapolicyd_version(),
+    );
+    anchored(
+        Severity::Error,
+        "fapd-E06",
+        rule.span.clone(),
+        message,
+        file,
+        rule.line,
+    )
+}
+
+/// CHECK 1 - `filehash=` does not exist on fapolicyd 1.3.2 (rhel8); the canonical
+/// 1.3.2 spelling is `sha256hash=`. It is valid on 1.4.x (rhel9/rhel10), so this
+/// fires ONLY under rhel8. Scans both sides (filehash is normally an object attr).
+fn check_filehash(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Vec<Diagnostic>) {
+    if target != TargetVersion::Rhel8 {
+        return;
+    }
+    for attr in rule.subject.iter().chain(rule.object.iter()) {
+        if let Attr::Kv { key, .. } = attr
+            && key == "filehash"
+        {
+            diags.push(e06(
+                rule,
+                file,
+                target,
+                "attribute `filehash=` (use `sha256hash=` instead)",
+            ));
+        }
+    }
+}
+
+/// CHECK 2 - `device=` is object-only on fapolicyd 1.4.x (rhel9/rhel10); a
+/// subject-side `device=` is rejected there. It is valid on the subject side on
+/// 1.3.2 (rhel8), so this fires ONLY under rhel9/rhel10. Object-side `device=` is
+/// normal usage everywhere and is left untouched.
+fn check_subject_device(
+    rule: &Rule,
+    file: &Path,
+    target: TargetVersion,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if target < TargetVersion::Rhel9 {
+        return;
+    }
+    for attr in &rule.subject {
+        if let Attr::Kv { key, .. } = attr
+            && key == "device"
+        {
+            diags.push(e06(
+                rule,
+                file,
+                target,
+                "subject-side attribute `device=` (object-only)",
+            ));
+        }
+    }
+}
+
+/// CHECK 3 - `pattern=` (a subject attr) whose value is not in the target
+/// version's accepted set. `normal` is rejected only on rhel8; a wholly unknown
+/// value (`bogusxyz`) is rejected on every target.
+fn check_pattern(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Vec<Diagnostic>) {
+    let accepted = accepted_pattern_values(target);
+    for attr in &rule.subject {
+        if let Attr::Kv {
+            key,
+            value: AttrValue::Str(value),
+            ..
+        } = attr
+            && key == "pattern"
+            && !accepted.contains(&value.as_str())
+        {
+            diags.push(e06(rule, file, target, &format!("pattern value `{value}`")));
+        }
+    }
 }
 
 #[cfg(test)]
