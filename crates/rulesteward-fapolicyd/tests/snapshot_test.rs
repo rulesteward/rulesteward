@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 use insta::{Settings, assert_snapshot};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, TrustDb, check_layout, collect_macro_names, fagenrules_cmp, lint,
-    lint_cross_file, lint_orphans, lint_with_context, parse_rules_file,
+    Entry, LintContext, TargetVersion, TrustDb, check_layout, collect_macro_names, fagenrules_cmp,
+    lint, lint_cross_file, lint_orphans, lint_with_context, parse_rules_file,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -972,6 +972,71 @@ fn w06_traps() {
 }
 
 // ---------------------------------------------------------------------------
+// fapd-W05 - uid=/gid= literal not found in the host identity database.
+// Identity-check-aware per-file snapshot driver.
+//
+// Corpus fixtures may only use universally-stable identities:
+//   - uid=0 is guaranteed to resolve on every POSIX host (getent passwd 0 -> root)
+//   - uid=4294967294 is guaranteed ABSENT on any real host (getent exit 2)
+//   - %macroref values are skipped (no literal to check)
+//
+// The driver builds a LintContext with check_identities=true and uses the REAL
+// getent path (walk()), so snapshot output is stable only for the
+// universally-stable fixtures above. Hermetically untestable cases (e.g.,
+// a specific username that exists on one CI host but not another) are covered
+// by the unit tests in identity.rs via the injectable mock resolver.
+// ---------------------------------------------------------------------------
+
+/// Parse one `.rules` file, run `lint_with_context` with
+/// `LintContext{ check_identities: true }`, and snapshot under `fapd-W05__<stem>`.
+fn drive_file_w05(path: &Path) {
+    let code = "fapd-W05";
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read trap input {}: {e}", path.display()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("trap input {} has no UTF-8 file stem", path.display()))
+        .to_owned();
+    let rel_path = Path::new("tests/corpus/traps")
+        .join(code)
+        .join(path.file_name().expect("trap file has a name"));
+
+    let rendered = match parse_rules_file(&src, &rel_path) {
+        Ok(entries) => {
+            let ctx = LintContext {
+                check_identities: true,
+                ..Default::default()
+            };
+            let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
+            render("parse=ok", &diags)
+        }
+        Err(diags) => render("parse=err", &diags),
+    };
+
+    let snapshot_name = format!("{code}__{stem}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn w05_traps() {
+    let files = list_rules_files("fapd-W05");
+    assert!(
+        files.len() >= 3,
+        "fapd-W05 trap corpus must have >= 3 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        drive_file_w05(path);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // fapd-X01 - trust DB entries not referenced by any rule (orphan summary).
 // Scenario-driven snapshot driver using lint_orphans.
 // ---------------------------------------------------------------------------
@@ -1074,5 +1139,90 @@ fn x01_traps() {
     );
     for scenario in &scenarios {
         drive_scenario_x01(scenario);
+    }
+}
+
+// ===========================================================================
+// VERSION-TARGET region (kept SEPARATE from any W05 / other-pipeline block to
+// avoid a merge conflict, per the test-author brief).
+//
+// fapd-W07 (version-suppressed) + fapd-E06 (version-divergent rejection) over
+// the `version-target/` trap corpus. Unlike the other drivers, the verdict here
+// DEPENDS on `ctx.target`, so each fixture is driven under EVERY target
+// (rhel8/rhel9/rhel10) and under None, and the snapshot name carries the target:
+//   `version-target__<stem>__<target>`.
+//
+// The matrix shape is the whole point: the SAME input produces different
+// diagnostics per target (E06 fires under one, clean under another), so a
+// per-target snapshot pins the cross-target divergence a single-context driver
+// could never express.
+//
+// NO .snap files ship here. They are generated on the first impl-green run by
+// `INSTA_UPDATE=always cargo test --test snapshot_test`. Until
+// `version_target::walk` + the target-aware W07 suppression land, every
+// version-target snapshot has no accepted `.snap` and the test is RED. That is
+// the intended TDD-RED state.
+// ===========================================================================
+
+/// All four lint contexts the version-target matrix sweeps, with a stable
+/// suffix used in the snapshot name. `None` is the implicit-1.4.x dialect.
+fn version_target_matrix() -> [(Option<TargetVersion>, &'static str); 4] {
+    [
+        (None, "none"),
+        (Some(TargetVersion::Rhel8), "rhel8"),
+        (Some(TargetVersion::Rhel9), "rhel9"),
+        (Some(TargetVersion::Rhel10), "rhel10"),
+    ]
+}
+
+/// Drive one version-target fixture under one target. Parses the file, runs
+/// `lint_with_context` with `ctx.target = target`, and snapshots under
+/// `version-target__<stem>__<suffix>`.
+fn drive_file_version_target(path: &Path, target: Option<TargetVersion>, suffix: &str) {
+    let code = "version-target";
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read trap input {}: {e}", path.display()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| panic!("trap input {} has no UTF-8 file stem", path.display()))
+        .to_owned();
+    let rel_path = Path::new("tests/corpus/traps")
+        .join(code)
+        .join(path.file_name().expect("trap file has a name"));
+
+    let rendered = match parse_rules_file(&src, &rel_path) {
+        Ok(entries) => {
+            let ctx = LintContext {
+                target,
+                ..Default::default()
+            };
+            let diags = lint_with_context(&entries, &src, &rel_path, &ctx);
+            render("parse=ok", &diags)
+        }
+        Err(diags) => render("parse=err", &diags),
+    };
+
+    let snapshot_name = format!("{code}__{stem}__{suffix}");
+    let mut settings = Settings::clone_current();
+    settings.set_snapshot_path(manifest_dir().join("tests/snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        assert_snapshot!(snapshot_name, rendered);
+    });
+}
+
+#[test]
+fn version_target_traps() {
+    let files = list_rules_files("version-target");
+    assert!(
+        files.len() >= 4,
+        "version-target trap corpus must have >= 4 files, found {}",
+        files.len(),
+    );
+    for path in &files {
+        for (target, suffix) in version_target_matrix() {
+            drive_file_version_target(path, target, suffix);
+        }
     }
 }

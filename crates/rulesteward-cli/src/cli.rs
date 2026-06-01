@@ -100,6 +100,17 @@ pub struct LintArgs {
     /// `--against-trustdb`; off by default (a real trust DB lists ~every system file).
     #[arg(long)]
     pub report_orphans: bool,
+
+    /// Target RHEL release for version-aware checks (rhel8/rhel9/rhel10). Omit to
+    /// lint the version-agnostic dialect (no version-divergent diagnostics).
+    #[arg(long, value_enum)]
+    pub target: Option<TargetVersionArg>,
+
+    /// Validate `uid=`/`gid=` literals against the host identity database via
+    /// `getent` (read-only); enables fapd-W05. Off by default (the check spawns a
+    /// `getent` subprocess that may query SSSD/LDAP/AD).
+    #[arg(long)]
+    pub check_identities: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -107,6 +118,27 @@ pub enum OutputFormat {
     Human,
     Json,
     Sarif,
+}
+
+/// CLI value-enum for `--target`. Mirrors the fapolicyd domain `TargetVersion`
+/// so the domain crate stays clap-free (the same layering as
+/// `TrustSourceFilter` -> `TrustSource`). The variant names are the accepted
+/// `--target` values (`rhel8`/`rhel9`/`rhel10`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TargetVersionArg {
+    Rhel8,
+    Rhel9,
+    Rhel10,
+}
+
+impl From<TargetVersionArg> for rulesteward_fapolicyd::TargetVersion {
+    fn from(arg: TargetVersionArg) -> Self {
+        match arg {
+            TargetVersionArg::Rhel8 => rulesteward_fapolicyd::TargetVersion::Rhel8,
+            TargetVersionArg::Rhel9 => rulesteward_fapolicyd::TargetVersion::Rhel9,
+            TargetVersionArg::Rhel10 => rulesteward_fapolicyd::TargetVersion::Rhel10,
+        }
+    }
 }
 
 /// Trust-DB subcommands.
@@ -510,5 +542,94 @@ mod tests {
     fn trustdb_rejects_unknown_subcommand() {
         let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "trustdb", "frobnicate"]);
         assert!(cli.is_err(), "unknown trustdb subcommand must be rejected");
+    }
+
+    // -- Phase 0 (version-target): --target value-enum + --check-identities flag --
+
+    /// Helper: parse `lint somedir <extra args>` and return the `LintArgs`.
+    fn parse_lint(extra: &[&str]) -> LintArgs {
+        let mut cmdline = vec!["rulesteward", "fapolicyd", "lint", "somedir"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("lint args must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+        } = cli
+        else {
+            panic!("expected Fapolicyd(Lint(_))");
+        };
+        args
+    }
+
+    /// `--target rhel8|rhel9|rhel10` parses to the matching arg variant.
+    /// RED until the `target` field + `TargetVersionArg` value-enum exist.
+    #[test]
+    fn lint_args_target_parses_each_rhel() {
+        for (flag, expected) in [
+            ("rhel8", TargetVersionArg::Rhel8),
+            ("rhel9", TargetVersionArg::Rhel9),
+            ("rhel10", TargetVersionArg::Rhel10),
+        ] {
+            let args = parse_lint(&["--target", flag]);
+            assert_eq!(
+                args.target,
+                Some(expected),
+                "--target {flag} must parse to {expected:?}"
+            );
+        }
+    }
+
+    /// No `--target` leaves `target` = None (implicit 1.4.x dialect, no regression).
+    #[test]
+    fn lint_args_target_defaults_none() {
+        assert!(
+            parse_lint(&[]).target.is_none(),
+            "absent --target must default to None"
+        );
+    }
+
+    /// An invalid `--target` value is rejected (pins the closed rhel set).
+    #[test]
+    fn lint_args_target_rejects_unknown_value() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "lint",
+            "somedir",
+            "--target",
+            "rhel7",
+        ]);
+        assert!(cli.is_err(), "an invalid --target value must be rejected");
+    }
+
+    /// `--check-identities` sets the flag; absence leaves it false (opt-in).
+    #[test]
+    fn lint_args_check_identities_parses_and_defaults_false() {
+        assert!(
+            parse_lint(&["--check-identities"]).check_identities,
+            "--check-identities must set the flag true"
+        );
+        assert!(
+            !parse_lint(&[]).check_identities,
+            "check_identities must default to false (opt-in)"
+        );
+    }
+
+    /// The CLI value-enum converts to the fapolicyd domain `TargetVersion`.
+    /// Keeps the domain crate clap-free (mirrors `TrustSourceFilter` -> `TrustSource`).
+    #[test]
+    fn target_arg_converts_to_domain_version() {
+        use rulesteward_fapolicyd::TargetVersion;
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel8),
+            TargetVersion::Rhel8
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel9),
+            TargetVersion::Rhel9
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel10),
+            TargetVersion::Rhel10
+        );
     }
 }

@@ -45,9 +45,12 @@ fn bin() -> Command {
 }
 
 /// `trustdb list --format json` over a fixture DB exits 0, and stdout parses to
-/// a JSON ARRAY of objects each carrying `path` / `source` / `size` / `sha256`,
+/// a JSON ARRAY of objects each carrying `path` / `source` / `size` / `digest`,
 /// terminated by a trailing newline. Asserts the WIRE FORMAT by parsing stdout
 /// into `serde_json::Value`, not by deserializing into a concrete Rust struct.
+///
+/// The key is `"digest"` (not `"sha256"`) because the field holds whatever hash
+/// algorithm fapolicyd recorded (MD5/SHA1/SHA256/SHA512 depending on DB version).
 #[test]
 fn trustdb_list_json_emits_array_of_objects_exit_zero() {
     let db_dir = tempfile::tempdir().expect("tempdir");
@@ -88,12 +91,16 @@ fn trustdb_list_json_emits_array_of_objects_exit_zero() {
         let obj = elem
             .as_object()
             .expect("each element must be a JSON object");
-        for key in ["path", "source", "size", "sha256"] {
+        for key in ["path", "source", "size", "digest"] {
             assert!(
                 obj.contains_key(key),
                 "element missing `{key}` field: {obj:?}"
             );
         }
+        assert!(
+            !obj.contains_key("sha256"),
+            "JSON must NOT contain old 'sha256' key; got: {obj:?}"
+        );
     }
 }
 

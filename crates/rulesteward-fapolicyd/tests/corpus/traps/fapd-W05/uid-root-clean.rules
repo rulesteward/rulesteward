@@ -1,0 +1,4 @@
+# W05 clean: uid=0 (root) resolves on every POSIX host.
+#   getent passwd 0 -> "root:x:0:0:...", exit 0  (GNU libc 2.43)
+# No W05 must fire with check_identities=true.
+allow uid=0 : all

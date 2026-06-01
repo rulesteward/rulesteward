@@ -10,12 +10,17 @@ use rulesteward_fapolicyd::{DiskVerdict, TrustEntry, TrustSource};
 use serde::Serialize;
 
 /// One row of `trustdb list` output: the recorded trust-DB entry verbatim.
+///
+/// The `digest` field holds whatever hash algorithm fapolicyd recorded for this
+/// entry (MD5/SHA1/SHA256/SHA512, depending on the fapolicyd version and DB
+/// generation). The JSON key is `"digest"` - a previous version used `"sha256"`
+/// which was misleading for non-SHA256 trust DBs.
 #[derive(Debug, Serialize)]
 pub struct ListRow {
     pub path: String,
     pub source: TrustSource,
     pub size: u64,
-    pub sha256: String,
+    pub digest: String,
 }
 
 impl From<&TrustEntry> for ListRow {
@@ -24,7 +29,7 @@ impl From<&TrustEntry> for ListRow {
             path: e.path.clone(),
             source: e.source,
             size: e.size,
-            sha256: e.digest.clone(),
+            digest: e.digest.clone(),
         }
     }
 }
@@ -117,7 +122,7 @@ pub fn render_list(rows: &[ListRow], json: bool) -> String {
                 "{:<8} {:>12} {} {}",
                 source_label(r.source),
                 r.size,
-                r.sha256,
+                r.digest,
                 r.path
             );
         }
@@ -208,7 +213,7 @@ mod tests {
             path: "/usr/bin/ls".to_owned(),
             source: TrustSource::RpmDb,
             size: 111,
-            sha256: "a".repeat(64),
+            digest: "a".repeat(64),
         }];
         let out = render_list(&rows, true);
         assert!(out.ends_with('\n'), "json output must end with newline");
@@ -216,9 +221,34 @@ mod tests {
         let arr = v.as_array().expect("top-level array");
         assert_eq!(arr.len(), 1);
         let obj = arr[0].as_object().expect("object");
-        for key in ["path", "source", "size", "sha256"] {
+        for key in ["path", "source", "size", "digest"] {
             assert!(obj.contains_key(key), "missing key {key}");
         }
+    }
+
+    /// The JSON key for the hash field must be `"digest"` (not `"sha256"`).
+    /// The field holds any hash algorithm fapolicyd may record (MD5/SHA1/SHA256/SHA512).
+    #[test]
+    fn list_json_key_is_digest_not_sha256() {
+        let rows = vec![ListRow {
+            path: "/usr/bin/ls".to_owned(),
+            source: TrustSource::RpmDb,
+            size: 111,
+            digest: "a".repeat(64),
+        }];
+        let out = render_list(&rows, true);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        let obj = v.as_array().expect("array")[0].as_object().expect("object");
+        assert!(
+            obj.contains_key("digest"),
+            "JSON key must be 'digest' (not 'sha256'); got keys: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !obj.contains_key("sha256"),
+            "JSON must NOT contain the old 'sha256' key; got keys: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

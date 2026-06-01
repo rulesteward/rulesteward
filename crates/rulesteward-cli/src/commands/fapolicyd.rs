@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, bail};
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
     Entry, LintContext, TrustDb, TrustEntry, TrustSource, check_layout, collect_macro_names,
     lint_cross_file, lint_orphans, lint_with_context, open_trustdb_readonly, parse_rules_file,
     verify_entry,
 };
+use thiserror::Error;
 
 use crate::cli::{
     FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
@@ -24,6 +24,24 @@ use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
 const DEFAULT_TRUSTDB_DIR: &str = "/var/lib/fapolicyd/";
+
+/// Typed errors from [`resolve_targets`].
+///
+/// Previously `resolve_targets` returned `anyhow::Result<...>`. Switching to a
+/// typed error lets callers pattern-match on the exact failure mode rather than
+/// parsing error strings.
+#[derive(Debug, Error)]
+pub enum ResolveError {
+    /// The supplied path (or the default) is not a directory.
+    #[error("{path}: not a directory")]
+    NotADirectory { path: PathBuf },
+    /// The directory could not be read (IO error).
+    #[error("reading directory {path}: {source}")]
+    ReadDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
 
 pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
     match cmd {
@@ -258,7 +276,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
         None => None,
     };
 
-    let (target_files, layout_diag) = resolve_targets(args)?;
+    let (target_files, layout_diag) = resolve_targets(args).map_err(anyhow::Error::from)?;
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
@@ -307,6 +325,8 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
             trustdb: trustdb.as_ref(),
             earlier_macros: if single_file { None } else { Some(&earlier) },
             single_file,
+            target: args.target.map(Into::into),
+            check_identities: args.check_identities,
         };
         all_diags.extend(lint_with_context(entries, source, path, &ctx));
         // Populate the ariadne source cache from the already-read source text.
@@ -364,10 +384,10 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
 
 // Returns `(files_to_lint, optional_layout_diagnostic)`.
 //
-// * `--file <FILE>` → lint exactly that file. No layout check.
-// * No `--file`, positional `[PATH]` directory → enumerate `*.rules` in it; also run fapd-F02 against the parent of that dir.
+// * `--file <FILE>` -> lint exactly that file. No layout check.
+// * No `--file`, positional `[PATH]` directory -> enumerate `*.rules` in it; also run fapd-F02 against the parent of that dir.
 // * Default: `/etc/fapolicyd/rules.d/`.
-fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diagnostic>)> {
+fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>), ResolveError> {
     if let Some(file) = &args.file {
         return Ok((vec![file.clone()], None));
     }
@@ -376,12 +396,15 @@ fn resolve_targets(args: &LintArgs) -> anyhow::Result<(Vec<PathBuf>, Option<Diag
         .clone()
         .unwrap_or_else(|| PathBuf::from(DEFAULT_RULES_D));
     if !dir.is_dir() {
-        bail!("{}: not a directory", dir.display());
+        return Err(ResolveError::NotADirectory { path: dir });
     }
     let rules_root = dir.parent().map_or_else(|| dir.clone(), Path::to_path_buf);
     let layout_diag = check_layout(&rules_root);
     let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .with_context(|| format!("reading directory {}", dir.display()))?
+        .map_err(|source| ResolveError::ReadDir {
+            path: dir.clone(),
+            source,
+        })?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         // Skip hidden dotfiles: fagenrules enumerates via `ls -1v | grep '\.rules$'`
@@ -413,6 +436,8 @@ mod tests {
             format: OutputFormat::Human,
             against_trustdb: None,
             report_orphans: false,
+            target: None,
+            check_identities: false,
         }
     }
 
@@ -468,25 +493,39 @@ mod tests {
         let args = lint_args(Some(PathBuf::from("/nonexistent/path/12345")), None);
         let result = resolve_targets(&args);
         let err = result.expect_err("expected Err for non-existent path");
-        let msg = format!("{err:#}");
+        let msg = format!("{err}");
         assert!(
             msg.contains("not a directory"),
-            "expected 'not a directory' in error chain, got {msg}"
+            "expected 'not a directory' in error message, got {msg}"
+        );
+    }
+
+    /// Typed error: a non-directory path must yield `ResolveError::NotADirectory`.
+    /// RED: will fail until `resolve_targets` returns `Result<_, ResolveError>`.
+    #[test]
+    fn resolve_targets_not_a_directory_yields_typed_error_variant() {
+        let f = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = f.path().to_path_buf();
+        let args = lint_args(Some(path.clone()), None);
+        let err = resolve_targets(&args).expect_err("file-as-dir must fail");
+        // Must be the NotADirectory variant - pattern match is the typed check.
+        assert!(
+            matches!(err, ResolveError::NotADirectory { path: ref p } if p == &path),
+            "expected ResolveError::NotADirectory with path={path:?}, got {err:?}"
         );
     }
 
     #[test]
     fn resolve_targets_file_as_dir_error_chain_includes_path() {
-        // Phase B: locks the anyhow::Error return type AND the fact that
-        // the bail!() carries the offending path through to the chain.
+        // Locks the fact that the typed error carries the offending path.
         let f = tempfile::NamedTempFile::new().expect("tempfile");
         let path = f.path().to_path_buf();
         let args = lint_args(Some(path.clone()), None);
-        let err: anyhow::Error = resolve_targets(&args).expect_err("file-as-dir must fail");
-        let chain = format!("{err:#}");
+        let err = resolve_targets(&args).expect_err("file-as-dir must fail");
+        let msg = format!("{err}");
         assert!(
-            chain.contains(path.display().to_string().as_str()),
-            "error chain must mention the offending path, got {chain}",
+            msg.contains(path.display().to_string().as_str()),
+            "error must mention the offending path, got {msg}",
         );
     }
 

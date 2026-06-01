@@ -227,18 +227,21 @@ impl<W: io::Write> io::Write for EpipeSwallowingWriter<W> {
 
 pub fn run(args: &CompletionsArgs) -> anyhow::Result<i32> {
     let mut cmd = Cli::command();
-    let bin_name = "rulesteward";
+    // Derive the binary name from the clap command rather than duplicating the
+    // "rulesteward" literal that is already declared in the #[command(name = ...)]
+    // attribute on `Cli`. This ensures completions always use the canonical name.
+    let bin_name = cmd.get_name().to_owned();
     let mut stdout = EpipeSwallowingWriter {
         inner: io::stdout().lock(),
         pipe_closed: false,
     };
     match args.shell {
-        CompletionShell::Bash => generate(Bash, &mut cmd, bin_name, &mut stdout),
-        CompletionShell::Zsh => generate(Zsh, &mut cmd, bin_name, &mut stdout),
-        CompletionShell::Fish => generate(Fish, &mut cmd, bin_name, &mut stdout),
-        CompletionShell::Elvish => generate(Elvish, &mut cmd, bin_name, &mut stdout),
-        CompletionShell::PowerShell => generate(PowerShell, &mut cmd, bin_name, &mut stdout),
-        CompletionShell::Tcsh => generate(Tcsh, &mut cmd, bin_name, &mut stdout),
+        CompletionShell::Bash => generate(Bash, &mut cmd, &bin_name, &mut stdout),
+        CompletionShell::Zsh => generate(Zsh, &mut cmd, &bin_name, &mut stdout),
+        CompletionShell::Fish => generate(Fish, &mut cmd, &bin_name, &mut stdout),
+        CompletionShell::Elvish => generate(Elvish, &mut cmd, &bin_name, &mut stdout),
+        CompletionShell::PowerShell => generate(PowerShell, &mut cmd, &bin_name, &mut stdout),
+        CompletionShell::Tcsh => generate(Tcsh, &mut cmd, &bin_name, &mut stdout),
     }
     Ok(EXIT_CLEAN)
 }

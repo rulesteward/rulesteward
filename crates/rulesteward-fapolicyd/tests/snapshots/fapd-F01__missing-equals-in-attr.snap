@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=err
 diagnostics=1
-[fapd-F01] sev=Fatal line=1 col=10 span=9..10 :: found ' ' expected something else, or '='
+[fapd-F01] sev=Fatal line=1 col=10 span=9..10 :: malformed rule syntax: found ' ' expected something else, or '='
