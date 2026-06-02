@@ -227,6 +227,135 @@ mod tests {
     use crate::ast::Perm;
     use crate::lints::testkit::{kv, kv_int, kv_ref, set_def};
 
+    // --- proptest invariants ---
+
+    mod proptest_invariants {
+        use super::super::{build_macro_map, shadows, subsumes_perm};
+        use crate::ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+        use proptest::prelude::*;
+        use rulesteward_core::span;
+
+        /// Build an `Attr::Kv` with a string value and no span.
+        fn kv_s(key: &str, val: &str) -> Attr {
+            Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Str(val.to_string()),
+                span: 0..0,
+            }
+        }
+
+        /// Build an `Attr::Kv` with an integer value and no span.
+        fn kv_i(key: &str, val: i64) -> Attr {
+            Attr::Kv {
+                key: key.to_string(),
+                value: AttrValue::Int(val),
+                span: 0..0,
+            }
+        }
+
+        fn arb_perm_opt() -> impl Strategy<Value = Option<Perm>> {
+            prop_oneof![
+                Just(None),
+                Just(Some(Perm::Open)),
+                Just(Some(Perm::Execute)),
+                Just(Some(Perm::Any)),
+            ]
+        }
+
+        fn arb_decision() -> impl Strategy<Value = Decision> {
+            prop_oneof![
+                Just(Decision::Allow),
+                Just(Decision::Deny),
+                Just(Decision::AllowAudit),
+                Just(Decision::DenyAudit),
+            ]
+        }
+
+        /// Generate a small but realistic rule: one subject attr and one object attr,
+        /// both concrete (no `SetRef`) so subsumption is purely literal-equality /
+        /// perm-covering. This keeps the generator simple while still exercising
+        /// all three subsumption mechanisms.
+        fn arb_concrete_rule() -> impl Strategy<Value = Rule> {
+            // Subject: uid=<0..4> so values repeat and same-pair subsumption is reachable.
+            // Object: path= one of a small set so collision is common.
+            let subject_strategy = prop_oneof![
+                (0u32..4u32).prop_map(|n| vec![kv_i("uid", i64::from(n))]),
+                Just(vec![Attr::All]),
+            ];
+            let object_strategy = prop_oneof![
+                prop_oneof![
+                    Just(vec![kv_s("path", "/usr/bin/foo")]),
+                    Just(vec![kv_s("path", "/usr/bin/bar")]),
+                    Just(vec![kv_s("path", "/bin/sh")]),
+                ],
+                Just(vec![Attr::All]),
+            ];
+            (
+                arb_decision(),
+                arb_perm_opt(),
+                subject_strategy,
+                object_strategy,
+            )
+                .prop_map(|(decision, perm, subject, object)| Rule {
+                    decision,
+                    perm,
+                    subject,
+                    object,
+                    syntax: SyntaxFlavor::Modern,
+                    line: 1,
+                    span: span(0, 0),
+                })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// Invariant: every rule subsumes itself (`shadows(r, r, map)` is true).
+            ///
+            /// This is the algebraic reflexivity property of the subsumption relation.
+            /// Kills mutations that:
+            /// - Invert `subsumes_perm` for the equal case (e.g. `Some(p) != b_perm`).
+            /// - Break the literal-equal check in `subsumes_value` (e.g. `a_lit != b_lit`).
+            /// - Invert the `Attr::All` shortcut to return `false` (reflexivity relies on
+            ///   `Attr::All` covering itself when `b_attrs` is `[Attr::All]` and
+            ///   `b_attrs.is_empty()` is `false`).
+            /// - Break predicate-list iteration so `a_attrs.iter().all(...)` returns false
+            ///   when every A-attr has an identical match in B.
+            #[test]
+            fn shadows_is_reflexive(rule in arb_concrete_rule()) {
+                let entries: Vec<Entry> = vec![Entry::Rule(rule.clone())];
+                let macro_map = build_macro_map(&entries);
+                prop_assert!(
+                    shadows(&rule, &rule, &macro_map),
+                    "every rule must shadow itself (reflexivity); rule={rule:?}"
+                );
+            }
+
+            /// Invariant: `subsumes_perm` is reflexive for every perm variant.
+            ///
+            /// A separate, finer-grained property that kills mutations on `subsumes_perm`
+            /// without relying on the full `shadows` call path. Covers `None`, `Any`,
+            /// `Open`, `Execute` - every variant the perm type exposes.
+            #[test]
+            fn subsumes_perm_is_reflexive(perm in arb_perm_opt()) {
+                prop_assert!(
+                    subsumes_perm(perm, perm),
+                    "subsumes_perm(p, p) must be true for any perm value; perm={perm:?}"
+                );
+            }
+
+            // NOTE: the `shadows_consumer_consistency` property test was relocated
+            // to `cross_file::tests::proptest_invariants` (its natural home) because
+            // the real W04 map-builder `build_global_macro_map` is a private fn in
+            // `cross_file.rs`. Placing the test there lets it call the REAL builder
+            // directly (same module) without any visibility change, making the test
+            // non-vacuous. The old version here simulated the global merge inline
+            // via `w04_map.extend(build_macro_map(&entries))` - equivalent to calling
+            // `build_global_macro_map` but NOT invoking that function - so mutations
+            // to `build_global_macro_map`'s fold body survived. See cross_file.rs.
+        }
+    }
+
     /// An empty macro map for helper tests that exercise no `%name=` sets.
     fn no_macros() -> MacroMap {
         MacroMap::new()

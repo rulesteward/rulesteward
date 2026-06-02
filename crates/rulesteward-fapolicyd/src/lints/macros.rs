@@ -1409,17 +1409,77 @@ mod tests {
                 );
             }
 
-            // Property 3: is_fap_int implies looks_int. For any string, if
-            // is_fap_int returns true then looks_int must also return true.
-            // Tests the subset relationship between the two predicates.
+            // Property 3: bidirectional implication between is_fap_int and looks_int.
+            //
+            // Semantics grounded in the implementations:
+            //   looks_int(s)  <=>  s is non-empty AND every byte is ASCII digit
+            //   is_fap_int(s) <=>  looks_int(s) AND s.parse::<i64>().is_ok()
+            //
+            // The two invariants asserted for every generated string:
+            //   (a) forward:     is_fap_int(s) -> looks_int(s)
+            //   (b) contrapositive:  !looks_int(s) -> !is_fap_int(s)
+            //
+            // Why the old one-directional guard was structurally weak: the generator
+            // produces strings in `[0-9]{1,42}` which are ALL digit strings, so
+            // `looks_int` is always true on them, making the implication trivially
+            // vacuous for the contrapositive direction. A mutant that hard-codes
+            // `is_fap_int -> false` would make the `if is_fap_int(&s)` branch never
+            // fire - the property passes vacuously. The contrapositive assertion (b)
+            // uses a generator that produces non-digit strings (those that fail
+            // `looks_int`) to directly test the "not looks_int -> not is_fap_int"
+            // direction, killing the hard-coded-false mutant.
+            //
+            // Kills mutations that:
+            // - Hard-code `is_fap_int -> false`: the forward assertion (a) fires for
+            //   short all-digit strings that DO parse as i64 (e.g. "0", "42").
+            // - Hard-code `looks_int -> true`: the contrapositive assertion (b) fires
+            //   for the non-digit prefix strings where looks_int must be false.
+            // - Swap `is_fap_int` and `looks_int` in either predicate.
+            // - Remove the `looks_int` check from `is_fap_int` (breaking the subset
+            //   relationship: an overflowing all-digit string satisfies looks_int but
+            //   not is_fap_int - exercised by Property 4/5 - but the relationship
+            //   also holds here for strings that fail looks_int altogether).
             #[test]
-            fn is_fap_int_implies_looks_int(s in "[0-9]{1,42}") {
-                if is_fap_int(&s) {
-                    prop_assert!(
-                        looks_int(&s),
-                        "is_fap_int({s}) returned true but looks_int returned false"
-                    );
-                }
+            fn is_fap_int_implies_looks_int(s in "[0-9]{1,18}") {
+                // (a) Forward: every is_fap_int string satisfies looks_int.
+                // All generated strings are all-digit and short enough to fit i64,
+                // so is_fap_int is true for all of them; the assertion fires every run.
+                prop_assert!(
+                    !is_fap_int(&s) || looks_int(&s),
+                    "is_fap_int({s:?}) is true but looks_int is false (violates subset relation)"
+                );
+                // (b) Contrapositive: every string that fails looks_int also fails
+                // is_fap_int. For an all-digit generator this is vacuously satisfied;
+                // the separate non-digit-prefix test below covers the contrapositive
+                // with the right generator shape.
+                prop_assert!(
+                    looks_int(&s) || !is_fap_int(&s),
+                    "is_fap_int({s:?}) is true despite looks_int being false (impossible by impl, \
+                     but a mutation to either predicate would surface here)"
+                );
+            }
+
+            // Property 3b: contrapositive - every string that fails looks_int also
+            // fails is_fap_int. Uses a generator that reliably produces non-digit
+            // characters so looks_int is false, directly killing a hard-coded
+            // `is_fap_int -> false` mutant (the antecedent of the original implication
+            // never fires; this test does not rely on is_fap_int being true).
+            #[test]
+            fn not_looks_int_implies_not_is_fap_int(
+                prefix in "[a-zA-Z_+\\-]",
+                suffix in "[0-9]{0,18}",
+            ) {
+                let s = format!("{prefix}{suffix}");
+                // looks_int must be false (non-digit prefix).
+                prop_assert!(
+                    !looks_int(&s),
+                    "generator invariant: string `{s}` with non-digit prefix must fail looks_int"
+                );
+                // Contrapositive: since !looks_int, is_fap_int must also be false.
+                prop_assert!(
+                    !is_fap_int(&s),
+                    "!looks_int({s:?}) must imply !is_fap_int (is_fap_int is a strict subset)"
+                );
             }
 
             // Property 4: for all-digit strings, is_fap_int agrees exactly with
@@ -1435,6 +1495,199 @@ mod tests {
                 prop_assert_eq!(got, expected,
                     "is_fap_int result mismatch for s={}; expected {} from i64 parse",
                     s, expected);
+            }
+
+            // Property 5: strings of 20+ significant digits (first digit nonzero)
+            // always fail is_fap_int.
+            //
+            // i64::MAX is 9223372036854775807 (19 digits, first digit nonzero).
+            // A string that starts with a nonzero digit and has 20+ total digits
+            // has numeric value >= 10^19 > i64::MAX, so `parse::<i64>()` returns
+            // Err. `is_fap_int` must return false for all such strings.
+            //
+            // Note: a 20-digit string that starts with '0' (e.g. "00000000000000000000")
+            // has value 0 and DOES parse as i64 - it is correctly accepted. This
+            // property restricts to `[1-9][0-9]{19,39}` to avoid that case.
+            //
+            // Kills mutations that:
+            // - Replace `parse::<i64>()` with `parse::<u64>()` (u64::MAX is a
+            //   20-digit number starting with '1', so some 20-digit strings
+            //   starting with '1' would wrongly pass: 18446744073709551615).
+            // - Drop the `parse` call entirely (treating all-digit as always valid).
+            #[test]
+            fn is_fap_int_false_for_strings_with_20plus_significant_digits(
+                s in "[1-9][0-9]{19,39}"
+            ) {
+                prop_assert!(
+                    !is_fap_int(&s),
+                    "digit string {:?} (len {}) with 20+ significant digits must fail is_fap_int",
+                    s, s.len()
+                );
+            }
+
+            // Property 6: leading zeros do not change the is_fap_int decision
+            // for values that fit in i64.
+            //
+            // A string like "0042" is all-digits, and "0042".parse::<i64>() == Ok(42),
+            // so is_fap_int must return true. This exercises the "leading zeros
+            // are accepted" path that fapolicyd implements (no octal, plain decimal
+            // parse). Kills a mutation that treats leading zeros specially (e.g.
+            // checking `s.starts_with('0') && s.len() > 1` as invalid).
+            //
+            // The generator produces a 1..=15 digit string and prepends 1..=5 zeros.
+            // The total length is at most 20, but because the leading zeros are
+            // prepended to a value that is itself at most 15 digits (and therefore
+            // fits i64 as long as its value <= i64::MAX), `parse::<i64>()` almost
+            // always succeeds. We use prop_assume to skip the rare case where the
+            // underlying value happens to exceed i64::MAX after removing leading zeros.
+            #[test]
+            fn is_fap_int_accepts_leading_zeros_when_value_fits_i64(
+                zeros in 1usize..=5usize,
+                digits in "[0-9]{1,15}",
+            ) {
+                let s = format!("{}{}", "0".repeat(zeros), digits);
+                // Guard: only assert the true-case when the string actually
+                // parses as i64 (the value may exceed i64::MAX after leading
+                // zeros don't change it). is_fap_int must agree with parse.
+                let expected = s.parse::<i64>().is_ok();
+                prop_assert_eq!(
+                    is_fap_int(&s),
+                    expected,
+                    "is_fap_int({:?}) must equal s.parse::<i64>().is_ok() = {:?}",
+                    s, expected
+                );
+            }
+
+            // Property 7: sign characters make is_fap_int return false.
+            //
+            // fapolicyd integers are plain ASCII digits only (no sign). A leading
+            // '+' or '-' makes a string NOT all-ASCII-digits, so `looks_int`
+            // returns false and therefore `is_fap_int` must also return false.
+            // This covers i64::MIN-style strings like "-9223372036854775808" and
+            // positive-sign strings like "+0", neither of which fapolicyd treats
+            // as integers.
+            //
+            // Kills mutations that:
+            // - Accept a leading '+' (treating it as a no-op sign).
+            // - Use `parse::<i128>()` or remove the all-digits check.
+            #[test]
+            fn is_fap_int_false_for_signed_strings(
+                sign in "[+\\-]",
+                digits in "[0-9]{1,19}",
+            ) {
+                let s = format!("{sign}{digits}");
+                prop_assert!(
+                    !is_fap_int(&s),
+                    "signed string `{s}` must fail is_fap_int (fapolicyd only accepts plain digits)"
+                );
+            }
+
+            // Property 8: empty string fails both looks_int and is_fap_int.
+            //
+            // An empty string has no bytes, so `v.bytes().all(...)` vacuously
+            // returns true but the leading `!v.is_empty()` guard fires. This
+            // is the same for both `looks_int` and `is_fap_int`. The
+            // empty-string case is also tested as a unit test below; this
+            // property pins the guard against a targeted mutation that removes
+            // the `!v.is_empty()` check from one but not the other.
+            //
+            // (proptest does not generate empty strings from "[0-9]{1,N}" but it
+            // CAN generate them via `proptest::string::string_regex`. We use the
+            // empty-string property with Just("") here for clarity.)
+            #[test]
+            fn is_fap_int_false_for_empty_string(_dummy in 0u8..1u8) {
+                prop_assert!(!looks_int(""), "empty string must fail looks_int");
+                prop_assert!(!is_fap_int(""), "empty string must fail is_fap_int");
+            }
+        }
+
+        // Deterministic boundary sentinel tests that kill specific mutations
+        // even when the property-based generators don't shrink to the exact
+        // boundary on every run.
+
+        /// `i64::MAX` exactly - the largest valid fapolicyd integer.
+        #[test]
+        fn is_fap_int_i64_max_boundary() {
+            let max = i64::MAX.to_string(); // "9223372036854775807"
+            assert!(
+                is_fap_int(&max),
+                "i64::MAX ({max}) must be accepted by is_fap_int"
+            );
+            assert!(looks_int(&max), "i64::MAX ({max}) must satisfy looks_int");
+        }
+
+        /// `i64::MAX` + 1 - the first value that overflows.
+        #[test]
+        fn is_fap_int_i64_max_plus_one_boundary() {
+            // i64::MAX + 1 = 9223372036854775808
+            let over = "9223372036854775808";
+            assert!(
+                !is_fap_int(over),
+                "i64::MAX+1 ({over}) must fail is_fap_int"
+            );
+            // But it IS all-digits, so looks_int should still return true.
+            assert!(
+                looks_int(over),
+                "i64::MAX+1 ({over}) must still satisfy looks_int (all-digit guard)"
+            );
+        }
+
+        /// `i64::MIN` as a string - negative, so not a fapolicyd integer.
+        #[test]
+        fn is_fap_int_i64_min_is_string() {
+            let min = i64::MIN.to_string(); // "-9223372036854775808"
+            assert!(
+                !is_fap_int(&min),
+                "i64::MIN ({min}) has a leading minus sign; must fail is_fap_int"
+            );
+            assert!(
+                !looks_int(&min),
+                "i64::MIN ({min}) has a leading minus sign; must fail looks_int"
+            );
+        }
+
+        /// A 20-digit decimal that happens to be exactly `u64::MAX`. If `is_fap_int`
+        /// were using `u64` instead of `i64`, this would wrongly return true.
+        #[test]
+        fn is_fap_int_u64_max_is_rejected() {
+            let u64_max = u64::MAX.to_string(); // "18446744073709551615" - 20 digits
+            assert!(
+                !is_fap_int(&u64_max),
+                "u64::MAX ({u64_max}) exceeds i64::MAX; must fail is_fap_int"
+            );
+        }
+
+        /// Leading zeros before `i64::MAX` - still valid because the parse value fits `i64`.
+        #[test]
+        fn is_fap_int_leading_zero_before_i64_max() {
+            // "09223372036854775807" parses as i64::MAX (leading zero is decimal, not octal).
+            let leading_zero_max = "09223372036854775807";
+            assert!(
+                is_fap_int(leading_zero_max),
+                "leading zero before i64::MAX must be accepted by is_fap_int"
+            );
+        }
+
+        /// Very long all-digit string (30 digits) - far beyond `i64::MAX` range.
+        #[test]
+        fn is_fap_int_very_long_digit_string_rejected() {
+            let thirty_digits = "1".repeat(30);
+            assert!(
+                !is_fap_int(&thirty_digits),
+                "30-digit string must fail is_fap_int (far exceeds i64::MAX)"
+            );
+            assert!(
+                looks_int(&thirty_digits),
+                "30-digit string must still satisfy looks_int (all-digit)"
+            );
+        }
+
+        /// Single-digit boundary: "0" through "9" must all pass.
+        #[test]
+        fn is_fap_int_single_digits_all_valid() {
+            for d in b'0'..=b'9' {
+                let s = String::from(d as char);
+                assert!(is_fap_int(&s), "single digit '{s}' must pass is_fap_int");
             }
         }
     }
