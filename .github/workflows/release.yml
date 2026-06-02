@@ -131,9 +131,8 @@ jobs:
           name: release-dist
           path: dist
       # Install the package the way an operator would, then prove the installed
-      # binary runs and the packaged man page landed. Catches RPM-packaging
-      # regressions (wrong path, broken Requires, un-runnable binary) before the
-      # release is published.
+      # binary runs. Catches RPM-packaging regressions (wrong path, broken Requires,
+      # un-runnable binary) before the release is published.
       - name: dnf install the RPM and run it
         run: |
           dnf install -y ./dist/rulesteward-*.x86_64.rpm
@@ -146,8 +145,15 @@ jobs:
           # ci.yml smoke step documents. Redirect to a file, then read the file.
           rulesteward --help > /tmp/rs_help.txt
           head -1 /tmp/rs_help.txt
-          test -f /usr/share/man/man1/rulesteward.1
-          test -f /usr/share/licenses/rulesteward/LICENSE
+          # The man page + LICENSE are %doc files. Minimal RHEL/Rocky containers
+          # default to `tsflags=nodocs`, which SKIPS extracting %doc to the
+          # filesystem, so `test -f` on the installed paths is host-dependent and
+          # wrong. Verify instead that the RPM *manifest* declares them -- that is
+          # what proves the packaging is correct, independent of the host's nodocs
+          # setting. (Capture to a file to avoid the same pipefail/SIGPIPE trap.)
+          rpm -qlp ./dist/rulesteward-*.x86_64.rpm > /tmp/rpm_files.txt
+          grep -q '/usr/share/man/man1/rulesteward.1' /tmp/rpm_files.txt
+          grep -q '/usr/share/licenses/rulesteward/LICENSE' /tmp/rpm_files.txt
 
   publish:
     name: sign + publish GitHub Release
