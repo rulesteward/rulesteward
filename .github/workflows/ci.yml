@@ -56,7 +56,7 @@ jobs:
     name: fmt + clippy (ubuntu)
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       # dtolnay/rust-toolchain handles toolchain install + PATH declaratively.
       # It assumes `rustup` exists; the persistent self-hosted runner should
@@ -210,7 +210,7 @@ jobs:
         run: |
           dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install stable Rust toolchain via rustup
         run: |
@@ -274,7 +274,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -316,7 +316,7 @@ jobs:
     # saved, in exchange for the wall-clock win on green pushes.
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Ensure rustup is available
         run: |
@@ -381,7 +381,7 @@ jobs:
     # ever produces a false-positive that takes more than a day to
     # mitigate.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       # Install cargo-audit from prebuilt binaries via taiki-e/install-action.
       # The previous rustsec/audit-check@v2 wrapper installed via
       # `cargo install cargo-audit` which compiled the tool from source --
@@ -408,7 +408,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.19.7
@@ -427,7 +427,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then

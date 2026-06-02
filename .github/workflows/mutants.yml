@@ -24,7 +24,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
