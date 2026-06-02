@@ -141,7 +141,7 @@ jobs:
       # aborts the entire transaction silently if any name fails to resolve,
       # which would leave the container without bash, tar, gcc, etc. Add
       # any of these back only with version-aware logic.
-      # actions/cache@v4 needs `tar` in PATH to extract the cache archive.
+      # actions/cache@v5 needs `tar` in PATH to extract the cache archive.
       # The rockylinux/rockylinux base image does not reliably include tar
       # (the Bootstrap step below installs it as one of the 10 baseline
       # packages -- if it were already present, that install would be
@@ -171,7 +171,7 @@ jobs:
       # Path is the in-container path; actions/cache runs inside the
       # container when `container:` is set on the job, so this Just Works.
       - name: Restore dnf cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /var/cache/dnf
           key: dnf-${{ matrix.label }}-${{ hashFiles('.github/workflows/ci.yml') }}
