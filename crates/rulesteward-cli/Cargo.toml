@@ -67,5 +67,9 @@ auto-req = "disabled"
 assets = [
     { source = "target/x86_64-unknown-linux-musl/release/rulesteward", dest = "/usr/bin/rulesteward", mode = "755" },
     { source = "dist/rulesteward.1", dest = "/usr/share/man/man1/rulesteward.1", mode = "644", doc = true },
-    { source = "LICENSE", dest = "/usr/share/licenses/rulesteward/LICENSE", mode = "644", doc = true },
+    # LICENSE is intentionally NOT marked `doc`: minimal RHEL/Rocky hosts default
+    # to `tsflags=nodocs`, which skips %doc files, but a shipped binary must always
+    # carry its license. As a plain file it installs regardless of nodocs. (The man
+    # page stays %doc -- genuinely optional documentation, fine to skip.)
+    { source = "LICENSE", dest = "/usr/share/licenses/rulesteward/LICENSE", mode = "644" },
 ]

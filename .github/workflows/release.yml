@@ -145,15 +145,18 @@ jobs:
           # ci.yml smoke step documents. Redirect to a file, then read the file.
           rulesteward --help > /tmp/rs_help.txt
           head -1 /tmp/rs_help.txt
-          # The man page + LICENSE are %doc files. Minimal RHEL/Rocky containers
-          # default to `tsflags=nodocs`, which SKIPS extracting %doc to the
-          # filesystem, so `test -f` on the installed paths is host-dependent and
-          # wrong. Verify instead that the RPM *manifest* declares them -- that is
-          # what proves the packaging is correct, independent of the host's nodocs
-          # setting. (Capture to a file to avoid the same pipefail/SIGPIPE trap.)
+          # The man page is %doc. Minimal RHEL/Rocky containers default to
+          # `tsflags=nodocs`, which SKIPS extracting %doc to the filesystem, so a
+          # `test -f` on the installed man page is host-dependent. Assert instead
+          # that the RPM *manifest* declares it (host-independent). (Capture to a
+          # file to avoid the pipefail/SIGPIPE trap that bit the --help check.)
           rpm -qlp ./dist/rulesteward-*.x86_64.rpm > /tmp/rpm_files.txt
           grep -q '/usr/share/man/man1/rulesteward.1' /tmp/rpm_files.txt
-          grep -q '/usr/share/licenses/rulesteward/LICENSE' /tmp/rpm_files.txt
+          # LICENSE is a plain (non-%doc) file, so it MUST land on disk even under
+          # nodocs. Assert the installed file directly -- this guards the "a shipped
+          # binary always carries its license" contract against a regression that
+          # re-marks LICENSE as doc=true (which would silently drop it on nodocs).
+          test -f /usr/share/licenses/rulesteward/LICENSE
 
   publish:
     name: sign + publish GitHub Release
