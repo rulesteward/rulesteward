@@ -1,0 +1,1 @@
+allow uid=-5 : exe=/foo

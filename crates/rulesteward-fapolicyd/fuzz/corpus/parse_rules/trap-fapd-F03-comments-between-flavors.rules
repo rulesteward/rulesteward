@@ -1,0 +1,7 @@
+# This file accidentally mixes flavors after a refactor
+
+allow perm=open uid=0 : all
+
+# Forgot to convert this legacy line below
+
+deny perm=execute uid=1000 exe=/bin/sh path=/bin/sh

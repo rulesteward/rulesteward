@@ -1,0 +1,32 @@
+[package]
+name = "rulesteward-fapolicyd-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+# This crate is nightly-only: cargo-fuzz requires nightly rustc for
+# -Zsanitizer=address and the libfuzzer_sys instrumentation hooks.
+# It is intentionally excluded from the stable workspace via the root
+# Cargo.toml `exclude` list.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rulesteward-fapolicyd = { path = "..", features = ["fuzz-targets"] }
+
+# cargo-fuzz requires fuzz targets to be declared as [[bin]] entries.
+
+[[bin]]
+name = "parse_rules"
+path = "fuzz_targets/parse_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_trust_value"
+path = "fuzz_targets/parse_trust_value.rs"
+test = false
+doc = false
+bench = false

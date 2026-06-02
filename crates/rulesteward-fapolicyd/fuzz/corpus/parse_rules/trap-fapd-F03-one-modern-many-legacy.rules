@@ -1,0 +1,4 @@
+deny perm=any uid=1000 path=/etc/shadow
+deny perm=any uid=1000 path=/etc/sudoers
+allow perm=open all : all
+allow perm=any uid=0 exe=/usr/bin/bash path=/usr/bin/

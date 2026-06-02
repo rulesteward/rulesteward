@@ -1,0 +1,2 @@
+allow perm=execute uid=0 : path=/bin/sh
+allow uid=0 : all

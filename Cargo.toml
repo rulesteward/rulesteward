@@ -1,5 +1,11 @@
 [workspace]
 members = ["crates/*"]
+# The fuzz crate lives at crates/rulesteward-fapolicyd/fuzz/ and is its own
+# workspace (cargo-fuzz requirement: nightly-only build).  The members glob
+# `crates/*` only matches one level deep so it would NOT pick up the nested
+# fuzz directory, but we state the exclusion explicitly as documentation and
+# as a guard against any future glob widening.
+exclude = ["crates/rulesteward-fapolicyd/fuzz"]
 resolver = "3"
 
 [workspace.package]

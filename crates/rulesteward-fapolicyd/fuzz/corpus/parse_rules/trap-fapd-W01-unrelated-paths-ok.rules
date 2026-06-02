@@ -1,0 +1,2 @@
+allow uid=0 : path=/usr/bin/foo
+allow uid=0 : path=/usr/bin/bar
