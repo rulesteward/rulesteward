@@ -7,19 +7,19 @@ name: release
 # environment it needs:
 #   build      (ubuntu)            -- static musl binary + manpage + RPM + SBOM + SHA256SUMS
 #   rpm-smoke  (rocky container)   -- dnf-install the RPM and run the binary
-#   publish    (ubuntu)            -- cosign-keyless-sign the checksums, then gh release create
+#   publish    (ubuntu)            -- cosign-keyless-sign the checksums, then create the GitHub Release
 #
 # Validated locally on 2026-06-02: every asset-generation command below was run
 # by hand and the SHA256SUMS verified. The CI-only parts this pipeline adds on top
 # of that local proof are: the cargo-tool install, cosign keyless OIDC signing, the
-# Rocky RPM smoke-install, and `gh release create`. Those are what the v0.1.0-rc1
-# dry-run exercises.
+# Rocky RPM smoke-install, and the GitHub Release creation. Those are what the
+# v0.1.0-rc1 dry-run exercises.
 on:
   push:
     tags: ["v*"]
 
 # Least privilege: the workflow default is read-only. Only the `publish` job
-# elevates to `contents: write` (for `gh release create`) and `id-token: write`
+# elevates to `contents: write` (to create the GitHub Release) and `id-token: write`
 # (so cosign can mint a short-lived Sigstore certificate from the ambient GitHub
 # OIDC token -- keyless signing, no long-lived private key). build + rpm-smoke
 # never get write or OIDC.
@@ -187,27 +187,26 @@ jobs:
             dist/SHA256SUMS
           ls -l dist/SHA256SUMS.sig dist/SHA256SUMS.pem
 
-      # Tag name is author-controlled data: pass it through env (never interpolate
-      # ${{ }} into the shell) and mark rc* tags as prereleases so the dry-run
-      # publishes a prerelease automatically.
+      # Create the Release via the GitHub API (softprops/action-gh-release), NOT the
+      # `gh` CLI: `gh` is not installed on the self-hosted runner, so a `gh release
+      # create` shell step exits 127. This JS action talks to the API directly using
+      # the job's GITHUB_TOKEN (contents: write above), uploads the asset globs, and
+      # marks rc/alpha/beta tags as prereleases via the expression below (the tag is
+      # consumed by the action, never interpolated into a shell). Pinned to @v2 to
+      # match the other major-version action pins in this repo.
       - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          PRERELEASE=""
-          case "$TAG" in
-            *-rc*|*-alpha*|*-beta*) PRERELEASE="--prerelease" ;;
-          esac
-          gh release create "$TAG" $PRERELEASE \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG" \
-            --generate-notes \
-            dist/rulesteward \
-            dist/rulesteward.1 \
-            dist/rulesteward-*.x86_64.rpm \
-            dist/rulesteward.cdx.json \
-            dist/SHA256SUMS \
-            dist/SHA256SUMS.sig \
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/rulesteward
+            dist/rulesteward.1
+            dist/rulesteward-*.x86_64.rpm
+            dist/rulesteward.cdx.json
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
             dist/SHA256SUMS.pem
