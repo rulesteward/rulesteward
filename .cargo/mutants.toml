@@ -12,7 +12,13 @@
 #   * ast.rs (type definitions only; no behavioral methods to mutate).
 #   * rulesteward-cli: mechanical glue (arg parsing, dispatch, format selection,
 #     exit-code mapping) whose paths are covered by end-to-end assert_cmd tests
-#     in tests/e2e_lint.rs.
+#     in tests/e2e_lint.rs. EXCEPTION: the pure trust-DB diff/stale computations
+#     in commands/trustdb_compute.rs ARE real algorithms (path-grouping, multiset
+#     value comparison, stale filtering), extracted out of the I/O orchestration
+#     precisely so they can be unit-tested against exact output and mutation-gated;
+#     they are in scope. The orchestration in commands/fapolicyd.rs + the
+#     Display-style renderers in output/trustdb.rs stay excluded (e2e-covered;
+#     render mutations are low-signal, same rationale as format.rs).
 #   * rulesteward-auditd, -selinux, -license: stub crates.
 #   * every test file (mutating tests is meaningless).
 
@@ -23,6 +29,7 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/attrs.rs",
     "crates/rulesteward-fapolicyd/src/trustdb.rs",
     "crates/rulesteward-sink/src/**/*.rs",
+    "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
 ]
 
 exclude_globs = [

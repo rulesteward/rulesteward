@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, TrustDb, TrustEntry, TrustSource, check_layout, collect_macro_names,
-    lint_cross_file, lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly,
-    parse_rules_file, verify_entry,
+    Entry, LintContext, TrustDb, TrustSource, check_layout, collect_macro_names, lint_cross_file,
+    lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly, parse_rules_file,
+    verify_entry,
 };
 use thiserror::Error;
 
+use super::trustdb_compute;
 use crate::cli::{
     FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
     TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbStaleArgs,
@@ -19,7 +20,7 @@ use crate::exit_code::{
     self, EXIT_CLEAN, EXIT_LMDB_ERROR, EXIT_NO_OP, EXIT_TOOL_FAILURE, EXIT_WARNINGS,
 };
 use crate::output::trustdb as trustdb_out;
-use crate::output::trustdb::{CheckRow, CheckVerdict, DbDiffKind, DbDiffRow, ListRow};
+use crate::output::trustdb::{CheckRow, CheckVerdict, ListRow};
 use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
@@ -89,17 +90,6 @@ fn open_db(db: Option<&Path>) -> Result<TrustDb, i32> {
 
 fn json(format: TrustdbFormat) -> bool {
     matches!(format, TrustdbFormat::Json)
-}
-
-/// A stable total order over `TrustSource` (which is not `Ord`) for sorting the
-/// per-path value multisets in a DB-vs-DB diff.
-fn source_rank(source: TrustSource) -> u8 {
-    match source {
-        TrustSource::Unknown => 0,
-        TrustSource::RpmDb => 1,
-        TrustSource::FileDb => 2,
-        TrustSource::Deb => 3,
-    }
 }
 
 fn source_matches(filter: TrustSourceFilter, source: TrustSource) -> bool {
@@ -181,57 +171,14 @@ fn run_diff(args: &TrustdbDiffArgs) -> anyhow::Result<i32> {
     Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
 }
 
-/// DB-vs-DB diff: compare the two `(path, value)` row sets. A row that appears
-/// in only one DB, or under a shared key with a differing value-multiset, is a
-/// divergence. Rather than treat a value change on a shared path as a pair of
-/// only-in-A / only-in-B rows, we group both DBs by path and compare the sorted
-/// multiset of value-tuples per path, classifying each path as only-in-db,
-/// only-in-against, or value-differs.
-/// Group trust-DB entries by path into a sorted multiset of value-tuples per
-/// path, so a value difference on a shared path is detected without spurious
-/// only-in-X rows. `TrustSource` is not `Ord` (frozen foundation type), so the
-/// per-path sort uses `source_rank` for a stable total order.
-fn group_by_path(entries: &[TrustEntry]) -> BTreeMap<String, Vec<(TrustSource, u64, String)>> {
-    let mut m: BTreeMap<String, Vec<(TrustSource, u64, String)>> = BTreeMap::new();
-    for e in entries {
-        m.entry(e.path.clone())
-            .or_default()
-            .push((e.source, e.size, e.digest.clone()));
-    }
-    for v in m.values_mut() {
-        v.sort_by(|x, y| (source_rank(x.0), x.1, &x.2).cmp(&(source_rank(y.0), y.1, &y.2)));
-    }
-    m
-}
-
+/// DB-vs-DB diff: read both DBs, classify the diff via the pure
+/// [`compute_db_diff`](trustdb_compute::compute_db_diff), and render. A non-empty
+/// diff is a divergence (`EXIT_WARNINGS`).
 fn run_diff_db(db: &TrustDb, other: &TrustDb, json: bool) -> anyhow::Result<i32> {
     let a = db.iter_entries()?;
     let b = other.iter_entries()?;
 
-    let ga = group_by_path(&a);
-    let gb = group_by_path(&b);
-
-    let mut rows: Vec<DbDiffRow> = Vec::new();
-    let mut paths: Vec<&String> = ga.keys().chain(gb.keys()).collect();
-    paths.sort();
-    paths.dedup();
-    for path in paths {
-        match (ga.get(path), gb.get(path)) {
-            (Some(_), None) => rows.push(DbDiffRow {
-                path: path.clone(),
-                kind: DbDiffKind::OnlyInDb,
-            }),
-            (None, Some(_)) => rows.push(DbDiffRow {
-                path: path.clone(),
-                kind: DbDiffKind::OnlyInAgainst,
-            }),
-            (Some(va), Some(vb)) if va != vb => rows.push(DbDiffRow {
-                path: path.clone(),
-                kind: DbDiffKind::ValueDiffers,
-            }),
-            _ => {}
-        }
-    }
+    let rows = trustdb_compute::compute_db_diff(&a, &b);
 
     let diverged = !rows.is_empty();
     print!("{}", trustdb_out::render_db_diff(&rows, json));
@@ -244,15 +191,16 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
         Err(code) => return Ok(code),
     };
     let entries = db.iter_entries()?;
-    let rows: Vec<CheckRow> = entries
+    let all_rows: Vec<CheckRow> = entries
         .iter()
         .map(|e| CheckRow {
             path: e.path.clone(),
             verdict: CheckVerdict::from(&verify_entry(e)),
         })
-        // stale = filtered to non-Match rows only.
-        .filter(|r| r.verdict.is_divergence())
         .collect();
+    // stale = the divergent (non-Match) rows; the filter is the pure
+    // `trustdb_compute::stale_rows` so it is unit-tested + mutation-covered.
+    let rows = trustdb_compute::stale_rows(all_rows);
     let any_stale = !rows.is_empty();
     print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
     Ok(if any_stale { EXIT_WARNINGS } else { EXIT_CLEAN })

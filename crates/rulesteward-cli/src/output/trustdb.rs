@@ -43,7 +43,7 @@ impl From<&TrustEntry> for ListRow {
 ///
 /// `Absent` means the queried path is not recorded in the trust DB at all
 /// (distinct from `Missing`, where it IS recorded but the file is gone on disk).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum CheckVerdict {
     Match,
@@ -83,7 +83,7 @@ impl CheckVerdict {
 }
 
 /// One row of a `check` / `diff` (vs-disk) / `stale` report.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct CheckRow {
     pub path: String,
     #[serde(flatten)]
@@ -91,7 +91,7 @@ pub struct CheckRow {
 }
 
 /// Which side of a DB-vs-DB diff a row appears on.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DbDiffKind {
     /// Present only in the primary (`--db`) database.
@@ -103,7 +103,7 @@ pub enum DbDiffKind {
 }
 
 /// One row of a DB-vs-DB `diff` report.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct DbDiffRow {
     pub path: String,
     #[serde(flatten)]

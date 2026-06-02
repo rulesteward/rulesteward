@@ -28,6 +28,7 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/attrs.rs",
     "crates/rulesteward-fapolicyd/src/trustdb.rs",
     "crates/rulesteward-sink/src/**/*.rs",
+    "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
 ]
 exclude_globs = [
     "**/tests/**",
@@ -42,9 +43,13 @@ exclude_globs = [
 impls) is excluded because mutation-noise is heavy there - most mutations on a
 Display impl are textual nudges that the round-trip property already catches
 semantically. `ast.rs` is excluded because it's plain type definitions with no
-behaviour to mutate. The `rulesteward-cli` crate is currently outside the net
-(mechanical glue covered by e2e tests); narrowing that exclusion to cover its
-real diff/stale logic is tracked separately.
+behaviour to mutate. The `rulesteward-cli` crate is mostly outside the net
+(mechanical glue covered by e2e tests), with ONE exception:
+`commands/trustdb_compute.rs` holds the pure trust-DB diff/stale algorithms
+(path-grouping, value-multiset comparison, stale filtering), extracted out of the
+I/O orchestration precisely so they can be exact-unit-tested and mutation-gated.
+The orchestration (`commands/fapolicyd.rs`) and the Display-style renderers
+(`output/trustdb.rs`) stay excluded.
 
 ## How the baseline reached zero
 
