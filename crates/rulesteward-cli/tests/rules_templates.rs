@@ -184,16 +184,17 @@ fn rules_templates_lint_clean_exit_zero_no_diagnostics() {
     let dir = rules_templates_dir();
 
     // Pass the directory as a positional arg (directory lint mode, no --file flag).
-    // Use --format json so "zero diagnostics" is unambiguous: output must not contain
-    // any fapd- code, i.e. the JSON array is [].
+    // Use --format json so "zero diagnostics" is unambiguous: the envelope's
+    // `diagnostics` array is empty and no fapd- code appears.
     Command::cargo_bin("rulesteward")
         .expect("rulesteward binary")
         .args(["fapolicyd", "lint", "--format", "json"])
         .arg(&dir)
         .assert()
         .code(0)
-        // The JSON array must be empty: no diagnostics of any severity.
+        // No diagnostics of any severity.
         .stdout(predicate::str::contains("fapd-").not())
-        // Output must be a JSON array (not a tool-error or garbage).
-        .stdout(predicate::str::starts_with("["));
+        // Output is the versioned JSON envelope object (not a tool-error or garbage).
+        .stdout(predicate::str::starts_with("{"))
+        .stdout(predicate::str::contains("\"schemaVersion\": 1"));
 }
