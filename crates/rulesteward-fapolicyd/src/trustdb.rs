@@ -116,6 +116,22 @@ pub(crate) fn parse_trust_value(raw: &[u8]) -> Result<(TrustSource, u64, String)
     Ok((TrustSource::from_int(src_int), size, hex_field.to_owned()))
 }
 
+/// Lowercase-hex encode raw digest bytes.
+///
+/// Kept as a single helper so `stream_hex` and the digest-stability test agree
+/// on the encoding. We hex-encode by hand rather than via `{:x}`: in the
+/// `digest` 0.11 line the finalize output type moved from `generic-array` to
+/// `hybrid-array::Array`, which does not implement `std::fmt::LowerHex`.
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // Writing to a String is infallible.
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
 /// Stream a file through digest `D` and return its lowercase-hex digest string.
 ///
 /// `D` must implement `sha2::Digest` (the trait `sha2` re-exports from the
@@ -130,14 +146,7 @@ fn stream_hex<D: sha2::Digest>(file: &mut std::fs::File) -> Result<String, std::
             n => hasher.update(&buf[..n]),
         }
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        // Writing to a String is infallible.
-        let _ = write!(hex, "{byte:02x}");
-    }
-    Ok(hex)
+    Ok(to_hex(&hasher.finalize()))
 }
 
 /// Verify a single `TrustEntry` against the file currently on disk.
@@ -425,6 +434,7 @@ pub fn write_trustdb_fixture_kv(dir: &Path, rows: &[(&str, &[u8])]) {
 // a frozen test body - the allow is added at the module level instead.
 #[allow(clippy::format_collect)]
 mod tests {
+    use super::to_hex;
     use super::write_fixture;
     use super::write_trustdb_fixture_kv;
     use super::{
@@ -562,7 +572,7 @@ mod tests {
     fn known_content_digest_is_stable() {
         let mut h = Sha256::new();
         h.update(KNOWN_BYTES);
-        let got = format!("{:x}", h.finalize());
+        let got = to_hex(&h.finalize());
         assert_eq!(
             got, KNOWN_SHA256,
             "KNOWN_SHA256 constant must equal the sha2-crate digest of KNOWN_BYTES"
