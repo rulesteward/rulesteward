@@ -60,8 +60,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall
+      # `--force` is required, not optional: this is a PERSISTENT self-hosted runner.
+      # binstall records a tool as "already installed" from a prior run, but a runner
+      # update can wipe ~/.cargo/bin while leaving that metadata -- so binstall would
+      # skip reinstalling and the next `cargo auditable` fails with "no such command"
+      # (observed in the v0.1.0-rc5 dry-run). --force always (re)installs the binaries,
+      # making the release independent of leftover runner state.
       - name: Install asset tools (auditable, generate-rpm, cyclonedx)
-        run: cargo binstall -y cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9
+        run: cargo binstall -y --force cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9
 
       # Build the shipped binary with the dependency manifest embedded
       # (cargo-auditable writes a `.dep-v0` ELF section that `cargo audit bin` /
