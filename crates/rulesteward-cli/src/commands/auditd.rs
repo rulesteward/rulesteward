@@ -1,11 +1,14 @@
-//! Body of `rulesteward auditd <subcommand>`. v0.1.0-dev stubs;
-//! real implementation lands in later sessions.
+//! Body of `rulesteward auditd <subcommand>`. Stubs; the real implementation
+//! lands in a later session.
 
 use crate::cli::AuditdCommand;
 use crate::exit_code::EXIT_NO_OP;
 
 pub fn run(_cmd: AuditdCommand) -> anyhow::Result<i32> {
-    eprintln!("rulesteward auditd: not yet implemented in v0.1.0-dev");
+    eprintln!(
+        "rulesteward auditd: not yet implemented in v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     Ok(EXIT_NO_OP)
 }
 

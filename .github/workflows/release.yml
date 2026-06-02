@@ -1,0 +1,201 @@
+name: release
+
+# Tag-gated release pipeline. Fires only on version tags (`v*`). The PR/main CI
+# in ci.yml is unaffected; this workflow is purely additive and easy to disable.
+#
+# Three stages, connected by a single `dist/` artifact so each runs in the
+# environment it needs:
+#   build      (ubuntu)            -- static musl binary + manpage + RPM + SBOM + SHA256SUMS
+#   rpm-smoke  (rocky container)   -- dnf-install the RPM and run the binary
+#   publish    (ubuntu)            -- cosign-keyless-sign the checksums, then gh release create
+#
+# Validated locally on 2026-06-02: every asset-generation command below was run
+# by hand and the SHA256SUMS verified. The CI-only parts this pipeline adds on top
+# of that local proof are: the cargo-tool install, cosign keyless OIDC signing, the
+# Rocky RPM smoke-install, and `gh release create`. Those are what the v0.1.0-rc1
+# dry-run exercises.
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege: the workflow default is read-only. Only the `publish` job
+# elevates to `contents: write` (for `gh release create`) and `id-token: write`
+# (so cosign can mint a short-lived Sigstore certificate from the ambient GitHub
+# OIDC token -- keyless signing, no long-lived private key). build + rpm-smoke
+# never get write or OIDC.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    name: build static musl binary + assets
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install stable Rust + musl target
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | bash -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          ~/.cargo/bin/rustup target add x86_64-unknown-linux-musl
+
+      - name: Install musl-tools (provides musl-gcc)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-musl
+
+      # Tier-B asset tooling, pinned to the versions validated locally on
+      # 2026-06-02. Installed via cargo-binstall (prebuilt binaries) rather than
+      # source-compiled. Pinned for the same drift-prevention reason ci.yml pins
+      # cargo-audit / cargo-deny.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - name: Install asset tools (auditable, generate-rpm, cyclonedx)
+        run: cargo binstall -y cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9
+
+      # Build the shipped binary with the dependency manifest embedded
+      # (cargo-auditable writes a `.dep-v0` ELF section that `cargo audit bin` /
+      # syft / trivy can read back from the binary itself). --locked pins the
+      # exact reviewed Cargo.lock. [profile.release] supplies strip + LTO.
+      - name: Build static musl binary (auditable, release)
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo auditable build --release --target "$TARGET" --bin rulesteward --locked
+
+      - name: Verify static linkage
+        run: |
+          BIN="target/$TARGET/release/rulesteward"
+          file "$BIN"
+          # musl + recent Rust yields "static-pie linked"; older yields
+          # "statically linked". Both are fully static -- accept either.
+          file "$BIN" | grep -qE "statically linked|static-pie linked"
+
+      # Assemble dist/ with the exact commands validated locally. The RPM reads
+      # [package.metadata.generate-rpm] from crates/rulesteward-cli/Cargo.toml; its
+      # asset source paths are resolved relative to this workspace-root cwd. The
+      # SBOM is scoped to the CLI crate's musl dependency set.
+      - name: Assemble release assets
+        run: |
+          set -euxo pipefail
+          BIN="target/$TARGET/release/rulesteward"
+          rm -rf dist && mkdir -p dist
+          # 1. man page (the binary renders its own clap tree to roff)
+          "$BIN" mangen dist
+          # 2. the binary itself
+          cp "$BIN" dist/rulesteward
+          # 3. RPM
+          cargo generate-rpm -p crates/rulesteward-cli --target "$TARGET"
+          cp "target/$TARGET/generate-rpm/"rulesteward-*.x86_64.rpm dist/
+          # 4. CycloneDX SBOM (CLI crate, musl dep set)
+          cargo cyclonedx --manifest-path crates/rulesteward-cli/Cargo.toml -f json \
+            --target "$TARGET" --override-filename rulesteward.cdx
+          cp crates/rulesteward-cli/rulesteward.cdx.json dist/
+          # 5. checksums over every shipped asset (not over SHA256SUMS itself)
+          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json > SHA256SUMS )
+          echo "--- dist/ ---"; ls -l dist; echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  rpm-smoke:
+    name: smoke-install the RPM on Rocky
+    needs: build
+    runs-on: [self-hosted, Linux, X64]
+    container:
+      image: rockylinux/rockylinux:9
+    defaults:
+      run:
+        shell: /usr/bin/bash --noprofile --norc -eo pipefail {0}
+    steps:
+      - name: Pre-install tar (required by actions/download-artifact)
+        run: dnf --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install tar gzip
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist
+      # Install the package the way an operator would, then prove the installed
+      # binary runs and the packaged man page landed. Catches RPM-packaging
+      # regressions (wrong path, broken Requires, un-runnable binary) before the
+      # release is published.
+      - name: dnf install the RPM and run it
+        run: |
+          dnf install -y ./dist/rulesteward-*.x86_64.rpm
+          command -v rulesteward
+          rulesteward --version
+          rulesteward --help | head -1
+          test -f /usr/share/man/man1/rulesteward.1
+          test -f /usr/share/licenses/rulesteward/LICENSE
+
+  publish:
+    name: sign + publish GitHub Release
+    needs: [build, rpm-smoke]
+    runs-on: [self-hosted, Linux, X64]
+    # Only this job needs write + OIDC. Scoped here rather than workflow-wide so
+    # the build / smoke jobs run with least privilege.
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless sign the checksums file. The ambient GitHub OIDC token (granted by
+      # id-token: write) is exchanged for a short-lived Sigstore certificate; the
+      # signature + cert are emitted as detached files. Verifying SHA256SUMS then
+      # transitively authenticates every asset it lists. `--yes` skips the
+      # interactive Rekor-upload confirmation.
+      - name: cosign sign-blob (keyless) the checksums
+        run: |
+          cosign sign-blob --yes \
+            --output-signature dist/SHA256SUMS.sig \
+            --output-certificate dist/SHA256SUMS.pem \
+            dist/SHA256SUMS
+          ls -l dist/SHA256SUMS.sig dist/SHA256SUMS.pem
+
+      # Tag name is author-controlled data: pass it through env (never interpolate
+      # ${{ }} into the shell) and mark rc* tags as prereleases so the dry-run
+      # publishes a prerelease automatically.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PRERELEASE=""
+          case "$TAG" in
+            *-rc*|*-alpha*|*-beta*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "$TAG" $PRERELEASE \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/rulesteward \
+            dist/rulesteward.1 \
+            dist/rulesteward-*.x86_64.rpm \
+            dist/rulesteward.cdx.json \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.sig \
+            dist/SHA256SUMS.pem

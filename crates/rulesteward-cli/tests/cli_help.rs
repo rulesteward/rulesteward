@@ -40,6 +40,39 @@ fn root_help_lists_completions_subcommand() {
 }
 
 #[test]
+fn hidden_stub_subcommands_absent_from_help() {
+    // The eight no-op stubs carry `#[command(hide = true)]` for v0.1.0 so the CLI
+    // does not advertise commands that silently do nothing; the implemented
+    // commands (lint, trustdb, completions) stay visible.
+    let bin = || Command::cargo_bin("rulesteward").expect("binary built");
+
+    bin()
+        .args(["fapolicyd", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lint"))
+        .stdout(predicate::str::contains("trustdb"))
+        .stdout(predicate::str::contains("simulate").not())
+        .stdout(predicate::str::contains("explain").not())
+        .stdout(predicate::str::contains("report").not())
+        .stdout(predicate::str::contains("container-check").not())
+        .stdout(predicate::str::contains("migrate").not())
+        .stdout(predicate::str::contains("doctor").not());
+
+    bin()
+        .args(["selinux", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("triage").not());
+
+    bin()
+        .args(["auditd", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cost").not());
+}
+
+#[test]
 fn completions_help_lists_supported_shells() {
     Command::cargo_bin("rulesteward")
         .expect("binary built")

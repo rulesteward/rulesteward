@@ -9,7 +9,7 @@ exclude = ["crates/rulesteward-fapolicyd/fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0-dev"
+version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/rulesteward/rulesteward"
@@ -27,6 +27,7 @@ boon = "0.6.1"
 chumsky = { version = "0.13", default-features = false }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+clap_mangen = "0.2"
 # default-features=false drops heed's serde / serde-bincode / serde-json features:
 # we use only `heed::types::Bytes` (raw bytes), so we do not need them, and turning
 # them off removes the unmaintained `bincode 1.3.3` transitive (RUSTSEC-2025-0141).
@@ -64,3 +65,13 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+# Release-binary hardening (spec section 5.2: "Stripped + LTO"). Applies to every
+# `--release` build, so the binary CI smoke-tests in the `musl-build` job is bit-for-bit
+# the binary the release workflow ships (RuleSteward has no release-only cfg paths, so
+# there is no behavioral divergence to worry about). `strip` drops the symbol table
+# (~0.5 MB); fat `lto` inlines/prunes across crate boundaries for a smaller, faster
+# binary. The extra link time is paid only on release builds, which are infrequent.
+[profile.release]
+strip = true
+lto = true

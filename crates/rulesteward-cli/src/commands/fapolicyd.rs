@@ -54,7 +54,10 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
         | FapolicydCommand::ContainerCheck
         | FapolicydCommand::Migrate
         | FapolicydCommand::Doctor => {
-            eprintln!("rulesteward fapolicyd <subcommand>: not yet implemented in v0.1.0-dev");
+            eprintln!(
+                "rulesteward fapolicyd <subcommand>: not yet implemented in v{}",
+                env!("CARGO_PKG_VERSION")
+            );
             Ok(EXIT_NO_OP)
         }
     }

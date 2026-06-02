@@ -1,11 +1,14 @@
-//! Body of `rulesteward selinux <subcommand>`. v0.1.0-dev stubs;
-//! real implementation lands in later sessions.
+//! Body of `rulesteward selinux <subcommand>`. Stubs; the real implementation
+//! lands in a later session.
 
 use crate::cli::SelinuxCommand;
 use crate::exit_code::EXIT_NO_OP;
 
 pub fn run(_cmd: SelinuxCommand) -> anyhow::Result<i32> {
-    eprintln!("rulesteward selinux: not yet implemented in v0.1.0-dev");
+    eprintln!(
+        "rulesteward selinux: not yet implemented in v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     Ok(EXIT_NO_OP)
 }
 

@@ -54,26 +54,48 @@ pub enum TopCommand {
 
     /// Print shell-completion script for the given shell
     Completions(CompletionsArgs),
+
+    /// Generate the `rulesteward.1` man page into a directory (release tooling).
+    /// Hidden: invoked by the release workflow, not an end-user command.
+    #[command(hide = true)]
+    Mangen(MangenArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct MangenArgs {
+    /// Directory to write `rulesteward.1` into (created if absent).
+    #[arg(value_name = "OUTDIR")]
+    pub outdir: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum FapolicydCommand {
     /// Lint fapolicyd rule files (unprivileged, no daemon)
     Lint(LintArgs),
+    // The six no-op stubs below (and `selinux triage` / `auditd cost`) are hidden
+    // for v0.1.0 so the CLI does not advertise commands that do nothing yet. NOTE:
+    // `hide` removes them from `--help` but clap_complete 4.6.5 still lists them in
+    // generated completions (accepted limitation; see e2e_completions.rs).
     /// (stub) Simulate a workload against a rule set
+    #[command(hide = true)]
     Simulate,
     /// (stub) Explain a FANOTIFY denial from the audit log
+    #[command(hide = true)]
     Explain,
     /// (stub) Status + recent-denials report
+    #[command(hide = true)]
     Report,
     /// (stub) Container-runtime detection
+    #[command(hide = true)]
     ContainerCheck,
     /// Trust database operations (read-only)
     #[command(subcommand)]
     Trustdb(TrustdbCommand),
     /// (stub) Migrate legacy fapolicyd.rules to rules.d/
+    #[command(hide = true)]
     Migrate,
     /// (stub) Daemon health + config sanity check
+    #[command(hide = true)]
     Doctor,
 }
 
@@ -217,12 +239,14 @@ pub struct TrustdbStaleArgs {
 #[derive(Debug, Subcommand)]
 pub enum SelinuxCommand {
     /// (stub) Triage `SELinux` AVCs
+    #[command(hide = true)]
     Triage,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AuditdCommand {
     /// (stub) auditd cost calculator
+    #[command(hide = true)]
     Cost,
 }
 
