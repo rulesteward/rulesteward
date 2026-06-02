@@ -52,7 +52,7 @@ pub const SUBJECT_ONLY: &[&str] = &[
     "pattern",
 ];
 
-pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash"];
+pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash", "mode"];
 
 pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 
@@ -101,6 +101,10 @@ const STRING_ATTRS: &[&str] = &[
     "device",
     "filehash",
     "sha256hash",
+    // fapolicyd types `mode` (FMODE) as a STRING attribute: a numeric `%set`
+    // assigned to it errors "cannot assign SIGNED set ... to the STRING attribute"
+    // on 1.3.2/1.4.3/1.4.5 (differential 2026-06-01).
+    "mode",
 ];
 /// Attributes that accept names as well as numbers (no type rejection).
 const PERMISSIVE_ATTRS: &[&str] = &["gid"];
@@ -173,6 +177,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_mode_is_object_only() {
+        // `mode` (FMODE) is a real OBJECT-only attribute: fapolicyd 1.3.2/1.4.3/1.4.5
+        // all load `... : mode=0755` but REJECT it subject-side (differential
+        // 2026-06-01, .private-docs/correctness-differential-grounding.md). Its
+        // absence here made fapd-E01 false-positive on every valid `mode=` rule.
+        assert_eq!(classify("mode"), Some(AttrSide::Object));
+        assert!(is_known("mode"));
+    }
+
+    #[test]
     fn classify_both_sides() {
         assert_eq!(classify("dir"), Some(AttrSide::Either));
         assert_eq!(classify("trust"), Some(AttrSide::Either));
@@ -212,6 +226,15 @@ mod tests {
         assert_eq!(type_category("path"), Some(AttrTypeCategory::Str));
         assert_eq!(type_category("dir"), Some(AttrTypeCategory::Str));
         assert_eq!(type_category("filehash"), Some(AttrTypeCategory::Str));
+    }
+
+    #[test]
+    fn type_category_mode_is_string() {
+        // The daemon itself types `mode` as STRING: assigning a numeric `%set`
+        // errors "cannot assign SIGNED set ... to the STRING attribute" on all three
+        // versions, while a string set loads (differential 2026-06-01). So a numeric
+        // set on mode= must be a fapd-E07 finding and a string set must not.
+        assert_eq!(type_category("mode"), Some(AttrTypeCategory::Str));
     }
 
     #[test]

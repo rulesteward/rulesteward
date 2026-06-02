@@ -200,6 +200,29 @@ mod tests {
     }
 
     #[test]
+    fn mode_object_attr_does_not_fire_e01() {
+        // `mode=0755` is a valid OBJECT attribute (differential 2026-06-01: loads on
+        // fapolicyd 1.3.2/1.4.3/1.4.5). E01 must not flag it as unknown. RED before
+        // `mode` is added to attrs::OBJECT_ONLY.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "mode".into(),
+                value: AttrValue::Str("0755".into()),
+                span: 0..0,
+            }],
+        )];
+        let diags = e01(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "mode= is a valid object attribute and must not fire fapd-E01; got {diags:?}",
+        );
+    }
+
+    #[test]
     fn e01_fires_per_unknown_attribute() {
         let entries = vec![modern_rule(
             5,

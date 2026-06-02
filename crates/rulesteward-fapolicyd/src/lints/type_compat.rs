@@ -236,6 +236,41 @@ mod tests {
         diags.iter().map(|d| d.code.as_ref()).collect()
     }
 
+    #[test]
+    fn numeric_set_on_mode_fires_e07_on_every_context() {
+        // `mode` is STRING-typed; a numeric `%set` is SIGNED-typed and rejected on
+        // 1.3.2/1.4.3/1.4.5 (daemon: "cannot assign SIGNED set nums to the STRING
+        // attribute", differential 2026-06-01). So E07 fires under None and each
+        // target. RED before `mode` is a known STRING attribute (E07 skips it).
+        let src = "# header\n%nums=0755,0644\nallow perm=any all : mode=%nums\n";
+        for ctx in ALL_CONTEXTS {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                1,
+                "numeric set on mode= must fire exactly one fapd-E07 under {ctx:?}; \
+                 got codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
+    #[test]
+    fn string_set_on_mode_does_not_fire_e07() {
+        // A string `%set` on the STRING attribute `mode` loads on all three versions
+        // (differential set-str-on-mode VALID), so E07 must NOT fire.
+        let src = "# header\n%strs=foo,bar\nallow perm=any all : mode=%strs\n";
+        for ctx in ALL_CONTEXTS {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "string set on mode= must NOT fire fapd-E07 under {ctx:?}; got codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
     // -----------------------------------------------------------------
     // UNIVERSAL: string-typed set on a numeric attribute (the headline
     // security case). Wrong on every version -> fires under None AND each

@@ -233,11 +233,15 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 /// "Object attributes" sections.
 fn legacy_classify(name: &str) -> Option<AttrSide> {
     match name {
-        // Subject-only in legacy (`pattern` is subject-only in both flavors)
-        "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "exe_dir" | "exe_type"
-        | "pattern" => Some(AttrSide::Subject),
+        // Subject-only in legacy (`pattern` is subject-only in both flavors).
+        // `exe_dir`/`exe_type` are NOT here: fapolicyd 1.3.2/1.4.3/1.4.5 all reject
+        // them, so they fall through to `None` and fapd-E01 flags them (matching the
+        // daemon) rather than being silently accepted as legacy anchors.
+        "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "pattern" => {
+            Some(AttrSide::Subject)
+        }
         // Object-only in legacy (dir/ftype/trust differ from modern's Either)
-        "path" | "device" | "filehash" | "sha256hash" | "dir" | "ftype" | "trust" => {
+        "path" | "device" | "filehash" | "sha256hash" | "mode" | "dir" | "ftype" | "trust" => {
             Some(AttrSide::Object)
         }
         // Valid on either side in both flavors
@@ -463,13 +467,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_classify_exe_dir_is_subject() {
-        assert_eq!(legacy_classify("exe_dir"), Some(AttrSide::Subject));
-    }
-
-    #[test]
-    fn legacy_classify_exe_type_is_subject() {
-        assert_eq!(legacy_classify("exe_type"), Some(AttrSide::Subject));
+    fn legacy_classify_exe_dir_and_exe_type_are_not_anchors() {
+        // `exe_dir`/`exe_type` are NOT real fapolicyd attributes - 1.3.2/1.4.3/1.4.5
+        // all reject them ("Field type (exe_dir) is unknown", differential
+        // 2026-06-01). The parser must agree with `attrs::is_known` (which rejects
+        // them) instead of pre-accepting them as legacy subject anchors, so
+        // `legacy_classify` returns None and fapd-E01 flags them - matching the
+        // daemon. (Replaces the prior tests that asserted Some(Subject).)
+        assert_eq!(legacy_classify("exe_dir"), None);
+        assert_eq!(legacy_classify("exe_type"), None);
     }
 
     #[test]
@@ -487,6 +493,14 @@ mod tests {
     #[test]
     fn legacy_classify_path_is_object() {
         assert_eq!(legacy_classify("path"), Some(AttrSide::Object));
+    }
+
+    #[test]
+    fn legacy_classify_mode_is_object() {
+        // `mode` is an OBJECT-only attribute (differential 2026-06-01); in the
+        // legacy (no-colon) dialect it serves as an object-side split anchor like
+        // path/device.
+        assert_eq!(legacy_classify("mode"), Some(AttrSide::Object));
     }
 
     #[test]

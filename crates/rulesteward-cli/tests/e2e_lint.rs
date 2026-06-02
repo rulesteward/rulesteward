@@ -55,7 +55,9 @@ fn lint_file_with_syntax_error_exits_five() {
 }
 
 #[test]
-fn lint_json_format_emits_array() {
+fn lint_json_format_emits_versioned_envelope() {
+    // v0.1.0 freezes the JSON contract as a versioned envelope object
+    // `{ "schemaVersion": 1, "diagnostics": [...] }`, not the old bare array.
     let f = write_tmp("allow uid=0 : all # bad\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -64,7 +66,9 @@ fn lint_json_format_emits_array() {
         .assert()
         .code(1)
         .stdout(predicate::str::contains("\"fapd-W03\""))
-        .stdout(predicate::str::starts_with("["));
+        .stdout(predicate::str::starts_with("{"))
+        .stdout(predicate::str::contains("\"schemaVersion\": 1"))
+        .stdout(predicate::str::contains("\"diagnostics\""));
 }
 
 /// Feature 3e: SARIF rendering now SUCCEEDS. A clean file linted with
@@ -296,7 +300,7 @@ fn lint_human_output_strips_ansi_when_no_color_set() {
 }
 
 /// Switching to JSON output must not be affected by the ariadne renderer path.
-/// JSON output should still be a JSON array with the expected code.
+/// JSON output is the versioned envelope object with the expected code.
 #[test]
 fn lint_json_output_unchanged_by_ariadne_renderer() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -308,7 +312,8 @@ fn lint_json_output_unchanged_by_ariadne_renderer() {
         .assert()
         .code(2)
         .stdout(predicate::str::contains("\"fapd-E01\""))
-        .stdout(predicate::str::starts_with("["));
+        .stdout(predicate::str::starts_with("{"))
+        .stdout(predicate::str::contains("\"schemaVersion\": 1"));
 }
 
 // --- per-code CLI exit-code tests for fapd-E02/fapd-E03/fapd-E04/fapd-E05/fapd-W07 ---
