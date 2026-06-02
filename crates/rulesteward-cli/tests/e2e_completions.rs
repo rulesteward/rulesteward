@@ -51,6 +51,15 @@ fn fish_completions_emit_non_empty_script() {
     );
 }
 
+// NOTE on hidden stubs + completions: the eight no-op stub subcommands carry
+// `#[command(hide = true)]`, which removes them from `--help` (asserted in
+// cli_help.rs::hidden_stub_subcommands_absent_from_help). clap_complete 4.6.5 does
+// NOT honor `hide` in generated completion scripts - the stubs still appear in the
+// bash/zsh/fish output - so there is intentionally no "absent from completions"
+// assertion here. Accepted for v0.1.0 (the primary discovery surface, --help, is
+// clean; the stubs print "not yet implemented" + exit 9 if invoked). Revisit if a
+// future clap_complete honors `hide` for static generation.
+
 #[test]
 fn unknown_shell_value_exits_three() {
     Command::cargo_bin("rulesteward")
