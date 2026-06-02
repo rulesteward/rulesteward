@@ -1,7 +1,8 @@
 //! fapd-W06 - a `path=`/`exe=` literal value in neither the trust DB nor on disk.
-//! STUB: the body is filled by the W06 fan-out pipeline (Task 4). The SIGNATURE
-//! is the frozen contract that `lint_with_context` and the W06 tests depend on;
-//! until the body lands, it emits no diagnostics so the no-context invariant holds.
+//! Walks every rule's subject + object attrs; for each `path=`/`exe=` string
+//! literal that is absent from both the supplied trust DB and the local
+//! filesystem, emits a Warning. Only runs when a `TrustDb` context is provided
+//! (the no-context lint path does not call `w06`).
 use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};

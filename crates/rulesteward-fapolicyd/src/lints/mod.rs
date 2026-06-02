@@ -13,8 +13,8 @@
 //! * `dir_slash` - AST-driven per-attribute trailing-slash lint (fapd-W08).
 //! * `version_target` - version-divergent checks gated on `--target` (fapd-E06).
 //! * `type_compat` - set/attribute value-type compatibility (fapd-E07).
-//! * `trust_path` - trust-DB-aware per-file pass (fapd-W06, stub until Task 4).
-//! * `cross_db` - trust-DB cross-pass (fapd-X01, stub until Task 5).
+//! * `trust_path` - trust-DB-aware per-file pass (fapd-W06).
+//! * `cross_db` - trust-DB cross-pass (fapd-X01), CLI-invoked.
 //! * `trust_hash` - trust-DB weak-digest surfacing (fapd-W11), CLI-invoked.
 
 pub(crate) mod cross_db;

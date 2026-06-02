@@ -26,6 +26,8 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
+    "crates/rulesteward-fapolicyd/src/trustdb.rs",
+    "crates/rulesteward-sink/src/**/*.rs",
 ]
 exclude_globs = [
     "**/tests/**",
@@ -34,10 +36,15 @@ exclude_globs = [
 ]
 ```
 
-`format.rs` (Display impls) is excluded because mutation-noise is heavy
-there - most mutations on a Display impl are textual nudges that the
-round-trip property already catches semantically. `ast.rs` is excluded
-because it's plain type definitions with no behaviour to mutate.
+`trustdb.rs` is in scope (it is the only `unsafe` code in the project - the
+`heed`/LMDB mmap boundary - so it warrants the strongest gate) along with the
+`rulesteward-sink` crate (the `Event` stable wire schema). `format.rs` (Display
+impls) is excluded because mutation-noise is heavy there - most mutations on a
+Display impl are textual nudges that the round-trip property already catches
+semantically. `ast.rs` is excluded because it's plain type definitions with no
+behaviour to mutate. The `rulesteward-cli` crate is currently outside the net
+(mechanical glue covered by e2e tests); narrowing that exclusion to cover its
+real diff/stale logic is tracked separately.
 
 ## How the baseline reached zero
 
