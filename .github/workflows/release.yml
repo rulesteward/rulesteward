@@ -139,7 +139,13 @@ jobs:
           dnf install -y ./dist/rulesteward-*.x86_64.rpm
           command -v rulesteward
           rulesteward --version
-          rulesteward --help | head -1
+          # Capture --help to a file FIRST. The job shell runs with `pipefail`, so
+          # `rulesteward --help | head -1` would fail: head closes the pipe after
+          # line 1, rulesteward errors on the broken pipe writing the rest of its
+          # multi-line help, and pipefail propagates that non-zero. Same trap the
+          # ci.yml smoke step documents. Redirect to a file, then read the file.
+          rulesteward --help > /tmp/rs_help.txt
+          head -1 /tmp/rs_help.txt
           test -f /usr/share/man/man1/rulesteward.1
           test -f /usr/share/licenses/rulesteward/LICENSE
 
