@@ -4,5 +4,6 @@
 pub mod auditd;
 pub mod completions;
 pub mod fapolicyd;
+pub mod mangen;
 pub mod selinux;
 pub mod trustdb_compute;

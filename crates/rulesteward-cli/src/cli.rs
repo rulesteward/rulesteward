@@ -54,6 +54,18 @@ pub enum TopCommand {
 
     /// Print shell-completion script for the given shell
     Completions(CompletionsArgs),
+
+    /// Generate the `rulesteward.1` man page into a directory (release tooling).
+    /// Hidden: invoked by the release workflow, not an end-user command.
+    #[command(hide = true)]
+    Mangen(MangenArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct MangenArgs {
+    /// Directory to write `rulesteward.1` into (created if absent).
+    #[arg(value_name = "OUTDIR")]
+    pub outdir: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]

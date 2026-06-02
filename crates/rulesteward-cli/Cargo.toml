@@ -25,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-sarif = { workspace = true }
 clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
 thiserror = { workspace = true }
 anyhow = "1"
 
