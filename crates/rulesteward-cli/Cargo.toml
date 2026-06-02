@@ -44,3 +44,28 @@ rulesteward-fapolicyd = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true
+
+# RPM packaging (Tier-1 distribution per spec section 5). Built by the release
+# workflow via `cargo generate-rpm -p rulesteward-cli --target x86_64-unknown-linux-musl`.
+# name / version / license / description are inherited from [package] above;
+# the static musl binary has no shared-library dependencies, so the auto-detected
+# Requires set is empty (no glibc/openssl runtime deps to declare). Asset source
+# paths are resolved relative to the workspace root (the cargo invocation cwd).
+[package.metadata.generate-rpm]
+# Override the RPM name: the crate is `rulesteward-cli` but the shipped binary and
+# every install doc say `rulesteward`, so the package is `rulesteward-<ver>.x86_64.rpm`.
+name = "rulesteward"
+summary = "Read-only RHEL hardening linter for fapolicyd, SELinux, and auditd"
+# Disable auto-detected Requires. cargo-generate-rpm's find-requires would emit
+# `rtld(GNU_HASH)` and `/bin/sh` from the ELF, but this is a static-pie musl binary
+# with zero shared-library / interpreter runtime dependencies (spec section 5.2:
+# "Zero system runtime dependencies ... scp's into any air-gapped RHEL host and runs").
+# Declaring that spurious interpreter dep would contradict that property, so we
+# suppress auto dependency discovery. Remaining Requires are `/bin/sh` (present on
+# every RHEL host) + rpmlib() format markers satisfied by rpm itself.
+auto-req = "disabled"
+assets = [
+    { source = "target/x86_64-unknown-linux-musl/release/rulesteward", dest = "/usr/bin/rulesteward", mode = "755" },
+    { source = "dist/rulesteward.1", dest = "/usr/share/man/man1/rulesteward.1", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/rulesteward/LICENSE", mode = "644", doc = true },
+]
