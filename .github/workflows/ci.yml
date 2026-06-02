@@ -58,12 +58,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install stable Rust toolchain (rustfmt + clippy)
+      # dtolnay/rust-toolchain handles toolchain install + PATH declaratively.
+      # It assumes `rustup` exists; the persistent self-hosted runner should
+      # have it, but install it via apt first as a safety net (no-op if present).
+      - name: Ensure rustup is available
         run: |
-          set -euxo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | bash -s -- -y --profile minimal --default-toolchain stable --component rustfmt,clippy
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable Rust toolchain (rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -269,12 +275,15 @@ jobs:
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
-      - name: Install stable toolchain with llvm-tools
+      - name: Ensure rustup is available
         run: |
-          set -euxo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | bash -s -- -y --profile minimal --default-toolchain stable --component llvm-tools-preview
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable toolchain with llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           # Save only on push events; see fmt-clippy comment above.
@@ -309,13 +318,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install stable Rust + musl target
+      - name: Ensure rustup is available
         run: |
-          set -euxo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | bash -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          ~/.cargo/bin/rustup target add x86_64-unknown-linux-musl
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable Rust + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
       - name: Install musl-tools (provides musl-gcc)
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -417,12 +428,15 @@ jobs:
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust 1.85 toolchain
+      - name: Ensure rustup is available
         run: |
-          set -euxo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | bash -s -- -y --profile minimal --default-toolchain 1.85
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install Rust 1.85 toolchain (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-msrv-1.85
