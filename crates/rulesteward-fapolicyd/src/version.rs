@@ -10,6 +10,14 @@
 //! are declared oldest-first so the derived `Ord` matches release age: a check
 //! that lands at fapolicyd 1.4.2+ is expressed as `target >= TargetVersion::Rhel9`.
 //!
+//! ASSUMPTION - one pin per RHEL MAJOR, "latest minor": each variant maps to the
+//! fapolicyd shipped by the LATEST minor of that release. A major spans several
+//! fapolicyd builds across its minors (e.g. RHEL 9.0-9.7 shipped 1.1.x WITHOUT
+//! `filehash`; 9.8 rebased to 1.4.3), so a host on an older minor than the pin may
+//! be linted against behavior its daemon does not yet have. `--target rhelN`
+//! therefore means "newest fapolicyd in the rhelN line", not "every rhelN host".
+//! Finer-grained pinning is deferred until a real older-minor deployment needs it.
+//!
 //! This enum is intentionally clap-free; the CLI mirrors it with a `ValueEnum`
 //! arg type and converts (the same layering as `TrustSourceFilter` -> `TrustSource`).
 
