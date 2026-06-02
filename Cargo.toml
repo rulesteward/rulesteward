@@ -37,7 +37,7 @@ predicates = "3"
 proptest = "1"
 rand = ">=0.9.3"  # documentary floor (RUSTSEC-2026-0097); only constrains a crate that opts in via `workspace = true`
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 md-5 = "0.10"
 sha1 = "0.10"
 serde-jsonlines = "0.7"
