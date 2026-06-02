@@ -195,7 +195,7 @@ jobs:
       # consumed by the action, never interpolated into a shell). Pinned to @v2 to
       # match the other major-version action pins in this repo.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
