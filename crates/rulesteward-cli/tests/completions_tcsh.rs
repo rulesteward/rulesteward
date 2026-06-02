@@ -322,10 +322,10 @@ fn tcsh_completions_has_no_duplicate_next_word_rules() {
     let s = tcsh_output();
     let mut keys: Vec<String> = Vec::new();
     for line in s.lines() {
-        if let Some(rest) = line.split("'n/").nth(1) {
-            if let Some(word) = rest.split('/').next() {
-                keys.push(word.to_owned());
-            }
+        if let Some(rest) = line.split("'n/").nth(1)
+            && let Some(word) = rest.split('/').next()
+        {
+            keys.push(word.to_owned());
         }
     }
     let mut seen = std::collections::BTreeSet::new();

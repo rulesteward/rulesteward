@@ -416,14 +416,20 @@ jobs:
         run: cargo deny check --config deny.toml
 
   # MSRV verification: build the workspace on the declared minimum
-  # supported Rust version. Cargo.toml's rust-version = "1.85" floor
+  # supported Rust version. Cargo.toml's rust-version = "1.88" floor
   # is only meaningful if CI actually exercises that toolchain;
-  # without this job, a new use of a 1.86+ feature would slip in
-  # silently and break downstream consumers pinned to 1.85. No
+  # without this job, a new use of a 1.89+ feature would slip in
+  # silently and break downstream consumers pinned to 1.88. No
   # matrix: MSRV doesn't vary by distro, and the existing `check`
   # matrix covers per-distro behavior on stable.
+  #
+  # Floor is 1.88 (raised from 1.85): the workspace uses let-chains
+  # (`if let .. && ..`, stabilized in 1.88) in rulesteward-fapolicyd,
+  # and heed 0.22.1 calls `usize::is_multiple_of` (stabilized in 1.87).
+  # A cold build below 1.88 fails with E0658; the prior "1.85" floor
+  # only passed because rust-cache restored pre-built artifacts.
   msrv:
-    name: cargo check on MSRV (1.85)
+    name: cargo check on MSRV (1.88)
     runs-on: [self-hosted, Linux, X64]
     needs: fmt-clippy
     steps:
@@ -433,13 +439,13 @@ jobs:
           if ! command -v rustup >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y rustup
           fi
-      - name: Install Rust 1.85 toolchain (MSRV)
+      - name: Install Rust 1.88 toolchain (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ubuntu-msrv-1.85
+          key: ubuntu-msrv-1.88
           # Save only on push events; see fmt-clippy comment above.
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: cargo check (MSRV)
