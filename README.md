@@ -26,7 +26,31 @@
 
 ## Install
 
-Pre-built static binaries for `x86_64-unknown-linux-musl` will ship via GitHub Releases. Until then:
+Pre-built static `x86_64-unknown-linux-musl` binaries ship via GitHub Releases. Three install paths:
+
+### 1. Download the signed static binary (recommended)
+
+Each release attaches the `rulesteward` binary, a `SHA256SUMS` file, and a cosign keyless signature (`SHA256SUMS.sig` + `SHA256SUMS.pem`). Verify integrity and authenticity before running:
+
+```bash
+# Download rulesteward, SHA256SUMS, SHA256SUMS.sig, SHA256SUMS.pem from the release.
+sha256sum -c SHA256SUMS                       # integrity
+cosign verify-blob \                          # authenticity (Sigstore keyless, no key to manage)
+  --certificate SHA256SUMS.pem \
+  --signature SHA256SUMS.sig \
+  --certificate-identity-regexp '^https://github.com/rulesteward/rulesteward' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+chmod +x rulesteward && ./rulesteward --version
+```
+
+### 2. RPM (RHEL / Rocky / AlmaLinux 8, 9, 10)
+
+```bash
+sudo dnf install ./rulesteward-<version>.x86_64.rpm
+```
+
+### 3. Build from source (Rust developers)
 
 ```bash
 cargo install --git https://github.com/rulesteward/rulesteward rulesteward-cli
