@@ -8,6 +8,10 @@
 
 pub mod ast;
 pub mod attrs;
+pub mod evaluate;
+pub mod explain;
+pub mod facts;
+pub mod fanotify;
 pub mod format;
 pub mod lints;
 pub mod load_order;

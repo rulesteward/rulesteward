@@ -30,6 +30,19 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/trustdb.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
+    # auditd logic modules (filled by pipeline P2):
+    "crates/rulesteward-auditd/src/parser.rs",
+    "crates/rulesteward-auditd/src/cost.rs",
+    "crates/rulesteward-auditd/src/bands.rs",
+    "crates/rulesteward-auditd/src/from_log.rs",
+    # selinux logic modules (filled by P0.4/P3/P4/P5):
+    "crates/rulesteward-selinux/src/avc.rs",
+    "crates/rulesteward-selinux/src/denial.rs",
+    "crates/rulesteward-selinux/src/triage.rs",
+    "crates/rulesteward-selinux/src/te_emit.rs",
+    "crates/rulesteward-selinux/src/categorize.rs",
+    # selinux-sys FFI shim (filled by P5):
+    "crates/rulesteward-selinux-sys/src/lib.rs",
 ]
 
 exclude_globs = [
