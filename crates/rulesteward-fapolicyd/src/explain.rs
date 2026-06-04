@@ -13,10 +13,14 @@
 //!
 //! Filled by pipeline P1 (issue #74).
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
-use crate::ast::{Decision, Rule};
-use crate::fanotify::AuditEvent;
+use crate::ast::{Decision, Perm, Rule};
+use crate::evaluate::{Source, evaluate};
+use crate::facts::{AccessFacts, SetTable, Trust};
+use crate::fanotify::{AuditEvent, TrustVal};
 
 // ---------------------------------------------------------------------------
 // ExplainError
@@ -113,8 +117,9 @@ pub struct ExplainResult {
 /// Used in `ExplainResult::rule_text` and human output. The format mirrors
 /// fapolicyd's own representation: `<decision>[:perm] <subject-attrs> : <object-attrs>`.
 #[must_use]
-pub fn rule_text(_rule: &Rule) -> String {
-    todo!("P1 #74 fills rule_text formatter")
+pub fn rule_text(rule: &Rule) -> String {
+    // Use the Display impl from format.rs which already does the right thing.
+    rule.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -126,8 +131,34 @@ pub fn rule_text(_rule: &Rule) -> String {
 ///
 /// Used by the replay path to find the first matching `deny*` rule.
 #[must_use]
-pub fn is_deny_decision(_decision: Decision) -> bool {
-    todo!("P1 #74 fills is_deny_decision (Deny|DenyAudit|DenySyslog|DenyLog -> true, else false)")
+pub fn is_deny_decision(decision: Decision) -> bool {
+    matches!(
+        decision,
+        Decision::Deny | Decision::DenyAudit | Decision::DenySyslog | Decision::DenyLog
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Internal: build AccessFacts from AuditEvent
+// ---------------------------------------------------------------------------
+
+fn trust_val_to_trust(tv: TrustVal) -> Trust {
+    match tv {
+        TrustVal::Yes => Trust::Yes,
+        TrustVal::No => Trust::No,
+        TrustVal::Unknown => Trust::Unknown,
+    }
+}
+
+fn facts_from_event(event: &AuditEvent) -> AccessFacts {
+    let perm = event.perm.unwrap_or(Perm::Open);
+    let mut facts = AccessFacts::new(perm);
+    facts.exe.clone_from(&event.exe);
+    facts.path.clone_from(&event.path);
+    facts.auid = event.auid;
+    facts.subj_trust = trust_val_to_trust(event.fanotify.subj_trust);
+    facts.obj_trust = trust_val_to_trust(event.fanotify.obj_trust);
+    facts
 }
 
 // ---------------------------------------------------------------------------
@@ -162,11 +193,92 @@ pub fn is_deny_decision(_decision: Decision) -> bool {
 /// Returns `ExplainError::RuleOutOfRange` (Era2) or `ExplainError::ReplayNoMatch`
 /// (Era1, no deny match found).
 pub fn explain_event(
-    _event: &AuditEvent,
-    _rules: &[&Rule],
-    _sets: &crate::facts::SetTable,
+    event: &AuditEvent,
+    rules: &[&Rule],
+    sets: &SetTable,
 ) -> Result<ExplainResult, ExplainError> {
-    todo!("P1 #74 fills explain_event")
+    let perm_label = event.perm.map(|p| format!("{p}"));
+
+    if event.fanotify.fan_type == 1 {
+        // Era2: direct rule lookup by 1-based index.
+        let rule_ref = event.fanotify.fan_info;
+        let idx = rule_ref as usize;
+        if idx == 0 || idx > rules.len() {
+            return Err(ExplainError::RuleOutOfRange {
+                rule_ref,
+                ruleset_len: rules.len(),
+            });
+        }
+        let rule = rules[idx - 1];
+        Ok(ExplainResult {
+            decision: format!("{}", rule.decision),
+            rule_number: Some(rule_ref),
+            rule_text: rule_text(rule),
+            matched_by: MatchedBy::RuleNumber,
+            exe: event.exe.clone(),
+            path: event.path.clone(),
+            perm: perm_label,
+            pid: event.pid,
+            auid: event.auid,
+            subj_trust: event.fanotify.subj_trust.label().to_string(),
+            obj_trust: event.fanotify.obj_trust.label().to_string(),
+            uncertain: None,
+        })
+    } else {
+        // Era1: replay via the frozen evaluate() core.
+        // The spec says "report the first matching deny* rule". evaluate() returns
+        // first-match-wins which may be an allow. We must walk past allows to find
+        // the first deny.
+        //
+        // Strategy: build facts once, then iterate rules owned, calling evaluate()
+        // on progressively-shorter slices until we find a deny match, OR use a
+        // single-rule evaluation per rule to find the first deny.
+        let facts = facts_from_event(event);
+
+        // Walk rules one by one (evaluate() with a single-element slice), looking
+        // for the first rule that decisively matches AND is a deny variant.
+        // This correctly handles the mixed [allow, deny] case per f1 §3.4.
+        let mut uncertain: Option<String> = None;
+        for (idx, &rule) in rules.iter().enumerate() {
+            let rule_num = idx + 1; // 1-based
+            // rule_num is a usize but ruleset sizes are bounded well within u32.
+            #[allow(clippy::cast_possible_truncation)]
+            let rule_num_u32 = rule_num as u32;
+            let verdict = evaluate(std::slice::from_ref(rule), sets, &facts);
+            if verdict.source == Source::Rule && is_deny_decision(verdict.decision) {
+                // Found the first deny match.
+                return Ok(ExplainResult {
+                    decision: format!("{}", verdict.decision),
+                    rule_number: Some(rule_num_u32),
+                    rule_text: rule_text(rule),
+                    matched_by: MatchedBy::Replay,
+                    exe: event.exe.clone(),
+                    path: event.path.clone(),
+                    perm: perm_label,
+                    pid: event.pid,
+                    auid: event.auid,
+                    subj_trust: event.fanotify.subj_trust.label().to_string(),
+                    obj_trust: event.fanotify.obj_trust.label().to_string(),
+                    uncertain,
+                });
+            }
+            // Capture uncertain reason from PossibleMatch (Source::Fallthrough with uncertain set).
+            // evaluate() on a single rule: if the rule has a NotEvaluable field, verdict.uncertain
+            // is set and source is Fallthrough (no decisive match). Carry the first such reason.
+            if uncertain.is_none()
+                && let Some(u) = verdict.uncertain
+            {
+                // Re-frame to reference the correct rule number.
+                // evaluate() formats it as "possible match at rule 1: ..." (single-rule slice).
+                // Replace "rule 1" with "rule N" for the actual position.
+                let reframed = u.replacen("rule 1", &format!("rule {rule_num}"), 1);
+                uncertain = Some(reframed);
+            }
+        }
+
+        // No deny match found.
+        Err(ExplainError::ReplayNoMatch)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +303,37 @@ pub fn explain_event(
 ///   (uncertain: <reason>)
 /// ```
 #[must_use]
-pub fn render_human(_result: &ExplainResult) -> String {
-    todo!("P1 #74 fills human renderer")
+pub fn render_human(result: &ExplainResult) -> String {
+    let exe = result.exe.as_deref().unwrap_or("<unknown>");
+    let path = result.path.as_deref().unwrap_or("<unknown>");
+    let perm = result.perm.as_deref().unwrap_or("access");
+
+    let pid_part = match result.pid {
+        Some(p) => format!("pid {p}"),
+        None => "pid unknown".to_string(),
+    };
+    let auid_part = match result.auid {
+        Some(a) => format!(", auid {a}"),
+        None => String::new(),
+    };
+
+    let rule_num_part = match result.rule_number {
+        Some(n) => format!("rule {n}"),
+        None => "unknown rule".to_string(),
+    };
+
+    let mut out = format!(
+        "DENIED: {exe} ({pid_part}{auid_part}) tried to {perm} {path}. Matched {rule_num_part}:\n  \"{}\". subject trust={}, object trust={}.",
+        result.rule_text, result.subj_trust, result.obj_trust,
+    );
+
+    if result.matched_by == MatchedBy::Replay {
+        out.push_str("\n  (rule number not in record; matched by replay)");
+    }
+
+    if let Some(ref reason) = result.uncertain {
+        let _ = write!(out, "\n  (uncertain: {reason})");
+    }
+
+    out
 }

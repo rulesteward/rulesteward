@@ -46,14 +46,22 @@ impl TrustVal {
     ///
     /// Values outside {0, 1, 2} are clamped to `Unknown` (f1 §3.2).
     #[must_use]
-    pub fn from_raw(_n: u32) -> Self {
-        todo!("P1 #73 fills TrustVal::from_raw (0->No, 1->Yes, _->Unknown)")
+    pub fn from_raw(n: u32) -> Self {
+        match n {
+            0 => TrustVal::No,
+            1 => TrustVal::Yes,
+            _ => TrustVal::Unknown,
+        }
     }
 
     /// Return the human-readable label used in `explain` output (f1 §4.2).
     #[must_use]
     pub fn label(self) -> &'static str {
-        todo!("P1 #73 fills TrustVal::label (No->\"no\", Yes->\"yes\", Unknown->\"unknown\")")
+        match self {
+            TrustVal::No => "no",
+            TrustVal::Yes => "yes",
+            TrustVal::Unknown => "unknown",
+        }
     }
 }
 
@@ -97,15 +105,17 @@ impl FanotifyRecord {
     /// Returns `None` for Era1 records (`fan_type == 0`).
     #[must_use]
     pub fn rule_number(&self) -> Option<u32> {
-        todo!(
-            "P1 #73 fills FanotifyRecord::rule_number (Some(fan_info) when fan_type==1, else None)"
-        )
+        if self.fan_type == 1 {
+            Some(self.fan_info)
+        } else {
+            None
+        }
     }
 
     /// Return `true` if the kernel denied the access (`resp == 2`).
     #[must_use]
     pub fn is_deny(&self) -> bool {
-        todo!("P1 #73 fills FanotifyRecord::is_deny (resp == 2)")
+        self.resp == 2
     }
 }
 
@@ -159,6 +169,107 @@ pub enum ParseError {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Extract `key=value` pairs from an audit record line body.
+///
+/// Handles both unquoted (`key=value`) and quoted (`key="value"`) forms.
+/// Returns `None` if the key is not found.
+///
+/// Requires that the key is preceded by whitespace or is at the start of the
+/// string, preventing `pid=` from matching inside `ppid=`.
+fn extract_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let search = format!("{key}=");
+    let mut start = 0;
+    loop {
+        let pos = line[start..].find(search.as_str())?;
+        let abs_pos = start + pos;
+        // Verify word boundary: preceded by whitespace or at position 0.
+        let preceded_by_space = abs_pos == 0
+            || line
+                .as_bytes()
+                .get(abs_pos - 1)
+                .is_some_and(u8::is_ascii_whitespace);
+        if preceded_by_space {
+            let after = &line[abs_pos + search.len()..];
+            // Quoted value: key="..."
+            if let Some(inner) = after.strip_prefix('"') {
+                let end = inner.find('"')?;
+                return Some(&inner[..end]);
+            }
+            // Unquoted: ends at next whitespace
+            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+            return Some(&after[..end]);
+        }
+        // This occurrence was inside another key (e.g. "ppid="); skip past it.
+        start = abs_pos + 1;
+    }
+}
+
+/// Extract the `audit(TS:SERIAL)` timestamp from a `msg=audit(TS:SERIAL):` field.
+fn extract_timestamp(line: &str) -> Option<&str> {
+    let start = line.find("audit(")?;
+    let inner = &line[start + "audit(".len()..];
+    let end = inner.find(')')?;
+    Some(&inner[..end])
+}
+
+/// Parse a `type=FANOTIFY` line into a `FanotifyRecord` and its timestamp.
+///
+/// Returns `(record, timestamp_str)` on success.
+fn parse_fanotify_line(line: &str) -> Result<(FanotifyRecord, String), ParseError> {
+    // Must be a FANOTIFY line.
+    if !line.contains("type=FANOTIFY") {
+        return Err(ParseError::NoFanotifyRecord);
+    }
+
+    let timestamp = extract_timestamp(line).unwrap_or("").to_string();
+
+    let resp_str = extract_field(line, "resp")
+        .ok_or_else(|| ParseError::MalformedRecord("missing resp field".to_string()))?;
+    let resp = resp_str
+        .parse::<u32>()
+        .map_err(|_| ParseError::MalformedRecord(format!("invalid resp value: {resp_str}")))?;
+
+    let fan_type_str = extract_field(line, "fan_type")
+        .ok_or_else(|| ParseError::MalformedRecord("missing fan_type field".to_string()))?;
+    let fan_type = fan_type_str.parse::<u32>().map_err(|_| {
+        ParseError::MalformedRecord(format!("invalid fan_type value: {fan_type_str}"))
+    })?;
+
+    // fan_info is HEX (kernel printf uses %X); parse with base 16.
+    let fan_info_str = extract_field(line, "fan_info")
+        .ok_or_else(|| ParseError::MalformedRecord("missing fan_info field".to_string()))?;
+    let fan_info = u32::from_str_radix(fan_info_str, 16).map_err(|_| {
+        ParseError::MalformedRecord(format!("invalid fan_info hex value: {fan_info_str}"))
+    })?;
+
+    let subj_trust_str = extract_field(line, "subj_trust")
+        .ok_or_else(|| ParseError::MalformedRecord("missing subj_trust field".to_string()))?;
+    let subj_trust_raw = subj_trust_str.parse::<u32>().map_err(|_| {
+        ParseError::MalformedRecord(format!("invalid subj_trust value: {subj_trust_str}"))
+    })?;
+
+    let obj_trust_str = extract_field(line, "obj_trust")
+        .ok_or_else(|| ParseError::MalformedRecord("missing obj_trust field".to_string()))?;
+    let obj_trust_raw = obj_trust_str.parse::<u32>().map_err(|_| {
+        ParseError::MalformedRecord(format!("invalid obj_trust value: {obj_trust_str}"))
+    })?;
+
+    Ok((
+        FanotifyRecord {
+            resp,
+            fan_type,
+            fan_info,
+            subj_trust: TrustVal::from_raw(subj_trust_raw),
+            obj_trust: TrustVal::from_raw(obj_trust_raw),
+        },
+        timestamp,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Public parse API
 // ---------------------------------------------------------------------------
 
@@ -176,8 +287,13 @@ pub enum ParseError {
 /// `fan_info` is parsed with `u32::from_str_radix(value, 16)` because the
 /// kernel printf uses `%X` (uppercase hex). `fan_info=3137` in the record
 /// decodes to `0x3137 = 12599` decimal (f1 §3.2 worked example).
-pub fn parse_fanotify_record(_line: &str) -> Result<FanotifyRecord, ParseError> {
-    todo!("P1 #73 fills fanotify record parser")
+pub fn parse_fanotify_record(line: &str) -> Result<FanotifyRecord, ParseError> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Err(ParseError::NoFanotifyRecord);
+    }
+    let (record, _ts) = parse_fanotify_line(trimmed)?;
+    Ok(record)
 }
 
 /// Parse an ausearch-grouped event block OR a bare `type=FANOTIFY` line into
@@ -199,6 +315,75 @@ pub fn parse_fanotify_record(_line: &str) -> Result<FanotifyRecord, ParseError> 
 /// Returns `ParseError::NoFanotifyRecord` if no FANOTIFY line is found.
 /// Returns `ParseError::MalformedRecord` if the FANOTIFY line is present but
 /// cannot be parsed.
-pub fn parse_audit_event(_input: &str) -> Result<AuditEvent, ParseError> {
-    todo!("P1 #73 fills audit event parser")
+pub fn parse_audit_event(input: &str) -> Result<AuditEvent, ParseError> {
+    // Find the FANOTIFY line among the input lines (skip separator lines like "----").
+    let mut fanotify_line: Option<&str> = None;
+    let mut syscall_line: Option<&str> = None;
+    let mut path_line: Option<&str> = None;
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "----" {
+            continue;
+        }
+        if trimmed.contains("type=FANOTIFY") {
+            fanotify_line = Some(trimmed);
+        } else if trimmed.contains("type=SYSCALL") {
+            syscall_line = Some(trimmed);
+        } else if trimmed.contains("type=PATH") {
+            path_line = Some(trimmed);
+        }
+        // PROCTITLE and CWD are ignored.
+    }
+
+    let fan_line = fanotify_line.ok_or(ParseError::NoFanotifyRecord)?;
+    let (fanotify, timestamp) = parse_fanotify_line(fan_line)?;
+
+    // Extract companion fields from SYSCALL record.
+    let mut pid: Option<i32> = None;
+    let mut auid: Option<u32> = None;
+    let mut exe: Option<String> = None;
+    let mut perm: Option<Perm> = None;
+
+    if let Some(sc) = syscall_line {
+        if let Some(pid_str) = extract_field(sc, "pid") {
+            pid = pid_str.parse::<i32>().ok();
+        }
+        if let Some(auid_str) = extract_field(sc, "auid")
+            && let Ok(raw) = auid_str.parse::<u32>()
+        {
+            // Sentinel u32::MAX means "not set" -> store as None.
+            if raw != u32::MAX {
+                auid = Some(raw);
+            }
+        }
+        if let Some(exe_str) = extract_field(sc, "exe") {
+            exe = Some(exe_str.to_string());
+        }
+        if let Some(syscall_str) = extract_field(sc, "syscall")
+            && let Ok(syscall_num) = syscall_str.parse::<u32>()
+        {
+            // syscall 59 is execve on x86_64 -> Execute; all others -> Open.
+            perm = Some(if syscall_num == 59 {
+                Perm::Execute
+            } else {
+                Perm::Open
+            });
+        }
+    }
+
+    // Extract object path from PATH record.
+    let path = path_line
+        .and_then(|pl| extract_field(pl, "name"))
+        .map(String::from);
+
+    Ok(AuditEvent {
+        fanotify,
+        pid,
+        auid,
+        exe,
+        path,
+        perm,
+        timestamp,
+    })
 }
