@@ -304,7 +304,7 @@ jobs:
       - name: Assert workspace floor (>=80% lines)
         run: cargo llvm-cov report --fail-under-lines 80
       - name: Assert parser + lint floor (>=90% lines, spec section 11)
-        run: cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --fail-under-lines 90
+        run: cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --fail-under-lines 90
 
   musl-build:
     name: build static musl binary (ubuntu)

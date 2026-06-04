@@ -10,6 +10,19 @@ This project uses OpenWolf for context management. Read and follow .wolf/OPENWOL
 @.rtk/RTK.md
 
 
+# Build / Test / Lint Commands
+
+Canonical commands live in the `justfile` (each recipe mirrors a CI gate verbatim). `just --list` shows all.
+
+- `just ci` - full local gate in CI order: fmt + clippy + test + cov. Run before every push.
+- `just fmt` / `just fmt-fix` - `cargo fmt --all --check` / apply. clippy does NOT enforce formatting; fmt is a separate gate.
+- `just clippy` - `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+- `just test` / `just cov` - workspace tests / llvm-cov with the 80% line floor.
+- `just musl` - static `x86_64-unknown-linux-musl` release binary (the distribution target).
+
+Prefix noisy commands with `rtk`; use `rtk proxy <cmd>` when output is parsed by another tool (a diff fed to `cargo mutants --in-diff`, JSON fed to `jq`).
+
+
 # Superpowers - Development Skills
 
 Make use of /superpowers skills whenever feasible.
@@ -31,8 +44,9 @@ Make use of /superpowers skills whenever feasible.
 # Global Rules - All of these rules MUST be followed at all times.
 
 - If two rules ever conflict, ask the user to resolve.
-- If a rule would lead to poor quality code, as the user to resolve.
+- If a rule would lead to poor quality code, ask the user to resolve.
 - Always ask questions rather than make assumptions.
+    - Questions are encouraged. Ask in as many rounds as necessary; do NOT truncate to the AskUserQuestion tool's 4-question maximum. Batch what fits, then open another round for the rest until everything ambiguous is resolved.
 - Use skill, plugins, and mcp servers when feasible.
 - "Do one thing and do it well." Unix Philosophy.
     - Functions, modules, etc. should ideally do one thing and be reusable where needed, rather than sprawling out and overlapping.
@@ -55,7 +69,8 @@ Make use of /superpowers skills whenever feasible.
 
 - **Spec + research lives in `.private-docs/`** - a gitignored symlink to `/home/runner/rulesteward-docs/`. Not in the GitHub repo. Start every session by reading `.private-docs/rulesteward-cli-tool-spec.md` (the v0.2 spec) and any `handoff-session-N.md` for the current milestone.
 - **Locked design decisions** are enumerated in spec §3 (19 of them). Do not re-litigate. If you find evidence contradicting one, surface it as `[QUESTION FOR USER]` and pause.
-- **Crate plan** (per spec §14.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`.
+- **Status:** `v0.1.0` shipped 2026-06-02; now targeting **v0.2** (the active spec). Implemented crates: `-core`, `-fapolicyd` (the only lint backend today), `-sink`, `-cli`. `-selinux` / `-auditd` / `-license` are placeholder stubs.
+- **Crate plan** (per spec §14.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`, MSRV `1.88` (workspace `rust-version`; dev/release stay on latest stable via `rust-toolchain.toml`).
 - **Locked crates:** parser `chumsky = "0.13"` + `ariadne = "0.6"`; LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
 - **Distribution target:** `x86_64-unknown-linux-musl` static binary.
 - **License:** Engine Apache-2.0; rule templates BSD-3-Clause (separate repo).

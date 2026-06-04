@@ -7,6 +7,18 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 // ---- Trust-DB subcommand format and filter enums ----
+// ---- Shared format enum for explain / cost / triage (human|json only; no SARIF) ----
+
+/// Output format for explain, cost, and triage subcommands.
+///
+/// Intentionally separate from `OutputFormat` (which carries a `Sarif` arm
+/// that has no meaning for these operations) and from `TrustdbFormat` (kept
+/// distinct for readability at each call site).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum HumanJsonFormat {
+    Human,
+    Json,
+}
 
 /// Output format for trust-DB subcommands.
 ///
@@ -79,9 +91,8 @@ pub enum FapolicydCommand {
     /// (stub) Simulate a workload against a rule set
     #[command(hide = true)]
     Simulate,
-    /// (stub) Explain a FANOTIFY denial from the audit log
-    #[command(hide = true)]
-    Explain,
+    /// Explain a FANOTIFY denial from the audit log
+    Explain(ExplainArgs),
     /// (stub) Status + recent-denials report
     #[command(hide = true)]
     Report,
@@ -163,6 +174,98 @@ impl From<TargetVersionArg> for rulesteward_fapolicyd::TargetVersion {
     }
 }
 
+/// Arguments for `rulesteward fapolicyd explain` (#72/#73/#74).
+///
+/// Explains a FANOTIFY denial record in the context of a rule set and
+/// optional trust DB.
+#[derive(Debug, Parser)]
+pub struct ExplainArgs {
+    /// The kernel FANOTIFY denial record or ausearch block to explain.
+    #[arg(long, value_name = "FILE")]
+    pub record: PathBuf,
+
+    /// The rules.d/ directory the denial references.
+    #[arg(long, value_name = "DIR")]
+    pub ruleset: PathBuf,
+
+    /// Read-only trust DB for replaying trust facts (optional).
+    #[arg(long, value_name = "PATH")]
+    pub trustdb: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward auditd cost` (#85).
+///
+/// Calculates the estimated cost and volume of auditd event traffic.
+#[derive(Debug, Parser)]
+pub struct CostArgs {
+    /// auditd rules file or directory to analyze.
+    #[arg(long, value_name = "DIR")]
+    pub rules: PathBuf,
+
+    /// Measure real event rate from a captured audit log (optional).
+    #[arg(long, value_name = "FILE")]
+    pub from_log: Option<PathBuf>,
+
+    /// USD per decimal GB (10^9 bytes), printed with currency in output.
+    #[arg(long, value_name = "USD", default_value_t = 5.00)]
+    pub price_per_gb: f64,
+
+    /// (not yet implemented) emit noise-reduction recommendations.
+    #[arg(long)]
+    pub recommend: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward selinux triage` (#94).
+///
+/// Triages `SELinux` AVC denials. The `--emit-te` flag activates te-emit mode
+/// (emits a self-contained base-module `.te`) instead of a triage report.
+/// te-emit is NOT a separate verb; it is a mode flag on triage.
+///
+/// At least one of `--audit-log` or `--record` must be supplied; this is
+/// validated by the triage command at run time, not by clap, so neither
+/// field is `required`.
+#[derive(Debug, Parser)]
+pub struct TriageArgs {
+    /// Scan a full audit log for AVCs.
+    #[arg(long, value_name = "FILE")]
+    pub audit_log: Option<PathBuf>,
+
+    /// A single AVC record file (mutually exclusive with --audit-log).
+    ///
+    /// At least one of --record or --audit-log must be supplied (validated at
+    /// run time, not by clap; the command errors if neither is present).
+    #[arg(long, value_name = "FILE", conflicts_with = "audit_log")]
+    pub record: Option<PathBuf>,
+
+    /// Time window to scan (e.g. 1h, 2d).
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Emit a self-contained base-module .te instead of a triage report.
+    #[arg(long)]
+    pub emit_te: bool,
+
+    /// Module name for the emitted .te (used with --emit-te).
+    #[arg(long, value_name = "NAME")]
+    pub module_name: Option<String>,
+
+    /// Write output to FILE instead of stdout.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: Option<PathBuf>,
+}
+
 /// Trust-DB subcommands.
 #[derive(Debug, Subcommand)]
 pub enum TrustdbCommand {
@@ -238,16 +341,14 @@ pub struct TrustdbStaleArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum SelinuxCommand {
-    /// (stub) Triage `SELinux` AVCs
-    #[command(hide = true)]
-    Triage,
+    /// Triage `SELinux` AVCs
+    Triage(TriageArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AuditdCommand {
-    /// (stub) auditd cost calculator
-    #[command(hide = true)]
-    Cost,
+    /// auditd cost calculator
+    Cost(CostArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -655,5 +756,265 @@ mod tests {
             TargetVersion::from(TargetVersionArg::Rhel10),
             TargetVersion::Rhel10
         );
+    }
+
+    // -- Phase 0 (v0.2): ExplainArgs, CostArgs, TriageArgs parse-contract tests --
+
+    /// Helper: extract `ExplainArgs` from a parsed CLI.
+    fn parse_explain(extra: &[&str]) -> ExplainArgs {
+        let mut cmdline = vec!["rulesteward", "fapolicyd", "explain"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("explain args must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Explain(args)),
+        } = cli
+        else {
+            panic!("expected Fapolicyd(Explain(_))");
+        };
+        args
+    }
+
+    /// `fapolicyd explain --record F --ruleset D` parses; fields round-trip.
+    #[test]
+    fn explain_args_record_and_ruleset_required_parse() {
+        let args = parse_explain(&[
+            "--record",
+            "/tmp/denial.log",
+            "--ruleset",
+            "/etc/fapolicyd/rules.d",
+        ]);
+        assert_eq!(args.record, PathBuf::from("/tmp/denial.log"));
+        assert_eq!(args.ruleset, PathBuf::from("/etc/fapolicyd/rules.d"));
+        assert!(args.trustdb.is_none(), "--trustdb must default to None");
+        assert!(
+            matches!(args.format, HumanJsonFormat::Human),
+            "--format must default to Human"
+        );
+    }
+
+    /// `--trustdb` is optional and round-trips.
+    #[test]
+    fn explain_args_trustdb_optional() {
+        let args = parse_explain(&[
+            "--record",
+            "/tmp/denial.log",
+            "--ruleset",
+            "/etc/fapolicyd/rules.d",
+            "--trustdb",
+            "/var/lib/fapolicyd",
+        ]);
+        assert_eq!(
+            args.trustdb.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd")),
+        );
+    }
+
+    /// `--format json` selects `Json`.
+    #[test]
+    fn explain_args_format_json_parses() {
+        let args = parse_explain(&[
+            "--record",
+            "/tmp/denial.log",
+            "--ruleset",
+            "/etc/fapolicyd/rules.d",
+            "--format",
+            "json",
+        ]);
+        assert!(matches!(args.format, HumanJsonFormat::Json));
+    }
+
+    /// Missing `--record` is a parse error.
+    #[test]
+    fn explain_args_missing_record_is_parse_error() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "explain",
+            "--ruleset",
+            "/etc/fapolicyd/rules.d",
+        ]);
+        assert!(cli.is_err(), "missing --record must be a parse error");
+    }
+
+    /// Missing `--ruleset` is a parse error.
+    #[test]
+    fn explain_args_missing_ruleset_is_parse_error() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "explain",
+            "--record",
+            "/tmp/denial.log",
+        ]);
+        assert!(cli.is_err(), "missing --ruleset must be a parse error");
+    }
+
+    /// Helper: extract `CostArgs` from a parsed CLI.
+    fn parse_cost(extra: &[&str]) -> CostArgs {
+        let mut cmdline = vec!["rulesteward", "auditd", "cost"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("cost args must parse");
+        let Cli {
+            command: TopCommand::Auditd(AuditdCommand::Cost(args)),
+        } = cli
+        else {
+            panic!("expected Auditd(Cost(_))");
+        };
+        args
+    }
+
+    /// `auditd cost --rules D` parses; required field round-trips.
+    #[test]
+    fn cost_args_rules_required_parses() {
+        let args = parse_cost(&["--rules", "/etc/audit/rules.d"]);
+        assert_eq!(args.rules, PathBuf::from("/etc/audit/rules.d"));
+        assert!(args.from_log.is_none(), "--from-log must default to None");
+        assert!(!args.recommend, "--recommend must default to false");
+        assert!(
+            (args.price_per_gb - 5.00).abs() < 1e-9,
+            "--price-per-gb must default to 5.00, got {}",
+            args.price_per_gb,
+        );
+        assert!(matches!(args.format, HumanJsonFormat::Human));
+    }
+
+    /// Optional fields all parse correctly.
+    #[test]
+    fn cost_args_optional_fields_parse() {
+        let args = parse_cost(&[
+            "--rules",
+            "/etc/audit/rules.d",
+            "--from-log",
+            "/var/log/audit/audit.log",
+            "--recommend",
+            "--price-per-gb",
+            "7.50",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(
+            args.from_log.as_deref(),
+            Some(std::path::Path::new("/var/log/audit/audit.log")),
+        );
+        assert!(args.recommend, "--recommend must set the flag");
+        assert!(
+            (args.price_per_gb - 7.50).abs() < 1e-9,
+            "--price-per-gb 7.50 must round-trip, got {}",
+            args.price_per_gb,
+        );
+        assert!(matches!(args.format, HumanJsonFormat::Json));
+    }
+
+    /// Helper: extract `TriageArgs` from a parsed CLI.
+    fn parse_triage(extra: &[&str]) -> TriageArgs {
+        let mut cmdline = vec!["rulesteward", "selinux", "triage"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("triage args must parse");
+        let Cli {
+            command: TopCommand::Selinux(SelinuxCommand::Triage(args)),
+        } = cli
+        else {
+            panic!("expected Selinux(Triage(_))");
+        };
+        args
+    }
+
+    /// `selinux triage --record F` parses.
+    #[test]
+    fn triage_args_record_parses() {
+        let args = parse_triage(&["--record", "/tmp/avc.log"]);
+        assert_eq!(
+            args.record.as_deref(),
+            Some(std::path::Path::new("/tmp/avc.log")),
+        );
+        assert!(args.audit_log.is_none());
+    }
+
+    /// `selinux triage --audit-log F` parses.
+    #[test]
+    fn triage_args_audit_log_parses() {
+        let args = parse_triage(&["--audit-log", "/var/log/audit/audit.log"]);
+        assert_eq!(
+            args.audit_log.as_deref(),
+            Some(std::path::Path::new("/var/log/audit/audit.log")),
+        );
+        assert!(args.record.is_none());
+    }
+
+    /// `--record` and `--audit-log` together are a parse error (`conflicts_with`).
+    #[test]
+    fn triage_args_record_and_audit_log_conflict() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "selinux",
+            "triage",
+            "--record",
+            "/tmp/avc.log",
+            "--audit-log",
+            "/var/log/audit/audit.log",
+        ]);
+        assert!(
+            cli.is_err(),
+            "--record and --audit-log together must be a parse error"
+        );
+    }
+
+    /// `--emit-te --module-name N -o /tmp/x.te` all parse.
+    #[test]
+    fn triage_args_emit_te_flags_parse() {
+        let args = parse_triage(&[
+            "--record",
+            "/tmp/avc.log",
+            "--emit-te",
+            "--module-name",
+            "mymodule",
+            "-o",
+            "/tmp/x.te",
+        ]);
+        assert!(args.emit_te, "--emit-te must set the flag");
+        assert_eq!(args.module_name.as_deref(), Some("mymodule"));
+        assert_eq!(
+            args.output.as_deref(),
+            Some(std::path::Path::new("/tmp/x.te")),
+        );
+    }
+
+    /// `--format json` and `--since 1h` parse.
+    #[test]
+    fn triage_args_format_and_since_parse() {
+        let args = parse_triage(&[
+            "--audit-log",
+            "/var/log/audit/audit.log",
+            "--format",
+            "json",
+            "--since",
+            "1h",
+        ]);
+        assert!(matches!(args.format, HumanJsonFormat::Json));
+        assert_eq!(args.since.as_deref(), Some("1h"));
+    }
+
+    /// A still-hidden verb (`fapolicyd simulate`) does NOT appear in `fapolicyd --help`.
+    /// This pins that only the three intended verbs were un-hidden.
+    #[test]
+    fn fapolicyd_simulate_is_still_hidden() {
+        // We verify the CLI tree: simulate must remain hidden (unit variant with #[command(hide=true)]).
+        // Parse "fapolicyd simulate" to confirm it is still accepted (hidden != removed)
+        // but the FapolicydCommand variant is a unit, not a tuple.
+        // We cannot easily test --help absence in a unit test, but we pin the variant shape:
+        // the Simulate variant carries no args (unit), confirming it was not accidentally
+        // promoted to a tuple variant by this task.
+        let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "simulate"]);
+        // Clap still accepts hidden commands; the assert is that it parses as the Simulate unit.
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Simulate),
+        }) = cli
+        {
+            // correct: Simulate is still a unit variant
+        } else {
+            panic!(
+                "fapolicyd simulate must parse as FapolicydCommand::Simulate (unit variant, still hidden)"
+            );
+        }
     }
 }

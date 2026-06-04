@@ -1,0 +1,1 @@
+type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=1 fan_info=3137 subj_trust=1 obj_trust=0

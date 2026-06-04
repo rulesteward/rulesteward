@@ -1,0 +1,2 @@
+# user-command execve auditing
+-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec

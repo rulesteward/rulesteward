@@ -1,0 +1,3 @@
+# base control block
+-D
+-b 8192

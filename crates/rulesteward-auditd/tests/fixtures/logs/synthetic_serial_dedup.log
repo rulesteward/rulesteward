@@ -1,0 +1,4 @@
+type=SYSCALL msg=audit(1780453442.924:2001): arch=c000003e syscall=59 success=yes exit=0 a0=1 a1=2 a2=3 a3=4 items=2 ppid=100 pid=201 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=1 comm="bash" exe="/usr/bin/bash" key="dup_key"
+type=PATH msg=audit(1780453442.924:2001): item=0 name="/usr/bin/bash" inode=456 dev=fd:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 key="dup_key"
+type=SYSCALL msg=audit(1780453442.925:2002): arch=c000003e syscall=59 success=yes exit=0 a0=1 a1=2 a2=3 a3=4 items=2 ppid=100 pid=202 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=1 comm="bash" exe="/usr/bin/bash" key="dup_key"
+type=PATH msg=audit(1780453442.925:2002): item=0 name="/usr/bin/bash" inode=456 dev=fd:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 key="dup_key"

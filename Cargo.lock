@@ -1078,6 +1078,11 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 [[package]]
 name = "rulesteward-auditd"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "rulesteward-cli"
@@ -1093,8 +1098,10 @@ dependencies = [
  "heed",
  "predicates",
  "proptest",
+ "rulesteward-auditd",
  "rulesteward-core",
  "rulesteward-fapolicyd",
+ "rulesteward-selinux",
  "serde",
  "serde-sarif",
  "serde_json",
@@ -1123,6 +1130,7 @@ dependencies = [
  "proptest",
  "rulesteward-core",
  "serde",
+ "serde_json",
  "sha1",
  "sha2",
  "tempfile",
@@ -1136,6 +1144,19 @@ version = "0.1.0"
 [[package]]
 name = "rulesteward-selinux"
 version = "0.1.0"
+dependencies = [
+ "rulesteward-selinux-sys",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "rulesteward-selinux-sys"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "rulesteward-sink"

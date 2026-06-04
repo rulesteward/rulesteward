@@ -1,4 +1,26 @@
-//! `SELinux` module - stub. Real implementation lands post-fapolicyd.
+//! `SELinux` module - AVC parsing, denial model, triage, TE emit, and categorization.
+//!
+//!
+//! Module skeletons are wired here; real implementations land in their respective
+//! Phase-0 tasks and pipelines (see per-module doc comments for issue references).
 
-#[doc(hidden)]
-pub fn placeholder() {}
+mod avc;
+mod categorize;
+mod denial;
+mod te_emit;
+mod triage;
+
+#[cfg(test)]
+mod avc_tests;
+
+pub use avc::{AvcDenial, AvcParseError, Verdict, parse_avc};
+pub use denial::{DenialGroup, DenialKind, group_denials};
+pub use te_emit::emit_te;
+pub use triage::{TriageReport, build_report, render_human};
+
+// The authoritative libsepol categorizer is opt-in (P5 / #105): it links
+// libsepol statically (#106/#107), so it is gated behind the
+// `authoritative-categorizer` feature and re-exported only when that feature is
+// enabled. The default workspace build links no libsepol.
+#[cfg(feature = "authoritative-categorizer")]
+pub use categorize::{CategorizeError, Policy, categorize};

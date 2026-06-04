@@ -1,0 +1,12 @@
+# INVERSE of scenario 9 (the KEY ORDERING TRAP). A never rule placed AFTER an always
+# rule on the SAME syscall. Rules evaluate in load order, FIRST match wins (f3 section
+# 2.3). Because the always rule is listed FIRST, root's execve (uid=0) matches 'always'
+# and is RECORDED before the never rule is ever consulted. The never rule here does
+# NOT suppress anything -- it is INERT for the traffic the always rule already caught.
+# Position is load-bearing: contrast scenario 9 (never ABOVE always => suppresses).
+#
+# Line 1 (FIRST = wins): record every execve, including uid=0.
+-a always,exit -S execve -k execve_all
+# Line 2 (SECOND = too late): a never rule that would have suppressed uid=0, but the
+# always rule above already matched and recorded it. This never is INERT.
+-a never,exit -S execve -F 'uid=0'

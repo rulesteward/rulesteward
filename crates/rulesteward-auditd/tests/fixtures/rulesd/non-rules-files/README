@@ -1,0 +1,3 @@
+This directory intentionally contains a non-.rules file (README) and a subdir
+named "something.rules" to test that parse_target filters correctly on
+p.is_file() && p.extension() == Some("rules").

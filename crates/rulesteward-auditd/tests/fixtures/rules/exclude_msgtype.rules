@@ -1,0 +1,18 @@
+# Exclude-msgtype suppression (catalog #10). Drops whole record types from the
+# audit event stream. PROCTITLE and PATH are high-frequency sub-records that
+# administrators often exclude to cut log volume. Both excludes are SUPPRESSIVE:
+# they remove bytes from events produced by the additive rules below; they never
+# add events of their own. A naive cost impl that counts these as additive
+# will overstate cost significantly.
+#
+# Exclude PROCTITLE records (~100 B each; appended to every execve event group).
+-a always,exclude -F msgtype=PROCTITLE
+# Exclude PATH records (~200 B each; appended to every file-touch event group).
+-a always,exclude -F msgtype=PATH
+#
+# Additive rules whose events are reduced by the excludes above:
+# Audit user-run commands (MEDIUM, auid-filtered execve).
+-a always,exit -S execve -F 'auid>=1000' -F 'auid!=unset' -k user_cmds
+# Identity file watches (LOW-MEDIUM; hardened host has few writes/day).
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity

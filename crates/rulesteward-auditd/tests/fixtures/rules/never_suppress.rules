@@ -1,0 +1,10 @@
+# NEGATIVE-volume trap (f3 §3.5): a never,exit rule placed ABOVE an always,exit rule
+# on the SAME syscall. Rules are evaluated in load order, first match wins; because
+# the never rule is listed first, root's execve (uid=0) matches 'never' and is
+# SUPPRESSED before the always rule can record it. The never rule REDUCES volume; it
+# does NOT add. Comparison/equality fields single-quoted per f3 §1.
+#
+# Line 1 (FIRST = wins for uid=0): suppress root's execve entirely.
+-a never,exit -S execve -F 'uid=0'
+# Line 2: record every other execve.
+-a always,exit -S execve -k execve_all
