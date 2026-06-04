@@ -1,0 +1,6 @@
+----
+type=PROCTITLE msg=audit(1600385000.000:100): proctitle=636174002F6574632F686F73746E616D65
+type=PATH msg=audit(1600385000.000:100): item=0 name="/etc/hostname" inode=100 dev=fd:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1600385000.000:100): cwd="/root"
+type=SYSCALL msg=audit(1600385000.000:100): arch=c000003e syscall=257 success=no exit=-13 a0=ffffff9c a1=55a5d1234560 a2=0 a3=0 items=1 ppid=1 pid=51 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=4294967295 comm="cat" exe="/usr/bin/coreutils" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1600385000.000:100): resp=2 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
