@@ -21,7 +21,14 @@ pub mod version;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
 pub use evaluate::{Source, Verdict, evaluate};
+pub use explain::{
+    ExplainError, ExplainResult, MatchedBy, explain_event, is_deny_decision, render_human,
+    rule_text,
+};
 pub use facts::{AccessFacts, FieldEval, RuleOutcome, SetTable, Trust};
+pub use fanotify::{
+    AuditEvent, FanotifyRecord, ParseError, TrustVal, parse_audit_event, parse_fanotify_record,
+};
 pub use lints::cross_db::lint_orphans;
 pub use lints::trust_hash::lint_weak_digests;
 pub use lints::{
