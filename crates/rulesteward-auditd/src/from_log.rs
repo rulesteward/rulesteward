@@ -152,3 +152,40 @@ fn extract_key(line: &str) -> Option<Option<String>> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests for private helpers
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::extract_serial;
+
+    // Kills mutant: replace + with - (returns "3:8675309" instead of "8675309")
+    // Kills mutant: replace + with * (returns ":8675309" instead of "8675309")
+    #[test]
+    fn extract_serial_basic() {
+        let line = "type=SYSCALL msg=audit(1738000000.123:8675309): arch=c000003e syscall=59";
+        assert_eq!(extract_serial(line), Some("8675309".to_string()));
+    }
+
+    // Different timestamp length + short serial - rules out degenerate coincidences.
+    #[test]
+    fn extract_serial_short_serial() {
+        let line = "type=CWD msg=audit(1700000001.001:1): cwd=\"/tmp\"";
+        assert_eq!(extract_serial(line), Some("1".to_string()));
+    }
+
+    // Large serial with longer timestamp - rules out off-by-one coincidences.
+    #[test]
+    fn extract_serial_large_serial() {
+        let line = "type=PATH msg=audit(1738999999.999:999999): item=0 name=\"/usr/bin/ls\"";
+        assert_eq!(extract_serial(line), Some("999999".to_string()));
+    }
+
+    // Line without msg=audit(...) returns None.
+    #[test]
+    fn extract_serial_missing_returns_none() {
+        let line = "type=EOE";
+        assert_eq!(extract_serial(line), None);
+    }
+}
