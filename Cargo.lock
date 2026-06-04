@@ -1098,6 +1098,7 @@ dependencies = [
  "heed",
  "predicates",
  "proptest",
+ "rulesteward-auditd",
  "rulesteward-core",
  "rulesteward-fapolicyd",
  "rulesteward-selinux",
