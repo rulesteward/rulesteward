@@ -120,7 +120,15 @@ pub fn parse_avc(input: &str) -> Result<Vec<AvcDenial>, AvcParseError> {
             continue;
         }
 
-        let serial_str = extract_audit_serial(line).unwrap_or_default();
+        // Correlation key: the numeric serial from `audit(EPOCH:SERIAL)`. Keying
+        // on the SAME parsed serial that fills `AvcDenial.serial` (rather than a
+        // second, string-returning parser) means the anchor test's serial +
+        // timestamp assertions also pin this correlation key - no internal-only
+        // helper whose output is never surfaced.
+        let serial_str = parse_audit_timestamp_serial(line)
+            .1
+            .map(|serial| serial.to_string())
+            .unwrap_or_default();
 
         if line.starts_with("type=AVC ") || line.contains(" type=AVC ") {
             avc_lines.push((serial_str, line));
@@ -157,15 +165,6 @@ pub fn parse_avc(input: &str) -> Result<Vec<AvcDenial>, AvcParseError> {
 struct CompanionFacts {
     exe: Option<String>,
     path: Option<String>,
-}
-
-/// Extract the `audit(EPOCH:SERIAL)` serial component as a string.
-fn extract_audit_serial(line: &str) -> Option<String> {
-    let after_open = line.find("audit(").map(|i| &line[i + 6..])?;
-    let colon = after_open.find(':')?;
-    let after_colon = &after_open[colon + 1..];
-    let close = after_colon.find(')')?;
-    Some(after_colon[..close].to_string())
 }
 
 /// Parse timestamp and serial from `audit(EPOCH:SERIAL)`.
