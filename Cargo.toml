@@ -18,6 +18,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 rulesteward-core = { path = "crates/rulesteward-core" }
+rulesteward-auditd = { path = "crates/rulesteward-auditd" }
 rulesteward-fapolicyd = { path = "crates/rulesteward-fapolicyd" }
 rulesteward-selinux = { path = "crates/rulesteward-selinux" }
 ariadne = "0.6"

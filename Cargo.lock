@@ -1081,6 +1081,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1097,6 +1098,7 @@ dependencies = [
  "heed",
  "predicates",
  "proptest",
+ "rulesteward-auditd",
  "rulesteward-core",
  "rulesteward-fapolicyd",
  "rulesteward-selinux",
