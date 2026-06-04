@@ -126,11 +126,8 @@ pub fn rule_text(_rule: &Rule) -> String {
 ///
 /// Used by the replay path to find the first matching `deny*` rule.
 #[must_use]
-pub fn is_deny_decision(decision: Decision) -> bool {
-    matches!(
-        decision,
-        Decision::Deny | Decision::DenyAudit | Decision::DenySyslog | Decision::DenyLog
-    )
+pub fn is_deny_decision(_decision: Decision) -> bool {
+    todo!("P1 #74 fills is_deny_decision (Deny|DenyAudit|DenySyslog|DenyLog -> true, else false)")
 }
 
 // ---------------------------------------------------------------------------

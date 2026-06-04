@@ -178,6 +178,10 @@ fn era2_rule_index_1_resolves_to_first_rule() {
 }
 
 /// Era2 fan_info=2 (hex) = 2 decimal -> rules[1] (0-based), the second rule.
+///
+/// The ruleset is [allow_open_all, deny_execute_all]. Rule 2 is deny_execute_all.
+/// An impl that returns the right index but the wrong rule object (e.g. rules[0]
+/// instead of rules[1]) would have the wrong decision and rule_text.
 #[test]
 fn era2_rule_index_2_resolves_to_second_rule() {
     let rule1 = allow_open_all();
@@ -188,6 +192,20 @@ fn era2_rule_index_2_resolves_to_second_rule() {
     let event = era2_event(2, Some("/usr/bin/curl"), Some("/tmp/payload"));
     let result = explain_event(&event, &rules, &sets).expect("should resolve rule 2");
     assert_eq!(result.rule_number, Some(2));
+    // The resolved rule must be the SECOND rule (deny_execute_all), not the first (allow_open_all).
+    // A wrong impl that returns rules[0] would have decision="allow", killing it here.
+    assert!(
+        result.decision.contains("deny"),
+        "rule 2 is deny_execute_all; decision must contain 'deny', got: {:?}",
+        result.decision
+    );
+    // The rule_text must also reflect deny_execute_all, not allow_open_all.
+    // This kills an impl that returns the right rule_number but the wrong rule object.
+    assert!(
+        result.rule_text.contains("deny"),
+        "rule_text for rule 2 must contain 'deny': got {:?}",
+        result.rule_text
+    );
 }
 
 /// Era2 rule out of range (fan_info=5, only 2 rules): exit-2 condition.
@@ -513,9 +531,14 @@ fn render_human_era2_contains_key_fields() {
         out.contains("/usr/bin/curl"),
         "human output must include exe: got {out:?}"
     );
+    // Must include the SPECIFIC rule number tied to result.rule_number (Some(1)).
+    // "contains('1')" alone is too weak (matches any string with the digit 1).
+    // "contains(\"rule\")" alone would pass even if the rule number were dropped.
+    // Require either "rule 1" or "rule_number: 1" so an off-by-one or
+    // dropped-field renderer is caught.
     assert!(
-        out.contains('1') || out.contains("rule 1") || out.contains("rule"),
-        "human output must reference the rule number: got {out:?}"
+        out.contains("rule 1") || out.contains("rule_number: 1"),
+        "human output must reference the specific rule number 1 (not just any '1'): got {out:?}"
     );
     // f1 §4.2: must mention subject trust and object trust
     assert!(
@@ -584,6 +607,13 @@ fn render_human_includes_uncertain_reason() {
 /// Grounding: f1 §4.2 JSON shape + issue #62 envelope contract.
 /// The impl uses render_envelope("explain", 1, &payload) from the CLI layer;
 /// this test verifies the payload struct itself serializes the correct keys.
+///
+/// CONTRACT-TEST (intentionally GREEN before impl):
+/// This test validates the #62 output contract locked in the struct definition
+/// (#[derive(Serialize)] + field names). These are frozen by the test-author
+/// as part of the barrier; the implementer MUST NOT change them.
+/// Green-by-design: the contract is enforced by the struct layout, not by any
+/// todo!() body. If this test is RED, the struct definition regressed.
 #[test]
 fn explain_result_serializes_correct_field_names() {
     let result = ExplainResult {
@@ -618,6 +648,11 @@ fn explain_result_serializes_correct_field_names() {
 }
 
 /// matched_by=Replay serializes as "replay" (snake_case).
+///
+/// CONTRACT-TEST (intentionally GREEN before impl):
+/// Validates the #[serde(rename_all="snake_case")] on MatchedBy, which is
+/// part of the frozen #62 output contract. Implementer must not change
+/// the variant names or the serde rename attribute.
 #[test]
 fn matched_by_replay_serializes_as_snake_case() {
     let result = ExplainResult {
@@ -643,6 +678,11 @@ fn matched_by_replay_serializes_as_snake_case() {
 
 /// uncertain=None serializes as null or is omitted (both are acceptable tolerant-reader behavior).
 /// The field must not be missing when Some.
+///
+/// CONTRACT-TEST (intentionally GREEN before impl):
+/// Validates that the `uncertain: Option<String>` field on ExplainResult
+/// serializes correctly. The struct layout and serde derives are the frozen
+/// #62 output contract. Implementer must not remove or rename this field.
 #[test]
 fn uncertain_some_is_present_in_json() {
     let result = ExplainResult {

@@ -46,22 +46,14 @@ impl TrustVal {
     ///
     /// Values outside {0, 1, 2} are clamped to `Unknown` (f1 §3.2).
     #[must_use]
-    pub fn from_raw(n: u32) -> Self {
-        match n {
-            0 => TrustVal::No,
-            1 => TrustVal::Yes,
-            _ => TrustVal::Unknown,
-        }
+    pub fn from_raw(_n: u32) -> Self {
+        todo!("P1 #73 fills TrustVal::from_raw (0->No, 1->Yes, _->Unknown)")
     }
 
     /// Return the human-readable label used in `explain` output (f1 §4.2).
     #[must_use]
     pub fn label(self) -> &'static str {
-        match self {
-            TrustVal::No => "no",
-            TrustVal::Yes => "yes",
-            TrustVal::Unknown => "unknown",
-        }
+        todo!("P1 #73 fills TrustVal::label (No->\"no\", Yes->\"yes\", Unknown->\"unknown\")")
     }
 }
 
@@ -105,17 +97,15 @@ impl FanotifyRecord {
     /// Returns `None` for Era1 records (`fan_type == 0`).
     #[must_use]
     pub fn rule_number(&self) -> Option<u32> {
-        if self.fan_type == 1 {
-            Some(self.fan_info)
-        } else {
-            None
-        }
+        todo!(
+            "P1 #73 fills FanotifyRecord::rule_number (Some(fan_info) when fan_type==1, else None)"
+        )
     }
 
     /// Return `true` if the kernel denied the access (`resp == 2`).
     #[must_use]
     pub fn is_deny(&self) -> bool {
-        self.resp == 2
+        todo!("P1 #73 fills FanotifyRecord::is_deny (resp == 2)")
     }
 }
 
