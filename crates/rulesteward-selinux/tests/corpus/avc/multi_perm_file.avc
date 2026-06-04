@@ -1,0 +1,3 @@
+type=AVC msg=audit(1780438805.959:23844): avc:  denied  { read } for  pid=14601 comm="mycat" name="data" dev="vda4" ino=109061505 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780438806.012:23845): avc:  denied  { getattr } for  pid=14602 comm="mycat" name="data" dev="vda4" ino=109061505 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780438806.044:23846): avc:  denied  { open } for  pid=14603 comm="mycat" name="data" dev="vda4" ino=109061505 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0
