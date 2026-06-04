@@ -450,3 +450,143 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: cargo check (MSRV)
         run: cargo check --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # libsepol / authoritative-categorizer coverage (#120, #121)
+  #
+  # The opt-in `authoritative-categorizer` feature (the libsepol FFI in
+  # rulesteward-selinux-sys + the categorize layer + the known-answer tests) is
+  # default-OFF, so the jobs above never build or exercise it. These three jobs
+  # close that gap. They build libsepol from the in-tree vendored source via
+  # build.rs (`make` + a C compiler), so each installs `make`.
+  # ---------------------------------------------------------------------------
+
+  # Feature-enabled clippy + test, on BOTH the glibc host target and the musl
+  # release target. The musl entry is the path the (opt-in) shipped binary would
+  # actually use: musl-gcc + the Makefile's -DHAVE_REALLOCARRAY probe. Mirrors the
+  # fmt-clippy ubuntu pattern.
+  selinux-feature:
+    name: ${{ matrix.label }} - authoritative-categorizer (clippy + test)
+    runs-on: [self-hosted, Linux, X64]
+    needs: fmt-clippy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: "gnu", target: "x86_64-unknown-linux-gnu" }
+          - { label: "musl", target: "x86_64-unknown-linux-musl" }
+    env:
+      # Used only by the musl entry's build.rs + linker; harmless on gnu.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure rustup is available
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable Rust toolchain (+ target, clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      # build.rs shells out to `make` + a C compiler to build vendored libsepol;
+      # the musl target additionally needs musl-gcc (musl-tools).
+      - name: Install build deps (make, gcc, musl-tools)
+        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: selinux-feature-${{ matrix.label }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      # Lint the FFI shim + the categorize layer. The default fmt-clippy job runs
+      # with the feature OFF, so it never sees this code; this is the only place it
+      # is type-checked + linted under -D warnings.
+      - name: clippy -p rulesteward-selinux-sys (vendored)
+        run: cargo clippy -p rulesteward-selinux-sys --all-targets --features vendored --target ${{ matrix.target }} --locked -- -D warnings
+      - name: clippy -p rulesteward-selinux (authoritative-categorizer)
+        run: cargo clippy -p rulesteward-selinux --all-targets --features authoritative-categorizer --target ${{ matrix.target }} --locked -- -D warnings
+      # The -sys build/link smoke (tests/links_from_source.rs) + the known-answer
+      # oracle (rulesteward-selinux/tests/known_answer_categorize.rs), both built
+      # against the from-source archive for this target.
+      - name: test -p rulesteward-selinux-sys (vendored build/link smoke)
+        run: cargo test -p rulesteward-selinux-sys --features vendored --target ${{ matrix.target }} --locked
+      - name: test -p rulesteward-selinux (authoritative-categorizer KAT)
+        run: cargo test -p rulesteward-selinux --features authoritative-categorizer --target ${{ matrix.target }} --locked
+
+  # Feature-enabled coverage (glibc). The default `coverage` job runs with the
+  # feature OFF, so categorize.rs + the -sys FFI are cfg-gated out of its numbers.
+  # This job measures them. Non-gameable gate: turning the categorizer ON must not
+  # drag the workspace below 80%, and rulesteward-selinux (now including
+  # categorize.rs) must hold the spec section 11 >=90% floor (measured 2026-06-04:
+  # workspace 92.1%, rulesteward-selinux 94.1%). The FFI-heavy
+  # rulesteward-selinux-sys (~78%) is reported but NOT hard-floored: it is an
+  # unsafe C-binding shim whose many error guards (LoadError / ReplayError paths)
+  # are unreachable-in-practice; its real adequacy comes from the known-answer
+  # replay + the build/link smoke, not a line %. (Coverage on the musl target is
+  # intentionally skipped: instrumentation under cross adds no signal the gnu run
+  # lacks.)
+  selinux-feature-coverage:
+    name: authoritative-categorizer coverage (ubuntu)
+    runs-on: [self-hosted, Linux, X64]
+    needs: fmt-clippy
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure rustup is available
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable toolchain with llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Install build deps (make, gcc)
+        run: sudo apt-get update && sudo apt-get install -y make gcc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: selinux-feature-coverage
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Collect coverage (feature on, no report)
+        run: cargo llvm-cov --no-report --workspace --features rulesteward-selinux/authoritative-categorizer --locked
+      - name: Assert workspace floor (>=80% lines, feature on)
+        run: cargo llvm-cov report --fail-under-lines 80
+      - name: Assert selinux floor (>=90% lines, incl. categorize.rs)
+        run: cargo llvm-cov report --package rulesteward-selinux --fail-under-lines 90
+      - name: Report selinux-sys FFI shim coverage (informational, not floored)
+        run: cargo llvm-cov report --package rulesteward-selinux-sys
+
+  # Standalone: build libsepol.a from the vendored source by ITSELF, off the
+  # shipped-binary critical path (independent, like audit/deny). Proves the
+  # vendored C compiles to a static archive that exports the symbols the FFI shim
+  # calls, without involving cargo or the Rust crate. No checksum yet (#120 defers
+  # it until byte-reproducibility is established).
+  libsepol-from-source:
+    name: build libsepol.a from vendored source (standalone)
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install musl toolchain + make + binutils
+        run: sudo apt-get update && sudo apt-get install -y musl-tools make gcc binutils
+      - name: Build libsepol.a from vendored source (musl)
+        run: |
+          set -euxo pipefail
+          rm -rf /tmp/lsbuild
+          cp -r crates/rulesteward-selinux-sys/vendor/libsepol /tmp/lsbuild
+          make -C /tmp/lsbuild/src libsepol.a \
+            CC=musl-gcc DISABLE_CIL=y DISABLE_SHARED=y \
+            CFLAGS="-I. -I../include -D_GNU_SOURCE -O2 -fno-semantic-interposition -fPIC"
+      - name: Assert archive produced + exports the called symbols
+        run: |
+          set -euxo pipefail
+          test -f /tmp/lsbuild/src/libsepol.a
+          ar t /tmp/lsbuild/src/libsepol.a | grep -qx 'services.o'
+          for s in sepol_compute_av_reason_buffer sepol_policydb_read \
+                   policydb_load_isids sepol_context_to_sid \
+                   sepol_policydb_create sepol_policydb_free; do
+            nm /tmp/lsbuild/src/libsepol.a | grep -qE " T $s\$" \
+              || { echo "missing exported symbol: $s"; exit 1; }
+          done
