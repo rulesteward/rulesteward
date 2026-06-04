@@ -332,6 +332,22 @@ fn h5_mls_suspected_declines_with_explanation_no_allow() {
 // Guards against: emitting `allow newrole_t self:process dyntransition;`
 // which audit2allow -N does (the TE allow already exists - it's a role
 // constraint, not a missing TE allow).
+//
+// ADVERSARIAL FIXES (two bugs in the original):
+//
+// Bug 1 - WRONG-IMPL SURVIVOR: the allow-guard used an OR-of-exact-string form:
+//   `!out.contains("allow newrole_t") || (!contains("..dyntransition;") && !contains(...))`
+// A wrong impl emitting the BRACE form `allow newrole_t newrole_t:process { dyntransition };`
+// slips through: !contains("allow newrole_t") = false, so we fall to the RHS;
+// the brace form does not match either exact string, so both !contains() = true,
+// and the whole assertion is true. The fix is a SIMPLE prefix match that catches
+// all emission forms: `!out.contains("allow newrole_t newrole_t:process")`.
+//
+// Bug 2 - VACUOUS 2nd assert: `lower.contains("role")` is always true because
+// the input type `newrole_t` contains the substring "role". The fix requires a
+// term that is NOT present in the input types themselves - "constraint" or
+// "dyntransition" context wording is appropriate (the explanation must say WHY,
+// not just reflect the input types back).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -346,19 +362,29 @@ fn h6_role_suspected_declines_with_explanation_no_allow() {
     )];
     let out = render_human(&groups);
 
-    // Must NOT emit an allow rule for a RoleSuspected denial.
+    // Must NOT emit an allow rule for a RoleSuspected denial - in ANY form.
+    // Prefix match catches semicolon form, brace form, and self-alias form:
+    //   "allow newrole_t newrole_t:process dyntransition;"
+    //   "allow newrole_t newrole_t:process { dyntransition };"
+    //   "allow newrole_t self:process ..."
     assert!(
-        !out.contains("allow newrole_t")
-            || (!out.contains("allow newrole_t newrole_t:process dyntransition;")
-                && !out.contains("allow newrole_t self:process dyntransition;")),
-        "TC-H6: must NOT emit allow for RoleSuspected denial; got:\n{out}"
+        !out.contains("allow newrole_t newrole_t:process")
+            && !out.contains("allow newrole_t self:process"),
+        "TC-H6: must NOT emit allow for RoleSuspected denial (any form); got:\n{out}"
     );
 
-    // Must explain that plain allow won't fix this.
+    // Must explain why plain allow won't fix this with a term that is NOT a
+    // substring of the input types (which would make it vacuous).
+    // "newrole_t" contains "role" and "new" - so "role" is not a valid sentinel.
+    // "dyntransition" IS the denied perm - it must not be used as the only signal.
+    // Require "constraint" or "rbac" (neither appears in newrole_t / process /
+    // dyntransition) to confirm the explanation discusses the real mechanism.
     let lower = out.to_lowercase();
     assert!(
-        lower.contains("role") || lower.contains("constraint") || lower.contains("rbac"),
-        "TC-H6: explanation must mention role/constraint/RBAC; got:\n{out}"
+        lower.contains("constraint") || lower.contains("rbac"),
+        "TC-H6: explanation must mention 'constraint' or 'rbac' (a term not in the \
+         input types/perms) to confirm a real mechanism explanation, not just echo \
+         the input; got:\n{out}"
     );
 }
 
@@ -720,5 +746,79 @@ fn h15_context_invalid_declines_and_warns_policy_mismatch() {
             || lower.contains("context")
             || lower.contains("invalid"),
         "TC-H15: must emit a policy-mismatch warning for ContextInvalid; got:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TC-H16: End-to-end parse_avc -> group_denials -> render_human
+//          (wires the vendored corpus fixtures into the render path)
+//
+// Source: corpus/avc/single_perm_read.avc (the f4 §1.2 anchor record).
+//
+// This test is the only one that exercises the FULL pipeline from raw AVC
+// text to human output. It ensures the corpus fixtures are not just reference
+// documentation but are load-bearing oracles for the composed path.
+//
+// The corpus file contains the real captured AVC:
+//   avc: denied { read } for pid=14601 comm="mycat" name="data"
+//   scontext=system_u:system_r:logrotate_t:s0
+//   tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0
+//
+// Expected render output: narrow allow `allow logrotate_t shadow_t:file read;`
+// (same oracle as TC-H1, but derived from the fixture parse path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn h16_end_to_end_corpus_single_perm_read() {
+    use rulesteward_selinux::{group_denials, parse_avc};
+
+    // Load the vendored fixture (CI cannot reach /mnt; the corpus/ dir is in
+    // the tests/ directory alongside this file).
+    let fixture = include_str!("corpus/avc/single_perm_read.avc");
+
+    // Parse every non-empty, non-comment line.
+    // parse_avc returns Vec<AvcDenial> (one call may yield multiple records
+    // for ausearch-grouped blocks), so flatten into a single Vec.
+    let mut denials = Vec::new();
+    for line in fixture.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut batch = parse_avc(trimmed)
+            .unwrap_or_else(|e| panic!("TC-H16: failed to parse AVC line: {e}\n  line: {trimmed}"));
+        denials.append(&mut batch);
+    }
+
+    assert!(
+        !denials.is_empty(),
+        "TC-H16: corpus/avc/single_perm_read.avc must contain at least one AVC record"
+    );
+
+    let groups = group_denials(&denials);
+    assert_eq!(
+        groups.len(),
+        1,
+        "TC-H16: single_perm_read fixture must produce exactly one denial group"
+    );
+    assert_eq!(
+        groups[0].kind,
+        rulesteward_selinux::DenialKind::TeAllowable,
+        "TC-H16: logrotate_t/shadow_t/file with object_r target must be TeAllowable"
+    );
+
+    let out = render_human(&groups);
+
+    // The narrow allow for the f4 §1.2 anchor.
+    assert!(
+        out.contains("allow logrotate_t shadow_t:file read;")
+            || out.contains("allow logrotate_t shadow_t:file { read };"),
+        "TC-H16: end-to-end render must emit narrow allow for corpus anchor; got:\n{out}"
+    );
+
+    // Must NOT emit interface macro (end-to-end trap guard).
+    assert!(
+        !out.contains("auth_read_shadow"),
+        "TC-H16: end-to-end render must NOT emit auth_read_shadow() macro; got:\n{out}"
     );
 }

@@ -15,8 +15,47 @@
 //! that the output is a valid JSON envelope, that `TeAllowable` groups include
 //! the narrow suggest rule, and that non-TeAllowable groups are reported without
 //! a suggested allow.
+//!
+//! ## `TriageReport` renderer contract (pinned by these tests)
+//!
+//! The JSON produced by `serde_json::to_string(&build_report(&groups))` must
+//! include per-group rendered output. The minimum required shape per group is:
+//!
+//! - `suggested_rule`: present and non-null for `TeAllowable` groups; absent or
+//!   null for `Permissive` / `MlsSuspected` / `RoleSuspected` groups.
+//! - `explanation`: present and non-empty for every group (f4 §6.2).
+//! - `any_permissive`: the literal boolean `true` or `false` (not just the
+//!   field name substring in a key).
+//! - `dontaudit` note: present somewhere in the JSON (as a field value or
+//!   within the explanation string) for `TeAllowable` groups (issue #94 Decision 1).
+//!
+//! The exact field names and nesting are up to P3; these tests parse the JSON
+//! with `serde_json::Value` and check the semantics, not the field names.
 
 use rulesteward_selinux::{DenialGroup, DenialKind, build_report};
+
+/// Walk a `serde_json::Value` tree looking for any field whose key contains
+/// "permissive" and whose value is the boolean `true`.
+///
+/// Used by TC-R5 to assert the actual boolean value rather than a key-name
+/// substring match (the vacuous `json.contains("permissive")` trap).
+fn has_permissive_true(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if k.contains("permissive") && v == &serde_json::Value::Bool(true) {
+                    return true;
+                }
+                if has_permissive_true(v) {
+                    return true;
+                }
+            }
+            false
+        }
+        serde_json::Value::Array(arr) => arr.iter().any(has_permissive_true),
+        _ => false,
+    }
+}
 
 fn make_group(
     source_type: &str,
@@ -74,6 +113,10 @@ fn r2_build_report_does_not_panic_on_empty_groups() {
 // The CLI uses: render_envelope("selinux-triage", 1, &build_report(&groups))
 // This test verifies the TriageReport struct round-trips via serde_json and
 // that the CLI envelope layer produces a valid JSON object.
+//
+// ADVERSARIAL NOTE: a trivial passthrough `TriageReport { groups: g.to_vec() }`
+// passes this test because `DenialGroup` already serializes as a JSON object.
+// TC-R4a / TC-R5 / TC-R7 / TC-R8 are the tests that defeat that passthrough.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -140,12 +183,69 @@ fn r4_teallowable_report_contains_required_denial_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-R5: Permissive denial in report - any_permissive is preserved (true)
+// TC-R4a: TeAllowable report JSON contains the narrow suggested allow rule string
+//          AND a dontaudit note - defeats the trivial passthrough survivor
+//
+// Source: f4 §6.2 contract (suggestedRule field); issue #94 Decision 1 (dontaudit).
+//
+// ADVERSARIAL NOTE: `TriageReport { groups: g.to_vec() }` (the Phase-0 shape)
+// serializes only DenialGroup fields - it has no suggested_rule or dontaudit
+// field. This test requires the implementer to extend the report shape with
+// rendered per-group content. The exact form of the suggested rule must match
+// the narrow `allow <src> <tgt>:<cls> { <perms> };` or
+// `allow <src> <tgt>:<cls> <perm>;` canon forms.
+//
+// f4 §1.2 anchor: `allow logrotate_t shadow_t:file read;`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r4a_teallowable_report_json_contains_suggested_rule_and_dontaudit() {
+    let groups = vec![make_group(
+        "logrotate_t",
+        "shadow_t",
+        "file",
+        &["read"],
+        false,
+        DenialKind::TeAllowable,
+    )];
+    let report = build_report(&groups);
+    let json = serde_json::to_string(&report).expect("serialize");
+
+    // The JSON must contain the narrow allow rule string for a TeAllowable group.
+    // Acceptable forms (single-perm may omit braces):
+    //   "allow logrotate_t shadow_t:file read;"
+    //   "allow logrotate_t shadow_t:file { read };"
+    assert!(
+        json.contains("allow logrotate_t shadow_t:file read;")
+            || json.contains("allow logrotate_t shadow_t:file { read };"),
+        "TC-R4a: TeAllowable report JSON must contain the narrow suggested allow rule \
+         'allow logrotate_t shadow_t:file read;'; got:\n{json}"
+    );
+
+    // The JSON must also mention dontaudit (issue #94 Decision 1: always note
+    // dontaudit as the safer option for TeAllowable denials).
+    assert!(
+        json.contains("dontaudit"),
+        "TC-R4a: TeAllowable report JSON must contain 'dontaudit' note \
+         (issue #94 Decision 1); got:\n{json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TC-R5: Permissive denial in report - any_permissive is preserved as boolean true
 //
 // Source: f4 §5.1 JSON spec: "permissive" (bool) field.
 //
 // Guards against silently stripping the permissive flag from the JSON output,
 // which would prevent consumers from distinguishing permissive vs. enforcing.
+//
+// ADVERSARIAL FIX (was vacuous): the old assertion `json.contains("true") ||
+// json.contains("permissive")` was always true because the serialized field
+// name `any_permissive` contains the substring "permissive". This version
+// parses the JSON and asserts the ACTUAL boolean value == true.
+//
+// Specifically: with `any_permissive: false` the old assertion still passed
+// because the field name alone triggered `json.contains("permissive")`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -160,10 +260,48 @@ fn r5_permissive_denial_preserves_permissive_true_in_report() {
     )];
     let report = build_report(&groups);
     let json = serde_json::to_string(&report).expect("serialize");
-    // The JSON must carry the permissive indicator.
+
+    // Parse the JSON and find the permissive boolean field.
+    // has_permissive_true() (module-level) walks the tree looking for a key
+    // that contains "permissive" with the literal boolean value `true`.
+    let v: serde_json::Value = serde_json::from_str(&json).expect("must parse as JSON");
+
     assert!(
-        json.contains("true") || json.contains("permissive"),
-        "TC-R5: JSON must carry the permissive=true field; got:\n{json}"
+        has_permissive_true(&v),
+        "TC-R5: report JSON must carry a permissive-keyed field with boolean value \
+         `true` for a Permissive denial (any_permissive=true); \
+         got:\n{json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TC-R5b: Permissive denial report does NOT contain a suggested allow rule
+//
+// Source: f4 §2.5 invariant 6 (permissive=1 -> report only, no allow).
+//
+// Companion to TC-R5: verifies the permissive flag actually suppresses the
+// suggested allow in the JSON output, not just that the flag is carried.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r5b_permissive_denial_report_has_no_suggested_allow() {
+    let groups = vec![make_group(
+        "logrotate_t",
+        "shadow_t",
+        "file",
+        &["read"],
+        true,
+        DenialKind::Permissive,
+    )];
+    let report = build_report(&groups);
+    let json = serde_json::to_string(&report).expect("serialize");
+
+    // The JSON must NOT contain a suggested allow rule for this triple.
+    assert!(
+        !json.contains("allow logrotate_t shadow_t:file read;")
+            && !json.contains("allow logrotate_t shadow_t:file { read };"),
+        "TC-R5b: Permissive denial report must NOT contain a suggested allow rule \
+         (f4 §2.5 inv.6); got:\n{json}"
     );
 }
 
@@ -214,5 +352,64 @@ fn r6_multiple_groups_all_present_in_report() {
     assert!(
         json.contains("newrole_t"),
         "TC-R6: newrole_t group must be in report; got:\n{json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TC-R7: Non-TeAllowable groups (MlsSuspected, RoleSuspected) have NO suggested
+//         allow rule in the JSON - defeats the trivial passthrough on the
+//         non-TeAllowable side
+//
+// Source: f4 §6.2 contract + f4 §2.5 inv.6 (permissive) + H5/H6 decline path.
+//
+// ADVERSARIAL NOTE: the trivial passthrough `TriageReport { groups: g.to_vec() }`
+// does not contain a suggested allow string for any group (it has no renderer
+// output at all), so this test is not itself a survivor defeater for the
+// passthrough. It is the COMPANION to TC-R4a: R4a proves TeAllowable DOES
+// produce the string; R7 proves non-TeAllowable does NOT. Together they pin
+// both sides of the suggestion logic. A wrong impl that suggests allows for all
+// groups (regardless of kind) fails TC-R7.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r7_non_teallowable_groups_have_no_suggested_allow_in_json() {
+    // MlsSuspected group: container_t / container_file_t / file
+    let mls_group = make_group(
+        "container_t",
+        "container_file_t",
+        "file",
+        &["read"],
+        false,
+        DenialKind::MlsSuspected,
+    );
+    let report = build_report(&[mls_group]);
+    let json = serde_json::to_string(&report).expect("serialize");
+
+    assert!(
+        !json.contains("allow container_t container_file_t:file read;")
+            && !json.contains("allow container_t container_file_t:file { read };"),
+        "TC-R7: MlsSuspected group must NOT have a suggested allow rule in JSON; \
+         got:\n{json}"
+    );
+
+    // RoleSuspected group: newrole_t / newrole_t / process
+    let role_group = make_group(
+        "newrole_t",
+        "newrole_t",
+        "process",
+        &["dyntransition"],
+        false,
+        DenialKind::RoleSuspected,
+    );
+    let report2 = build_report(&[role_group]);
+    let json2 = serde_json::to_string(&report2).expect("serialize");
+
+    assert!(
+        !json2.contains("allow newrole_t newrole_t:process dyntransition;")
+            && !json2.contains("allow newrole_t newrole_t:process { dyntransition };")
+            && !json2.contains("allow newrole_t self:process dyntransition;")
+            && !json2.contains("allow newrole_t"),
+        "TC-R7: RoleSuspected group must NOT have a suggested allow rule in JSON; \
+         got:\n{json2}"
     );
 }
