@@ -1145,6 +1145,7 @@ version = "0.1.0"
 name = "rulesteward-selinux"
 version = "0.1.0"
 dependencies = [
+ "rulesteward-selinux-sys",
  "serde",
  "serde_json",
  "thiserror",
@@ -1153,6 +1154,9 @@ dependencies = [
 [[package]]
 name = "rulesteward-selinux-sys"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "rulesteward-sink"

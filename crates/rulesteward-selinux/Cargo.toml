@@ -8,7 +8,18 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+# `authoritative-categorizer` is the OPT-IN libsepol replay layer (P5 / #105):
+# the `categorize` module + the `rulesteward-selinux-sys` FFI it wraps. Off by
+# default so the shipped binary links no libsepol (~224 KiB; f4b section 7) and
+# carries no LGPL-2.1 obligation (#110). Enabling it pulls in
+# `rulesteward-selinux-sys` (the static libsepol link, #106/#107). The #109
+# known-answer tests (tests/known_answer_*.rs) run only when this feature is built
+# (the CI feature job per the #106/#109 CI-readiness notes).
+authoritative-categorizer = ["dep:rulesteward-selinux-sys"]
+
 [dependencies]
+rulesteward-selinux-sys = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
