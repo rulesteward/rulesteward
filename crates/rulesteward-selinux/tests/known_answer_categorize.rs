@@ -32,6 +32,11 @@
 //!   over-grant at compile time as a neverallow-class check, so `-N` lets the
 //!   over-grant survive into the binary for the RUNTIME `type_attribute_bounds_av`
 //!   check to strip (which is what sets the BOUNDS reason bit).
+//! - `tests/fixtures/allow.policy` <- `allow.cil`, built `secilc -M true`. The access
+//!   under test is EXPLICITLY ALLOWED (a TE allow grants it, no constraint blocks it),
+//!   so libsepol returns reason bitmask 0 - the D8 `reason==0` path the categorizer
+//!   maps to `ContextInvalid` (the supplied policy already allows the host-denied
+//!   access).
 //!
 //! Each `AvcDenial` is built through the FROZEN [`parse_avc`] parser from a real
 //! kernel-format `type=AVC` line, never hand-constructed - the categorizer consumes
@@ -63,6 +68,12 @@ fn kat_policy() -> Policy {
 fn bounds_policy() -> Policy {
     let path = fixture("bounds.policy");
     Policy::load(&path).unwrap_or_else(|e| panic!("load bounds.policy ({}): {e}", path.display()))
+}
+
+/// Load the reason==0 known-answer policy (the access under test is allowed).
+fn allow_policy() -> Policy {
+    let path = fixture("allow.policy");
+    Policy::load(&path).unwrap_or_else(|e| panic!("load allow.policy ({}): {e}", path.display()))
 }
 
 /// Parse a single-record `type=AVC` line through the frozen parser, asserting
@@ -119,6 +130,16 @@ const AVC_BOUNDS: &str = r#"type=AVC msg=audit(1700000000.004:1004): avc:  denie
 /// context; realistic in offline cross-host analysis).
 /// Grounded: libsepol replay -> `sepol_context_to_sid` rejects the context (BADSCON).
 const AVC_BADSCON: &str = r#"type=AVC msg=audit(1700000000.005:1005): avc:  denied  { read } for  pid=1005 comm="probe" scontext=u1:r_a:zzz_undefined_t:s0:c0.c1 tcontext=u1:r_a:tgt_t:s0:c0.c1 tclass=file permissive=0"#;
+
+/// reason==0 (D8): `src_t -> tgt_t : file { read }` against the `allow.policy`,
+/// where that access is EXPLICITLY ALLOWED (`allow src_t tgt_t (file (read ...))`)
+/// and no constraint blocks it. libsepol returns reason bitmask `0` (no deny bit),
+/// which the categorizer maps to `ContextInvalid` - the supplied policy already
+/// allows the host-denied access, so the categorizer declines to suggest a redundant
+/// allow (categorize.rs D8 else-branch). Both contexts ARE defined in `allow.policy`,
+/// so this is the reason==0 path, NOT the BADSCON path above.
+/// Grounded: libsepol replay (against `allow.policy`) -> `bits=0x0` (access allowed).
+const AVC_ALLOWED: &str = r#"type=AVC msg=audit(1700000000.006:1006): avc:  denied  { read } for  pid=1006 comm="probe" scontext=u1:r_a:src_t:s0:c0.c1 tcontext=u1:r_a:tgt_t:s0:c0.c1 tclass=file permissive=0"#;
 
 // ---------------------------------------------------------------------------
 // Known-answer anchors: one per authoritative DenialKind
@@ -185,6 +206,23 @@ fn kat_undefined_context_is_context_invalid() {
         kind,
         DenialKind::ContextInvalid,
         "a context whose type the supplied policy does not define must be ContextInvalid, not an error"
+    );
+}
+
+#[test]
+fn reason_zero_policy_allows_is_context_invalid() {
+    let policy = allow_policy();
+    let denial = parse_one(AVC_ALLOWED);
+    // Distinct from the BADSCON case above: here BOTH contexts ARE defined in the
+    // policy, but the access is ALLOWED, so libsepol returns reason bitmask 0. The
+    // categorizer's D8 else-branch maps reason==0 to ContextInvalid (the supplied
+    // policy already allows the host-denied access; categorize.rs D8).
+    let kind = categorize(&denial, &policy)
+        .expect("an allowed access (reason==0) must be Ok(ContextInvalid), not an Err");
+    assert_eq!(
+        kind,
+        DenialKind::ContextInvalid,
+        "src_t -> tgt_t:file read is explicitly ALLOWED by allow.policy (reason bit 0x0): the reason==0 D8 branch must yield ContextInvalid, not Bounds"
     );
 }
 

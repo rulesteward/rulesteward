@@ -95,11 +95,23 @@ exclude_globs = [
 # deterministically produces this outcome. The mutant therefore cannot be killed
 # by any reliable, non-flaky test. It is a genuine unreachable-in-practice
 # equivalent mutant: the branch it guards is dead code under normal usage.
+#
+# `categorize` line 196 (`bits & (REASON_CONS | REASON_RBAC)`): the `| -> ^`
+# mutant rewrites the mask `REASON_CONS | REASON_RBAC` to `REASON_CONS ^
+# REASON_RBAC`. REASON_CONS = 0x2 and REASON_RBAC = 0x4 are DISJOINT bits
+# (rulesteward-selinux-sys/src/lib.rs), so `0x2 | 0x4` == `0x2 ^ 0x4` == 0x6: the
+# mask is byte-identical, the mutant is behaviourally identical and unkillable by
+# any test. Same disjoint-bit shape as the open_trustdb_readonly case above. (The
+# sibling `| -> &` mutant yields 0x2 & 0x4 == 0x0, an all-zero mask that never
+# matches the CONS/RBAC branch, and IS killed by the kat MLS/role constraint
+# tests.) Excluded by name, not `#[mutants::skip]`, so the rationale stays here in
+# reviewable config.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
     'replace \| with \^ in open_trustdb_readonly',
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
+    'replace \| with \^ in categorize',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

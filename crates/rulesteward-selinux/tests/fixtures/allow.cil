@@ -1,0 +1,46 @@
+; reason==0 known-answer policy. The access under test is EXPLICITLY ALLOWED, so
+; libsepol's sepol_compute_av_reason_buffer returns reason bitmask 0 (no TE / CONS /
+; RBAC / BOUNDS deny bit set). That is the D8 case the categorizer maps to
+; ContextInvalid: the SUPPLIED policy already allows the access the host denied (a
+; policy mismatch), so the categorizer declines to suggest a redundant allow and
+; routes the caller to the floor heuristic (categorize.rs D8 else-branch).
+;
+; This is the ONLY fixture that drives reason==0, so it is what pins the precedence
+; chain's final else-branch (and kills the categorize.rs:198 `& -> |` mutant, which
+; would otherwise turn `bits & REASON_BOUNDS != 0` into the always-true
+; `bits | REASON_BOUNDS != 0` and mis-route this allowed access to Bounds).
+;
+; Built `secilc -M true` (MLS required so the :s0:c0.c1 contexts parse), exactly like
+; kat.policy.
+(class file (read write open getattr execute))
+(classorder (file))
+(sid kernel)
+(sid security)
+(sidorder (kernel security))
+
+(type src_t)
+(type tgt_t)
+(role r_a)
+(user u1)
+(userrole u1 r_a)
+(roletype r_a src_t)
+(roletype r_a tgt_t)
+
+(sensitivity s0)
+(sensitivityorder (s0))
+(category c0)
+(category c1)
+(categoryorder (c0 c1))
+(sensitivitycategory s0 (c0 c1))
+(level l0 (s0 (c0 c1)))
+
+(context ctx_k (u1 r_a src_t (l0 l0)))
+(sidcontext kernel ctx_k)
+(sidcontext security ctx_k)
+(userlevel u1 l0)
+(userrange u1 (l0 l0))
+
+; The access under test is fully allowed: a TE allow grants it and NO constraint
+; blocks it (src and tgt share level l0, so any mls/role constraint would be
+; satisfied even if present). -> reason bitmask 0.
+(allow src_t tgt_t (file (read open getattr)))
