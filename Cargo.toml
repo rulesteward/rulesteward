@@ -20,6 +20,7 @@ rust-version = "1.88"
 rulesteward-core = { path = "crates/rulesteward-core" }
 rulesteward-fapolicyd = { path = "crates/rulesteward-fapolicyd" }
 rulesteward-selinux = { path = "crates/rulesteward-selinux" }
+rulesteward-selinux-sys = { path = "crates/rulesteward-selinux-sys" }
 ariadne = "0.6"
 assert_cmd = "2"
 # JSON Schema validator (test-only): the 3e SARIF round-trip test validates rendered

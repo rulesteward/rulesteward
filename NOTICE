@@ -1,0 +1,25 @@
+RuleSteward
+Copyright RuleSteward contributors
+
+The RuleSteward engine is licensed under the Apache License, Version 2.0.
+See LICENSE for the full text.
+
+Third-party components
+======================
+
+libsepol 3.10 (SELinux userspace), LGPL-2.1, statically linked under the
+authoritative-categorizer feature.
+
+  - Used only when RuleSteward is built with the optional
+    `authoritative-categorizer` Cargo feature. The default build links no
+    libsepol and carries no LGPL obligation.
+  - Statically linked from a musl-built `libsepol.a`
+    (crates/rulesteward-selinux-sys/libsepol.a; build provenance in
+    crates/rulesteward-selinux-sys/build.rs).
+  - License: GNU Lesser General Public License, version 2.1. The full text is
+    in LICENSES/LGPL-2.1.txt. Source for libsepol is available from the SELinux
+    userspace project (https://github.com/SELinuxProject/selinux), release 3.10.
+
+The single-static-binary distribution model is preserved: libsepol is linked
+into the feature-enabled binary as a static archive (LGPL-2.1 permits static
+linking with this notice and the accompanying license text).

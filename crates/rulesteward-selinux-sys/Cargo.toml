@@ -1,16 +1,21 @@
 [package]
 name = "rulesteward-selinux-sys"
-description = "libsepol FFI shim for RuleSteward (skeleton; filled by P5 issues #106/#107)."
+description = "libsepol FFI shim for RuleSteward (statically links libsepol 3.10; #106/#107)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-# links = "sepol"  # deferred to P5 (#106); adding it here requires libsepol
-#                  # present on the build host, which is not guaranteed in CI.
-#                  # P5 will add the links key + a real build.rs that probes for
-#                  # the library and emits the correct rustc-link-lib directives.
+# Cargo enforces a single link of the native `sepol` library across the graph and
+# runs build.rs (which emits `rustc-link-lib=static=sepol` against the committed
+# musl-built libsepol.a). See build.rs for the archive provenance + the
+# single-archive-serves-glibc-and-musl note.
+links = "sepol"
+build = "build.rs"
+
+[dependencies]
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

@@ -44,6 +44,11 @@
 
 use std::path::Path;
 
+use rulesteward_selinux_sys::{
+    LoadError, Policy as SysPolicy, REASON_BOUNDS, REASON_CONS, REASON_RBAC, REASON_TE,
+    ReplayError, ReplayOutcome,
+};
+
 use crate::{AvcDenial, DenialKind};
 
 /// Error from the authoritative categorizer.
@@ -81,6 +86,15 @@ pub enum CategorizeError {
     /// error (negative return code). The wrapped value is that code.
     #[error("libsepol reason computation failed (rc={0})")]
     ComputeFailed(i32),
+    /// A replay input (a context / class / permission token) contained an
+    /// interior NUL byte and could not be passed to libsepol. Mirrors the FFI's
+    /// [`ReplayError::InputNul`] (issue #107); additive (D9, P5-local).
+    #[error("replay input {what} contains an interior NUL byte")]
+    InvalidInput {
+        /// Which input carried the NUL (`"scontext"` / `"tcontext"` / `"tclass"`
+        /// / `"perm"`).
+        what: &'static str,
+    },
 }
 
 /// A loaded binary `SELinux` policy, ready to categorize denials against.
@@ -94,27 +108,37 @@ pub enum CategorizeError {
 /// reason-buffer allocations libsepol hands back (`reason_buf` must be `free(3)`d
 /// per f4b section 4.1); `Policy` is the owner whose `Drop` releases them.
 pub struct Policy {
-    /// Placeholder so the stub is a constructible type that names its purpose.
-    /// The real field set (the libsepol policydb handle owned via the
-    /// `rulesteward-selinux-sys` FFI) lands with issue #107.
-    _private: (),
+    /// The owned libsepol policydb + sidtab handles, behind the
+    /// `rulesteward-selinux-sys` FFI (#107). All `unsafe` lives in that crate;
+    /// this wrapper is safe.
+    inner: SysPolicy,
 }
 
 impl Policy {
     /// Load a binary `SELinux` policy from a file path (the operator-supplied
     /// `--policy <file>`).
     ///
-    /// Calls `sepol_set_policydb_from_file` on the opened file, which reads the
-    /// binary policy and initialises the internal sidtab in one call
-    /// (f4b section 1.2, `services.c:133-153`).
+    /// Reads the binary policy into an owned libsepol handle and builds its SID
+    /// table (f4b section 1.2). Loading touches no libsepol global state, so two
+    /// policies can be loaded and categorized against in one process (the
+    /// `rulesteward-selinux-sys` module docs explain the global-swap-per-replay
+    /// model this enables).
     ///
     /// # Errors
     ///
     /// Returns [`CategorizeError::PolicyLoad`] when the file cannot be opened or
     /// libsepol rejects it (wrong magic / truncated / unsupported version).
     pub fn load(path: &Path) -> Result<Self, CategorizeError> {
-        let _ = path;
-        todo!("P5 #107/#108: open the policy file + sepol_set_policydb_from_file")
+        let inner = SysPolicy::load(path).map_err(|e| match e {
+            // Every load failure collapses to PolicyLoad - the operator-facing
+            // contract is "the supplied --policy could not be loaded"; the sys
+            // error's Display carries the specific cause (open / read / sidtab).
+            LoadError::Open { .. }
+            | LoadError::Read { .. }
+            | LoadError::Sidtab { .. }
+            | LoadError::PathNul { .. } => CategorizeError::PolicyLoad(e.to_string()),
+        })?;
+        Ok(Policy { inner })
     }
 }
 
@@ -139,6 +163,49 @@ impl Policy {
 /// denial, distinct from the expected undefined-CONTEXT case), and
 /// [`CategorizeError::ComputeFailed`] on a hard libsepol replay error.
 pub fn categorize(denial: &AvcDenial, policy: &Policy) -> Result<DenialKind, CategorizeError> {
-    let _ = (denial, policy);
-    todo!("P5 #108: replay via sepol_compute_av_reason_buffer + map reason bits")
+    // `permissive` is intentionally NOT read here: categorization replays the
+    // policy, it does not interpret the log (see the fn docs + the frozen
+    // permissive-flip invariant). The four replay inputs are the contexts, the
+    // class, and the perm set.
+    let outcome = policy
+        .inner
+        .replay(
+            &denial.scontext_raw,
+            &denial.tcontext_raw,
+            &denial.tclass,
+            &denial.perms,
+        )
+        .map_err(|e| match e {
+            ReplayError::UnknownClass { tclass } => CategorizeError::UnknownClass(tclass),
+            ReplayError::UnknownPermission { perm, tclass } => {
+                CategorizeError::UnknownPermission { perm, tclass }
+            }
+            ReplayError::Compute { rc } => CategorizeError::ComputeFailed(rc),
+            ReplayError::InputNul { what } => CategorizeError::InvalidInput { what },
+        })?;
+
+    let kind = match outcome {
+        // An undefined source/target context (BADSCON / BADTCON) is the expected
+        // cross-host case, not an error: fall through to ContextInvalid.
+        ReplayOutcome::BadContext => DenialKind::ContextInvalid,
+        ReplayOutcome::Reason(bits) => {
+            // Precedence mirrors audit2why: TE before CONS/RBAC before BOUNDS
+            // (module docs reason-bit table; audit2why.c:386-431).
+            if bits & REASON_TE != 0 {
+                DenialKind::TeAllowable
+            } else if bits & (REASON_CONS | REASON_RBAC) != 0 {
+                DenialKind::Constraint
+            } else if bits & REASON_BOUNDS != 0 {
+                DenialKind::Bounds
+            } else {
+                // D8 (orchestrator-resolved): reason==0 means the SUPPLIED policy
+                // already ALLOWS the access the host denied (a policy mismatch).
+                // ContextInvalid is the least-wrong of the 7 frozen DenialKinds:
+                // it declines to suggest a redundant allow and routes the caller
+                // to the floor heuristic, rather than fabricating an 8th variant.
+                DenialKind::ContextInvalid
+            }
+        }
+    };
+    Ok(kind)
 }
