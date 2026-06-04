@@ -79,15 +79,27 @@ when a milestone fans out 2+ independent features:
 - **Session plans:** run `/rs-session-plan` to scaffold a new plan pre-wired to the
   protocol (do not hand-write the skeleton).
 - **Reviewer subagents** (`.claude/agents/`): `spec-reviewer`, `idiomatic-rust-reviewer`,
-  `adversarial-test-reviewer`. Each bakes in the bubble-up preamble and runs on `opus`.
+  `adversarial-test-reviewer` (barrier, impl-BLIND), `adversarial-impl-reviewer`
+  (post-GREEN, impl-AWARE). Each bakes in the bubble-up preamble and runs on `opus`.
 - **Workflow binding:** `.claude/workflows/rs-milestone-fanout.js` (+ `README.md`) is the
-  accelerator binding (`parallel()` barrier, `pipeline()` impl->mutation->review,
-  structured HALT early-return). The manual binding is always the floor.
+  accelerator binding: `parallel()` barrier, then `pipeline()` runs impl -> Adversarial
+  Testing Loop (impl-aware review + mutation gate) -> spec/idiomatic review, with a
+  structured HALT early-return. The manual binding is always the floor.
+
+**Adversarial Testing Loop (post-implementation):** after a feature first reaches GREEN
+and before spec/idiomatic review, run the named loop: (1) an impl-AWARE adversarial
+review (the `adversarial-impl-reviewer` agent reads the REAL impl + diff for an input the
+frozen tests miss; distinct from the impl-BLIND barrier reviewer) and (2) the mutation
+gate. Both route findings to the TEST-AUTHOR to STRENGTHEN tests (never weaken; the
+implementer only makes them green); loop until both come up clean. Never trust a DONE
+report (4a / PR #118: the gate caught a test-author over-claiming a kill twice, only the
+mandatory RE-RUN surfaced it). Same step applies in single-pipeline work (same person may
+author + impl).
 
 **Mutation gate, two layers:** the per-pipeline LOCAL gate (`cargo mutants` after GREEN,
-survivors route back to the test-author) is the adversarial-adequacy measure during a
-milestone; the CI `mutants.yml` nightly run remains the project-wide net. They are
-complementary, not redundant.
+survivors route back to the test-author) is half of the Adversarial Testing Loop above and
+the adversarial-adequacy measure during a milestone; the CI `mutants.yml` nightly run
+remains the project-wide net. They are complementary, not redundant.
 
 **MCP servers (context7 + serena):** these back the "prefer Context7 over training
 recall" guidance and Rust symbol navigation. They are currently installed as Claude
