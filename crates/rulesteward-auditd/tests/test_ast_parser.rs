@@ -361,8 +361,8 @@ fn inline_comment_stripped() {
 fn whitespace_torture_fixture_parses() {
     let path = fixture_path("rules/whitespace_torture.rules");
     let rules = parse_target(&path).expect("whitespace_torture fixture must parse");
-    // Expected: 1x execve syscall, 1x openat syscall, 1x watch, 4x control = 7 rules.
-    // (comment-only lines produce no rules; both control block lines are real rules)
+    // Expected: 1x execve syscall, 1x openat syscall, 1x watch = 3 rules.
+    // (no control rules in this fixture; comment-only lines produce no rules)
     assert!(
         !rules.is_empty(),
         "whitespace_torture must yield at least one rule"
@@ -441,16 +441,17 @@ fn rulesd_directory_concat_filename_order() {
 /// Grounded: f3 section 9 -- parse error -> exit 5 (`EXIT_RULE_PARSE_ERROR`).
 #[test]
 fn unknown_flag_produces_parse_error_with_line_number() {
-    // Line 1 is a comment (no error), line 2 has an unknown flag.
-    let errors = parse_err("# comment\n--totally-unknown-flag 999");
+    // Lines 1-2 are comments (no error), line 3 has the unknown flag.
+    // A stub always-Err{line:2} would fail because the bad line is on line 3.
+    let errors = parse_err("# comment\n# another comment\n--totally-unknown-flag 999");
     assert!(
         !errors.is_empty(),
         "expected at least one parse error for unknown flag"
     );
-    // The error should point to line 2 (1-based).
+    // The error should point to line 3 (1-based).
     assert!(
-        errors.iter().any(|e| e.line == 2),
-        "error must cite line 2; got: {errors:?}"
+        errors.iter().any(|e| e.line == 3),
+        "error must cite line 3; got: {errors:?}"
     );
 }
 
@@ -458,7 +459,10 @@ fn unknown_flag_produces_parse_error_with_line_number() {
 /// for THAT line without swallowing the parse error.
 #[test]
 fn partial_error_surfaces_bad_line() {
-    let input = "-D\n--bad-flag\n-b 8192";
+    // Bad line is on line 3 (different from the line-2 case in the other error
+    // test). A stub always-Err{line:2} passes if both bad lines are on line 2;
+    // having one on line 3 means line-tracking is actually pinned.
+    let input = "-D\n-b 8192\n--bad-flag";
     let result = parse_rules_str(input);
     assert!(
         result.is_err(),
@@ -466,8 +470,8 @@ fn partial_error_surfaces_bad_line() {
     );
     let errors = result.unwrap_err();
     assert!(
-        errors.iter().any(|e| e.line == 2),
-        "error must cite line 2 (the bad line); got: {errors:?}"
+        errors.iter().any(|e| e.line == 3),
+        "error must cite line 3 (the bad line); got: {errors:?}"
     );
 }
 

@@ -2,12 +2,13 @@
 //!
 //! # Grounding
 //! - Read-only line scan of `audit.log`; aggregate by `key=` field: f3 section 5.3c.
-//! - `key=` appears in SYSCALL records as `key="value"` or `key=(null)`.
-//! - Count distinct audit event serials per key (one SYSCALL per serial = one event).
+//! - `key=` appears in any record type as `key="value"` or `key=(null)`.
+//! - Count distinct audit event serials per key (one serial = one event, any record type).
 //! - Oracle: `rocky8-live-from-log-execve/oracle/from-log-counts.json`:
-//!   `wc_s4_execve_short -> 106` unique serials.
+//!   `wc_s4_execve_short -> 106` unique serials (105 SYSCALL + 1 `CONFIG_CHANGE`, all keyed).
 //! - Fixture: `tests/fixtures/logs/from_log_execve_keyed.log` (106 key-tagged lines).
 //! - Fixture: `tests/fixtures/logs/synthetic_minimal.log` (8 lines, known counts).
+//! - Fixture: `tests/fixtures/logs/synthetic_serial_dedup.log` (serial-dedup trap).
 
 use std::path::Path;
 
@@ -28,9 +29,9 @@ fn fixture_path(rel: &str) -> std::path::PathBuf {
 // --------------------------------------------------------------------------
 
 /// Synthetic log: 3 events with `key="test_execve"`, 2 with `key="test_watch"`,
-/// 1 with `key=(null)`. Total distinct events: 6 (but 3 are non-SYSCALL lines).
+/// 1 with `key=(null)`. Total distinct events: 6 (2 non-SYSCALL lines carry no key=).
 ///
-/// The reader must count by UNIQUE SERIAL from SYSCALL records:
+/// The reader must count by UNIQUE SERIAL across all record types:
 /// - `test_execve`: serials 1001, 1002, 1003 -> 3 events.
 /// - `test_watch`: serials 1004, 1005 -> 2 events.
 /// - None (`key=(null)`): serial 1006 -> 1 event.
@@ -90,11 +91,10 @@ fn synthetic_log_lines_scanned_nonzero() {
 /// (rocky8-live-from-log-execve/oracle/from-log-counts.json).
 /// The file was captured on Rocky 8 from 100x `/bin/true` invocations
 /// (the for-loop also spawns seq etc., giving 106 total, not 100).
-///
-/// ADVERSARIAL property: a wrong impl that counts ALL lines (not unique serials)
-/// would report the same number here because each keyed line has a distinct serial.
-/// But on a log with duplicate serials (from PATH/CWD records sharing a serial),
-/// it would overcount. The synthetic test above covers that trap.
+/// Structure: 1 `CONFIG_CHANGE` + 105 SYSCALL records, all 106 carrying the key.
+/// All serials are distinct, so a line-count impl and a serial-dedup impl both
+/// produce 106 here. The `serial_dedup_collapses_same_key` test covers the
+/// trap where serials are shared.
 #[test]
 fn corpus_from_log_execve_counts_106() {
     let path = fixture_path("logs/from_log_execve_keyed.log");
@@ -109,6 +109,37 @@ fn corpus_from_log_execve_counts_106() {
         count, 106,
         "must count exactly 106 events for key wc_s4_execve_short \
          (corpus oracle rocky8-live-from-log-execve/oracle/from-log-counts.json)"
+    );
+}
+
+// --------------------------------------------------------------------------
+// Serial-dedup: two key-bearing records sharing one serial = 1 event
+// --------------------------------------------------------------------------
+
+/// A PATH record sharing the same serial as its SYSCALL parent MUST NOT be
+/// counted as a second event.
+///
+/// Fixture: `synthetic_serial_dedup.log` has 2 serials (2001, 2002), each with
+/// one SYSCALL + one PATH record, both carrying `key="dup_key"`. That is 4
+/// key-bearing lines but only 2 distinct serials -> the count must be 2, not 4.
+///
+/// ADVERSARIAL TRAP: a lazy impl that increments the counter for every line
+/// matching `key=X` (ignoring serial) reports 4 here. A correct serial-dedup
+/// impl reports 2. This test is the only fixture that distinguishes them.
+/// Grounded: f3 section 5.3c -- "count distinct audit event serials per key".
+#[test]
+fn serial_dedup_collapses_same_key() {
+    let path = fixture_path("logs/synthetic_serial_dedup.log");
+    let rates = count_events_by_key(&path).expect("serial dedup fixture must be readable");
+    let count = rates
+        .counts
+        .get(&Some("dup_key".to_string()))
+        .copied()
+        .unwrap_or(0);
+    assert_eq!(
+        count, 2,
+        "4 key-bearing lines across 2 serials must collapse to 2 events, not 4 \
+         (serial-dedup trap: a naive line-counter reports 4)"
     );
 }
 

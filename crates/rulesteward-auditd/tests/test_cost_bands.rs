@@ -396,20 +396,31 @@ fn classify_directory_watch_is_high() {
     assert_eq!(direction, Direction::Additive);
 }
 
-/// Single-file watch -> MEDIUM or LOW + Additive (not HIGH).
+/// Single-file watch -> (LOW or MEDIUM) + Additive.
 ///
 /// ADVERSARIAL TRAP: a naive classifier that marks all watches HIGH would
 /// mislead operators about identity-watch costs. A single stable file like
 /// `/etc/passwd` is low-to-medium (few writes/day on a hardened host).
+/// Direction must be Additive (a watch rule generates events, it does not
+/// suppress them).
 /// Grounded: f3 section 3.5.
 #[test]
 fn classify_single_file_watch_is_not_high() {
     let rule = watch_wa("/etc/passwd", false, Some("identity"));
-    let (tier, _direction) = classify_rule(&rule);
+    let (tier, direction) = classify_rule(&rule);
     assert_ne!(
         tier,
         VolumeTier::High,
         "single-file watch must NOT be HIGH tier; should be MEDIUM or LOW"
+    );
+    assert_eq!(
+        direction,
+        Direction::Additive,
+        "single-file watch must be Additive (generates events, does not suppress)"
+    );
+    assert!(
+        tier == VolumeTier::Low || tier == VolumeTier::Medium,
+        "single-file watch must be LOW or MEDIUM; got {tier:?}"
     );
 }
 

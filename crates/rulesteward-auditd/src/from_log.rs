@@ -30,10 +30,12 @@ pub struct MeasuredRates {
     pub lines_scanned: u64,
 }
 
-/// Scan an `audit.log` file and aggregate SYSCALL events by `key=` value.
+/// Scan an `audit.log` file and aggregate audit events by `key=` value.
 ///
-/// Only SYSCALL records are counted (one event per serial number). Non-SYSCALL
-/// lines (PATH, CWD, EXECVE, PROCTITLE, etc.) are skipped.
+/// Any record type that carries `key="value"` contributes to the count for that
+/// key (`SYSCALL`, `CONFIG_CHANGE`, `WATCH`, etc.). Records with no `key=` field or
+/// with `key=(null)` are counted under `None`. Multiple records sharing the
+/// same audit serial number are collapsed into one event (serial-dedup).
 ///
 /// Returns `Err` when the file cannot be opened or read.
 ///
