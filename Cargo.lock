@@ -1099,6 +1099,7 @@ dependencies = [
  "proptest",
  "rulesteward-core",
  "rulesteward-fapolicyd",
+ "rulesteward-selinux",
  "serde",
  "serde-sarif",
  "serde_json",

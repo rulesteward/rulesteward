@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 rulesteward-core = { workspace = true }
 rulesteward-fapolicyd = { workspace = true }
+rulesteward-selinux = { workspace = true }
 clap = { workspace = true }
 ariadne = { workspace = true }
 serde = { workspace = true }

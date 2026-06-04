@@ -15,6 +15,5 @@ mod avc_tests;
 
 pub use avc::{AvcDenial, AvcParseError, Verdict, parse_avc};
 pub use denial::{DenialGroup, DenialKind, group_denials};
-
-#[doc(hidden)]
-pub fn placeholder() {}
+pub use te_emit::emit_te;
+pub use triage::{TriageReport, build_report, render_human};
