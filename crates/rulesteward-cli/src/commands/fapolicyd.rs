@@ -48,8 +48,8 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
     match cmd {
         FapolicydCommand::Lint(args) => run_lint(&args),
         FapolicydCommand::Trustdb(cmd) => run_trustdb(cmd),
+        FapolicydCommand::Explain(args) => crate::commands::explain::run(args),
         FapolicydCommand::Simulate
-        | FapolicydCommand::Explain
         | FapolicydCommand::Report
         | FapolicydCommand::ContainerCheck
         | FapolicydCommand::Migrate

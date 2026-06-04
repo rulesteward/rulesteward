@@ -41,9 +41,8 @@ fn root_help_lists_completions_subcommand() {
 
 #[test]
 fn hidden_stub_subcommands_absent_from_help() {
-    // The eight no-op stubs carry `#[command(hide = true)]` for v0.1.0 so the CLI
-    // does not advertise commands that silently do nothing; the implemented
-    // commands (lint, trustdb, completions) stay visible.
+    // simulate/report/container-check/migrate/doctor remain hidden.
+    // explain (fapolicyd), triage (selinux), and cost (auditd) are now visible (v0.2).
     let bin = || Command::cargo_bin("rulesteward").expect("binary built");
 
     bin()
@@ -52,8 +51,8 @@ fn hidden_stub_subcommands_absent_from_help() {
         .success()
         .stdout(predicate::str::contains("lint"))
         .stdout(predicate::str::contains("trustdb"))
+        .stdout(predicate::str::contains("explain")) // now visible
         .stdout(predicate::str::contains("simulate").not())
-        .stdout(predicate::str::contains("explain").not())
         .stdout(predicate::str::contains("report").not())
         .stdout(predicate::str::contains("container-check").not())
         .stdout(predicate::str::contains("migrate").not())
@@ -63,13 +62,48 @@ fn hidden_stub_subcommands_absent_from_help() {
         .args(["selinux", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("triage").not());
+        .stdout(predicate::str::contains("triage")); // now visible
 
     bin()
         .args(["auditd", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("cost").not());
+        .stdout(predicate::str::contains("cost")); // now visible
+}
+
+#[test]
+fn fapolicyd_explain_help_lists_flags() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["fapolicyd", "explain", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--record"))
+        .stdout(predicate::str::contains("--ruleset"))
+        .stdout(predicate::str::contains("--format"));
+}
+
+#[test]
+fn auditd_cost_help_lists_flags() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["auditd", "cost", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--rules"))
+        .stdout(predicate::str::contains("--price-per-gb"))
+        .stdout(predicate::str::contains("--format"));
+}
+
+#[test]
+fn selinux_triage_help_lists_flags() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--emit-te"))
+        .stdout(predicate::str::contains("--format"));
 }
 
 #[test]

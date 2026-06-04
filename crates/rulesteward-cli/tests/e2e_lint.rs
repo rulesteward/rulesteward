@@ -149,24 +149,6 @@ fn lint_sarif_format_warning_file_carries_ruleid_and_level() {
 }
 
 #[test]
-fn selinux_triage_stub_exits_nine() {
-    Command::cargo_bin("rulesteward")
-        .expect("binary")
-        .args(["selinux", "triage"])
-        .assert()
-        .code(9);
-}
-
-#[test]
-fn auditd_cost_stub_exits_nine() {
-    Command::cargo_bin("rulesteward")
-        .expect("binary")
-        .args(["auditd", "cost"])
-        .assert()
-        .code(9);
-}
-
-#[test]
 fn unknown_subcommand_exits_three_not_two() {
     Command::cargo_bin("rulesteward")
         .expect("binary")

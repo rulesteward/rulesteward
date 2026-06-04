@@ -1,26 +1,11 @@
-//! Body of `rulesteward auditd <subcommand>`. Stubs; the real implementation
-//! lands in a later session.
+//! Body of `rulesteward auditd <subcommand>`. Pipeline bodies land in later sessions.
 
 use crate::cli::AuditdCommand;
-use crate::exit_code::EXIT_NO_OP;
 
-pub fn run(_cmd: AuditdCommand) -> anyhow::Result<i32> {
-    eprintln!(
-        "rulesteward auditd: not yet implemented in v{}",
-        env!("CARGO_PKG_VERSION")
-    );
-    Ok(EXIT_NO_OP)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn auditd_cost_stub_returns_exit_no_op() {
-        assert_eq!(
-            run(AuditdCommand::Cost).expect("stub never errors"),
-            EXIT_NO_OP
-        );
+pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
+    match cmd {
+        AuditdCommand::Cost(_args) => {
+            todo!("P2 #90 fills auditd cost")
+        }
     }
 }
