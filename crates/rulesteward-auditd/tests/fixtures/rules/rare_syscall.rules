@@ -1,0 +1,5 @@
+# Rare-syscall LOW tier (f3 section 3.5: adjtimex/settimeofday/mount are rarely
+# called -> 1-100 events/day). A naive 'any syscall rule = HIGH' impl over-warns.
+# These are the canonical time-change audit rules (CIS/STIG time_change set).
+-a always,exit -S adjtimex -S settimeofday -k time_change
+-a always,exit -S clock_settime -k time_change
