@@ -20,6 +20,8 @@ pub mod trustdb;
 pub mod version;
 
 pub use ast::{Attr, AttrValue, Decision, Entry, Perm, Rule, SyntaxFlavor};
+pub use evaluate::{Source, Verdict, evaluate};
+pub use facts::{AccessFacts, FieldEval, RuleOutcome, SetTable, Trust};
 pub use lints::cross_db::lint_orphans;
 pub use lints::trust_hash::lint_weak_digests;
 pub use lints::{
