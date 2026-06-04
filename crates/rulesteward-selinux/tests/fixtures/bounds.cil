@@ -1,0 +1,45 @@
+; BOUNDS known-answer policy. A typebounds violation is the operative deny
+; reason: the child type is bounded by the parent, but a rule grants the child
+; WRITE that the parent lacks. The runtime bounds check (type_attribute_bounds_av,
+; libsepol services.c:850-901) strips that over-grant and sets SEPOL_COMPUTEAV_BOUNDS
+; when the child requests write. (Mirrors the spike's bounds-policy/bounds.cil, which
+; the libsepol spike binary replays to bits=0x8 BOUNDS.)
+;
+; secilc rejects a child-exceeds-parent grant at COMPILE time as a neverallow-class
+; check, so this fixture MUST be built with `secilc -N` (disable-neverallow) so the
+; over-grant survives into the binary policy for the RUNTIME bounds check to strip.
+; The over-grant is the whole point of the fixture; -N is required, not optional.
+(class file (read write open getattr execute))
+(classorder (file))
+(sid kernel)
+(sid security)
+(sidorder (kernel security))
+
+(type rsbnd_parent_t)
+(type rsbnd_child_t)
+(type tmp_t)
+(typebounds rsbnd_parent_t rsbnd_child_t)
+
+(role system_r)
+(user system_u)
+(userrole system_u system_r)
+(roletype system_r rsbnd_parent_t)
+(roletype system_r rsbnd_child_t)
+
+; minimal MLS so contexts with :s0 parse (built with -M true, like kat.policy)
+(sensitivity s0)
+(sensitivityorder (s0))
+(level systemlow (s0))
+(levelrange low_low (systemlow systemlow))
+
+(context kernel_ctx (system_u system_r rsbnd_parent_t low_low))
+(sidcontext kernel kernel_ctx)
+(sidcontext security kernel_ctx)
+
+(userlevel system_u systemlow)
+(userrange system_u low_low)
+
+; parent: read only on tmp_t (NO write)
+(allow rsbnd_parent_t tmp_t (file (read open getattr)))
+; child: rule grants write, but the typebounds parent lacks write -> BOUNDS on write
+(allow rsbnd_child_t tmp_t (file (read write open getattr)))

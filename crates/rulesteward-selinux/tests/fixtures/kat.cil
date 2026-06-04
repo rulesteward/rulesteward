@@ -1,0 +1,46 @@
+; TE + CONSTRAINT(MLS) + CONSTRAINT(role) known-answer policy.
+; To make a CONSTRAINT the operative reason, the access must be TE-ALLOWED but
+; blocked by a (mls)constrain. So we add the TE allows for the constraint cases.
+(class file (read write open getattr execute))
+(class process (transition dyntransition fork sigchld))
+(classorder (file process))
+(sid kernel)
+(sid security)
+(sidorder (kernel security))
+
+(type src_t)
+(type tgt_t)
+(role r_a)
+(role r_b)
+(user u1)
+(userrole u1 r_a)
+(userrole u1 r_b)
+(roletype r_a src_t)
+(roletype r_a tgt_t)
+(roletype r_b src_t)
+(roletype r_b tgt_t)
+
+(sensitivity s0)
+(sensitivity s1)
+(sensitivityorder (s0 s1))
+(category c0)
+(category c1)
+(categoryorder (c0 c1))
+(sensitivitycategory s0 (c0 c1))
+(sensitivitycategory s1 (c0 c1))
+(level l0 (s0 (c0 c1)))
+(level l1 (s1 (c0 c1)))
+
+(mlsconstrain (file (read)) (dom l1 l2))
+(constrain (process (dyntransition)) (eq r1 r2))
+
+(context ctx_k (u1 r_a src_t (l0 l0)))
+(sidcontext kernel ctx_k)
+(sidcontext security ctx_k)
+(userlevel u1 l0)
+(userrange u1 (l0 l1))
+
+; TE allows so the CONSTRAINT (not a TE gap) is the operative deny reason:
+(allow src_t tgt_t (file (read open getattr)))
+(allow src_t src_t (process (dyntransition)))
+; NOTE: deliberately NO allow for src_t tgt_t:file WRITE -> that stays a TE gap.
