@@ -91,11 +91,14 @@ pub fn render_human(groups: &[DenialGroup]) -> String {
     if groups.is_empty() {
         return String::new();
     }
-    groups
+    let mut out = groups
         .iter()
         .map(render_group_human)
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    // Exactly one trailing newline, matching `explain`/`auditd cost` (#114).
+    out.push('\n');
+    out
 }
 
 // ---------------------------------------------------------------------------

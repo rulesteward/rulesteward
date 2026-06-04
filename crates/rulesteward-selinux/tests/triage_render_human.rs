@@ -588,6 +588,30 @@ fn h11_empty_groups_no_panic() {
     let _ = out;
 }
 
+#[test]
+fn render_human_nonempty_ends_with_single_trailing_newline() {
+    // #114: triage human output must end with exactly one trailing newline, like
+    // `explain` (println!) and `auditd cost` (writeln!). The JSON path already
+    // ends with `\n` via render_envelope; this aligns the human path.
+    let groups = vec![make_group(
+        "logrotate_t",
+        "shadow_t",
+        "file",
+        &["read"],
+        false,
+        DenialKind::TeAllowable,
+    )];
+    let out = render_human(&groups);
+    assert!(
+        out.ends_with('\n'),
+        "render_human output must end with a trailing newline; got:\n{out:?}"
+    );
+    assert!(
+        !out.ends_with("\n\n"),
+        "render_human must end with exactly one newline, not a blank line; got:\n{out:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // TC-H12: Multi-class same target (httpd_t / default_t: file + lnk_file + chr_file)
 //

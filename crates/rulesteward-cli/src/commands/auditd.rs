@@ -11,7 +11,7 @@ use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::json::render_envelope;
 use rulesteward_auditd::{
     AuditRule, Direction,
-    bands::{RateBand, classify_rule, default_rate_band},
+    bands::{RateBand, VolumeTier, classify_rule, default_rate_band},
     cost::{CostBand, LogFormat, compute_cost_band, sum_rate_bands},
     from_log::count_events_by_key,
     parser::parse_target,
@@ -35,6 +35,10 @@ fn cost(args: &CostArgs) -> i32 {
             for e in &errs {
                 eprintln!("auditd cost: parse error (line {}): {}", e.line, e.message);
             }
+            // EXIT_RULE_PARSE_ERROR (5): auditd cost parses a RULES file, so an
+            // unparseable file matches `lint`'s fapd-F01 -> 5 mapping (spec §9.4).
+            // `explain` parses a denial RECORD (not a rule) and returns EXIT_ERRORS
+            // (2) instead; the divergence is intentional (#114).
             return EXIT_RULE_PARSE_ERROR;
         }
     };
@@ -135,7 +139,7 @@ fn build_rule_entries_assumed(rules: &[AuditRule], fmt: LogFormat, price: f64) -
             RuleEntry {
                 rule_text: fmt_rule(rule),
                 key: rule_key(rule),
-                tier: format!("{tier:?}").to_lowercase(),
+                tier: tier_str(tier).to_string(),
                 direction,
                 rate_band: band,
                 cost,
@@ -176,7 +180,7 @@ fn build_rule_entries_from_log(
             RuleEntry {
                 rule_text: fmt_rule(rule),
                 key: key.clone(),
-                tier: format!("{tier:?}").to_lowercase(),
+                tier: tier_str(tier).to_string(),
                 direction,
                 rate_band: band,
                 cost,
@@ -472,6 +476,19 @@ fn fmt_direction(d: Direction) -> String {
     }
 }
 
+/// The stable wire string for a volume tier.
+///
+/// Explicit (not `format!("{tier:?}")`) so a `VolumeTier` rename is a compile
+/// error here rather than a silent JSON-contract change (#115).
+fn tier_str(tier: VolumeTier) -> &'static str {
+    match tier {
+        VolumeTier::High => "high",
+        VolumeTier::Medium => "medium",
+        VolumeTier::Low => "low",
+        VolumeTier::Negative => "negative",
+    }
+}
+
 fn fmt_filter_list(list: &rulesteward_auditd::FilterList) -> &'static str {
     use rulesteward_auditd::FilterList;
     match list {
@@ -550,5 +567,22 @@ fn fmt_op(op: &rulesteward_auditd::CompareOp) -> &'static str {
         CompareOp::Ge => ">=",
         CompareOp::BitAnd => "&",
         CompareOp::BitAndEq => "&=",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tier_str;
+    use rulesteward_auditd::bands::VolumeTier;
+
+    #[test]
+    fn tier_str_maps_each_variant_to_its_lowercase_name() {
+        // Pins the JSON/human wire string for every VolumeTier variant. A variant
+        // rename or a wrong arm silently changes the output contract; this guards
+        // it (the prior `format!("{tier:?}").to_lowercase()` had no such test, #115).
+        assert_eq!(tier_str(VolumeTier::High), "high");
+        assert_eq!(tier_str(VolumeTier::Medium), "medium");
+        assert_eq!(tier_str(VolumeTier::Low), "low");
+        assert_eq!(tier_str(VolumeTier::Negative), "negative");
     }
 }

@@ -63,8 +63,8 @@ use crate::{AvcDenial, DenialKind};
 #[derive(Debug, thiserror::Error)]
 pub enum CategorizeError {
     /// The binary policy file could not be opened or parsed by libsepol
-    /// (`sepol_set_policydb_from_file` failed). The wrapped string is the
-    /// libsepol failure detail.
+    /// (the `sepol_policydb_read` + `policydb_load_isids` load path the FFI uses
+    /// failed). The wrapped string is the libsepol failure detail.
     #[error("failed to load SELinux policy: {0}")]
     PolicyLoad(String),
     /// The denial's `tclass` is not a class defined in the supplied policy

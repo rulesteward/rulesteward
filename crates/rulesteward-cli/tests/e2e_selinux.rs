@@ -1,8 +1,9 @@
 //! End-to-end tests for `rulesteward selinux` subcommands.
 //!
-//! Only the input-validation path is testable in the frozen state: the render
-//! path hits `todo!()` inside `triage.rs` / `te_emit.rs` (P3/P4 fill those).
-//! Tests that would invoke a renderer are intentionally absent.
+//! These end-to-end tests cover the `selinux triage` input-validation path only
+//! (missing-flag errors and `--help`). The renderers are implemented; their
+//! output is covered by the selinux crate's `triage_render_human.rs`,
+//! `te_emit_unit.rs`, and `known_answer_categorize.rs`.
 
 use assert_cmd::Command;
 use predicates::prelude::*;

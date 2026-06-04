@@ -190,14 +190,8 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     }
 
     match tokens[0].as_str() {
-        "-D" => {
-            if tokens.len() == 1 {
-                Ok(AuditRule::Control(ControlRule::DeleteAll))
-            } else {
-                // `-D` with extra args is still treated as DeleteAll per auditctl(8).
-                Ok(AuditRule::Control(ControlRule::DeleteAll))
-            }
-        }
+        // `-D` (with or without trailing args) is DeleteAll per auditctl(8).
+        "-D" => Ok(AuditRule::Control(ControlRule::DeleteAll)),
 
         "-b" => {
             let n = tokens.get(1).ok_or_else(|| err("-b requires a value"))?;
@@ -522,9 +516,12 @@ mod tests {
     use crate::ast::{AuditRule, ControlRule};
 
     // --- quote-stripping guard (parser.rs:180) ---
-    // Kills mutant: replace && with || in `starts_with('\'') && ends_with('\'') && len >= 2`.
-    // Under ||, a token with only a leading quote like `'abc` satisfies starts_with('\'')
-    // and gets wrongly stripped to `abc`.
+    // Kills the mutant: replace && with || in
+    // `starts_with('\'') && ends_with('\'') && len >= 2`.
+    // Under ||, a token with only a LEADING quote like `'_x` satisfies
+    // starts_with('\'') and is wrongly stripped (`'_x` -> `_` via t[1..len-1]);
+    // the correct && leaves it intact. The leading-only test below asserts the
+    // preserved key VALUE, so a wrong impl cannot pass it.
 
     #[test]
     fn quote_strip_balanced_is_stripped() {
@@ -541,27 +538,23 @@ mod tests {
 
     #[test]
     fn quote_strip_unbalanced_leading_only_not_stripped() {
-        // `'abc` has a leading quote but no trailing quote.
-        // With the correct && guard: starts_with true, ends_with false -> NOT stripped.
-        // Under && -> ||: starts_with true -> stripped to `bc` (wrong).
-        // Use it as a -k key value embedded in a rule string. A leading-quote-only
-        // token will be preserved verbatim under correct &&, causing a parse error
-        // (not a valid field expression), which is distinct from being silently stripped.
-        // The key observable difference: under ||, `'abc` becomes `abc` (valid key),
-        // but under &&, `'abc` is left as-is.
-        //
-        // We verify the round-trip: parse a rule with a properly quoted key 'mykey'
-        // succeeds, AND a rule with an unbalanced `'mykey` (leading quote only)
-        // results in a different parse outcome.
-        let good = parse_line("-a exit,always -S open -k 'mykey'", 1);
-        assert!(good.is_ok(), "balanced quoted -k should parse ok");
-
-        // Under &&->||, 'mykey (no closing quote) would be stripped to `mykey` and
-        // parse identically to the balanced case. Under correct &&, it is left as
-        // `'mykey` (with the leading quote), which is still accepted as a key value.
-        // We assert the balanced form parses to the same shape as the unquoted form:
-        let unquoted = parse_line("-a exit,always -S open -k mykey", 1);
-        assert!(unquoted.is_ok(), "unquoted -k should parse ok");
+        // `'_x` has a LEADING single quote but no closing quote.
+        // Correct && guard: starts_with('\'') true, ends_with('\'') false -> NOT
+        // stripped -> the key is preserved verbatim as `'_x`.
+        // Mutant && -> ||: starts_with('\'') alone triggers the strip, so
+        // t[1..len-1] turns `'_x` into `_`, corrupting the key.
+        // Asserting the KEY VALUE (not merely that the line parses) is what kills
+        // the mutant: both impls return Ok, but only the correct one keeps `'_x`.
+        let parsed = parse_line("-a exit,always -S open -k '_x", 1)
+            .expect("a rule with an unbalanced-quote key should still parse");
+        match parsed {
+            AuditRule::Syscall { key, .. } => assert_eq!(
+                key.as_deref(),
+                Some("'_x"),
+                "leading-only quote must be preserved unstripped (kills the parser.rs:180 &&->|| mutant)"
+            ),
+            other => panic!("expected Syscall, got {other:?}"),
+        }
     }
 
     #[test]
@@ -579,14 +572,10 @@ mod tests {
         assert!(parsed.is_ok(), "two-char balanced quote should parse");
     }
 
-    // --- -D control rule (parser.rs:194) ---
-    // Mutant: replace == with != in `if tokens.len() == 1`.
-    // EQUIVALENT MUTANT: both the if-branch and the else-branch return
-    // `Ok(AuditRule::Control(ControlRule::DeleteAll))` (see parser.rs:195,198).
-    // No observable behaviour difference exists regardless of which branch runs.
-    // Verified by inspection. No assertion can kill this mutant.
-    //
-    // The tests below confirm correctness of the observable behaviour either way:
+    // --- -D control rule ---
+    // The `-D` arm is a single `Ok(...DeleteAll)`: the dead if/else that produced
+    // the parser.rs:194 equivalent mutant was collapsed (#115). These tests confirm
+    // both forms (bare and with trailing args) parse to DeleteAll:
     #[test]
     fn delete_all_bare() {
         let parsed = parse_line("-D", 1).expect("-D should parse");

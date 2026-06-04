@@ -159,6 +159,12 @@ unsafe extern "C" {
     /// cast, see [`SepolPolicydb`]).
     fn policydb_load_isids(p: *mut SepolPolicydb, s: *mut Sidtab) -> c_int;
 
+    /// `sidtab.h` - free a sidtab's internal hash table + entries (the allocation
+    /// `policydb_load_isids` makes). Operates on a caller-owned `sidtab_t`: it
+    /// frees the INTERNAL state, NOT the struct pointer itself (we own that via
+    /// `Box`), so there is no double-free with the `Box` drop.
+    fn sepol_sidtab_destroy(s: *mut Sidtab);
+
     /// `services.h:30` - install `p` as the global policydb the service functions
     /// use. Takes the raw `policydb_t *` (first-field cast).
     fn sepol_set_policydb(p: *mut SepolPolicydb) -> c_int;
@@ -232,9 +238,10 @@ fn silence_libsepol_debug() {
 /// installs these handles as the global under [`GLOBAL_REPLAY_LOCK`] for the
 /// duration of one replay.
 ///
-/// `Drop` frees the policydb handle. The sidtab is owned inline (`Box`ed so its
-/// address is stable across moves) and dropped with the struct; libsepol's
-/// internal SID entries are released when the policydb is freed.
+/// `Drop` frees the policydb handle AND the sidtab's internal hash table (via
+/// `sepol_sidtab_destroy`): that htable is a separate libsepol allocation made by
+/// `policydb_load_isids`, NOT released by freeing the policydb (#113). The sidtab
+/// struct itself is `Box`ed (stable address across moves) and freed by the `Box`.
 pub struct Policy {
     pdb: *mut SepolPolicydb,
     // Boxed so the pointer we hand libsepol (`sepol_set_sidtab`) stays valid even
@@ -534,13 +541,17 @@ impl Policy {
 
 impl Drop for Policy {
     fn drop(&mut self) {
-        // SAFETY: `self.pdb` was created by `sepol_policydb_create` and never
-        // freed elsewhere (Drop runs once). Freeing it releases the policydb and
-        // its interned SID entries. We do not free the global pointers: another
-        // live `Policy` may currently own the global, and the global is just a
-        // borrowed pointer (libsepol does not own it).
+        // SAFETY: Drop runs once. `self.sidtab` was filled by `policydb_load_isids`,
+        // which allocated its internal htable; `sepol_sidtab_destroy` frees that
+        // htable + entries WITHOUT freeing the `Sidtab` struct (the `Box` owns and
+        // frees the struct after this), so there is no double-free (#113). `self.pdb`
+        // was created by `sepol_policydb_create` and never freed elsewhere; freeing
+        // it releases the policydb. We do NOT clear the libsepol globals: another
+        // live `Policy` may currently own them, and they are borrowed pointers
+        // (libsepol does not own them). Neither pointer is aliased here.
         #[allow(unsafe_code)]
         unsafe {
+            sepol_sidtab_destroy(std::ptr::from_mut::<Sidtab>(self.sidtab.as_mut()));
             sepol_policydb_free(self.pdb);
         }
     }

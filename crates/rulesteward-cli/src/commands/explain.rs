@@ -33,7 +33,10 @@ pub fn run(args: ExplainArgs) -> anyhow::Result<i32> {
         Ok(e) => e,
         Err(e) => {
             eprintln!("error: parsing FANOTIFY record: {e}");
-            // Exit 2 per f1 §4.2: unparseable record.
+            // Exit 2 (EXIT_ERRORS) per f1 §4.2: an unparseable denial RECORD. NOT
+            // EXIT_RULE_PARSE_ERROR (5), which spec §9.4 reserves for an unparseable
+            // RULES file -- a denial record is not a rule. `auditd cost` parses a
+            // rules file and returns 5; the divergence is intentional (#114).
             return Ok(EXIT_ERRORS);
         }
     };
