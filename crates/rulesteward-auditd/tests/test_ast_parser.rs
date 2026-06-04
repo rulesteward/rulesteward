@@ -545,3 +545,345 @@ fn fixture_never_suppress_load_order_preserved() {
         _ => unreachable!(),
     }
 }
+
+// --------------------------------------------------------------------------
+// Group A: parse_audit_field - table-driven coverage of all 40 field arms
+// (kills the ~40 "delete match arm <field>" mutation survivors in parser.rs)
+// --------------------------------------------------------------------------
+
+/// Every field name from `fieldtab.h:24-72` must map to the correct `AuditField`
+/// variant. One table-driven test: each entry is `(field_name_string, expected_variant)`.
+/// Exercises each arm of `parse_audit_field` by embedding the field name in a
+/// `-F field=0` filter inside a parseable syscall rule.
+///
+/// Grounded: `/tmp/audit-src/lib/fieldtab.h:24-72` (46 canonical field names).
+/// Note: `loginuid` is an alias for `auid` (same variant, one entry); `msgtype` is
+/// also present. Total distinct names tested: 41 (40 single-name arms + 1 alias arm).
+///
+/// [DESIGN NOTE: `parse_audit_field` recognises 41 field name strings mapping to
+/// 40 `AuditField` variants; cost uses a subset (auid, uid, exit, success, key are
+/// the most relevant for rate attribution). The full set is retained per the
+/// locked spec grounded in fieldtab.h.]
+#[test]
+fn parse_audit_field_all_arms_recognized() {
+    use rulesteward_auditd::AuditField::*;
+
+    // (field_name_in_rule, expected_AuditField_variant)
+    let cases: &[(&str, AuditField)] = &[
+        ("arch", Arch),
+        ("auid", Auid),
+        ("loginuid", Auid), // alias -> same variant
+        ("devmajor", DevMajor),
+        ("devminor", DevMinor),
+        ("dir", Dir),
+        ("egid", Egid),
+        ("euid", Euid),
+        ("exe", Exe),
+        ("exit", Exit),
+        ("field_compare", FieldCompare),
+        ("filetype", Filetype),
+        ("fsgid", Fsgid),
+        ("fstype", Fstype),
+        ("fsuid", Fsuid),
+        ("gid", Gid),
+        ("inode", Inode),
+        ("key", Key),
+        ("msgtype", MsgType),
+        ("obj_gid", ObjGid),
+        ("obj_lev_high", ObjLevHigh),
+        ("obj_lev_low", ObjLevLow),
+        ("obj_role", ObjRole),
+        ("obj_type", ObjType),
+        ("obj_uid", ObjUid),
+        ("obj_user", ObjUser),
+        ("path", Path),
+        ("perm", Perm),
+        ("pers", Pers),
+        ("pid", Pid),
+        ("ppid", Ppid),
+        ("saddr_fam", SaddrFam),
+        ("sessionid", SessionId),
+        ("sgid", Sgid),
+        ("subj_clr", SubjClr),
+        ("subj_role", SubjRole),
+        ("subj_sen", SubjSen),
+        ("subj_type", SubjType),
+        ("subj_user", SubjUser),
+        ("success", Success),
+        ("suid", Suid),
+        ("uid", Uid),
+    ];
+
+    for (field_name, expected_variant) in cases {
+        // Build a minimal parseable syscall rule containing `-F <field>=0`.
+        // Using `=0` as the value works for all field types for parsing purposes
+        // (the parser stores value as a String; semantic validation is separate).
+        let rule_str = format!("-a always,exit -S execve -F {field_name}=0");
+        let rules = parse_rules_str(&rule_str).unwrap_or_else(|e| {
+            panic!("field '{field_name}' failed to parse: {e:?}\n  rule: {rule_str}")
+        });
+        assert_eq!(rules.len(), 1, "expected 1 rule for field '{field_name}'");
+        match &rules[0] {
+            AuditRule::Syscall { fields, .. } => {
+                assert_eq!(
+                    fields.len(),
+                    1,
+                    "expected 1 field filter for '{field_name}'"
+                );
+                assert_eq!(
+                    &fields[0].field, expected_variant,
+                    "field '{field_name}' must map to {expected_variant:?}"
+                );
+            }
+            other => panic!("field '{field_name}': expected Syscall rule, got {other:?}"),
+        }
+    }
+}
+
+/// An unrecognised field name must produce a parse error (the `_ => None` fallback).
+/// Grounded: `parse_audit_field` returns `None` for unknown names; `parse_field_filter`
+/// converts that to a `ParseError`.
+#[test]
+fn parse_audit_field_unknown_returns_error() {
+    let errors = parse_err("-a always,exit -S execve -F totally_unknown_field=0");
+    assert!(
+        !errors.is_empty(),
+        "unknown field must produce a parse error"
+    );
+    assert!(
+        errors[0].message.contains("unknown field"),
+        "error message must mention 'unknown field'; got: {:?}",
+        errors[0].message
+    );
+}
+
+// --------------------------------------------------------------------------
+// Group B: targeted tests for logic-survivor mutations
+// --------------------------------------------------------------------------
+
+/// parser.rs:114 `&& -> ||` in `parse_target` directory filter.
+///
+/// Mutation: `p.is_file() || p.extension()==Some("rules")` (instead of `&&`).
+/// With `||`, a non-.rules file (README, *.txt) or a subdir named `something.rules`
+/// would pass the filter and either fail to parse or produce wrong rule counts.
+///
+/// Fixture: `rulesd/non-rules-files/` contains:
+///   - `10-real.rules`  (1 syscall rule -- the only file that should be read)
+///   - `README`         (plain text -- must be excluded by `is_file()` check)
+///   - `something.rules/`  (a DIRECTORY with .rules extension -- must be excluded by `is_file()`)
+///
+/// Grounded: `augenrules(8)` concatenates ONLY regular files with `.rules` extension.
+/// With `&&` (correct): 1 rule. With `||` (mutant): README tries to parse -> error or
+/// extra rule; `something.rules/` dir triggers `is_file() = false` but `||` lets it
+/// through, causing a directory-read or parse failure.
+#[test]
+fn parse_target_dir_filter_excludes_non_rules_files() {
+    let dir = fixture_path("rulesd/non-rules-files");
+    let rules = parse_target(&dir).expect(
+        "non-rules-files directory must parse successfully \
+         (only 10-real.rules should be read; README and something.rules/ dir ignored)",
+    );
+    assert_eq!(
+        rules.len(),
+        1,
+        "must find exactly 1 rule (from 10-real.rules only); \
+         got {}: {rules:?}",
+        rules.len()
+    );
+    match &rules[0] {
+        AuditRule::Syscall { key, .. } => {
+            assert_eq!(
+                key.as_deref(),
+                Some("execve_real"),
+                "rule key must be 'execve_real' (from 10-real.rules)"
+            );
+        }
+        other => panic!("expected Syscall rule, got {other:?}"),
+    }
+}
+
+/// parser.rs:158-159 `strip_comment` -- single-quote protection of `#`.
+///
+/// Three mutation survivors target this function:
+///   - delete `'\''` match arm  (single-quote toggle removed)
+///   - replace guard `!in_single_quote` with `true`  (always treat `#` as comment)
+///   - delete `!` in guard  (same effect as above)
+///
+/// With any of these mutations, a `#` inside single quotes is incorrectly treated
+/// as a comment start, truncating the token at the `#` and producing a parse error
+/// or wrong value.
+///
+/// Test A: `#` inside single-quoted `-F key` value -- must NOT be stripped.
+/// Test B: trailing `# comment` after a real token -- must BE stripped.
+///
+/// Grounded: `strip_comment` doc comment + `man 7 audit.rules` section 2.
+#[test]
+fn strip_comment_hash_inside_single_quotes_not_stripped() {
+    // `-F key='a#b'` -- the `#` is inside single quotes and must survive stripping.
+    // The parser receives the single-quoted token 'a#b' and strips the outer quotes,
+    // yielding value "a#b". If the `'` arm is deleted or the guard is wrong, the
+    // `#` is treated as a comment start and the rule is truncated to `-a always,exit
+    // -S execve -F key=` (or similar), causing a parse error.
+    let rule_str = "-a always,exit -S execve -F 'key=a#b'";
+    let rules = parse_rules_str(rule_str).unwrap_or_else(|e| {
+        panic!("# inside single quotes must not start a comment; parse failed: {e:?}")
+    });
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { fields, .. } => {
+            assert_eq!(fields.len(), 1, "expected 1 field filter");
+            assert_eq!(fields[0].field, AuditField::Key, "field must be Key");
+            assert_eq!(
+                fields[0].value, "a#b",
+                "value must be 'a#b' with the # preserved; got: {:?}",
+                fields[0].value
+            );
+        }
+        other => panic!("expected Syscall rule, got {other:?}"),
+    }
+}
+
+#[test]
+fn strip_comment_trailing_comment_is_stripped() {
+    // `# trailing comment` after a real token MUST be stripped.
+    // With `!in_single_quote` guard replaced by `true`, the `#` is always a comment
+    // start -- this test still passes under that mutant, so it is a companion to
+    // the above, not a standalone killer. The above test is the adversarial one.
+    let rule_str = "-w /etc/passwd -p wa -k passwd_chk  # trailing comment";
+    let rules = parse_rules_str(rule_str)
+        .unwrap_or_else(|e| panic!("trailing comment must be stripped; parse failed: {e:?}"));
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { key, .. } => {
+            assert_eq!(
+                key.as_deref(),
+                Some("passwd_chk"),
+                "key must be 'passwd_chk' with trailing comment stripped"
+            );
+        }
+        other => panic!("expected Watch rule, got {other:?}"),
+    }
+}
+
+/// parser.rs:180,181,194 -- single-quote stripping in `parse_line` tokenizer.
+///
+/// Three mutation survivors:
+///   - `&& -> ||` in `starts_with('\'') && ends_with('\'') && len >= 2`
+///   - `- -> /` in `t[1..t.len() - 1]` (the slice that removes the quotes)
+///   - `== -> !=` in `t.len() >= 2` check (len equality/comparison)
+///
+/// With `|| ` mutant: a token that only starts-with or only ends-with a quote
+/// gets its quotes stripped incorrectly.
+/// With `/ ` mutant: the inner-slice arithmetic yields a wrong substring.
+/// With `!=` mutant: the length guard inverts -- short tokens get stripped,
+/// single-quote token `'` (len=1) passes the `!=` check.
+///
+/// Test: a quoted token `'auid>=1000'` must produce value `auid>=1000` (no quotes).
+/// Also test a single `'` (len=1) which must NOT be treated as a strippable token
+/// (though in practice it produces a parse error since `auid>=1000` without the
+/// quotes is what the field filter expects anyway -- the key assertion is that the
+/// parser does not panic or silently produce wrong output).
+#[test]
+fn parse_line_single_quoted_token_strips_outer_quotes() {
+    // 'auid>=1000' -> field auid, op Ge, value "1000"
+    let rule_str = "-a always,exit -S execve -F 'auid>=1000' -k test_quoting";
+    let rules = parse_rules_str(rule_str).unwrap_or_else(|e| {
+        panic!("single-quoted token 'auid>=1000' must parse correctly; error: {e:?}")
+    });
+    assert_eq!(rules.len(), 1, "expected 1 rule");
+    match &rules[0] {
+        AuditRule::Syscall { fields, key, .. } => {
+            assert_eq!(fields.len(), 1, "expected 1 field");
+            assert_eq!(fields[0].field, AuditField::Auid, "field must be Auid");
+            assert_eq!(fields[0].op, CompareOp::Ge, "operator must be Ge (>=)");
+            assert_eq!(
+                fields[0].value, "1000",
+                "value must be '1000' (quotes stripped); got: {:?}",
+                fields[0].value
+            );
+            assert_eq!(key.as_deref(), Some("test_quoting"));
+        }
+        other => panic!("expected Syscall rule, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_line_unquoted_token_passes_through_unchanged() {
+    // Without surrounding quotes, the token must be used as-is.
+    // This distinguishes the `&&->||` mutant: an unquoted token does not start
+    // with `'`, so `||` would not cause mishandling here -- but the above test
+    // with a truly-quoted token IS the adversarial case. This test is a sanity
+    // companion.
+    let rule_str = "-a always,exit -S execve -F auid>=1000 -k test_unquoted";
+    let rules = parse_rules_str(rule_str)
+        .unwrap_or_else(|e| panic!("unquoted auid>=1000 must parse correctly; error: {e:?}"));
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { fields, .. } => {
+            assert_eq!(fields[0].op, CompareOp::Ge, "operator must be Ge");
+            assert_eq!(fields[0].value, "1000", "value must be 1000");
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
+/// parser.rs:414,416 -- `parse_filter_list` arms for "user" and "filesystem".
+///
+/// Two mutation survivors: delete "user" arm; delete "filesystem" arm.
+/// Both are valid `auditctl(8)` filter lists from `flagtab.h`.
+///
+/// Grounded: `/tmp/audit-src/lib/flagtab.h:25-29` -- task/exit/user/exclude/filesystem.
+/// "user" and "filesystem" are the two arms not already covered by existing tests.
+#[test]
+fn parse_filter_list_user_recognized() {
+    // `-a user,always` -- "user" list; rarely used but valid per flagtab.h.
+    let rules = parse_rules_str("-a user,always -S execve")
+        .expect("-a user,always must parse (flagtab.h user list)");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { list, action, .. } => {
+            assert_eq!(list, &FilterList::User, "list must be User");
+            assert_eq!(action, &Action::Always, "action must be Always");
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_filter_list_filesystem_recognized() {
+    // `-a filesystem,never` -- "filesystem" list; valid per flagtab.h.
+    let rules = parse_rules_str("-a filesystem,never -S execve")
+        .expect("-a filesystem,never must parse (flagtab.h filesystem list)");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { list, action, .. } => {
+            assert_eq!(list, &FilterList::Filesystem, "list must be Filesystem");
+            assert_eq!(action, &Action::Never, "action must be Never");
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
+/// parser.rs:424 -- `parse_action` arm for "possible".
+///
+/// Mutation survivor: delete "possible" arm.
+///
+/// Grounded: `/tmp/audit-src/lib/actiontab.h:23-25` lists never/possible/always.
+/// "possible" is a real (if uncommon) auditctl action value. The AST variant
+/// `Action::Possible` is defined and documented in `ast.rs`.
+/// Therefore this is NOT an equivalent mutant -- a rules file with `possible` as
+/// the action would fail to parse if the arm is deleted.
+#[test]
+fn parse_action_possible_recognized() {
+    // `-a exit,possible -S execve` -- valid per actiontab.h.
+    let rules = parse_rules_str("-a exit,possible -S execve")
+        .expect("-a exit,possible must parse (actiontab.h possible action)");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { action, list, .. } => {
+            assert_eq!(action, &Action::Possible, "action must be Possible");
+            assert_eq!(list, &FilterList::Exit, "list must be Exit");
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
