@@ -93,11 +93,15 @@ fn h1_single_perm_teallowable_emits_narrow_allow_no_macro_no_padding() {
 
     // Must NOT contain perms beyond `read` for this triple (f4 §2.5 inv.3).
     // The macro-expanded set would include open, getattr, ioctl, lock.
+    // Scoped to `allow` lines only (matching TC-H7/H12 idiom) so that perm words
+    // appearing in plain-language explanation prose do not false-fail this guard.
     for forbidden_perm in &["open", "getattr", "ioctl", "lock"] {
+        let padded_on_allow_line = out.lines().filter(|l| l.contains("allow ")).any(|l| {
+            l.contains(&format!(" {forbidden_perm} ")) || l.contains(&format!(" {forbidden_perm};"))
+        });
         assert!(
-            !out.contains(&format!("shadow_t:file {{ {forbidden_perm}"))
-                && !out.contains(&format!(" {forbidden_perm} ")),
-            "TC-H1: must NOT pad with `{forbidden_perm}` for a single `read` denial; got:\n{out}"
+            !padded_on_allow_line,
+            "TC-H1: must NOT pad with `{forbidden_perm}` on an allow line for a single `read` denial; got:\n{out}"
         );
     }
 
