@@ -10,5 +10,10 @@ mod denial;
 mod te_emit;
 mod triage;
 
+#[cfg(test)]
+mod avc_tests;
+
+pub use avc::{AvcDenial, AvcParseError, Verdict, parse_avc};
+
 #[doc(hidden)]
 pub fn placeholder() {}
