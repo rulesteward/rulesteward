@@ -72,11 +72,28 @@ fn h1_single_perm_teallowable_emits_narrow_allow_no_macro_no_padding() {
     )];
     let out = render_human(&groups);
 
-    // Must contain the exact narrow allow (f4 §2.5, corpus oracle).
+    // Must contain the BARE (no-brace) single-perm form (f4 §2.5, corpus oracle).
+    // `allow logrotate_t shadow_t:file read;`  - NOT the brace form.
+    // This assertion KILLS the M1 mutant (`==` -> `!=` in format_narrow_allow):
+    // the mutant renders the single-perm group with braces (`{ read }`), which
+    // does NOT match `"allow logrotate_t shadow_t:file read;"` (no `{`).
     assert!(
-        out.contains("allow logrotate_t shadow_t:file read;")
-            || out.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-H1: must emit narrow allow for single-perm TeAllowable; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:file read;"),
+        "TC-H1: must emit bare single-perm allow (no braces) for single-perm \
+         TeAllowable; got:\n{out}"
+    );
+    // Confirm the brace form does NOT appear for a single-perm group.
+    assert!(
+        !out.contains("allow logrotate_t shadow_t:file { read }"),
+        "TC-H1: must NOT emit brace form for single-perm allow; got:\n{out}"
+    );
+
+    // M2 kill: the explanation must display the bare perm token `read`, not
+    // `{ read }`. The `!=` mutant in triage_group flips perm_display for single-
+    // perm groups to the brace form, which the explanation text would reflect.
+    assert!(
+        !out.contains("{ read }"),
+        "TC-H1: explanation must NOT wrap single perm in braces; got:\n{out}"
     );
 
     // Must NOT contain any interface macro (f4 §2.5 inv.1).
@@ -139,20 +156,35 @@ fn h2_multi_perm_same_triple_unions_into_one_rule() {
     }];
     let out = render_human(&groups);
 
-    // Must contain the unioned brace (order within braces may vary).
-    // The corpus oracle is `{ getattr open read }` (BTreeSet sort order).
+    // Must contain the BRACE multi-perm form (BTreeSet sort: getattr open read).
+    // M1 kill: the `!=` mutant in format_narrow_allow emits single-perm groups
+    // with braces and multi-perm groups BARE (dropping all but the first perm).
+    // The bare multi-perm form would be `allow logrotate_t shadow_t:file getattr;`
+    // (only the first perm, no union), which does NOT match the brace form below.
     assert!(
-        out.contains("allow logrotate_t shadow_t:file"),
-        "TC-H2: must emit allow logrotate_t shadow_t:file; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:file { getattr open read };"),
+        "TC-H2: must emit brace multi-perm allow in BTreeSet order \
+         `allow logrotate_t shadow_t:file {{ getattr open read }};`; got:\n{out}"
     );
 
-    // All 3 denied perms must appear.
+    // All 3 denied perms must appear on the allow line.
     for perm in &["getattr", "open", "read"] {
         assert!(
-            out.contains(perm),
-            "TC-H2: must include denied perm `{perm}`; got:\n{out}"
+            out.lines()
+                .filter(|l| l.contains("allow logrotate_t shadow_t:file"))
+                .any(|l| l.contains(perm)),
+            "TC-H2: allow line must include denied perm `{perm}`; got:\n{out}"
         );
     }
+
+    // M2 kill: the explanation must use the braced multi-perm display
+    // `{ getattr open read }`. The `!=` mutant flips multi-perm to bare (just
+    // `getattr`), which would NOT contain the full braced string below.
+    assert!(
+        out.contains("{ getattr open read }"),
+        "TC-H2: explanation must display multi-perm as `{{ getattr open read }}`; \
+         got:\n{out}"
+    );
 
     // Must NOT pad with ioctl or lock (f4 §2.5 inv.3).
     assert!(
@@ -425,16 +457,15 @@ fn h7_multi_triple_separate_rules_per_tclass() {
     ];
     let out = render_human(&groups);
 
-    // Both class-specific rules must appear.
+    // Both class-specific rules must appear in bare single-perm form (no braces).
+    // Strengthened from `||` form to exact match to kill M1 mutant.
     assert!(
-        out.contains("allow logrotate_t shadow_t:file read;")
-            || out.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-H7: must emit allow logrotate_t shadow_t:file read; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:file read;"),
+        "TC-H7: must emit bare single-perm allow logrotate_t shadow_t:file read; got:\n{out}"
     );
     assert!(
-        out.contains("allow logrotate_t shadow_t:dir search;")
-            || out.contains("allow logrotate_t shadow_t:dir { search };"),
-        "TC-H7: must emit allow logrotate_t shadow_t:dir search; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:dir search;"),
+        "TC-H7: must emit bare single-perm allow logrotate_t shadow_t:dir search; got:\n{out}"
     );
 
     // Must NOT cross-merge: `file` rule must not contain `search` and
@@ -598,16 +629,15 @@ fn h12_multi_class_same_target_three_separate_rules() {
     ];
     let out = render_human(&groups);
 
-    // Each class-specific allow must appear.
+    // Each class-specific allow must appear in bare single-perm form (no braces).
+    // Strengthened from `||` form to exact match to kill M1 mutant.
     assert!(
-        out.contains("allow httpd_t default_t:file read;")
-            || out.contains("allow httpd_t default_t:file { read };"),
-        "TC-H12: must emit allow httpd_t default_t:file read; got:\n{out}"
+        out.contains("allow httpd_t default_t:file read;"),
+        "TC-H12: must emit bare single-perm allow httpd_t default_t:file read; got:\n{out}"
     );
     assert!(
-        out.contains("allow httpd_t default_t:lnk_file read;")
-            || out.contains("allow httpd_t default_t:lnk_file { read };"),
-        "TC-H12: must emit allow httpd_t default_t:lnk_file read; got:\n{out}"
+        out.contains("allow httpd_t default_t:lnk_file read;"),
+        "TC-H12: must emit bare single-perm allow httpd_t default_t:lnk_file read; got:\n{out}"
     );
     assert!(
         out.contains("allow httpd_t default_t:chr_file"),
@@ -813,11 +843,11 @@ fn h16_end_to_end_corpus_single_perm_read() {
 
     let out = render_human(&groups);
 
-    // The narrow allow for the f4 §1.2 anchor.
+    // The narrow allow for the f4 §1.2 anchor - bare single-perm form (no braces).
+    // Strengthened from `||` form to exact match to kill M1 mutant.
     assert!(
-        out.contains("allow logrotate_t shadow_t:file read;")
-            || out.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-H16: end-to-end render must emit narrow allow for corpus anchor; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:file read;"),
+        "TC-H16: end-to-end render must emit bare single-perm allow for corpus anchor; got:\n{out}"
     );
 
     // Must NOT emit interface macro (end-to-end trap guard).

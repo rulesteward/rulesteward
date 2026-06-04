@@ -211,15 +211,19 @@ fn r4a_teallowable_report_json_contains_suggested_rule_and_dontaudit() {
     let report = build_report(&groups);
     let json = serde_json::to_string(&report).expect("serialize");
 
-    // The JSON must contain the narrow allow rule string for a TeAllowable group.
-    // Acceptable forms (single-perm may omit braces):
-    //   "allow logrotate_t shadow_t:file read;"
-    //   "allow logrotate_t shadow_t:file { read };"
+    // The JSON must contain the BARE single-perm allow rule (no braces).
+    // M1 kill (JSON path): the `!=` mutant in format_narrow_allow renders the
+    // single-perm group with braces, producing `allow ... { read };` in the JSON.
+    // This assertion requires the bare form, so the mutant fails.
     assert!(
-        json.contains("allow logrotate_t shadow_t:file read;")
-            || json.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-R4a: TeAllowable report JSON must contain the narrow suggested allow rule \
-         'allow logrotate_t shadow_t:file read;'; got:\n{json}"
+        json.contains("allow logrotate_t shadow_t:file read;"),
+        "TC-R4a: TeAllowable report JSON must contain the bare single-perm allow rule \
+         'allow logrotate_t shadow_t:file read;' (no braces); got:\n{json}"
+    );
+    // Confirm the brace form does NOT appear for a single-perm group in JSON.
+    assert!(
+        !json.contains("allow logrotate_t shadow_t:file { read }"),
+        "TC-R4a: JSON must NOT contain brace form for single-perm allow; got:\n{json}"
     );
 
     // The JSON must also mention dontaudit (issue #94 Decision 1: always note
