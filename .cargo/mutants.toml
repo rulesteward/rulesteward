@@ -31,6 +31,11 @@ examine_globs = [
     # pure rule-evaluator core (P0.4 #67): explain replay + future simulate engine.
     "crates/rulesteward-fapolicyd/src/evaluate.rs",
     "crates/rulesteward-fapolicyd/src/facts.rs",
+    # P1 explain domain logic (filled by pipeline P1): FANOTIFY record parser + replay/explain.
+    # Top-level src files, NOT under parser/** or lints/**, so they must be listed explicitly
+    # or the P1 mutation gate passes vacuously (examine_globs is an allowlist).
+    "crates/rulesteward-fapolicyd/src/fanotify.rs",
+    "crates/rulesteward-fapolicyd/src/explain.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
     # auditd logic modules (filled by pipeline P2):
