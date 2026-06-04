@@ -396,10 +396,8 @@ fn parse_list_action(s: &str, lineno: usize) -> Result<(FilterList, Action), Par
     }
 
     // Try both orderings (list,action or action,list - both are valid per auditctl(8)).
-    let try_list_action =
-        parse_filter_list(parts[0]).and_then(|l| parse_action(parts[1]).map(|a| (l, a)));
-    let try_action_list =
-        parse_action(parts[0]).and_then(|a| parse_filter_list(parts[1]).map(|l| (l, a)));
+    let try_list_action = parse_filter_list(parts[0]).zip(parse_action(parts[1]));
+    let try_action_list = parse_filter_list(parts[1]).zip(parse_action(parts[0]));
 
     match (try_list_action, try_action_list) {
         (Some((l, a)), _) | (_, Some((l, a))) => Ok((l, a)),
