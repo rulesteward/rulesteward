@@ -672,6 +672,122 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Mutation-hardening: the matcher-primitive boundaries (int_set_contains +
+    // prefix_string_match SetRef/keyword paths - kills the `== -> !=` survivors).
+    // -----------------------------------------------------------------------
+
+    /// `uid=%set` resolves to numeric membership: a fact uid IN the set matches,
+    /// one NOT in it does not. Kills the `n == fact_val` -> `!=` mutant in the
+    /// `SetRef` arm of `int_set_contains`.
+    #[test]
+    fn uid_setref_numeric_membership_matches_and_rejects() {
+        let sets = SetTable::from_entries(&[set_def("admins", &["0", "1000"])]);
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_ref("uid", "admins")],
+            vec![Attr::All],
+        )];
+        let mut in_set = AccessFacts::new(Perm::Open);
+        in_set.uids = vec![1000];
+        assert_eq!(
+            evaluate(&rules, &sets, &in_set).decision,
+            Decision::Deny,
+            "uid 1000 is a member of %admins -> rule matches"
+        );
+        let mut out_of_set = AccessFacts::new(Perm::Open);
+        out_of_set.uids = vec![42];
+        assert_eq!(
+            evaluate(&rules, &sets, &out_of_set).decision,
+            Decision::Allow,
+            "uid 42 is NOT in %admins -> no match -> fallthrough Allow"
+        );
+    }
+
+    /// A uid given as a numeric STRING literal (`AttrValue::Str("0")`, not Int)
+    /// matches a fact uid of 0 and rejects 5. Kills the `n == fact_val` -> `!=`
+    /// mutant in the `Str` arm of `int_set_contains`.
+    #[test]
+    fn uid_numeric_string_literal_matches_and_rejects() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("uid", "0")], // kv() builds AttrValue::Str("0")
+            vec![Attr::All],
+        )];
+        let mut matching = AccessFacts::new(Perm::Open);
+        matching.uids = vec![0];
+        assert_eq!(
+            evaluate(&rules, &empty_sets(), &matching).decision,
+            Decision::Deny,
+            "uid=\"0\" (string) matches fact uid 0"
+        );
+        let mut nonmatching = AccessFacts::new(Perm::Open);
+        nonmatching.uids = vec![5];
+        assert_eq!(
+            evaluate(&rules, &empty_sets(), &nonmatching).decision,
+            Decision::Allow,
+            "uid=\"0\" (string) does NOT match fact uid 5"
+        );
+    }
+
+    /// A `dir=%set` whose members include the `execdirs` keyword: a fact exe
+    /// under an execdir (`/usr/`) matches; one outside (`/opt/`) does not. Kills
+    /// the `m == "execdirs"` and `prefix_from_list(...) == Match` `!=` mutants.
+    #[test]
+    fn dir_setref_execdirs_keyword_matches_under_usr() {
+        let sets = SetTable::from_entries(&[set_def("mydirs", &["execdirs"])]);
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_ref("dir", "mydirs")],
+            vec![Attr::All],
+        )];
+        let mut under = AccessFacts::new(Perm::Open);
+        under.exe = Some("/usr/bin/foo".to_string());
+        assert_eq!(
+            evaluate(&rules, &sets, &under).decision,
+            Decision::Deny,
+            "exe under an execdir (/usr/) matches dir=%{{execdirs}}"
+        );
+        let mut outside = AccessFacts::new(Perm::Open);
+        outside.exe = Some("/opt/x".to_string());
+        assert_eq!(
+            evaluate(&rules, &sets, &outside).decision,
+            Decision::Allow,
+            "exe outside any execdir does not match"
+        );
+    }
+
+    /// A `dir=%set` whose members include the `systemdirs` keyword (which adds
+    /// `/etc/`, NOT covered by execdirs): a fact exe under `/etc/` matches. Kills
+    /// the `m == "systemdirs"` and `prefix_from_list(...) == Match` `!=` mutants.
+    #[test]
+    fn dir_setref_systemdirs_keyword_matches_under_etc() {
+        let sets = SetTable::from_entries(&[set_def("mydirs", &["systemdirs"])]);
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_ref("dir", "mydirs")],
+            vec![Attr::All],
+        )];
+        let mut under = AccessFacts::new(Perm::Open);
+        under.exe = Some("/etc/passwd".to_string());
+        assert_eq!(
+            evaluate(&rules, &sets, &under).decision,
+            Decision::Deny,
+            "exe under /etc/ (systemdirs-only) matches dir=%{{systemdirs}}"
+        );
+        let mut outside = AccessFacts::new(Perm::Open);
+        outside.exe = Some("/opt/x".to_string());
+        assert_eq!(
+            evaluate(&rules, &sets, &outside).decision,
+            Decision::Allow,
+            "exe outside systemdirs does not match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Semantic 1: first-match-wins (f1 §1.1, policy.c:1126)
     // -----------------------------------------------------------------------
 
