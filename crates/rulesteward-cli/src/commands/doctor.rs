@@ -346,26 +346,31 @@ impl SystemProbe for LiveProbe {
     }
 
     fn denial_stats(&self) -> Result<DenialStats, String> {
-        // Parse the fapolicyd denial log at /var/log/fapolicyd/fapolicyd.log
-        // or the audit log. We read the audit log with ausearch.
-        let out = std::process::Command::new("ausearch")
-            .args(["-k", "fapolicyd", "--raw"])
-            .output()
-            .map_err(|e| format!("ausearch not found: {e}"))?;
-        if !out.status.success() && out.stdout.is_empty() {
-            // ausearch may exit 1 when there are no results -- that's fine.
-            return Ok(DenialStats {
-                count_24h: 0,
-                count_7d: 0,
-                top_denied: Vec::new(),
-            });
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let count = text.lines().filter(|l| l.contains("FANOTIFY")).count();
+        // Run ausearch for each window separately so the counts are distinct.
+        // ausearch exits 1 (no results) or fails if the binary is absent;
+        // empty stdout with non-zero exit is treated as 0 denials, not an error.
+        let run_ausearch = |start_arg: &str| -> Result<String, String> {
+            let out = std::process::Command::new("ausearch")
+                .args(["-m", "FANOTIFY", "--raw", "--start", start_arg])
+                .output()
+                .map_err(|e| format!("ausearch not found: {e}"))?;
+            if !out.status.success() && out.stdout.is_empty() {
+                return Ok(String::new()); // no results -- treat as empty
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+
+        let raw_24h = run_ausearch("today")?;
+        let raw_7d = run_ausearch("week-ago")?;
+
+        let (count_24h, _) = parse_fanotify_denials(&raw_24h);
+        let (count_7d, mut top_denied) = parse_fanotify_denials(&raw_7d);
+        top_denied.truncate(10);
+
         Ok(DenialStats {
-            count_24h: u64::try_from(count).unwrap_or(u64::MAX),
-            count_7d: u64::try_from(count).unwrap_or(u64::MAX),
-            top_denied: Vec::new(), // top-10 parsing deferred (informational)
+            count_24h,
+            count_7d,
+            top_denied,
         })
     }
 
@@ -403,7 +408,17 @@ impl SystemProbe for LiveProbe {
 /// Read mode from /etc/fapolicyd/fapolicyd.conf.
 /// Returns Some("enforcing") or Some("permissive") or None.
 fn read_fapolicyd_mode() -> Option<String> {
-    let text = std::fs::read_to_string("/etc/fapolicyd/fapolicyd.conf").ok()?;
+    read_fapolicyd_mode_from(Path::new("/etc/fapolicyd/fapolicyd.conf"))
+}
+
+/// Inner implementation of `read_fapolicyd_mode` that accepts an explicit path
+/// so that unit tests can supply a temp file without touching the real system.
+///
+/// Returns `Some("permissive")` if `permissive=1` (or `permissive = 1`) is set,
+/// `Some("enforcing")` if the file is readable but the key is absent or set to
+/// anything other than `1`, and `None` if the file cannot be read.
+fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(conf_path).ok()?;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("permissive") {
@@ -417,6 +432,9 @@ fn read_fapolicyd_mode() -> Option<String> {
 }
 
 /// Scan all `.rules` files in `rules_dir` for deprecated `sha256hash=`.
+///
+/// Returns `true` if any `.rules` file in `rules_dir` contains the literal
+/// string `sha256hash=`; `false` if the dir cannot be read or no file matches.
 fn check_sha256hash_in_dir(rules_dir: &Path) -> bool {
     let Ok(rd) = std::fs::read_dir(rules_dir) else {
         return false;
@@ -433,6 +451,104 @@ fn check_sha256hash_in_dir(rules_dir: &Path) -> bool {
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// FANOTIFY denial parser (pure -- testable without a real audit log)
+// ---------------------------------------------------------------------------
+
+/// Parse raw `ausearch -m FANOTIFY --raw` output and extract the total denial
+/// count plus the top denied subject→object pairs sorted descending by count.
+///
+/// Each `type=FANOTIFY` record group that contains both a FANOTIFY line with
+/// `resp=2` (`FAN_DENY`) and a SYSCALL `exe=` field contributes one hit to the
+/// `(subject_exe, object_path)` tally.  When a group has `resp=2` but no
+/// `exe=`, the subject is reported as `"(unknown)"`.  Groups with `resp=1`
+/// (`FAN_ALLOW`) are ignored.
+///
+/// The function is era-agnostic: it uses the SYSCALL `exe=` field (present in
+/// both era1 and era2 ausearch blocks) for the subject and the PATH `name=`
+/// field for the object.  Groups that contain only a bare FANOTIFY line (no
+/// SYSCALL companion) are still counted when `resp=2`.
+///
+/// Returns `(total_denials, top_pairs)` where `top_pairs` is sorted by count
+/// descending (capped at the first 10 by the caller).
+#[must_use]
+pub fn parse_fanotify_denials(raw: &str) -> (u64, Vec<(String, String, u64)>) {
+    use std::collections::HashMap;
+
+    let mut total: u64 = 0;
+    let mut tally: HashMap<(String, String), u64> = HashMap::new();
+
+    // ausearch separates events with "----" lines; split on those.
+    // A bare FANOTIFY-only input with no separator is treated as one block.
+    let blocks: Vec<&str> = raw
+        .split("\n----\n")
+        .flat_map(|chunk| chunk.split("----\n"))
+        .collect();
+
+    for block in blocks {
+        let mut fanotify_resp: Option<u32> = None;
+        let mut exe: Option<&str> = None;
+        let mut obj_path: Option<&str> = None;
+
+        for line in block.lines() {
+            let t = line.trim();
+            if t.is_empty() || t == "----" {
+                continue;
+            }
+            if t.contains("type=FANOTIFY") {
+                // Extract resp= field (unquoted decimal).
+                if let Some(resp_val) = extract_kv(t, "resp") {
+                    fanotify_resp = resp_val.parse::<u32>().ok();
+                }
+            } else if t.contains("type=SYSCALL") {
+                exe = extract_kv(t, "exe");
+            } else if t.contains("type=PATH") {
+                obj_path = extract_kv(t, "name");
+            }
+        }
+
+        // Only count DENY records (resp == 2).
+        if fanotify_resp == Some(2) {
+            total += 1;
+            let subj = exe.unwrap_or("(unknown)").to_string();
+            let obj = obj_path.unwrap_or("(unknown)").to_string();
+            *tally.entry((subj, obj)).or_insert(0) += 1;
+        }
+    }
+
+    let mut pairs: Vec<(String, String, u64)> =
+        tally.into_iter().map(|((s, o), c)| (s, o, c)).collect();
+    // Sort descending by count; stable tie-break by (subj, obj) for determinism.
+    pairs.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    (total, pairs)
+}
+
+/// Minimal key=value extractor for audit record lines (handles quoted and
+/// unquoted values; word-boundary match so `pid=` doesn't match inside
+/// `ppid=`).  Mirrors the logic in `rulesteward_fapolicyd::fanotify`.
+fn extract_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=");
+    let (abs_pos, _) = line.match_indices(needle.as_str()).find(|&(pos, _)| {
+        pos == 0
+            || line
+                .as_bytes()
+                .get(pos - 1)
+                .is_some_and(u8::is_ascii_whitespace)
+    })?;
+    let after = &line[abs_pos + needle.len()..];
+    if let Some(inner) = after.strip_prefix('"') {
+        let end = inner.find('"')?;
+        return Some(&inner[..end]);
+    }
+    let end = after.find(char::is_whitespace).unwrap_or(after.len());
+    Some(&after[..end])
 }
 
 /// Parse the JSON lint output and count severity=Error / severity=Warning diagnostics.
@@ -1906,5 +2022,456 @@ mod tests {
         let counts = parse_lint_counts(json).expect("parse ok");
         assert_eq!(counts.errors, 0);
         assert_eq!(counts.warnings, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // JOB 1A: status_counts tally -- kills the `replace += with *=` survivors
+    //
+    // A `*= 1` mutant would leave every counter at 0, so asserting exact
+    // non-zero counts for each bucket kills all five mutants at once.
+    // The JSON summary path is also asserted to pin that render_json uses the
+    // same tally (the two renderers share status_counts, so they cannot drift).
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn status_counts_exact_tally_kills_star_eq_mutants() {
+        // 2 Ok, 1 Warn, 3 Fail, 1 Skip, 1 Unknown -- total 8.
+        let results: Vec<CheckResult> = vec![
+            result(CheckStatus::Ok),
+            result(CheckStatus::Ok),
+            result(CheckStatus::Warn),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Skip),
+            result(CheckStatus::Unknown),
+        ];
+        let s = status_counts(&results);
+        assert_eq!(s.total, 8);
+        assert_eq!(s.ok, 2, "ok count");
+        assert_eq!(s.warn, 1, "warn count");
+        assert_eq!(s.fail, 3, "fail count");
+        assert_eq!(s.skip, 1, "skip count");
+        assert_eq!(s.unknown, 1, "unknown count");
+    }
+
+    #[test]
+    fn render_json_summary_reflects_exact_tally() {
+        // The JSON envelope must carry the exact per-bucket counts.
+        // Pins that render_json calls status_counts and that the JSON field
+        // names match the DoctorSummary struct fields.
+        let results: Vec<CheckResult> = vec![
+            result(CheckStatus::Ok),
+            result(CheckStatus::Ok),
+            result(CheckStatus::Warn),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Fail),
+            result(CheckStatus::Skip),
+            result(CheckStatus::Unknown),
+        ];
+        let out = render_json(&results);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["summary"]["total"], 8);
+        assert_eq!(v["summary"]["ok"], 2);
+        assert_eq!(v["summary"]["warn"], 1);
+        assert_eq!(v["summary"]["fail"], 3);
+        assert_eq!(v["summary"]["skip"], 1);
+        assert_eq!(v["summary"]["unknown"], 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // JOB 1B: check_disk_space boundary tests
+    //
+    // Kills survivors on the `< FAIL_BYTES` / `< WARN_BYTES` boundaries
+    // (`<` vs `<=` / `==` / `>`) and the `bytes_free / (1024*1024)` arithmetic.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn check_disk_space_exactly_fail_bytes_is_warn_not_fail() {
+        // bytes_free == FAIL_BYTES (100 MiB exactly) is NOT below FAIL_BYTES,
+        // so it must be Warn (between FAIL and WARN thresholds), not Fail.
+        // Kills a `< -> <=` mutant on the first branch.
+        let probe = FakeProbe {
+            fs_space: Some(FsSpace {
+                bytes_free: FAIL_BYTES,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            check_disk_space(&probe).status,
+            CheckStatus::Warn,
+            "exactly FAIL_BYTES must be Warn, not Fail"
+        );
+    }
+
+    #[test]
+    fn check_disk_space_one_byte_below_fail_bytes_is_fail() {
+        // bytes_free == FAIL_BYTES - 1 is strictly below FAIL_BYTES -> Fail.
+        // Kills a `< -> ==` or `< -> >` mutant on the first branch.
+        let probe = FakeProbe {
+            fs_space: Some(FsSpace {
+                bytes_free: FAIL_BYTES - 1,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            check_disk_space(&probe).status,
+            CheckStatus::Fail,
+            "FAIL_BYTES-1 must be Fail"
+        );
+    }
+
+    #[test]
+    fn check_disk_space_exactly_warn_bytes_is_ok_not_warn() {
+        // bytes_free == WARN_BYTES (128 MiB exactly) is NOT below WARN_BYTES,
+        // so it must be Ok, not Warn.
+        // Kills a `< -> <=` mutant on the second branch.
+        let probe = FakeProbe {
+            fs_space: Some(FsSpace {
+                bytes_free: WARN_BYTES,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            check_disk_space(&probe).status,
+            CheckStatus::Ok,
+            "exactly WARN_BYTES must be Ok, not Warn"
+        );
+    }
+
+    #[test]
+    fn check_disk_space_one_byte_below_warn_bytes_is_warn() {
+        // WARN_BYTES - 1 is strictly below WARN_BYTES but above FAIL_BYTES -> Warn.
+        let probe = FakeProbe {
+            fs_space: Some(FsSpace {
+                bytes_free: WARN_BYTES - 1,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            check_disk_space(&probe).status,
+            CheckStatus::Warn,
+            "WARN_BYTES-1 must be Warn"
+        );
+    }
+
+    #[test]
+    fn check_disk_space_detail_reports_correct_mib() {
+        // 200 MiB exactly: detail must say "200 MiB". Pins the /(1024*1024)
+        // arithmetic -- a mutant replacing * with + or - in the divisor would
+        // produce a wrong MiB value and fail this assertion.
+        let probe = FakeProbe {
+            fs_space: Some(FsSpace {
+                bytes_free: 200 * 1024 * 1024,
+            }),
+            ..Default::default()
+        };
+        let result = check_disk_space(&probe);
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(
+            result.detail.contains("200 MiB"),
+            "detail must report 200 MiB for exactly 200*1024*1024 bytes: {}",
+            result.detail
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // JOB 1C: check_denial_rate top_denied section
+    //
+    // Kills the `delete !` survivor on `!stats.top_denied.is_empty()`.
+    // Without the `!`, the top-denied section would be appended when the list
+    // IS empty and omitted when it is NOT empty -- both assertions below would
+    // fail.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn check_denial_rate_nonempty_top_denied_includes_top_section() {
+        let probe = FakeProbe {
+            denials: Some(DenialStats {
+                count_24h: 5,
+                count_7d: 50,
+                top_denied: vec![
+                    ("/usr/bin/python3".to_string(), "/etc/shadow".to_string(), 3),
+                    ("/usr/bin/bash".to_string(), "/tmp/secret".to_string(), 2),
+                ],
+            }),
+            ..Default::default()
+        };
+        let result = check_denial_rate(&probe);
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(
+            result.detail.contains("top denied:"),
+            "non-empty top_denied must include 'top denied:' in detail: {}",
+            result.detail
+        );
+        assert!(
+            result.detail.contains("/usr/bin/python3"),
+            "detail must include the top subject: {}",
+            result.detail
+        );
+        assert!(
+            result.detail.contains("/etc/shadow"),
+            "detail must include the top object: {}",
+            result.detail
+        );
+    }
+
+    #[test]
+    fn check_denial_rate_empty_top_denied_excludes_top_section() {
+        // When top_denied is empty the "top denied:" section must be absent.
+        // A `delete !` mutant would incorrectly append it even for an empty list.
+        let probe = FakeProbe {
+            denials: Some(DenialStats {
+                count_24h: 0,
+                count_7d: 0,
+                top_denied: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let result = check_denial_rate(&probe);
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(
+            !result.detail.contains("top denied:"),
+            "empty top_denied must NOT include 'top denied:' in detail: {}",
+            result.detail
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // JOB 1D: read_fapolicyd_mode_from + check_sha256hash_in_dir
+    //
+    // Tempfile-based unit tests that kill the file-IO helper survivors.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_one_returns_permissive() {
+        // `permissive=1` -> Some("permissive").
+        // Kills mutants on the `== "1"` guard and on the return-value string.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "# comment\npermissive=1\nsome_other=0\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string())
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_zero_returns_enforcing() {
+        // `permissive=0` -> not "1" -> returns Some("enforcing"), not None.
+        // Kills a mutant that converts the `!= "1"` path to None.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive=0\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string())
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_absent_key_returns_enforcing() {
+        // No `permissive=` line at all -> Some("enforcing").
+        // Kills a mutant that short-circuits the fallthrough to None.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "integrity=sha256\nrpm_integrity_check=1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string())
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_missing_file_returns_none() {
+        // A non-existent file -> None (the `?` operator in the impl).
+        let path = Path::new("/nonexistent/path/to/fapolicyd.conf");
+        assert_eq!(read_fapolicyd_mode_from(path), None);
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_with_spaces_returns_permissive() {
+        // `permissive = 1` (spaces around `=`) -> permissive.
+        // The impl uses `split('=').nth(1)?.trim()` so this works; this test
+        // pins that the trim() call is not accidentally mutated away.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string())
+        );
+    }
+
+    #[test]
+    fn check_sha256hash_in_dir_returns_true_when_present() {
+        // A `.rules` file containing `sha256hash=` -> true.
+        // Kills the `!= -> ==` return-value mutant.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("10-test.rules"),
+            "allow exe=/usr/bin/cat : sha256hash=abc123\n",
+        )
+        .unwrap();
+        assert!(
+            check_sha256hash_in_dir(dir.path()),
+            "must return true when sha256hash= is present"
+        );
+    }
+
+    #[test]
+    fn check_sha256hash_in_dir_returns_false_when_absent() {
+        // A `.rules` file without `sha256hash=` -> false.
+        // Kills a mutant that always returns true.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("10-test.rules"),
+            "allow exe=/usr/bin/cat : filehash=abc123\n",
+        )
+        .unwrap();
+        assert!(
+            !check_sha256hash_in_dir(dir.path()),
+            "must return false when no sha256hash= is present"
+        );
+    }
+
+    #[test]
+    fn check_sha256hash_in_dir_ignores_non_rules_files() {
+        // A `.txt` file containing `sha256hash=` must NOT trigger a true return.
+        // Kills a mutant that drops the `.rules` extension filter.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("notes.txt"),
+            "allow exe=/usr/bin/cat : sha256hash=abc123\n",
+        )
+        .unwrap();
+        assert!(
+            !check_sha256hash_in_dir(dir.path()),
+            "non-.rules files must be ignored"
+        );
+    }
+
+    #[test]
+    fn check_sha256hash_in_dir_nonexistent_dir_returns_false() {
+        let path = Path::new("/nonexistent/rules.d");
+        assert!(
+            !check_sha256hash_in_dir(path),
+            "non-existent dir must return false"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // JOB 2: parse_fanotify_denials pure parser
+    //
+    // Tests use representative ausearch output derived from the era1/era2 fixtures
+    // in crates/rulesteward-fapolicyd/tests/fixtures/explain/.
+    // -------------------------------------------------------------------------
+
+    /// Representative era1 ausearch block (resp=2 = DENY).
+    const ERA1_DENY: &str = r#"----
+type=PROCTITLE msg=audit(1600385000.000:100): proctitle=636174002F6574632F686F73746E616D65
+type=PATH msg=audit(1600385000.000:100): item=0 name="/etc/hostname" inode=100 dev=fd:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1600385000.000:100): cwd="/root"
+type=SYSCALL msg=audit(1600385000.000:100): arch=c000003e syscall=257 success=no exit=-13 a0=ffffff9c a1=55a5d1234560 a2=0 a3=0 items=1 ppid=1 pid=51 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=4294967295 comm="cat" exe="/usr/bin/coreutils" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1600385000.000:100): resp=2 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+"#;
+
+    /// Era2 block with resp=1 (ALLOW) -- must NOT be counted.
+    const ERA2_ALLOW: &str = r#"----
+type=PROCTITLE msg=audit(1600385147.372:590): proctitle=636174002F6574632F686F73746E616D65
+type=PATH msg=audit(1600385147.372:590): item=0 name="/etc/hostname" inode=100 dev=fd:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1600385147.372:590): cwd="/root"
+type=SYSCALL msg=audit(1600385147.372:590): arch=c000003e syscall=257 success=no exit=-13 a0=ffffff9c a1=55a5d1234560 a2=0 a3=0 items=1 ppid=1 pid=52 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=4294967295 comm="cat" exe="/usr/bin/coreutils" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1600385147.372:590): resp=1 fan_type=1 fan_info=1 subj_trust=1 obj_trust=0
+"#;
+
+    #[test]
+    fn parse_fanotify_denials_empty_input_is_zero() {
+        let (count, pairs) = parse_fanotify_denials("");
+        assert_eq!(count, 0);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn parse_fanotify_denials_single_deny_block_counts_one() {
+        let (count, pairs) = parse_fanotify_denials(ERA1_DENY);
+        assert_eq!(count, 1, "one DENY block -> count 1");
+        assert_eq!(pairs.len(), 1);
+        let (subj, obj, c) = &pairs[0];
+        assert_eq!(subj, "/usr/bin/coreutils");
+        assert_eq!(obj, "/etc/hostname");
+        assert_eq!(*c, 1);
+    }
+
+    #[test]
+    fn parse_fanotify_denials_allow_block_not_counted() {
+        // ALLOW (resp=1) blocks must be ignored -- count stays 0.
+        let (count, pairs) = parse_fanotify_denials(ERA2_ALLOW);
+        assert_eq!(count, 0, "ALLOW block must not increment count");
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn parse_fanotify_denials_deny_and_allow_mixed() {
+        let input = format!("{ERA1_DENY}{ERA2_ALLOW}");
+        let (count, pairs) = parse_fanotify_denials(&input);
+        assert_eq!(count, 1, "only the DENY block counts");
+        assert_eq!(pairs.len(), 1);
+    }
+
+    #[test]
+    fn parse_fanotify_denials_two_deny_blocks_same_pair_accumulates() {
+        // Two DENY blocks with the same (subj, obj) pair -> count 2, one pair
+        // with tally 2.  Kills a mutant that resets the counter instead of
+        // accumulating.
+        let input = format!("{ERA1_DENY}{ERA1_DENY}");
+        let (count, pairs) = parse_fanotify_denials(&input);
+        assert_eq!(count, 2, "two identical DENY blocks -> count 2");
+        assert_eq!(pairs.len(), 1, "same pair appears once in the tally");
+        assert_eq!(pairs[0].2, 2, "tally for the pair must be 2");
+    }
+
+    #[test]
+    fn parse_fanotify_denials_top_pairs_sorted_descending_by_count() {
+        // Build input: python3 denied 3x, bash denied 1x.
+        // After parsing, python3 must appear first (higher count).
+        let python_deny = |serial: u32| {
+            format!(
+                "----\ntype=SYSCALL msg=audit(1.0:{serial}): exe=\"/usr/bin/python3\" pid=1 auid=4294967295\ntype=PATH msg=audit(1.0:{serial}): item=0 name=\"/etc/shadow\"\ntype=FANOTIFY msg=audit(1.0:{serial}): resp=2 fan_type=0 fan_info=0 subj_trust=0 obj_trust=0\n"
+            )
+        };
+        let bash_deny = || {
+            "----\ntype=SYSCALL msg=audit(2.0:200): exe=\"/usr/bin/bash\" pid=2 auid=4294967295\ntype=PATH msg=audit(2.0:200): item=0 name=\"/tmp/secret\"\ntype=FANOTIFY msg=audit(2.0:200): resp=2 fan_type=0 fan_info=0 subj_trust=0 obj_trust=0\n".to_string()
+        };
+        let input = format!(
+            "{}{}{}{}",
+            python_deny(1),
+            python_deny(2),
+            python_deny(3),
+            bash_deny()
+        );
+        let (count, pairs) = parse_fanotify_denials(&input);
+        assert_eq!(count, 4);
+        assert_eq!(pairs.len(), 2);
+        // First pair (highest count) must be python3.
+        assert_eq!(pairs[0].0, "/usr/bin/python3");
+        assert_eq!(pairs[0].2, 3);
+        // Second pair must be bash.
+        assert_eq!(pairs[1].0, "/usr/bin/bash");
+        assert_eq!(pairs[1].2, 1);
+    }
+
+    #[test]
+    fn parse_fanotify_denials_no_syscall_subject_is_unknown() {
+        // A bare FANOTIFY-only deny block (no SYSCALL line) -> subject "(unknown)".
+        let bare = "type=FANOTIFY msg=audit(1.0:1): resp=2 fan_type=0 fan_info=0 subj_trust=0 obj_trust=0\n";
+        let (count, pairs) = parse_fanotify_denials(bare);
+        assert_eq!(count, 1);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            pairs[0].0, "(unknown)",
+            "no SYSCALL -> subject is (unknown)"
+        );
     }
 }
