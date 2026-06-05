@@ -11,7 +11,7 @@ Images: `fapolicyd8` (Rocky Linux 8, fapolicyd 1.3.2), `fapolicyd9` (Rocky Linux
 
 **Not vendored:** `README.md`, `validation.log`, `manifest.json` (provenance on NFS).
 
-**Scenario counts:** 79 total - 36 happy-path, 40 adversarial, 3 neutral.
+**Scenario counts:** 77 total - 36 happy-path, 38 adversarial, 3 neutral (2 exe=untrusted scenarios dropped; see below + #126).
 
 **CI portability:** Tests use `env!("CARGO_MANIFEST_DIR")` to locate this vendored corpus; no NFS dependency at test time.
 

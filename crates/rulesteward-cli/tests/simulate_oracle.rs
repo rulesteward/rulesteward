@@ -56,7 +56,7 @@
 //! - Rule number catches first-match vs last-match, within-file order,
 //!   cross-file lexical order.
 //! - 3-state verdict catches silent certainty on pattern=, ftype=, trust= cases.
-//! - Floor guard (`count >= 79`) catches silent corpus-load failure.
+//! - Floor guard (`count >= 77`) catches silent corpus-load failure.
 
 use assert_cmd::Command;
 use std::path::PathBuf;
