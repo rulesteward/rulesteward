@@ -566,60 +566,111 @@ pub fn compute_drift(current: &[RegisterRow], snapshot: &[RegisterRow]) -> Vec<D
     drift
 }
 
-/// The drift comparison key for a row: the full canonical predicate with the
-/// hash VALUE masked to a sentinel.
+/// The drift comparison key for a row: the canonical predicate (decision, perm,
+/// sorted+set-expanded subject, sorted+set-expanded+hash-masked object).
 ///
-/// Two grants are considered "the same grant" for drift purposes when they have
-/// the same decision, perm, subject, AND object - except that the hex digest in
-/// a `filehash=` / `sha256hash=` attribute is replaced by the sentinel `<hash>`.
-/// This achieves two goals simultaneously:
+/// This mirrors `canonical_grant_key` / `canonical_side` / `canonical_value` for
+/// the AST, but operates on the stored `RegisterRow` string fields (the snapshot
+/// rows have no AST available - only the rendered strings and `set_expansions`).
 ///
-/// 1. **Object-value changes produce add+remove** (not false zero-drift): two
-///    grants with the same scope but different object values (e.g. `dir=/a/` vs
-///    `dir=/b/`, or `ftype=A` vs `ftype=B`) produce different keys and are
-///    correctly reported as one removed + one added row.
+/// Two grants are considered "the same grant" for drift purposes when their
+/// CANONICAL predicate is equal (f2 section 4.1). In particular:
 ///
-/// 2. **Hash re-pins produce "changed" (not add+remove)**: when only the
-///    filehash hex digest changes (e.g. `filehash=AAAA...` -> `filehash=BBBB...`)
-///    the two rows share the same masked key, so `compute_drift` lands in the
-///    `(Some, Some)` arm and `rows_differ` detects the differing `hash` /
-///    `hash_origin`, producing a `DriftKind::Changed` row.
+/// 1. **Attribute reorder is ignored**: `dir=/a/ ftype=text/plain` and
+///    `ftype=text/plain dir=/a/` produce the same sorted token set.
 ///
-/// The masking regex: replace any 32-to-128 char lowercase hex run that is the
-/// VALUE of a `filehash=` or `sha256hash=` attribute. In practice the stored
-/// `object` string has the form `filehash=<64 hex chars>` (or similar), so we
-/// replace the value portion with `<hash>`.
+/// 2. **Set-ref == literal expansion**: `exe=%exes` (with `%exes=[/bin/a]`)
+///    and literal `exe=/bin/a` produce the same expanded token after looking up
+///    `%exes` in `row.set_expansions` (which is `{"%exes": ["/bin/a"]}`).
+///
+/// 3. **Object-value changes produce add+remove**: two grants with different
+///    object values (e.g. `dir=/a/` vs `dir=/b/`) produce different canonical
+///    tokens and thus different keys.
+///
+/// 4. **Hash re-pins produce "changed" (not add+remove)**: the hex digest in
+///    a `filehash=` / `sha256hash=` token is replaced by the sentinel `<hash>`
+///    on the object side, so only `rows_differ` (not the key) distinguishes them.
 fn row_key(row: &RegisterRow) -> String {
-    // Mask the hex digest in filehash=/sha256hash= so a re-pin of the same
-    // grant doesn't produce a different key. We operate on the stored `object`
-    // string (the lossless render of the object-side attrs).
-    let masked_object = mask_hash_value(&row.object);
+    let canonical_subj = canonical_side_from_row_str(&row.subject, &row.set_expansions);
+    let canonical_obj_masked =
+        canonical_masked_object_from_row_str(&row.object, &row.set_expansions);
     format!(
         "{}|{}|{}|{}",
-        row.decision, row.perm, row.subject, masked_object
+        row.decision, row.perm, canonical_subj, canonical_obj_masked
     )
 }
 
-/// Replace the hex-digest value in a `filehash=<hex>` or `sha256hash=<hex>`
-/// attribute string with the sentinel `<hash>`.
+/// Parse a rendered predicate side (space-separated `key=value` or `all` tokens),
+/// set-expand any `key=%setname` token using `set_expansions`, then sort and join
+/// with `;`.
 ///
-/// Only the VALUE (the hex portion after `=`) is masked; the key name and all
-/// other attributes are preserved. This makes the drift key stable across
-/// hash re-pins while keeping every other object attribute (dir, path, ftype,
-/// etc.) intact.
-fn mask_hash_value(object: &str) -> String {
-    // Attributes of interest: `filehash=` or `sha256hash=` followed by a run
-    // of lowercase hex digits (32-128 chars, covering MD5 through SHA512).
-    // We split on spaces (the render joins attrs with space) and mask only the
-    // matching token.
-    let mut parts: Vec<String> = Vec::new();
-    for token in object.split(' ') {
-        let masked = if let Some(rest) = token
-            .strip_prefix("filehash=")
-            .or_else(|| token.strip_prefix("sha256hash="))
-        {
-            // Check that the value looks like a hex digest (all lowercase hex chars).
-            if !rest.is_empty()
+/// Mirrors `canonical_side` for the AST, but operates on the stored row strings.
+/// Each space-delimited token is either:
+///   - `"all"` (the bare wildcard sentinel)
+///   - `"key=value"` where `value` is a literal
+///   - `"key=%setname"` where `%setname` appears in `set_expansions`
+///
+/// A `key=%setname` token is replaced by one `key=member` token per sorted member
+/// (the members in `set_expansions` are already sorted). A literal token stands as-is.
+fn canonical_side_from_row_str(
+    side: &str,
+    set_expansions: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let mut tokens: Vec<String> = Vec::new();
+    for raw in side.split(' ') {
+        if raw.is_empty() {
+            continue;
+        }
+        if raw == "all" {
+            tokens.push("all".to_owned());
+            continue;
+        }
+        // Try to split on the first `=`.
+        if let Some((key, val)) = raw.split_once('=') {
+            if let Some(set_name) = val.strip_prefix('%') {
+                let set_key = format!("%{set_name}");
+                if let Some(members) = set_expansions.get(&set_key) {
+                    // Expand: one token per member (members are already sorted).
+                    for member in members {
+                        tokens.push(format!("{key}={member}"));
+                    }
+                } else {
+                    // No expansion found; keep the raw token.
+                    tokens.push(raw.to_owned());
+                }
+            } else {
+                // Literal value.
+                tokens.push(raw.to_owned());
+            }
+        } else {
+            // No `=` - keep as-is (shouldn't occur in well-formed rows).
+            tokens.push(raw.to_owned());
+        }
+    }
+    tokens.sort();
+    tokens.join(";")
+}
+
+/// Like `canonical_side_from_row_str` for the object side, but additionally
+/// masks the hex digest in any `filehash=` / `sha256hash=` token with `<hash>`.
+///
+/// This preserves the hash-repin property: `filehash=AAAA` and `filehash=BBBB`
+/// both canonicalise to `filehash=<hash>`, so `compute_drift` lands in the
+/// `(Some, Some)` arm and `rows_differ` detects the difference as `changed`.
+fn canonical_masked_object_from_row_str(
+    object: &str,
+    set_expansions: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let expanded = canonical_side_from_row_str(object, set_expansions);
+    // The expanded string uses `;` as a separator; mask hash tokens within it.
+    // Re-split on `;`, mask each token, re-join.
+    let masked: Vec<String> = expanded
+        .split(';')
+        .map(|token| {
+            if let Some(rest) = token
+                .strip_prefix("filehash=")
+                .or_else(|| token.strip_prefix("sha256hash="))
+                && !rest.is_empty()
                 && rest.len() >= 32
                 && rest.len() <= 128
                 && rest.bytes().all(|b| b.is_ascii_hexdigit())
@@ -629,16 +680,12 @@ fn mask_hash_value(object: &str) -> String {
                 } else {
                     "sha256hash"
                 };
-                format!("{prefix}=<hash>")
-            } else {
-                token.to_owned()
+                return format!("{prefix}=<hash>");
             }
-        } else {
             token.to_owned()
-        };
-        parts.push(masked);
-    }
-    parts.join(" ")
+        })
+        .collect();
+    masked.join(";")
 }
 
 /// True iff two rows with the same canonical key have a meaningful difference.
