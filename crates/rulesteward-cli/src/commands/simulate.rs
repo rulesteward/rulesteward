@@ -19,6 +19,14 @@
 //!   the trust DB was built will be marked untrusted at runtime.
 //! - `exe=untrusted` / `exe=trusted` trust macros are NOT evaluated
 //!   (treated as literal exe paths); tracked in issue #126.
+//! - `--trustdb` is accepted but the DB is not yet consulted: subject/object
+//!   trust is taken from the workload's `trust`/`subjTrust`/`objTrust` fields
+//!   (defaulting to `Unknown` when absent). The DB lookup will be wired in a
+//!   future round; tracked in issue #127.
+//! - On-demand file hashing is not performed: a `filehash=`/`sha256hash=`
+//!   rule is evaluated only when the workload supplies the object's `sha256`
+//!   field; simulate does NOT hash the local file on demand. Tracked in
+//!   issue #127.
 
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -497,6 +505,11 @@ pub fn run(args: SimulateArgs) -> anyhow::Result<i32> {
     };
     if parse_error {
         return Ok(EXIT_RULE_PARSE_ERROR);
+    }
+
+    // Disclose that --trustdb is not yet consulted (issue #127).
+    if args.trustdb.is_some() {
+        eprintln!("note: --trustdb is not yet consulted; trust is taken from the workload (#127)");
     }
 
     // Extract only Rule items (SetDefinitions are used by SetTable; blanks/comments skip).

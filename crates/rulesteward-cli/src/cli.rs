@@ -222,7 +222,12 @@ pub struct SimulateArgs {
     #[arg(long, value_name = "FILE")]
     pub workload: PathBuf,
 
-    /// Read-only trust DB for replaying trust facts (optional).
+    /// Trust DB path (reserved; not yet consulted - see issue #127).
+    ///
+    /// The argument is accepted but the DB is not read this round: subject and
+    /// object trust are taken from the workload's `trust`/`subjTrust`/`objTrust`
+    /// fields (defaulting to Unknown when absent). Passing this flag emits a
+    /// note on stderr so the caller knows the DB is not being used.
     #[arg(long, value_name = "PATH")]
     pub trustdb: Option<PathBuf>,
 
