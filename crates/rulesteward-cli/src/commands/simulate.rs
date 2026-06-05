@@ -95,11 +95,16 @@ struct Query {
     gids: Vec<u32>,
     ftype: Option<String>,
     sha256: Option<String>,
-    /// Trust applies to both subject and object (the workload.json has a single
-    /// `trust` field; the evaluate engine checks trust on both sides against the
-    /// same value so that a workload expressing "this exe is trusted" and "this
-    /// object is trusted" can be expressed with one field).
-    trust: Trust,
+    /// Subject-side trust status.
+    ///
+    /// Set from `subjTrust` (per-side override) if present, else from
+    /// `trust` (symmetric shorthand) if present, else `Trust::Unknown`.
+    subj_trust: Trust,
+    /// Object-side trust status.
+    ///
+    /// Set from `objTrust` (per-side override) if present, else from
+    /// `trust` (symmetric shorthand) if present, else `Trust::Unknown`.
+    obj_trust: Trust,
 }
 
 /// Parse a single JSON object `{exe, path, perm, ...}` into a `Query`.
@@ -136,12 +141,16 @@ fn parse_json_object(obj: &serde_json::Map<String, serde_json::Value>) -> anyhow
     let gids = parse_int_field(obj, "gid")?;
 
     // trust: bool, null, or absent. null and absent both map to Trust::Unknown.
-    let trust = match obj.get("trust") {
-        None | Some(serde_json::Value::Null) => Trust::Unknown,
-        Some(serde_json::Value::Bool(true)) => Trust::Yes,
-        Some(serde_json::Value::Bool(false)) => Trust::No,
-        Some(other) => anyhow::bail!("unexpected trust value in workload: {other}"),
-    };
+    // This is the symmetric shorthand: when subjTrust / objTrust are absent,
+    // both sides inherit this value.
+    let trust_sym = parse_trust_field(obj, "trust")?;
+
+    // subjTrust / objTrust: per-side overrides. When present they take priority
+    // over the symmetric `trust` shorthand for their respective side.
+    let subj_trust =
+        parse_trust_field(obj, "subjTrust")?.unwrap_or(trust_sym.unwrap_or(Trust::Unknown));
+    let obj_trust =
+        parse_trust_field(obj, "objTrust")?.unwrap_or(trust_sym.unwrap_or(Trust::Unknown));
 
     Ok(Query {
         perm,
@@ -153,8 +162,26 @@ fn parse_json_object(obj: &serde_json::Map<String, serde_json::Value>) -> anyhow
         gids,
         ftype,
         sha256,
-        trust,
+        subj_trust,
+        obj_trust,
     })
+}
+
+/// Parse a trust field by key: bool, null, or absent.
+///
+/// Returns `Ok(Some(Trust::Yes/No))` when the value is a boolean,
+/// `Ok(None)` when the key is absent or `null` (caller decides the default),
+/// and an error when the value has an unexpected type.
+fn parse_trust_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> anyhow::Result<Option<Trust>> {
+    match obj.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(true)) => Ok(Some(Trust::Yes)),
+        Some(serde_json::Value::Bool(false)) => Ok(Some(Trust::No)),
+        Some(other) => anyhow::bail!("unexpected {key} value in workload: {other}"),
+    }
 }
 
 /// Parse a uid or gid field: single integer, array, null, or absent.
@@ -227,7 +254,8 @@ fn parse_terse_line(line: &str) -> anyhow::Result<Query> {
         gids: Vec::new(),
         ftype: None,
         sha256: None,
-        trust: Trust::Unknown,
+        subj_trust: Trust::Unknown,
+        obj_trust: Trust::Unknown,
     })
 }
 
@@ -327,9 +355,9 @@ fn decision_str(decision: Decision) -> &'static str {
 
 /// Evaluate one `Query` against the ruleset and produce a `ResultEntry`.
 fn evaluate_query(query: &Query, rules: &[Rule], sets: &SetTable) -> ResultEntry {
-    // Single workload `trust` field maps to both sides of the trust check.
-    // This means a workload expressing "exe is trusted, object is trusted"
-    // covers both subject-side `trust=1` and object-side `trust=1` rules.
+    // Subject and object trust are tracked independently. The workload JSON
+    // supports `subjTrust` / `objTrust` per-side overrides as well as the
+    // symmetric `trust` shorthand (parsed in `parse_json_object`).
     let facts = AccessFacts {
         perm: query.perm,
         exe: query.exe.clone(),
@@ -342,8 +370,8 @@ fn evaluate_query(query: &Query, rules: &[Rule], sets: &SetTable) -> ResultEntry
         sessionid: None,
         pid: None,
         ppid: None,
-        subj_trust: query.trust,
-        obj_trust: query.trust,
+        subj_trust: query.subj_trust,
+        obj_trust: query.obj_trust,
         ftype: query.ftype.clone(),
         sha256: query.sha256.clone(),
     };
