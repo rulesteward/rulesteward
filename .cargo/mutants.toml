@@ -42,6 +42,8 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/register.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
+    # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69).
+    "crates/rulesteward-cli/src/commands/simulate.rs",
     # P0 (v0.2 round 2) generic CSV serializer: RFC-4180 escaping branches.
     "crates/rulesteward-cli/src/output/csv.rs",
     # auditd logic modules (filled by pipeline P2):
