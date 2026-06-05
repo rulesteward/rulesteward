@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "subject": "all",
+      "object": "trust=1",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "trust",
+      "setExpansions": {},
+      "source": {
+        "file": "90-trustenum.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ],
+  "trustJoin": [
+    {
+      "grantIndex": 0,
+      "rows": [
+        {
+          "path": "/usr/bin/ls",
+          "source": "RpmDb",
+          "size": 49,
+          "digest": "309b3c9a3246361ec0338641aed3c14e7f91e23e7cf10de000c75135ba99fddd"
+        },
+        {
+          "path": "/usr/bin/cat",
+          "source": "FileDb",
+          "size": 50,
+          "digest": "c6138c9502337f42763d627e4b665dd4fd66f26a987891d0a7e8313783f689ad"
+        },
+        {
+          "path": "/opt/local/tool",
+          "source": "Unknown",
+          "size": 23,
+          "digest": "03d2c1c283a28a22e87c242b19ae8b5040d8335cc4eb3781529955d281ff0cfe"
+        }
+      ]
+    }
+  ]
+}

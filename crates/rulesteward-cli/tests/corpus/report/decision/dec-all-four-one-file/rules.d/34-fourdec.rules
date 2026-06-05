@@ -1,0 +1,5 @@
+allow perm=open all : all
+allow_audit perm=open exe=/usr/bin/rpm : all
+allow_syslog perm=any all : ftype=text/x-shellscript
+allow_log perm=open all : dir=/var/tmp/
+deny_audit perm=any all : all

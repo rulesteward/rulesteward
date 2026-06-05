@@ -1,0 +1,1 @@
+allow perm=open all : trust=1 ftype=application/x-executable

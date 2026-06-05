@@ -1,0 +1,3 @@
+allow perm=execute all : trust=1
+deny_audit perm=any all : all
+allow perm=open all : ftype=text/x-shellscript

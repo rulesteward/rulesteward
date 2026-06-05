@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "ftype=text/x-shellscript",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {},
+      "source": { "file": "73-unusedset.rules", "line": 2 },
+      "loadIndex": 1
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "exe=/usr/bin/rpm",
+      "object": "all",
+      "subjectPaths": [
+        "/usr/bin/rpm"
+      ],
+      "objectPaths": [],
+      "hash": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826",
+      "hashOrigin": "trustdb",
+      "hashAlgorithm": "SHA256",
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "A4-trustdigest.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ],
+  "trustJoin": [
+    {
+      "path": "/usr/bin/rpm",
+      "source": "RpmDb",
+      "size": 24200,
+      "digest": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826"
+    }
+  ]
+}

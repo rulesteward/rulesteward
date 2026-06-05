@@ -1,0 +1,29 @@
+{
+  "id": "diff-changed-hash-repin",
+  "class": "diff-drift",
+  "source": "report-wave1",
+  "intent": "Drift where a grant's rule-embedded filehash= value changed (re-pin); same canonical key, differing hash, one changed row.",
+  "edge_case_axis": "diff-drift",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "changed": 1
+    },
+    "scopes": {
+      "hash": 1
+    },
+    "hash_origins": {
+      "rule-filehash": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

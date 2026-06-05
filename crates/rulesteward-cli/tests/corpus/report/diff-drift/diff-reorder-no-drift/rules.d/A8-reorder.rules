@@ -1,0 +1,2 @@
+allow perm=execute all : trust=1
+allow perm=open all : all

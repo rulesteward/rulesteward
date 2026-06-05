@@ -1,0 +1,29 @@
+{
+  "id": "paths-none",
+  "class": "path-extraction",
+  "source": "report-wave1",
+  "intent": "A grant with no path-bearing attr; both subjectPaths and objectPaths empty.",
+  "edge_case_axis": "path-extraction",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "ftype": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

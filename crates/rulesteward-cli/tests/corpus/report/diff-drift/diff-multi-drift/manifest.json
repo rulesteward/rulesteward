@@ -1,0 +1,31 @@
+{
+  "id": "diff-multi-drift",
+  "class": "diff-drift",
+  "source": "report-wave1",
+  "intent": "Simultaneous added, removed, and changed in one diff (three drift rows).",
+  "edge_case_axis": "diff-drift",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": {
+      "allow": 2
+    },
+    "scopes": {
+      "all": 1,
+      "hash": 1
+    },
+    "hash_origins": {
+      "none": 1,
+      "rule-filehash": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": []
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

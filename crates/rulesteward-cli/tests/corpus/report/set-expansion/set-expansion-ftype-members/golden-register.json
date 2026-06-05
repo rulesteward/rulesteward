@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "ftype=%editors",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {
+        "%editors": [
+          "text/x-perl",
+          "text/x-python",
+          "text/x-shellscript"
+        ]
+      },
+      "source": {
+        "file": "74-editors.rules",
+        "line": 2
+      },
+      "loadIndex": 1
+    }
+  ]
+}

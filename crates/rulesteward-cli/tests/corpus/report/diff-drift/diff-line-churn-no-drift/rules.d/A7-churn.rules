@@ -1,0 +1,4 @@
+# an inserted comment that shifts line numbers
+# another inserted comment
+allow perm=open all : all
+allow perm=execute all : trust=1

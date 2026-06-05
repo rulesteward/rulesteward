@@ -1,0 +1,1 @@
+allow perm=execute exe=/usr/bin/python3 : filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

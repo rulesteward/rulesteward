@@ -1,0 +1,3 @@
+%tools=/usr/bin/zip,/usr/bin/tar
+%mimes=text/x-python,application/x-executable
+allow perm=execute exe=%tools : ftype=%mimes

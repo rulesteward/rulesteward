@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "all",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "all",
+      "setExpansions": {},
+      "source": {
+        "file": "34-fourdec.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    },
+    {
+      "decision": "allow_audit",
+      "perm": "open",
+      "subject": "exe=/usr/bin/rpm",
+      "object": "all",
+      "subjectPaths": [
+        "/usr/bin/rpm"
+      ],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "34-fourdec.rules",
+        "line": 2
+      },
+      "loadIndex": 2
+    },
+    {
+      "decision": "allow_syslog",
+      "perm": "any",
+      "subject": "all",
+      "object": "ftype=text/x-shellscript",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {},
+      "source": {
+        "file": "34-fourdec.rules",
+        "line": 3
+      },
+      "loadIndex": 3
+    },
+    {
+      "decision": "allow_log",
+      "perm": "open",
+      "subject": "all",
+      "object": "dir=/var/tmp/",
+      "subjectPaths": [],
+      "objectPaths": [
+        "/var/tmp/"
+      ],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "dir",
+      "setExpansions": {},
+      "source": {
+        "file": "34-fourdec.rules",
+        "line": 4
+      },
+      "loadIndex": 4
+    }
+  ]
+}

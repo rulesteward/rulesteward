@@ -1,0 +1,2 @@
+%unused=text/x-perl,text/x-python
+allow perm=open all : ftype=text/x-shellscript

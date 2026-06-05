@@ -1,0 +1,1 @@
+allow perm=any uid=0 gid=0 : all

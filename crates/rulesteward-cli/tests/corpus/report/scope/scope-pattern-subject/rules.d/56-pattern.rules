@@ -1,0 +1,1 @@
+allow perm=any pattern=ld_so : all

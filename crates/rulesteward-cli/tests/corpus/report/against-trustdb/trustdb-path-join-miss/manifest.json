@@ -1,0 +1,36 @@
+{
+  "id": "trustdb-path-join-miss",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "A path grant whose path is NOT in the trust DB WITH --against-trustdb; the join finds no match, hashOrigin stays none, trustJoin row empty for that grant. Honest miss.",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": [
+      {
+        "path": "/usr/bin/ls",
+        "source": "RpmDb",
+        "size": 49,
+        "digest": "309b3c9a3246361ec0338641aed3c14e7f91e23e7cf10de000c75135ba99fddd"
+      }
+    ]
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

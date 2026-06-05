@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "trust=1 ftype=application/x-executable",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {},
+      "source": {
+        "file": "C4-trustftype.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ]
+}

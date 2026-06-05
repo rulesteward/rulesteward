@@ -1,0 +1,1 @@
+allow perm=open exe=/usr/local/bin/mytool : all

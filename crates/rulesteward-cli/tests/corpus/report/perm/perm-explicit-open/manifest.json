@@ -1,0 +1,29 @@
+{
+  "id": "perm-explicit-open",
+  "class": "perm",
+  "source": "report-wave1",
+  "intent": "Explicit perm=open renders perm:\"open\", indistinguishable in output from the default.",
+  "edge_case_axis": "perm",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "all": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

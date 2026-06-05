@@ -1,0 +1,29 @@
+{
+  "id": "noise-deny-family-all-four",
+  "class": "noise-filter",
+  "source": "report-wave1",
+  "intent": "One of each deny-family decision plus one allow; only the allow is enumerated.",
+  "edge_case_axis": "noise-filter",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": [
+      "allow"
+    ],
+    "scopes": [
+      "ftype"
+    ],
+    "hash_origins": [
+      "none"
+    ]
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

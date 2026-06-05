@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "ftype=%scripts",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {
+        "%scripts": [
+          "text/x-perl",
+          "text/x-python"
+        ]
+      },
+      "source": {
+        "file": "B2-setdef.rules",
+        "line": 4
+      },
+      "loadIndex": 1
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+allow perm=execute all : trust=1
+allow perm=open exe=/usr/bin/rpm : all
+allow perm=any uid=0 : dir=/var/tmp/
+allow perm=open all : ftype=application/x-sharedlib
+allow perm=any pattern=ld_so : all
+allow perm=open uid=0 : path=/etc/hosts
+allow perm=open all : filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+allow perm=open all : all
