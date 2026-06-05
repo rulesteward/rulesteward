@@ -51,7 +51,8 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
         FapolicydCommand::Explain(args) => crate::commands::explain::run(args),
         FapolicydCommand::Simulate(args) => crate::commands::simulate::run(args),
         FapolicydCommand::Report(args) => crate::commands::report::run(args),
-        FapolicydCommand::ContainerCheck | FapolicydCommand::Migrate | FapolicydCommand::Doctor => {
+        FapolicydCommand::Doctor(args) => crate::commands::doctor::run(&args),
+        FapolicydCommand::ContainerCheck | FapolicydCommand::Migrate => {
             eprintln!(
                 "rulesteward fapolicyd <subcommand>: not yet implemented in v{}",
                 env!("CARGO_PKG_VERSION")

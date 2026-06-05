@@ -41,9 +41,10 @@ fn root_help_lists_completions_subcommand() {
 
 #[test]
 fn hidden_stub_subcommands_absent_from_help() {
-    // container-check/migrate/doctor remain hidden.
+    // container-check/migrate remain hidden.
     // explain (fapolicyd), triage (selinux), and cost (auditd) are visible (v0.2 round 1).
     // simulate/report (fapolicyd) are visible as of v0.2 round 2 (un-hidden Phase-0).
+    // doctor (fapolicyd) is visible as of this round (#76/#77/#78).
     let bin = || Command::cargo_bin("rulesteward").expect("binary built");
 
     bin()
@@ -55,9 +56,9 @@ fn hidden_stub_subcommands_absent_from_help() {
         .stdout(predicate::str::contains("explain")) // now visible
         .stdout(predicate::str::contains("simulate")) // now visible (round 2)
         .stdout(predicate::str::contains("report")) // now visible (round 2)
+        .stdout(predicate::str::contains("doctor")) // now visible (this round)
         .stdout(predicate::str::contains("container-check").not())
-        .stdout(predicate::str::contains("migrate").not())
-        .stdout(predicate::str::contains("doctor").not());
+        .stdout(predicate::str::contains("migrate").not());
 
     bin()
         .args(["selinux", "--help"])
