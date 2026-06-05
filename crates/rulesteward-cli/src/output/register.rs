@@ -8,7 +8,7 @@
 use rulesteward_fapolicyd::register::{
     EXCEPTION_REGISTER_DRIFT_KIND, EXCEPTION_REGISTER_KIND, REGISTER_SCHEMA_VERSION,
 };
-use rulesteward_fapolicyd::{DriftRow, HashOrigin, RegisterRow, TrustEntry, TrustSource};
+use rulesteward_fapolicyd::{DriftRow, HashOrigin, RegisterRow, Scope, TrustEntry, TrustSource};
 use serde::Serialize;
 
 use crate::output::csv::to_csv;
@@ -195,7 +195,7 @@ pub fn render_csv_register(grants: &[RegisterRow]) -> String {
                 r.object.clone(),
                 r.hash.clone().unwrap_or_default(),
                 hash_origin_str(r.hash_origin).to_owned(),
-                format!("{:?}", r.scope).to_lowercase(),
+                scope_str(r.scope).to_owned(),
                 r.source.file.clone(),
                 r.source.line.to_string(),
                 r.load_index.to_string(),
@@ -254,6 +254,18 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_owned()
     } else {
         s.chars().take(max_len).collect()
+    }
+}
+
+fn scope_str(s: Scope) -> &'static str {
+    match s {
+        Scope::All => "all",
+        Scope::Path => "path",
+        Scope::Dir => "dir",
+        Scope::Ftype => "ftype",
+        Scope::Pattern => "pattern",
+        Scope::Hash => "hash",
+        Scope::Trust => "trust",
     }
 }
 

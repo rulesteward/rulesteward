@@ -116,12 +116,25 @@ exclude_globs = [
 # matches the CONS/RBAC branch, and IS killed by the kat MLS/role constraint
 # tests.) Excluded by name, not `#[mutants::skip]`, so the rationale stays here in
 # reviewable config.
+#
+# `compute_scope` object-loop and subject-loop filter closures both use `*p < best_pri`
+# (strict less-than). The `< -> <=` mutant is a genuine equivalent mutant in both
+# locations because a tie is impossible:
+# - Object-loop: each object key maps to a unique priority in {1,2,3,4,5,6}; no two
+#   object keys can share a priority, so `*p == best_pri` never occurs during iteration.
+# - Subject-loop: subject keys map to {50,60,70}; at the time the subject loop runs,
+#   `best_pri` is either 255 (sentinel) or one of {1..6} (set by the object loop).
+#   None of {50,60,70} can equal {1,2,3,4,5,6,255}, so a tie is impossible.
+# In both cases `< p` and `<= p` produce identical results for all reachable inputs.
+# Excluded by name, not `#[mutants::skip]`, so the rationale stays here in reviewable
+# config.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
     'replace \| with \^ in open_trustdb_readonly',
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
     'replace \| with \^ in categorize',
+    'replace < with <= in compute_scope',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

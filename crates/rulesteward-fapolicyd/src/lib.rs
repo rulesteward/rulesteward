@@ -41,6 +41,7 @@ pub use parser::{inline, parse_rules_file};
 pub use register::{
     DriftKind, DriftRow, EXCEPTION_REGISTER_DRIFT_KIND, EXCEPTION_REGISTER_KIND, HashAlgorithm,
     HashOrigin, REGISTER_SCHEMA_VERSION, RegisterRow, RegisterSource, Scope, canonical_grant_key,
+    hash_algorithm_from_len,
 };
 pub use trustdb::{
     DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,

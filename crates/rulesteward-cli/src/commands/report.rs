@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use rulesteward_fapolicyd::register::{build_register, compute_drift};
 use rulesteward_fapolicyd::{
-    Entry, HashOrigin, RegisterRow, Scope, fagenrules_cmp, open_trustdb_readonly, parse_rules_file,
+    Entry, HashOrigin, RegisterRow, Scope, fagenrules_cmp, hash_algorithm_from_len,
+    open_trustdb_readonly, parse_rules_file,
 };
 use serde::Deserialize;
 
@@ -237,18 +238,6 @@ fn collect_grant_paths(grant: &RegisterRow) -> Vec<String> {
     paths.extend(grant.subject_paths.clone());
     paths.extend(grant.object_paths.clone());
     paths
-}
-
-/// Determine the `HashAlgorithm` from a hex digest's length.
-fn hash_algorithm_from_len(hex: &str) -> Option<rulesteward_fapolicyd::HashAlgorithm> {
-    use rulesteward_fapolicyd::HashAlgorithm;
-    match hex.len() {
-        32 => Some(HashAlgorithm::Md5),
-        40 => Some(HashAlgorithm::Sha1),
-        64 => Some(HashAlgorithm::Sha256),
-        128 => Some(HashAlgorithm::Sha512),
-        _ => None,
-    }
 }
 
 /// Resolve the target rule files in fagenrules load order.

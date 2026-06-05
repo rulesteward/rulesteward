@@ -185,6 +185,10 @@ fn perm_token(p: Perm) -> String {
 /// renders as `key=<sorted,expanded,comma-joined members>`; the pairs are then
 /// sorted so attribute order within the side is insignificant (a predicate side
 /// is a conjunction). Joined with `;`.
+///
+/// Tokens are `;`-joined. Attribute values are assumed `;`-free (guaranteed by
+/// the fapolicyd grammar and C02 contract; `;` is not fapolicyd-producible in
+/// attribute values).
 fn canonical_side(attrs: &[Attr], sets: &SetTable) -> String {
     let mut pairs: Vec<String> = Vec::with_capacity(attrs.len());
     for attr in attrs {
@@ -281,7 +285,8 @@ fn extract_hash(attrs: &[Attr]) -> Option<String> {
 /// Determine the `HashAlgorithm` from a hex digest's length.
 ///
 /// 32 hex chars -> MD5, 40 -> SHA1, 64 -> SHA256, 128 -> SHA512, else `None`.
-fn hash_algorithm_from_len(hex: &str) -> Option<HashAlgorithm> {
+#[must_use]
+pub fn hash_algorithm_from_len(hex: &str) -> Option<HashAlgorithm> {
     match hex.len() {
         32 => Some(HashAlgorithm::Md5),
         40 => Some(HashAlgorithm::Sha1),
@@ -612,6 +617,10 @@ fn row_key(row: &RegisterRow) -> String {
 ///
 /// A `key=%setname` token is replaced by one `key=member` token per sorted member
 /// (the members in `set_expansions` are already sorted). A literal token stands as-is.
+///
+/// Tokens are `;`-joined. Attribute values are assumed `;`-free (guaranteed by
+/// the fapolicyd grammar and C02 contract; `;` is not fapolicyd-producible in
+/// attribute values).
 fn canonical_side_from_row_str(
     side: &str,
     set_expansions: &BTreeMap<String, Vec<String>>,
