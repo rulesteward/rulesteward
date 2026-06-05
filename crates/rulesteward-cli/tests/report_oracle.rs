@@ -205,7 +205,7 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("against-trustdb", "trustdb-source-filedb"),
         ("against-trustdb", "trustdb-source-rpmdb"),
         ("against-trustdb", "trustdb-source-unknown"),
-        // diff-drift (9) - handled separately in diff_drift module
+        // diff-drift (12) - handled separately in diff_drift module
         ("diff-drift", "diff-added-grant"),
         ("diff-drift", "diff-changed-hash-repin"),
         ("diff-drift", "diff-changed-origin"),
@@ -213,6 +213,9 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("diff-drift", "diff-line-churn-no-drift"),
         ("diff-drift", "diff-multi-drift"),
         ("diff-drift", "diff-no-drift"),
+        ("diff-drift", "diff-object-change-dir"),
+        ("diff-drift", "diff-object-change-ftype"),
+        ("diff-drift", "diff-object-change-path"),
         ("diff-drift", "diff-removed-grant"),
         ("diff-drift", "diff-reorder-no-drift"),
         // load-order (4)
@@ -220,7 +223,8 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("load-order", "load-order-dup-predicate"),
         ("load-order", "load-order-numeric-prefix"),
         ("load-order", "load-order-two-files"),
-        // noise-filter (4)
+        // noise-filter (5)
+        ("noise-filter", "loadindex-deny-before-allow"),
         ("noise-filter", "noise-comments-blanks"),
         ("noise-filter", "noise-deny-excluded"),
         ("noise-filter", "noise-deny-family-all-four"),
@@ -228,16 +232,17 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Floor guard: all 73 vendored scenarios must be reachable on disk.
+/// Floor guard: all 77 vendored scenarios must be reachable on disk.
 #[test]
-fn corpus_floor_guard_73_scenarios_present() {
+fn corpus_floor_guard_77_scenarios_present() {
     let all = all_scenario_ids();
     let count = all.len();
     assert!(
-        count >= 73,
-        "Corpus floor guard: expected >= 73 scenarios, got {count}. \
+        count >= 77,
+        "Corpus floor guard: expected >= 77 scenarios, got {count}. \
          Issue #84 cited 63; wave1-patch added 9 more (72); adversarial-review fix added \
-         trustdb-enumerate-cap-noflag (73)."
+         trustdb-enumerate-cap-noflag (73); adversarial-impl-review added 3 drift-key \
+         collision killers + 1 loadindex-deny-before-allow (77)."
     );
     for (category, id) in &all {
         let rules_d = scenario_rules_d(category, id);
@@ -490,6 +495,11 @@ plain_oracle_test!(
 );
 
 // noise-filter
+plain_oracle_test!(
+    oracle_loadindex_deny_before_allow,
+    "noise-filter",
+    "loadindex-deny-before-allow"
+);
 plain_oracle_test!(
     oracle_noise_comments_blanks,
     "noise-filter",
@@ -1487,6 +1497,174 @@ fn oracle_diff_changed_trustdb_digest() {
 }
 
 // ---------------------------------------------------------------------------
+// Drift-key collision killing tests (adversarial-impl-review, 2026-06-05)
+//
+// The impl's compute_drift keys on `decision|perm|subject|scope`, which collides
+// when two grants share the same scope but have DIFFERENT object values (e.g.
+// dir=/a/ vs dir=/b/ both have scope=dir -> the old key treats them as the SAME
+// grant -> reports zero drift instead of removed+added). These three scenarios
+// each supply a snapshot with one object value and a current rules.d with a
+// different object of the same scope, asserting exactly 2 drift rows (removed +
+// added). They are RED against the current impl (which collapses them to zero drift).
+// The diff-changed-hash-repin test (above) ensures hash repins STAY "changed"
+// after the implementer's fix.
+// ---------------------------------------------------------------------------
+
+/// diff-object-change-dir: snapshot has `allow open all : dir=/a/`; current has
+/// `allow open all : dir=/b/`. Same scope (dir), same subject (all), same
+/// decision/perm. Different object -> must be REMOVED + ADDED (NOT zero drift).
+///
+/// RED against the current impl (which keys on decision|perm|subject|scope and
+/// collides /a/ and /b/ into a single key -> reports no drift).
+#[test]
+fn oracle_diff_object_change_dir() {
+    let rules_d = scenario_rules_d("diff-drift", "diff-object-change-dir");
+    let golden = scenario_golden("diff-drift", "diff-object-change-dir");
+    let snapshot = scenario_snapshot("diff-drift", "diff-object-change-dir");
+    let snap_file = write_json_tmp(&snapshot);
+    let (exit_code, actual) = run_report_json(
+        &rules_d,
+        &["--diff-against", snap_file.path().to_str().expect("utf8")],
+    );
+    assert_eq!(
+        exit_code, 0,
+        "diff-object-change-dir: default exit must be 0 (drift is informational)"
+    );
+    assert_envelope(
+        &actual,
+        "exception-register-drift",
+        "diff-object-change-dir",
+    );
+    assert_matches_golden(&actual, &golden, "diff-object-change-dir");
+    // The key property: EXACTLY 2 drift rows (added for dir=/b/, removed for dir=/a/).
+    // A drift-key-colliding impl reports 0 rows here -> RED.
+    let drift = actual["drift"].as_array().expect("drift must be an array");
+    assert_eq!(
+        drift.len(),
+        2,
+        "diff-object-change-dir: must have exactly 2 drift rows (removed dir=/a/ + added dir=/b/), \
+         not 0 (which indicates drift-key collision: decision|perm|subject|scope collapses both)"
+    );
+    let kinds: std::collections::HashSet<&str> =
+        drift.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert!(
+        kinds.contains("added"),
+        "diff-object-change-dir: must have an 'added' row for dir=/b/"
+    );
+    assert!(
+        kinds.contains("removed"),
+        "diff-object-change-dir: must have a 'removed' row for dir=/a/"
+    );
+    // Verify the object values appear in the drift rows (not just the count):
+    let added = drift.iter().find(|r| r["kind"] == "added").unwrap();
+    assert_eq!(
+        added["grant"]["object"], "dir=/b/",
+        "added row must reference dir=/b/"
+    );
+    let removed = drift.iter().find(|r| r["kind"] == "removed").unwrap();
+    assert_eq!(
+        removed["grant"]["object"], "dir=/a/",
+        "removed row must reference dir=/a/"
+    );
+}
+
+/// diff-object-change-ftype: snapshot has `allow open all : ftype=application/x-executable`;
+/// current has `allow open all : ftype=text/x-shellscript`. Same ftype scope, different
+/// MIME type -> must be REMOVED + ADDED.
+///
+/// RED against the current impl (ftype-scope collision produces zero drift).
+#[test]
+fn oracle_diff_object_change_ftype() {
+    let rules_d = scenario_rules_d("diff-drift", "diff-object-change-ftype");
+    let golden = scenario_golden("diff-drift", "diff-object-change-ftype");
+    let snapshot = scenario_snapshot("diff-drift", "diff-object-change-ftype");
+    let snap_file = write_json_tmp(&snapshot);
+    let (exit_code, actual) = run_report_json(
+        &rules_d,
+        &["--diff-against", snap_file.path().to_str().expect("utf8")],
+    );
+    assert_eq!(
+        exit_code, 0,
+        "diff-object-change-ftype: default exit must be 0"
+    );
+    assert_envelope(
+        &actual,
+        "exception-register-drift",
+        "diff-object-change-ftype",
+    );
+    assert_matches_golden(&actual, &golden, "diff-object-change-ftype");
+    let drift = actual["drift"].as_array().expect("drift must be an array");
+    assert_eq!(
+        drift.len(),
+        2,
+        "diff-object-change-ftype: must have exactly 2 drift rows (removed + added), \
+         not 0 (drift-key ftype-scope collision)"
+    );
+    let kinds: std::collections::HashSet<&str> =
+        drift.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert!(kinds.contains("added"), "must have 'added' row");
+    assert!(kinds.contains("removed"), "must have 'removed' row");
+    let added = drift.iter().find(|r| r["kind"] == "added").unwrap();
+    assert_eq!(
+        added["grant"]["object"], "ftype=text/x-shellscript",
+        "added row must reference ftype=text/x-shellscript"
+    );
+    let removed = drift.iter().find(|r| r["kind"] == "removed").unwrap();
+    assert_eq!(
+        removed["grant"]["object"], "ftype=application/x-executable",
+        "removed row must reference ftype=application/x-executable"
+    );
+}
+
+/// diff-object-change-path: snapshot has `allow open all : path=/x`;
+/// current has `allow open all : path=/y`. Same path scope, different path ->
+/// must be REMOVED + ADDED.
+///
+/// RED against the current impl (path-scope collision produces zero drift).
+#[test]
+fn oracle_diff_object_change_path() {
+    let rules_d = scenario_rules_d("diff-drift", "diff-object-change-path");
+    let golden = scenario_golden("diff-drift", "diff-object-change-path");
+    let snapshot = scenario_snapshot("diff-drift", "diff-object-change-path");
+    let snap_file = write_json_tmp(&snapshot);
+    let (exit_code, actual) = run_report_json(
+        &rules_d,
+        &["--diff-against", snap_file.path().to_str().expect("utf8")],
+    );
+    assert_eq!(
+        exit_code, 0,
+        "diff-object-change-path: default exit must be 0"
+    );
+    assert_envelope(
+        &actual,
+        "exception-register-drift",
+        "diff-object-change-path",
+    );
+    assert_matches_golden(&actual, &golden, "diff-object-change-path");
+    let drift = actual["drift"].as_array().expect("drift must be an array");
+    assert_eq!(
+        drift.len(),
+        2,
+        "diff-object-change-path: must have exactly 2 drift rows (removed path=/x + added path=/y), \
+         not 0 (drift-key path-scope collision)"
+    );
+    let kinds: std::collections::HashSet<&str> =
+        drift.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert!(kinds.contains("added"), "must have 'added' row");
+    assert!(kinds.contains("removed"), "must have 'removed' row");
+    let added = drift.iter().find(|r| r["kind"] == "added").unwrap();
+    assert_eq!(
+        added["grant"]["object"], "path=/y",
+        "added row must reference path=/y"
+    );
+    let removed = drift.iter().find(|r| r["kind"] == "removed").unwrap();
+    assert_eq!(
+        removed["grant"]["object"], "path=/x",
+        "removed row must reference path=/x"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // C02 parity test: canonical_grant_key agrees with the linter's C02 AST-equality
 // notion (issue #82, spec-reviewer requirement).
 //
@@ -1710,6 +1888,84 @@ mod c02_parity {
             canonical_grant_key(&no_perm, &sets),
             canonical_grant_key(&explicit_open, &sets),
             "C02 parity: absent perm must default to open for canonical key purposes"
+        );
+    }
+
+    /// Drift-key collision guard: two rules with the SAME decision/perm/subject
+    /// but DIFFERENT object values MUST produce DIFFERENT canonical keys.
+    ///
+    /// This pins the requirement that `compute_drift` keys on the FULL canonical
+    /// predicate (including the object). A drift key of `decision|perm|subject|scope`
+    /// (without the object value) would make `allow open all : dir=/a/` and
+    /// `allow open all : dir=/b/` collide -> `compute_drift` reports zero drift
+    /// instead of removed+added. `canonical_grant_key` already encodes the object
+    /// (it was always correct); this test asserts that the drift function uses
+    /// the SAME notion (i.e. the implementer must key `compute_drift` on the full
+    /// canonical predicate, not a truncated scope-only key).
+    #[test]
+    fn c02_parity_drift_key_includes_object_value_no_collision() {
+        let sets = empty_sets();
+
+        // dir=/a/ vs dir=/b/ - same scope=dir, different object value
+        let dir_a = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv("dir", AttrValue::Str("/a/".into()))],
+        );
+        let dir_b = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv("dir", AttrValue::Str("/b/".into()))],
+        );
+        assert_ne!(
+            canonical_grant_key(&dir_a, &sets),
+            canonical_grant_key(&dir_b, &sets),
+            "canonical_grant_key: dir=/a/ and dir=/b/ must produce DIFFERENT keys \
+             (object value is part of the key; drift must key on this, not just scope)"
+        );
+
+        // ftype=A vs ftype=B - same scope=ftype, different MIME
+        let ftype_exec = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv(
+                "ftype",
+                AttrValue::Str("application/x-executable".into()),
+            )],
+        );
+        let ftype_sh = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv("ftype", AttrValue::Str("text/x-shellscript".into()))],
+        );
+        assert_ne!(
+            canonical_grant_key(&ftype_exec, &sets),
+            canonical_grant_key(&ftype_sh, &sets),
+            "canonical_grant_key: ftype=application/x-executable and ftype=text/x-shellscript \
+             must produce DIFFERENT keys"
+        );
+
+        // path=/x vs path=/y - same scope=path, different object path
+        let path_x = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv("path", AttrValue::Str("/x".into()))],
+        );
+        let path_y = rule(
+            Decision::Allow,
+            Some(Perm::Open),
+            vec![Attr::All],
+            vec![kv("path", AttrValue::Str("/y".into()))],
+        );
+        assert_ne!(
+            canonical_grant_key(&path_x, &sets),
+            canonical_grant_key(&path_y, &sets),
+            "canonical_grant_key: path=/x and path=/y must produce DIFFERENT keys"
         );
     }
 }

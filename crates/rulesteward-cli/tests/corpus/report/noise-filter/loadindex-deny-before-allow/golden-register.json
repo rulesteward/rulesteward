@@ -4,21 +4,21 @@
   "grants": [
     {
       "decision": "allow",
-      "perm": "open",
-      "subject": "all",
-      "object": "ftype=text/x-shellscript",
+      "perm": "any",
+      "subject": "uid=0",
+      "object": "dir=/var/tmp/",
       "subjectPaths": [],
-      "objectPaths": [],
+      "objectPaths": ["/var/tmp/"],
       "hash": null,
       "hashOrigin": "none",
       "hashAlgorithm": null,
-      "scope": "ftype",
+      "scope": "dir",
       "setExpansions": {},
       "source": {
-        "file": "B2-denyfour.rules",
-        "line": 5
+        "file": "B3-denyidx.rules",
+        "line": 2
       },
-      "loadIndex": 5
+      "loadIndex": 2
     }
   ]
 }

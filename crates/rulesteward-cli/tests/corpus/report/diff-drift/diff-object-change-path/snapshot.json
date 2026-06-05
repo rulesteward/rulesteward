@@ -6,19 +6,19 @@
       "decision": "allow",
       "perm": "open",
       "subject": "all",
-      "object": "ftype=text/x-shellscript",
+      "object": "path=/x",
       "subjectPaths": [],
-      "objectPaths": [],
+      "objectPaths": ["/x"],
       "hash": null,
       "hashOrigin": "none",
       "hashAlgorithm": null,
-      "scope": "ftype",
+      "scope": "path",
       "setExpansions": {},
       "source": {
-        "file": "B2-denyfour.rules",
-        "line": 5
+        "file": "D3-objpath.rules",
+        "line": 1
       },
-      "loadIndex": 5
+      "loadIndex": 1
     }
   ]
 }

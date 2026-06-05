@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register-drift",
+  "drift": [
+    {
+      "kind": "added",
+      "grant": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "path=/y",
+        "subjectPaths": [],
+        "objectPaths": ["/y"],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "D3-objpath.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "from": null,
+      "to": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "path=/y",
+        "subjectPaths": [],
+        "objectPaths": ["/y"],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "D3-objpath.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      }
+    },
+    {
+      "kind": "removed",
+      "grant": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "path=/x",
+        "subjectPaths": [],
+        "objectPaths": ["/x"],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "D3-objpath.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "from": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "path=/x",
+        "subjectPaths": [],
+        "objectPaths": ["/x"],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "D3-objpath.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "to": null
+    }
+  ]
+}

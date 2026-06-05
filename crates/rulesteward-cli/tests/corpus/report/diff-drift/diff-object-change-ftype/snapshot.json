@@ -6,7 +6,7 @@
       "decision": "allow",
       "perm": "open",
       "subject": "all",
-      "object": "ftype=text/x-shellscript",
+      "object": "ftype=application/x-executable",
       "subjectPaths": [],
       "objectPaths": [],
       "hash": null,
@@ -15,10 +15,10 @@
       "scope": "ftype",
       "setExpansions": {},
       "source": {
-        "file": "B2-denyfour.rules",
-        "line": 5
+        "file": "D2-objftype.rules",
+        "line": 1
       },
-      "loadIndex": 5
+      "loadIndex": 1
     }
   ]
 }
