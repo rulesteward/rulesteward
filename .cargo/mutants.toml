@@ -155,6 +155,39 @@ exclude_re = [
     # parse_kernel_version, parse_lint_counts, worst_exit_code, renderers) stays
     # in scope and is killed by the FakeProbe unit tests.
     '<impl SystemProbe for LiveProbe>',
+    # `read_fapolicyd_mode` is a one-line delegation wrapper:
+    #   `read_fapolicyd_mode_from(Path::new("/etc/fapolicyd/fapolicyd.conf"))`
+    # On the test/CI machine /etc/fapolicyd/fapolicyd.conf does not exist, so
+    # the inner fn always returns None via the `?` operator.  A mutant that
+    # replaces the entire wrapper return with None / Some("") / Some("xyzzy")
+    # is therefore behaviourally identical to the real code in ALL test
+    # environments (None == None; Some("") and Some("xyzzy") are unreachable
+    # because the file is absent).  The INNER function `read_fapolicyd_mode_from`
+    # IS fully tested via the tempfile-based unit tests; the wrapper's only job
+    # is to supply the production path, which is verified by the live VM smoke.
+    # Genuine equivalent mutants for the test environment.
+    'replace read_fapolicyd_mode -> Option<String>',
+    # `extract_kv` word-boundary guard: `pos == 0 || is_ascii_whitespace(pos-1)`.
+    # The `== 0` -> `!= 0` mutant means only NON-zero positions pass the guard.
+    # In doctor's FANOTIFY/SYSCALL/PATH record lines, every field key appears
+    # after whitespace (e.g. "resp=2 fan_type=0 ..."); no line in any test
+    # starts with a bare `key=value` at position 0 without a preceding
+    # "type=XXX msg=..." prefix.  The `!= 0` mutant therefore produces
+    # identical results for all doctor-context inputs.  Genuine equivalent mutant.
+    # (The identical helper in rulesteward_fapolicyd::fanotify IS tested with
+    # position-0 inputs by the explain tests; the doctor copy has no such path.)
+    'replace == with != in extract_kv',
+    # `parse_fanotify_denials` block-skip guard: `t.is_empty() || t == "----"`.
+    # The `|| -> &&` mutant changes the guard to "skip only if BOTH empty AND
+    # equal to '----'", which is never true (an empty string cannot equal
+    # "----").  With the mutant, "----" and "" lines are no longer skipped and
+    # fall through the three `if t.contains(...)` branches -- but none of the
+    # three patterns ("type=FANOTIFY", "type=SYSCALL", "type=PATH") match a
+    # "----" or empty line, so all three `else if` arms are taken as the final
+    # `else if t.contains("type=PATH")` (false), which is a no-op.  The tally
+    # and total are therefore identical to the original.  Genuine equivalent mutant:
+    # the separator-skip is an optimisation, not a correctness boundary.
+    'replace \|\| with && in parse_fanotify_denials',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

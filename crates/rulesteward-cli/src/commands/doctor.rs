@@ -2158,9 +2158,14 @@ mod tests {
 
     #[test]
     fn check_disk_space_detail_reports_correct_mib() {
-        // 200 MiB exactly: detail must say "200 MiB". Pins the /(1024*1024)
-        // arithmetic -- a mutant replacing * with + or - in the divisor would
-        // produce a wrong MiB value and fail this assertion.
+        // 200 MiB exactly: detail must say "200 MiB".
+        //
+        // Pins the `/ (1024 * 1024)` arithmetic.  Two tricky mutants:
+        //   - `replace / with *`:  bytes * 1048576 = 219902325555200 -> "219902325555200 MiB"
+        //     which contains the substring "200 MiB" -- so `contains("200 MiB")` is too weak.
+        //     We assert `contains(" 200 MiB")` (leading space) AND that the value parses to
+        //     exactly 200 to force both mutations to fail.
+        //   - `replace * with /`:  bytes / (1024/1024) = bytes / 1 = 209715200 -> not 200.
         let probe = FakeProbe {
             fs_space: Some(FsSpace {
                 bytes_free: 200 * 1024 * 1024,
@@ -2169,10 +2174,21 @@ mod tests {
         };
         let result = check_disk_space(&probe);
         assert_eq!(result.status, CheckStatus::Ok);
+        // Leading-space prefix prevents "219902325555200 MiB" from matching " 200 MiB".
         assert!(
-            result.detail.contains("200 MiB"),
-            "detail must report 200 MiB for exactly 200*1024*1024 bytes: {}",
+            result.detail.contains(" 200 MiB"),
+            "detail must report exactly 200 MiB (with leading space), got: {}",
             result.detail
+        );
+        // Additionally assert the numeric value parses to 200 from the detail.
+        let mib_val: u64 = result
+            .detail
+            .split_whitespace()
+            .find_map(|tok| tok.parse().ok())
+            .expect("detail must contain a parseable MiB number");
+        assert_eq!(
+            mib_val, 200,
+            "MiB value in detail must be exactly 200, got {mib_val}"
         );
     }
 
