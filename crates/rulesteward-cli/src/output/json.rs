@@ -21,6 +21,9 @@
 //! |-----------------|---------------|-------------------|
 //! | `lint`          | 1             | this module       |
 //! | `trust-entries` | 1             | `output::trustdb` |
+//! | `simulate`      | 1             | `commands::simulate` |
+//! | `exception-register`       | 1  | `output::register` |
+//! | `exception-register-drift` | 1  | `output::register` |
 //! | `explain`       | TBD           | explain pipeline  |
 //! | `auditd-cost`   | TBD           | auditd pipeline   |
 //! | `selinux-triage`| TBD           | selinux pipeline  |

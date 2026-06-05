@@ -206,7 +206,8 @@ pub fn run(args: crate::cli::ReportArgs) -> anyhow::Result<i32> {
         print!("{rendered}");
 
         if args.fail_on_drift && has_drift {
-            return Ok(1); // EXIT_DRIFT_DETECTED (spec §9.4)
+            // Drift detected under --fail-on-drift: warnings-tier exit (spec §6).
+            return Ok(crate::exit_code::EXIT_WARNINGS);
         }
         return Ok(EXIT_CLEAN);
     }
