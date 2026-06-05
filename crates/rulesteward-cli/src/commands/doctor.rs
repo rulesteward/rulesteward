@@ -491,11 +491,16 @@ fn check_service(probe: &dyn SystemProbe) -> CheckResult {
                     ),
                 }
             } else {
+                // Surface the ACTUAL mode string rather than hard-coding
+                // "enforcing": `read_fapolicyd_mode` defaults an absent
+                // permissive= key to "enforcing", but if a future probe ever
+                // returns some other value we report it verbatim instead of
+                // mislabeling it as enforcing.
                 CheckResult {
                     name: "service-status",
                     status: CheckStatus::Ok,
                     detail: format!(
-                        "fapolicyd is running, enabled={}, mode=enforcing",
+                        "fapolicyd is running, enabled={}, mode={mode}",
                         state.enabled
                     ),
                     remediation: None,
@@ -1007,6 +1012,30 @@ struct DoctorSummary {
     unknown: usize,
 }
 
+/// Tally check statuses once. Shared by both renderers so the JSON `summary`
+/// and the human `Summary:` line cannot drift (e.g. when a `CheckStatus`
+/// variant is added, only this function changes).
+fn status_counts(results: &[CheckResult]) -> DoctorSummary {
+    let mut s = DoctorSummary {
+        total: results.len(),
+        ok: 0,
+        warn: 0,
+        fail: 0,
+        skip: 0,
+        unknown: 0,
+    };
+    for r in results {
+        match r.status {
+            CheckStatus::Ok => s.ok += 1,
+            CheckStatus::Warn => s.warn += 1,
+            CheckStatus::Fail => s.fail += 1,
+            CheckStatus::Skip => s.skip += 1,
+            CheckStatus::Unknown => s.unknown += 1,
+        }
+    }
+    s
+}
+
 /// The `doctor-report` JSON payload (flattened into the envelope).
 #[derive(Serialize)]
 struct DoctorPayload<'a> {
@@ -1015,29 +1044,8 @@ struct DoctorPayload<'a> {
 }
 
 fn render_json(results: &[CheckResult]) -> String {
-    let mut ok = 0usize;
-    let mut warn = 0usize;
-    let mut fail = 0usize;
-    let mut skip = 0usize;
-    let mut unknown = 0usize;
-    for r in results {
-        match r.status {
-            CheckStatus::Ok => ok += 1,
-            CheckStatus::Warn => warn += 1,
-            CheckStatus::Fail => fail += 1,
-            CheckStatus::Skip => skip += 1,
-            CheckStatus::Unknown => unknown += 1,
-        }
-    }
     let payload = DoctorPayload {
-        summary: DoctorSummary {
-            total: results.len(),
-            ok,
-            warn,
-            fail,
-            skip,
-            unknown,
-        },
+        summary: status_counts(results),
         checks: results,
     };
     render_envelope("doctor-report", DOCTOR_SCHEMA_VERSION, &payload)
@@ -1048,9 +1056,11 @@ fn render_json(results: &[CheckResult]) -> String {
 // ---------------------------------------------------------------------------
 
 fn render_human(results: &[CheckResult]) -> String {
+    // `writeln!` into a `String` (via `fmt::Write`) is infallible -- the buffer
+    // never returns Err -- so the `let _ =` discards the impossible error.
     let mut out = String::new();
-    writeln!(out, "fapolicyd doctor report").unwrap();
-    writeln!(out, "{}", "-".repeat(60)).unwrap();
+    let _ = writeln!(out, "fapolicyd doctor report");
+    let _ = writeln!(out, "{}", "-".repeat(60));
     for r in results {
         let status_label = match r.status {
             CheckStatus::Ok => " OK  ",
@@ -1059,40 +1069,20 @@ fn render_human(results: &[CheckResult]) -> String {
             CheckStatus::Skip => "SKIP ",
             CheckStatus::Unknown => " ?? ",
         };
-        writeln!(out, "[{status_label}] {}: {}", r.name, r.detail).unwrap();
+        let _ = writeln!(out, "[{status_label}] {}: {}", r.name, r.detail);
         if let Some(ref rem) = r.remediation {
-            writeln!(out, "       -> {rem}").unwrap();
+            let _ = writeln!(out, "       -> {rem}");
         }
     }
-    writeln!(out, "{}", "-".repeat(60)).unwrap();
+    let _ = writeln!(out, "{}", "-".repeat(60));
 
-    // Count statuses.
-    let ok_count = results
-        .iter()
-        .filter(|r| r.status == CheckStatus::Ok)
-        .count();
-    let warn_count = results
-        .iter()
-        .filter(|r| r.status == CheckStatus::Warn)
-        .count();
-    let fail_count = results
-        .iter()
-        .filter(|r| r.status == CheckStatus::Fail)
-        .count();
-    let skip_count = results
-        .iter()
-        .filter(|r| r.status == CheckStatus::Skip)
-        .count();
-    let unk_count = results
-        .iter()
-        .filter(|r| r.status == CheckStatus::Unknown)
-        .count();
-
-    writeln!(
+    // Shared tally so the human summary cannot drift from the JSON summary.
+    let c = status_counts(results);
+    let _ = writeln!(
         out,
-        "Summary: {ok_count} ok, {warn_count} warn, {fail_count} fail, {skip_count} skip, {unk_count} unknown"
-    )
-    .unwrap();
+        "Summary: {} ok, {} warn, {} fail, {} skip, {} unknown",
+        c.ok, c.warn, c.fail, c.skip, c.unknown
+    );
     out
 }
 
@@ -1260,6 +1250,39 @@ mod tests {
         let result = check_service(&probe);
         assert_eq!(result.status, CheckStatus::Ok);
         assert!(result.remediation.is_none());
+        // The Ok detail must report the ACTUAL mode, not a hard-coded literal.
+        assert!(
+            result.detail.contains("mode=enforcing"),
+            "enforcing detail: {}",
+            result.detail
+        );
+    }
+
+    #[test]
+    fn check_service_running_unknown_mode_is_reported_verbatim() {
+        // A non-permissive mode string that is NOT "enforcing" must be surfaced
+        // verbatim in the detail (Ok), never mislabeled as "mode=enforcing".
+        // Kills a mutant that hard-codes the mode label in the Ok branch.
+        let probe = FakeProbe {
+            service: Some(ServiceState {
+                running: true,
+                enabled: true,
+                mode: Some("disabled".to_string()),
+            }),
+            ..Default::default()
+        };
+        let result = check_service(&probe);
+        assert_eq!(result.status, CheckStatus::Ok);
+        assert!(
+            result.detail.contains("mode=disabled"),
+            "detail must report the real mode verbatim, got: {}",
+            result.detail
+        );
+        assert!(
+            !result.detail.contains("mode=enforcing"),
+            "detail must NOT falsely claim enforcing for an arbitrary mode: {}",
+            result.detail
+        );
     }
 
     #[test]
@@ -1679,6 +1702,32 @@ mod tests {
         // Both issues should appear in the detail.
         assert!(result.detail.contains("permissive"), "{}", result.detail);
         assert!(result.detail.contains("sha256hash"), "{}", result.detail);
+    }
+
+    #[test]
+    fn check_misconfig_all_three_independent_and_unmasked() {
+        // All three sub-conditions true: EACH must appear in the detail.
+        // Pins sub-condition independence -- kills a mutant that makes any one
+        // condition contingent on the others being absent (e.g. only pushing
+        // `both_layouts` when no other issue is present), which the
+        // single-condition + permissive+sha256hash tests cannot detect.
+        let probe = FakeProbe {
+            conf: Some(FapolicydConf {
+                permissive_set: true,
+                deprecated_sha256hash: true,
+                both_layouts_present: true,
+            }),
+            ..Default::default()
+        };
+        let result = check_misconfig(&probe, &fake_path());
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("permissive"), "{}", result.detail);
+        assert!(result.detail.contains("sha256hash"), "{}", result.detail);
+        assert!(
+            result.detail.contains("fapd-F02"),
+            "both-layouts (fapd-F02) must not be masked by the other two: {}",
+            result.detail
+        );
     }
 
     // -------------------------------------------------------------------------
