@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/etc/hostname",
+  "perm": "open"
+}

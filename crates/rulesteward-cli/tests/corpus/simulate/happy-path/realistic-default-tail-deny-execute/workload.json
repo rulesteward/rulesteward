@@ -1,0 +1,7 @@
+{
+  "exe": "/tmp/evil",
+  "path": "/tmp/evil",
+  "perm": "execute",
+  "trust": false,
+  "note": "The workload binary is a compiled ELF that calls execl('/usr/bin/grep', ...). When /tmp/evil (untrusted, trust=0) attempts to execute /usr/bin/grep, fapolicyd evaluates the execute event with subject=exe=/tmp/evil. rule 1 'allow perm=execute trust=1' checks subject trust (0) -> no match; rule 2 'deny_audit perm=execute all:all' fires. The oracle dec= line captures this deny at the point where evil attempts the exec. Requires overlay in watch_fs."
+}

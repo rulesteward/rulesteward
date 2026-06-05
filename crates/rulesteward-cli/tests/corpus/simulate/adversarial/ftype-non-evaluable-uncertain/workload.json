@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/some/nonexistent/file",
+  "perm": "open"
+}

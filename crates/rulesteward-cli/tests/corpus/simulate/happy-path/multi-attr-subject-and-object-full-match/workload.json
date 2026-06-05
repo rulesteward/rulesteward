@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/bash",
+  "path": "/etc/hosts",
+  "perm": "open",
+  "uid": 1000,
+  "ftype": "text/plain"
+}

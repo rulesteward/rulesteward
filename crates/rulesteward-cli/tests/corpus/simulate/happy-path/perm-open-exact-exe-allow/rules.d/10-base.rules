@@ -1,0 +1,2 @@
+allow perm=open exe=/usr/bin/bash : all
+deny_audit perm=any all : all

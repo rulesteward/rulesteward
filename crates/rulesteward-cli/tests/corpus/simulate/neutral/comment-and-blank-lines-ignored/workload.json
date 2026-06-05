@@ -1,0 +1,9 @@
+{
+  "exe": "/usr/bin/coreutils",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "uid": null,
+  "gid": null,
+  "trust": null,
+  "comm": null
+}

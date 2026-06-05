@@ -1,0 +1,2 @@
+deny_audit perm=open gid=1000 : all
+allow perm=any all : all

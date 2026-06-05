@@ -1,0 +1,8 @@
+{
+  "exe": "/usr/bin/true",
+  "path": "/usr/bin/true",
+  "perm": "execute",
+  "trust": true,
+  "trigger_command": "/usr/bin/true",
+  "sha256": "c73afb60197c9c64805d2b4ab95efdee8646f8248ff800de2575a11eed8f9f08"
+}

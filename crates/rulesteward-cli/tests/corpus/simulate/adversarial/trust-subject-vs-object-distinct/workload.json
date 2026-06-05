@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/trusted-proc",
+  "path": "/tmp/untrusted-drop",
+  "perm": "open",
+  "subjTrust": true,
+  "objTrust": false
+}

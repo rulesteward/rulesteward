@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/bash",
+  "path": "/etc/shadow",
+  "perm": "open",
+  "comm": "bash-completion"
+}

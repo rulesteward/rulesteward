@@ -1,0 +1,2 @@
+deny_audit exe=/usr/local/bin/myexe : all
+allow perm=any all : all

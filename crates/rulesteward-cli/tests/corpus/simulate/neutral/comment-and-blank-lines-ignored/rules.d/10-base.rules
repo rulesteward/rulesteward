@@ -1,0 +1,7 @@
+# header comment
+
+allow perm=open exe=/usr/bin/grep : all
+
+# another comment
+deny_audit perm=open exe=/usr/bin/cat : all
+allow perm=any all : all

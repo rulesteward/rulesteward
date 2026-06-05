@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/cat",
+  "resolved_exe": "/usr/bin/coreutils",
+  "path": "/home/user/notes.txt",
+  "perm": "open",
+  "note": "/usr/bin/cat resolves to exe=/usr/bin/coreutils. Target file /home/user/notes.txt is on the overlay filesystem; watch_fs must include overlay to capture this event (fapolicyd.conf patched at test time with overlay added to watch_fs)."
+}

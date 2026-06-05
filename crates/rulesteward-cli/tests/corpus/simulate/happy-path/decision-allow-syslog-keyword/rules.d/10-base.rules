@@ -1,0 +1,2 @@
+allow_syslog perm=open exe=/usr/bin/coreutils : all
+deny perm=any all : all

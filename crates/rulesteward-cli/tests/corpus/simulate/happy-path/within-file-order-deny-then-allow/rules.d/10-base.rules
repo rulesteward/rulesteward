@@ -1,0 +1,3 @@
+deny_audit perm=open exe=/usr/bin/coreutils : path=/etc/hostname
+allow perm=open exe=/usr/bin/coreutils : path=/etc/hostname
+allow perm=any all : all
