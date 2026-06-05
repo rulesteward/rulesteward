@@ -262,26 +262,26 @@ fn parse_watch_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Parse
     let mut perms = PermBits::default();
     let mut key: Option<String> = None;
 
-    let mut i = 2usize; // skip '-w' and path
-    while i < tokens.len() {
-        match tokens[i].as_str() {
+    // Flags after `-w <path>`. Each flag consumes its argument with a second
+    // `.next()`. Iterating (rather than a hand-rolled `i += 1` index cursor)
+    // means there is no increment to mutate into a backward, hanging walk.
+    // `.skip(2)` is the original `i = 2usize` start ('-w' and path).
+    let mut rest = tokens.iter().skip(2);
+    while let Some(tok) = rest.next() {
+        match tok.as_str() {
             "-p" => {
-                i += 1;
-                let pstr = tokens.get(i).ok_or_else(|| err("-p requires perm chars"))?;
+                let pstr = rest.next().ok_or_else(|| err("-p requires perm chars"))?;
                 perms = parse_perms(pstr, lineno)?;
             }
             "-k" => {
-                i += 1;
                 key = Some(
-                    tokens
-                        .get(i)
+                    rest.next()
                         .ok_or_else(|| err("-k requires a value"))?
                         .clone(),
                 );
             }
             other => return Err(err(&format!("unexpected token in watch rule: '{other}'"))),
         }
-        i += 1;
     }
 
     let is_dir = path.ends_with('/');
@@ -334,28 +334,26 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
     let mut fields: Vec<FieldFilter> = Vec::new();
     let mut key: Option<String> = None;
 
-    let mut i = 2usize; // past '-a/A list,action'
-    while i < tokens.len() {
-        match tokens[i].as_str() {
+    // Flags after `-a/-A <list,action>`. Each flag consumes its argument with a
+    // second `.next()`. Iterating (rather than a hand-rolled `i += 1` index
+    // cursor) means there is no increment to mutate into a backward, hanging
+    // walk. `.skip(2)` is the original `i = 2usize` start.
+    let mut rest = tokens.iter().skip(2);
+    while let Some(tok) = rest.next() {
+        match tok.as_str() {
             "-S" => {
-                i += 1;
-                let sc = tokens
-                    .get(i)
+                let sc = rest
+                    .next()
                     .ok_or_else(|| err("-S requires a syscall name"))?;
                 syscalls.push(sc.clone());
             }
             "-F" => {
-                i += 1;
-                let fspec = tokens
-                    .get(i)
-                    .ok_or_else(|| err("-F requires a field spec"))?;
+                let fspec = rest.next().ok_or_else(|| err("-F requires a field spec"))?;
                 fields.push(parse_field_filter(fspec, lineno)?);
             }
             "-k" => {
-                i += 1;
                 key = Some(
-                    tokens
-                        .get(i)
+                    rest.next()
                         .ok_or_else(|| err("-k requires a value"))?
                         .clone(),
                 );
@@ -364,7 +362,6 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
             // when concatenating files); skip gracefully by erroring rather than silently.
             other => return Err(err(&format!("unexpected token in syscall rule: '{other}'"))),
         }
-        i += 1;
     }
 
     Ok(AuditRule::Syscall {
