@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "exe=%exes",
+      "object": "all",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "path",
+      "setExpansions": {
+        "%exes": [
+          "/bin/a"
+        ]
+      },
+      "source": {
+        "file": "B2-setref.rules",
+        "line": 2
+      },
+      "loadIndex": 1
+    }
+  ]
+}

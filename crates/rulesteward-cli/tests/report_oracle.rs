@@ -205,7 +205,7 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("against-trustdb", "trustdb-source-filedb"),
         ("against-trustdb", "trustdb-source-rpmdb"),
         ("against-trustdb", "trustdb-source-unknown"),
-        // diff-drift (12) - handled separately in diff_drift module
+        // diff-drift (14) - handled separately in diff_drift module
         ("diff-drift", "diff-added-grant"),
         ("diff-drift", "diff-changed-hash-repin"),
         ("diff-drift", "diff-changed-origin"),
@@ -218,6 +218,8 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("diff-drift", "diff-object-change-path"),
         ("diff-drift", "diff-removed-grant"),
         ("diff-drift", "diff-reorder-no-drift"),
+        ("diff-drift", "diff-reorder-object-attrs-no-drift"),
+        ("diff-drift", "diff-setref-vs-members-no-drift"),
         // load-order (4)
         ("load-order", "load-index-within-file"),
         ("load-order", "load-order-dup-predicate"),
@@ -232,17 +234,19 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Floor guard: all 77 vendored scenarios must be reachable on disk.
+/// Floor guard: all 79 vendored scenarios must be reachable on disk.
 #[test]
-fn corpus_floor_guard_77_scenarios_present() {
+fn corpus_floor_guard_79_scenarios_present() {
     let all = all_scenario_ids();
     let count = all.len();
     assert!(
-        count >= 77,
-        "Corpus floor guard: expected >= 77 scenarios, got {count}. \
+        count >= 79,
+        "Corpus floor guard: expected >= 79 scenarios, got {count}. \
          Issue #84 cited 63; wave1-patch added 9 more (72); adversarial-review fix added \
          trustdb-enumerate-cap-noflag (73); adversarial-impl-review added 3 drift-key \
-         collision killers + 1 loadindex-deny-before-allow (77)."
+         collision killers + 1 loadindex-deny-before-allow (77); second adversarial-impl-review \
+         added 2 canonical-predicate killers: diff-reorder-object-attrs-no-drift + \
+         diff-setref-vs-members-no-drift (79)."
     );
     for (category, id) in &all {
         let rules_d = scenario_rules_d(category, id);
@@ -1661,6 +1665,153 @@ fn oracle_diff_object_change_path() {
     assert_eq!(
         removed["grant"]["object"], "path=/x",
         "removed row must reference path=/x"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Canonical-predicate drift killing tests (adversarial-impl-review, 2026-06-05)
+//
+// These two scenarios expose that compute_drift's row_key uses the source-order
+// render of subject/object (not the canonical predicate). The canonical predicate
+// (decision, perm, sorted(subject), sorted(object), set-expanded) is what
+// f2 section 4.1 mandates for the diff key. Two canonical-equal grants that
+// DIFFER in source-order render produce spurious add+remove in the current impl.
+//
+// (A) diff-reorder-object-attrs-no-drift: current grant has object
+//     "dir=/a/ ftype=text/plain"; snapshot has "ftype=text/plain dir=/a/".
+//     Canonical predicate is identical. Expected drift: EMPTY. RED now.
+//
+// (B) diff-setref-vs-members-no-drift: current grant has subject "exe=%exes"
+//     (with %exes={/bin/a}); snapshot has literal "exe=/bin/a". Canonical
+//     predicate is identical (set-expansion makes them equal). Expected drift: EMPTY.
+//     RED now.
+// ---------------------------------------------------------------------------
+
+/// diff-reorder-object-attrs-no-drift: current has `allow open all : dir=/a/ ftype=text/plain`;
+/// snapshot has the SAME grant with object attrs in the OPPOSITE order
+/// (`ftype=text/plain dir=/a/`). A predicate side is an order-insensitive
+/// conjunction (f2 section 4.1), so the canonical predicate is IDENTICAL.
+/// Expected drift: EMPTY (zero rows). Exit 0.
+///
+/// RED against the current impl: `row_key` keys on the raw source-order
+/// `object` string. "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/"
+/// -> two distinct keys -> spurious removed(snapshot) + added(current).
+#[test]
+fn oracle_diff_reorder_object_attrs_no_drift() {
+    let rules_d = scenario_rules_d("diff-drift", "diff-reorder-object-attrs-no-drift");
+    // The snapshot has the same grant but with object attrs swapped.
+    // Current register has object="dir=/a/ ftype=text/plain" (parser order).
+    // Snapshot has object="ftype=text/plain dir=/a/" (reversed order).
+    // The canonical predicate (sorted attr pairs) is identical for both.
+    let snapshot = serde_json::json!({
+        "schemaVersion": 1,
+        "kind": "exception-register",
+        "grants": [{
+            "decision": "allow",
+            "perm": "open",
+            "subject": "all",
+            "object": "ftype=text/plain dir=/a/",
+            "subjectPaths": [],
+            "objectPaths": ["/a/"],
+            "hash": null,
+            "hashOrigin": "none",
+            "hashAlgorithm": null,
+            "scope": "ftype",
+            "setExpansions": {},
+            "source": { "file": "B1-reorder-obj.rules", "line": 1 },
+            "loadIndex": 1
+        }]
+    });
+    let snap_file = write_json_tmp(&snapshot);
+    let (exit_code, actual) = run_report_json(
+        &rules_d,
+        &["--diff-against", snap_file.path().to_str().expect("utf8")],
+    );
+    assert_eq!(
+        exit_code, 0,
+        "diff-reorder-object-attrs-no-drift: expected exit 0"
+    );
+    assert_envelope(
+        &actual,
+        "exception-register-drift",
+        "diff-reorder-object-attrs-no-drift",
+    );
+    // The key property: drift must be EMPTY.
+    // The current impl reports 2 rows (removed "ftype=text/plain dir=/a/" +
+    // added "dir=/a/ ftype=text/plain") because row_key uses source-order render.
+    let drift = actual["drift"].as_array().expect("drift must be an array");
+    assert!(
+        drift.is_empty(),
+        "diff-reorder-object-attrs-no-drift: object attribute reorder must produce EMPTY drift \
+         (canonical predicate is identical per f2 section 4.1; predicate side is an \
+         order-insensitive conjunction). Got {} drift rows: {drift:#?}",
+        drift.len()
+    );
+}
+
+/// diff-setref-vs-members-no-drift: current has `%exes=/bin/a` then
+/// `allow perm=open exe=%exes : all`; the snapshot was taken when the rule
+/// used the literal form `exe=/bin/a` (no set definition). Canonical predicate
+/// is identical (a %set ref and its sorted expansion are the same grant per
+/// f2 section 4.1). Expected drift: EMPTY. Exit 0.
+///
+/// RED against the current impl: `row_key` uses the raw source-order `subject`
+/// string. Current has "exe=%exes"; snapshot has "exe=/bin/a". These differ as
+/// strings -> two distinct keys -> spurious removed(snapshot) + added(current).
+///
+/// Observed current rendered form: `subject="exe=%exes"`, `setExpansions={"%exes":["/bin/a"]}`.
+/// Snapshot literal form: `subject="exe=/bin/a"`, `setExpansions={}`.
+#[test]
+fn oracle_diff_setref_vs_members_no_drift() {
+    let rules_d = scenario_rules_d("diff-drift", "diff-setref-vs-members-no-drift");
+    // Snapshot: the grant was written as a literal (no set def).
+    // subject="exe=/bin/a", setExpansions={}.
+    // Current: subject="exe=%exes", setExpansions={"%exes":["/bin/a"]}.
+    // Canonical predicate: both expand exe to {/bin/a} -> identical canonical key.
+    let snapshot = serde_json::json!({
+        "schemaVersion": 1,
+        "kind": "exception-register",
+        "grants": [{
+            "decision": "allow",
+            "perm": "open",
+            "subject": "exe=/bin/a",
+            "object": "all",
+            "subjectPaths": [],
+            "objectPaths": [],
+            "hash": null,
+            "hashOrigin": "none",
+            "hashAlgorithm": null,
+            "scope": "path",
+            "setExpansions": {},
+            "source": { "file": "B2-setref.rules", "line": 2 },
+            "loadIndex": 1
+        }]
+    });
+    let snap_file = write_json_tmp(&snapshot);
+    let (exit_code, actual) = run_report_json(
+        &rules_d,
+        &["--diff-against", snap_file.path().to_str().expect("utf8")],
+    );
+    assert_eq!(
+        exit_code, 0,
+        "diff-setref-vs-members-no-drift: expected exit 0"
+    );
+    assert_envelope(
+        &actual,
+        "exception-register-drift",
+        "diff-setref-vs-members-no-drift",
+    );
+    // The key property: drift must be EMPTY.
+    // The current impl reports 2 rows (removed "exe=/bin/a" + added "exe=%exes")
+    // because row_key uses source-order render and %exes != /bin/a as strings.
+    let drift = actual["drift"].as_array().expect("drift must be an array");
+    assert!(
+        drift.is_empty(),
+        "diff-setref-vs-members-no-drift: %set reference vs its sorted literal expansion \
+         must produce EMPTY drift (canonical predicate is identical per f2 section 4.1; \
+         a SetRef expands to its sorted members, same as the literal). \
+         Got {} drift rows: {drift:#?}",
+        drift.len()
     );
 }
 

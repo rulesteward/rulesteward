@@ -1,0 +1,29 @@
+{
+  "id": "diff-reorder-object-attrs-no-drift",
+  "class": "diff-drift",
+  "source": "adversarial-impl-review-2026-06-05",
+  "intent": "Snapshot has object attrs in reversed order (ftype=text/plain dir=/a/) vs current (dir=/a/ ftype=text/plain). Canonical predicate is identical (object side is an order-insensitive conjunction per f2 section 4.1). Expected drift: EMPTY. RED against current impl because row_key uses source-order render, not canonical_grant_key.",
+  "edge_case_axis": "diff-drift-canonical-predicate",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "ftype": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 4.1 canonical predicate equality: predicate side is order-insensitive conjunction; reordering object attrs must not produce drift",
+    "grounding": "canonical_grant_key in register.rs sorts attr pairs; row_key must use canonical_grant_key not source-order render"
+  },
+  "primary_source": "f2 section 4.1 lines 245-249"
+}

@@ -983,4 +983,93 @@ mod tests {
             "absent perm must default to open"
         );
     }
+
+    // ---- compute_drift canonical-predicate contract (f2 section 4.1) ----
+    //
+    // These unit tests pin the requirement that compute_drift treats two
+    // RegisterRows as the SAME grant when their canonical predicate is equal,
+    // even if their stored `subject`/`object` strings differ.
+    //
+    // (A) Object attribute REORDER: `dir=/a/ ftype=text/plain` vs
+    //     `ftype=text/plain dir=/a/` must produce EMPTY drift.
+    // (B) Set-ref vs literal: `exe=%exes` (with %exes={/bin/a}) vs
+    //     `exe=/bin/a` (literal, no set expansion) must produce EMPTY drift.
+    //
+    // The current impl's `row_key` uses source-order render, so both cases
+    // produce different keys -> spurious add+remove -> these tests are RED.
+    // The implementer must re-point `row_key` to use `canonical_grant_key`
+    // (or an equivalent canonical key over the stored row) so they turn GREEN.
+
+    fn make_row(
+        subject: &str,
+        object: &str,
+        set_expansions: BTreeMap<String, Vec<String>>,
+    ) -> RegisterRow {
+        RegisterRow {
+            decision: "allow".to_owned(),
+            perm: "open".to_owned(),
+            subject: subject.to_owned(),
+            object: object.to_owned(),
+            subject_paths: vec![],
+            object_paths: vec![],
+            hash: None,
+            hash_origin: crate::register::HashOrigin::None,
+            hash_algorithm: None,
+            scope: crate::register::Scope::All,
+            set_expansions,
+            source: RegisterSource {
+                file: "test.rules".to_owned(),
+                line: 1,
+            },
+            load_index: 1,
+        }
+    }
+
+    /// (A) Object attribute REORDER: a grant with `dir=/a/ ftype=text/plain`
+    /// compared against a snapshot row with `ftype=text/plain dir=/a/`.
+    /// Canonical predicate is equal (object side is an order-insensitive
+    /// conjunction per f2 section 4.1). Expected: EMPTY drift.
+    ///
+    /// RED against the current impl: `row_key` uses source-order `object` string,
+    /// so "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/" -> two different
+    /// keys -> spurious add+remove (2 drift rows instead of 0).
+    #[test]
+    fn compute_drift_object_attr_reorder_is_empty() {
+        // current: object attrs in parser-emitted order
+        let current_row = make_row("all", "dir=/a/ ftype=text/plain", BTreeMap::new());
+        // snapshot: same grant but object attrs in reversed order
+        let snapshot_row = make_row("all", "ftype=text/plain dir=/a/", BTreeMap::new());
+
+        let drift = compute_drift(&[current_row], &[snapshot_row]);
+        assert!(
+            drift.is_empty(),
+            "Object attribute reorder must produce EMPTY drift (canonical predicate is equal, \
+             f2 section 4.1): got {drift:#?}"
+        );
+    }
+
+    /// (B) Set-ref vs literal: a grant with `exe=%exes` (set expansion
+    /// `%exes=["/bin/a"]`) compared against a snapshot row with `exe=/bin/a`
+    /// (literal, no set expansion). Canonical predicate is equal (a %set ref
+    /// expands and sorts to the same value as the literal per f2 section 4.1).
+    /// Expected: EMPTY drift.
+    ///
+    /// RED against the current impl: `row_key` uses source-order `subject` string,
+    /// so "exe=%exes" != "exe=/bin/a" -> different keys -> spurious add+remove.
+    #[test]
+    fn compute_drift_setref_vs_literal_is_empty() {
+        // current: subject uses %set reference, setExpansions records the members
+        let mut set_expansions = BTreeMap::new();
+        set_expansions.insert("%exes".to_owned(), vec!["/bin/a".to_owned()]);
+        let current_row = make_row("exe=%exes", "all", set_expansions);
+        // snapshot: same grant but written as the literal expansion (no set def in use)
+        let snapshot_row = make_row("exe=/bin/a", "all", BTreeMap::new());
+
+        let drift = compute_drift(&[current_row], &[snapshot_row]);
+        assert!(
+            drift.is_empty(),
+            "Set-ref vs literal expansion must produce EMPTY drift (canonical predicate is equal, \
+             f2 section 4.1): got {drift:#?}"
+        );
+    }
 }

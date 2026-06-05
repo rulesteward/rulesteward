@@ -1,0 +1,2 @@
+%exes=/bin/a
+allow perm=open exe=%exes : all
