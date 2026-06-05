@@ -476,6 +476,128 @@ fn partial_error_surfaces_bad_line() {
 }
 
 // --------------------------------------------------------------------------
+// Flag-loop error arms in parse_watch_rule / parse_syscall_rule.
+//
+// These missing-argument and unexpected-token arms were previously only ever
+// "caught" by the cargo-mutants 94s per-test timeout: the hand-rolled
+// `while i < tokens.len()` cursor, when a `+= -> -=` mutation reversed it,
+// walked the index backward and hung. No assertion exercised the arms, so the
+// iterator refactor (which removes the index, and with it the hang-mutants)
+// would let `delete match arm` / `ok_or_else -> Ok` mutants survive without
+// these tests. (mutants CI fix.)
+// --------------------------------------------------------------------------
+
+/// `-p` with no following perm string is an error (watch flag loop).
+#[test]
+fn watch_p_flag_missing_arg_errors() {
+    let errors = parse_err("-w /etc/passwd -p");
+    assert!(
+        errors[0].message.contains("-p requires perm chars"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// `-k` with no following value is an error (watch flag loop).
+#[test]
+fn watch_k_flag_missing_arg_errors() {
+    let errors = parse_err("-w /etc/passwd -k");
+    assert!(
+        errors[0].message.contains("-k requires a value"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// An unrecognised token inside a watch rule hits the `other` arm.
+#[test]
+fn watch_unexpected_token_errors() {
+    let errors = parse_err("-w /etc/passwd -z foo");
+    assert!(
+        errors[0].message.contains("unexpected token in watch rule"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// `-S` with no following syscall name is an error (syscall flag loop).
+#[test]
+fn syscall_s_flag_missing_arg_errors() {
+    let errors = parse_err("-a always,exit -S");
+    assert!(
+        errors[0].message.contains("-S requires a syscall name"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// `-F` with no following field spec is an error (syscall flag loop).
+#[test]
+fn syscall_f_flag_missing_arg_errors() {
+    let errors = parse_err("-a always,exit -S execve -F");
+    assert!(
+        errors[0].message.contains("-F requires a field spec"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// `-k` with no following value is an error (syscall flag loop).
+#[test]
+fn syscall_k_flag_missing_arg_errors() {
+    let errors = parse_err("-a always,exit -S execve -k");
+    assert!(
+        errors[0].message.contains("-k requires a value"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// An unrecognised token inside a syscall rule hits the `other` arm.
+#[test]
+fn syscall_unexpected_token_errors() {
+    let errors = parse_err("-a always,exit -S execve -z foo");
+    assert!(
+        errors[0]
+            .message
+            .contains("unexpected token in syscall rule"),
+        "got: {:?}",
+        errors[0].message
+    );
+    assert_eq!(errors[0].line, 1);
+}
+
+/// `-S`, `-F`, and `-k` together: each flag consumes exactly one following
+/// token. A loop that mis-advanced (or consumed zero/two tokens per flag)
+/// would mis-bind these three values.
+#[test]
+fn syscall_combined_s_f_k_each_consume_one_token() {
+    let rules = parse_ok("-a always,exit -S open -F uid=0 -k mykey");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall {
+            syscalls,
+            fields,
+            key,
+            ..
+        } => {
+            assert_eq!(syscalls, &["open".to_string()]);
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].field, AuditField::Uid);
+            assert_eq!(fields[0].value, "0");
+            assert_eq!(key.as_deref(), Some("mykey"));
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------------
 // Corpus fixture round-trips (issue #87 + #86)
 // --------------------------------------------------------------------------
 
