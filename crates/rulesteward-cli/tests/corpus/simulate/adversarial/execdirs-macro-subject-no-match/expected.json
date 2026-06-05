@@ -3,5 +3,5 @@
   "full_decision_keyword": "deny_audit",
   "rule_number": 2,
   "source": "rule",
-  "confidence": "uncertain"
+  "confidence": "decisive"
 }

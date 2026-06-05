@@ -1,5 +1,5 @@
 {
-  "exe": "/usr/bin/cat",
+  "exe": "/usr/bin/coreutils",
   "path": "/etc/hostname",
   "perm": "open",
   "uid": null,

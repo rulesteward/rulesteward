@@ -1,1 +1,5 @@
-{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}
+{
+  "exe": "/usr/bin/coreutils",
+  "path": "/etc/hostname",
+  "perm": "open"
+}
