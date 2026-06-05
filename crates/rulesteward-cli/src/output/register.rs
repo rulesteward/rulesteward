@@ -247,8 +247,14 @@ pub fn render_human_register(grants: &[RegisterRow]) -> String {
     out
 }
 
-fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len { s } else { &s[..max_len] }
+fn truncate(s: &str, max_len: usize) -> String {
+    // Use char-aware truncation to avoid panicking on multibyte UTF-8 sequences
+    // (fapolicyd paths can contain non-ASCII characters).
+    if s.chars().count() <= max_len {
+        s.to_owned()
+    } else {
+        s.chars().take(max_len).collect()
+    }
 }
 
 fn hash_origin_str(o: HashOrigin) -> &'static str {

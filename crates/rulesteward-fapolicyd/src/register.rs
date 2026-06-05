@@ -391,12 +391,13 @@ fn collect_set_expansions(
 /// load order.
 ///
 /// For each allow-family rule (allow / `allow_audit` / `allow_syslog` / `allow_log`),
-/// build a `RegisterRow`. Deny-family rules are excluded.
+/// build a `RegisterRow`. Deny-family rules are excluded from the register but
+/// are counted in `load_index` because the daemon processes them in sequence.
 ///
 /// `source_file` is the display name of the source file for each entry (just
 /// the filename, not the full path). `load_index` is 1-based across the entire
-/// rule set (all files in load order), counting only rules (not set-defs /
-/// comments / blanks).
+/// rule set (all files in load order), counting ALL rules (allow AND deny family)
+/// because the daemon's compiled rule order reflects every rule's position.
 ///
 /// The returned `Vec<RegisterRow>` is in load order (fagenrules file order,
 /// then line order within a file).
@@ -418,11 +419,12 @@ pub fn build_register(files_with_entries: &[(&str, &[Entry])]) -> Vec<RegisterRo
     for (filename, entries) in files_with_entries {
         for entry in *entries {
             if let Entry::Rule(rule) = entry {
+                // Every rule (allow AND deny family) advances the daemon-position
+                // counter; the register emits rows only for allow-family rules.
+                load_index += 1;
                 if !is_allow_family(rule.decision) {
                     continue;
                 }
-                // Only allow-family rules advance the load index.
-                load_index += 1;
                 let row = build_row(rule, filename, load_index, &sets);
                 rows.push(row);
             }
@@ -564,33 +566,79 @@ pub fn compute_drift(current: &[RegisterRow], snapshot: &[RegisterRow]) -> Vec<D
     drift
 }
 
-/// The drift comparison key for a row: `decision|perm|subject|scope`.
+/// The drift comparison key for a row: the full canonical predicate with the
+/// hash VALUE masked to a sentinel.
 ///
-/// Drift comparison keys two grants as the "same grant" when they have the same
-/// decision, perm, subject predicate, and scope - regardless of the specific
-/// hash / path / ftype value in the object predicate. This means:
-/// - A hash re-pin (same exe grant, filehash changed) produces a "changed" row,
-///   not an add+remove pair.
-/// - A trust-DB digest change (hashOrigin enriched / digest changed) produces
-///   "changed" instead of add+remove.
-/// - Different scope (e.g. hash vs all for the same subject) produces add+remove
-///   (they are semantically distinct grants).
+/// Two grants are considered "the same grant" for drift purposes when they have
+/// the same decision, perm, subject, AND object - except that the hex digest in
+/// a `filehash=` / `sha256hash=` attribute is replaced by the sentinel `<hash>`.
+/// This achieves two goals simultaneously:
 ///
-/// Note: `scope` is serialized as its lowercase string (the serde form).
+/// 1. **Object-value changes produce add+remove** (not false zero-drift): two
+///    grants with the same scope but different object values (e.g. `dir=/a/` vs
+///    `dir=/b/`, or `ftype=A` vs `ftype=B`) produce different keys and are
+///    correctly reported as one removed + one added row.
+///
+/// 2. **Hash re-pins produce "changed" (not add+remove)**: when only the
+///    filehash hex digest changes (e.g. `filehash=AAAA...` -> `filehash=BBBB...`)
+///    the two rows share the same masked key, so `compute_drift` lands in the
+///    `(Some, Some)` arm and `rows_differ` detects the differing `hash` /
+///    `hash_origin`, producing a `DriftKind::Changed` row.
+///
+/// The masking regex: replace any 32-to-128 char lowercase hex run that is the
+/// VALUE of a `filehash=` or `sha256hash=` attribute. In practice the stored
+/// `object` string has the form `filehash=<64 hex chars>` (or similar), so we
+/// replace the value portion with `<hash>`.
 fn row_key(row: &RegisterRow) -> String {
-    let scope_str = match row.scope {
-        Scope::All => "all",
-        Scope::Path => "path",
-        Scope::Dir => "dir",
-        Scope::Ftype => "ftype",
-        Scope::Pattern => "pattern",
-        Scope::Hash => "hash",
-        Scope::Trust => "trust",
-    };
+    // Mask the hex digest in filehash=/sha256hash= so a re-pin of the same
+    // grant doesn't produce a different key. We operate on the stored `object`
+    // string (the lossless render of the object-side attrs).
+    let masked_object = mask_hash_value(&row.object);
     format!(
         "{}|{}|{}|{}",
-        row.decision, row.perm, row.subject, scope_str
+        row.decision, row.perm, row.subject, masked_object
     )
+}
+
+/// Replace the hex-digest value in a `filehash=<hex>` or `sha256hash=<hex>`
+/// attribute string with the sentinel `<hash>`.
+///
+/// Only the VALUE (the hex portion after `=`) is masked; the key name and all
+/// other attributes are preserved. This makes the drift key stable across
+/// hash re-pins while keeping every other object attribute (dir, path, ftype,
+/// etc.) intact.
+fn mask_hash_value(object: &str) -> String {
+    // Attributes of interest: `filehash=` or `sha256hash=` followed by a run
+    // of lowercase hex digits (32-128 chars, covering MD5 through SHA512).
+    // We split on spaces (the render joins attrs with space) and mask only the
+    // matching token.
+    let mut parts: Vec<String> = Vec::new();
+    for token in object.split(' ') {
+        let masked = if let Some(rest) = token
+            .strip_prefix("filehash=")
+            .or_else(|| token.strip_prefix("sha256hash="))
+        {
+            // Check that the value looks like a hex digest (all lowercase hex chars).
+            if !rest.is_empty()
+                && rest.len() >= 32
+                && rest.len() <= 128
+                && rest.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                let prefix = if token.starts_with("filehash=") {
+                    "filehash"
+                } else {
+                    "sha256hash"
+                };
+                format!("{prefix}=<hash>")
+            } else {
+                token.to_owned()
+            }
+        } else {
+            token.to_owned()
+        };
+        parts.push(masked);
+    }
+    parts.join(" ")
 }
 
 /// True iff two rows with the same canonical key have a meaningful difference.

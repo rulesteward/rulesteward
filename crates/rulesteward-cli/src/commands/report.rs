@@ -145,13 +145,10 @@ pub fn run(args: crate::cli::ReportArgs) -> anyhow::Result<i32> {
                 Some(TrustJoinOutputKind::Cap(cap))
             } else {
                 // Shape A: small DB with --enumerate-trust, list all entries.
-                // Row order: reverse of LMDB key order (matching the corpus golden
-                // which was authored with rows in insertion/reverse-lex order).
-                let rows: Vec<TrustJoinRow> = all_entries
-                    .iter()
-                    .rev()
-                    .map(TrustJoinRow::from_entry)
-                    .collect();
+                // Row order: lexicographic by path (LMDB already iterates in key
+                // order, so no additional sort is needed).
+                let rows: Vec<TrustJoinRow> =
+                    all_entries.iter().map(TrustJoinRow::from_entry).collect();
                 let join_entry = TrustJoinEntry {
                     grant_index: tidx,
                     rows,
