@@ -306,26 +306,24 @@ fn eval_subject_field(
         "pid" => (eval_optional_int(facts.pid, value, sets), None),
         "ppid" => (eval_optional_int(facts.ppid, value, sets), None),
         "exe" => match as_str_literal(value) {
-            // #126: `exe=untrusted` / `exe=trusted` are TRUST MACROS (real on
-            // fapolicyd >= 1.4.x; 1.3.2 treats them as inert literals - that is
-            // a DOC note, not a code branch here, since evaluate() has no version
-            // param). They evaluate against the SUBJECT trust state, NOT the exe
-            // path. Reuse `eval_trust_field` so the NotEvaluable/Match/NoMatch
-            // return shape (and the simulate confidence downgrade on Unknown
-            // trust) matches the `trust=` arm exactly:
+            // #126: `exe=untrusted` is a TRUST MACRO - real fapolicyd has NO
+            // symmetric `trusted` macro; only `untrusted` is special in the EXE
+            // case (f1 grounding §1.4 ~line 164; upstream rules.c:1443-1463; live
+            // fapolicyd 1.4.5). The macro evaluates against the SUBJECT trust
+            // state, NOT the exe path. Reuse `eval_trust_field` so the
+            // NotEvaluable/Match/NoMatch return shape (and the simulate confidence
+            // downgrade on Unknown trust) matches the `trust=` arm exactly:
             //   - `untrusted` is equivalent to `trust=0` (match iff Trust::No)
-            //   - `trusted`   is equivalent to `trust=1` (match iff Trust::Yes)
+            // `exe=trusted` is NOT a macro: it falls through to the literal
+            // exe-path compare below (it matches only if the exe path is literally
+            // the string "trusted", essentially never for a real path).
             Some("untrusted") => eval_trust_field(
                 facts.subj_trust,
                 &AttrValue::Int(0),
                 "subj trust unknown (no trust DB)",
             ),
-            Some("trusted") => eval_trust_field(
-                facts.subj_trust,
-                &AttrValue::Int(1),
-                "subj trust unknown (no trust DB)",
-            ),
-            // Any other value (or a non-literal SetRef/Int): literal exe path match.
+            // Any other value (incl. the literal "trusted", or a non-literal
+            // SetRef/Int): literal exe path match.
             _ => match &facts.exe {
                 None => (FieldEval::Match, None),
                 Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
@@ -372,6 +370,15 @@ fn eval_object_field(
             Some(d) => (exact_string_match(d, value, sets), None),
         },
         "sha256hash" | "filehash" => match &facts.sha256 {
+            // #127: the object is PRESENT on disk but its hash could NOT be
+            // computed (e.g. EACCES). FILE_HASH treats a hash-lookup error as a
+            // denial (rules.c:1606-1611: "Treat errors as denial for file hash
+            // lookups" -> `return 0`), so the constraint is `NoMatch` - DISTINCT
+            // from object-absent. Pinned by
+            // `filehash_present_but_unhashable_is_denied_not_widened`.
+            None if facts.sha256_unhashable => (FieldEval::NoMatch, None),
+            // Object ABSENT (no hash, not flagged unhashable): widen (skip), the
+            // standard absent-fact behavior (rules.c:1572-1575).
             None => (FieldEval::Match, None),
             Some(h) => (exact_string_match(h, value, sets), None),
         },
@@ -1991,22 +1998,28 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #126: `exe=trusted` / `exe=untrusted` are TRUST MACROS, not literal paths.
+    // #126: `exe=untrusted` is the ONLY exe TRUST MACRO. `exe=trusted` is a
+    // LITERAL exe-path compare, NOT a macro.
     //
-    // Ground truth (real fapolicyd >= 1.4.x, captured on Rocky 8/9/10; see the
-    // re-vendored corpus scenarios `adversarial/exe-untrusted-macro-*` and their
-    // NFS `manifest.json`/`validation.log`):
+    // Ground truth (real fapolicyd, f1 grounding §1.4 line ~164; upstream
+    // `src/library/rules.c` EXE case `rules.c:1443-1463`; live fapolicyd 1.4.5):
+    // the EXE switch does EXACT string membership PLUS exactly one special token,
+    // the `untrusted` macro ("if the set contains `untrusted` AND the subject is
+    // not in the trust DB, match immediately"). There is NO `trusted` macro;
+    // `exe=trusted` compares the literal string "trusted" against the exe path.
+    // Issue #126 wrongly assumed a symmetric `trusted` macro.
     //   - `exe=untrusted` matches IFF the subject is NOT trusted (`subj_trust=No`).
-    //   - `exe=trusted`   matches IFF the subject IS  trusted (`subj_trust=Yes`).
-    //   - `subj_trust=Unknown` -> the macro is `NotEvaluable` (no trust DB
-    //     consulted), so a rule carrying it produces `PossibleMatch` (downgrade),
-    //     mirroring the existing `trust=` NotEvaluable behavior.
+    //   - `subj_trust=Unknown` -> the `untrusted` macro is `NotEvaluable` (no
+    //     trust DB consulted), so a rule carrying it produces `PossibleMatch`
+    //     (downgrade), mirroring the existing `trust=` NotEvaluable behavior.
+    //   - `exe=trusted` is a literal: it matches IFF the exe path equals the
+    //     string "trusted" (essentially never for a real path).
     //
-    // These pin the macro semantics DIRECTLY on `evaluate()`, so a wrong impl
-    // that treats `untrusted`/`trusted` as a literal exe path (the pre-#126
-    // behavior: `exact_string_match(exe_path, "untrusted")`) cannot pass: a
-    // literal compare yields `NoMatch` for any real exe path, so the deny rule
-    // never fires and the untrusted-match assertions below fail.
+    // These pin the macro semantics DIRECTLY on `evaluate()`. A wrong impl that
+    // treats `untrusted` as a literal exe path (the pre-#126 behavior:
+    // `exact_string_match(exe_path, "untrusted")`) cannot pass the untrusted
+    // tests; a wrong impl that treats `trusted` as a (symmetric) trust macro
+    // cannot pass the literal `exe=trusted` test below.
     // -----------------------------------------------------------------------
 
     /// `exe=untrusted` FIRES for an untrusted subject (`subj_trust=No`).
@@ -2071,56 +2084,63 @@ mod tests {
         );
     }
 
-    /// `exe=trusted` FIRES for a trusted subject (`subj_trust=Yes`) - the inverse
-    /// of `untrusted`. A literal-path impl (compare exe path to "trusted") yields
-    /// `NoMatch` and never fires the deny rule. RED until #126.
+    /// `exe=trusted` is a LITERAL exe-path compare, NOT a trust macro.
+    ///
+    /// Grounding: real fapolicyd has NO `trusted` macro - only `untrusted` is
+    /// special in the EXE case (f1 §1.4 line ~164; upstream `rules.c:1443-1463`;
+    /// live fapolicyd 1.4.5). So `exe=trusted` does EXACT string membership: it
+    /// matches only if the exe path is literally the string "trusted".
+    ///
+    /// Rule 1 `deny_audit perm=any exe=trusted : all` then rule 2
+    /// `allow perm=any all : all`. The subject's exe is `/usr/bin/coreutils` and
+    /// `subj_trust=Yes`. Because "trusted" != "/usr/bin/coreutils", rule 1 does
+    /// NOT fire (literal `NoMatch`); the verdict falls through to the rule-2 Allow.
+    ///
+    /// RED against the buggy macro impl: that impl treats `exe=trusted` as
+    /// `trust=1`, so with `subj_trust=Yes` it fires the deny rule -> `Deny` at
+    /// rule 1. This test asserts `Allow` at rule 2, so it fails until the bogus
+    /// `trusted` macro branch is removed and `exe=trusted` falls through to the
+    /// literal exe-path compare.
     #[test]
-    fn exe_trusted_macro_matches_trusted_subject() {
+    fn exe_trusted_is_literal_not_a_trust_macro() {
         use crate::facts::Trust;
 
-        let rules = vec![rule(
-            Decision::Deny,
-            Some(Perm::Any),
-            vec![kv("exe", "trusted")],
-            vec![Attr::All],
-        )];
+        let rules = vec![
+            rule(
+                Decision::DenyAudit,
+                Some(Perm::Any),
+                vec![kv("exe", "trusted")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
 
         let mut facts = AccessFacts::new(Perm::Open);
-        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.exe = Some("/usr/bin/coreutils".to_string());
         facts.subj_trust = Trust::Yes;
         let v = evaluate(&rules, &empty_sets(), &facts);
         assert_eq!(
             v.decision,
-            Decision::Deny,
-            "exe=trusted must FIRE the deny rule for a trusted subject"
-        );
-        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
-        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
-    }
-
-    /// `exe=trusted` does NOT fire for an untrusted subject (`subj_trust=No`):
-    /// falls through to Allow. Symmetric to the untrusted-trusted case.
-    #[test]
-    fn exe_trusted_macro_no_match_untrusted_subject() {
-        use crate::facts::Trust;
-
-        let rules = vec![rule(
-            Decision::Deny,
-            Some(Perm::Any),
-            vec![kv("exe", "trusted")],
-            vec![Attr::All],
-        )];
-
-        let mut facts = AccessFacts::new(Perm::Open);
-        facts.exe = Some("/tmp/payload".to_string());
-        facts.subj_trust = Trust::No;
-        let v = evaluate(&rules, &empty_sets(), &facts);
-        assert_eq!(
-            v.decision,
             Decision::Allow,
-            "exe=trusted must NOT fire for an untrusted subject -> fallthrough Allow"
+            "exe=trusted is a LITERAL path compare ('trusted' != '/usr/bin/coreutils'), \
+             so the deny rule must NOT fire; the verdict is the rule-2 Allow. A wrong \
+             impl that treats `trusted` as a trust macro would Deny here."
         );
-        assert_eq!(v.source, Source::Fallthrough, "no rule matched");
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive match is rule 2 (allow); the literal exe=trusted deny did not fire"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "a literal exe-path NoMatch is decisive, not uncertain"
+        );
     }
 
     /// `exe=untrusted` with `subj_trust=Unknown` (no trust DB consulted) is

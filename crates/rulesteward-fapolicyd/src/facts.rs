@@ -183,6 +183,18 @@ pub struct AccessFacts {
     /// Object SHA-256 hex digest.
     /// EXACT string membership match (rules.c:1603-1617).
     pub sha256: Option<String>,
+
+    /// #127: the object path is PRESENT on disk but its hash could NOT be
+    /// computed (e.g. EACCES while opening it for on-demand hashing). When
+    /// `true` AND `sha256` is `None`, a `filehash=`/`sha256hash=` constraint
+    /// evaluates to `NoMatch` (`FILE_HASH` error-as-denial, rules.c:1606-1611)
+    /// rather than widening - DISTINCT from the object-absent case (path does
+    /// not exist), where `sha256 == None` keeps the skip/widen behavior.
+    ///
+    /// Defaults to `false`. `explain` never sets it (it never hashes on demand),
+    /// so its behavior is unchanged; only `simulate`'s on-demand hashing path
+    /// sets it when `sha256_file` returns an error for a present file.
+    pub sha256_unhashable: bool,
 }
 
 impl AccessFacts {
@@ -207,6 +219,7 @@ impl AccessFacts {
             obj_trust: Trust::Unknown,
             ftype: None,
             sha256: None,
+            sha256_unhashable: false,
         }
     }
 }

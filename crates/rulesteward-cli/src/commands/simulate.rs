@@ -420,15 +420,23 @@ fn evaluate_query(
     let obj_trust = resolve_trust(query.obj_trust, query.path.as_deref(), ctx.trustdb);
 
     // On-demand object hashing (#127): when a `filehash=`/`sha256hash=` rule
-    // needs the object's hash, the workload omitted `sha256`, and the object
-    // `path` exists on disk, hash it now. If the file is absent (or hashing
-    // fails), leave `sha256 = None` so the existing low-confidence / NotEvaluable
-    // (absent-fact-widening) behavior applies.
-    let sha256 = match (&query.sha256, &query.path) {
+    // needs the object's hash and the workload omitted `sha256`, hash the object
+    // `path` now. Three outcomes, distinguished so the filehash field evaluates
+    // correctly (rules.c:1606-1611 treats a hash-lookup error as a denial):
+    //   - `Ok(Some(h))`  : hashed OK -> use the digest.
+    //   - `Ok(None)`     : object ABSENT (NotFound) -> leave `sha256 = None`;
+    //                      the absent-fact-widening / NotEvaluable behavior applies.
+    //   - `Err(_)`       : object PRESENT but UNHASHABLE (e.g. EACCES) -> leave
+    //                      `sha256 = None` AND set `sha256_unhashable = true`, so
+    //                      the `filehash=` constraint is `NoMatch` (deny), not widen.
+    let (sha256, sha256_unhashable) = match (&query.sha256, &query.path) {
         (None, Some(p)) if ctx.ruleset_uses_filehash => {
-            trustdb::sha256_file(std::path::Path::new(p)).ok().flatten()
+            match trustdb::sha256_file(std::path::Path::new(p)) {
+                Ok(opt) => (opt, false),
+                Err(_) => (None, true),
+            }
         }
-        _ => query.sha256.clone(),
+        _ => (query.sha256.clone(), false),
     };
 
     let facts = AccessFacts {
@@ -447,6 +455,7 @@ fn evaluate_query(
         obj_trust,
         ftype: query.ftype.clone(),
         sha256,
+        sha256_unhashable,
     };
 
     let verdict = rulesteward_fapolicyd::evaluate(rules, sets, &facts);

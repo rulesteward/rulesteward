@@ -84,20 +84,24 @@ fn parse_json(label: &str, bytes: &[u8]) -> serde_json::Value {
 /// omits `trust`.
 ///
 /// Setup:
-///   - Trust DB contains the subject exe path `/usr/bin/trusted-tool`.
-///   - Ruleset: `deny_audit perm=any exe=trusted : all` then `allow perm=any all : all`.
+///   - Trust DB CONTAINS the subject exe path `/usr/bin/trusted-tool` (present => trusted).
+///   - Ruleset: `deny_audit perm=any exe=untrusted : all` then `allow perm=any all : all`.
 ///   - Workload: `{exe: /usr/bin/trusted-tool, path: /etc/hostname, perm: open}`
 ///     -- NO `trust` field.
 ///
-/// Expected with #127: the DB lookup resolves `subj_trust = Yes`, so the
-/// `exe=trusted` macro (#126) FIRES rule 1 -> `decision=deny, matchedRule=1`,
-/// `verdict=Decisive`.
+/// Expected with #127: the DB lookup resolves `subj_trust = Yes` (trusted), so the
+/// `exe=untrusted` macro does NOT fire rule 1 (trusted subject != untrusted) -> falls
+/// through to rule 2 -> `decision=allow, matchedRule=2, verdict=Decisive`.
 ///
 /// Why a wrong impl fails: an impl that ignores `--trustdb` leaves
-/// `subj_trust = Unknown`; the `exe=trusted` macro is then `NotEvaluable` ->
-/// rule 1 is a Possible (not decisive) -> fallthrough to rule 2 `allow`. So the
-/// wrong impl predicts `decision=allow, matchedRule=2, verdict=Possible` and the
-/// `decision == "deny"` assertion fails.
+/// `subj_trust = Unknown`; the `exe=untrusted` macro is then `NotEvaluable` ->
+/// rule 1 is a Possible -> fallthrough to rule 2 `allow` BUT `verdict=Possible`
+/// (unevaluable rule above the match). The correct impl gives `verdict=Decisive`
+/// because there is no unevaluable rule above the match (rule 1 was fully evaluated
+/// and got `NoMatch`). Asserting `verdict=Decisive` distinguishes the two impls.
+///
+/// Pair with `trustdb_absent_subject_resolves_untrusted` which pins the absent=>No
+/// direction: together they prove present=>trusted / absent=>untrusted.
 #[test]
 fn trustdb_resolves_subject_trust_when_workload_omits_trust() {
     let db_dir = tempfile::tempdir().expect("db tempdir");
@@ -109,8 +113,10 @@ fn trustdb_resolves_subject_trust_when_workload_omits_trust() {
         )],
     );
 
+    // Rule 1: deny untrusted subjects.  Rule 2: allow everything else.
+    // A PRESENT (trusted) subject must NOT match exe=untrusted -> falls through to allow.
     let (_rules_guard, rules_dir) =
-        write_rules_dir("deny_audit perm=any exe=trusted : all\nallow perm=any all : all\n");
+        write_rules_dir("deny_audit perm=any exe=untrusted : all\nallow perm=any all : all\n");
     // NOTE: workload deliberately omits `trust` / `subjTrust` / `objTrust`.
     let workload =
         write_workload(r#"{"exe":"/usr/bin/trusted-tool","path":"/etc/hostname","perm":"open"}"#);
@@ -137,16 +143,18 @@ fn trustdb_resolves_subject_trust_when_workload_omits_trust() {
     let json = parse_json("trustdb_resolves_subject_trust", &out);
     let result = &json["results"][0];
     assert_eq!(
-        result["decision"], "deny",
-        "--trustdb must resolve subj_trust=Yes from the DB so exe=trusted fires (rule 1 deny)"
+        result["decision"], "allow",
+        "--trustdb must resolve subj_trust=Yes (trusted) so exe=untrusted does NOT fire; \
+         the subject falls through to rule 2 allow"
     );
     assert_eq!(
-        result["matchedRule"], 1,
-        "the deny rule (exe=trusted) is rule 1"
+        result["matchedRule"], 2,
+        "the allow fallthrough rule is rule 2 (exe=untrusted did not match the trusted subject)"
     );
     assert_eq!(
         result["verdict"], "Decisive",
-        "DB-resolved trust makes the macro decisive, not Possible"
+        "DB-resolved trust makes rule 1 a full NoMatch (not NotEvaluable), so rule 2 \
+         is Decisive rather than Possible"
     );
     assert_eq!(result["source"], "rule");
 }
@@ -342,5 +350,214 @@ fn filehash_on_demand_hash_mismatch_does_not_match() {
     assert_eq!(
         result["matchedRule"], 2,
         "the decisive rule is rule 2 (allow fallthrough rule)"
+    );
+}
+
+/// ABSENT object path widens the `sha256hash=` field (regression pin for the two
+/// mutation survivors in `evaluate.rs:379` and `trustdb.rs:164`).
+///
+/// When the workload names an object `path` that does NOT exist on disk and OMITS
+/// `sha256`, `sha256_file` returns `Ok(None)` (NotFound branch, `trustdb.rs:164`).
+/// `evaluate_query` propagates that as `sha256 = None, sha256_unhashable = false`.
+/// `evaluate.rs:382` then hits `None => Match` (the standard absent-fact-widening
+/// path, rules.c:1572-1575), so the `sha256hash=` object constraint WIDENS and rule
+/// 1 (`allow`) fires.
+///
+/// The two mutation survivors both flip this to deny:
+/// - `evaluate.rs:379` mutant (`facts.sha256_unhashable` -> `true`): the unhashable
+///   guard fires even though `sha256_unhashable = false`, routing to `NoMatch`.
+/// - `trustdb.rs:164` mutant (NotFound guard -> `false`): NotFound propagates as
+///   `Err` => `sha256_unhashable = true`, same `NoMatch` outcome.
+/// Either way the verdict flips to deny at rule 2, killing this test.
+///
+/// Grounding: absent-path widening is the standard absent-fact skip documented in
+/// f1 grounding §1.4 ~line 173 (rules.c:1572-1575). It is DISTINCT from the
+/// present-but-unhashable FILE_HASH error-as-denial (rules.c:1606-1611) pinned by
+/// `filehash_present_but_unhashable_is_denied_not_widened` below.
+///
+/// This test PASSES against the current (correct) impl (regression pin); it does NOT
+/// have a RED phase because the absent-path widening shipped as part of #127 and has
+/// been correct since then - this test only closes the mutation gap.
+#[test]
+fn filehash_absent_object_path_widens_not_denied() {
+    // Use a path that is guaranteed to not exist. Include a UUID-like suffix so
+    // even a parallel test run cannot accidentally create it.
+    let obj_path = std::path::PathBuf::from(format!(
+        "/tmp/does-not-exist-rulesteward-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0xdeadbeef)
+    ));
+    // Confirm the path truly does not exist (smoke-guard; not a test assertion).
+    assert!(
+        !obj_path.exists(),
+        "test setup error: {obj_path:?} exists; choose a different path"
+    );
+
+    // Same ruleset shape as the unhashable test: sha256hash= allow rule first, then
+    // a deny_audit catch-all.  The all-zeros sha256 is a valid 64-hex string that
+    // can never collide with `KNOWN_SHA256` or an empty-file hash.
+    let all_zeros = "0000000000000000000000000000000000000000000000000000000000000000";
+    let rules =
+        format!("allow perm=open all : sha256hash={all_zeros}\ndeny_audit perm=any all : all\n");
+    let (_rules_guard, rules_dir) = write_rules_dir(&rules);
+
+    // Workload names the absent path and OMITS `sha256`.
+    let workload = write_workload(&format!(
+        r#"{{"exe":"/usr/bin/cat","path":"{}","perm":"open"}}"#,
+        obj_path.display()
+    ));
+
+    let out = bin()
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_dir.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    let json = parse_json("filehash_absent_object_path_widens_not_denied", &out);
+    let result = &json["results"][0];
+    assert_eq!(
+        result["decision"], "allow",
+        "absent object path: sha256_file returns Ok(None) (NotFound), sha256_unhashable \
+         stays false, the sha256hash= field WIDENS (None => Match, rules.c:1572-1575), \
+         so rule 1 allow fires. Both mutant survivors flip this to deny."
+    );
+    assert_eq!(
+        result["matchedRule"], 1,
+        "rule 1 (allow sha256hash=) matches via absent-fact widening; rule 2 is never reached"
+    );
+    assert_eq!(
+        result["verdict"], "Decisive",
+        "no uncertainty above the match (sha256_unhashable=false means no NotEvaluable \
+         guard fired); the widened match is Decisive"
+    );
+    assert_eq!(result["source"], "rule", "a rule fired, not a fallthrough");
+}
+
+/// `FILE_HASH` error-as-denial: the object file is PRESENT but UNHASHABLE (unreadable),
+/// so a `sha256hash=` rule must NOT match -> the verdict falls through to the next
+/// (deny) rule. This is DISTINCT from the absent-fact skip (object entirely absent).
+///
+/// Grounding (real fapolicyd): the `FILE_HASH` case returns 0 (= the constraint does
+/// NOT match, deny/fall-through) when the object is present but its hash backend
+/// yields nothing - `src/library/rules.c:1606-1611`:
+/// `if (!obj->o) { /* Treat errors as denial for file hash lookups */ if (type == FILE_HASH) return 0; break; }`.
+/// This error-as-denial path is DISTINCT from the
+/// object-NULL skip-widening at `rules.c:1572-1575`. See f1 grounding §1.4 line ~173
+/// and the canonical NFS oracle
+/// `/mnt/side-projects/fapolicyd-simulate-corpus/canonical/adversarial/filehash-missing-object-present-deny/`
+/// (the canonical workload OMITS `sha256`, exercising the on-demand path; the repo
+/// corpus fixture diverged by SUPPLYING one - restored to OMIT it in this pass).
+///
+/// Setup:
+///   - A real file on disk made UNREADABLE via `chmod 000`, so `sha256_file`
+///     returns `Err(PermissionDenied)` (present-but-unhashable), NOT `Ok(None)`
+///     (absent). Mirrors `trustdb.rs::verify_entry_open_permission_denied_is_read_error`.
+///   - Ruleset: `allow perm=open all : sha256hash=<all-zeros>` then
+///     `deny_audit perm=any all : all` (matches the canonical oracle's `rules.d`).
+///   - Workload: `{exe, path: <the unreadable file>, perm: open}` -- NO `sha256`.
+///
+/// Expected with the #127 fix: hashing the present file FAILS (EACCES); the
+/// `sha256hash=` constraint must be treated as error-as-denial = `NoMatch`, so rule
+/// 1 `allow` does NOT fire and the verdict is rule 2 `deny_audit` ->
+/// `decision=deny, matchedRule=2`.
+///
+/// Why the CURRENT (buggy) impl fails this: `evaluate_query` collapses the hash
+/// error into `None` (`sha256_file(...).ok().flatten()` at simulate.rs:427-432);
+/// `evaluate()` then WIDENS the absent `sha256hash=` field to `Match`
+/// (evaluate.rs:374-376), firing rule 1 `allow` -> the buggy impl predicts
+/// `decision=allow, matchedRule=1` -> this `decision == "deny"` assertion FAILS.
+/// The fix must distinguish present-but-unhashable (error -> `NoMatch` -> deny) from
+/// object-absent (skip -> widen).
+///
+/// Skipped under root: `chmod 000` has no effect (DAC bypassed), so the file is
+/// readable, hashing succeeds, and the path is never exercised (the all-zeros rule
+/// would still `NoMatch` -> deny rule 2, but for the wrong reason - not the error
+/// path). Probe by opening the file; if it succeeds we are root and skip.
+#[test]
+fn filehash_present_but_unhashable_is_denied_not_widened() {
+    let file_dir = tempfile::tempdir().expect("file tempdir");
+    let obj_path = file_dir.path().join("present-but-unhashable");
+    write_known_file(&obj_path); // a real, present file
+
+    // Remove all permissions so File::open returns PermissionDenied (EACCES).
+    let status = std::process::Command::new("chmod")
+        .args(["000", obj_path.to_str().expect("utf8 path")])
+        .status()
+        .expect("chmod");
+    assert!(status.success(), "chmod 000 failed");
+
+    // Skip under root: DAC checks are bypassed, so chmod 000 has no effect and the
+    // present-but-unhashable error path cannot be observed. Restore + return.
+    if std::fs::File::open(&obj_path).is_ok() {
+        let _ = std::process::Command::new("chmod")
+            .args(["644", obj_path.to_str().expect("utf8 path")])
+            .status();
+        return;
+    }
+
+    // Rule 1 allow gated on a sha256hash= (all-zeros, like the canonical oracle);
+    // rule 2 deny_audit catch-all. Matches the canonical NFS `rules.d`.
+    let all_zeros = "0000000000000000000000000000000000000000000000000000000000000000";
+    let rules =
+        format!("allow perm=open all : sha256hash={all_zeros}\ndeny_audit perm=any all : all\n");
+    let (_rules_guard, rules_dir) = write_rules_dir(&rules);
+    // Workload supplies the on-disk `path` (present-but-unreadable) and OMITS sha256.
+    let workload = write_workload(&format!(
+        r#"{{"exe":"/usr/bin/cat","path":"{}","perm":"open"}}"#,
+        obj_path.display()
+    ));
+
+    let out = bin()
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_dir.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    // Restore permissions so the tempdir can be cleaned up.
+    let _ = std::process::Command::new("chmod")
+        .args(["644", obj_path.to_str().expect("utf8 path")])
+        .status();
+
+    let json = parse_json("filehash_present_but_unhashable", &out);
+    let result = &json["results"][0];
+    assert_eq!(
+        result["decision"], "deny",
+        "present-but-unhashable object: the sha256hash= rule must NOT match \
+         (FILE_HASH error-as-denial, rules.c:1606-1611), so rule 1 allow does not \
+         fire and the verdict is rule 2 deny_audit. The buggy widening impl wrongly \
+         allows at rule 1."
+    );
+    assert_eq!(
+        result["matchedRule"], 2,
+        "the decisive rule is rule 2 (deny_audit catch-all); rule 1 allow did not fire \
+         because the present file's hash could not be computed"
+    );
+    assert_eq!(
+        result["source"], "rule",
+        "rule 2 is a decisive rule match, not a fallthrough"
     );
 }

@@ -134,6 +134,22 @@ exclude_globs = [
 # In both cases `< p` and `<= p` produce identical results for all reachable inputs.
 # Excluded by name, not `#[mutants::skip]`, so the rationale stays here in reviewable
 # config.
+#
+# `ruleset_uses_filehash` (simulate.rs) and the `ctx.ruleset_uses_filehash` match
+# guard in `evaluate_query` are both an OPTIMIZATION GUARD, not a correctness gate:
+# they only decide WHETHER to hash the object file on demand. Forcing either to
+# `true` (the `-> bool with true` / `match guard ... with true` mutants) makes the
+# on-demand hashing path run UNCONDITIONALLY - i.e. it hashes the object even when no
+# rule carries a `filehash=`/`sha256hash=` field. But `facts.sha256` /
+# `facts.sha256_unhashable` are READ by exactly one evaluator arm: the
+# `sha256hash`|`filehash` object arm. If no rule references that field, the computed
+# hash (or the unhashable flag) is never observed by `evaluate()`, so the verdict is
+# byte-identical. The mutants only add redundant I/O with no verdict-observable
+# effect: genuine equivalent mutants. (The sibling `-> false`/`with false` mutants
+# would SKIP hashing when a filehash rule DOES need it, breaking the #127 deny path,
+# and ARE killed by `filehash_present_but_unhashable_is_denied_not_widened` and the
+# on-demand-hash oracle tests.) Excluded by name, not `#[mutants::skip]`, so the
+# rationale stays here in reviewable config.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
@@ -141,6 +157,8 @@ exclude_re = [
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
     'replace \| with \^ in categorize',
     'replace < with <= in compute_scope',
+    'replace ruleset_uses_filehash -> bool with true',
+    'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

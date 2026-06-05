@@ -452,7 +452,13 @@ fn execdirs_systemdirs_macro_expansion() {
     assert_scenario("adversarial", "systemdirs-macro-includes-etc");
 }
 
-/// `exe=untrusted` / `exe=trusted` are TRUST MACROS, not literal exe paths (#126).
+/// `exe=untrusted` is a TRUST MACRO, not a literal exe path (#126). NOTE the
+/// grounded correction: `exe=untrusted` is the ONLY exe trust macro; `exe=trusted`
+/// is a LITERAL exe-path compare (real fapolicyd has no `trusted` macro - f1 §1.4
+/// line ~164 / `rules.c:1443-1463`). The literal `exe=trusted` semantics are pinned
+/// by the inline `exe_trusted_is_literal_not_a_trust_macro` unit test in
+/// `crates/rulesteward-fapolicyd/src/evaluate.rs`; the corpus scenarios below cover
+/// only `exe=untrusted`.
 ///
 /// Re-vendored from NFS in this feature (the two scenarios dropped in session 5a).
 /// Oracle source: real fapolicyd 1.4.5 (el9/el10) `dec=` capture, in each

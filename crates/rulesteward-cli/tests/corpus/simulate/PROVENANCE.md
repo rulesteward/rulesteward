@@ -39,9 +39,11 @@ per-side trust overrides for the new scenarios. The implementer must update
 ## Re-vendored for #126 (session 5b follow-up, 2026-06-05)
 
 The two `exe=untrusted` trust-macro scenarios were re-vendored from NFS (79 -> 81)
-now that #126 makes `evaluate()` treat `exe=trusted`/`exe=untrusted` as a TRUST
-MACRO instead of a literal exe path. Oracle: real fapolicyd 1.4.5 (el9/el10)
-`dec=` capture (each scenario's NFS `manifest.json`/`validation.log`).
+now that #126 makes `evaluate()` treat `exe=untrusted` as a TRUST MACRO instead of
+a literal exe path. (Grounded correction: `exe=untrusted` is the ONLY exe trust
+macro; `exe=trusted` is a LITERAL exe-path compare - real fapolicyd has no
+`trusted` macro, f1 §1.4 line ~164 / `rules.c:1443-1463`.) Oracle: real fapolicyd
+1.4.5 (el9/el10) `dec=` capture (each scenario's NFS `manifest.json`/`validation.log`).
 
 - `adversarial/exe-untrusted-macro-match`: subject `/tmp/payload` is untrusted
   (`trust: false`); `deny_audit exe=untrusted : all` fires -> `deny`, rule 1.
