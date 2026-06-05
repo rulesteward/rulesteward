@@ -13,12 +13,16 @@ authoritative-categorizer feature.
   - Used only when RuleSteward is built with the optional
     `authoritative-categorizer` Cargo feature. The default build links no
     libsepol and carries no LGPL obligation.
-  - Statically linked from a musl-built `libsepol.a`
-    (crates/rulesteward-selinux-sys/libsepol.a; build provenance in
-    crates/rulesteward-selinux-sys/build.rs).
+  - Built from the libsepol 3.10 source vendored in-tree at
+    crates/rulesteward-selinux-sys/vendor/libsepol/ and statically linked
+    (the build recipe + version pin are in that directory's README.txt; the
+    build is driven by crates/rulesteward-selinux-sys/build.rs).
   - License: GNU Lesser General Public License, version 2.1. The full text is
-    in LICENSES/LGPL-2.1.txt. Source for libsepol is available from the SELinux
-    userspace project (https://github.com/SELinuxProject/selinux), release 3.10.
+    in LICENSES/LGPL-2.1.txt and in vendor/libsepol/LICENSE. The complete,
+    corresponding libsepol source is included in this repository under
+    crates/rulesteward-selinux-sys/vendor/libsepol/ (upstream:
+    https://github.com/SELinuxProject/selinux, release 3.10), satisfying the
+    LGPL-2.1 source-availability requirement for any feature-enabled binary.
 
 The single-static-binary distribution model is preserved: libsepol is linked
 into the feature-enabled binary as a static archive (LGPL-2.1 permits static

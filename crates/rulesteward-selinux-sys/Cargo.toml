@@ -8,11 +8,22 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 # Cargo enforces a single link of the native `sepol` library across the graph and
-# runs build.rs (which emits `rustc-link-lib=static=sepol` against the committed
-# musl-built libsepol.a). See build.rs for the archive provenance + the
-# single-archive-serves-glibc-and-musl note.
+# runs build.rs, which (only under the `vendored` feature) builds libsepol 3.10
+# from the in-tree `vendor/libsepol/` source into OUT_DIR and emits
+# `rustc-link-lib=static=sepol`. See build.rs + vendor/libsepol/README.txt for the
+# source pin, the build recipe, and the per-target (glibc vs musl) note.
 links = "sepol"
 build = "build.rs"
+
+[features]
+# `vendored` builds + statically links libsepol from the in-tree source. It is
+# default-OFF and is the ONLY thing that makes build.rs compile libsepol: a
+# default build (e.g. `cargo build/test --workspace`) compiles this crate's rlib
+# with a no-op build.rs and links NO libsepol (an rlib links no native libs), so
+# the default workspace build carries zero libsepol cost. `rulesteward-selinux`'s
+# `authoritative-categorizer` feature turns this on; the standalone `vendored`
+# build/link smoke test (tests/links_from_source.rs) runs under it too.
+vendored = []
 
 [dependencies]
 thiserror = { workspace = true }
