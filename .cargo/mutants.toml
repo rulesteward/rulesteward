@@ -49,8 +49,12 @@ examine_globs = [
     "crates/rulesteward-selinux/src/triage.rs",
     "crates/rulesteward-selinux/src/te_emit.rs",
     "crates/rulesteward-selinux/src/categorize.rs",
-    # selinux-sys FFI shim (filled by P5):
-    "crates/rulesteward-selinux-sys/src/lib.rs",
+    # selinux-sys FFI shim: EXCLUDED from mutation scope (removed in PR #128).
+    # It is the libsepol FFI (vendored in #125), built behind the default-off
+    # `vendored` feature and not yet wired into any consumer (#124), so it has
+    # 0% test coverage and every mutant is an unkillable survivor (they run with
+    # 0s test, pure gate noise). Restore to this list once #124 wires it in AND
+    # it has real test coverage. Tracked: #131.
 ]
 
 exclude_globs = [

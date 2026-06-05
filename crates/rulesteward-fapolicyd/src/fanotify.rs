@@ -181,30 +181,30 @@ pub enum ParseError {
 /// string, preventing `pid=` from matching inside `ppid=`.
 fn extract_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let search = format!("{key}=");
-    let mut start = 0;
-    loop {
-        let pos = line[start..].find(search.as_str())?;
-        let abs_pos = start + pos;
-        // Verify word boundary: preceded by whitespace or at position 0.
-        let preceded_by_space = abs_pos == 0
+    // Take the first occurrence of `key=` at a word boundary (start-of-line or
+    // preceded by whitespace), so `pid=` does not match inside `ppid=`. Scanning
+    // with `match_indices(..).find(..)` (rather than a hand-rolled
+    // `start = abs_pos + 1` cursor) means there is no loop-advance arithmetic a
+    // mutation could reverse into a non-terminating loop -- the old cursor hung
+    // under the `+ -> -` / `+ -> *` mutants. No `key=` needle here can
+    // self-overlap (no key passed in contains `=`), so `match_indices`
+    // (non-overlapping) selects the same occurrence the old `+1` walk did.
+    let (abs_pos, _) = line.match_indices(search.as_str()).find(|&(abs_pos, _)| {
+        abs_pos == 0
             || line
                 .as_bytes()
                 .get(abs_pos - 1)
-                .is_some_and(u8::is_ascii_whitespace);
-        if preceded_by_space {
-            let after = &line[abs_pos + search.len()..];
-            // Quoted value: key="..."
-            if let Some(inner) = after.strip_prefix('"') {
-                let end = inner.find('"')?;
-                return Some(&inner[..end]);
-            }
-            // Unquoted: ends at next whitespace
-            let end = after.find(char::is_whitespace).unwrap_or(after.len());
-            return Some(&after[..end]);
-        }
-        // This occurrence was inside another key (e.g. "ppid="); skip past it.
-        start = abs_pos + 1;
+                .is_some_and(u8::is_ascii_whitespace)
+    })?;
+    let after = &line[abs_pos + search.len()..];
+    // Quoted value: key="..."
+    if let Some(inner) = after.strip_prefix('"') {
+        let end = inner.find('"')?;
+        return Some(&inner[..end]);
     }
+    // Unquoted: ends at next whitespace.
+    let end = after.find(char::is_whitespace).unwrap_or(after.len());
+    Some(&after[..end])
 }
 
 /// Extract the `audit(TS:SERIAL)` timestamp from a `msg=audit(TS:SERIAL):` field.
