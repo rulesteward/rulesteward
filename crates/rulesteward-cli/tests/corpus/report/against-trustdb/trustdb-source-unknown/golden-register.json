@@ -25,10 +25,15 @@
   ],
   "trustJoin": [
     {
-      "path": "/opt/vendor/bin/agent",
-      "size": 51,
-      "digest": "c73afb60197c9c64805d2b4ab95efdee8646f8248ff800de2575a11eed8f9f08",
-      "source": "Unknown"
+      "grantIndex": 0,
+      "rows": [
+        {
+          "path": "/opt/vendor/bin/agent",
+          "source": "Unknown",
+          "size": 51,
+          "digest": "c73afb60197c9c64805d2b4ab95efdee8646f8248ff800de2575a11eed8f9f08"
+        }
+      ]
     }
   ]
 }

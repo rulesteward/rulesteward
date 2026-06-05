@@ -7,11 +7,11 @@
 //! `commands/report.rs::run()` is a `todo!()` stub (exit 101). When the
 //! `feat-report` implementer fills the stub, all tests must turn GREEN.
 //!
-//! ## trustJoin shape - QUESTION FOR USER (see below)
+//! ## trustJoin shape - RESOLVED (f2 section 3.2, orchestrator 2026-06-04)
 //!
-//! Two shapes appear in the corpus goldens. The oracle asserts Shape A
-//! (grantIndex + rows array) as authoritative per the task spec. See the
-//! `[QUESTION FOR USER]` comment block before the `against_trustdb` module.
+//! All path-join scenarios use Shape A: `[{ "grantIndex": N, "rows": [...] }]`.
+//! The two former Shape-B goldens have been normalized. The enumerate-cap shape
+//! (grantSource/count/enumerated/entries) is a distinct opt-in form kept as-is.
 //!
 //! ## Corpus provenance
 //!
@@ -520,32 +520,27 @@ plain_oracle_test!(
 // ---------------------------------------------------------------------------
 // against-trustdb oracle tests
 //
-// [QUESTION FOR USER: trustJoin shape inconsistency]
+// trustJoin shape - RESOLVED (f2 section 3.2, orchestrator decision 2026-06-04)
 //
-// The corpus golden registers contain TWO different trustJoin shapes:
-//
-// Shape A (6 of 8 against-trustdb scenarios + trustdb-path-join-miss with empty rows):
+// All path-join scenarios use Shape A (per-grant array):
 //   "trustJoin": [{ "grantIndex": 0, "rows": [{path, source, size, digest}] }]
 //
-//   Examples: trustdb-path-join-rpm, trustdb-source-filedb, trustdb-source-rpmdb,
-//   trustdb-enumerate-trust1, trustdb-path-join-miss (rows: [])
+// The former Shape B goldens (diff-changed-trustdb-digest and trustdb-source-unknown)
+// have been normalized to Shape A in the trustJoin-fix commit.
 //
-// Shape B (2 scenarios: diff-changed-trustdb-digest, trustdb-source-unknown):
-//   "trustJoin": [{ "path": "...", "source": "...", "size": N, "digest": "..." }]
-//   (a flat object, not wrapped in a grantIndex+rows structure)
+// trustdb-enumerate-cap uses a distinct shape (object with grantSource/count/
+// enumerated/entries) for the --enumerate-trust opt-in cap form (f2 section 2.4).
+// This is intentionally different from the per-grant path-join Shape A and is
+// kept as-is.
 //
-// Additionally, trustdb-enumerate-cap uses yet another shape (object with
-// grantSource/count/enumerated/entries) which appears to be the --enumerate-trust
-// opt-in form.
-//
-// This oracle ASSERTS Shape A ({ grantIndex, rows }) as authoritative, consistent
-// with the dedicated `against-trustdb` category and the task spec. The flat Shape
-// B in diff-changed-trustdb-digest and trustdb-source-unknown is treated as a
-// corpus inconsistency introduced during patch-phase authoring.
-//
-// IF THE IMPLEMENTER ADOPTS SHAPE B INSTEAD: these tests will fail on the
-// grantIndex+rows structure assertion. The orchestrator must confirm the canonical
-// shape before the implementer conforms. This is the documented trustJoin question.
+// The three trustJoin forms and which scenarios use them:
+//   Shape A (path-join): all against-trustdb path-join scenarios + diff-drift
+//     scenarios that use --against-trustdb (trustdb-path-join-rpm, trustdb-source-*,
+//     trustdb-path-join-miss, diff-changed-trustdb-digest)
+//   Enumerate-cap shape: trustdb-enumerate-cap (--enumerate-trust opt-in)
+//   No trustJoin: scenarios without --against-trustdb (trustdb-no-flag-trust1, all
+//     cardinality/decision/perm/scope/hash-origin-alg/set-expansion/path-extraction/
+//     load-order/noise-filter and most diff-drift scenarios)
 // ---------------------------------------------------------------------------
 
 /// Trustdb fixture rows for scenarios that join `/usr/bin/rpm` (`RpmDb`, `src_int=1`).
@@ -635,14 +630,13 @@ fn oracle_trustdb_source_filedb() {
 }
 
 /// trustdb-source-unknown: source int 0 maps to `TrustSource::Unknown`.
-/// NOTE: the corpus golden for this scenario uses flat Shape B. This test
-/// asserts Shape A (the authoritative form). See the [QUESTION FOR USER] block.
+/// The corpus golden for this scenario now uses Shape A (normalized by the
+/// trustJoin-fix commit). The inline expected below matches the golden file.
 #[test]
 fn oracle_trustdb_source_unknown() {
     let rules_d = scenario_rules_d("against-trustdb", "trustdb-source-unknown");
-    // We assert Shape A here even though the corpus golden has Shape B.
-    // The authoritative shape is grantIndex+rows per the task spec.
-    // Build the expected Shape A golden for assertion:
+    // Build the expected Shape A golden for assertion
+    // (inline so the test is self-contained and the structure is explicit):
     let expected = serde_json::json!({
         "schemaVersion": 1,
         "kind": "exception-register",
@@ -1359,8 +1353,6 @@ fn oracle_diff_multi_drift() {
 
 /// diff-changed-origin: hashOrigin changed from "none" to "trustdb" (same canonical
 /// predicate key). This uses both --against-trustdb and --diff-against.
-/// NOTE: the corpus golden for diff-changed-trustdb-digest uses flat Shape B trustJoin;
-/// this test uses Shape A (authoritative). See [QUESTION FOR USER] block.
 #[test]
 fn oracle_diff_changed_origin() {
     let rules_d = scenario_rules_d("diff-drift", "diff-changed-origin");
@@ -1396,8 +1388,7 @@ fn oracle_diff_changed_origin() {
 
 /// diff-changed-trustdb-digest: the trust-DB digest for a path grant changed between
 /// snapshots (integrity drift). Uses --against-trustdb and --diff-against.
-/// NOTE: the corpus golden uses flat Shape B trustJoin. We assert Shape A in this
-/// test. See [QUESTION FOR USER] block above.
+/// The corpus golden now uses Shape A trustJoin (normalized by the trustJoin-fix commit).
 #[test]
 fn oracle_diff_changed_trustdb_digest() {
     let rules_d = scenario_rules_d("diff-drift", "diff-changed-trustdb-digest");

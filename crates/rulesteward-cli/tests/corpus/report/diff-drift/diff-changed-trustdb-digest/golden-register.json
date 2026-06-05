@@ -25,10 +25,15 @@
   ],
   "trustJoin": [
     {
-      "path": "/usr/bin/rpm",
-      "source": "RpmDb",
-      "size": 24200,
-      "digest": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826"
+      "grantIndex": 0,
+      "rows": [
+        {
+          "path": "/usr/bin/rpm",
+          "source": "RpmDb",
+          "size": 24200,
+          "digest": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826"
+        }
+      ]
     }
   ]
 }
