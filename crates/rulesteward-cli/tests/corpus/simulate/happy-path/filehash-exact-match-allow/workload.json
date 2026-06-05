@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/true",
+  "path": "/usr/bin/true",
+  "perm": "execute",
+  "trust": true,
+  "trigger_command": "/usr/bin/true"
+}

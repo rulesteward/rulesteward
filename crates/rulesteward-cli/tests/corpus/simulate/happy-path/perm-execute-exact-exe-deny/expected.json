@@ -1,0 +1,7 @@
+{
+  "decision": "deny",
+  "full_decision_keyword": "deny_audit",
+  "rule_number": 1,
+  "source": "rule",
+  "confidence": "uncertain"
+}

@@ -1,0 +1,2 @@
+deny_audit perm=open exe=/usr/bin/bash uid=1000 : path=/etc/hostname ftype=text/plain
+allow perm=any all : all

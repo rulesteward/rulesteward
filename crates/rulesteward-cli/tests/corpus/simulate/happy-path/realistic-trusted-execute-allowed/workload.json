@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/ls",
+  "path": "/usr/bin/ls",
+  "perm": "execute",
+  "trust": true
+}

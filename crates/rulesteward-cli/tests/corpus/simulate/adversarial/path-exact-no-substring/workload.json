@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/etc/ssh/sshd_config",
+  "perm": "open"
+}

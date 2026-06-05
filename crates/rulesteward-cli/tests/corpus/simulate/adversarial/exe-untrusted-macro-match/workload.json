@@ -1,0 +1,6 @@
+{
+  "exe": "/tmp/payload",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "trust": false
+}

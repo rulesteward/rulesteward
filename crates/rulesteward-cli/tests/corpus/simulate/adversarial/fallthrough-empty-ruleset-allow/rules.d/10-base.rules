@@ -1,0 +1,1 @@
+deny_audit perm=open exe=/usr/bin/curl : all

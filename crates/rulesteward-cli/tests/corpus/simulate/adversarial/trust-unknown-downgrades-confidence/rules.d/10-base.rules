@@ -1,0 +1,3 @@
+deny_audit perm=execute trust=1 : all
+allow perm=execute exe=/usr/local/bin/myexe : all
+deny_audit perm=any all : all

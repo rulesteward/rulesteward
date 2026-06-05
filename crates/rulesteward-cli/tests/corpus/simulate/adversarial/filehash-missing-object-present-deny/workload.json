@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/tmp/present-but-unhashable",
+  "perm": "open"
+}

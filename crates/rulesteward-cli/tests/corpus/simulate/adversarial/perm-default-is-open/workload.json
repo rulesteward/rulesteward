@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/local/bin/myexe",
+  "path": "/usr/local/bin/mychild",
+  "perm": "execute"
+}

@@ -1,0 +1,9 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "uid": null,
+  "gid": null,
+  "trust": null,
+  "comm": null
+}

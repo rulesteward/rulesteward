@@ -1,0 +1,2 @@
+deny_log perm=open exe=/usr/bin/coreutils : all
+allow perm=any all : all

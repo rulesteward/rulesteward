@@ -1,0 +1,5 @@
+{
+  "exe": "/opt/app/bin/tool",
+  "path": "/opt/app/bin/tool",
+  "perm": "execute"
+}

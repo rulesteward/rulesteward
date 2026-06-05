@@ -1,0 +1,2 @@
+allow perm=execute dir=execdirs : all
+deny_audit perm=any all : all

@@ -1,0 +1,6 @@
+{
+  "exe": "/tmp/dropper",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "trust": false
+}

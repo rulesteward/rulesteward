@@ -1,0 +1,2 @@
+deny_audit perm=open exe=/usr/bin/bash : path=/etc/shadow
+allow perm=any all : all

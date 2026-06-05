@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/bash",
+  "path": "/usr/bin/python3.9",
+  "perm": "execute",
+  "note": "el10 uses /usr/bin/python3.12 (not python3.9); both captured"
+}

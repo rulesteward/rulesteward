@@ -1,0 +1,2 @@
+deny_audit perm=open uid=0 : path=/tmp/test-sensitive
+allow perm=any all : all

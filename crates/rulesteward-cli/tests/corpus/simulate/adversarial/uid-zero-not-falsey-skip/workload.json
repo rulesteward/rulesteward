@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/coreutils",
+  "path": "/tmp/test-sensitive",
+  "perm": "open",
+  "uid": 1000
+}

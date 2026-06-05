@@ -1,0 +1,2 @@
+deny_audit perm=open exe=/usr/bin/bash : path=/etc/hostname
+allow perm=open exe=/usr/bin/bash : path=/etc/hostname
