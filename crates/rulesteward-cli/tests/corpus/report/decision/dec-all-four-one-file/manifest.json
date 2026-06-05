@@ -1,0 +1,35 @@
+{
+  "id": "dec-all-four-one-file",
+  "class": "decision",
+  "source": "report-wave1",
+  "intent": "One file with all four allow-family decisions plus a deny; register enumerates exactly the four allows, deny excluded.",
+  "edge_case_axis": "decision",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 4,
+    "decisions": {
+      "allow": 1,
+      "allow_audit": 1,
+      "allow_syslog": 1,
+      "allow_log": 1
+    },
+    "scopes": {
+      "all": 1,
+      "path": 1,
+      "ftype": 1,
+      "dir": 1
+    },
+    "hash_origins": {
+      "none": 4
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

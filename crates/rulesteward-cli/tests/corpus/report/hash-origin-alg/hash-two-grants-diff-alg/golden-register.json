@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "filehash=0123456789abcdef0123456789abcdef",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": "0123456789abcdef0123456789abcdef",
+      "hashOrigin": "rule-filehash",
+      "hashAlgorithm": "MD5",
+      "scope": "hash",
+      "setExpansions": {},
+      "source": { "file": "67-twoalg.rules", "line": 1 },
+      "loadIndex": 1
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "hashOrigin": "rule-filehash",
+      "hashAlgorithm": "SHA512",
+      "scope": "hash",
+      "setExpansions": {},
+      "source": { "file": "67-twoalg.rules", "line": 2 },
+      "loadIndex": 2
+    }
+  ]
+}

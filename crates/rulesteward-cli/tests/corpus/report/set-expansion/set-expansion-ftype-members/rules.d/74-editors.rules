@@ -1,0 +1,2 @@
+%editors=text/x-shellscript,text/x-python,text/x-perl
+allow perm=open all : ftype=%editors

@@ -1,0 +1,3 @@
+allow perm=open exe=/usr/bin/a : all
+allow perm=open exe=/usr/bin/b : all
+allow perm=open exe=/usr/bin/c : all

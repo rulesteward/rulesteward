@@ -1,0 +1,36 @@
+{
+  "id": "diff-changed-trustdb-digest",
+  "class": "diff-drift",
+  "source": "report-wave1",
+  "intent": "Under --against-trustdb, the resolved trust-DB digest for an enumerable grant differs from the snapshot; one changed (integrity-drift) row.",
+  "edge_case_axis": "diff-drift",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "trustdb": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": [
+      {
+        "path": "/usr/bin/rpm",
+        "size": 24200,
+        "digest": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826",
+        "source": "RpmDb"
+      }
+    ]
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

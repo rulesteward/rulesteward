@@ -8,6 +8,7 @@
 pub mod csv;
 pub mod human;
 pub mod json;
+pub mod register;
 pub mod sarif;
 pub mod trustdb;
 

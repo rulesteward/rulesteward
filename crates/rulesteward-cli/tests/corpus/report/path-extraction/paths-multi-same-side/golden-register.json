@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "exe=/usr/bin/python3.14 comm=dnf",
+      "object": "all",
+      "subjectPaths": [
+        "/usr/bin/python3.14"
+      ],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "85-execomm.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ]
+}

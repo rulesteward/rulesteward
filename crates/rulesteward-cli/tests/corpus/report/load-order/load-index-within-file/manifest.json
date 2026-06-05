@@ -1,0 +1,29 @@
+{
+  "id": "load-index-within-file",
+  "class": "load-order",
+  "source": "report-wave1",
+  "intent": "One file, three allow rules; loadIndex increments 1,2,3 and source.line tracks each rule's line.",
+  "edge_case_axis": "load-order",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 3,
+    "decisions": [
+      "allow"
+    ],
+    "scopes": [
+      "path"
+    ],
+    "hash_origins": [
+      "none"
+    ]
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

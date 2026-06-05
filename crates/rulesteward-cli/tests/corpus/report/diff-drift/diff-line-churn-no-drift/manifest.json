@@ -1,0 +1,30 @@
+{
+  "id": "diff-line-churn-no-drift",
+  "class": "diff-drift",
+  "source": "report-wave1",
+  "intent": "Snapshot and current differ ONLY in line numbers (a comment shifts every rule down) but canonical predicate keys match; drift empty. Proves the diff key is predicate-based, not file:line.",
+  "edge_case_axis": "diff-drift",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": {
+      "allow": 2
+    },
+    "scopes": {
+      "all": 1,
+      "trust": 1
+    },
+    "hash_origins": {
+      "none": 2
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": []
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

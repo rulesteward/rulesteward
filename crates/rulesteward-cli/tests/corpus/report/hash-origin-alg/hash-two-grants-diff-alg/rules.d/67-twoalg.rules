@@ -1,0 +1,2 @@
+allow perm=open all : filehash=0123456789abcdef0123456789abcdef
+allow perm=open all : filehash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

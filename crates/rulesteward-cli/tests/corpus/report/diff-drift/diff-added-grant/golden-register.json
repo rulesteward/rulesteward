@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register-drift",
+  "drift": [
+    {
+      "kind": "added",
+      "grant": {
+        "decision": "allow",
+        "perm": "execute",
+        "subject": "all",
+        "object": "trust=1",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "trust",
+        "setExpansions": {},
+        "source": {
+          "file": "A0-added.rules",
+          "line": 2
+        },
+        "loadIndex": 2
+      },
+      "from": null,
+      "to": {
+        "decision": "allow",
+        "perm": "execute",
+        "subject": "all",
+        "object": "trust=1",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "trust",
+        "setExpansions": {},
+        "source": {
+          "file": "A0-added.rules",
+          "line": 2
+        },
+        "loadIndex": 2
+      }
+    }
+  ]
+}

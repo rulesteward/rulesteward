@@ -1,0 +1,48 @@
+{
+  "id": "trustdb-enumerate-trust1",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "trust=1 grant WITH --against-trustdb; trustJoin enumerates trust-DB rows (path/size/digest SHA256/source). Requires a fixture trust DB.",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "trust": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": [
+      {
+        "path": "/usr/bin/ls",
+        "source": "RpmDb",
+        "size": 49,
+        "digest": "309b3c9a3246361ec0338641aed3c14e7f91e23e7cf10de000c75135ba99fddd"
+      },
+      {
+        "path": "/usr/bin/cat",
+        "source": "FileDb",
+        "size": 50,
+        "digest": "c6138c9502337f42763d627e4b665dd4fd66f26a987891d0a7e8313783f689ad"
+      },
+      {
+        "path": "/opt/local/tool",
+        "source": "Unknown",
+        "size": 23,
+        "digest": "03d2c1c283a28a22e87c242b19ae8b5040d8335cc4eb3781529955d281ff0cfe"
+      }
+    ]
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

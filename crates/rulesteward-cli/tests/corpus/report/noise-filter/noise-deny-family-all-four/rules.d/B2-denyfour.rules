@@ -1,0 +1,5 @@
+deny perm=open all : all
+deny_audit perm=any all : all
+deny_syslog perm=open all : ftype=application/x-bad-elf
+deny_log perm=execute all : all
+allow perm=open all : ftype=text/x-shellscript

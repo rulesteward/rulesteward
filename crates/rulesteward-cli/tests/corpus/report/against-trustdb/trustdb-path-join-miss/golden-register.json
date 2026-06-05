@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "exe=/usr/local/bin/notindb",
+      "object": "all",
+      "subjectPaths": [
+        "/usr/local/bin/notindb"
+      ],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "92-pathmiss.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ],
+  "trustJoin": [
+    {
+      "grantIndex": 0,
+      "rows": []
+    }
+  ]
+}

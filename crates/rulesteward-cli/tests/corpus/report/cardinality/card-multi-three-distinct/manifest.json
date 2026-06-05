@@ -1,0 +1,23 @@
+{
+  "id": "card-multi-three-distinct",
+  "class": "cardinality",
+  "source": "report-wave1",
+  "intent": "Three allow grants with distinct predicates in one file; loadIndex increments and each row is distinct.",
+  "edge_case_axis": "cardinality",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 3,
+    "decisions": { "allow": 3 },
+    "scopes": { "trust": 1, "path": 1, "dir": 1 },
+    "hash_origins": { "none": 3 }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

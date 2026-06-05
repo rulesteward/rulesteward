@@ -1,0 +1,1 @@
+allow_log perm=open all : dir=/var/tmp/

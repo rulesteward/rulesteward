@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "dir=/a/ ftype=text/plain",
+      "subjectPaths": [],
+      "objectPaths": [
+        "/a/"
+      ],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {},
+      "source": {
+        "file": "B1-reorder-obj.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ]
+}

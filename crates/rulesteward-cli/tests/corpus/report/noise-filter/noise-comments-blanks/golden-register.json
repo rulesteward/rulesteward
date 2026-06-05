@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "all",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "all",
+      "setExpansions": {},
+      "source": {
+        "file": "B1-comments.rules",
+        "line": 3
+      },
+      "loadIndex": 1
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "subject": "all",
+      "object": "trust=1",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "trust",
+      "setExpansions": {},
+      "source": {
+        "file": "B1-comments.rules",
+        "line": 6
+      },
+      "loadIndex": 2
+    }
+  ]
+}

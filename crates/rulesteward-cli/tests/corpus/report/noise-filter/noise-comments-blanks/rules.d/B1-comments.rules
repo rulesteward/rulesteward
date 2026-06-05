@@ -1,0 +1,6 @@
+# header comment
+
+allow perm=open all : all
+
+# mid comment
+allow perm=execute all : trust=1

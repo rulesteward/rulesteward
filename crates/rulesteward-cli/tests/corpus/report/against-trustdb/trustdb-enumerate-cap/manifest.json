@@ -1,0 +1,30 @@
+{
+  "id": "trustdb-enumerate-cap",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "A trust DB with many rows under a single trust=1 grant; golden carries a count (Q4 cap behavior, --enumerate-trust opt-in for full listing).",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "trust": 1
+    },
+    "hash_origins": {
+      "none": 1
+    },
+    "trust_join_count": 25
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": true
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

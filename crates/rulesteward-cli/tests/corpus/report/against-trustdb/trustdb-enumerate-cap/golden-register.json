@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "subject": "all",
+      "object": "trust=1",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "trust",
+      "setExpansions": {},
+      "source": {
+        "file": "97-cap.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ],
+  "trustJoin": {
+    "grantSource": {
+      "file": "97-cap.rules",
+      "line": 1
+    },
+    "count": 25,
+    "enumerated": true,
+    "entries": [
+      {
+        "path": "/usr/bin/[",
+        "size": 48,
+        "digest": "afd97bbd643bfe1473794af167cd5c6f44fe449681033e3584b40b836f624b4b",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/addr2line",
+        "size": 28408,
+        "digest": "cba8e8f3f6cbbae449c426c354b62eb2641daacff4524534c91866f54e827971",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/alias",
+        "size": 33,
+        "digest": "c277897660adddce26a75871188bdae7ffa73f571a6fb779090a4c92df33988d",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/ar",
+        "size": 57328,
+        "digest": "a11f48a428eb1255cc70d98fa44a6379b77d8daa4362da0e4beedddbc788ad5f",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/arch",
+        "size": 51,
+        "digest": "209bae4071910ef54b4a3bd302059bf7e00870d8bacffcd7c5489425f37ed16f",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/arping",
+        "size": 27896,
+        "digest": "1bd55e017ba8746aa0ff5561382ec72f1e0dbc8eada677a6c63ab7821e9f32c9",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/as",
+        "size": 727368,
+        "digest": "515db58c63606abb91c08960022c1e541ef473f8a9e0d81f6ebcf1eb5868a0d2",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/attr",
+        "size": 16096,
+        "digest": "dea7d94771744cd115d74864cf4c439f40f033ad3d813102076747ee9c4e3366",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/audit2allow",
+        "size": 15064,
+        "digest": "c540b9edef596cb74442d82634bf340193cd0445efad6853944ef595062b5e55",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/aulast",
+        "size": 19664,
+        "digest": "8152e96195cfb6e186cec4dc4fa64e6861a6b5492f5ef3d417ebe8fe68808b5e",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/aulastlog",
+        "size": 15488,
+        "digest": "a0bae31df53fe3a574748ca15b08aff722feab9e32b4db4200accc0df589c611",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/ausyscall",
+        "size": 15480,
+        "digest": "78dbed9adeb3c599963b4d83a9d159aad090cd2fe5c220a5bd7f8fe8f6c2eb34",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/auvirt",
+        "size": 36152,
+        "digest": "6d2f500a2c6efb3801fd0288c889a1e8678302ead32b9ec267dd9655731fc4fe",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/b2sum",
+        "size": 52,
+        "digest": "9116333c88eee22e55e30db1ad088483f52a3024b624356416873bc14fad9359",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/base32",
+        "size": 53,
+        "digest": "ff10172686b6db691ae57530dff6cd14b980cbba7ed81a8dcf81bd42dd7bb23b",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/base64",
+        "size": 53,
+        "digest": "fed1b291454a61812e605fd06b04f915ef7e5436cfc1ee17f96523f56c2fbebf",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/basename",
+        "size": 55,
+        "digest": "9a1e6804fef8ca36d39b008210b187dc4a82c456919574e61e17ab40c033589c",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/basenc",
+        "size": 53,
+        "digest": "cd8a131e0af4133b97da4adcca84ae61cc24c898d8d0e2b6aabac6d2d7a34094",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/bash",
+        "size": 1389024,
+        "digest": "ec6d007d48ef11bc47ad3f372b4b20ff2f0d4e63867e7e4cc0f1b17b19fa88b2",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/bashbug-64",
+        "size": 7079,
+        "digest": "5588678b4cf9d513e85c908fad23ed079135656be7b79559570b23f4c3433022",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/bg",
+        "size": 30,
+        "digest": "5a864f2047a83aa767ac1a3fca577e5f3a8eb4d129b4b1974fb2009960a9a0be",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/busctl",
+        "size": 102560,
+        "digest": "d13279e945ea5f87d1e8142bc8c72f5dc3480df4553797e69f5cac1a9c259e4d",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/c++filt",
+        "size": 27832,
+        "digest": "5e4cc686f443c908863a7316cd3c99d901d3daf59ea16a9372e918baedb54343",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/ca-legacy",
+        "size": 1648,
+        "digest": "48f9c9bd7473d45f2f2e30d5c723cf58d7175be9e3f19573a67049cbac35330a",
+        "source": "FileDb"
+      },
+      {
+        "path": "/usr/bin/cal",
+        "size": 53064,
+        "digest": "0b83b31f33a5fde9116308d50574b6b7e256812897ab53dd938eb0cfe1d04a2c",
+        "source": "FileDb"
+      }
+    ]
+  }
+}

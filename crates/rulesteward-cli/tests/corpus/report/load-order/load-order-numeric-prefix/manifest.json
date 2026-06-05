@@ -1,0 +1,29 @@
+{
+  "id": "load-order-numeric-prefix",
+  "class": "load-order",
+  "source": "report-wave1",
+  "intent": "Files 05-x, 40-y, and 5-bare to exercise numeric-prefix ordering edges (5 vs 05 vs 40) under fagenrules_cmp.",
+  "edge_case_axis": "load-order",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 3,
+    "decisions": [
+      "allow"
+    ],
+    "scopes": [
+      "path"
+    ],
+    "hash_origins": [
+      "none"
+    ]
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

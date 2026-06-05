@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "dir=/a/",
+      "subjectPaths": [],
+      "objectPaths": ["/a/"],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "dir",
+      "setExpansions": {},
+      "source": {
+        "file": "D1-objdir.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ]
+}

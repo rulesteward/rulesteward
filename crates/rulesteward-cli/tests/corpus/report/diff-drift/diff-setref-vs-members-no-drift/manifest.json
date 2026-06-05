@@ -1,0 +1,33 @@
+{
+  "id": "diff-setref-vs-members-no-drift",
+  "class": "diff-drift",
+  "source": "adversarial-impl-review-2026-06-05",
+  "intent": "Current rules.d uses %exes=/bin/a then allow perm=open exe=%exes : all; snapshot was taken when the rule used the literal form exe=/bin/a (no set definition). Canonical predicate is identical (exe=%exes expands and sorts to the same value as exe=/bin/a per f2 section 4.1). Expected drift: EMPTY. RED against current impl because row_key uses source-order render ('exe=%exes' vs 'exe=/bin/a' are different strings).",
+  "edge_case_axis": "diff-drift-canonical-predicate",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 4.1 canonical predicate equality: a %set reference and its sorted expanded members are the same grant; no drift must be produced",
+    "grounding": "canonical_grant_key in register.rs expands SetRefs via canonical_value; row_key must use canonical_grant_key not source-order render",
+    "observed_current_subject": "exe=%exes",
+    "observed_current_setExpansions": { "%exes": ["/bin/a"] },
+    "snapshot_subject": "exe=/bin/a",
+    "snapshot_setExpansions": {}
+  },
+  "primary_source": "f2 section 4.1 lines 245-249"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "card-multi-many-mixed",
+  "class": "cardinality",
+  "source": "report-wave1",
+  "intent": "Eight allow grants spanning several scopes in one file; stress row ordering and heterogeneity.",
+  "edge_case_axis": "cardinality",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 8,
+    "decisions": { "allow": 8 },
+    "scopes": { "trust": 1, "path": 2, "dir": 1, "ftype": 1, "pattern": 1, "hash": 1, "all": 1 },
+    "hash_origins": { "none": 7, "rule-filehash": 1 }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

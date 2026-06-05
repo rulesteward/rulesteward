@@ -1,0 +1,29 @@
+{
+  "id": "combo-multi-everything",
+  "class": "scope",
+  "source": "report-wave1",
+  "intent": "A single rich grant exercising subject + object + perm + hash + setExpansion + source together in one register row.",
+  "edge_case_axis": "scope",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "hash": 1
+    },
+    "hash_origins": {
+      "rule-filehash": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

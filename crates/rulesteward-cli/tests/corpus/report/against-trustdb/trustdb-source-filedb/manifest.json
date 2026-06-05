@@ -1,0 +1,36 @@
+{
+  "id": "trustdb-source-filedb",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "A trust row with source int 2 maps to TrustSource FileDb.",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "trustdb": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": [
+      {
+        "path": "/usr/local/bin/mytool",
+        "source": "FileDb",
+        "size": 22,
+        "digest": "541af05cc76beb84d47421e052366c026740bb87cff284865238374c336e5545"
+      }
+    ]
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

@@ -1,0 +1,29 @@
+{
+  "id": "dec-allow-audit",
+  "class": "decision",
+  "source": "report-wave1",
+  "intent": "decision keyword allow_audit renders decision:\"allow_audit\".",
+  "edge_case_axis": "decision",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow_audit": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}
