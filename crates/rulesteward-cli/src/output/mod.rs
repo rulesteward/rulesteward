@@ -5,6 +5,7 @@
 //! ariadne snippets when source text is available. The `json` and `sarif`
 //! renderers do not need source text.
 
+pub mod csv;
 pub mod human;
 pub mod json;
 pub mod sarif;

@@ -41,8 +41,9 @@ fn root_help_lists_completions_subcommand() {
 
 #[test]
 fn hidden_stub_subcommands_absent_from_help() {
-    // simulate/report/container-check/migrate/doctor remain hidden.
-    // explain (fapolicyd), triage (selinux), and cost (auditd) are now visible (v0.2).
+    // container-check/migrate/doctor remain hidden.
+    // explain (fapolicyd), triage (selinux), and cost (auditd) are visible (v0.2 round 1).
+    // simulate/report (fapolicyd) are visible as of v0.2 round 2 (un-hidden Phase-0).
     let bin = || Command::cargo_bin("rulesteward").expect("binary built");
 
     bin()
@@ -52,8 +53,8 @@ fn hidden_stub_subcommands_absent_from_help() {
         .stdout(predicate::str::contains("lint"))
         .stdout(predicate::str::contains("trustdb"))
         .stdout(predicate::str::contains("explain")) // now visible
-        .stdout(predicate::str::contains("simulate").not())
-        .stdout(predicate::str::contains("report").not())
+        .stdout(predicate::str::contains("simulate")) // now visible (round 2)
+        .stdout(predicate::str::contains("report")) // now visible (round 2)
         .stdout(predicate::str::contains("container-check").not())
         .stdout(predicate::str::contains("migrate").not())
         .stdout(predicate::str::contains("doctor").not());
@@ -69,6 +70,30 @@ fn hidden_stub_subcommands_absent_from_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("cost")); // now visible
+}
+
+#[test]
+fn fapolicyd_simulate_help_lists_flags() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["fapolicyd", "simulate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--rules"))
+        .stdout(predicate::str::contains("--workload"))
+        .stdout(predicate::str::contains("--format"));
+}
+
+#[test]
+fn fapolicyd_report_help_lists_flags() {
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["fapolicyd", "report", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--diff-against"))
+        .stdout(predicate::str::contains("--fail-on-drift"))
+        .stdout(predicate::str::contains("--format"));
 }
 
 #[test]

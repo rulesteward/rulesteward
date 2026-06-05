@@ -20,6 +20,7 @@
 //! | kind            | schemaVersion | owner module      |
 //! |-----------------|---------------|-------------------|
 //! | `lint`          | 1             | this module       |
+//! | `trust-entries` | 1             | `output::trustdb` |
 //! | `explain`       | TBD           | explain pipeline  |
 //! | `auditd-cost`   | TBD           | auditd pipeline   |
 //! | `selinux-triage`| TBD           | selinux pipeline  |

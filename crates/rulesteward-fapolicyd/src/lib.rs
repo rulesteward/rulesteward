@@ -16,6 +16,7 @@ pub mod format;
 pub mod lints;
 pub mod load_order;
 pub mod parser;
+pub mod register;
 pub mod trustdb;
 pub mod version;
 
@@ -37,6 +38,10 @@ pub use lints::{
 };
 pub use load_order::fagenrules_cmp;
 pub use parser::{inline, parse_rules_file};
+pub use register::{
+    DriftKind, DriftRow, EXCEPTION_REGISTER_DRIFT_KIND, EXCEPTION_REGISTER_KIND, HashAlgorithm,
+    HashOrigin, REGISTER_SCHEMA_VERSION, RegisterRow, RegisterSource, Scope, canonical_grant_key,
+};
 pub use trustdb::{
     DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
     verify_entry, weak_digest_algorithm,

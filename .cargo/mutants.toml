@@ -36,8 +36,14 @@ examine_globs = [
     # or the P1 mutation gate passes vacuously (examine_globs is an allowlist).
     "crates/rulesteward-fapolicyd/src/fanotify.rs",
     "crates/rulesteward-fapolicyd/src/explain.rs",
+    # P0 (v0.2 round 2) frozen register contract: canonical_grant_key is real
+    # AST-equality logic (sorted set-expansion). Top-level src file, must be
+    # listed explicitly or its mutation gate passes vacuously (allowlist).
+    "crates/rulesteward-fapolicyd/src/register.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
+    # P0 (v0.2 round 2) generic CSV serializer: RFC-4180 escaping branches.
+    "crates/rulesteward-cli/src/output/csv.rs",
     # auditd logic modules (filled by pipeline P2):
     "crates/rulesteward-auditd/src/parser.rs",
     "crates/rulesteward-auditd/src/cost.rs",
