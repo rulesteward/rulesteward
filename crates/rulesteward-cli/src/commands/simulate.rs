@@ -17,23 +17,20 @@
 //! - Trust-DB presence is not the same as runtime integrity: the daemon
 //!   re-checks sha256/size on every access; a file modified on disk after
 //!   the trust DB was built will be marked untrusted at runtime.
-//! - `exe=untrusted` / `exe=trusted` trust macros are NOT evaluated
-//!   (treated as literal exe paths); tracked in issue #126.
-//! - `--trustdb` is accepted but the DB is not yet consulted: subject/object
-//!   trust is taken from the workload's `trust`/`subjTrust`/`objTrust` fields
-//!   (defaulting to `Unknown` when absent). The DB lookup will be wired in a
-//!   future round; tracked in issue #127.
-//! - On-demand file hashing is not performed: a `filehash=`/`sha256hash=`
-//!   rule is evaluated only when the workload supplies the object's `sha256`
-//!   field; simulate does NOT hash the local file on demand. Tracked in
-//!   issue #127.
+//! - The `exe=untrusted` / `exe=trusted` trust macros (#126) are evaluated
+//!   against subject trust, but they are real only on fapolicyd >= 1.4.x;
+//!   on 1.3.2 fapolicyd treats them as inert literal paths. simulate has no
+//!   target-version parameter, so it always applies the >= 1.4.x semantics.
 
 use std::fmt::Write as _;
 use std::io::Read as _;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use rulesteward_fapolicyd::{AccessFacts, Decision, Entry, Perm, Rule, SetTable, Source, Trust};
+use rulesteward_fapolicyd::trustdb::{self, TrustDb};
+use rulesteward_fapolicyd::{
+    AccessFacts, Attr, Decision, Entry, Perm, Rule, SetTable, Source, Trust,
+};
 use serde::Serialize;
 
 use crate::cli::{HumanJsonFormat, SimulateArgs};
@@ -361,11 +358,79 @@ fn decision_str(decision: Decision) -> &'static str {
     }
 }
 
+/// Resolution context threaded into per-query evaluation (#127).
+///
+/// Holds the optional read-only trust DB handle (for `--trustdb` trust
+/// resolution) and a flag for whether the ruleset references a
+/// `filehash=`/`sha256hash=` object attribute (so we only hash the object file
+/// on demand when a rule actually needs it).
+struct EvalContext<'a> {
+    /// Open read-only trust DB, when `--trustdb` was supplied and opened OK.
+    trustdb: Option<&'a TrustDb>,
+    /// True iff at least one rule's object side carries `filehash=`/`sha256hash=`.
+    ruleset_uses_filehash: bool,
+}
+
+/// True iff any rule's object side carries a `filehash=`/`sha256hash=` attribute.
+fn ruleset_uses_filehash(rules: &[Rule]) -> bool {
+    rules.iter().any(|r| {
+        r.object.iter().any(|a| {
+            matches!(
+                a,
+                Attr::Kv { key, .. } if key == "filehash" || key == "sha256hash"
+            )
+        })
+    })
+}
+
+/// Resolve a side's trust from the trust DB when the workload left it `Unknown`.
+///
+/// Workload-supplied trust always wins (`current != Unknown` is returned as-is).
+/// Otherwise, with an open DB and a known path: PRESENT in the DB => `Trust::Yes`,
+/// ABSENT => `Trust::No`. With no DB or no path, the original value is unchanged.
+fn resolve_trust(current: Trust, path: Option<&str>, db: Option<&TrustDb>) -> Trust {
+    if current != Trust::Unknown {
+        return current; // workload-supplied trust takes priority over the DB
+    }
+    match (db, path) {
+        (Some(db), Some(p)) => {
+            if db.contains_path(p) {
+                Trust::Yes
+            } else {
+                Trust::No
+            }
+        }
+        _ => current,
+    }
+}
+
 /// Evaluate one `Query` against the ruleset and produce a `ResultEntry`.
-fn evaluate_query(query: &Query, rules: &[Rule], sets: &SetTable) -> ResultEntry {
+fn evaluate_query(
+    query: &Query,
+    rules: &[Rule],
+    sets: &SetTable,
+    ctx: &EvalContext,
+) -> ResultEntry {
     // Subject and object trust are tracked independently. The workload JSON
     // supports `subjTrust` / `objTrust` per-side overrides as well as the
-    // symmetric `trust` shorthand (parsed in `parse_json_object`).
+    // symmetric `trust` shorthand (parsed in `parse_json_object`). When the
+    // workload left a side `Unknown`, `--trustdb` resolves it (#127): the
+    // subject side keys on the exe path, the object side on the object path.
+    let subj_trust = resolve_trust(query.subj_trust, query.exe.as_deref(), ctx.trustdb);
+    let obj_trust = resolve_trust(query.obj_trust, query.path.as_deref(), ctx.trustdb);
+
+    // On-demand object hashing (#127): when a `filehash=`/`sha256hash=` rule
+    // needs the object's hash, the workload omitted `sha256`, and the object
+    // `path` exists on disk, hash it now. If the file is absent (or hashing
+    // fails), leave `sha256 = None` so the existing low-confidence / NotEvaluable
+    // (absent-fact-widening) behavior applies.
+    let sha256 = match (&query.sha256, &query.path) {
+        (None, Some(p)) if ctx.ruleset_uses_filehash => {
+            trustdb::sha256_file(std::path::Path::new(p)).ok().flatten()
+        }
+        _ => query.sha256.clone(),
+    };
+
     let facts = AccessFacts {
         perm: query.perm,
         exe: query.exe.clone(),
@@ -378,10 +443,10 @@ fn evaluate_query(query: &Query, rules: &[Rule], sets: &SetTable) -> ResultEntry
         sessionid: None,
         pid: None,
         ppid: None,
-        subj_trust: query.subj_trust,
-        obj_trust: query.obj_trust,
+        subj_trust,
+        obj_trust,
         ftype: query.ftype.clone(),
-        sha256: query.sha256.clone(),
+        sha256,
     };
 
     let verdict = rulesteward_fapolicyd::evaluate(rules, sets, &facts);
@@ -507,10 +572,22 @@ pub fn run(args: SimulateArgs) -> anyhow::Result<i32> {
         return Ok(EXIT_RULE_PARSE_ERROR);
     }
 
-    // Disclose that --trustdb is not yet consulted (issue #127).
-    if args.trustdb.is_some() {
-        eprintln!("note: --trustdb is not yet consulted; trust is taken from the workload (#127)");
-    }
+    // Open the trust DB read-only (#127). Workload-supplied trust still takes
+    // priority per-query; the DB only fills in trust the workload left Unknown.
+    // A failure to open is non-fatal: warn and fall back to workload-only trust.
+    let trustdb: Option<TrustDb> = match &args.trustdb {
+        Some(db_path) => match trustdb::open_trustdb_readonly(db_path) {
+            Ok(db) => Some(db),
+            Err(e) => {
+                eprintln!(
+                    "warning: could not open --trustdb {}: {e}; trust taken from workload only",
+                    db_path.display()
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
     // Extract only Rule items (SetDefinitions are used by SetTable; blanks/comments skip).
     let rules: Vec<Rule> = entries
@@ -547,9 +624,13 @@ pub fn run(args: SimulateArgs) -> anyhow::Result<i32> {
     };
 
     // --- Evaluate ---
+    let ctx = EvalContext {
+        trustdb: trustdb.as_ref(),
+        ruleset_uses_filehash: ruleset_uses_filehash(&rules),
+    };
     let results: Vec<ResultEntry> = queries
         .iter()
-        .map(|q| evaluate_query(q, &rules, &sets))
+        .map(|q| evaluate_query(q, &rules, &sets, &ctx))
         .collect();
 
     // --- Summary ---

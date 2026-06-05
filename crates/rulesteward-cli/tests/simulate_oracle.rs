@@ -1,7 +1,7 @@
 //! Data-driven oracle test for `rulesteward fapolicyd simulate`.
 //!
-//! Iterates every vendored scenario in `tests/corpus/simulate/` (79 total:
-//! 36 happy-path + 40 adversarial + 3 neutral) and asserts the binary's
+//! Iterates every vendored scenario in `tests/corpus/simulate/` (81 total:
+//! 36 happy-path + 42 adversarial + 3 neutral) and asserts the binary's
 //! predicted decision and matched rule number against ground truth captured
 //! from real fapolicyd (`--debug --permissive dec=` lines).
 //!
@@ -78,7 +78,7 @@
 //! - Rule number catches first-match vs last-match, within-file order,
 //!   cross-file lexical order.
 //! - 3-state verdict catches silent certainty on pattern=, ftype=, trust= cases.
-//! - Floor guard (`count >= 79`) catches silent corpus-load failure.
+//! - Floor guard (`count >= 81`) catches silent corpus-load failure.
 
 use assert_cmd::Command;
 use std::path::PathBuf;
@@ -259,10 +259,10 @@ fn assert_scenario(class: &str, id: &str) {
 
 /// Run every vendored scenario and verify the oracle.
 ///
-/// The floor guard `count >= 79` catches a silent corpus-load failure where the
+/// The floor guard `count >= 81` catches a silent corpus-load failure where the
 /// directory walk returns 0 scenarios but all tests trivially "pass".
 #[test]
-fn oracle_all_79_scenarios() {
+fn oracle_all_81_scenarios() {
     let corpus = corpus_root();
     let mut count = 0usize;
 
@@ -284,8 +284,8 @@ fn oracle_all_79_scenarios() {
     }
 
     assert!(
-        count >= 79,
-        "corpus floor: expected >= 79 scenarios but only found {count}; \
+        count >= 81,
+        "corpus floor: expected >= 81 scenarios but only found {count}; \
          check that the corpus was vendored correctly under tests/corpus/simulate/"
     );
 }
@@ -316,7 +316,7 @@ fn oracle_happy_path_class() {
     );
 }
 
-/// Run all adversarial scenarios (40 wrong-impl traps).
+/// Run all adversarial scenarios (42 wrong-impl traps).
 #[test]
 fn oracle_adversarial_class() {
     let corpus = corpus_root().join("adversarial");
@@ -333,8 +333,8 @@ fn oracle_adversarial_class() {
         count += 1;
     }
     assert!(
-        count >= 40,
-        "expected >= 40 adversarial scenarios, found {count}"
+        count >= 42,
+        "expected >= 42 adversarial scenarios, found {count}"
     );
 }
 
@@ -452,10 +452,40 @@ fn execdirs_systemdirs_macro_expansion() {
     assert_scenario("adversarial", "systemdirs-macro-includes-etc");
 }
 
-// NOTE: the `exe=untrusted` / `exe=trusted` trust-macro scenarios were dropped from
-// this oracle in session 5a (issue #126). The frozen `evaluate()` treats `untrusted`
-// as a literal exe path, not a trust macro; documented as a known simulate limitation
-// until #126 lands the macro in `evaluate()` and re-vendors the two scenarios.
+/// `exe=untrusted` / `exe=trusted` are TRUST MACROS, not literal exe paths (#126).
+///
+/// Re-vendored from NFS in this feature (the two scenarios dropped in session 5a).
+/// Oracle source: real fapolicyd 1.4.5 (el9/el10) `dec=` capture, in each
+/// scenario's NFS `manifest.json`/`validation.log`. The vendored `expected.json`
+/// reflects the modern (fapolicyd >= 1.4.x) macro semantics:
+///
+/// - `exe-untrusted-macro-match`: subject `/tmp/payload` is NOT trusted
+///   (`trust: false`); rule 1 `deny_audit exe=untrusted : all` MUST fire ->
+///   `decision=deny, matchedRule=1`. Oracle `dec_line`:
+///   `rule=1 dec=deny_audit perm=open ... exe=/tmp/payload : ... trust=0`.
+/// - `exe-untrusted-macro-trusted-no-match`: subject `/usr/bin/cat` IS trusted
+///   (`trust: true`); rule 1 must NOT fire (the macro is inverted), so the event
+///   falls through to rule 2 `allow` -> `decision=allow, matchedRule=2`. Oracle
+///   `dec_line`: `rule=2 dec=allow ... : ... trust=0`.
+///
+/// RED until #126: the frozen `evaluate()` `"exe" =>` arm calls
+/// `exact_string_match`, so `exe=untrusted` is compared as the literal string
+/// `"untrusted"` against the exe path. For the match scenario that yields
+/// `NoMatch` -> fallthrough to rule 2 allow (WRONG: oracle says deny rule 1).
+/// (The trusted scenario passes for the WRONG reason today - exact-string
+/// `NoMatch` -> fallthrough to rule 2 allow happens to coincide with the oracle;
+/// the focused `exe_*_macro_*` unit tests inline in
+/// `crates/rulesteward-fapolicyd/src/evaluate.rs` pin the macro semantics
+/// directly so a wrong impl cannot satisfy both.)
+///
+/// NOTE (documented for the impl's `--help`): the macro is fapolicyd >= 1.4.x
+/// only; on 1.3.2 it is INERT (the el8 oracle shows rule 1 NOT firing even for
+/// an untrusted exe). The vendored corpus pins the modern (>= 1.4) behavior.
+#[test]
+fn exe_trust_macro_scenarios() {
+    assert_scenario("adversarial", "exe-untrusted-macro-match");
+    assert_scenario("adversarial", "exe-untrusted-macro-trusted-no-match");
+}
 
 /// uid= and gid= use SET INTERSECTION semantics, not exact equality.
 #[test]

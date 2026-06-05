@@ -305,9 +305,31 @@ fn eval_subject_field(
         "sessionid" => (eval_optional_int(facts.sessionid, value, sets), None),
         "pid" => (eval_optional_int(facts.pid, value, sets), None),
         "ppid" => (eval_optional_int(facts.ppid, value, sets), None),
-        "exe" => match &facts.exe {
-            None => (FieldEval::Match, None),
-            Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
+        "exe" => match as_str_literal(value) {
+            // #126: `exe=untrusted` / `exe=trusted` are TRUST MACROS (real on
+            // fapolicyd >= 1.4.x; 1.3.2 treats them as inert literals - that is
+            // a DOC note, not a code branch here, since evaluate() has no version
+            // param). They evaluate against the SUBJECT trust state, NOT the exe
+            // path. Reuse `eval_trust_field` so the NotEvaluable/Match/NoMatch
+            // return shape (and the simulate confidence downgrade on Unknown
+            // trust) matches the `trust=` arm exactly:
+            //   - `untrusted` is equivalent to `trust=0` (match iff Trust::No)
+            //   - `trusted`   is equivalent to `trust=1` (match iff Trust::Yes)
+            Some("untrusted") => eval_trust_field(
+                facts.subj_trust,
+                &AttrValue::Int(0),
+                "subj trust unknown (no trust DB)",
+            ),
+            Some("trusted") => eval_trust_field(
+                facts.subj_trust,
+                &AttrValue::Int(1),
+                "subj trust unknown (no trust DB)",
+            ),
+            // Any other value (or a non-literal SetRef/Int): literal exe path match.
+            _ => match &facts.exe {
+                None => (FieldEval::Match, None),
+                Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
+            },
         },
         "comm" => match &facts.comm {
             None => (FieldEval::Match, None),
@@ -1965,6 +1987,185 @@ mod tests {
             v.decision,
             Decision::Deny,
             "absent gid (empty vec) must widen, not block the rule"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #126: `exe=trusted` / `exe=untrusted` are TRUST MACROS, not literal paths.
+    //
+    // Ground truth (real fapolicyd >= 1.4.x, captured on Rocky 8/9/10; see the
+    // re-vendored corpus scenarios `adversarial/exe-untrusted-macro-*` and their
+    // NFS `manifest.json`/`validation.log`):
+    //   - `exe=untrusted` matches IFF the subject is NOT trusted (`subj_trust=No`).
+    //   - `exe=trusted`   matches IFF the subject IS  trusted (`subj_trust=Yes`).
+    //   - `subj_trust=Unknown` -> the macro is `NotEvaluable` (no trust DB
+    //     consulted), so a rule carrying it produces `PossibleMatch` (downgrade),
+    //     mirroring the existing `trust=` NotEvaluable behavior.
+    //
+    // These pin the macro semantics DIRECTLY on `evaluate()`, so a wrong impl
+    // that treats `untrusted`/`trusted` as a literal exe path (the pre-#126
+    // behavior: `exact_string_match(exe_path, "untrusted")`) cannot pass: a
+    // literal compare yields `NoMatch` for any real exe path, so the deny rule
+    // never fires and the untrusted-match assertions below fail.
+    // -----------------------------------------------------------------------
+
+    /// `exe=untrusted` FIRES for an untrusted subject (`subj_trust=No`).
+    /// A literal-path impl compares the exe path against "untrusted" -> `NoMatch`
+    /// -> the deny rule never fires -> this assertion fails. RED until #126.
+    #[test]
+    fn exe_untrusted_macro_matches_untrusted_subject() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "untrusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/tmp/payload".to_string());
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe=untrusted must FIRE the deny rule for an untrusted subject"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// `exe=untrusted` does NOT fire for a trusted subject (`subj_trust=Yes`):
+    /// the deny rule is skipped and the ruleset falls through to Allow.
+    /// An impl that ALWAYS fires `untrusted` (ignoring trust state) would wrongly
+    /// deny here.
+    #[test]
+    fn exe_untrusted_macro_no_match_trusted_subject() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "untrusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "exe=untrusted must NOT fire for a trusted subject -> fallthrough Allow"
+        );
+        assert_eq!(v.source, Source::Fallthrough, "no rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=Yes makes the macro a decisive NoMatch, not uncertain"
+        );
+    }
+
+    /// `exe=trusted` FIRES for a trusted subject (`subj_trust=Yes`) - the inverse
+    /// of `untrusted`. A literal-path impl (compare exe path to "trusted") yields
+    /// `NoMatch` and never fires the deny rule. RED until #126.
+    #[test]
+    fn exe_trusted_macro_matches_trusted_subject() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "trusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe=trusted must FIRE the deny rule for a trusted subject"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+    }
+
+    /// `exe=trusted` does NOT fire for an untrusted subject (`subj_trust=No`):
+    /// falls through to Allow. Symmetric to the untrusted-trusted case.
+    #[test]
+    fn exe_trusted_macro_no_match_untrusted_subject() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "trusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/tmp/payload".to_string());
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "exe=trusted must NOT fire for an untrusted subject -> fallthrough Allow"
+        );
+        assert_eq!(v.source, Source::Fallthrough, "no rule matched");
+    }
+
+    /// `exe=untrusted` with `subj_trust=Unknown` (no trust DB consulted) is
+    /// `NotEvaluable`: the rule produces a `PossibleMatch` (downgrade), exactly
+    /// like a `trust=` field without a trust DB. The ruleset then falls through
+    /// to Allow but `uncertain` carries a reason. An impl that DEFAULTS the macro
+    /// to fire (or to never-fire silently) loses this downgrade signal.
+    #[test]
+    fn exe_untrusted_macro_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("exe", "untrusted")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        // The unevaluable deny (rule 1) sits above the decisive allow (rule 2):
+        // the verdict is the allow, but `uncertain` is recorded (downgrade).
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "exe=untrusted with Unknown trust must downgrade to a Possible/uncertain verdict"
         );
     }
 }
