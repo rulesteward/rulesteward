@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register-drift",
+  "drift": [
+    {
+      "kind": "changed",
+      "grant": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "exe=/usr/bin/rpm",
+        "object": "all",
+        "subjectPaths": [
+          "/usr/bin/rpm"
+        ],
+        "objectPaths": [],
+        "hash": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826",
+        "hashOrigin": "trustdb",
+        "hashAlgorithm": "SHA256",
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "A8-origin.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "from": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "exe=/usr/bin/rpm",
+        "object": "all",
+        "subjectPaths": [
+          "/usr/bin/rpm"
+        ],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "A8-origin.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "to": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "exe=/usr/bin/rpm",
+        "object": "all",
+        "subjectPaths": [
+          "/usr/bin/rpm"
+        ],
+        "objectPaths": [],
+        "hash": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826",
+        "hashOrigin": "trustdb",
+        "hashAlgorithm": "SHA256",
+        "scope": "path",
+        "setExpansions": {},
+        "source": {
+          "file": "A8-origin.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      }
+    }
+  ]
+}

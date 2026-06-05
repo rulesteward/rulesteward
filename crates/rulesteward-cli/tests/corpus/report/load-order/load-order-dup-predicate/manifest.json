@@ -1,0 +1,29 @@
+{
+  "id": "load-order-dup-predicate",
+  "class": "load-order",
+  "source": "report-wave1",
+  "intent": "Two AST-equal allow rules in different files; both appear as distinct register rows (different loadIndex/source) even though a canonical drift key would collapse them.",
+  "edge_case_axis": "load-order",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": [
+      "allow"
+    ],
+    "scopes": [
+      "all"
+    ],
+    "hash_origins": [
+      "none"
+    ]
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

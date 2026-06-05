@@ -1,0 +1,2 @@
+allow perm=execute trust=1 : all
+deny_audit perm=execute all : all

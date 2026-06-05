@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/cat",
+  "resolved_exe": "/usr/bin/coreutils",
+  "path": "/etc/hostname",
+  "perm": "open"
+}

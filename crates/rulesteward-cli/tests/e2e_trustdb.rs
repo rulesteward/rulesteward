@@ -45,14 +45,15 @@ fn bin() -> Command {
 }
 
 /// `trustdb list --format json` over a fixture DB exits 0, and stdout parses to
-/// a JSON ARRAY of objects each carrying `path` / `source` / `size` / `digest`,
-/// terminated by a trailing newline. Asserts the WIRE FORMAT by parsing stdout
-/// into `serde_json::Value`, not by deserializing into a concrete Rust struct.
+/// the UNIFIED ENVELOPE (CC-2 / #63): a top-level object carrying
+/// `schemaVersion: 1`, `kind: "trust-entries"`, and `data` = the array of row
+/// objects, terminated by a trailing newline. Asserts the WIRE FORMAT by parsing
+/// stdout into `serde_json::Value`, not by deserializing into a concrete struct.
 ///
 /// The key is `"digest"` (not `"sha256"`) because the field holds whatever hash
 /// algorithm fapolicyd recorded (MD5/SHA1/SHA256/SHA512 depending on DB version).
 #[test]
-fn trustdb_list_json_emits_array_of_objects_exit_zero() {
+fn trustdb_list_json_emits_envelope_of_objects_exit_zero() {
     let db_dir = tempfile::tempdir().expect("tempdir");
     write_trustdb_fixture_kv(
         db_dir.path(),
@@ -81,11 +82,25 @@ fn trustdb_list_json_emits_array_of_objects_exit_zero() {
     );
 
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid JSON");
-    let arr = json.as_array().expect("top-level JSON must be an array");
+    assert!(
+        json.is_object(),
+        "top-level JSON must be the versioned envelope object, not a bare array: {json}"
+    );
+    assert_eq!(
+        json["schemaVersion"],
+        serde_json::json!(1),
+        "envelope must carry schemaVersion=1: {json}"
+    );
+    assert_eq!(
+        json["kind"],
+        serde_json::json!("trust-entries"),
+        "envelope must carry kind=trust-entries: {json}"
+    );
+    let arr = json["data"].as_array().expect("`data` must be an array");
     assert_eq!(
         arr.len(),
         2,
-        "two fixture rows must produce two array elements"
+        "two fixture rows must produce two `data` elements"
     );
     for elem in arr {
         let obj = elem
@@ -164,7 +179,8 @@ fn trustdb_list_annotates_weak_digest_entry() {
         .clone();
     let json: serde_json::Value =
         serde_json::from_str(&String::from_utf8(json).expect("utf8")).expect("valid json");
-    let arr = json.as_array().expect("array");
+    assert_eq!(json["kind"], serde_json::json!("trust-entries"));
+    let arr = json["data"].as_array().expect("`data` array");
     let weak = arr
         .iter()
         .find(|o| o["path"] == "/usr/bin/weak")
@@ -211,7 +227,8 @@ fn trustdb_list_source_rpm_filter_keeps_rpm_rows() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
-    let arr = json.as_array().expect("array");
+    assert_eq!(json["kind"], serde_json::json!("trust-entries"));
+    let arr = json["data"].as_array().expect("`data` array");
     assert_eq!(
         arr.len(),
         1,

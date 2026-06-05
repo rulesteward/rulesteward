@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/tmp/present-but-unhashable",
+  "perm": "open",
+  "sha256": "ff954117403da60c92d0548291da8121560c87cf6fe0b0f34ebd8cfb55b55ac2"
+}

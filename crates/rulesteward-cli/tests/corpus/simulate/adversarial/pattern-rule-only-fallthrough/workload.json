@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/busybox",
+  "path": "/usr/bin/busybox",
+  "perm": "execute"
+}

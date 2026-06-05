@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/coreutils",
+  "resolved_exe": "/usr/bin/coreutils",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "note": "/usr/bin/cat resolves to exe=/usr/bin/coreutils. The first file (10-a.rules) targets exe=/usr/bin/grep which does not match the cat/coreutils invocation."
+}

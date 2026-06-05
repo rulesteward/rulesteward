@@ -6,5 +6,7 @@ pub mod completions;
 pub mod explain;
 pub mod fapolicyd;
 pub mod mangen;
+pub mod report;
 pub mod selinux;
+pub mod simulate;
 pub mod trustdb_compute;

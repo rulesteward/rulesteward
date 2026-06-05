@@ -1,0 +1,2 @@
+%one=text/x-shellscript
+allow perm=open all : ftype=%one

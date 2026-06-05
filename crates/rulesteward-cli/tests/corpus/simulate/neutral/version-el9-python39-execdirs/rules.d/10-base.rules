@@ -1,0 +1,2 @@
+allow perm=execute all : dir=/usr/bin/
+deny_audit perm=any all : all

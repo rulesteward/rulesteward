@@ -1,0 +1,30 @@
+{
+  "id": "load-order-two-files",
+  "class": "load-order",
+  "source": "report-wave1",
+  "intent": "Two files with distinct numeric prefixes; loadIndex reflects fagenrules_cmp order and source.file is correct per row.",
+  "edge_case_axis": "load-order",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": {
+      "allow": 2
+    },
+    "scopes": {
+      "all": 1,
+      "trust": 1
+    },
+    "hash_origins": {
+      "none": 2
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": []
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

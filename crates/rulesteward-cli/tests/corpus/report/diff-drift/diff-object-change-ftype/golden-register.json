@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register-drift",
+  "drift": [
+    {
+      "kind": "added",
+      "grant": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "ftype=text/x-shellscript",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "ftype",
+        "setExpansions": {},
+        "source": {
+          "file": "D2-objftype.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "from": null,
+      "to": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "ftype=text/x-shellscript",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "ftype",
+        "setExpansions": {},
+        "source": {
+          "file": "D2-objftype.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      }
+    },
+    {
+      "kind": "removed",
+      "grant": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "ftype=application/x-executable",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "ftype",
+        "setExpansions": {},
+        "source": {
+          "file": "D2-objftype.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "from": {
+        "decision": "allow",
+        "perm": "open",
+        "subject": "all",
+        "object": "ftype=application/x-executable",
+        "subjectPaths": [],
+        "objectPaths": [],
+        "hash": null,
+        "hashOrigin": "none",
+        "hashAlgorithm": null,
+        "scope": "ftype",
+        "setExpansions": {},
+        "source": {
+          "file": "D2-objftype.rules",
+          "line": 1
+        },
+        "loadIndex": 1
+      },
+      "to": null
+    }
+  ]
+}

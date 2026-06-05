@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/etc/resolv.conf",
+  "perm": "open",
+  "trust": false
+}

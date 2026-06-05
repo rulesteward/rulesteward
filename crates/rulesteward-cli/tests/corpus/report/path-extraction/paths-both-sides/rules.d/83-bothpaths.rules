@@ -1,0 +1,1 @@
+allow perm=execute exe=/usr/bin/rpm : path=/var/lib/rpm/Packages

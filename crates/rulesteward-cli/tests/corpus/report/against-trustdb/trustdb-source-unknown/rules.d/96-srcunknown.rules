@@ -1,0 +1,1 @@
+allow perm=open exe=/opt/vendor/bin/agent : all

@@ -1,0 +1,1 @@
+deny_audit perm=execute pattern=static : all

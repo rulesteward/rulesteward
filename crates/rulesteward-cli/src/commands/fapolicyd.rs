@@ -49,11 +49,9 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
         FapolicydCommand::Lint(args) => run_lint(&args),
         FapolicydCommand::Trustdb(cmd) => run_trustdb(cmd),
         FapolicydCommand::Explain(args) => crate::commands::explain::run(args),
-        FapolicydCommand::Simulate
-        | FapolicydCommand::Report
-        | FapolicydCommand::ContainerCheck
-        | FapolicydCommand::Migrate
-        | FapolicydCommand::Doctor => {
+        FapolicydCommand::Simulate(args) => crate::commands::simulate::run(args),
+        FapolicydCommand::Report(args) => crate::commands::report::run(args),
+        FapolicydCommand::ContainerCheck | FapolicydCommand::Migrate | FapolicydCommand::Doctor => {
             eprintln!(
                 "rulesteward fapolicyd <subcommand>: not yet implemented in v{}",
                 env!("CARGO_PKG_VERSION")

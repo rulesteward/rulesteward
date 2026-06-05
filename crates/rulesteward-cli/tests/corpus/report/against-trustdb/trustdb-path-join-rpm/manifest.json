@@ -1,0 +1,36 @@
+{
+  "id": "trustdb-path-join-rpm",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "A concrete exe= path grant WITH --against-trustdb resolves to the single matching trust-DB row; hashOrigin becomes trustdb, SHA256.",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "trustdb": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": [
+      {
+        "path": "/usr/bin/rpm",
+        "source": "RpmDb",
+        "size": 24200,
+        "digest": "4153ba40ce4cbbe142248737a1438016d504ec50d00a186d9a0958e482de0826"
+      }
+    ]
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

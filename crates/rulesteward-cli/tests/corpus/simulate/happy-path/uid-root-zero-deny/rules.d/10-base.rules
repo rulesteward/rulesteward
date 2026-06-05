@@ -1,0 +1,2 @@
+deny_audit perm=open uid=0 : path=/etc/hostname
+allow perm=any all : all

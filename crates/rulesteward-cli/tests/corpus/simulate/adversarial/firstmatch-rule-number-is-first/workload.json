@@ -1,0 +1,5 @@
+{
+  "exe": "/usr/bin/bash",
+  "path": "/etc/hostname",
+  "perm": "open"
+}

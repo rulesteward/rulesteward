@@ -1,0 +1,1 @@
+allow perm=open exe=/usr/bin/c : all

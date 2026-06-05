@@ -1,0 +1,7 @@
+{
+  "exe": "/usr/bin/coreutils",
+  "resolved_exe": "/usr/bin/coreutils",
+  "path": "/etc/hostname",
+  "perm": "open",
+  "note": "/usr/bin/cat is a multicall script wrapper on el8/9/10; fapolicyd sees exe=/usr/bin/coreutils."
+}

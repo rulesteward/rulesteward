@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "subject": "exe=%tools",
+      "object": "ftype=%mimes",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "ftype",
+      "setExpansions": {
+        "%mimes": [
+          "application/x-executable",
+          "text/x-python"
+        ],
+        "%tools": [
+          "/usr/bin/tar",
+          "/usr/bin/zip"
+        ]
+      },
+      "source": {
+        "file": "75-tworefs.rules",
+        "line": 3
+      },
+      "loadIndex": 1
+    }
+  ]
+}

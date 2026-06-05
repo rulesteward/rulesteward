@@ -1,0 +1,30 @@
+{
+  "id": "noise-comments-blanks",
+  "class": "noise-filter",
+  "source": "report-wave1",
+  "intent": "Allow grants interleaved with comment and blank lines; source.line stays correct and comments/blanks are not emitted as grants.",
+  "edge_case_axis": "noise-filter",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": [
+      "allow"
+    ],
+    "scopes": [
+      "all",
+      "trust"
+    ],
+    "hash_origins": [
+      "none"
+    ]
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

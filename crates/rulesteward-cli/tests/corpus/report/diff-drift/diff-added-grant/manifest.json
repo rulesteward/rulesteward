@@ -1,0 +1,29 @@
+{
+  "id": "diff-added-grant",
+  "class": "diff-drift",
+  "source": "report-wave1",
+  "intent": "Current ruleset has one MORE allow than the snapshot; one added drift row.",
+  "edge_case_axis": "diff-drift",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": true
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "added": 1
+    },
+    "scopes": {
+      "trust": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

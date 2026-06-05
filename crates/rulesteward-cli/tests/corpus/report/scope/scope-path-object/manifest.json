@@ -1,0 +1,29 @@
+{
+  "id": "scope-path-object",
+  "class": "scope",
+  "source": "report-wave1",
+  "intent": "An object path= yields scope:\"path\" and objectPaths extraction.",
+  "edge_case_axis": "scope",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

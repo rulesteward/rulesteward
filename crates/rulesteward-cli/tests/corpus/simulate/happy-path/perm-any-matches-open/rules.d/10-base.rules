@@ -1,0 +1,2 @@
+deny_audit perm=any exe=/usr/bin/wget : all
+allow perm=any all : all

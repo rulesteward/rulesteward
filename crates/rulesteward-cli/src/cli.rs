@@ -20,6 +20,17 @@ pub enum HumanJsonFormat {
     Json,
 }
 
+/// Output format for the `report` subcommand (human | json | csv).
+///
+/// Distinct from `HumanJsonFormat`: `report` additionally supports a CSV
+/// surface (one row per grant) via the generic `output::csv` helper.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum HumanJsonCsvFormat {
+    Human,
+    Json,
+    Csv,
+}
+
 /// Output format for trust-DB subcommands.
 ///
 /// Intentionally separate from `OutputFormat` (which carries a `Sarif` arm
@@ -84,18 +95,16 @@ pub struct MangenArgs {
 pub enum FapolicydCommand {
     /// Lint fapolicyd rule files (unprivileged, no daemon)
     Lint(LintArgs),
-    // The six no-op stubs below (and `selinux triage` / `auditd cost`) are hidden
-    // for v0.1.0 so the CLI does not advertise commands that do nothing yet. NOTE:
-    // `hide` removes them from `--help` but clap_complete 4.6.5 still lists them in
-    // generated completions (accepted limitation; see e2e_completions.rs).
-    /// (stub) Simulate a workload against a rule set
-    #[command(hide = true)]
-    Simulate,
+    /// Simulate a workload against a rule set (which rule decides each access)
+    Simulate(SimulateArgs),
     /// Explain a FANOTIFY denial from the audit log
     Explain(ExplainArgs),
-    /// (stub) Status + recent-denials report
-    #[command(hide = true)]
-    Report,
+    /// Build the exception register: every effective allow grant, with drift
+    Report(ReportArgs),
+    // The remaining no-op stubs below are hidden so the CLI does not advertise
+    // commands that do nothing yet. NOTE: `hide` removes them from `--help` but
+    // clap_complete 4.6.5 still lists them in generated completions (accepted
+    // limitation; see e2e_completions.rs).
     /// (stub) Container-runtime detection
     #[command(hide = true)]
     ContainerCheck,
@@ -195,6 +204,73 @@ pub struct ExplainArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd simulate` (spec §6.1).
+///
+/// Replays a workload of access attempts against a rule set (optionally with a
+/// trust DB) and reports which rule decides each access. The body is
+/// implemented in the `feat-simulate` pipeline; this struct is the frozen
+/// Phase-0 arg contract.
+#[derive(Debug, Parser)]
+pub struct SimulateArgs {
+    /// The rules.d/ directory to replay the workload against.
+    #[arg(long, value_name = "DIR")]
+    pub rules: PathBuf,
+
+    /// Workload of access attempts to replay (`-` reads from stdin).
+    #[arg(long, value_name = "FILE")]
+    pub workload: PathBuf,
+
+    /// Trust DB path (reserved; not yet consulted - see issue #127).
+    ///
+    /// The argument is accepted but the DB is not read this round: subject and
+    /// object trust are taken from the workload's `trust`/`subjTrust`/`objTrust`
+    /// fields (defaulting to Unknown when absent). Passing this flag emits a
+    /// note on stderr so the caller knows the DB is not being used.
+    #[arg(long, value_name = "PATH")]
+    pub trustdb: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd report` (spec §6.1 + f2 §6).
+///
+/// Builds the exception register (every effective allow grant) and optionally
+/// computes drift against a prior snapshot. The body is implemented in the
+/// `feat-report` pipeline; this struct is the frozen Phase-0 arg contract.
+/// Mirrors `LintArgs`' positional-`[PATH]` + `--file` target convention.
+#[derive(Debug, Parser)]
+pub struct ReportArgs {
+    /// Path to the rules.d/ directory to report on (defaults to /etc/fapolicyd/rules.d/)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Single-file mode - report on exactly this file
+    #[arg(long, value_name = "FILE", conflicts_with = "path")]
+    pub file: Option<PathBuf>,
+
+    /// Output format (human | json | csv).
+    #[arg(long, value_enum, default_value_t = HumanJsonCsvFormat::Human)]
+    pub format: HumanJsonCsvFormat,
+
+    /// Cross-check grants against this read-only fapolicyd trust DB.
+    #[arg(long, value_name = "DIR")]
+    pub against_trustdb: Option<PathBuf>,
+
+    /// Compute drift against a previously-written register snapshot (JSON).
+    #[arg(long, value_name = "FILE")]
+    pub diff_against: Option<PathBuf>,
+
+    /// Exit non-zero when drift is detected (for CI gating).
+    #[arg(long)]
+    pub fail_on_drift: bool,
+
+    /// Enumerate trust-DB entries referenced by grants in the report.
+    #[arg(long)]
+    pub enumerate_trust: bool,
 }
 
 /// Arguments for `rulesteward auditd cost` (#85).
@@ -994,27 +1070,165 @@ mod tests {
         assert_eq!(args.since.as_deref(), Some("1h"));
     }
 
-    /// A still-hidden verb (`fapolicyd simulate`) does NOT appear in `fapolicyd --help`.
-    /// This pins that only the three intended verbs were un-hidden.
+    // -- Phase 0 (v0.2 round 2): SimulateArgs / ReportArgs parse-contract tests --
+
+    /// Helper: extract `SimulateArgs` from a parsed CLI.
+    fn parse_simulate(extra: &[&str]) -> SimulateArgs {
+        let mut cmdline = vec!["rulesteward", "fapolicyd", "simulate"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("simulate args must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Simulate(args)),
+        } = cli
+        else {
+            panic!("expected Fapolicyd(Simulate(_))");
+        };
+        args
+    }
+
+    /// `fapolicyd simulate --rules D --workload F` parses; required fields
+    /// round-trip and the optionals default. RED until `Simulate` becomes a
+    /// tuple variant carrying `SimulateArgs`.
     #[test]
-    fn fapolicyd_simulate_is_still_hidden() {
-        // We verify the CLI tree: simulate must remain hidden (unit variant with #[command(hide=true)]).
-        // Parse "fapolicyd simulate" to confirm it is still accepted (hidden != removed)
-        // but the FapolicydCommand variant is a unit, not a tuple.
-        // We cannot easily test --help absence in a unit test, but we pin the variant shape:
-        // the Simulate variant carries no args (unit), confirming it was not accidentally
-        // promoted to a tuple variant by this task.
-        let cli = Cli::try_parse_from(["rulesteward", "fapolicyd", "simulate"]);
-        // Clap still accepts hidden commands; the assert is that it parses as the Simulate unit.
-        if let Ok(Cli {
-            command: TopCommand::Fapolicyd(FapolicydCommand::Simulate),
-        }) = cli
-        {
-            // correct: Simulate is still a unit variant
-        } else {
-            panic!(
-                "fapolicyd simulate must parse as FapolicydCommand::Simulate (unit variant, still hidden)"
-            );
-        }
+    fn simulate_args_rules_and_workload_required_parse() {
+        let args = parse_simulate(&["--rules", "/etc/fapolicyd/rules.d", "--workload", "/tmp/wl"]);
+        assert_eq!(args.rules, PathBuf::from("/etc/fapolicyd/rules.d"));
+        assert_eq!(args.workload, PathBuf::from("/tmp/wl"));
+        assert!(args.trustdb.is_none(), "--trustdb must default to None");
+        assert!(
+            matches!(args.format, HumanJsonFormat::Human),
+            "--format must default to Human"
+        );
+    }
+
+    /// `--workload -` (stdin sentinel) parses as the literal path `-`; the
+    /// simulate pipeline interprets it, not clap.
+    #[test]
+    fn simulate_args_workload_dash_is_stdin_sentinel() {
+        let args = parse_simulate(&["--rules", "/r", "--workload", "-"]);
+        assert_eq!(args.workload, PathBuf::from("-"));
+    }
+
+    /// `--trustdb` is optional and round-trips; `--format json` selects Json.
+    #[test]
+    fn simulate_args_optional_fields_parse() {
+        let args = parse_simulate(&[
+            "--rules",
+            "/r",
+            "--workload",
+            "/w",
+            "--trustdb",
+            "/var/lib/fapolicyd",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(
+            args.trustdb.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd")),
+        );
+        assert!(matches!(args.format, HumanJsonFormat::Json));
+    }
+
+    /// Missing `--rules` or `--workload` is a parse error (both required).
+    #[test]
+    fn simulate_args_missing_required_is_parse_error() {
+        assert!(
+            Cli::try_parse_from(["rulesteward", "fapolicyd", "simulate", "--workload", "/w"])
+                .is_err(),
+            "missing --rules must be a parse error"
+        );
+        assert!(
+            Cli::try_parse_from(["rulesteward", "fapolicyd", "simulate", "--rules", "/r"]).is_err(),
+            "missing --workload must be a parse error"
+        );
+    }
+
+    /// Helper: extract `ReportArgs` from a parsed CLI.
+    fn parse_report(extra: &[&str]) -> ReportArgs {
+        let mut cmdline = vec!["rulesteward", "fapolicyd", "report"];
+        cmdline.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(cmdline).expect("report args must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Report(args)),
+        } = cli
+        else {
+            panic!("expected Fapolicyd(Report(_))");
+        };
+        args
+    }
+
+    /// `fapolicyd report` (no args) parses; the positional path defaults to None
+    /// and every flag defaults off / Human.
+    #[test]
+    fn report_args_default_parse() {
+        let args = parse_report(&[]);
+        assert!(args.path.is_none(), "positional path must default to None");
+        assert!(args.file.is_none());
+        assert!(matches!(args.format, HumanJsonCsvFormat::Human));
+        assert!(args.against_trustdb.is_none());
+        assert!(args.diff_against.is_none());
+        assert!(!args.fail_on_drift);
+        assert!(!args.enumerate_trust);
+    }
+
+    /// `--format csv` selects the CSV surface.
+    #[test]
+    fn report_args_format_csv_parses() {
+        assert!(matches!(
+            parse_report(&["--format", "csv"]).format,
+            HumanJsonCsvFormat::Csv
+        ));
+    }
+
+    /// The positional path round-trips; `--file` conflicts with it.
+    #[test]
+    fn report_args_positional_path_and_file_conflict() {
+        let args = parse_report(&["/etc/fapolicyd/rules.d"]);
+        assert_eq!(
+            args.path.as_deref(),
+            Some(std::path::Path::new("/etc/fapolicyd/rules.d")),
+        );
+        let args = parse_report(&["--file", "/some/40-x.rules"]);
+        assert_eq!(
+            args.file.as_deref(),
+            Some(std::path::Path::new("/some/40-x.rules")),
+        );
+        // positional + --file together is a parse error (conflicts_with).
+        assert!(
+            Cli::try_parse_from([
+                "rulesteward",
+                "fapolicyd",
+                "report",
+                "/dir",
+                "--file",
+                "/f.rules",
+            ])
+            .is_err(),
+            "positional path and --file together must be a parse error"
+        );
+    }
+
+    /// All report flags parse together.
+    #[test]
+    fn report_args_all_flags_parse() {
+        let args = parse_report(&[
+            "/r",
+            "--against-trustdb",
+            "/var/lib/fapolicyd",
+            "--diff-against",
+            "/tmp/prev.json",
+            "--fail-on-drift",
+            "--enumerate-trust",
+        ]);
+        assert_eq!(
+            args.against_trustdb.as_deref(),
+            Some(std::path::Path::new("/var/lib/fapolicyd")),
+        );
+        assert_eq!(
+            args.diff_against.as_deref(),
+            Some(std::path::Path::new("/tmp/prev.json")),
+        );
+        assert!(args.fail_on_drift);
+        assert!(args.enumerate_trust);
     }
 }

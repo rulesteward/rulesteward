@@ -1,0 +1,29 @@
+{
+  "id": "combo-trust-and-ftype",
+  "class": "scope",
+  "source": "report-wave1",
+  "intent": "One grant whose object combines trust= and ftype=; scope resolves to ftype (the narrower keying predicate) per the f2 specificity precedence.",
+  "edge_case_axis": "scope",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "ftype": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

@@ -1,0 +1,29 @@
+{
+  "id": "hash-filehash-sha256-64",
+  "class": "hash-origin-alg",
+  "source": "report-wave1",
+  "intent": "A 64-hex inline filehash yields hashAlgorithm SHA256 (length 64).",
+  "edge_case_axis": "hash-origin-alg",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "hash": 1
+    },
+    "hash_origins": {
+      "rule-filehash": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

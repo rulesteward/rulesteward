@@ -9,6 +9,34 @@
 use rulesteward_fapolicyd::{DiskVerdict, TrustEntry, TrustSource};
 use serde::Serialize;
 
+use crate::output::json::render_envelope;
+
+/// Schema version for the `trust-entries` JSON kind (CC-2 / #63). Bumps only on a
+/// breaking change to the trust-DB row payload (field removal, rename, retype).
+pub const TRUST_ENTRIES_SCHEMA_VERSION: u32 = 1;
+
+/// `kind` discriminator for the unified trust-DB JSON envelope.
+const TRUST_ENTRIES_KIND: &str = "trust-entries";
+
+/// Envelope payload for the trust-DB verbs: the rows live under a `data` key so
+/// the wire shape is `{ schemaVersion, kind: "trust-entries", data: [...] }`.
+#[derive(Serialize)]
+struct TrustEntriesPayload<'a, T: Serialize> {
+    data: &'a [T],
+}
+
+/// Wrap a row slice in the unified `trust-entries` envelope (CC-2 / #63).
+///
+/// Replaces the pre-v0.2 bare top-level JSON array. Same trailing-newline
+/// convention as the bare array it supersedes (via `render_envelope`).
+fn to_envelope<T: Serialize>(rows: &[T]) -> String {
+    render_envelope(
+        TRUST_ENTRIES_KIND,
+        TRUST_ENTRIES_SCHEMA_VERSION,
+        &TrustEntriesPayload { data: rows },
+    )
+}
+
 /// One row of `trustdb list` output: the recorded trust-DB entry verbatim.
 ///
 /// The `digest` field holds whatever hash algorithm fapolicyd recorded for this
@@ -116,7 +144,7 @@ pub struct DbDiffRow {
 #[must_use]
 pub fn render_list(rows: &[ListRow], json: bool) -> String {
     if json {
-        to_json(rows)
+        to_envelope(rows)
     } else {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -143,7 +171,7 @@ pub fn render_list(rows: &[ListRow], json: bool) -> String {
 #[must_use]
 pub fn render_checks(rows: &[CheckRow], json: bool) -> String {
     if json {
-        to_json(rows)
+        to_envelope(rows)
     } else {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -159,7 +187,7 @@ pub fn render_checks(rows: &[CheckRow], json: bool) -> String {
 #[must_use]
 pub fn render_db_diff(rows: &[DbDiffRow], json: bool) -> String {
     if json {
-        to_json(rows)
+        to_envelope(rows)
     } else {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -169,19 +197,6 @@ pub fn render_db_diff(rows: &[DbDiffRow], json: bool) -> String {
         }
         out
     }
-}
-
-/// Serialize a report to pretty JSON with a trailing newline.
-///
-/// Mirrors `output/json.rs` exactly: the report types here are plain structs of
-/// owned `String`/`u64`/`enum` fields with no map keys that can fail to
-/// serialize, so `serde_json::to_string_pretty` is infallible for them and the
-/// `.expect(...)` cannot fire.
-fn to_json<T: Serialize + ?Sized>(report: &T) -> String {
-    let mut s =
-        serde_json::to_string_pretty(report).expect("trust-DB report serialization cannot fail");
-    s.push('\n');
-    s
 }
 
 fn source_label(source: TrustSource) -> &'static str {
@@ -217,7 +232,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn list_json_is_array_with_trailing_newline() {
+    fn list_json_is_trust_entries_envelope_with_trailing_newline() {
         let rows = vec![ListRow {
             path: "/usr/bin/ls".to_owned(),
             source: TrustSource::RpmDb,
@@ -228,7 +243,14 @@ mod tests {
         let out = render_list(&rows, true);
         assert!(out.ends_with('\n'), "json output must end with newline");
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
-        let arr = v.as_array().expect("top-level array");
+        // CC-2 / #63: the unified envelope, not a bare array.
+        assert!(
+            v.is_object(),
+            "must be the envelope object, not a bare array"
+        );
+        assert_eq!(v["schemaVersion"], serde_json::json!(1));
+        assert_eq!(v["kind"], serde_json::json!("trust-entries"));
+        let arr = v["data"].as_array().expect("`data` array");
         assert_eq!(arr.len(), 1);
         let obj = arr[0].as_object().expect("object");
         for key in ["path", "source", "size", "digest"] {
@@ -285,7 +307,8 @@ mod tests {
         // JSON: weak row has "weak":"MD5"; strong row omits the key.
         let json = render_list(&rows, true);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-        let arr = v.as_array().expect("array");
+        assert_eq!(v["kind"], serde_json::json!("trust-entries"));
+        let arr = v["data"].as_array().expect("`data` array");
         let weak_obj = arr
             .iter()
             .find(|o| o["path"] == "/usr/bin/weak")
@@ -317,7 +340,10 @@ mod tests {
         }];
         let out = render_list(&rows, true);
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
-        let obj = v.as_array().expect("array")[0].as_object().expect("object");
+        assert_eq!(v["kind"], serde_json::json!("trust-entries"));
+        let obj = v["data"].as_array().expect("`data` array")[0]
+            .as_object()
+            .expect("object");
         assert!(
             obj.contains_key("digest"),
             "JSON key must be 'digest' (not 'sha256'); got keys: {:?}",

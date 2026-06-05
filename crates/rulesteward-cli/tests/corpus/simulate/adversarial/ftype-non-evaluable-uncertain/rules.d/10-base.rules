@@ -1,0 +1,3 @@
+deny_audit perm=open all : ftype=application/x-sharedlib
+allow perm=open exe=/usr/bin/cat : all
+deny_audit perm=any all : all

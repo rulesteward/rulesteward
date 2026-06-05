@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "exe=/usr/local/bin/mytool",
+      "object": "all",
+      "subjectPaths": [
+        "/usr/local/bin/mytool"
+      ],
+      "objectPaths": [],
+      "hash": "541af05cc76beb84d47421e052366c026740bb87cff284865238374c336e5545",
+      "hashOrigin": "trustdb",
+      "hashAlgorithm": "SHA256",
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "95-srcfile.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ],
+  "trustJoin": [
+    {
+      "grantIndex": 0,
+      "rows": [
+        {
+          "path": "/usr/local/bin/mytool",
+          "source": "FileDb",
+          "size": 22,
+          "digest": "541af05cc76beb84d47421e052366c026740bb87cff284865238374c336e5545"
+        }
+      ]
+    }
+  ]
+}

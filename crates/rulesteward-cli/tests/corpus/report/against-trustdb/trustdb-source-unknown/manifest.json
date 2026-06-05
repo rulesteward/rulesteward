@@ -1,0 +1,29 @@
+{
+  "id": "trustdb-source-unknown",
+  "class": "against-trustdb",
+  "source": "report-wave1",
+  "intent": "A trust row with source int 0 maps to TrustSource Unknown.",
+  "edge_case_axis": "against-trustdb",
+  "input": {
+    "against_trustdb": true,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "path": 1
+    },
+    "hash_origins": {
+      "trustdb": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": true
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

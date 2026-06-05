@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "all",
+      "object": "all",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "all",
+      "setExpansions": {},
+      "source": {
+        "file": "A1-removed.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "subject": "all",
+      "object": "trust=1",
+      "subjectPaths": [],
+      "objectPaths": [],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "trust",
+      "setExpansions": {},
+      "source": {
+        "file": "A1-removed.rules",
+        "line": 2
+      },
+      "loadIndex": 2
+    }
+  ]
+}

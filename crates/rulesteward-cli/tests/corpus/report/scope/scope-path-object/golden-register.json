@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "exception-register",
+  "grants": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "subject": "uid=0",
+      "object": "path=/etc/hosts",
+      "subjectPaths": [],
+      "objectPaths": [
+        "/etc/hosts"
+      ],
+      "hash": null,
+      "hashOrigin": "none",
+      "hashAlgorithm": null,
+      "scope": "path",
+      "setExpansions": {},
+      "source": {
+        "file": "53-path-obj.rules",
+        "line": 1
+      },
+      "loadIndex": 1
+    }
+  ]
+}

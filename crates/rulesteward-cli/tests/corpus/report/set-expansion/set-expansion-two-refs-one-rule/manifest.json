@@ -1,0 +1,29 @@
+{
+  "id": "set-expansion-two-refs-one-rule",
+  "class": "set-expansion",
+  "source": "report-wave1",
+  "intent": "One rule referencing TWO different %macro sets (subject exe=%tools, object ftype=%mimes); both appear in setExpansions.",
+  "edge_case_axis": "set-expansion",
+  "input": {
+    "against_trustdb": false,
+    "diff_against": false
+  },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 1,
+    "decisions": {
+      "allow": 1
+    },
+    "scopes": {
+      "ftype": 1
+    },
+    "hash_origins": {
+      "none": 1
+    }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

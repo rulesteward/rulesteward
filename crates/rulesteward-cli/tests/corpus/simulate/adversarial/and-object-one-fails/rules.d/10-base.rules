@@ -1,0 +1,2 @@
+deny_audit perm=open all : path=/etc/hostname ftype=application/x-executable
+allow perm=any all : all

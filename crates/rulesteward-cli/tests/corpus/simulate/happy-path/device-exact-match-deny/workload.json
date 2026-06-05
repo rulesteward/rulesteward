@@ -1,0 +1,6 @@
+{
+  "exe": "/usr/bin/cat",
+  "path": "/mnt/data/file",
+  "perm": "open",
+  "device": "/dev/sda1"
+}

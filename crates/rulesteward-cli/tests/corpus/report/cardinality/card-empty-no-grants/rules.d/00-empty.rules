@@ -1,0 +1,3 @@
+# no allow grants here
+
+deny_audit perm=any all : all

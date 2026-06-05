@@ -1,0 +1,3 @@
+deny_audit perm=execute pattern=ld_so : all
+allow perm=execute exe=/usr/local/bin/myexe : all
+deny_audit perm=any all : all

@@ -1,0 +1,20 @@
+{
+  "id": "hash-two-grants-diff-alg",
+  "class": "hash-origin-alg",
+  "source": "report-wave1",
+  "intent": "Two grants in one file, one MD5-32 and one SHA512-128, so hashAlgorithm varies row to row.",
+  "edge_case_axis": "hash-origin-alg",
+  "input": { "against_trustdb": false, "diff_against": false },
+  "golden_file": "golden-register.json",
+  "expected_summary": {
+    "grant_count": 2,
+    "decisions": { "allow": 2 },
+    "scopes": { "hash": 2 },
+    "hash_origins": { "rule-filehash": 2 }
+  },
+  "oracle": {
+    "method": "f2 section 3.2 mapping (spec-derived)",
+    "trustdb_digests_captured": false
+  },
+  "primary_source": "f2 sections 2.2/3.2"
+}

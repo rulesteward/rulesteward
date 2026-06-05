@@ -1,0 +1,4 @@
+# scripts allowlist
+%scripts=text/x-perl,text/x-python
+
+allow perm=open all : ftype=%scripts

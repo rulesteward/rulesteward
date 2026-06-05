@@ -1,0 +1,5 @@
+{
+  "exe": "/etc/cron.daily/logrotate",
+  "path": "/etc/cron.daily/logrotate",
+  "perm": "execute"
+}
