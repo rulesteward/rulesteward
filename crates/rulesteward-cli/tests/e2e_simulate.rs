@@ -839,3 +839,333 @@ fn human_output_fallthrough_mentions_fallthrough() {
         .code(0)
         .stdout(predicate::str::is_match(r"(?i)(fallthrough|no.match|no rule)").unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// Mutation-killing tests (survivors from the post-impl mutation gate)
+// ---------------------------------------------------------------------------
+
+// --- Kills survivors 1-4: render_human label branches + summary-line counts ---
+//
+// Survivor 1 (simulate.rs:445:23): `res.source == "rule"` in render_human.
+//   Mutant flips `==` to `!=`: a rule-matched access takes the fallthrough branch
+//   and prints "allow (fallthrough - no rule matched)" even for a decisive deny.
+//   Kill: assert that the human verdict line for a rule-matched deny contains
+//   the decision and rule number IN THE VERDICT line, not just anywhere in output.
+//
+// Survivors 2-4 (simulate.rs:465:31, :469:31, :473:31): the three verdict-class
+//   filter predicates in render_human's summary computation.
+//   Mutant flips one `==` to `!=`: that class gets the wrong count (counts all
+//   OTHER classes instead of its own).
+//   Kill: assert the exact per-class counts in the human summary line.
+//
+// One comprehensive test covers all four survivors.
+
+/// Human output verdict line for a decisive deny must say "DECISIVE deny (rule N)".
+/// The verdict line format is `"  verdict: DECISIVE deny (rule 1)"` - the decision
+/// and rule number appear in the verdict line, not just the note line.
+/// Kills: simulate.rs:445:23 (source == "rule" -> source != "rule").
+#[test]
+fn human_render_decisive_deny_verdict_line_contains_rule_and_decision() {
+    // Single deny rule - one query produces a Decisive deny via rule 1.
+    let (_rules_dir, rules_path) = write_rules_dir("deny perm=open all : all\n");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_path.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+        ])
+        .assert()
+        .code(0)
+        // The verdict line must say "DECISIVE deny (rule 1)" - all three tokens on
+        // the same line. With the mutant (source != "rule" is true for source=="rule"),
+        // the else branch fires and prints "DECISIVE allow (fallthrough - no rule
+        // matched)" instead, so neither "deny" nor "rule 1" appear in the verdict line.
+        .stdout(predicate::str::is_match(r"verdict:.*DECISIVE.*deny.*rule").unwrap());
+}
+
+/// Human output verdict line for a decisive allow must say "DECISIVE allow (rule N)".
+/// Kills: simulate.rs:445:23 (source == "rule" -> source != "rule").
+#[test]
+fn human_render_decisive_allow_verdict_line_contains_rule_and_decision() {
+    let (_rules_dir, rules_path) = write_rules_dir("allow perm=open all : all\n");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_path.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+        ])
+        .assert()
+        .code(0)
+        // Verdict line: "  verdict: DECISIVE allow (rule 1)"
+        // With the mutant (source != "rule" true when source=="rule"), the else branch
+        // fires: "verdict: DECISIVE allow (fallthrough - no rule matched)" - no "rule 1".
+        .stdout(predicate::str::is_match(r"verdict:.*DECISIVE.*allow.*rule").unwrap());
+}
+
+/// Human summary line for a mixed workload reports exact per-class counts.
+///
+/// Workload: 2 decisive + 1 possible + 2 no-match queries.
+/// Expected summary line: `"5 queries, 2 decisive, 1 possible, 2 no-match"`
+///
+/// Kills simulate.rs:465:31, :469:31, :473:31: flipping any of the three
+/// verdict-class filter predicates (`== -> !=`) in `render_human` produces the
+/// wrong count for that class.
+#[test]
+fn human_summary_line_exact_per_class_counts() {
+    // Rules:
+    //   Rule 1: deny perm=open all : path=/etc/hostname  (decisive only for that exact path)
+    //   Rule 2: deny perm=execute pattern=ld_so : all    (unevaluable, contributes Possible)
+    //   Rule 3: allow perm=execute all : all              (decisive execute, Possible due to rule 2)
+    // Queries with perm=open and path != /etc/hostname have no matching rule -> NoMatch.
+    let (_rules_dir, rules_path) = write_rules_dir(
+        "deny perm=open all : path=/etc/hostname\n\
+         deny perm=execute pattern=ld_so : all\n\
+         allow perm=execute all : all\n",
+    );
+    let workload = write_tmp(
+        r#"[
+            {"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"},
+            {"exe":"/usr/bin/ls","path":"/etc/hostname","perm":"open"},
+            {"exe":"/usr/local/bin/myexe","path":"/usr/local/bin/mychild","perm":"execute"},
+            {"exe":"/usr/bin/cat","path":"/nonexistent/path","perm":"open"},
+            {"exe":"/usr/bin/cat","path":"/other/path","perm":"open"}
+        ]"#,
+    );
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_path.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+        ])
+        .assert()
+        .code(0)
+        // Exact summary line. Any mutant flipping one verdict-class filter (== -> !=)
+        // produces the wrong count for that class.
+        .stdout(predicate::str::contains(
+            "5 queries, 2 decisive, 1 possible, 2 no-match",
+        ));
+}
+
+// --- Kills survivor 5: evaluate_query confidence_note branch (simulate.rs:398:30) ---
+//
+// Line 398: `verdict.source == Source::Fallthrough` in the confidence_note arm.
+// Mutant flips `==` to `!=`: when source IS Fallthrough the else branch fires
+// (formats "decisive: rule 0 allow" instead of the fallthrough note), and when
+// source is NOT Fallthrough the Fallthrough branch fires (produces the fallthrough
+// note instead of "decisive: rule N decision").
+//
+// Kill: assert the exact confidenceNote text for a fallthrough case (must contain
+// "fallthrough" or "no rule"), and separately for a decisive rule-matched case
+// (must contain "decisive" and the rule number).
+
+/// For a fallthrough query the JSON `confidenceNote` must contain "fallthrough".
+///
+/// Kills simulate.rs:398:30 (`== Source::Fallthrough` -> `!= Source::Fallthrough`).
+/// With the mutant, the else branch fires for a fallthrough: note becomes
+/// `"decisive: rule 0 allow"` which does NOT contain "fallthrough".
+#[test]
+fn json_confidence_note_fallthrough_contains_fallthrough() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(dir.path().join("10-empty.rules"), "# no rules\n").expect("write");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            dir.path().to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    let json = parse_json(
+        "json_confidence_note_fallthrough_contains_fallthrough",
+        &out,
+    );
+    let note = json["results"][0]["confidenceNote"]
+        .as_str()
+        .expect("confidenceNote must be a string");
+    assert!(
+        note.contains("fallthrough") || note.contains("no rule"),
+        "fallthrough confidenceNote must mention 'fallthrough' or 'no rule', got: {note:?}"
+    );
+}
+
+/// For a decisive rule-matched query the JSON confidenceNote must contain "decisive"
+/// and the rule number.
+/// Kills: simulate.rs:398:30 (`== Source::Fallthrough` -> `!= Source::Fallthrough`).
+/// With the mutant, the Fallthrough branch fires for a rule-matched case: note becomes
+/// "no rule matched; implicit allow (fallthrough)" - no "decisive" or rule number.
+#[test]
+fn json_confidence_note_decisive_contains_rule_number() {
+    let (_rules_dir, rules_path) = write_rules_dir("deny perm=open all : all\n");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_path.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    let json = parse_json("json_confidence_note_decisive_contains_rule_number", &out);
+    let note = json["results"][0]["confidenceNote"]
+        .as_str()
+        .expect("confidenceNote must be a string");
+    assert!(
+        note.contains("decisive"),
+        "decisive confidenceNote must contain 'decisive', got: {note:?}"
+    );
+    assert!(
+        note.contains('1'),
+        "decisive confidenceNote must contain the rule number (1), got: {note:?}"
+    );
+}
+
+// --- Kills survivor 6: load_ruleset file-extension filter (simulate.rs:316:17) ---
+//
+// Line 316: `p.extension()... == Some("rules")` joined with `&&` to `p.is_file()`.
+// Mutant replaces `&&` with `||`: the filter becomes
+//   `p.is_file() || extension == Some("rules") || ...`
+// With `||`, any regular file passes the filter regardless of extension, so a
+// non-`.rules` file (e.g., a README with invalid rule content) gets included and
+// causes a parse error -> exit 5.
+//
+// Kill: place a non-`.rules` file with invalid content alongside a valid `.rules`
+// file and assert the run succeeds (exit 0). With `&&`, the non-.rules file is
+// skipped. With `||`, it is included and parse fails.
+
+/// A rules directory containing a non-`.rules` file (e.g., README) must succeed.
+/// The non-`.rules` file is ignored by the `&&` filter (extension check gates inclusion).
+/// Kills: simulate.rs:316:17 (`&&` -> `||`): with `||`, any file is included, the
+/// README content fails to parse, and the run exits 5 instead of 0.
+#[test]
+fn load_ruleset_ignores_non_rules_extension_files() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    // A valid rules file that allows everything.
+    std::fs::write(
+        dir.path().join("10-allow.rules"),
+        "allow perm=open all : all\n",
+    )
+    .expect("write rules");
+    // A non-.rules file with content that would fail to parse if accidentally loaded.
+    std::fs::write(
+        dir.path().join("README.txt"),
+        "This is NOT a rules file and should not be loaded.\n",
+    )
+    .expect("write README");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            dir.path().to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        // With correct `&&` filter, README.txt is skipped; 10-allow.rules parses fine;
+        // exit 0. With `||` mutant, README.txt is included; parse fails; exit 5.
+        .code(0);
+}
+
+// --- Kills survivor 7: summary.no_match += 1 (simulate.rs:551:51) ---
+//
+// Line 551: `summary.no_match += 1` mutated to `summary.no_match *= 1`.
+// With `*= 1`, no_match remains 0 (initial value 0 multiplied by 1 each time = 0).
+// Kill: run a workload with >= 2 NoMatch queries and assert noMatch == 2.
+// With `+= 1`: noMatch = 2. With `*= 1`: noMatch = 0.
+//
+// A NoMatch result requires a fallthrough (no rule matched for this query's perm).
+// Use perm=any queries against a ruleset that only has perm=open and perm=execute
+// rules - a perm=any query matches perm=any or perm=all rules only; those absent
+// means fallthrough.
+
+/// Two fallthrough (no-match) queries must produce `summary.noMatch == 2`.
+///
+/// Kills simulate.rs:551:51: `+= 1` mutated to `*= 1` leaves `no_match` at 0
+/// because `0 * 1 = 0` for every iteration.
+#[test]
+fn summary_no_match_count_multiple_fallthrough_queries() {
+    // Path-specific rule: only queries for /etc/hostname match; other paths fall through.
+    let (_rules_dir, rules_path) = write_rules_dir("deny perm=open all : path=/etc/hostname\n");
+    // 3 queries: 1 decisive (matched path), 2 no-match (unmatched paths)
+    let workload = write_tmp(
+        r#"[
+            {"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"},
+            {"exe":"/usr/bin/cat","path":"/nonexistent/path-a","perm":"open"},
+            {"exe":"/usr/bin/cat","path":"/nonexistent/path-b","perm":"open"}
+        ]"#,
+    );
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "simulate",
+            "--rules",
+            rules_path.to_str().unwrap(),
+            "--workload",
+            workload.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    let json = parse_json("summary_no_match_count_multiple_fallthrough_queries", &out);
+    let summary = &json["summary"];
+    assert_eq!(summary["total"], 3, "total must be 3");
+    assert_eq!(summary["decisive"], 1, "decisive must be 1");
+    assert_eq!(summary["possible"], 0, "possible must be 0");
+    // Key assertion: += 1 twice gives 2; *= 1 twice gives 0.
+    assert_eq!(
+        summary["noMatch"], 2,
+        "noMatch must be 2 (kills the *= mutant)"
+    );
+}
