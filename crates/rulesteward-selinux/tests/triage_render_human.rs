@@ -269,17 +269,36 @@ fn h3_two_perm_shadow_file_no_interface_no_etc_t() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-H4: Permissive denial - must NOT emit an allow (f4 §2.5 inv.6)
+// TC-H4: Permissive denial - emit allow + PERMISSIVE-MODE banner
 //
-// Source: corpus rocky9-permissive-denial.
-// Oracle: empty allow set; informational note only.
+// SANCTIONED SPEC CHANGE (round-2, 2026-06-05): the user explicitly REVERSED
+// f4 §2.5 invariant 6 (`f4-selinux-triage-grounding.md` line 294-296: "permissive=1
+// denials are reported but NOT auto-suggested as allows"). The new behaviour:
+// a `permissive=1` denial DOES now get a suggested `allow`, but it MUST be
+// preceded by a clear PERMISSIVE-MODE caveat banner so the operator knows the
+// access was logged-not-enforced and must be reviewed before allowing.
 //
-// Guards against: a naive impl that blindly maps every `avc: denied` record
-// to an allow rule without checking permissive=1 (exactly what audit2allow does).
+// This is NOT weakening: the test still pins concrete, load-bearing behaviour
+// (the banner marker MUST be present AND the allow MUST be emitted). The pre-
+// reversal assertions (no allow / only-informational) are intentionally
+// replaced because the underlying spec decision changed.
+//
+// Banner marker (stable substring the impl MUST emit, shared by the floor path
+// and the --policy authoritative path; see e2e_selinux_authoritative.rs):
+//   "PERMISSIVE MODE:"
+//
+// Source: corpus rocky9-permissive-denial (the same fixture; the verdict, not
+// the record, is what changed).
 // ---------------------------------------------------------------------------
 
+/// Stable banner marker substring the implementation MUST emit on any
+/// permissive denial block (BOTH the floor path here and the --policy
+/// authoritative path in the CLI e2e). Asserted verbatim so a wording drift is
+/// caught. Chosen by the round-2 test-author per the user's f4-inv-6 reversal.
+const PERMISSIVE_BANNER_MARKER: &str = "PERMISSIVE MODE:";
+
 #[test]
-fn h4_permissive_denial_no_allow_emitted() {
+fn h4_permissive_denial_emits_allow_with_banner() {
     let groups = vec![make_group(
         "logrotate_t",
         "shadow_t",
@@ -290,23 +309,48 @@ fn h4_permissive_denial_no_allow_emitted() {
     )];
     let out = render_human(&groups);
 
-    // Must NOT emit a suggested allow rule for a permissive denial.
+    // NEW (f4-inv-6 reversal): a suggested allow MUST now be emitted for a
+    // permissive denial. Accept either the single-perm or braced multi-perm form
+    // (single-perm `read` is the canonical render here).
     assert!(
-        !out.contains("allow logrotate_t shadow_t:file read;")
-            && !out.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-H4: must NOT emit an allow rule for a permissive=1 denial; got:\n{out}"
+        out.contains("allow logrotate_t shadow_t:file read;")
+            || out.contains("allow logrotate_t shadow_t:file { read };"),
+        "TC-H4 (f4-inv-6 reversal): a permissive=1 denial MUST now get a suggested \
+         allow; got:\n{out}"
     );
 
-    // Must contain some informational content (the denial IS reported, just not auto-allowed).
+    // The PERMISSIVE-MODE caveat banner MUST precede / accompany the allow so the
+    // operator knows the access was logged-not-enforced and must be reviewed.
+    assert!(
+        out.contains(PERMISSIVE_BANNER_MARKER),
+        "TC-H4 (f4-inv-6 reversal): a permissive denial block MUST carry the \
+         '{PERMISSIVE_BANNER_MARKER}' caveat banner; got:\n{out}"
+    );
+
+    // The banner must come BEFORE the suggested allow (caveat-first), so the
+    // operator reads the warning before the rule.
+    let banner_pos = out
+        .find(PERMISSIVE_BANNER_MARKER)
+        .expect("banner present (asserted above)");
+    let allow_pos = out
+        .find("allow logrotate_t shadow_t:file")
+        .expect("allow present (asserted above)");
+    assert!(
+        banner_pos < allow_pos,
+        "TC-H4 (f4-inv-6 reversal): the PERMISSIVE-MODE banner must precede the \
+         suggested allow (caveat-first); got:\n{out}"
+    );
+
+    // Still reported, still mentions permissive (these assertions are unchanged
+    // from the pre-reversal test - the denial is still surfaced, with context).
     assert!(
         !out.trim().is_empty(),
         "TC-H4: output must not be empty - permissive denial must still be reported"
     );
-
-    // Must mention `permissive` to explain why no allow is suggested.
     assert!(
         out.to_lowercase().contains("permissive"),
-        "TC-H4: output must mention 'permissive' so the operator understands why no allow is emitted; got:\n{out}"
+        "TC-H4: output must mention 'permissive' so the operator understands the \
+         caveat; got:\n{out}"
     );
 }
 

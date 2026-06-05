@@ -349,6 +349,10 @@ pub struct TriageArgs {
     /// the record-only floor classifier when present; the floor is the fallback
     /// when `--policy` is not supplied or when a context in the denial is not
     /// defined in the supplied policy (cross-host / cross-version mismatch).
+    ///
+    /// A `--policy` that cannot be LOADED is a hard error (exit 2): the run does
+    /// NOT silently fall back to the floor, since the operator explicitly asked
+    /// for authoritative analysis.
     #[arg(long, value_name = "FILE")]
     pub policy: Option<PathBuf>,
 }

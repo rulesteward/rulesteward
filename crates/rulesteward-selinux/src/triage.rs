@@ -13,7 +13,23 @@
 //! 3. Exact perm set only - no perm-set expansion.
 //! 4. No unrelated types.
 //! 5. One rule per (sdomain, ttype, tclass) triple.
-//! 6. `Permissive` groups are reported but NO allow is emitted.
+//! 6. REVERSED (round-2, user decision 2026-06-05): a `permissive=1` denial NOW
+//!    gets a suggested allow, preceded by a top-level PERMISSIVE-MODE caveat
+//!    banner so the operator knows the access was logged-not-enforced and must be
+//!    reviewed before allowing. The original invariant 6 ("Permissive groups are
+//!    reported but NO allow is emitted") was the locked f4 §2.5 inv.6; the user
+//!    explicitly reversed it (f4-selinux-triage-grounding.md line 294-296). The
+//!    banner is keyed on `any_permissive` (not the `kind`), so it also fires on
+//!    the authoritative `--policy` path where the verdict may be `TeAllowable`
+//!    with `any_permissive == true`.
+//!
+//!    EXTENDED (round-3, user decision 2026-06-05): the reversal of inv.6 now
+//!    also applies to the MACHINE-READABLE JSON `build_report` path, not just the
+//!    human render. A permissive `Permissive`-kind group's `suggested_rule` is
+//!    populated in the JSON too (the same narrow allow the human path emits); the
+//!    per-entry `any_permissive: true` field is the machine-readable caveat in
+//!    place of the human banner. The JSON and human paths are now CONSISTENT for
+//!    permissive denials.
 //! 7. Suggest only, never apply.
 //! 8. Always note `dontaudit` as the safer option for benign denials.
 //!
@@ -25,6 +41,20 @@
 
 use crate::denial::{DenialGroup, DenialKind};
 use serde::Serialize;
+
+/// The PERMISSIVE-MODE caveat banner emitted for any group with
+/// `any_permissive == true` (round-2 reversal of f4 §2.5 inv.6). Caveat-first:
+/// rendered BEFORE the suggested allow so the operator reads the warning before
+/// the rule.
+///
+/// The leading `"PERMISSIVE MODE:"` substring is the stable marker the triage
+/// tests pin (both the floor-path `h4_*` test and the CLI `--policy` e2e); a
+/// permissive denial on EITHER path carries it, because the authoritative CLI
+/// renderer reuses this floor renderer for non-already-allows groups.
+const PERMISSIVE_BANNER: &str = "PERMISSIVE MODE: this denial was logged in permissive mode (permissive=1), so the access \
+     was NOT actually blocked. The suggested allow below is what would be required to permit \
+     this access under ENFORCING mode - review whether the access is genuinely needed before \
+     applying it (`dontaudit` silences the log without granting access).";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -50,9 +80,10 @@ pub struct TriageEntry {
     pub kind: DenialKind,
     /// The narrow suggested allow rule, or `null` when no allow is appropriate.
     ///
-    /// `None` for `Permissive`, `MlsSuspected`, `RoleSuspected`, `Constraint`,
-    /// `Bounds`. Present for `TeAllowable` and (with a policy-mismatch caveat)
-    /// `ContextInvalid` when the floor falls back to `TeAllowable`.
+    /// Present for `TeAllowable` and (round-3) `Permissive` (the latter with the
+    /// `any_permissive: true` flag as the machine-readable caveat). `None` for
+    /// `MlsSuspected`, `RoleSuspected`, `Constraint`, `Bounds`, and
+    /// `ContextInvalid` (policy-mismatch decline).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_rule: Option<String>,
     /// Plain-language explanation of the denial and suggested action.
@@ -74,7 +105,9 @@ pub struct TriageReport {
 /// Build the machine-readable triage report from grouped denials.
 ///
 /// Each `DenialGroup` becomes a `TriageEntry` with a narrow suggested allow
-/// (for `TeAllowable` groups) or a decline explanation (for all other kinds).
+/// (for `TeAllowable` and, as of round-3, `Permissive` groups - the latter
+/// carrying `any_permissive: true` as the machine-readable caveat) or a decline
+/// explanation (for the constraint/role/MLS/bounds/context-invalid kinds).
 #[must_use]
 pub fn build_report(groups: &[DenialGroup]) -> TriageReport {
     let entries = groups.iter().map(build_entry).collect();
@@ -148,9 +181,28 @@ fn build_entry(group: &DenialGroup) -> TriageEntry {
 }
 
 /// Render one `DenialGroup` as a human-readable block.
+///
+/// Round-2 inv.6 reversal: a group with `any_permissive == true` gets the
+/// PERMISSIVE-MODE caveat banner rendered CAVEAT-FIRST (before the suggested
+/// allow). Round-3 (2026-06-05) extended the reversal to the JSON path, so
+/// `triage_group` now returns the suggested allow for a `Permissive`-kind group
+/// directly; the human and JSON paths share that one rule (no human-only
+/// fallback any more). A group whose authoritative verdict is `TeAllowable` with
+/// `any_permissive == true` (the `--policy` path) also carries the allow from
+/// `triage_group`; it just additionally gains the banner here.
 fn render_group_human(group: &DenialGroup) -> String {
+    // The suggested allow now comes solely from `triage_group` (the single
+    // decision point shared with the JSON path). Permissive groups carry it as
+    // of round-3, so no human-only override is needed.
     let (suggested_rule, explanation) = triage_group(group);
+
     let mut out = String::new();
+    // Caveat-first: the PERMISSIVE-MODE banner precedes everything else so the
+    // operator reads the warning before the suggested allow.
+    if group.any_permissive {
+        out.push_str(PERMISSIVE_BANNER);
+        out.push('\n');
+    }
     out.push_str(&explanation);
     if let Some(rule) = suggested_rule {
         out.push('\n');
@@ -199,17 +251,27 @@ fn triage_group(group: &DenialGroup) -> (Option<String>, String) {
         }
 
         // ------------------------------------------------------------------
-        // Permissive: report only, no allow (f4 §2.5 inv.6).
+        // Permissive: round-3 (user decision 2026-06-05) - the MACHINE-READABLE
+        // report NOW populates `suggested_rule` for permissive denials too, so the
+        // JSON is CONSISTENT with the human path. This extends the round-2 inv.6
+        // reversal (which only flipped the HUMAN path) to the JSON `build_report`
+        // path as well. The per-entry `any_permissive: true` flag is the
+        // machine-readable caveat (no banner needed in JSON); the suggested allow
+        // is the SAME narrow rule the human path emits (shared `format_narrow_allow`
+        // over the same source/target/class/perms). This is a SANCTIONED contract
+        // change reversing f4 §2.5 inv.6 for the JSON path; TC-R5b is updated to
+        // assert the rule IS present (was: asserts absent).
         // ------------------------------------------------------------------
         DenialKind::Permissive => {
+            let rule = format_narrow_allow(src, tgt, cls, &group.perms);
             let explanation = format!(
                 "NOTED (permissive): domain '{src}' logged a denial of {perm_display} \
                  on {cls} '{tgt}', but the domain was in permissive mode (permissive=1) \
                  so the access was NOT actually blocked. \
-                 No allow rule is suggested for a permissive denial - the access \
-                 succeeded despite the log entry."
+                 The narrowest allow that would permit this access under enforcing mode \
+                 is suggested below; review whether the access is genuinely needed."
             );
-            (None, explanation)
+            (Some(rule), explanation)
         }
 
         // ------------------------------------------------------------------

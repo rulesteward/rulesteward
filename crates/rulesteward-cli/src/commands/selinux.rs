@@ -16,8 +16,8 @@ use crate::cli::{HumanJsonFormat, SelinuxCommand, TriageArgs};
 use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS};
 use crate::output::json::render_envelope;
 use rulesteward_selinux::{
-    AvcDenial, DenialGroup, Policy, ReplayOutcome, build_report, categorize_with_outcome, emit_te,
-    group_denials, parse_avc, render_human,
+    AvcDenial, DenialGroup, DenialKind, Policy, ReplayOutcome, build_report,
+    categorize_with_outcome, emit_te, group_denials, parse_avc, render_human,
 };
 
 /// Schema version for the `selinux-triage` payload kind. Bumps only on a
@@ -62,8 +62,18 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
     // feature is now default-ON, so this path compiles in the default build.
     // The already-allows sub-case tracks which groups had Reason(0) so we can
     // render a DISTINCT operator message for #122.
+    //
+    // A FAILED `--policy` load is a loud error (round-2 decision): we must NOT
+    // silently fall back to the floor with exit 0. Report it and return
+    // EXIT_ERRORS, staying read-only (no panic).
     let already_allows_groups =
-        apply_authoritative_categorizer(args.policy.as_deref(), &denials, &mut groups);
+        match apply_authoritative_categorizer(args.policy.as_deref(), &denials, &mut groups) {
+            Ok(set) => set,
+            Err(e) => {
+                eprintln!("selinux triage: {e:#}");
+                return Ok(EXIT_ERRORS);
+            }
+        };
 
     let rendered = if args.emit_te {
         emit_te(&groups, args.module_name.as_deref())
@@ -84,46 +94,97 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
     Ok(EXIT_CLEAN)
 }
 
+/// How "actionable" / important-to-surface an authoritative per-context verdict
+/// is. Used to pick the verdict shown for a HETEROGENEOUS group (one whose
+/// members share the `(source_type, target_type, tclass)` triple but carry
+/// DIFFERENT raw contexts - e.g. differing MLS levels). A higher rank wins.
+///
+/// The load-bearing ordering: a genuinely-blocked member (TE gap / constraint /
+/// bounds / bad-context) MUST outrank the `Reason(0)` "already allows" member, so
+/// the output never tells the operator the policy "already allows" a group that
+/// in fact contains an enforced block (the round-2 grounded bug).
+fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
+    match (kind, outcome) {
+        // A real TE allow gap: most actionable (the operator likely wants the allow).
+        (DenialKind::TeAllowable, _) => 5,
+        // Hard blocks that need a policy-structure fix, not a plain allow.
+        (DenialKind::Constraint | DenialKind::Bounds, _) => 4,
+        // A bad/undefined context in the supplied policy ("does not define").
+        (DenialKind::ContextInvalid, ReplayOutcome::BadContext) => 3,
+        // Reason(0) -> ContextInvalid: the supplied policy ALREADY ALLOWS this.
+        // LEAST actionable; must lose to any blocked member above.
+        (DenialKind::ContextInvalid, ReplayOutcome::Reason(0)) => 1,
+        // Any other floor verdict the authoritative layer left in place.
+        _ => 2,
+    }
+}
+
 /// Apply the authoritative categorizer when `--policy` is supplied.
 ///
 /// Returns the set of `(source_type, target_type, tclass)` triples whose
-/// authoritative outcome was `Reason(0)` (the supplied policy already allows
-/// the access - the "already allows" sub-case for locked decision #122).
+/// authoritative outcome was the `Reason(0)` "already allows" sub-case for ALL of
+/// the group's distinct contexts (locked decision #122).
 ///
-/// Mutates `groups` in place: for each group where the authoritative categorizer
-/// returns a result, the `kind` field is overridden with the authoritative
-/// `DenialKind`. On `CategorizeError` (hard errors, not BADSCON) the group's
-/// floor kind is preserved and a warning is emitted on stderr.
+/// Mutates `groups` in place: for each group, the authoritative categorizer is
+/// replayed ONCE PER DISTINCT raw `(scontext, tcontext)` pair in the group (not
+/// just the first representative). A `(source_type, target_type, tclass)` triple
+/// is only as coarse as `group_denials` - two AVCs differing only in MLS level
+/// land in ONE group - so replaying a single representative would let a
+/// `Reason(0)` member mask a constraint-blocked member (the round-2 grounded
+/// bug). The group's `kind` is set to the MOST ACTIONABLE per-context verdict
+/// (see [`verdict_rank`]); a group is reported "already allows" ONLY when EVERY
+/// distinct context replays to `Reason(0)`.
+///
+/// On `CategorizeError` (hard errors, not BADSCON) that context is skipped with a
+/// warning on stderr (the floor kind is preserved if no context classified).
 ///
 /// When `policy_path` is `None` this is a no-op that returns an empty set.
+///
+/// # Errors
+///
+/// Returns `Err` when an explicitly-supplied `--policy` cannot be loaded
+/// (`Policy::load` failed). The caller maps this to `EXIT_ERRORS` - a failed
+/// `--policy` load must FAIL LOUD, never silently fall back to the floor
+/// (round-2 decision). The run stays read-only and does not panic.
 fn apply_authoritative_categorizer(
     policy_path: Option<&Path>,
     denials: &[AvcDenial],
     groups: &mut [DenialGroup],
-) -> std::collections::HashSet<(String, String, String)> {
+) -> anyhow::Result<std::collections::HashSet<(String, String, String)>> {
     let Some(path) = policy_path else {
-        return std::collections::HashSet::new();
+        return Ok(std::collections::HashSet::new());
     };
 
-    // Load the policy once; all group replays share the loaded policydb.
-    let policy = match Policy::load(path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "selinux triage: could not load policy {}: {e}",
-                path.display()
-            );
-            return std::collections::HashSet::new();
-        }
-    };
+    // Load the policy once; all group replays share the loaded policydb. A load
+    // failure is propagated to the caller (-> EXIT_ERRORS), NOT swallowed.
+    let policy =
+        Policy::load(path).map_err(|e| anyhow!("could not load policy {}: {e}", path.display()))?;
 
     let mut already_allows: std::collections::HashSet<(String, String, String)> =
         std::collections::HashSet::new();
 
     for group in groups.iter_mut() {
-        // Find the first AvcDenial for this group to get representative raw contexts.
-        // All denials in a group share (source_type, target_type, tclass); the first
-        // one's raw contexts are the representative contexts for the authoritative replay.
+        // Collect the DISTINCT raw context pairs for this group. Two AVCs that
+        // share the (source_type, target_type, tclass) triple but differ in MLS
+        // level / role land in ONE group, yet replay to DIFFERENT verdicts; we
+        // must replay each distinct context, not just the first representative.
+        let mut seen_contexts: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        let context_pairs: Vec<(String, String)> = denials
+            .iter()
+            .filter(|d| {
+                d.source_type == group.source_type
+                    && d.target_type == group.target_type
+                    && d.tclass == group.tclass
+            })
+            .filter_map(|d| {
+                let key = (d.scontext_raw.clone(), d.tcontext_raw.clone());
+                seen_contexts.insert(key.clone()).then_some(key)
+            })
+            .collect();
+
+        // A representative for the fields the categorizer does NOT read (verdict /
+        // permissive); replay uses only the contexts, class, and perms.
         let Some(rep) = denials.iter().find(|d| {
             d.source_type == group.source_type
                 && d.target_type == group.target_type
@@ -132,53 +193,78 @@ fn apply_authoritative_categorizer(
             // No matching denial found (should not happen in normal flow); keep floor.
             continue;
         };
+        // `rep` found implies `context_pairs` is non-empty (same triple filter).
 
-        // Build a synthetic AvcDenial using the group's UNIONED perms + the
-        // representative raw contexts. The authoritative categorizer reads only
-        // scontext_raw, tcontext_raw, tclass, and perms.
-        let synthetic = AvcDenial {
-            perms: group.perms.iter().cloned().collect(),
-            scontext_raw: rep.scontext_raw.clone(),
-            tcontext_raw: rep.tcontext_raw.clone(),
-            tclass: group.tclass.clone(),
-            source_type: group.source_type.clone(),
-            target_type: group.target_type.clone(),
-            verdict: rep.verdict,
-            permissive: rep.permissive,
-            pid: None,
-            comm: None,
-            exe: None,
-            path: None,
-            name: None,
-            serial: None,
-            timestamp: None,
-        };
+        // Replay each distinct context with the group's UNIONED perms. Track the
+        // winning (most-actionable) verdict and whether EVERY context was the
+        // Reason(0) "already allows" sub-case.
+        let mut best: Option<(u8, DenialKind)> = None;
+        let mut classified_any = false;
+        let mut all_already_allows = true;
 
-        match categorize_with_outcome(&synthetic, &policy) {
-            Ok((kind, outcome)) => {
-                group.kind = kind;
-                // Track the Reason(0) "already allows" sub-case for #122.
-                if matches!(outcome, ReplayOutcome::Reason(0)) {
-                    already_allows.insert((
-                        group.source_type.clone(),
-                        group.target_type.clone(),
-                        group.tclass.clone(),
-                    ));
+        for (scontext_raw, tcontext_raw) in context_pairs {
+            // The authoritative categorizer reads only scontext_raw, tcontext_raw,
+            // tclass, and perms; the remaining fields are inert for replay.
+            let synthetic = AvcDenial {
+                perms: group.perms.iter().cloned().collect(),
+                scontext_raw,
+                tcontext_raw,
+                tclass: group.tclass.clone(),
+                source_type: group.source_type.clone(),
+                target_type: group.target_type.clone(),
+                verdict: rep.verdict,
+                permissive: rep.permissive,
+                pid: None,
+                comm: None,
+                exe: None,
+                path: None,
+                name: None,
+                serial: None,
+                timestamp: None,
+            };
+
+            match categorize_with_outcome(&synthetic, &policy) {
+                Ok((kind, outcome)) => {
+                    classified_any = true;
+                    if !matches!(outcome, ReplayOutcome::Reason(0)) {
+                        all_already_allows = false;
+                    }
+                    let rank = verdict_rank(kind, outcome);
+                    if best.is_none_or(|(best_rank, _)| rank > best_rank) {
+                        best = Some((rank, kind));
+                    }
+                }
+                Err(e) => {
+                    // Hard error (unknown class/perm, compute failure): skip this
+                    // context, warn. A context that cannot replay is conservatively
+                    // NOT treated as "already allows".
+                    all_already_allows = false;
+                    eprintln!(
+                        "selinux triage: authoritative categorize failed for \
+                         ({} -> {} : {}): {e}; falling back to floor for this context",
+                        group.source_type, group.target_type, group.tclass,
+                    );
                 }
             }
-            Err(e) => {
-                // Hard error (unknown class/perm, compute failure): keep floor,
-                // emit a warning so the operator knows the replay failed.
-                eprintln!(
-                    "selinux triage: authoritative categorize failed for \
-                     ({} -> {} : {}): {e}; falling back to floor",
-                    group.source_type, group.target_type, group.tclass,
-                );
-            }
+        }
+
+        if let Some((_, kind)) = best {
+            group.kind = kind;
+        }
+
+        // Report "already allows" ONLY when every distinct context replayed to
+        // Reason(0). A heterogeneous group with any blocked member is NEVER
+        // reported as already-allows (the actionable member's verdict won above).
+        if classified_any && all_already_allows {
+            already_allows.insert((
+                group.source_type.clone(),
+                group.target_type.clone(),
+                group.tclass.clone(),
+            ));
         }
     }
 
-    already_allows
+    Ok(already_allows)
 }
 
 /// Render the human-readable triage output, substituting the Reason(0) "already

@@ -67,7 +67,11 @@ pub enum DenialKind {
     /// (Heuristic - the authoritative layer may reclassify as `Constraint`.)
     RoleSuspected,
     /// The denial had `permissive=1`: the access was NOT actually blocked.
-    /// Report only; do NOT auto-suggest an allow rule (f4 §2.5 invariant 6).
+    ///
+    /// Round-2 reversal of f4 §2.5 invariant 6 (user decision 2026-06-05): the
+    /// HUMAN triage render now offers a suggested allow gated behind a
+    /// PERMISSIVE-MODE caveat banner; the machine-readable `build_report` JSON
+    /// keeps `suggested_rule = null` for this kind (see `triage.rs`).
     Permissive,
 }
 
