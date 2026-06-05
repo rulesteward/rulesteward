@@ -114,9 +114,11 @@ pub enum FapolicydCommand {
     /// (stub) Migrate legacy fapolicyd.rules to rules.d/
     #[command(hide = true)]
     Migrate,
-    /// (stub) Daemon health + config sanity check
-    #[command(hide = true)]
-    Doctor,
+    /// Run a composite health check on a live fapolicyd deployment.
+    ///
+    /// Runs 13 read-only checks and reports a pass/warn/fail scorecard.
+    /// Exit 0 = all checks pass; 1 = warnings present; 2 = failures present.
+    Doctor(DoctorArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -297,6 +299,21 @@ pub struct CostArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd doctor` (#76/#77/#78).
+///
+/// Runs 13 read-only deployment health checks and reports a scorecard.
+#[derive(Debug, Parser)]
+pub struct DoctorArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Rules directory to lint as part of the health check
+    /// (defaults to /etc/fapolicyd/rules.d/).
+    #[arg(long, value_name = "DIR", hide = true)]
+    pub rules_dir: Option<std::path::PathBuf>,
 }
 
 /// Arguments for `rulesteward selinux triage` (#94).
