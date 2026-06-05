@@ -966,7 +966,8 @@ fn check_disk_space(probe: &dyn SystemProbe) -> CheckResult {
 
 /// Check 12: recent denial rate (24h / 7d) + top-10 denied subj/obj.
 ///
-/// Informational: Ok (we surface counts in detail; Warn only on a very high spike).
+/// Informational only: always Ok, surfacing the 24h/7d counts (and top-10 denied
+/// subj/obj when present) in the detail. Spec §6.1 defines no spike threshold.
 fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
     match probe.denial_stats() {
         Err(e) => CheckResult {
@@ -2407,6 +2408,23 @@ type=FANOTIFY msg=audit(1600385147.372:590): resp=1 fan_type=1 fan_info=1 subj_t
         let (count, pairs) = parse_fanotify_denials("");
         assert_eq!(count, 0);
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn extract_kv_matches_key_at_position_zero() {
+        // The key sits at byte 0 (no preceding whitespace), exercising the
+        // `pos == 0` arm of the word-boundary guard. Kills the `== 0 -> != 0`
+        // mutant (which would underflow/miss the position-0 key and return None).
+        assert_eq!(extract_kv("resp=2 fan_type=0", "resp"), Some("2"));
+    }
+
+    #[test]
+    fn extract_kv_respects_word_boundary() {
+        // `subj_trust=2` must NOT match a search for `trust` (no whitespace
+        // before `trust=`): pins the boundary guard's whitespace arm.
+        assert_eq!(extract_kv("resp=2 subj_trust=2", "trust"), None);
+        // But a real whitespace-preceded `trust=` does match.
+        assert_eq!(extract_kv("resp=2 trust=1", "trust"), Some("1"));
     }
 
     #[test]

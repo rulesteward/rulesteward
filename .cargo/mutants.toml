@@ -167,16 +167,9 @@ exclude_re = [
     # is to supply the production path, which is verified by the live VM smoke.
     # Genuine equivalent mutants for the test environment.
     'replace read_fapolicyd_mode -> Option<String>',
-    # `extract_kv` word-boundary guard: `pos == 0 || is_ascii_whitespace(pos-1)`.
-    # The `== 0` -> `!= 0` mutant means only NON-zero positions pass the guard.
-    # In doctor's FANOTIFY/SYSCALL/PATH record lines, every field key appears
-    # after whitespace (e.g. "resp=2 fan_type=0 ..."); no line in any test
-    # starts with a bare `key=value` at position 0 without a preceding
-    # "type=XXX msg=..." prefix.  The `!= 0` mutant therefore produces
-    # identical results for all doctor-context inputs.  Genuine equivalent mutant.
-    # (The identical helper in rulesteward_fapolicyd::fanotify IS tested with
-    # position-0 inputs by the explain tests; the doctor copy has no such path.)
-    'replace == with != in extract_kv',
+    # (`extract_kv == 0 -> != 0` is NOT excluded: it is killed directly by
+    # `extract_kv_matches_key_at_position_zero`, which exercises the pos-0 guard
+    # arm. A real kill is strictly better than an equivalence exclusion.)
     # `parse_fanotify_denials` block-skip guard: `t.is_empty() || t == "----"`.
     # The `|| -> &&` mutant changes the guard to "skip only if BOTH empty AND
     # equal to '----'", which is never true (an empty string cannot equal
