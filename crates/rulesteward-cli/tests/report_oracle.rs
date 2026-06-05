@@ -22,9 +22,10 @@
 //!
 //! ## Count note
 //!
-//! Issue #84 cites "63 scenarios" but the actual corpus has 72 (the
-//! report-wave1-patch phase added 9 more after the issue was filed). All 72 are
-//! wired here. The floor guard asserts >= 72.
+//! Issue #84 cites "63 scenarios" but the actual corpus has 73 (the
+//! report-wave1-patch phase added 9 more after the issue was filed; the
+//! adversarial-review fix added `trustdb-enumerate-cap-noflag`). All 73 are
+//! wired here. The floor guard asserts >= 73.
 
 use assert_cmd::Command;
 use rulesteward_fapolicyd::trustdb::write_trustdb_fixture_kv;
@@ -194,8 +195,9 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
         ("path-extraction", "paths-object-dir"),
         ("path-extraction", "paths-object-path"),
         ("path-extraction", "paths-subject-exe"),
-        // against-trustdb (8) - handled separately in against_trustdb module
+        // against-trustdb (9) - handled separately in against_trustdb module
         ("against-trustdb", "trustdb-enumerate-cap"),
+        ("against-trustdb", "trustdb-enumerate-cap-noflag"),
         ("against-trustdb", "trustdb-enumerate-trust1"),
         ("against-trustdb", "trustdb-no-flag-trust1"),
         ("against-trustdb", "trustdb-path-join-miss"),
@@ -226,15 +228,16 @@ fn all_scenario_ids() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Floor guard: all 72 vendored scenarios must be reachable on disk.
+/// Floor guard: all 73 vendored scenarios must be reachable on disk.
 #[test]
-fn corpus_floor_guard_72_scenarios_present() {
+fn corpus_floor_guard_73_scenarios_present() {
     let all = all_scenario_ids();
     let count = all.len();
     assert!(
-        count >= 72,
-        "Corpus floor guard: expected >= 72 scenarios, got {count}. \
-         Issue #84 cited 63 but the actual corpus has 72 (wave1-patch added 9 more)."
+        count >= 73,
+        "Corpus floor guard: expected >= 73 scenarios, got {count}. \
+         Issue #84 cited 63; wave1-patch added 9 more (72); adversarial-review fix added \
+         trustdb-enumerate-cap-noflag (73)."
     );
     for (category, id) in &all {
         let rules_d = scenario_rules_d(category, id);
@@ -760,23 +763,26 @@ fn oracle_trustdb_enumerate_trust1() {
     assert_matches_golden(&actual, &golden, "trustdb-enumerate-trust1");
 }
 
-/// trustdb-enumerate-cap: a trust=1 grant with many trust-DB rows (25); without
-/// --enumerate-trust the output must show a count cap, not enumerate all rows.
-/// With --enumerate-trust it must show all 25 entries.
+/// trustdb-enumerate-cap (WITHOUT --enumerate-trust): the enumeration gate must
+/// suppress the full 25-entry list and emit the count-only cap form.
 ///
-/// The corpus golden for this scenario uses a third trustJoin shape (grantSource/
-/// count/enumerated/entries), which is the enumerate-cap form. The implementer
-/// must match this shape exactly when --enumerate-trust is passed.
+/// # The property under test (f2 section 2.4 / Q4, issue #82)
 ///
-/// The 25 fixture rows are captured from manifest.json (`FileDb` entries).
+/// A single `trust=1` grant covers ~72k trusted files in production. Without
+/// `--enumerate-trust` the implementation MUST emit a suppressed cap block:
+///   `{ "grantSource": ..., "count": 25, "enumerated": false }`
+/// with NO `entries` list. An implementation that always enumerates all entries
+/// (ignores the gate) passes the old weak assertion but FAILS this test.
+///
+/// The `trustdb-enumerate-cap-noflag` golden pins the exact no-flag wire shape.
+/// The WITH-flag twin (`oracle_trustdb_enumerate_cap_with_flag`) pins the full form.
+/// Together they force the implementer to honour BOTH sides of the gate.
+///
+/// The 25 fixture rows are the same `build_cap_trustdb_rows()` used by the WITH-flag test.
 #[test]
 fn oracle_trustdb_enumerate_cap_without_flag() {
     let rules_d = scenario_rules_d("against-trustdb", "trustdb-enumerate-cap");
-    // WITHOUT --enumerate-trust: the implementation must emit a count summary,
-    // not the full 25-entry list. The golden has a grantSource/count/enumerated/entries
-    // shape - but without the flag, the count-only form must be emitted.
-    // We just assert exit 0 and the schemaVersion/kind (the exact count-cap shape
-    // is implementation-defined; the WITH-flag test below asserts the full golden).
+    let golden_noflag = scenario_golden("against-trustdb", "trustdb-enumerate-cap-noflag");
     let cap_rows = build_cap_trustdb_rows();
     let tmp = build_trustdb_from_rows(&cap_rows);
     let (exit_code, actual) = run_report_json(
@@ -792,13 +798,38 @@ fn oracle_trustdb_enumerate_cap_without_flag() {
         "exception-register",
         "trustdb-enumerate-cap (no flag)",
     );
-    // Without --enumerate-trust, the trustJoin block must be present but NOT
-    // enumerate all entries. The trust=1 grant's join block must carry a count
-    // (f2 section 3.2 Q4 cap), not a 25-entry array.
-    let join = &actual["trustJoin"];
-    assert!(
-        join.is_object() || join.is_array(),
-        "trustJoin must be present even without --enumerate-trust"
+
+    // Pin the exact no-flag wire shape against the vendored golden.
+    // This fails a never-cap impl (one that always emits the 25-entry list):
+    // such an impl would produce `enumerated: true` + a 25-element `entries`
+    // array, which does not equal the golden's `enumerated: false` + no `entries`.
+    assert_matches_golden(&actual, &golden_noflag, "trustdb-enumerate-cap (no flag)");
+
+    // Belt-and-suspenders: assert the suppression invariants directly so a
+    // structural mismatch in the golden itself does not hide the property.
+    let join = actual["trustJoin"]
+        .as_object()
+        .expect("trustdb-enumerate-cap (no flag): trustJoin must be a JSON object in the cap form");
+    assert_eq!(
+        join.get("enumerated").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "trustdb-enumerate-cap (no flag): trustJoin.enumerated must be false (entries suppressed)"
+    );
+    assert_eq!(
+        join.get("count").and_then(serde_json::Value::as_u64),
+        Some(25),
+        "trustdb-enumerate-cap (no flag): trustJoin.count must be 25"
+    );
+    // No `entries` key, or an empty/absent entries array - the 25-row list must
+    // not be present. A wrong impl emitting `entries: [25 items]` fails here.
+    let entries_len = join
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    assert_eq!(
+        entries_len, 0,
+        "trustdb-enumerate-cap (no flag): trustJoin must NOT carry the 25-entry list without \
+         --enumerate-trust (got {entries_len} entries; expected 0 or absent)"
     );
 }
 

@@ -64,6 +64,27 @@ pub enum HashAlgorithm {
 
 /// The fapolicyd matching scope a grant was derived from (the narrowest object
 /// constraint that produced the row).
+///
+/// # Scope precedence (narrowest wins, per f2 §2.2 / §3.2)
+///
+/// When a rule's object side carries multiple constraints the implementer must
+/// pick the single narrowest one and record it here. Precedence, strongest first:
+///
+/// 1. `Hash`    - `filehash=` / `sha256hash=` literal (strongest static pin;
+///    a filehash matches exactly one file version)
+/// 2. `Path`    - `path=` or `exe=` literal (matches one specific filesystem path)
+/// 3. `Ftype`   - `ftype=` MIME-type constraint
+/// 4. `Dir`     - `dir=` directory-prefix constraint
+/// 5. `Trust`   - `trust=1` (matches every entry in the trust DB)
+/// 6. `Pattern` - `pattern=` `ld_so` / `mmap` / etc. (subject-side keyword match)
+/// 7. `All`     - bare `all` (no object constraint at all; widest)
+///
+/// The corpus `combo-*` goldens pin this ordering:
+/// - `combo-exe-and-filehash`  -> `hash`  (filehash beats exe= path)
+/// - `combo-multi-everything`  -> `hash`  (filehash beats ftype + others)
+/// - `combo-trust-and-ftype`   -> `ftype` (ftype beats trust=1)
+/// - `combo-legacy-syntax-grant` -> `path` (path= literal)
+/// - `combo-uid-gid-no-path`   -> `all`   (subject-only constraints, object=all)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
