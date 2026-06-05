@@ -1,0 +1,2 @@
+deny_audit perm=open trust=1 : trust=0
+allow perm=any all : all

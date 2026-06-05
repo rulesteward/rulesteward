@@ -1,7 +1,7 @@
 //! Data-driven oracle test for `rulesteward fapolicyd simulate`.
 //!
-//! Iterates every vendored scenario in `tests/corpus/simulate/` (77 total:
-//! 36 happy-path + 38 adversarial + 3 neutral) and asserts the binary's
+//! Iterates every vendored scenario in `tests/corpus/simulate/` (79 total:
+//! 36 happy-path + 40 adversarial + 3 neutral) and asserts the binary's
 //! predicted decision and matched rule number against ground truth captured
 //! from real fapolicyd (`--debug --permissive dec=` lines).
 //!
@@ -35,6 +35,28 @@
 //! }
 //! ```
 //!
+//! ## Workload schema (frozen by new adversarial scenarios, session 5a follow-up)
+//!
+//! The JSON workload object now supports separate per-side trust overrides:
+//!
+//! ```json
+//! {
+//!   "exe": "<path>",
+//!   "path": "<path>",
+//!   "perm": "open" | "execute" | "any",
+//!   "subjTrust": true | false | null,
+//!   "objTrust": true | false | null,
+//!   "trust": true | false | null
+//! }
+//! ```
+//!
+//! - `subjTrust` / `objTrust`: when present, set subject-side and object-side
+//!   trust independently. These override `trust` for their respective side.
+//! - `trust`: symmetric shorthand - when present and the corresponding
+//!   `subjTrust` / `objTrust` is absent, sets both sides to the same value.
+//!   This is the existing behavior (backwards-compatible).
+//! - All three are optional; absent means `Trust::Unknown` for that side.
+//!
 //! - `verdict` = 3-state: `"Decisive"` (no unevaluable rule above the match),
 //!   `"Possible"` (an unevaluable rule sits above the match - pattern=, ftype=
 //!   without a supplied ftype, trust= without a trust DB), or `"NoMatch"`
@@ -56,7 +78,7 @@
 //! - Rule number catches first-match vs last-match, within-file order,
 //!   cross-file lexical order.
 //! - 3-state verdict catches silent certainty on pattern=, ftype=, trust= cases.
-//! - Floor guard (`count >= 77`) catches silent corpus-load failure.
+//! - Floor guard (`count >= 79`) catches silent corpus-load failure.
 
 use assert_cmd::Command;
 use std::path::PathBuf;
@@ -237,10 +259,10 @@ fn assert_scenario(class: &str, id: &str) {
 
 /// Run every vendored scenario and verify the oracle.
 ///
-/// The floor guard `count >= 77` catches a silent corpus-load failure where the
+/// The floor guard `count >= 79` catches a silent corpus-load failure where the
 /// directory walk returns 0 scenarios but all tests trivially "pass".
 #[test]
-fn oracle_all_77_scenarios() {
+fn oracle_all_79_scenarios() {
     let corpus = corpus_root();
     let mut count = 0usize;
 
@@ -262,8 +284,8 @@ fn oracle_all_77_scenarios() {
     }
 
     assert!(
-        count >= 77,
-        "corpus floor: expected >= 77 scenarios but only found {count}; \
+        count >= 79,
+        "corpus floor: expected >= 79 scenarios but only found {count}; \
          check that the corpus was vendored correctly under tests/corpus/simulate/"
     );
 }
@@ -294,7 +316,7 @@ fn oracle_happy_path_class() {
     );
 }
 
-/// Run all adversarial scenarios (38 wrong-impl traps).
+/// Run all adversarial scenarios (40 wrong-impl traps).
 #[test]
 fn oracle_adversarial_class() {
     let corpus = corpus_root().join("adversarial");
@@ -311,8 +333,8 @@ fn oracle_adversarial_class() {
         count += 1;
     }
     assert!(
-        count >= 38,
-        "expected >= 38 adversarial scenarios, found {count}"
+        count >= 40,
+        "expected >= 40 adversarial scenarios, found {count}"
     );
 }
 
@@ -460,6 +482,49 @@ fn trust_subject_vs_object_distinct() {
     assert_scenario("happy-path", "trust-subject-one-match");
     assert_scenario("happy-path", "trust-object-zero-deny");
     assert_scenario("adversarial", "trust-subject-zero-no-match");
+}
+
+/// `subjTrust` + `objTrust` INDEPENDENT: a workload expressing trusted subject opening
+/// an untrusted object MUST hit `deny_audit trust=1 : trust=0`.
+///
+/// The canonical fapolicyd pattern for denying trusted processes accessing untrusted
+/// files is `deny_audit perm=open trust=1 : trust=0`. An impl that collapses a
+/// single `trust` workload field onto BOTH sides of the evaluation cannot fire this
+/// rule (setting `trust=true` gives `subj_trust=Yes, obj_trust=Yes`; the object side
+/// then fails `trust=0` and the rule is skipped). The fix requires separate
+/// `subjTrust` / `objTrust` workload fields so the two sides can be set
+/// independently. (Bug found by impl-aware adversarial review, session 5a follow-up.)
+///
+/// The frozen `evaluate()` DOES evaluate them independently:
+/// - `eval_subject_field("trust", ...)` reads `facts.subj_trust`
+/// - `eval_object_field("trust", ...)` reads `facts.obj_trust`
+///
+/// This is a `simulate` command bug, NOT an `evaluate()` bug.
+///
+/// Expected (derived from `evaluate()` with `subj_trust=Yes, obj_trust=No`):
+/// `decision=deny, full_decision_keyword=deny_audit, rule_number=1,`
+/// `source=rule, confidence=decisive`.
+#[test]
+fn both_sided_trust_killing_scenario() {
+    assert_scenario("adversarial", "trust-subject-vs-object-distinct");
+}
+
+/// `resolved_exe` OVER `exe`: when `resolved_exe` is present in the workload, it
+/// REPLACES `exe` for rule matching. A rule matching `/usr/bin/coreutils` must
+/// fire even when the workload's `exe` field is `/usr/bin/cat`, because
+/// `resolved_exe` is the canonical executable identity fapolicyd uses.
+///
+/// This pins the `resolved_exe`-over-`exe` preference in `parse_json_object`
+/// (simulate.rs lines 116-121). Previously, no corpus scenario distinguished
+/// `exe` from `resolved_exe` - a wrong impl that ignored `resolved_exe` would
+/// always pass the existing corpus.
+///
+/// Expected (derived from `evaluate()` with `exe=/usr/bin/coreutils`):
+/// `decision=deny, full_decision_keyword=deny_audit, rule_number=1,`
+/// `source=rule, confidence=decisive`.
+#[test]
+fn exe_resolved_pins_resolved_over_raw_exe() {
+    assert_scenario("adversarial", "exe-resolved-distinct");
 }
 
 /// ftype=any always matches, even when ftype is absent from the workload.
