@@ -635,6 +635,66 @@ fn write_rules_d(parent: &std::path::Path, filename: &str, content: &str) -> std
     rules_d
 }
 
+/// `--sarif-include-pass` is RESERVED / no-op in this release (#65 / #137):
+/// SARIF stdout is byte-identical with and without the flag, the exit code is
+/// unchanged, and a one-line stderr note tells the operator the flag has no
+/// effect yet and points at the tracking issue. Without the flag, no note.
+#[test]
+fn sarif_include_pass_is_reserved_noop_with_stderr_note() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+
+    let base = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--format", "sarif"])
+        .arg(&rules_d)
+        .assert();
+    let base_out = base.get_output().clone();
+
+    let withflag = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "lint",
+            "--format",
+            "sarif",
+            "--sarif-include-pass",
+        ])
+        .arg(&rules_d)
+        .assert();
+    let with_out = withflag.get_output().clone();
+
+    assert_eq!(
+        with_out.stdout, base_out.stdout,
+        "--sarif-include-pass must NOT change SARIF stdout in this release (reserved/no-op)"
+    );
+    assert_eq!(
+        with_out.status.code(),
+        base_out.status.code(),
+        "the reserved flag must not change the exit code"
+    );
+
+    let stderr = String::from_utf8(with_out.stderr.clone()).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--sarif-include-pass"),
+        "stderr must name the reserved flag; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("reserved") || stderr.contains("no effect"),
+        "stderr must say the flag is reserved / has no effect; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("137"),
+        "stderr note should reference tracking issue #137; got: {stderr}"
+    );
+
+    let base_stderr = String::from_utf8(base_out.stderr.clone()).expect("utf8 stderr");
+    assert!(
+        !base_stderr.contains("--sarif-include-pass"),
+        "no reserved-flag note must appear when the flag is absent; got: {base_stderr}"
+    );
+}
+
 /// Passing a nonexistent directory as --against-trustdb must fail with exit 3
 /// (`EXIT_TOOL_FAILURE`). The stub currently exits 9; this test is RED.
 #[test]

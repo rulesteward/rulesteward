@@ -107,6 +107,14 @@ pub struct RegisterSource {
 ///
 /// `Deserialize` is derived so a previously-written register snapshot can be
 /// read back for `--diff-against`.
+///
+/// OSCAL design note (#65 / CC-4): this payload is pre-designed to map cleanly to
+/// an OSCAL component-definition / assessment-results export without a schema
+/// change - the stable grant identity (`decision`+`perm`+`subject`+`object`),
+/// the granting-rule reference (`source` file+line), the `hash`/`hashOrigin`
+/// provenance, and `scope` cover the OSCAL control-implementation fields. The
+/// OSCAL/HDF exporters themselves are deferred paid features and are NOT built in
+/// this release (no speculative abstraction); only the field shape is reserved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterRow {

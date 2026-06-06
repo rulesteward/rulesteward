@@ -6,8 +6,9 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::cli::{AuditdCommand, CostArgs, HumanJsonFormat};
+use crate::cli::{AuditdCommand, CostArgs, HumanJsonCsvFormat};
 use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
 use rulesteward_auditd::{
     AuditRule, Direction,
@@ -86,14 +87,18 @@ fn cost(args: &CostArgs) -> i32 {
 
     // Render output.
     let output = match args.format {
-        HumanJsonFormat::Human => render_human(&rule_bands, &total_cost, price_per_gb, rate_source),
-        HumanJsonFormat::Json => render_json(
+        HumanJsonCsvFormat::Human => {
+            render_human(&rule_bands, &total_cost, price_per_gb, rate_source)
+        }
+        HumanJsonCsvFormat::Json => render_json(
             &rule_bands,
             &total_cost,
             price_per_gb,
             log_format,
             rate_source,
         ),
+        // CSV is the flat per-rule table ONLY; totals stay in JSON/human (#64).
+        HumanJsonCsvFormat::Csv => render_csv_cost(&rule_bands),
     };
 
     print!("{output}");
@@ -404,6 +409,49 @@ fn render_json(
 }
 
 // ---------------------------------------------------------------------------
+// CSV renderer (#64 / CC-3): flat per-rule table ONLY
+// ---------------------------------------------------------------------------
+
+/// Render the per-rule cost table as RFC-4180 CSV.
+///
+/// One row per rule; the nested event band is flattened to
+/// `eventsPerDayLow/Typical/High` columns, and `gbPerDay` is the per-rule
+/// typical volume. Per the locked CSV policy, the aggregate totals, the rate
+/// band, the rate source, and the confidence note are deliberately EXCLUDED:
+/// CSV is a single rectangular table, so a consumer who needs the grand total
+/// sums the `gbPerDay` column. Numeric columns are emitted at full f64 precision
+/// (matching the JSON surface), not the human renderer's rounded display.
+#[must_use]
+fn render_csv_cost(entries: &[RuleEntry]) -> String {
+    let headers = &[
+        "rule",
+        "key",
+        "tier",
+        "direction",
+        "eventsPerDayLow",
+        "eventsPerDayTypical",
+        "eventsPerDayHigh",
+        "gbPerDay",
+    ];
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|e| {
+            vec![
+                e.rule_text.clone(),
+                e.key.clone().unwrap_or_default(),
+                e.tier.clone(),
+                fmt_direction(e.direction),
+                e.rate_band.low.to_string(),
+                e.rate_band.typical.to_string(),
+                e.rate_band.high.to_string(),
+                e.cost.gb_per_day.typical.to_string(),
+            ]
+        })
+        .collect();
+    to_csv(headers, &rows)
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -584,5 +632,139 @@ mod tests {
         assert_eq!(tier_str(VolumeTier::Medium), "medium");
         assert_eq!(tier_str(VolumeTier::Low), "low");
         assert_eq!(tier_str(VolumeTier::Negative), "negative");
+    }
+
+    // -- #64: `auditd cost --format csv` (per-rule table ONLY) ----------------
+
+    use super::{RuleEntry, render_csv_cost};
+    use rulesteward_auditd::Direction;
+    use rulesteward_auditd::bands::RateBand;
+    use rulesteward_auditd::cost::{LogFormat, compute_cost_band};
+
+    /// Build a `RuleEntry` for the CSV tests, deriving the cost band the same way
+    /// the production builders do (so `gbPerDay` is the real computed value).
+    fn entry(
+        rule: &str,
+        key: Option<&str>,
+        tier: &str,
+        dir: Direction,
+        band: RateBand,
+    ) -> RuleEntry {
+        let cost = compute_cost_band(&band, LogFormat::Enriched, 5.0);
+        RuleEntry {
+            rule_text: rule.to_owned(),
+            key: key.map(str::to_owned),
+            tier: tier.to_owned(),
+            direction: dir,
+            rate_band: band,
+            cost,
+        }
+    }
+
+    /// CSV has a stable header and one flat row per rule: the nested event band
+    /// is flattened to low/typical/high columns; `gbPerDay` is the per-rule cost.
+    /// An absent key is an empty cell; a suppressive rule shows a zero band.
+    #[test]
+    fn csv_cost_per_rule_columns_and_values() {
+        let entries = vec![
+            entry(
+                "-w /etc/passwd -p wa",
+                Some("identity"),
+                "high",
+                Direction::Additive,
+                RateBand {
+                    low: 10.0,
+                    typical: 20.0,
+                    high: 30.0,
+                },
+            ),
+            entry(
+                "never-rule",
+                None,
+                "negative",
+                Direction::Suppressive,
+                RateBand::ZERO,
+            ),
+        ];
+        let csv = render_csv_cost(&entries);
+        let mut lines = csv.lines();
+        assert_eq!(
+            lines.next(),
+            Some(
+                "rule,key,tier,direction,eventsPerDayLow,eventsPerDayTypical,eventsPerDayHigh,gbPerDay"
+            ),
+            "stable flat header"
+        );
+        let rows: Vec<&str> = lines.collect();
+        assert_eq!(rows.len(), 2, "one row per rule, no totals/summary row");
+
+        let f: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(f.len(), 8, "8 columns per row");
+        assert_eq!(f[0], "-w /etc/passwd -p wa");
+        assert_eq!(f[1], "identity");
+        assert_eq!(f[2], "high");
+        assert_eq!(f[3], "additive");
+        assert!((f[4].parse::<f64>().unwrap() - 10.0).abs() < 1e-9);
+        assert!((f[5].parse::<f64>().unwrap() - 20.0).abs() < 1e-9);
+        assert!((f[6].parse::<f64>().unwrap() - 30.0).abs() < 1e-9);
+        assert!(
+            (f[7].parse::<f64>().unwrap() - entries[0].cost.gb_per_day.typical).abs() < 1e-12,
+            "gbPerDay column must be the per-rule typical cost"
+        );
+
+        let s: Vec<&str> = rows[1].split(',').collect();
+        assert_eq!(s[0], "never-rule");
+        assert_eq!(s[1], "", "absent key is an empty cell");
+        assert_eq!(s[3], "suppressive");
+        assert!(
+            s[5].parse::<f64>().unwrap().abs() < 1e-9,
+            "suppressive band is zero"
+        );
+    }
+
+    /// The CSV is the flat per-rule table ONLY: no totals, no band/confidence
+    /// summary lines leak into it (locked decision: totals stay in JSON/human).
+    #[test]
+    fn csv_cost_excludes_totals_and_summary() {
+        let entries = vec![entry(
+            "r",
+            None,
+            "low",
+            Direction::Additive,
+            RateBand {
+                low: 1.0,
+                typical: 1.0,
+                high: 1.0,
+            },
+        )];
+        let csv = render_csv_cost(&entries);
+        for forbidden in ["Estimated", "CONFIDENCE", "cost estimate", "(band"] {
+            assert!(
+                !csv.contains(forbidden),
+                "CSV must be per-rule rows only; found `{forbidden}`:\n{csv}"
+            );
+        }
+        assert_eq!(csv.lines().count(), 2, "header + exactly one rule row");
+    }
+
+    /// Rule text containing a comma is RFC-4180 quoted (delegated to `to_csv`).
+    #[test]
+    fn csv_cost_quotes_rule_text_with_comma() {
+        let entries = vec![entry(
+            "-a always,exit -S execve",
+            Some("k"),
+            "high",
+            Direction::Additive,
+            RateBand {
+                low: 1.0,
+                typical: 1.0,
+                high: 1.0,
+            },
+        )];
+        let csv = render_csv_cost(&entries);
+        assert!(
+            csv.contains("\"-a always,exit -S execve\""),
+            "comma in rule text must be quoted:\n{csv}"
+        );
     }
 }

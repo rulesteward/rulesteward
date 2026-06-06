@@ -7,8 +7,9 @@
 //! joined with `\n`, the header row comes first, and the output ends with a
 //! trailing newline (shell-pipeline safety, matching the JSON convention).
 //!
-//! This round it is wired into `report` only; `trustdb` / `auditd` CSV are
-//! deferred.
+//! Wired into the flat-row verbs: `report` (exception register), `trustdb list`,
+//! and `auditd cost` (per-rule table) - the only CSV surfaces per the locked
+//! output-format policy (#64 / CC-3).
 
 /// Serialize a table to an RFC-4180-ish CSV string with a trailing newline.
 ///

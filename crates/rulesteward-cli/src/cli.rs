@@ -41,6 +41,18 @@ pub enum TrustdbFormat {
     Json,
 }
 
+/// Output format for `trustdb list` (human | json | csv).
+///
+/// Distinct from `TrustdbFormat`: only `list` is a flat-row verb, so only it
+/// gains the CSV surface (#64 / CC-3). `check` / `diff` / `stale` keep the
+/// human|json `TrustdbFormat`.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TrustdbListFormat {
+    Human,
+    Json,
+    Csv,
+}
+
 /// Filter trust-DB entries by their source database.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TrustSourceFilter {
@@ -54,7 +66,22 @@ pub enum TrustSourceFilter {
 #[command(
     name = "rulesteward",
     version,
-    about = "RuleSteward - fapolicyd / SELinux / auditd policy linter"
+    about = "RuleSteward - fapolicyd / SELinux / auditd policy linter",
+    long_about = "RuleSteward - fapolicyd / SELinux / auditd policy linter.\n\
+\n\
+OUTPUT FORMATS (locked policy, #65 / CC-4):\n\
+  human  default; human-readable text.\n\
+  json   versioned JSON envelope { schemaVersion, kind, ... } for structured\n\
+         state (lint, report, auditd cost, trustdb, simulate, explain, triage).\n\
+         New optional fields and new kinds are additive; the version bumps only\n\
+         on a breaking change.\n\
+  sarif  lint only: FINDINGS ONLY (SARIF 2.1.0); not used for inventory/metrics.\n\
+         --sarif-include-pass is reserved for clean-rule pass results (#137).\n\
+  csv    flat-row verbs only (report, trustdb list, auditd cost per-rule): one\n\
+         rectangular RFC-4180 CSV table; aggregate totals stay in json/human.\n\
+\n\
+OSCAL / HDF compliance exports are deferred paid exporters; the register payload\n\
+is pre-designed to map to OSCAL, but no exporter is built in this release."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -131,7 +158,7 @@ pub struct LintArgs {
     #[arg(long, value_name = "FILE", conflicts_with = "path")]
     pub file: Option<PathBuf>,
 
-    /// Output format
+    /// Output format (human | json | sarif). SARIF is findings-only (SARIF 2.1.0).
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
 
@@ -155,6 +182,16 @@ pub struct LintArgs {
     /// `getent` subprocess that may query SSSD/LDAP/AD).
     #[arg(long)]
     pub check_identities: bool,
+
+    /// (reserved; no effect yet) Additionally emit SARIF `kind:"pass"` results
+    /// for evaluated-but-clean rules. Only meaningful with `--format sarif`.
+    ///
+    /// The flag parses and is accepted from this release per the locked
+    /// output-format policy (#65), but pass-result emission semantics are not
+    /// yet implemented; the run prints a note and SARIF output is unchanged.
+    /// Tracked in #137.
+    #[arg(long)]
+    pub sarif_include_pass: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -298,9 +335,12 @@ pub struct CostArgs {
     #[arg(long)]
     pub recommend: bool,
 
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
+    /// Output format (human | json | csv).
+    ///
+    /// `csv` emits the flat per-rule table only; the aggregate totals and the
+    /// confidence note stay on the human and JSON surfaces (#64 / CC-3).
+    #[arg(long, value_enum, default_value_t = HumanJsonCsvFormat::Human)]
+    pub format: HumanJsonCsvFormat,
 }
 
 /// Arguments for `rulesteward fapolicyd doctor` (#76/#77/#78).
@@ -402,9 +442,9 @@ pub struct TrustdbListArgs {
     #[arg(value_name = "DIR")]
     pub db: Option<PathBuf>,
 
-    /// Output format
-    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
-    pub format: TrustdbFormat,
+    /// Output format (human | json | csv).
+    #[arg(long, value_enum, default_value_t = TrustdbListFormat::Human)]
+    pub format: TrustdbListFormat,
 
     /// Filter entries by source database
     #[arg(long, value_enum)]
@@ -573,6 +613,33 @@ mod tests {
         }
     }
 
+    /// The top-level long help documents the locked output-format policy (#65 /
+    /// CC-4): SARIF = findings only, JSON envelope + CSV for structured state,
+    /// OSCAL/HDF deferred. Pins the policy text so a future edit that drops it is
+    /// a test failure (the man page is generated from this help, so this also
+    /// guards the man page).
+    #[test]
+    fn long_help_documents_output_format_policy() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("SARIF"),
+            "policy must mention SARIF; got:\n{help}"
+        );
+        assert!(
+            help.to_lowercase().contains("findings"),
+            "policy must state SARIF is findings-only; got:\n{help}"
+        );
+        assert!(
+            help.contains("CSV"),
+            "policy must mention CSV for flat-row verbs; got:\n{help}"
+        );
+        assert!(
+            help.to_uppercase().contains("OSCAL"),
+            "policy must note OSCAL is deferred; got:\n{help}"
+        );
+    }
+
     // -- Section 3d: trustdb clap-contract tests (GREEN; the tree is frozen) --
     // These pin the frozen subcommand surface: a future edit that drops a verb,
     // renames a flag, or relaxes a required-arg constraint breaks them.
@@ -605,7 +672,7 @@ mod tests {
             "positional DIR must round-trip"
         );
         assert!(
-            matches!(args.format, TrustdbFormat::Json),
+            matches!(args.format, TrustdbListFormat::Json),
             "--format json must select Json"
         );
         assert!(
@@ -631,10 +698,35 @@ mod tests {
             "DIR must be optional and default to None"
         );
         assert!(
-            matches!(args.format, TrustdbFormat::Human),
+            matches!(args.format, TrustdbListFormat::Human),
             "--format must default to Human"
         );
         assert!(args.source.is_none(), "--source must default to None");
+    }
+
+    /// `trustdb list --format csv` selects the CSV surface (#64). `csv` is a
+    /// `list`-only format; check/diff/stale keep the human|json `TrustdbFormat`.
+    #[test]
+    fn trustdb_list_args_format_csv_parses() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "fapolicyd",
+            "trustdb",
+            "list",
+            "--format",
+            "csv",
+        ])
+        .expect("trustdb list --format csv must parse");
+        let Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+        } = cli
+        else {
+            panic!("expected Trustdb(List(_))");
+        };
+        assert!(
+            matches!(args.format, TrustdbListFormat::Csv),
+            "--format csv must select Csv"
+        );
     }
 
     /// `--source` rejects a value not in {rpm,file,deb,unknown}.
@@ -855,6 +947,20 @@ mod tests {
         );
     }
 
+    /// `--sarif-include-pass` parses and defaults to false (#65 / #137). The flag
+    /// is reserved/no-op in this release; the parse contract still freezes here.
+    #[test]
+    fn lint_args_sarif_include_pass_parses_and_defaults_false() {
+        assert!(
+            parse_lint(&["--sarif-include-pass"]).sarif_include_pass,
+            "--sarif-include-pass must set the flag true"
+        );
+        assert!(
+            !parse_lint(&[]).sarif_include_pass,
+            "sarif_include_pass must default to false (opt-in)"
+        );
+    }
+
     /// The CLI value-enum converts to the fapolicyd domain `TargetVersion`.
     /// Keeps the domain crate clap-free (mirrors `TrustSourceFilter` -> `TrustSource`).
     #[test]
@@ -991,7 +1097,17 @@ mod tests {
             "--price-per-gb must default to 5.00, got {}",
             args.price_per_gb,
         );
-        assert!(matches!(args.format, HumanJsonFormat::Human));
+        assert!(matches!(args.format, HumanJsonCsvFormat::Human));
+    }
+
+    /// `auditd cost --format csv` selects the CSV per-rule surface (#64).
+    #[test]
+    fn cost_args_format_csv_parses() {
+        let args = parse_cost(&["--rules", "/etc/audit/rules.d", "--format", "csv"]);
+        assert!(
+            matches!(args.format, HumanJsonCsvFormat::Csv),
+            "--format csv must select Csv"
+        );
     }
 
     /// Optional fields all parse correctly.
@@ -1018,7 +1134,7 @@ mod tests {
             "--price-per-gb 7.50 must round-trip, got {}",
             args.price_per_gb,
         );
-        assert!(matches!(args.format, HumanJsonFormat::Json));
+        assert!(matches!(args.format, HumanJsonCsvFormat::Json));
     }
 
     /// Helper: extract `TriageArgs` from a parsed CLI.

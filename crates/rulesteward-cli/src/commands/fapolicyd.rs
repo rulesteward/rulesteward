@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::trustdb_compute;
 use crate::cli::{
     FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
-    TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbStaleArgs,
+    TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbListFormat, TrustdbStaleArgs,
 };
 use crate::exit_code::{
     self, EXIT_CLEAN, EXIT_LMDB_ERROR, EXIT_NO_OP, EXIT_TOOL_FAILURE, EXIT_WARNINGS,
@@ -115,7 +115,12 @@ fn run_list(args: &TrustdbListArgs) -> anyhow::Result<i32> {
         .filter(|e| args.source.is_none_or(|f| source_matches(f, e.source)))
         .map(ListRow::from)
         .collect();
-    print!("{}", trustdb_out::render_list(&rows, json(args.format)));
+    let rendered = match args.format {
+        TrustdbListFormat::Human => trustdb_out::render_list(&rows, false),
+        TrustdbListFormat::Json => trustdb_out::render_list(&rows, true),
+        TrustdbListFormat::Csv => trustdb_out::render_csv_list(&rows),
+    };
+    print!("{rendered}");
     Ok(EXIT_CLEAN)
 }
 
@@ -209,6 +214,17 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
 }
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
+    // `--sarif-include-pass` is reserved and not yet implemented (#137). Surface
+    // an honest note when it is set rather than silently ignoring it, so the
+    // operator never believes they received pass-result attestation. SARIF
+    // output is unchanged in this release.
+    if args.sarif_include_pass {
+        eprintln!(
+            "note: --sarif-include-pass is reserved and has no effect in this release \
+             (pass-result emission is tracked in #137)"
+        );
+    }
+
     let trustdb = match &args.against_trustdb {
         Some(p) => {
             if !p.is_dir() {
@@ -394,6 +410,7 @@ mod tests {
             report_orphans: false,
             target: None,
             check_identities: false,
+            sarif_include_pass: false,
         }
     }
 
