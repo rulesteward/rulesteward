@@ -1,5 +1,14 @@
 //! End-to-end RED tests for `rulesteward selinux triage --policy <path>` (#124).
 //!
+//! This entire suite exercises the authoritative `--policy` path, which only
+//! exists in the libsepol-backed default build. It is gated on the
+//! `authoritative-categorizer` feature (default-ON, #124) so the file is
+//! compiled + run by the plain `cargo test -p rulesteward-cli` build and is
+//! cleanly SKIPPED under the Apache-2.0-only `--no-default-features` build
+//! (where `--policy` does not exist). The floor input-validation tests in
+//! `e2e_selinux.rs` are NOT gated and run in both configs.
+#![cfg(feature = "authoritative-categorizer")]
+//!
 //! These tests pin the OPERATOR-FACING behaviour of wiring the authoritative
 //! libsepol categorizer (`rulesteward_selinux::categorize`) into the CLI via a
 //! new `--policy <path>` flag, and flipping the `authoritative-categorizer`

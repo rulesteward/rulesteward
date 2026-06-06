@@ -46,8 +46,13 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           ~/.cargo/bin/rustup target add x86_64-unknown-linux-musl
 
-      - name: Install musl-tools (provides musl-gcc)
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # musl-tools provides musl-gcc. `make` + host `gcc` are additionally
+      # needed now that the authoritative-categorizer feature is DEFAULT-ON
+      # (#124): the release build compiles the vendored libsepol 3.10 C source
+      # via build.rs (libsepol's Makefile + host cc; musl-gcc is the per-target
+      # compiler), and the shipped binary statically links libsepol (LGPL-2.1).
+      - name: Install build deps (make, gcc, musl-tools)
+        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -107,8 +112,36 @@ jobs:
           cargo cyclonedx --manifest-path crates/rulesteward-cli/Cargo.toml -f json \
             --target "$TARGET" --override-filename rulesteward.cdx
           cp crates/rulesteward-cli/rulesteward.cdx.json dist/
-          # 5. checksums over every shipped asset (not over SHA256SUMS itself)
-          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json > SHA256SUMS )
+          # 5. LGPL-2.1 deliverables for the shipped binary. The default build
+          #    statically links libsepol 3.10 (LGPL-2.1, #124), so the release MUST
+          #    carry the full LGPL-2.1 text + the NOTICE, and point to the complete
+          #    corresponding source (vendored in-tree). This satisfies the LGPL-2.1
+          #    license/notice + source-availability obligations for the binary.
+          cp LICENSES/LGPL-2.1.txt dist/LGPL-2.1.txt
+          cp NOTICE dist/NOTICE
+          # Pointer to the complete corresponding libsepol source. The source is
+          # vendored in-tree at the path below (it travels with the source release
+          # tarball GitHub attaches automatically); this file makes the LGPL-2.1
+          # source offer explicit alongside the binary assets.
+          cat > dist/LGPL-2.1-SOURCE-OFFER.txt <<EOF
+          RuleSteward ${GITHUB_REF_NAME:-this release} statically links libsepol 3.10,
+          licensed under the GNU Lesser General Public License, version 2.1
+          (full text: LGPL-2.1.txt, also at LICENSES/LGPL-2.1.txt in the source tree).
+
+          The complete, corresponding source for libsepol 3.10 is included in the
+          RuleSteward source repository (the "Source code" archive attached to this
+          release) at:
+
+            crates/rulesteward-selinux-sys/vendor/libsepol/
+
+          Upstream: https://github.com/SELinuxProject/selinux (release 3.10).
+          libsepol is statically linked into the rulesteward binary; the build
+          recipe is crates/rulesteward-selinux-sys/build.rs and the static archive
+          is reproducible from that vendored source, satisfying the LGPL-2.1
+          section 6 relinking requirement.
+          EOF
+          # 6. checksums over every shipped asset (not over SHA256SUMS itself)
+          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json LGPL-2.1.txt NOTICE LGPL-2.1-SOURCE-OFFER.txt > SHA256SUMS )
           echo "--- dist/ ---"; ls -l dist; echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
 
       - name: Upload dist artifact
@@ -163,6 +196,11 @@ jobs:
           # binary always carries its license" contract against a regression that
           # re-marks LICENSE as doc=true (which would silently drop it on nodocs).
           test -f /usr/share/licenses/rulesteward/LICENSE
+          # The default build statically links libsepol 3.10 (LGPL-2.1, #124), so the
+          # RPM must also ship the LGPL-2.1 text + NOTICE (both plain, non-%doc).
+          # Assert they land on disk to guard the LGPL obligation against regression.
+          test -f /usr/share/licenses/rulesteward/LGPL-2.1.txt
+          test -f /usr/share/licenses/rulesteward/NOTICE
 
   publish:
     name: sign + publish GitHub Release
@@ -216,6 +254,9 @@ jobs:
             dist/rulesteward.1
             dist/rulesteward-*.x86_64.rpm
             dist/rulesteward.cdx.json
+            dist/LGPL-2.1.txt
+            dist/NOTICE
+            dist/LGPL-2.1-SOURCE-OFFER.txt
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/SHA256SUMS.pem

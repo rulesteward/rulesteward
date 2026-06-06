@@ -8,7 +8,6 @@
 //! The `--policy` flag and the already-allows rendering for the Reason(0) sub-case
 //! were added by the CODE-WIRE step (#124, #122).
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::anyhow;
@@ -16,10 +15,26 @@ use anyhow::anyhow;
 use crate::cli::{HumanJsonFormat, SelinuxCommand, TriageArgs};
 use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS};
 use crate::output::json::render_envelope;
+// Floor (always-on) surface: parse / group / emit / build + render the report.
+// These compile in BOTH the default build and the clean Apache-2.0-only
+// `--no-default-features` build (no libsepol).
+use rulesteward_selinux::{emit_te, group_denials, parse_avc, render_human};
+
+// Floor report builder, used directly only by the clean Apache-2.0-only build
+// (the feature-on path renders via `build_report_with_already_allows`).
+#[cfg(not(feature = "authoritative-categorizer"))]
+use rulesteward_selinux::build_report;
+
+// Authoritative (`--policy`) surface, gated on the `authoritative-categorizer`
+// feature (default-ON, #124). Pulled in only for the libsepol-backed default
+// build; absent from the clean Apache-2.0-only `--no-default-features` build.
+#[cfg(feature = "authoritative-categorizer")]
 use rulesteward_selinux::{
     AvcDenial, DenialGroup, DenialKind, Policy, ReplayOutcome, build_report_with_already_allows,
-    categorize_with_outcome, emit_te, group_denials, parse_avc, render_human,
+    categorize_with_outcome,
 };
+#[cfg(feature = "authoritative-categorizer")]
+use std::collections::HashSet;
 
 /// Schema version for the `selinux-triage` payload kind. Bumps only on a
 /// breaking change (field removal, rename, or retype). Adding optional fields
@@ -56,17 +71,23 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
     };
 
     // `--since` is accepted and stored but not yet applied; P3 wires the time filter.
+    #[cfg_attr(not(feature = "authoritative-categorizer"), allow(unused_mut))]
     let mut groups = group_denials(&denials);
 
     // When --policy is supplied, run the authoritative categorizer (#124) and
-    // merge the authoritative verdict over the floor. The authoritative-categorizer
-    // feature is now default-ON, so this path compiles in the default build.
-    // The already-allows sub-case tracks which groups had Reason(0) so we can
-    // render a DISTINCT operator message for #122.
+    // merge the authoritative verdict over the floor. The already-allows sub-case
+    // tracks which groups had Reason(0) so we can render a DISTINCT operator
+    // message for #122.
     //
     // A FAILED `--policy` load is a loud error (round-2 decision): we must NOT
     // silently fall back to the floor with exit 0. Report it and return
     // EXIT_ERRORS, staying read-only (no panic).
+    //
+    // This whole block is gated on `authoritative-categorizer` (default-ON, #124).
+    // In the clean Apache-2.0-only `--no-default-features` build the `--policy`
+    // flag does not exist (see `TriageArgs`) and there is no authoritative layer,
+    // so `triage` runs floor-only.
+    #[cfg(feature = "authoritative-categorizer")]
     let already_allows_groups =
         match apply_authoritative_categorizer(args.policy.as_deref(), &denials, &mut groups) {
             Ok(set) => set,
@@ -80,9 +101,11 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
         emit_te(&groups, args.module_name.as_deref())
     } else {
         match args.format {
+            #[cfg(feature = "authoritative-categorizer")]
             HumanJsonFormat::Human => {
                 render_human_with_already_allows(&groups, &already_allows_groups)
             }
+            #[cfg(feature = "authoritative-categorizer")]
             HumanJsonFormat::Json => render_envelope(
                 "selinux-triage",
                 SELINUX_TRIAGE_SCHEMA_VERSION,
@@ -101,6 +124,17 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
                     ))
                 }),
             ),
+            // Floor-only renderers for the clean Apache-2.0-only build: no
+            // authoritative replay, so there is no "already allows" distinction
+            // to thread (every group renders via the standard floor templates).
+            #[cfg(not(feature = "authoritative-categorizer"))]
+            HumanJsonFormat::Human => render_human(&groups),
+            #[cfg(not(feature = "authoritative-categorizer"))]
+            HumanJsonFormat::Json => render_envelope(
+                "selinux-triage",
+                SELINUX_TRIAGE_SCHEMA_VERSION,
+                &build_report(&groups),
+            ),
         }
     };
 
@@ -117,6 +151,7 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
 /// bounds / bad-context) MUST outrank the `Reason(0)` "already allows" member, so
 /// the output never tells the operator the policy "already allows" a group that
 /// in fact contains an enforced block (the round-2 grounded bug).
+#[cfg(feature = "authoritative-categorizer")]
 fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
     match (kind, outcome) {
         // A real TE allow gap: most actionable (the operator likely wants the allow).
@@ -160,6 +195,7 @@ fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
 /// (`Policy::load` failed). The caller maps this to `EXIT_ERRORS` - a failed
 /// `--policy` load must FAIL LOUD, never silently fall back to the floor
 /// (round-2 decision). The run stays read-only and does not panic.
+#[cfg(feature = "authoritative-categorizer")]
 fn apply_authoritative_categorizer(
     policy_path: Option<&Path>,
     denials: &[AvcDenial],
@@ -285,6 +321,7 @@ fn apply_authoritative_categorizer(
 ///
 /// For all other groups, delegates to `render_human` (the selinux crate's
 /// renderer) so that no existing rendering logic is duplicated here.
+#[cfg(feature = "authoritative-categorizer")]
 fn render_human_with_already_allows(
     groups: &[DenialGroup],
     already_allows_groups: &HashSet<(String, String, String)>,
@@ -329,6 +366,7 @@ fn render_human_with_already_allows(
 /// different policy version or a different host. The operator message is
 /// DISTINCT from the `ContextInvalid` / BADSCON template ("does not define"),
 /// satisfying the #122 requirement without adding a new `DenialKind` variant.
+#[cfg(feature = "authoritative-categorizer")]
 fn render_already_allows_group(group: &DenialGroup) -> String {
     let src = &group.source_type;
     let tgt = &group.target_type;

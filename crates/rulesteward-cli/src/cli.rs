@@ -372,6 +372,12 @@ pub struct TriageArgs {
     /// A `--policy` that cannot be LOADED is a hard error (exit 2): the run does
     /// NOT silently fall back to the floor, since the operator explicitly asked
     /// for authoritative analysis.
+    ///
+    /// Gated on the `authoritative-categorizer` feature (default-ON, #124): the
+    /// flag only exists in the libsepol-backed default build. In the clean
+    /// Apache-2.0-only `--no-default-features` build there is no authoritative
+    /// path, so the flag is absent and `triage` runs floor-only.
+    #[cfg(feature = "authoritative-categorizer")]
     #[arg(long, value_name = "FILE")]
     pub policy: Option<PathBuf>,
 }

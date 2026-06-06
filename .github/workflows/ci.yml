@@ -71,6 +71,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # The authoritative-categorizer feature is now DEFAULT-ON (#124), so a
+      # plain `cargo clippy --workspace --all-targets` compiles the vendored
+      # libsepol C source via build.rs (needs `make` + a C compiler).
+      - name: Install build deps (make, gcc)
+        run: sudo apt-get update && sudo apt-get install -y make gcc
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-fmt-clippy
@@ -284,6 +290,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      # authoritative-categorizer is DEFAULT-ON (#124): llvm-cov --workspace
+      # now compiles the vendored libsepol C source (needs `make` + a C compiler).
+      - name: Install build deps (make, gcc)
+        run: sudo apt-get update && sudo apt-get install -y make gcc
       - uses: Swatinem/rust-cache@v2
         with:
           # Save only on push events; see fmt-clippy comment above.
@@ -328,8 +338,12 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Install musl-tools (provides musl-gcc)
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # musl-tools provides musl-gcc (the musl target's C compiler/linker).
+      # `make` + host `gcc` are additionally needed now that the release build is
+      # DEFAULT-ON (#124) and compiles the vendored libsepol C source via build.rs
+      # (libsepol's Makefile + host cc; musl-gcc is the per-target compiler).
+      - name: Install build deps (make, gcc, musl-tools)
+        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -443,6 +457,10 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88"
+      # authoritative-categorizer is DEFAULT-ON (#124): cargo check --workspace
+      # now compiles the vendored libsepol C source (needs `make` + a C compiler).
+      - name: Install build deps (make, gcc)
+        run: sudo apt-get update && sudo apt-get install -y make gcc
       - uses: Swatinem/rust-cache@v2
         with:
           key: ubuntu-msrv-1.88
@@ -499,9 +517,10 @@ jobs:
         with:
           key: selinux-feature-${{ matrix.label }}
           save-if: ${{ github.event_name != 'pull_request' }}
-      # Lint the FFI shim + the categorize layer. The default fmt-clippy job runs
-      # with the feature OFF, so it never sees this code; this is the only place it
-      # is type-checked + linted under -D warnings.
+      # Lint the FFI shim + the categorize layer for BOTH targets (gnu + musl).
+      # The default fmt-clippy job builds the workspace default (feature ON, gnu
+      # host) so it does see the categorize layer, but this job adds the musl
+      # target + the -sys `vendored` feature coverage that the host build skips.
       - name: clippy -p rulesteward-selinux-sys (vendored)
         run: cargo clippy -p rulesteward-selinux-sys --all-targets --features vendored --target ${{ matrix.target }} --locked -- -D warnings
       - name: clippy -p rulesteward-selinux (authoritative-categorizer)
@@ -514,9 +533,10 @@ jobs:
       - name: test -p rulesteward-selinux (authoritative-categorizer KAT)
         run: cargo test -p rulesteward-selinux --features authoritative-categorizer --target ${{ matrix.target }} --locked
 
-  # Feature-enabled coverage (glibc). The default `coverage` job runs with the
-  # feature OFF, so categorize.rs + the -sys FFI are cfg-gated out of its numbers.
-  # This job measures them. Non-gameable gate: turning the categorizer ON must not
+  # Feature-enabled coverage (glibc), explicitly forcing the feature on via
+  # `--features rulesteward-selinux/authoritative-categorizer`. This job exists to
+  # measure categorize.rs + the -sys FFI and hold the selinux >=90% floor with the
+  # categorizer included. Non-gameable gate: turning the categorizer ON must not
   # drag the workspace below 80%, and rulesteward-selinux (now including
   # categorize.rs) must hold the spec section 11 >=90% floor (measured 2026-06-04:
   # workspace 92.1%, rulesteward-selinux 94.1%). The FFI-heavy
@@ -590,3 +610,40 @@ jobs:
             nm /tmp/lsbuild/src/libsepol.a | grep -qE " T $s\$" \
               || { echo "missing exported symbol: $s"; exit 1; }
           done
+
+  # The clean Apache-2.0-only build (#124, #110). The `authoritative-categorizer`
+  # feature is DEFAULT-ON, so a plain workspace build links the LGPL-2.1 libsepol;
+  # `--no-default-features` is the ONLY libsepol-free build and the one downstreams
+  # who want an Apache-2.0-only artifact use. This job GUARDS that build path: it
+  # deliberately does NOT install make/gcc, so if any libsepol C source ever leaks
+  # into the no-default-features dep graph the build fails (the regression we want
+  # to catch). It builds, lints, and tests rulesteward-cli with the feature off.
+  apache-only-build:
+    name: apache-2.0-only build (no libsepol, no-default-features)
+    runs-on: [self-hosted, Linux, X64]
+    needs: fmt-clippy
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure rustup is available
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable Rust toolchain (+ clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # NOTE: NO make/gcc install on purpose. The whole point of this job is that
+      # the no-default-features build is libsepol-free and must compile without a
+      # C toolchain for the vendored libsepol. If it ever needs make/gcc, libsepol
+      # has leaked into the Apache-2.0-only build -- that is the failure to catch.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: apache-only-build
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: cargo build (no libsepol)
+        run: cargo build -p rulesteward-cli --no-default-features --locked
+      - name: cargo clippy (no libsepol)
+        run: cargo clippy -p rulesteward-cli --no-default-features --all-targets --locked -- -D warnings
+      - name: cargo test (no libsepol)
+        run: cargo test -p rulesteward-cli --no-default-features --locked
