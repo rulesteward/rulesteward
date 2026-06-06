@@ -334,6 +334,55 @@ fn eval_exe_setref_with_untrusted_macro(
     )
 }
 
+/// Evaluate `dir=<set>` when the set CONTAINS the `untrusted` macro token.
+///
+/// fapolicyd's DIR case OR-s the `untrusted` macro with PREFIX membership (the
+/// standard `attr_set_check_pstr` semantics for the dir= field):
+///   match IFF (set contains "untrusted" AND the process/file is NOT trusted,
+///     via the macro)
+///     OR
+///   (the reference path is a PREFIX of a literal set member).
+///
+/// The macro is the deciding factor only when no literal prefix member matched;
+/// in that case `Trust::Unknown` downgrades to `NotEvaluable`, mirroring
+/// `eval_exe_setref_with_untrusted_macro` and the bare `dir=untrusted` arm.
+///
+/// This mirrors `eval_exe_setref_with_untrusted_macro` exactly, with
+/// `prefix_string_match` used for the literal leg instead of `exact_string_match`
+/// (dir= is a prefix match; exe= is an exact match).
+///
+/// Grounding: f1 §2.2 line 216 + f1 §1.4 line 166 (DIR subject: `EXE_DIR` field,
+/// deprecated `untrusted` macro OR'd with prefix match); upstream rules.c dir=
+/// case ~1490-1530 (SUBJECT) and ODIR case (OBJECT).
+///
+/// The helper is PARAMETERIZED over `ref_path` (the path to prefix-match: the
+/// subject's exe for a subject-side `dir=`, or the object path for an
+/// object-side `dir=`) and `trust` (the corresponding trust value).  This
+/// allows BOTH the subject arm and the object arm to share one implementation.
+///
+/// Precondition: `set_contains_untrusted(value, sets)` is `true`.
+fn eval_dir_setref_with_untrusted_macro(
+    value: &AttrValue,
+    sets: &SetTable,
+    ref_path: Option<&str>,
+    trust: Trust,
+    unknown_reason: &str,
+) -> (FieldEval, Option<String>) {
+    // Literal prefix-membership leg (independent of trust). An absent path fact
+    // widens (Match), the standard absent-fact behaviour.
+    let literal = match ref_path {
+        None => FieldEval::Match,
+        Some(path) => prefix_string_match(path, value, sets),
+    };
+    if literal == FieldEval::Match {
+        return (FieldEval::Match, None);
+    }
+    // No literal prefix member matched: the `untrusted` macro is the deciding
+    // factor. Reuse `eval_trust_field` so Match/NoMatch/NotEvaluable (and the
+    // Unknown downgrade reason) mirror the bare `dir=untrusted` arm exactly.
+    eval_trust_field(trust, &AttrValue::Int(0), unknown_reason)
+}
+
 /// Evaluate one subject-side attribute against the facts.
 /// Returns `(FieldEval, Option<reason_string>)` where the reason is non-None
 /// only for `NotEvaluable` cases.
@@ -388,10 +437,38 @@ fn eval_subject_field(
             None => (FieldEval::Match, None),
             Some(comm_val) => (exact_string_match(comm_val, value, sets), None),
         },
-        "dir" => match &facts.exe {
-            // Subject dir= matches against the exe path using prefix semantics.
-            None => (FieldEval::Match, None), // absent exe widens
-            Some(exe_path) => (prefix_string_match(exe_path, value, sets), None),
+        "dir" => match as_str_literal(value) {
+            // `dir=untrusted` is a SUBJECT TRUST MACRO, mirroring `exe=untrusted`
+            // (f1 §2.2 line 216; f1 §1.4 line 166: EXE_DIR field, the deprecated
+            // `untrusted` macro OR'd with prefix match). It evaluates against the
+            // SUBJECT trust state, NOT the exe path. Reuse `eval_trust_field` so
+            // the NotEvaluable/Match/NoMatch return shape (and the Unknown downgrade
+            // reason) mirrors the `exe=untrusted` arm and the `trust=` arm exactly:
+            //   - `untrusted` is equivalent to `trust=0` (match iff Trust::No).
+            Some("untrusted") => eval_trust_field(
+                facts.subj_trust,
+                &AttrValue::Int(0),
+                "subj trust unknown (no trust DB)",
+            ),
+            // A SetRef whose resolved members CONTAIN the `untrusted` macro token:
+            // real fapolicyd's DIR case OR-s the `untrusted` macro with PREFIX
+            // membership (f1 §1.4 line 166; f1 §2.2 line 216). The macro path
+            // mirrors the bare `dir=untrusted` Trust::Unknown -> NotEvaluable
+            // downgrade when it is the deciding factor (no literal prefix matched).
+            None if set_contains_untrusted(value, sets) => eval_dir_setref_with_untrusted_macro(
+                value,
+                sets,
+                facts.exe.as_deref(),
+                facts.subj_trust,
+                "subj trust unknown (no trust DB)",
+            ),
+            // Any other value (a bare prefix literal, a SetRef without the
+            // `untrusted` token, execdirs/systemdirs keywords, or an Int):
+            // standard prefix match against the exe path.
+            _ => match &facts.exe {
+                None => (FieldEval::Match, None), // absent exe widens
+                Some(exe_path) => (prefix_string_match(exe_path, value, sets), None),
+            },
         },
         "pattern" => {
             // `pattern=` is a runtime ELF-access-pattern detector; cannot be
@@ -460,9 +537,41 @@ fn eval_object_field(
         },
         "dir" => {
             // Object odir= uses prefix match against the object path.
-            match &facts.path {
-                None => (FieldEval::Match, None),
-                Some(p) => (prefix_string_match(p, value, sets), None),
+            // The `untrusted` macro is honoured against OBJECT trust
+            // (`!is_obj_trusted(e)`) per upstream rules.c ODIR case; grounding:
+            // f1 §1.4 line 174 (dir/odir object: same macro as subject dir) +
+            // f1 §2.2 line 216 (trust-DB-dependent). This mirrors the subject-side
+            // `dir=` arm exactly, substituting facts.path / facts.obj_trust for
+            // facts.exe / facts.subj_trust.
+            match as_str_literal(value) {
+                // Bare `dir=untrusted` on the object side: the `untrusted` trust
+                // macro fires IFF the object is NOT trusted. Reuse `eval_trust_field`
+                // so the NotEvaluable/Match/NoMatch return shape (and the Unknown
+                // downgrade reason) mirrors the subject-side `dir=untrusted` arm.
+                Some("untrusted") => eval_trust_field(
+                    facts.obj_trust,
+                    &AttrValue::Int(0),
+                    "obj trust unknown (no trust DB)",
+                ),
+                // A SetRef whose resolved members CONTAIN the `untrusted` macro
+                // token: OR the macro (against obj_trust) with PREFIX membership
+                // on the object path, using the shared parameterized helper.
+                None if set_contains_untrusted(value, sets) => {
+                    eval_dir_setref_with_untrusted_macro(
+                        value,
+                        sets,
+                        facts.path.as_deref(),
+                        facts.obj_trust,
+                        "obj trust unknown (no trust DB)",
+                    )
+                }
+                // Any other value (a bare prefix literal, a SetRef without the
+                // `untrusted` token, execdirs/systemdirs keywords, or an Int):
+                // standard prefix match against the object path.
+                _ => match &facts.path {
+                    None => (FieldEval::Match, None),
+                    Some(p) => (prefix_string_match(p, value, sets), None),
+                },
             }
         }
         "trust" => eval_trust_field(facts.obj_trust, value, "obj trust unknown (no trust DB)"),
@@ -497,7 +606,16 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
                     FieldEval::NoMatch => return (RuleOutcome::NoMatch, None),
                     FieldEval::NotEvaluable => {
                         if possible_reason.is_none() {
-                            possible_reason = reason;
+                            // Harden: synthesise a reason when the field evaluator
+                            // returned None. A NotEvaluable with a None reason would
+                            // otherwise slip through to Decisive(decision) below,
+                            // masking the unevaluable constraint. After the object-side
+                            // dir= fix the (NotEvaluable, None) path is unreachable for
+                            // the dir= arm, but this guard prevents future regressions.
+                            possible_reason =
+                                Some(reason.unwrap_or_else(|| {
+                                    format!("{key} is not statically evaluable")
+                                }));
                         }
                     }
                 }
@@ -518,7 +636,12 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
                     FieldEval::NoMatch => return (RuleOutcome::NoMatch, None),
                     FieldEval::NotEvaluable => {
                         if possible_reason.is_none() {
-                            possible_reason = reason;
+                            // Harden: synthesise a reason when the field evaluator
+                            // returned None (same defence as the subject loop above).
+                            possible_reason =
+                                Some(reason.unwrap_or_else(|| {
+                                    format!("{key} is not statically evaluable")
+                                }));
                         }
                     }
                 }
@@ -2646,6 +2769,911 @@ mod tests {
         assert!(
             v.uncertain.is_none(),
             "absent-object widening is decisive, not uncertain"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #136: bare `dir=untrusted` is the DIR-field TRUST MACRO (full exe= parity).
+    //
+    // Ground truth (f1 grounding §2.2 line 216; upstream rules.c dir= case;
+    // fapolicyd >=1.4.x): like `exe=untrusted`, a bare `dir=untrusted` value
+    // in the SUBJECT dir= field is the trust macro, NOT a literal prefix to
+    // compare against the exe path. It matches IFF the subject is NOT trusted
+    // (`subj_trust=No`); `subj_trust=Yes` -> NoMatch (no fire); and
+    // `subj_trust=Unknown` downgrades to NotEvaluable (same as exe=untrusted
+    // and trust=0).
+    //
+    // On CURRENT code the dir= arm falls through to `prefix_string_match`,
+    // which for the bare `Str("untrusted")` case returns `NotEvaluable`
+    // unconditionally (prefix_string_match:L162: the `"untrusted"` branch
+    // returns `FieldEval::NotEvaluable` regardless of trust state). So:
+    //   - `subj_trust=No` -> currently NotEvaluable (should be Match/Deny) RED
+    //   - `subj_trust=Yes` -> currently NotEvaluable (should be NoMatch/Allow)
+    //     the current verdict is uncertain Allow; the test expects decisive Allow
+    //   - `subj_trust=Unknown` -> currently NotEvaluable (correct outcome,
+    //     wrong reason - the current impl has no trust DB consultation, so the
+    //     reason string differs from the expected but the overall verdict is
+    //     the same; this test asserts uncertain.is_some() which IS currently
+    //     true, but the fix must preserve it with proper trust-DB reasoning)
+    //
+    // The No and Yes cases are definitively RED on current code.
+    // -----------------------------------------------------------------------
+
+    /// `dir=untrusted` FIRES for an untrusted subject (`subj_trust=No`).
+    ///
+    /// Ground truth: f1 grounding §2.2 line 216; in fapolicyd 1.4.x and later
+    /// the dir= arm treats `untrusted` as the SUBJECT trust macro (same as
+    /// `exe=untrusted`). It matches IFF the subject is NOT in the trust DB.
+    ///
+    /// Current code: `prefix_string_match` returns `NotEvaluable` for a bare
+    /// `dir=untrusted` value regardless of trust state (`prefix_string_match`
+    /// line ~162). So the deny rule becomes a `PossibleMatch`; the ruleset falls
+    /// through to the allow -> verdict is Allow. This assertion (`Deny`) is RED.
+    #[test]
+    fn dir_untrusted_macro_matches_untrusted_subject() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("dir", "untrusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/home/user/payload".to_string());
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "dir=untrusted must FIRE the deny rule for an untrusted subject (trust macro, \
+             not a literal prefix compare)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// `dir=untrusted` does NOT fire for a trusted subject (`subj_trust=Yes`).
+    ///
+    /// Ground truth: same as above (f1 §2.2 line 216). When the subject IS
+    /// trusted, the `untrusted` macro is a decisive `NoMatch` -> the deny rule
+    /// is skipped -> fallthrough Allow, uncertain=None.
+    ///
+    /// Current code: `prefix_string_match` returns `NotEvaluable` for bare
+    /// `dir=untrusted`, so the deny rule becomes a `PossibleMatch`; the verdict
+    /// is the allow rule but `uncertain` is set. This test asserts
+    /// `uncertain.is_none()` (a decisive `NoMatch`, not uncertain). RED on
+    /// current code because `NotEvaluable` sets `uncertain`.
+    #[test]
+    fn dir_untrusted_macro_no_match_trusted_subject() {
+        use crate::facts::Trust;
+
+        // Single deny rule (no allow fallback): if the deny fires wrongly we get
+        // Deny; if it correctly doesn't fire we get the implicit fallthrough Allow.
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("dir", "untrusted")],
+            vec![Attr::All],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "dir=untrusted must NOT fire for a trusted subject -> fallthrough Allow"
+        );
+        assert_eq!(v.source, Source::Fallthrough, "no rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=Yes makes the macro a decisive NoMatch, not uncertain"
+        );
+    }
+
+    /// `dir=untrusted` with `subj_trust=Unknown` is `NotEvaluable` (no trust DB).
+    ///
+    /// Ground truth: same as exe=untrusted Unknown (f1 §2.2 line 216; the
+    /// simulate confidence-downgrade on Unknown trust applies to the dir= macro
+    /// just as it does for exe= and trust=). The deny rule downgrades to a
+    /// `PossibleMatch`; the verdict is the rule-2 Allow but `uncertain` is set.
+    ///
+    /// Current code ALSO returns `NotEvaluable` via `prefix_string_match` for
+    /// bare `dir=untrusted` when trust is Unknown (though for the wrong reason -
+    /// it never consults trust state at all). The overall outcome (uncertain=Some)
+    /// is currently correct but must remain so after the fix switches to the
+    /// proper trust-state-aware path.
+    #[test]
+    fn dir_untrusted_macro_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("dir", "untrusted")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "dir=untrusted with Unknown trust must downgrade to an uncertain verdict, \
+             mirroring exe=untrusted (f1 §2.2 line 216)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #136: `dir=%set` where the set CONTAINS the `untrusted` macro token.
+    //
+    // This is the DIR-field analogue of the EXE SetRef fix landed in PR #135
+    // (issue #126). Real fapolicyd's DIR case also honours the `untrusted`
+    // macro when a %set contains it (f1 §1.4 line 166: the EXE_DIR dir=
+    // subject field uses prefix match AND honours the deprecated `untrusted`
+    // macro; f1 §2.2 line 216: dir=untrusted is trust-DB-dependent). So the
+    // DIR match for a set containing `untrusted` is:
+    //   (set contains "untrusted" AND subject NOT trusted)
+    //   OR
+    //   (exe path is a PREFIX of a literal set member)
+    //
+    // The fix (PR #136) adds `eval_dir_setref_with_untrusted_macro` (the exact
+    // analogue of `eval_exe_setref_with_untrusted_macro`) and restructures the
+    // subject dir= arm to mirror the exe= arm: bare `dir=untrusted` goes to
+    // `eval_trust_field`; a SetRef containing "untrusted" goes to the new helper;
+    // all other values (prefix literals, execdirs/systemdirs, sets without the
+    // macro) fall through to the existing `prefix_string_match` path unchanged.
+    //
+    // The macro path mirrors the bare `dir=untrusted` Trust::Unknown ->
+    // NotEvaluable downgrade when the macro is the deciding factor (no literal
+    // prefix matched), mirroring how the exe= SetRef arm works.
+    // -----------------------------------------------------------------------
+
+    /// Set `%dirs = {"untrusted", "/tmp/"}`, rule 1 `deny perm=any dir=%dirs :
+    /// all`, rule 2 `allow perm=any all : all`. Subject is untrusted
+    /// (`subj_trust=No`) and its exe is NOT prefixed by any literal member
+    /// (`/home/user/payload`, not under `/tmp/`).
+    ///
+    /// Expected: decisive Deny at rule 1. The embedded `untrusted` macro must
+    /// FIRE because the set contains "untrusted" AND `subj_trust=No`.
+    ///
+    /// Grounding: f1 §1.4 line 166 (`EXE_DIR`: `untrusted` macro OR'd with
+    /// prefix match) + f1 §2.2 line 216 (dir=untrusted is trust-DB-dependent).
+    #[test]
+    fn dir_setref_with_untrusted_member_fires_for_untrusted_subject() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("dirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("dir", "dirs")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/home/user/payload".to_string()); // NOT under /tmp/
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "set %dirs contains the `untrusted` macro and the subject is untrusted: \
+             the deny rule must FIRE via the macro (exe not under any literal prefix member)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// Same `%dirs = {"untrusted", "/tmp/"}`, but the subject IS trusted and
+    /// its exe is NOT under a literal prefix member: the macro must NOT fire
+    /// (trusted) AND there is no literal prefix match -> the deny rule is
+    /// skipped and the ruleset falls through to the rule-2 Allow.
+    ///
+    /// An impl that fires the macro regardless of trust state would wrongly
+    /// Deny here. This test stays GREEN on the current code (prefix match
+    /// -> `NoMatch`, fallthrough Allow) but would go RED for an over-broad fix
+    /// that always fires the macro.
+    #[test]
+    fn dir_setref_with_untrusted_member_no_fire_for_trusted_subject() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("dirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("dir", "dirs")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/home/user/trusted_app".to_string()); // NOT under /tmp/
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "trusted subject + exe not under any literal prefix member: macro does NOT fire \
+             and there is no literal match, so the deny rule is skipped and the verdict is \
+             the rule-2 Allow"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (allow) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=Yes + literal prefix NoMatch is decisive, not uncertain"
+        );
+    }
+
+    /// Same `%dirs = {"untrusted", "/tmp/"}`, subject trust Unknown, exe NOT
+    /// under a literal prefix member: the embedded `untrusted` macro is the
+    /// deciding factor and trust is unknown -> `NotEvaluable` downgrade.
+    ///
+    /// Grounding: f1 §1.4 line 166 + f1 §2.2 line 216. This mirrors the bare
+    /// `dir=untrusted` Unknown behaviour (now also fixed in PR #136) and the
+    /// exe= `SetRef` analogue (`exe_setref_with_untrusted_member_unknown_trust_is_uncertain`).
+    /// The deny rule (rule 1) downgrades to a possible match; the verdict is
+    /// the rule-2 Allow but `uncertain` is set.
+    ///
+    /// `eval_dir_setref_with_untrusted_macro` routes the deciding macro leg
+    /// through `eval_trust_field`, which returns `NotEvaluable` for `Unknown`
+    /// with the same "subj trust unknown (no trust DB)" reason string.
+    #[test]
+    fn dir_setref_with_untrusted_member_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("dirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("dir", "dirs")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/home/user/payload".to_string()); // NOT under /tmp/
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "dir=%dirs (set contains `untrusted`) with Unknown trust and no literal prefix \
+             match must downgrade to an uncertain verdict, mirroring bare dir=untrusted"
+        );
+    }
+
+    /// Set `%dirs = {"untrusted", "/usr/"}`, subject IS trusted, exe IS under
+    /// the literal prefix `/usr/` (`/usr/bin/cat`): the literal PREFIX match
+    /// fires regardless of trust state.
+    ///
+    /// This guards that the fix does not break ordinary `dir=` prefix semantics:
+    /// a literal prefix member still matches by prefix even when the set also
+    /// contains the `untrusted` token. The literal leg must be OR-ed
+    /// independently of the macro, exactly as the `exe=` `SetRef` fix works.
+    ///
+    /// Should remain GREEN on current code (prefix match -> Match, Deny).
+    /// Would go RED if a wrong fix only activates when `subj_trust=No`.
+    #[test]
+    fn dir_setref_literal_prefix_member_matches_regardless_of_trust() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("dirs", &["untrusted", "/usr/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("dir", "dirs")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string()); // IS under /usr/ -> literal prefix match
+        facts.subj_trust = Trust::Yes; // trusted, macro does NOT fire for trusted
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe `/usr/bin/cat` is under the prefix `/usr/` in %dirs: the literal-prefix \
+             membership match must fire independently of trust (subject is trusted, the \
+             `untrusted` macro does NOT fire)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(
+            v.source,
+            Source::Rule,
+            "a decisive literal-prefix-membership match"
+        );
+        assert!(
+            v.uncertain.is_none(),
+            "a literal-prefix match is decisive, not uncertain"
+        );
+    }
+
+    /// Negative guard: set `%safedirs = {"/usr/", "/bin/"}` has NO `untrusted`
+    /// member. A rule `deny perm=any dir=%safedirs : all` must NOT become
+    /// `NotEvaluable` when `subj_trust=No`: it is ordinary prefix matching.
+    ///
+    /// This guards against an over-broad fix that marks any `dir=%set` as
+    /// potentially-macro-enabled. The result must be an ordinary `NoMatch` (or
+    /// `Match`) based solely on the exe prefix, not uncertain.
+    ///
+    /// Exe is `/home/user/thing` -> NOT under /usr/ or /bin/ -> `NoMatch` ->
+    /// the deny rule is skipped, rule 2 allow fires, verdict is Allow.
+    ///
+    /// Should remain GREEN on current code (no untrusted member, pure prefix
+    /// semantics). Would go RED if a wrong fix treats every dir=%set with any
+    /// member as potentially untrusted-macro-aware.
+    #[test]
+    fn dir_setref_without_untrusted_member_does_not_become_not_evaluable() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("safedirs", &["/usr/", "/bin/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("dir", "safedirs")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/home/user/thing".to_string()); // NOT under /usr/ or /bin/
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "set %safedirs has no `untrusted` member: the dir= constraint is a pure prefix \
+             match; exe not under any prefix -> NoMatch -> rule 1 deny skipped, rule 2 allow \
+             fires"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (allow) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "a pure prefix NoMatch (no untrusted macro involved) is decisive, not uncertain"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // OBJECT-SIDE dir=untrusted parity (issue #136 follow-up).
+    //
+    // Ground truth: upstream rules.c ODIR case honours the `untrusted` macro
+    // against OBJECT trust (`!is_obj_trusted(e)`), NOT subject trust.
+    // f1 grounding §1.4 line 174 (dir/odir object: same macro as subject dir)
+    // + f1 §2.2 line 216 (trust-DB-dependent).
+    //
+    // In the MODERN fapolicyd grammar, object-side `dir=untrusted` appears as a
+    // post-colon attribute in `Rule.object`. The evaluator routes it through
+    // `eval_object_field`, whose `dir=` arm (eval_object_field:~L530-536)
+    // currently does a plain `prefix_string_match(facts.path, ...)`. For the
+    // bare string "untrusted", `prefix_string_match` returns `NotEvaluable` no
+    // matter what `obj_trust` is. So:
+    //   - `obj_trust=No`      -> currently NotEvaluable (should be Match/Deny)  RED
+    //   - `obj_trust=Yes`     -> currently NotEvaluable (should be NoMatch/Allow) RED
+    //   - `obj_trust=Unknown` -> currently NotEvaluable (correct outcome, now for
+    //                            the right reason after the fix)
+    //
+    // These tests are RED on the 0677e98 base (subject fix only, no object fix).
+    // -----------------------------------------------------------------------
+
+    /// OBJECT `dir=untrusted` must NOT fire for a TRUSTED object (`obj_trust=Yes`).
+    ///
+    /// Rule: `deny perm=any all : dir=untrusted` (object side).
+    /// Facts: `path=Some("/usr/bin/cat")`, `obj_trust=Trust::Yes`.
+    ///
+    /// Expected: `decision=Allow` (fallthrough), `source=Fallthrough`, `uncertain=None`.
+    ///
+    /// Current code: `prefix_string_match(path, "untrusted")` returns
+    /// `NotEvaluable` unconditionally, so the deny rule downgrades to
+    /// `PossibleMatch` regardless of trust. There is no second rule so the
+    /// verdict is Allow but `uncertain` IS set. This test asserts
+    /// `uncertain.is_none()` (a decisive `NoMatch`) -> RED.
+    #[test]
+    fn object_dir_untrusted_macro_no_fire_for_trusted_object() {
+        use crate::facts::Trust;
+
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv("dir", "untrusted")],
+        )];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.obj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "object dir=untrusted must NOT fire for a trusted object -> fallthrough Allow"
+        );
+        assert_eq!(v.source, Source::Fallthrough, "no rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "obj_trust=Yes makes the object untrusted macro a decisive NoMatch, not uncertain: \
+             {:?}",
+            v.uncertain
+        );
+    }
+
+    /// OBJECT `dir=untrusted` FIRES for an UNTRUSTED object (`obj_trust=No`).
+    ///
+    /// Rule: `deny perm=any all : dir=untrusted` (object side).
+    /// Facts: `path=Some("/tmp/payload")`, `obj_trust=Trust::No`.
+    ///
+    /// Expected: `decision=Deny`, `matched_rule=Some(1)`, `uncertain=None`.
+    ///
+    /// Current code: `NotEvaluable` is returned from `prefix_string_match`,
+    /// but with a single rule + no second rule the verdict is Allow (fallthrough
+    /// after `PossibleMatch`). A deny rule with no follow-up rule means the deny
+    /// is still possible. Let us mirror the subject tests more faithfully: add a
+    /// second `allow all : all` rule so the `PossibleMatch` -> uncertain path is
+    /// distinguishable from the decisive-Deny path. With a second rule present:
+    ///   - CORRECT (after fix): rule 1 decisively Deny (`obj_trust=No` -> Match).
+    ///   - WRONG (pre-fix): rule 1 `PossibleMatch`, rule 2 decisive Allow,
+    ///     `decision=Allow`, `uncertain=Some` -> both assertions below fail.
+    #[test]
+    fn object_dir_untrusted_macro_fires_for_untrusted_object() {
+        use crate::facts::Trust;
+
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv("dir", "untrusted")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/tmp/payload".to_string());
+        facts.obj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "object dir=untrusted must FIRE the deny rule for an untrusted object \
+             (trust macro against obj_trust, not a literal prefix compare)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "obj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// OBJECT `dir=untrusted` with `obj_trust=Unknown` is `NotEvaluable`.
+    ///
+    /// Rules: rule 1 `deny perm=any all : dir=untrusted`,
+    ///        rule 2 `allow perm=any all : all`.
+    /// Facts: `path=Some("/tmp/payload")`, `obj_trust=Trust::Unknown`.
+    ///
+    /// Expected: `decision=Allow`, `matched_rule=Some(2)`, `uncertain=Some(...)`.
+    ///
+    /// Current code returns the same overall verdict shape (uncertain Allow) but
+    /// for the wrong reason; after the fix the uncertain reason must reflect
+    /// obj-trust-unknown, not a generic `"untrusted is NotEvaluable"` from
+    /// `prefix_string_match`. This test just asserts `uncertain.is_some()`,
+    /// which is currently true but must remain so with the correct trust path.
+    #[test]
+    fn object_dir_untrusted_macro_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv("dir", "untrusted")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/tmp/payload".to_string());
+        facts.obj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "object dir=untrusted with Unknown obj_trust must downgrade to an uncertain verdict, \
+             mirroring the subject-side dir=untrusted Unknown behaviour"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // OBJECT-SIDE `dir=%set` containing the `untrusted` macro token.
+    //
+    // Mirrors the subject-side `dir_setref_with_untrusted_member_*` tests above,
+    // but targets `eval_object_field`'s `dir=` arm (object path = facts.path,
+    // trust = facts.obj_trust). The set `%objdirs = {"untrusted", "/tmp/"}`.
+    //
+    // On current 0677e98 code, `eval_object_field`'s dir= arm unconditionally
+    // calls `prefix_string_match(facts.path, value, sets)`. For a SetRef
+    // containing "untrusted", `prefix_string_match` iterates set members,
+    // encounters "untrusted" as a string that is NOT a keyword, tests
+    // `/tmp/payload`.starts_with("untrusted") = false, then moves on. So for
+    // path="/tmp/payload" (NOT under /tmp/) the result is NoMatch, not the
+    // expected macro fire. These tests expose that bug.
+    // -----------------------------------------------------------------------
+
+    /// Set `%objdirs = {"untrusted", "/tmp/"}`, rule `deny perm=any all :
+    /// dir=%objdirs`. Object `path="/tmp/x"` IS under `"/tmp/"`, `obj_trust=Trust::Yes`.
+    ///
+    /// Expected: decisive Deny (literal prefix match fires regardless of trust).
+    /// This is the literal-leg guard: even though the set contains `untrusted`,
+    /// a literal prefix member still matches by prefix independently.
+    ///
+    /// Should be GREEN on current code (prefix match under `"/tmp/"` -> Match).
+    /// Included to anchor that the fix does NOT break ordinary prefix matching.
+    #[test]
+    fn object_dir_setref_literal_prefix_member_matches_regardless_of_obj_trust() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("objdirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv_ref("dir", "objdirs")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/tmp/x".to_string()); // IS under /tmp/ -> literal prefix match
+        facts.obj_trust = Trust::Yes; // trusted; macro must NOT fire for trusted
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "object path /tmp/x is under literal prefix /tmp/ in %objdirs: \
+             the deny rule must FIRE via the literal-prefix leg, trust-independently"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive literal-prefix match");
+        assert!(
+            v.uncertain.is_none(),
+            "a literal-prefix match is decisive, not uncertain"
+        );
+    }
+
+    /// Set `%objdirs = {"untrusted", "/tmp/"}`, object `path="/home/x"` (NOT under
+    /// `/tmp/`), `obj_trust=Trust::No`.
+    ///
+    /// Expected: decisive Deny at rule 1 (the embedded `untrusted` macro FIRES
+    /// because the set contains `"untrusted"` AND `obj_trust=No`).
+    ///
+    /// Current code: `prefix_string_match` treats `"untrusted"` as a plain prefix
+    /// literal, tests `"/home/x".starts_with("untrusted")` = false, then `/tmp/`
+    /// -> `"/home/x".starts_with("/tmp/")` = false -> `NoMatch` -> rule 1 skipped
+    /// -> rule 2 Allow. This test asserts Deny -> RED on 0677e98.
+    #[test]
+    fn object_dir_setref_with_untrusted_member_fires_for_untrusted_object() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("objdirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv_ref("dir", "objdirs")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/home/x".to_string()); // NOT under /tmp/
+        facts.obj_trust = Trust::No; // untrusted object -> macro must fire
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "set %objdirs contains the `untrusted` macro and the object is untrusted: \
+             the deny rule must FIRE via the macro (path not under any literal prefix member)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "obj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// Set `%objdirs = {"untrusted", "/tmp/"}`, object `path="/home/x"` (NOT under
+    /// `/tmp/`), `obj_trust=Trust::Yes`.
+    ///
+    /// Expected: `decision=Allow`, `matched_rule=Some(2)`, `uncertain=None`.
+    /// (Trusted object -> macro does NOT fire; no literal prefix match either.)
+    ///
+    /// Current code: already returns Allow (via `NoMatch` from `prefix_string_match`)
+    /// with `uncertain=None`. This test stays GREEN on current code but would go
+    /// RED for an over-broad fix that always fires the macro.
+    #[test]
+    fn object_dir_setref_with_untrusted_member_no_fire_for_trusted_object() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("objdirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv_ref("dir", "objdirs")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/home/x".to_string()); // NOT under /tmp/
+        facts.obj_trust = Trust::Yes; // trusted -> macro does NOT fire
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "trusted object + path not under any literal prefix member: macro does NOT fire \
+             and there is no literal match, so the deny rule is skipped, rule 2 allow fires"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (allow) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "obj_trust=Yes + literal-prefix NoMatch is decisive, not uncertain"
+        );
+    }
+
+    /// Set `%objdirs = {"untrusted", "/tmp/"}`, object `path="/home/x"` (NOT under
+    /// `/tmp/`), `obj_trust=Trust::Unknown`.
+    ///
+    /// Expected: `decision=Allow`, `matched_rule=Some(2)`, `uncertain=Some(...)`.
+    /// (The embedded macro is the deciding factor; trust is unknown ->
+    /// `NotEvaluable` downgrade, mirroring the bare `dir=untrusted` Unknown case.)
+    ///
+    /// Current code ALSO returns `uncertain=Some` (because `prefix_string_match`
+    /// returns `NoMatch` for the literal `"untrusted"` prefix, then `NoMatch` for
+    /// `"/tmp/"` -> overall `NoMatch`, not `NotEvaluable`). Actually wait - let me
+    /// think again: `prefix_string_match` for a `SetRef` iterates members. For
+    /// member `"untrusted"`: it is not a keyword (execdirs/systemdirs), so the
+    /// code does `fact_path.starts_with("untrusted")` = false. For member
+    /// `"/tmp/"`: `"/home/x".starts_with("/tmp/")` = false. Returns `NoMatch`.
+    /// So the rule is `NoMatch` -> rule 2 Allow. `uncertain=None`. But the test
+    /// EXPECTS `uncertain=Some`. -> RED on 0677e98.
+    #[test]
+    fn object_dir_setref_with_untrusted_member_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("objdirs", &["untrusted", "/tmp/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv_ref("dir", "objdirs")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/home/x".to_string()); // NOT under /tmp/
+        facts.obj_trust = Trust::Unknown; // unknown -> NotEvaluable downgrade
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "object dir=%objdirs (set contains `untrusted`) with Unknown obj_trust and no \
+             literal prefix match must downgrade to an uncertain verdict, mirroring the \
+             subject-side SetRef Unknown behaviour"
+        );
+    }
+
+    /// OBJECT `dir=%set` where the set has NO `untrusted` member must NOT fire
+    /// the untrusted macro, even when the object is untrusted (`obj_trust=No`).
+    ///
+    /// This is the object-side analog of
+    /// `dir_setref_without_untrusted_member_does_not_become_not_evaluable` (the
+    /// subject-side guard at `eval_subject_field`'s `dir=` arm). It targets the
+    /// guard at `eval_object_field`'s `dir=` arm, line 559:
+    ///   `None if set_contains_untrusted(value, sets) => { ... }`
+    ///
+    /// If that guard is mutated to `true`, EVERY object `SetRef` routes to the
+    /// macro helper. For `obj_trust=No` the macro fires -> rule 1 Deny. The
+    /// correct code takes the `_` arm (pure prefix match), the path is NOT under
+    /// any prefix in the set -> `NoMatch` -> rule 1 skipped -> rule 2 Allow.
+    ///
+    /// Set: `%safedirs = {"/usr/", "/bin/"}` (no `untrusted` member).
+    /// Rule 1: `deny perm=any all : dir=%safedirs`.
+    /// Rule 2: `allow perm=any all : all`.
+    /// Facts: `path=Some("/home/user/thing")` (NOT under `/usr/` or `/bin/`),
+    ///        `obj_trust=Trust::No` (key: untrusted object).
+    ///
+    /// Expected: `decision=Allow`, `matched_rule=Some(2)`, `source=Rule`,
+    ///           `uncertain=None` (decisive `NoMatch`, no macro involved).
+    ///
+    /// Kills the mutant: `replace match guard set_contains_untrusted(value, sets)
+    /// with true in eval_object_field` (line 559).
+    #[test]
+    fn object_dir_setref_without_untrusted_member_does_not_become_not_evaluable() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("safedirs", &["/usr/", "/bin/"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv_ref("dir", "safedirs")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/home/user/thing".to_string()); // NOT under /usr/ or /bin/
+        facts.obj_trust = Trust::No; // untrusted object: macro would fire if guard wrong
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "set %safedirs has no `untrusted` member: the dir= constraint is a pure prefix \
+             match on the object path; path not under any prefix -> NoMatch -> rule 1 deny \
+             skipped, rule 2 allow fires"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (allow) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "a pure prefix NoMatch (no untrusted macro involved) is decisive, not uncertain"
         );
     }
 }
