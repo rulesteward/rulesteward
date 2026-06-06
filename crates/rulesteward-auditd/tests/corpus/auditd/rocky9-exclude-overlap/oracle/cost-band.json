@@ -1,0 +1,45 @@
+{
+  "scenario": "rocky9-exclude-overlap",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed",
+    "bytesNote": "1200 B/event (locked single constant). The CWD exclude removes ~60 B/event (CWD record) -> ~1140 B net; the additive band uses full 1200 B as the upper bound. Standardized from 900 to 1200 B/event (locked 2026-06-03)."
+  },
+  "correct_model": {
+    "comment": "Cost = the additive watch only. The exclude contributes 0 additive volume and lowers net bytes.",
+    "eventsPerDay": {
+      "low": 1000,
+      "typical": 20000,
+      "high": 200000
+    },
+    "gbPerDay": {
+      "low": 0.0012,
+      "typical": 0.024,
+      "high": 0.24
+    },
+    "costPerMonth": {
+      "low": 0.18,
+      "typical": 3.65,
+      "high": 36.48
+    },
+    "math": "watch event 1200 B (locked constant). typical 20000*1200/1e9 = 0.024 GB/day -> 0.024*30.4*5 = $3.65/mo. The exclude REDUCES net bytes from 1200 B/event (to ~1140 B net). Standardized from 900 to 1200 B/event (locked 2026-06-03).",
+    "note": "Net <= band. The CWD exclude removes ~60 B per watch event. The exact suppression benefit is workload-dependent (f3 section 5)."
+  },
+  "without_exclude_reference": {
+    "comment": "the watch alone at full 1200 B/event (same as additive band at the locked constant)",
+    "costPerMonth": {
+      "low": 0.18,
+      "typical": 3.65,
+      "high": 36.48
+    }
+  },
+  "naive_wrong_model": {
+    "comment": "A naive impl counts the exclude rule as an ADDITIVE rule with its own volume.",
+    "error": "Adding the exclude as additive DOUBLE-counts and OVERSTATES; the exclude only ever REDUCES (removes CWD bytes). The correct net is <= the watch-alone band ($3.65/mo typical); a naive additive model would report well above $3.65/mo."
+  }
+}

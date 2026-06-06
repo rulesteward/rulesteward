@@ -1,0 +1,56 @@
+{
+  "scenario": "rocky10-watch-vs-syscall-equiv",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perForm": {
+    "watch_form": {
+      "gbPerDay": {
+        "low": 0.00012,
+        "typical": 0.0024,
+        "high": 0.024
+      },
+      "costPerMonth": {
+        "low": 0.02,
+        "typical": 0.36,
+        "high": 3.65
+      }
+    },
+    "syscall_form": {
+      "gbPerDay": {
+        "low": 0.00012,
+        "typical": 0.0024,
+        "high": 0.024
+      },
+      "costPerMonth": {
+        "low": 0.02,
+        "typical": 0.36,
+        "high": 3.65
+      }
+    }
+  },
+  "equivalence_check": "watch_form == syscall_form EXACTLY. This is the load-bearing assertion of scenario 12: the two equivalent forms MUST produce identical cost. typical each: 2000*1200/1e9 = 0.0024 GB/day -> 0.0024*30.4*5.00 = $0.36/mo. Standardized from 900 to 1200 B/event (locked 2026-06-03).",
+  "total_if_both_present": {
+    "gbPerDay": {
+      "low": 0.00024,
+      "typical": 0.0048,
+      "high": 0.048
+    },
+    "costPerMonth": {
+      "low": 0.04,
+      "typical": 0.73,
+      "high": 7.30
+    }
+  },
+  "math": "Each form: file-watch event ~1200 B. typical 2000*1200/1e9 = 0.0024 GB/day -> $0.36/mo. The forms are equivalent so each costs the SAME; a ruleset listing both (as here, to fixture the equivalence) sums to 2x only because both are loaded. Standardized from 900 to 1200 B/event (locked 2026-06-03).",
+  "naive_wrong_model": {
+    "comment": "A naive impl that treats the -w watch as a single-path 'one rule' but expands the -F path syscall form into its full perm-group syscall list (or vice versa) prices the two forms DIFFERENTLY.",
+    "error": "watch_form != syscall_form. The correct model recognizes the desugaring (f3 section 2.2) and prices both identically. Any nonzero delta between the two forms is the bug this scenario catches."
+  }
+}

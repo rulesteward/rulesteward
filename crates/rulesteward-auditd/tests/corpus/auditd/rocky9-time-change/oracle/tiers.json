@@ -1,0 +1,49 @@
+{
+  "scenario": "rocky9-time-change",
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "rare time syscalls OR'd (auditctl(8) -S, f3 2.3); LOW tier (f3 3.5)"
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "32-bit arch pairing (NOT a duplicate; f3 catalog #30 arch-paired intent)"
+    },
+    {
+      "line": "-w /etc/localtime -p wa -k time-change",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "localtime watch perm=wa, 900 B/event (f3 3.3)"
+    }
+  ],
+  "dominant_tier": "LOW (rare time syscalls + localtime watch). All additive, all LOW.",
+  "rate_band_basis": "f3 3.5/6: adjtimex/settimeofday/clock_settime are rarely-called syscalls -> LOW band (1-100/day). localtime watch LOW-traffic. Mixed bytes (1200 syscall / 900 watch)."
+}

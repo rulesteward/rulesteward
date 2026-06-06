@@ -1,0 +1,36 @@
+{
+  "id": "rocky9-multi-triple",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Same source domain and same target TYPE (shadow_t) but TWO different classes: file{read} and dir{search}. Tests that perms are NOT unioned across different classes (f4 contract #5) - two separate allow lines, one per (sdomain, ttype, tclass) triple.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "dir",
+      "perms": ["search"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [
+    "allow logrotate_t shadow_t:file read;",
+    "allow logrotate_t shadow_t:dir search;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:dir search; allow logrotate_t shadow_t:file read;",
+    "audit2allow_R": "allow logrotate_t shadow_t:dir search; auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "-R keeps the raw dir:search allow (no interface matched it) but converts the file:read denial into the auth_read_shadow() macro (attribute + read_file_perms 5-perm padding + etc_t:dir 6-perm grant). Our expected.te keeps BOTH as raw allows: file:read and dir:search on separate lines, no macro, no cross-class union, no padding.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive grouper keyed only on (sdomain, ttype) - forgetting tclass - would wrongly union file:read and dir:search into one rule like `allow logrotate_t shadow_t:??? { read search };` (read is not a valid dir perm, search is not a valid file perm - a broken/uncompilable rule). The class MUST be part of the grouping key."
+  }
+}

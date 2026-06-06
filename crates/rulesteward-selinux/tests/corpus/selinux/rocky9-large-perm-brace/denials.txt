@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438906.100:42001): avc:  denied  { ioctl read write getattr lock append open } for  pid=28000 comm="dbwriter" name="state.db" dev="vda4" ino=99001 scontext=system_u:system_r:mysqld_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0

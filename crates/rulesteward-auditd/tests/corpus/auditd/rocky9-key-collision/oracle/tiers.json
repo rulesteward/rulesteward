@@ -1,0 +1,38 @@
+{
+  "scenario": "rocky9-key-collision",
+  "key_note": "Both rules carry -k access but are DIFFERENT rules (execve vs init_module/finit_module) with wildly different volumes (HIGH vs LOW). Per-rule classification must NOT be collapsed by the shared key: each rule keeps its own tier. In --from-log per-key aggregation, key=access sums BOTH rules' events into one bucket (correct for per-key), but the ruleset-only per-RULE tiering must still distinguish them.",
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k access",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "access",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "unrestricted execve HIGH. Shares key=access with the module rule but is a DISTINCT rule."
+    },
+    {
+      "line": "-a always,exit -S init_module -S finit_module -k access",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "access",
+      "syscalls": [
+        "init_module",
+        "finit_module"
+      ],
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      },
+      "note": "module-load syscalls, rare => LOW. SAME key=access. Must NOT be conflated with the execve rule despite the shared key."
+    }
+  ],
+  "dominant_tier": "HIGH (execve) + LOW (modules), SAME key",
+  "rate_band_basis": "f3 section 6: execve HIGH; module-load rare LOW. Two distinct rules, one shared key."
+}

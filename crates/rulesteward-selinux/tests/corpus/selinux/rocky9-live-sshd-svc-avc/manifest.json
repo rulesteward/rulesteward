@@ -1,0 +1,87 @@
+{
+  "id": "rocky9-live-sshd-svc-avc",
+  "os": 9,
+  "os_version": "Rocky Linux 9.8",
+  "kernel": "5.14.0-687.10.1.el9_8.0.1.x86_64",
+  "selinux_policy": "selinux-policy-38.1.75-2.el9",
+  "policy_version": "policy.33",
+  "enforcement": "Enforcing",
+  "profile": "oracle-fixture",
+  "tier": "vm-live",
+  "intent": "Real AVC denials from SSH authentication and service startup on Rocky 9. Naturally generated without semodule -DB. All category: Missing TE allow rule.",
+  "semodule_db_applied": true,
+  "semodule_db_result": "No additional AVCs appeared with dontaudit disabled (10s window). The 125 AVCs in the log were generated naturally by SSH auth during the measurement session.",
+  "avc_count": 125,
+  "unique_denial_patterns": 7,
+  "patterns": [
+    {
+      "scontext": "sshd_t",
+      "tcontext": "chkpwd_t",
+      "tclass": "process",
+      "perms": ["noatsecure", "rlimitinh", "siginh"],
+      "comm": "sshd-session/unix_chkpwd",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow sshd_t chkpwd_t:process { noatsecure rlimitinh siginh };"
+    },
+    {
+      "scontext": "sshd_t",
+      "tcontext": "shadow_t",
+      "tclass": "file",
+      "perms": ["read"],
+      "comm": "sshd-session",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow sshd_t shadow_t:file read;"
+    },
+    {
+      "scontext": "systemd_logind_t",
+      "tcontext": "systemd_logind_t",
+      "tclass": "capability",
+      "perms": ["net_admin"],
+      "comm": "systemd-user-runtime-dir",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow systemd_logind_t self:capability net_admin;"
+    },
+    {
+      "scontext": "init_t",
+      "tcontext": "chkpwd_t",
+      "tclass": "process",
+      "perms": ["siginh"],
+      "comm": "systemd",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow init_t chkpwd_t:process siginh;"
+    },
+    {
+      "scontext": "init_t",
+      "tcontext": "shadow_t",
+      "tclass": "file",
+      "perms": ["read"],
+      "comm": "systemd",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow init_t shadow_t:file read;"
+    },
+    {
+      "scontext": "init_t",
+      "tcontext": "unconfined_t",
+      "tclass": "process",
+      "perms": ["siginh"],
+      "comm": "systemd",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow init_t unconfined_t:process siginh;"
+    },
+    {
+      "scontext": "setroubleshootd_t",
+      "tcontext": "rpm_var_lib_t",
+      "tclass": "file",
+      "perms": ["write", "setattr"],
+      "comm": "rpm",
+      "category": "Missing TE allow rule",
+      "audit2allow": "allow setroubleshootd_t rpm_var_lib_t:file { setattr write };"
+    }
+  ],
+  "kernel_fields": {
+    "field_set": "Rocky9-ENRICHED-5.14",
+    "notable": "permissive=0 present on all denials (Enforcing). AUID field present. ARCH field present in ENRICHED format. type=AVC with msg= format (audit-3.1.5 style).",
+    "vs_rocky8": "Same AVC format as Rocky 8 (audit 3.1.x family). Field names and record structure identical.",
+    "vs_rocky10": "Rocky 10 uses audit 4.0.3 (major version bump) - may have different record fields. Not compared in this run."
+  }
+}

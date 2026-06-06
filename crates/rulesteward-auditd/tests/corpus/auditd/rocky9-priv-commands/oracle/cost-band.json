@@ -1,0 +1,19 @@
+{
+  "scenario": "rocky9-priv-commands",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "total": {
+    "gbPerDayLow": 0.003601,
+    "gbPerDayTypical": 0.036036,
+    "gbPerDayHigh": 0.36012,
+    "costPerMonthLow": 0.55,
+    "costPerMonthTypical": 5.48,
+    "costPerMonthHigh": 54.74
+  },
+  "math": "Sum: sudo 15000*1200 (MEDIUM) + su 15000*1200 (modeled MEDIUM-low) + passwd 30*1200 (LOW), /1e9. $/mo = gb/day*30.4*5.00."
+}

@@ -1,0 +1,77 @@
+{
+  "scenario": "rocky9-identity-watches",
+  "rules": [
+    {
+      "line": "-w /etc/group -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch perm=wa"
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch"
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch"
+    },
+    {
+      "line": "-w /etc/gshadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch"
+    },
+    {
+      "line": "-w /etc/security/opasswd -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "old-password history watch"
+    }
+  ],
+  "dominant_tier": "MEDIUM (passwd/shadow/group); LOW (gshadow/opasswd). All additive, one shared key.",
+  "rate_band_basis": "f3 6: identity-file write watches are LOW-traffic on a stable host; 900 B/event (f3 3.3). Five watches, ONE shared -k identity key."
+}

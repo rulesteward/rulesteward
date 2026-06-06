@@ -1,0 +1,77 @@
+{
+  "scenario": "rocky10-rulesd-multifile",
+  "rules": [
+    {
+      "line": "-D",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "control -D delete-all at load (auditctl(8) -D, f3 2.1); volume-neutral"
+    },
+    {
+      "line": "-b 8192",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "control backlog (auditctl(8) -b, f3 2.1)"
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "from 30-identity.rules; watch perm=wa"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "from 50-exec.rules; auid-narrowed execve (f3 6 ~0.3x)"
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "from 99-finalize.rules; immutable finalize (auditctl(8) -e 2, f3 2.1)"
+    }
+  ],
+  "dominant_tier": "MEDIUM (auid-narrowed execve + identity watch); NEGATIVE control bookends",
+  "rate_band_basis": "f3 6: auid-narrowed execve ~0.3x (1.5k/15k/150k); identity watch LOW-traffic; control rules 0. Mixed bytes (900 watch / 1200 syscall)."
+}

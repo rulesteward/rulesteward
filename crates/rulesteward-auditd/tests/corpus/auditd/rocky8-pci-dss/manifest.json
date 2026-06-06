@@ -1,0 +1,93 @@
+{
+  "id": "rocky8-pci-dss",
+  "os": 8,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A PCI-DSS-style file-integrity-monitoring (FIM) watch set (catalog #21): identity files plus RECURSIVE directory watches on /bin and /sbin. The directory watches are recursive to the subtree bottom (f3 2.2), a HIGH breadth multiplier a naive single-path model understates.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k pci_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "pci_identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k pci_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "pci_identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /bin/ -p wa -k pci_binaries",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "pci_binaries",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      }
+    },
+    {
+      "line": "-w /sbin/ -p wa -k pci_binaries",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "pci_binaries",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      }
+    },
+    {
+      "line": "-w /etc/cron.d/ -p wa -k pci_jobs",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "pci_jobs",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.002436,
+    "gbPerDayTypical": 0.0498,
+    "gbPerDayHigh": 0.498,
+    "costPerMonthLow": 0.37,
+    "costPerMonthTypical": 7.57,
+    "costPerMonthHigh": 75.7
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The /bin and /sbin watches are DIRECTORY watches: recursive to the subtree bottom (f3 2.2), so they fire on every write/attr-change across the entire tree -- HIGH breadth. A naive impl treating '-w /bin -p wa' as a single path understates volume ~20x+. All file-watch events are 900 B (f3 3.3), not 1200 B."
+}

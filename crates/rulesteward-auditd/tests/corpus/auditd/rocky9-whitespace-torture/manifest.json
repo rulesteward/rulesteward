@@ -1,0 +1,68 @@
+{
+  "id": "rocky9-whitespace-torture",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Whitespace-torture (catalog #38): column-0 + indented comments (spaces and tabs), inline # comments, blank lines, multi-space token separation, tab-indented rules, trailing whitespace. All valid for augenrules. Parser-stress: the formatting must not change the parse result.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "trailing whitespace after the rule; must be stripped. HIGH execve, 1200 B."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset' -k file_access",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "file_access",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "tab-indented with multiple spaces between tokens; must normalize. Narrowed openat MEDIUM, 1200 B."
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k passwd_watch",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_watch",
+      "perm_expands_to_syscalls": 49,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "note": "inline # comment after a tab; comment must be stripped. Single-file write/attr watch, 900 B."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00792,
+    "gbPerDayTypical": 0.0804,
+    "gbPerDayHigh": 0.804,
+    "costPerMonthLow": 1.2,
+    "costPerMonthTypical": 12.22,
+    "costPerMonthHigh": 122.21
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The file mixes tabs and spaces, indents some rules and comments, puts an inline # comment after a rule (after a tab), and has blank/comment-only lines and trailing whitespace. All valid for augenrules/auditctl (f3 section 2: line-oriented, # comment). A fragile parser may: (a) treat a tab-indented rule line as a comment or skip it; (b) include an inline # comment as part of the -k value; (c) fail to normalize multiple spaces between tokens; (d) choke on blank lines. The correct parse yields exactly 3 rules (HIGH execve, MEDIUM openat, MEDIUM watch) identical to a whitespace-clean version. Any deviation is a tokenizer bug."
+}

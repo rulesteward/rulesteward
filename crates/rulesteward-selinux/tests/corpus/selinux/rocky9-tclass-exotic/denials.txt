@@ -1,0 +1,4 @@
+type=AVC msg=audit(1780438907.010:43001): avc:  denied  { read write search } for  pid=29001 comm="crond" scontext=system_u:system_r:crond_t:s0 tcontext=system_u:system_r:crond_t:s0 tclass=key permissive=0
+type=AVC msg=audit(1780438907.120:43002): avc:  denied  { use } for  pid=29002 comm="httpd" scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=fd permissive=0
+type=AVC msg=audit(1780438907.230:43003): avc:  denied  { send_msg } for  pid=29003 comm="NetworkManager" scontext=system_u:system_r:NetworkManager_t:s0 tcontext=system_u:system_r:system_dbusd_t:s0 tclass=dbus permissive=0
+type=AVC msg=audit(1780438907.340:43004): avc:  denied  { use_as_override } for  pid=29004 comm="init" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:kernel_t:s0 tclass=kernel_service permissive=0

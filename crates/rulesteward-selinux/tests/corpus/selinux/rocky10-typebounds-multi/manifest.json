@@ -1,0 +1,31 @@
+{
+  "id": "rocky10-typebounds-multi",
+  "os": 10,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE, THE HEADLINE FLOOR-VS-AUTHORITATIVE CASE: a MULTI-PERM typebounds violation. rsbnd_child_t (bounded by rsbnd_parent_t) requests { write lock ioctl } on tmp_t:file - three perms its parent lacks. Authoritative=Bounds, floor=none. Proves Bounds is NOT record-detectable and the policy-backed layer is necessary. Ships bounds_test.te/.pp. (os:10 lane of the version matrix; the transform is policyvers-33-invariant.)",
+  "denials": [
+    { "sdomain": "rsbnd_child_t", "ttype": "tmp_t", "tclass": "file",
+      "perms": ["write","lock","ioctl"], "permissive": false, "kind": "Bounds" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Bounds",
+  "floor_label": "none",
+  "_kinds_note": "Authoritative=Bounds for ALL THREE perms (audit2why replay against policy.bounds reports 'Typebounds violation' three times). floor=none: same role (system_r), same level (s0), ordinary file/perm vocab - the offline heuristic has NOTHING to flag and would wrongly suggest a 3-perm allow. THE clearest proof in the corpus that the floor alone is insufficient.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow rsbnd_child_t tmp_t:file { ioctl lock write };  (BOGUS 3-perm allow - none of it helps; the bound is enforced above the TE vector)",
+    "audit2allow_R": "not computed against policy.bounds (no interface info for custom types); see audit2allow-R.te",
+    "narrower_than_R_by": "N/A - decline scenario. expected.te is rule-free and compiles exit 0.",
+    "audit2why_category": "Bounds",
+    "audit2why_detail": "Typebounds violation. Add an allow rule for the parent type. (reported once per perm: write, lock, ioctl)",
+    "audit2why_policy": "_policies/policy.bounds (typebounds module loaded; built via _policies/build-bounds-policy.sh). Against STOCK policy the custom types are undefined (BADSCON), NOT Bounds."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Typebounds violation across { write lock ioctl }: rsbnd_child_t is bounded by a parent type lacking these perms on tmp_t:file. The fix is to widen the PARENT type, not the child.",
+    "suspected_trap": "A naive impl emits the BOGUS allow rsbnd_child_t tmp_t:file { ioctl lock write };. Worse, the OFFLINE floor cannot flag this at all (floor=none) because every field looks normal - this is THE fixture proving the offline floor is blind to Bounds and the policy-backed authoritative layer is mandatory."
+  }
+}

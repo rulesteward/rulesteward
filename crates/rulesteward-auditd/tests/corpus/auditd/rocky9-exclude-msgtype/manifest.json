@@ -1,0 +1,90 @@
+{
+  "id": "rocky9-exclude-msgtype",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Standalone exclude-msgtype suppression (catalog #10). Two -a always,exclude -F msgtype=<TYPE> rules that drop whole record types (PROCTITLE, PATH) from the event stream. These are SUPPRESSIVE: they reduce per-event byte volume produced by the additive rules; they never add events. Tests that a cost impl correctly classifies 'always,exclude' as suppressive, not additive.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only (per f3 section 2.4 and generator prompt: containers cannot load audit rules without kernel netlink; VMs needed for live-load; grammar-only is correct tier for this scenario)",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exclude -F msgtype=PROCTITLE",
+      "kind": "exclude",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "Drops PROCTITLE sub-records (~100 B each, AUDIT_PROCTITLE=1327). Contributes 0 additive volume; a naive impl that treats 'always,exclude' as 'always,exit' counts this as additive MEDIUM volume (the trap)."
+    },
+    {
+      "line": "-a always,exclude -F msgtype=PATH",
+      "kind": "exclude",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "Drops PATH sub-records (~200 B each, AUDIT_PATH=1302). Contributes 0 additive volume. Same trap as PROCTITLE exclude."
+    },
+    {
+      "line": "-a always,exit -S execve -F 'auid>=1000' -F 'auid!=unset' -k user_cmds",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "user_cmds",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "rate_band": {
+        "low": 10,
+        "typical": 100,
+        "high": 1000
+      }
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "rate_band": {
+        "low": 10,
+        "typical": 100,
+        "high": 1000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.001824,
+    "gbPerDayTypical": 0.01824,
+    "gbPerDayHigh": 0.1824,
+    "costPerMonthLow": 0.28,
+    "costPerMonthTypical": 2.77,
+    "costPerMonthHigh": 27.72
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Both -a always,exclude rules use action 'always', which a naive impl confuses with 'always,exit' and counts as additive MEDIUM volume. Correct: 'always,exclude' is the exclude filter list, direction=suppressive, contributing 0 additive events and only reducing bytes on events produced by the additive rules below. A naive impl adds two spurious MEDIUM bands (~$2.76/mo each), inflating total from ~$2.76/mo to ~$8.21/mo (3x overstatement). The key assertion: classifying 'always,exclude' as suppressive (direction=suppressive, tier NEGATIVE) regardless of the 'always' action word."
+}

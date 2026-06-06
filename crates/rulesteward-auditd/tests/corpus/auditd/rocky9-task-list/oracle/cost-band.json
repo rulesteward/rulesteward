@@ -1,0 +1,38 @@
+{
+  "scenario": "rocky9-task-list",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "task_create": {
+      "gbPerDay": {
+        "low": 1.2e-05,
+        "typical": 0.00024,
+        "high": 0.0024
+      },
+      "costPerMonth": {
+        "low": 0.0,
+        "typical": 0.04,
+        "high": 0.36
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 1.2e-05,
+      "typical": 0.00024,
+      "high": 0.0024
+    },
+    "costPerMonth": {
+      "low": 0.0,
+      "typical": 0.04,
+      "high": 0.36
+    }
+  },
+  "math": "1200 B/event. typical 200/day: 200*1200/1e9 = 0.00024 GB/day -> 0.00024*30.4*5 = $0.04/mo. Near-zero.",
+  "list_note": "Additive but LOW. The scenario's value is recognizing the 'task' list and tiering it LOW, not HIGH."
+}

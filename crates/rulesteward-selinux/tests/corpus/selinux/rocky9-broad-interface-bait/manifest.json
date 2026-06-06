@@ -1,0 +1,33 @@
+{
+  "id": "rocky9-broad-interface-bait",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "THE HEADLINE over-broadening contract case (f4 section 2.3). A logrotate_t -> shadow_t:file { read getattr } denial whose audit2allow -R picks the broad auth_read_shadow() interface. The oracle PROVES RuleSteward's raw narrow allow is strictly narrower: no macro, no typeattribute, no perm padding, no unrelated etc_t.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["getattr"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file { getattr read };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file { getattr read };",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "auth_read_shadow() expands (per f4 section 2.3, .if text identical el8/9/10) to: (1) typeattribute logrotate_t can_read_shadow_passwords - a policy-wide attribute granting every existing `allow can_read_shadow_passwords ...` rule to logrotate_t; (2) allow logrotate_t shadow_t:file { open getattr read ioctl lock } - 5 perms where only 2 (getattr, read) were denied (adds open, ioctl, lock); (3) allow logrotate_t etc_t:dir { getattr search open read lock ioctl } - 6 perms on the etc_t type that NEVER appeared in any denial. Our expected.te: `allow logrotate_t shadow_t:file { getattr read };` - the exact 2 denied perms, zero macro/attribute/padding/unrelated-type.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "An impl that shells out to audit2allow -R (or replicates its refpolicy-default behavior) emits `auth_read_shadow(logrotate_t)` - a single innocuous-looking macro call that, once compiled, grants a policy-wide attribute + 3 extra perms on shadow_t + a full 6-perm grant on the unrelated etc_t:dir. This is precisely the over-broadening RuleSteward exists to refuse."
+  }
+}

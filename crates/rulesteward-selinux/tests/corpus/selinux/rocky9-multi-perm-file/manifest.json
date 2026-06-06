@@ -1,0 +1,35 @@
+{
+  "id": "rocky9-multi-perm-file",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Same (logrotate_t, shadow_t, file) triple denied across three separate records with perms read, getattr, open. Tests that perms are correctly UNIONED WITHIN one triple into a single allow rule (f4 contract #5). One allow line, three perms.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["getattr"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["open"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file { getattr open read };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file { getattr open read };",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "omits the auth_read_shadow() macro. Even with 3 denied perms (getattr/open/read), -R collapses the whole file access to the macro - which adds the can_read_shadow_passwords attribute, pads shadow_t:file to read_file_perms (open/getattr/read/ioctl/lock - adds ioctl+lock we did NOT see denied), and grants etc_t:dir list_dir_perms (6 perms on an unrelated type). Our expected.te emits exactly the 3 denied perms on one allow line.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive grouper might emit three separate allow lines (one per record) instead of unioning the three perms into a single { getattr open read } brace for the one triple; or, mirroring -R, pad the perm set with ioctl/lock."
+  }
+}

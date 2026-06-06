@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438903.400:30301): avc:  denied  { signal } for  pid=25001 comm="keepalived" scontext=system_u:system_r:keepalived_t:s0 tcontext=system_u:system_r:httpd_t:s0 tclass=process permissive=0

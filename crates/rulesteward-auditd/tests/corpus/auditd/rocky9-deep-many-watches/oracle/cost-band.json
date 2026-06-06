@@ -1,0 +1,61 @@
+{
+  "scenario": "rocky9-deep-many-watches",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "recursive_dir_watch": {
+    "events": {
+      "low": 1000,
+      "typical": 20000,
+      "high": 200000
+    },
+    "gbPerDay": {
+      "low": 0.0012,
+      "typical": 0.024,
+      "high": 0.24
+    },
+    "costPerMonth": {
+      "low": 0.18,
+      "typical": 3.65,
+      "high": 36.48
+    }
+  },
+  "all_file_watches_combined": {
+    "count": 20,
+    "events": {
+      "low": 200,
+      "typical": 4000,
+      "high": 40000
+    },
+    "gbPerDay": {
+      "low": 0.00024,
+      "typical": 0.0048,
+      "high": 0.048
+    },
+    "costPerMonth": {
+      "low": 0.04,
+      "typical": 0.73,
+      "high": 7.30
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.00144,
+      "typical": 0.0288,
+      "high": 0.288
+    },
+    "costPerMonth": {
+      "low": 0.22,
+      "typical": 4.38,
+      "high": 43.78
+    }
+  },
+  "math": "recursive /etc/security/ watch typ 20000*1200/1e9 = 0.024 GB/day -> $3.65/mo (dominates). 20 single-file watches typ 4000*1200/1e9 = 0.0048 GB/day -> $0.73/mo combined. Total typical ~$4.38/mo. Standardized from 900 to 1200 B/event (locked 2026-06-03).",
+  "ranking_note": "The recursive dir watch ($3.65/mo) out-weighs all 20 deep file watches combined ($0.73/mo). Path depth is irrelevant to volume; recursion is what matters."
+}

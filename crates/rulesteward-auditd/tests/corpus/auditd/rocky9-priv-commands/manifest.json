@@ -1,0 +1,67 @@
+{
+  "id": "rocky9-priv-commands",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Privileged-command execution auditing (catalog #26): -a always,exit -F path=/usr/bin/sudo -F perm=x -F 'auid>=1000'. MEDIUM. The trap: -F perm=x expands to execve,execveat (permtab.h, f3 2.4) and this rule is EQUIVALENT to a -w /usr/bin/sudo -p x watch (f3 2.2) -- the cost model must price them the same.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -F path=/usr/bin/sudo -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-a always,exit -F path=/usr/bin/su -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-a always,exit -F path=/usr/bin/passwd -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.003601,
+    "gbPerDayTypical": 0.036036,
+    "gbPerDayHigh": 0.36012,
+    "costPerMonthLow": 0.55,
+    "costPerMonthTypical": 5.48,
+    "costPerMonthHigh": 54.74
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "These syscall rules use -F path=...-F perm=x, which is EXACTLY EQUIVALENT to the watch form -w /usr/bin/sudo -p x (f3 2.2). A cost model MUST price the syscall form and the equivalent watch form the SAME (catalog #12 trap). Also: perm=x expands to execve,execveat (permtab.h, f3 2.4), so these are execve-class 1200 B events, NOT 900 B watch events despite targeting a path. The auid narrowing makes them MEDIUM (not unrestricted HIGH)."
+}

@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-granted-no-permissive",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL verdict + field-absence: a lone audited `avc: granted { read }` record with NO permissive= field at all (the kernel emits permissive= ONLY on a denial, avc.c:721). The parser must handle the ABSENCE of permissive= (Option<bool> -> None on a granted record) and recognize granted as an audited allow that SUCCEEDED - not a denial to remediate.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": null, "verdict": "granted", "kind": "GrantedNotADenial" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "n/a",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). A granted record is not a denial, so neither layer applies: the access already succeeded and there is nothing to fix.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "(empty - a lone granted record yields zero allow rules; audit2allow does not suggest a fix for an audited allow)",
+    "audit2allow_R": "(empty)",
+    "narrower_than_R_by": "N/A - not a denial. Both baselines are empty (verified). expected.te is intentionally rule-free (header + require{}, zero allow rules) and compiles to prove the no-suggestion/empty shape is valid.",
+    "audit2why_category": "n/a (audit2why prints the record with a generic 'should be dontaudit'd/already allowed' note; it is not a denial to categorize)",
+    "expected_is_subset_of_N": null,
+    "expected_strictly_narrower_than_R": null
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Granted record: this is an audited ALLOW (the access succeeded), not a denial. The kernel emits no permissive= field on a granted record (avc.c:721). There is nothing to fix; do not emit an allow.",
+    "suspected_trap": "Two traps. (1) A parser that REQUIRES a permissive= field (treats it as mandatory) would fail to parse a granted record entirely, since the kernel omits permissive= on grants. (2) A parser that ignores the verdict and treats any `type=AVC` as a denial would emit a bogus `allow logrotate_t shadow_t:file read;` for an access that already succeeded. Correct: permissive is Option<bool> (None on a grant), and only `denied` records yield suggestions."
+  }
+}

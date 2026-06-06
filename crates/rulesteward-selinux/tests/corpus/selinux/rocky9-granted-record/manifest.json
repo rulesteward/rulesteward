@@ -1,0 +1,33 @@
+{
+  "id": "rocky9-granted-record",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL verdict-discrimination: an audited `avc: granted { read }` record (an allow that SUCCEEDED) mixed with an `avc: denied { write }` record in the same set. triage must distinguish the verdict (avc.c:659 emits granted vs denied) and emit an allow ONLY for the actual denial, never for the granted record.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "verdict": "granted", "kind": "GrantedNotADenial" },
+    { "sdomain": "logrotate_t", "ttype": "var_log_t", "tclass": "file",
+      "perms": ["write"], "permissive": false, "verdict": "denied", "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t var_log_t:file write;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). Applies to the DENIED write only; the granted read is excluded by verdict before any categorization.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t var_log_t:file write;  (audit2allow correctly SKIPS the granted read - prints '#!!!! This avc is allowed in the current policy' for it - and emits an allow only for the denied write)",
+    "audit2allow_R": "logging_rw_generic_logs(logrotate_t)  (the -R macro form for the denied write only; the granted read is still skipped)",
+    "narrower_than_R_by": "For the denied write: -R substitutes the logging_rw_generic_logs() interface macro (grants read+write generic-log perms, likely on multiple log types), whereas expected.te emits exactly `allow logrotate_t var_log_t:file write;` - the single denied perm on the single denied type, no macro, no read padding, no extra log types.",
+    "audit2why_category": "TeAllowable (the denied write is a missing-TE-allow gap; the granted read audit2why labels as 'should be dontaudit'd' i.e. already allowed)",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl that ignores the verdict token and treats every `type=AVC` record as a denial would emit a bogus `allow logrotate_t shadow_t:file read;` for the GRANTED read (which already succeeded and needs no fix), in addition to the real write allow. Correct behavior: filter on `granted` vs `denied` (avc.c:659) and only suggest fixes for denials. audit2allow gets this right (it skips the grant); a hand-rolled parser must too."
+  }
+}

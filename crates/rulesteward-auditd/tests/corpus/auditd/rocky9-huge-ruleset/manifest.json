@@ -1,0 +1,75 @@
+{
+  "id": "rocky9-huge-ruleset",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Huge ruleset (212 valid rules: 4 control + 200 single-file watches + 8 syscall). Tests parse performance, volume RANKING (one execve rule dominates), and that output does NOT flood with all 212 lines equally weighted (f3 section 5.1).",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rule_count": 212,
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "DOMINANT rule; outweighs all 180 watches combined."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset' -k file_access",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "file_access",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-w /etc/a.cfg -p wa -k watch_0 (representative of 180 single-file watches)",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "watch_0",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "one of 180 single-file write/attr watches; each LOW, 900 B/event. Collectively minor vs execve."
+    },
+    {
+      "line": "-D / -b 8192 / --backlog_wait_time 60000 / -f 1",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "note": "the 4 control rules; volume-neutral."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0102,
+    "gbPerDayTypical": 0.126,
+    "gbPerDayHigh": 1.26,
+    "costPerMonthLow": 1.55,
+    "costPerMonthTypical": 19.15,
+    "costPerMonthHigh": 191.52
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Two traps. (1) Parse performance / output flood: a naive impl dumps all 212 rules in a flat unranked list, burying the one rule (-S execve) that actually drives ~$9/mo of the ~$20.06/mo total. The correct output RANKS by volume and surfaces the dominant execve rule; the 200 single-file watches are collectively minor (~$5.47/mo). (2) Equal-weighting: a model that tiers all 200 watches the same as the execve rule over-states their collective importance. The ranking logic (f3 section 5.1, 'reliably RANK rules by expected volume') is the load-bearing behavior."
+}

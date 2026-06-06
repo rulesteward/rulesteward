@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:24045): avc:  denied  { read getattr } for  pid=15045 comm="logrotate" name="messages" dev="vda4" ino=400145 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:var_log_t:s0 tclass=file permissive=0

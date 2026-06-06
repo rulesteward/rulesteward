@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-hex-perm-token",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL parser-tolerance + tool-bug demonstration: a 0x%x residual perm token (0x4000) inside the brace alongside the named perm `read` (avc.c:677, for permission bits with no textual name). The parser must NOT choke on the hex token; it preserves the named `read` perm and reports the un-mappable residual. Crucially, audit2allow CHOKES on the hex token and drops the ENTIRE record (empty output) - RuleSteward should do better by recovering the named perm.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "perms_unmappable_residual": ["0x4000"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). audit2why could not run here because the hex token fails libsepol perm conversion (same failure as audit2allow); the category is derived from the named-perm subset, which is a plain TeAllowable file read.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "(empty - libsepol fails 'could not convert 0x4000 to av bit' and audit2allow DROPS THE ENTIRE RECORD, emitting zero rules; verified - the warning is on stderr, stdout is empty)",
+    "audit2allow_R": "(empty - same hex-token failure)",
+    "narrower_than_R_by": "N/A in the usual subset sense: the audit2allow baselines are EMPTY here because the tool choked. The comparison is inverted - RuleSteward's expected.te (`allow logrotate_t shadow_t:file read;`) is STRICTLY MORE USEFUL than audit2allow's empty output: by tolerating the hex token and keeping the named `read`, it recovers the narrow allow audit2allow threw away. This is a tool-robustness finding, not an over-broadening one.",
+    "audit2why_category": "(empty - audit2why hits the same libsepol perm-conversion failure)",
+    "expected_is_subset_of_N": null,
+    "expected_strictly_narrower_than_R": null
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "Two traps. (1) A parser that splits the brace on whitespace and tries to map every token to a perm name CRASHES or errors on `0x4000` (libsepol literally errors). (2) A parser that mirrors audit2allow's all-or-nothing behavior DROPS the whole denial when it sees the hex token, silently losing the recoverable `read` perm. Correct behavior: tolerate the hex token, preserve `read`, report `0x4000` as an un-mappable residual (never emit it into a rule - it would not compile)."
+  }
+}

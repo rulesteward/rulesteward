@@ -1,0 +1,42 @@
+{
+  "id": "rocky9-task-list",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "task filter-list rule (f3 section 2.3, flagtab.h AUDIT_FILTER_TASK). An -a always,task rule fires at task creation (fork/clone), near-zero net volume when narrowed. Valid, distinct list. Catches a naive 'any -a rule = HIGH' classifier.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,task -F 'auid>=1000' -F 'auid!=unset' -k task_create",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "task_create",
+      "list": "task",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "task-creation list, narrowed by auid. Fires at fork/clone for user tasks; LOW/near-zero net volume. 1200 B/event. Valid distinct list (not 'exit')."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 1.2e-05,
+    "gbPerDayTypical": 0.00024,
+    "gbPerDayHigh": 0.0024,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.04,
+    "costPerMonthHigh": 0.36
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The 'task' filter list (flagtab.h) matches only at fork/clone time and sees inherited task attributes (auditctl(8)), so an always,task rule fires far less and carries near-zero net volume (LOW, ~$0.04/mo here). Two traps: (a) a parser that only knows 'exit'/'filesystem' rejects the valid 'task' list; (b) a classifier that tiers every -a always rule as HIGH over-warns by ~200x. The list must be recognized and the rule tiered LOW."
+}

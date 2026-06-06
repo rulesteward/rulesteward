@@ -1,0 +1,3 @@
+type=AVC msg=audit(1780438904.510:40001): avc:  denied  { read } for  pid=26001 comm="httpd" name="index.html" dev="vda4" ino=145002 scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:default_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780438904.622:40002): avc:  denied  { write } for  pid=26044 comm="crond" name="cronjob.tmp" dev="vda4" ino=22119 scontext=system_u:system_r:crond_t:s0 tcontext=system_u:object_r:tmp_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780438904.733:40003): avc:  denied  { getattr } for  pid=26001 comm="httpd" name="index.html" dev="vda4" ino=145002 scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:default_t:s0 tclass=file permissive=0

@@ -1,0 +1,21 @@
+{
+  "id": "rocky9-stock-control",
+  "os": 9,
+  "profile": "control-only",
+  "adversarial": false,
+  "intent": "The shipped bootstrap control block (-D / -b 8192 / --backlog_wait_time 60000 / -f 1) that every Rocky VM ships in /etc/audit/rules.d/audit.rules. Exercises the control-rule classification and the near-zero cost boundary.",
+  "rs_commit": "fe89260",
+  "validation": { "method": "grammar-only", "verdict": "valid", "log": "validation.log" },
+  "rules": [
+    { "line": "-D", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null },
+    { "line": "-b 8192", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null },
+    { "line": "--backlog_wait_time 60000", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null },
+    { "line": "-f 1", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0, "gbPerDayTypical": 0.0, "gbPerDayHigh": 0.0,
+    "costPerMonthLow": 0.0, "costPerMonthTypical": 0.0, "costPerMonthHigh": 0.0
+  },
+  "from_log": { "present": false, "measured_counts": null },
+  "suspected_trap": "A naive impl might mis-tier control flags as syscall rules, or divide-by-zero / emit NaN on a zero-event ruleset. The correct result is a sane ~$0/month at every band. -b 8192 carrying a numeric arg must not be misread as a volume signal."
+}

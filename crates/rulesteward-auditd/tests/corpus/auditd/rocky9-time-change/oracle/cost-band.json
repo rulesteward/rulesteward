@@ -1,0 +1,21 @@
+{
+  "scenario": "rocky9-time-change",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "total": {
+    "gbPerDayLow": 1.44e-05,
+    "gbPerDayTypical": 0.000672,
+    "gbPerDayHigh": 0.00624,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.10,
+    "costPerMonthHigh": 0.95
+  },
+  "math": "Sum: 2 time-syscall rules @30 ev*1200 (b64+b32) + localtime watch @500 ev*1200, /1e9. $/mo = gb/day*30.4*5.00. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event (locked 2026-06-03). Tiny near-zero band."
+}

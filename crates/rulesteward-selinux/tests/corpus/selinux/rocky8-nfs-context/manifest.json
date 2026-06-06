@@ -1,0 +1,31 @@
+{
+  "id": "rocky8-nfs-context",
+  "os": 8,
+  "image": "fapolicyd8",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A confined web service serving content from an NFS mount: httpd_t denied read+getattr on an nfs_t file. Network-filesystem labeling case. audit2why reports this is governed by the httpd_use_nfs boolean - the canonical remedy is the boolean, not a raw allow, which makes the narrow-allow suggestion technically valid but operationally inferior.",
+  "denials": [
+    { "sdomain": "httpd_t", "ttype": "nfs_t", "tclass": "file",
+      "perms": ["read", "getattr"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow httpd_t nfs_t:file { read getattr };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). NOTE: audit2why additionally reports a BOOLEAN remedy (httpd_use_nfs) - the access is TE-allowable but the shipped policy already has a tunable for it.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow httpd_t nfs_t:file { getattr read }; (with a comment: 'This avc can be allowed using one of these booleans: httpd_use_nfs, git_system_use_nfs')",
+    "audit2allow_R": "allow httpd_t nfs_t:file { getattr read }; (same raw allow + the same boolean comment; no interface macro substituted)",
+    "narrower_than_R_by": "EQUAL raw allow in this case (no interface macro fired for nfs_t:file). Both -N and -R additionally PRINT a boolean hint as a comment. expected.te is exactly the raw allow. The triage value here is recognizing the boolean remedy: a raw allow works but `setsebool -P httpd_use_nfs 1` is the shipped, narrower-than-a-custom-module fix.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": false
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl that only parses the `allow ...` line and ignores the audit2why/audit2allow boolean comment would emit a custom-module allow when a shipped boolean (httpd_use_nfs) is the correct, maintained remedy. triage should detect the boolean hint and prefer it. Also: the perms must NOT be padded - nfs_t:file gets exactly { read getattr }."
+  }
+}

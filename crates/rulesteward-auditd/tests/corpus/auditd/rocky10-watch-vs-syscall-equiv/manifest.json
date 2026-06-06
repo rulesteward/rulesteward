@@ -1,0 +1,56 @@
+{
+  "id": "rocky10-watch-vs-syscall-equiv",
+  "os": 10,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Watch-vs-syscall equivalence (f3 section 2.2): the same audit intent as both a -w /etc/passwd -p wa watch and the equivalent -a always,exit -F path=/etc/passwd -F perm=wa syscall rule. The cost model MUST price the two equivalent forms the SAME. Engineered to catch an impl that treats the sugar and desugared forms as different cost. Run on el10 (audit 4.0.3) to also exercise the major-version parser.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k passwd_watch",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_watch",
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "Single-file write+attr watch. -p wa = AUDIT_PERM_WRITE (26 syscalls) + AUDIT_PERM_ATTR (23 syscalls) on this path (permtab.h, f3 section 2.4). 900 B/event (file-watch, no EXECVE)."
+    },
+    {
+      "line": "-a always,exit -F path=/etc/passwd -F perm=wa -k passwd_syscall",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_syscall",
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "EQUIVALENT desugared form of the watch above (f3 section 2.2). Identical underlying perm-group coverage and identical 900 B/event file-watch shape. MUST be priced equal to the -w form."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00024,
+    "gbPerDayTypical": 0.0048,
+    "gbPerDayHigh": 0.048,
+    "costPerMonthLow": 0.04,
+    "costPerMonthTypical": 0.73,
+    "costPerMonthHigh": 7.3
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "KEY CORRECTNESS TRAP. The watch form (-w /etc/passwd -p wa) and the syscall form (-a always,exit -F path=/etc/passwd -F perm=wa) are EQUIVALENT (f3 section 2.2: a -w watch desugars to exactly a -F path + -F perm exit-list rule) and MUST be priced identically: same tier (MEDIUM), same direction (additive), same 900 B/event file-watch byte shape, same rate band. A naive impl that prices the watch as a single path but expands the syscall form into its full perm-group syscall list (or applies 1200 B to one and 900 B to the other) reports DIFFERENT cost for the two and is WRONG. The assertion is rate_band/byte/tier equality between the two forms, NOT the absolute dollar figure."
+}

@@ -1,0 +1,34 @@
+{
+  "id": "rocky9-ausearch-grouped",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "oracle-fixture",
+  "adversarial": false,
+  "intent": "A full `ausearch -m AVC` event block: the AVC record plus its companion PROCTITLE / PATH / CWD / SYSCALL records, ALL sharing the same audit(TS:SERIAL) = (1780440805.959:40123). Fixtures the parser's companion-record correlation (f4 section 1.3): the bare AVC is self-sufficient for the narrow allow, but the human-meaningful exe=/path=/comm= live in the SYSCALL/PATH records. The parser must (a) group by serial, (b) pull exe=\"/tmp/avc-test/mycat\", path/name=\"/tmp/avc-test/f1\", syscall=257 (openat) for the explanation, and (c) still emit exactly the same narrow allow as the bare AVC. Ships BOTH denials.txt (bare) and denials.ausearch.txt (grouped) - audit2allow yields the identical allow from each.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable",
+      "exe": "/tmp/avc-test/mycat", "path": "/tmp/avc-test/f1", "comm": "mycat",
+      "syscall": "257 (openat)", "serial": 40123 }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "TeAllowable; floor none. The companion records carry NO additional decline signal - they enrich the explanation only.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read; (IDENTICAL whether fed the bare denials.txt OR the full denials.ausearch.txt block - audit2allow ignores the companion SYSCALL/PATH/PROCTITLE records for perm generation, confirmed by running both)",
+    "audit2allow_R": "auth_read_shadow(logrotate_t) (the broad shadow-read macro)",
+    "narrower_than_R_by": "-R emits the broad auth_read_shadow() macro (attribute + read_file_perms padding + etc_t:dir). Our expected.te emits exactly the single denied read. The companion records do not change the emitted rule; they only enrich the human explanation.",
+    "audit2why_category": "TeAllowable",
+    "ausearch_block_yields_same_allow": true,
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "Three parser traps. (1) A parser that treats every line as an AVC would choke on the PROCTITLE/PATH/CWD/SYSCALL lines or mis-attribute their k=v fields to the AVC. It must recognize the record TYPE and only the AVC line drives the rule. (2) The PROCTITLE is HEX-ENCODED (proctitle=2f746d70...) - a parser that wants the human cmdline must hex-decode it (NUL-separated argv). (3) Companion correlation must key on the audit(TS:SERIAL) serial (40123) so a multi-event dump groups the right SYSCALL/PATH with the right AVC. The emitted allow must be byte-identical to the bare-AVC case; the exe=/path= are explanation enrichment only, never affecting the rule."
+  }
+}

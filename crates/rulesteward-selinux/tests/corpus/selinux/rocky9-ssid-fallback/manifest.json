@@ -1,0 +1,32 @@
+{
+  "id": "rocky9-ssid-fallback",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL parser-tolerance: the kernel could not resolve the SIDs to context strings, so the record carries numeric ssid=42 / tsid=99 instead of scontext= / tcontext= (avc.c:709,714). The parser must TOLERATE the fallback (not crash on missing scontext/tcontext) and DECLINE cleanly - with no type names there is no TE allow to suggest.",
+  "denials": [
+    { "sdomain": null, "ttype": null, "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "Unresolvable",
+      "ssid": 42, "tsid": 99 }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "n/a",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). Here NEITHER layer can produce a result: with only numeric ssid/tsid and no context strings there are no types to map to a TE rule and nothing for audit2why to replay. The correct behavior is a clean parser-level decline (tolerate-and-skip), not a crash.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "(empty - audit2allow emits zero rules because it has no scontext/tcontext types to work with)",
+    "audit2allow_R": "(empty)",
+    "narrower_than_R_by": "N/A - decline scenario. Both -N and -R are empty (verified). expected.te is intentionally rule-free (header + a single class require, zero allow rules) and compiles to prove the declined/empty shape is valid.",
+    "audit2why_category": "(empty - audit2why also emits nothing; no contexts to replay against policy)",
+    "expected_is_subset_of_N": null,
+    "expected_strictly_narrower_than_R": null
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Unresolvable SIDs: the record carries numeric ssid=42 / tsid=99 with no scontext/tcontext (the kernel could not resolve the SIDs to context strings). A TE allow needs the source-domain and target TYPE names, which are absent. Decline cleanly and note the record could not be fully resolved.",
+    "suspected_trap": "A parser that assumes scontext= / tcontext= are ALWAYS present (positional or regex with required keys) would CRASH or mis-parse on the ssid=/tsid= fallback. The robust behavior is to tolerate the fallback and decline, never panic. audit2allow itself simply emits nothing (it does not crash), which is the floor a correct impl must at least match."
+  }
+}

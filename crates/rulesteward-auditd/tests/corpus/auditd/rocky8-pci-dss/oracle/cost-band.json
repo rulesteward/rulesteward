@@ -1,0 +1,21 @@
+{
+  "scenario": "rocky8-pci-dss",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "total": {
+    "gbPerDayLow": 0.002436,
+    "gbPerDayTypical": 0.0498,
+    "gbPerDayHigh": 0.498,
+    "costPerMonthLow": 0.37,
+    "costPerMonthTypical": 7.57,
+    "costPerMonthHigh": 75.70
+  },
+  "math": "Sum additive watch events*1200/1e9: 2 identity @500 + 2 dir-watches @20000 (recursive HIGH) + cron.d @500. gb/day typical = (2*500 + 2*20000 + 500)*1200/1e9. $/mo = gb/day*30.4*5.00. Standardized from 900 to 1200 B/event (locked 2026-06-03)."
+}

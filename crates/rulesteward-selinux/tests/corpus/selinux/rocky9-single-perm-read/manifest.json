@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-single-perm-read",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Canonical single-permission file-read denial (logrotate_t reading a mislabeled shadow_t file). The anchor scenario - byte-identical in format to the f4 section 1.2 real captured AVC. Maps to one clean narrow allow.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read;",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "omits the auth_read_shadow() interface macro, which expands to: typeattribute logrotate_t can_read_shadow_passwords (policy-wide attribute), allow logrotate_t shadow_t:file read_file_perms (5 perms open/getattr/read/ioctl/lock vs the 1 denied), and allow logrotate_t etc_t:dir list_dir_perms (6 perms on the unrelated etc_t type that never appeared in a denial). Our expected.te emits only `allow logrotate_t shadow_t:file read;` - exactly the 1 denied perm, no macro, no attribute, no padding, no unrelated type.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl that mirrors audit2allow -R (the tool default) would emit the auth_read_shadow() macro and silently grant 5+ perms on shadow_t and 6 on etc_t plus a policy-wide attribute, instead of the single denied read perm."
+  }
+}

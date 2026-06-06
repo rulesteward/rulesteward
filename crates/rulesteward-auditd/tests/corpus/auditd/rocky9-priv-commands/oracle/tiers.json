@@ -1,0 +1,49 @@
+{
+  "scenario": "rocky9-priv-commands",
+  "rules": [
+    {
+      "line": "-a always,exit -F path=/usr/bin/sudo -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "path=/usr/bin/sudo + perm=x (execve/execveat, permtab.h) + auid-narrowed; equivalent to a -w /usr/bin/sudo -p x watch (f3 2.2)"
+    },
+    {
+      "line": "-a always,exit -F path=/usr/bin/su -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "path=/usr/bin/su + perm=x; su run less often than sudo"
+    },
+    {
+      "line": "-a always,exit -F path=/usr/bin/passwd -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "privileged",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "path=/usr/bin/passwd + perm=x; rarely run"
+    }
+  ],
+  "dominant_tier": "MEDIUM (sudo, frequently run); LOW (su/passwd, rarely run). All additive.",
+  "rate_band_basis": "f3 2.4/6: perm=x -> execve,execveat (permtab.h:28-31); auid-narrowed so ~0.3x. sudo MEDIUM, su/passwd LOW. 1200 B/event (execve-class, f3 3.3)."
+}

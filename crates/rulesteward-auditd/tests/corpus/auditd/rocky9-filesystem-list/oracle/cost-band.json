@@ -1,0 +1,38 @@
+{
+  "scenario": "rocky9-filesystem-list",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "fs_ext4": {
+      "gbPerDay": {
+        "low": 0.0018,
+        "typical": 0.018,
+        "high": 0.18
+      },
+      "costPerMonth": {
+        "low": 0.27,
+        "typical": 2.74,
+        "high": 27.36
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.0018,
+      "typical": 0.018,
+      "high": 0.18
+    },
+    "costPerMonth": {
+      "low": 0.27,
+      "typical": 2.74,
+      "high": 27.36
+    }
+  },
+  "math": "1200 B/event. typical 15000*1200/1e9 = 0.018 GB/day -> 0.018*30.4*5 = $2.74/mo.",
+  "list_note": "Additive. The scenario's value is recognizing the 'filesystem' filter list as valid (flagtab.h), not the dollar figure."
+}

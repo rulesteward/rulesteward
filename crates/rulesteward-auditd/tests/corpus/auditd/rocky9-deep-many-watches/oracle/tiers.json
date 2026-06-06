@@ -1,0 +1,26 @@
+{
+  "scenario": "rocky9-deep-many-watches",
+  "dominant_tier": "HIGH (additive; one recursive dir watch dominates)",
+  "ranking_note": "20 single-file write/attr watches on deep nested paths (LOW each, 900 B) PLUS one RECURSIVE /etc/security/ directory watch (HIGH, recursive subtree f3 section 2.2). The cost model must RANK the recursive dir watch ABOVE all 20 single-file watches combined and not treat path DEPTH as a volume signal (a deep path does not mean more events; recursion does). Parser must handle long paths.",
+  "dominant_rule": "-w /etc/security/ -p wa -k security_tree (recursive HIGH)",
+  "tier_summary": {
+    "HIGH": [
+      "-w /etc/security/ -p wa -k security_tree (recursive dir watch)"
+    ],
+    "LOW": [
+      "20 single-file -w watches on deep paths (LOW each, 900 B)"
+    ]
+  },
+  "dir_band": {
+    "low": 1000,
+    "typical": 20000,
+    "high": 200000
+  },
+  "file_band_each": {
+    "low": 10,
+    "typical": 200,
+    "high": 2000
+  },
+  "rate_band_basis": "f3 section 6: recursive dir watch HIGH (low1k/typ20k/high200k); single-file watches LOW. Path depth is NOT a volume signal.",
+  "note": "Per-file-watch lines summarized (count high); the ranking + the recursive-vs-file distinction are the assertions."
+}

@@ -1,0 +1,34 @@
+{
+  "id": "rocky10-xver-permissive-denial",
+  "os": "rocky10",
+  "policyvers": 35,
+  "image": "fapolicyd10",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Cross-version replay of rocky9-permissive-denial against el10 policyvers 35. logrotate_t -> shadow_t:file read with permissive=1. Verifies that audit2why returns the same 'Unknown - should be dontaudit'd' output on el10 as on el9 (the dontaudit rule covering logrotate_t -> shadow_t:file is present in both selinux-policy 38/el9 and 42/el10). Bucket is stable.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": true, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "Permissive",
+  "_audit2why_note": "audit2why returns 'Unknown - should be dontaudit'd by active policy' on BOTH el9 and el10 for this access. The dontaudit rule covering logrotate_t -> shadow_t:file is present in both selinux-policy versions. The recorded authoritative_category 'TeAllowable' reflects the underlying TE gap (audit2allow -N correctly emits the allow), not the literal audit2why string.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2why_category": "Unknown - should be dontaudit'd (identical to el9 oracle output)",
+    "audit2why_detail": "Unknown - should be dontaudit'd by active policy. Possible mismatch between this policy and the one under which the audit message was generated."
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-permissive-denial",
+    "rocky9_bucket": "TeAllowable",
+    "el10_bucket": "TeAllowable",
+    "buckets_match": true,
+    "_note": "Both el9 and el10 audit2why return identical 'Unknown/dontaudit' text. Bucket classification (TeAllowable) is stable."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Permissive denial (permissive=1): access was not blocked. Report informational only."
+  }
+}

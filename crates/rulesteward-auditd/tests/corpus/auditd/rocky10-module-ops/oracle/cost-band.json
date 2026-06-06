@@ -1,0 +1,19 @@
+{
+  "scenario": "rocky10-module-ops",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "total": {
+    "gbPerDayLow": 2e-06,
+    "gbPerDayTypical": 0.00012,
+    "gbPerDayHigh": 0.0012,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.02,
+    "costPerMonthHigh": 0.18
+  },
+  "math": "Sum: 2 module-op rules (b64+b32) @ 50 ev typical * 1200, /1e9. gb/day typical = 2*50*1200/1e9. $/mo = gb/day*30.4*5.00. Near-zero band."
+}

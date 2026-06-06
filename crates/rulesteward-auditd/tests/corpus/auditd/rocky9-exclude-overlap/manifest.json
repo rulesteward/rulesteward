@@ -1,0 +1,56 @@
+{
+  "id": "rocky9-exclude-overlap",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Exclude-overlap suppression (f3 section 3.5, catalog #32). An exclude-list rule (msgtype=CWD) overlapping a recursive /etc watch's event scope. The exclude REDUCES net bytes (removes CWD sub-records); it never adds. Tests suppression-interaction modeling.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exclude -F msgtype=CWD",
+      "kind": "syscall",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "exclude-list rule; drops CWD records from event groups. SUPPRESSIVE (reduces per-event bytes ~60 B). Contributes 0 additive volume; a naive impl counting it as additive is the trap."
+    },
+    {
+      "line": "-w /etc -p wa -k etc_changes",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "etc_changes",
+      "is_dir": true,
+      "perm_expands_to_syscalls": 49,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      },
+      "note": "RECURSIVE /etc dir watch (f3 section 2.2), write+attr. HIGH (low1k/typ20k/high200k, f3 section 6). Net per-event bytes REDUCED by the CWD exclude above (900 -> ~840 B)."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0012,
+    "gbPerDayTypical": 0.024,
+    "gbPerDayHigh": 0.24,
+    "costPerMonthLow": 0.18,
+    "costPerMonthTypical": 3.65,
+    "costPerMonthHigh": 36.48
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The exclude-list rule (-a always,exclude -F msgtype=CWD) is SUPPRESSIVE: it removes the CWD sub-record (~60 B, f3 section 3.2) from every event group, reducing net bytes where it overlaps the /etc watch. A naive impl that counts the exclude rule as ADDITIVE (as if it audits CWD) OVER-states cost; the correct net is the additive watch alone at a REDUCED per-event byte size (~840 B vs 900 B), i.e. ~$2.55/mo, <= the watch-alone $2.74/mo. Direction (suppressive, not additive) is the load-bearing assertion, paired with the recursive-watch HIGH tier."
+}

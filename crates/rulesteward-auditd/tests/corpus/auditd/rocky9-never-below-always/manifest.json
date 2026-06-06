@@ -1,0 +1,55 @@
+{
+  "id": "rocky9-never-below-always",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "INVERSE of scenario 9 (catalog #33, KEY ORDERING TRAP). A never rule placed AFTER an always rule on the same syscall. First-match-wins (f3 section 2.3) means the always rule records uid=0 execve before the never is consulted, so the never is INERT and does NOT suppress. Catches a model that treats any never as suppressive regardless of position.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "FIRST in load order; records ALL execve including uid=0. Full HIGH volume stands; the later never rule does NOT reduce it."
+    },
+    {
+      "line": "-a never,exit -S execve -F 'uid=0'",
+      "kind": "syscall",
+      "tier": "NEGATIVE",
+      "direction": "inert",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "INERT: placed AFTER the always rule, so first-match-wins means the always already recorded uid=0 execve before this never is consulted. It SUPPRESSES NOTHING here (it would only matter for syscalls the always rule does not catch first). direction=inert (NOT suppressive; the never is dead for this traffic). Contrast scenario 9 (never ABOVE always => suppressive)."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.006,
+    "gbPerDayTypical": 0.06,
+    "gbPerDayHigh": 0.6,
+    "costPerMonthLow": 0.91,
+    "costPerMonthTypical": 9.12,
+    "costPerMonthHigh": 91.2,
+    "note": "FULL always band; the trailing never is INERT (suppresses nothing). NO reduction, unlike scenario 9."
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "KEY CORRECTNESS TRAP (inverse of scenario 9). The never rule is placed AFTER the always rule on the same syscall (execve). Because rules evaluate in load order with FIRST-match-wins (f3 section 2.3), the always rule (line 1) records uid=0 execve BEFORE the never rule (line 2) is ever consulted, so the never rule is INERT -- it SUPPRESSES NOTHING. The correct net cost is the FULL always band ($9.12/mo typical), NO reduction. A naive impl that treats ANY never/exclude rule as suppressive regardless of POSITION wrongly subtracts the uid=0 slice and under-states cost. Direction here is INERT (not suppressive), the exact opposite of scenario 9 where the same two rules in the opposite order DO suppress. Position is load-bearing: never-AFTER-always does NOT suppress."
+}

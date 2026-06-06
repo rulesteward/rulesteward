@@ -1,0 +1,43 @@
+{
+  "id": "rocky8-xver-mls-denial",
+  "os": 8,
+  "image": "fapolicyd8",
+  "policyvers": 31,
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE: an MLS level-dominance violation (container_t at s0 reading container_file_t at s0:c0 - the target carries a category the source lacks). The MCS mlsconstrain, not a missing TE allow, blocks the read. RuleSteward must DETECT-and-DECLINE.",
+  "denials": [
+    {
+      "sdomain": "container_t",
+      "ttype": "container_file_t",
+      "tclass": "file",
+      "perms": [
+        "read"
+      ],
+      "permissive": false,
+      "kind": "Constraint"
+    }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "MlsSuspected",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay against policyvers 31). floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "mlsconstrain file { ioctl read ... } DENIED. Possible cause is the source level (s0) and target level (s0:c0) are different.",
+    "policyvers": 31,
+    "container": "fapolicyd8 (RHEL 8.10, selinux-policy-3.14.3-139.el8_10.2)"
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "MLS level-dominance violation: source level s0 does not dominate target level s0:c0 (target has category c0 the source lacks). A TE allow cannot fix an MLS constraint; the fix is an MLS labeling or policy change.",
+    "suspected_trap": "A naive impl emits allow container_t container_file_t:file read; (audit2allow does this) which compiles, loads, and STILL does not grant access. The floor's MlsSuspected flag (s0 vs s0:c0 level mismatch) catches it offline."
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-mls-denial",
+    "rocky9_bucket": "Constraint",
+    "el8_bucket": "Constraint",
+    "buckets_match": true,
+    "policyvers_note": "Both el8 and el9 enforce the same MLS mlsconstrain. Bucket is stable."
+  }
+}

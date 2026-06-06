@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-dontaudit-benign",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "A benign/noisy denial that shipped policy already DONTAUDITs: sshd_t reading a shadow_t file. audit2why reports 'should be dontaudit'd by active policy'. sshd does PAM auth via a helper; a direct read of shadow_t is noise that the operator almost never wants to ALLOW. Per f4 contract #8 / Q1, triage should NOT silently widen this into an allow - it should suggest a dontaudit (or at minimum flag 'if not needed, dontaudit is safer'). The expected.te emits a dontaudit rule (which compiles cleanly), NOT an allow.",
+  "denials": [
+    { "sdomain": "sshd_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["dontaudit sshd_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category TeAllowable (it IS a missing-TE-allow access mechanically), but the audit2why reason is 'should be dontaudit'd by active policy' - shipped policy deliberately suppresses this noise. floor_label none (same role family, level s0). The KIND being TeAllowable is exactly the trap: a TE-allowable access is NOT automatically an access you should ALLOW. The expected output is a dontaudit, not an allow.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow sshd_t shadow_t:file read; (with the comment 'This avc has a dontaudit rule in the current policy' - audit2allow STILL emits an allow despite knowing the access is dontaudit'd)",
+    "audit2allow_R": "auth_read_shadow(sshd_t) (the broad shadow-read macro: typeattribute can_read_shadow_passwords + read_file_perms padding + etc_t:dir grant)",
+    "narrower_than_R_by": "-R emits the broad auth_read_shadow() macro. -N emits a raw allow but explicitly comments that a dontaudit rule already exists. Our expected.te emits `dontaudit sshd_t shadow_t:file read;` - the OPPOSITE of widening: it suppresses the noise without granting access. This compiles (checkmodule exit 0). The narrow contract here is 'do not turn benign noise into a grant'.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "benign-noise: shipped policy dontaudits this access; suggest a dontaudit (or flag 'if not needed, dontaudit is safer'), do NOT silently widen into an allow",
+    "suspected_trap": "A naive impl sees kind=TeAllowable and emits `allow sshd_t shadow_t:file read;` - granting sshd the ability to read the shadow password file, a serious privilege escalation surface, for what is benign noise the shipped policy already suppresses. audit2allow -N itself does this (emits the allow, only a COMMENT warns). The correct triage: detect that the access is dontaudit'd / benign and suggest a `dontaudit` rule instead, never auto-allow a shadow read."
+  }
+}

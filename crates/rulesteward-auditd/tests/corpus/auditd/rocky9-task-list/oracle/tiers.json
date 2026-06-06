@@ -1,0 +1,22 @@
+{
+  "scenario": "rocky9-task-list",
+  "list_note": "The 'task' filter list (flagtab.h:25-29 AUDIT_FILTER_TASK) matches at task-creation (fork/clone) and can only see inherited task attributes (auditctl(8)). Narrowed by auid>=1000 it fires for user-task creation only -- LOW / near-zero net volume. Valid, distinct from 'exit'. A naive 'any -a rule is HIGH' classifier over-warns.",
+  "rules": [
+    {
+      "line": "-a always,task -F 'auid>=1000' -F 'auid!=unset' -k task_create",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "task_create",
+      "list": "task",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "task-creation list, narrowed by auid. Fires at fork/clone for user tasks; LOW/near-zero net volume. 1200 B/event. Valid distinct list (not 'exit')."
+    }
+  ],
+  "dominant_tier": "LOW (additive)",
+  "rate_band_basis": "f3 section 6: task-creation, tightly narrowed by auid => LOW (user-task fork/clone is infrequent vs syscall-level events)."
+}

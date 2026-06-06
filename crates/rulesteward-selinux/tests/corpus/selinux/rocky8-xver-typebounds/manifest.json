@@ -1,0 +1,40 @@
+{
+  "id": "rocky8-xver-typebounds",
+  "os": 8,
+  "image": "fapolicyd8",
+  "policyvers": 31,
+  "profile": "constraint",
+  "adversarial": false,
+  "intent": "Cross-version bounds check. The bounds_test module (from _policies/bounds_test.te) is compiled with checkmodule on el8 (policyvers 31) and installed via semodule -n into a bind-mounted tmpfs copy of the el8 module store. The rsbnd_child_t -> tmp_t:file { write lock ioctl } denial is replayed against the resulting policy.bounds.el8. El8 result: 'Typebounds violation' (Bounds bucket) - matches the el10 result from rocky10-typebounds-multi. Confirms: the Bounds bucket is stable across policyvers 31/33/36.",
+  "denials": [
+    { "sdomain": "rsbnd_child_t", "ttype": "tmp_t", "tclass": "file",
+      "perms": ["write", "lock", "ioctl"], "permissive": false, "kind": "Bounds" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Bounds",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category=Bounds (libsepol audit2why reports 'Typebounds violation. Add an allow rule for the parent type.'). floor_label=none (Bounds is NOT detectable from the AVC record alone - no role/level/permissive signal). This is the headline cross-version proof that Bounds is stable.",
+  "oracle": {
+    "audit2why_category": "Bounds",
+    "audit2why_detail": "Typebounds violation. Add an allow rule for the parent type. (repeated for each of the 3 denials: write, lock, ioctl)",
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "policyvers": 31,
+    "container": "fapolicyd8 (RHEL 8.10, selinux-policy-3.14.3-139.el8_10.2, checkpolicy-2.9-1.el8)",
+    "bounds_module_source": "_policies/bounds_test.te (shared with el10 scenario rocky10-typebounds-multi)",
+    "build_note": "checkmodule -M -m succeeded on el8 (policyvers ceiling 31, module language 4-19). The bounds_test module uses base-module syntax (module ... 1.0; require { ... }) which is backward-compatible to el8's module language level."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Typebounds violation: rsbnd_child_t is bounded by rsbnd_parent_t but rsbnd_child_t has { write lock ioctl } permissions on tmp_t:file that rsbnd_parent_t does not. A TE allow for rsbnd_child_t cannot fix a typebounds violation; the fix is to add the same permissions to the PARENT type or remove the typebounds relationship.",
+    "suspected_trap": "A naive impl emits 'allow rsbnd_child_t tmp_t:file { write lock ioctl }' - which is exactly what audit2allow -N suggests. But this TE allow already exists in the policy (it was authored in bounds_test.te). The typebounds constraint overrides it. Only the authoritative layer catches Bounds; the floor heuristic sees no role/level/permissive signal and would suggest the allow."
+  },
+  "xver_baseline": {
+    "scenario": "rocky10-typebounds-multi",
+    "rocky10_bucket": "Bounds",
+    "el8_bucket": "Bounds",
+    "buckets_match": true,
+    "policyvers_note": "The typebounds mechanism is enforced by the kernel and replayed by libsepol identically across policyvers 31 (el8), 33 (el9/el10), and 36 (el10). The 'Typebounds violation' message in audit2why.txt is word-for-word identical across all three. Bounds bucket is stable.",
+    "checkmodule_note": "checkmodule ceiling for el8 is policyvers 19 (checkpolicy 2.9). The bounds_test module uses base-module syntax and compiled cleanly. El10 uses checkmodule 4-24 (policyvers ceiling 36). The compiled module binary differs (different format version) but the behavior is identical."
+  }
+}

@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438901.200:30101): avc:  denied  { connectto } for  pid=23110 comm="haproxy" path="/run/app/app.sock" scontext=system_u:system_r:haproxy_t:s0 tcontext=system_u:system_r:initrc_t:s0 tclass=unix_stream_socket permissive=0

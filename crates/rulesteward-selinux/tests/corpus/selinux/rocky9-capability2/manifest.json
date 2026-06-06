@@ -1,0 +1,43 @@
+{
+  "id": "rocky9-capability2",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A tclass=capability2 denial (systemd_resolved_t denied bpf). Exercises the newer capability2 class and its cap2-common perm vocabulary (bpf), distinct from the original capability class.",
+  "denials": [
+    {
+      "sdomain": "systemd_resolved_t",
+      "ttype": "systemd_resolved_t",
+      "tclass": "capability2",
+      "perms": [
+        "bpf"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [
+    "allow systemd_resolved_t self:capability2 bpf;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). For decline scenarios these MAY disagree on purpose.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow systemd_resolved_t self:capability2 bpf;",
+    "audit2allow_R": "allow systemd_resolved_t self:capability2 bpf;",
+    "narrower_than_R_by": "As with the capability class, audit2allow -R emits NO macro for a capability2 self-grant - it produces the identical raw self-allow as -N. Honest datapoint: the macro baseline is not broader here.",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "audit2why reports 'Missing type enforcement (TE) allow rule' - a clean TeAllowable.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": false,
+    "expected_equals_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A parser that only knows the original capability class (cap common) will not recognize capability2/bpf. capability2 is a distinct class with its own cap2 common (bpf, perfmon, syslog, ...). The narrow fix must target capability2 and use the cap2 perm."
+  }
+}

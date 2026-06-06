@@ -1,0 +1,9 @@
+{
+  "scenario": "rocky9-stock-control",
+  "assumptions": { "pricePerGb": 5.00, "currency": "USD", "bytesPerEvent": 1200, "logFormat": "enriched", "rateSource": "assumed" },
+  "eventsPerDay": { "low": 0, "typical": 0, "high": 0 },
+  "gbPerDay": { "low": 0.0, "typical": 0.0, "high": 0.0 },
+  "costPerMonth": { "low": 0.0, "typical": 0.0, "high": 0.0 },
+  "math": "control-only ruleset: 0 events/day at every band; gb/day = 0 * 1200 / 1e9 = 0; $/month = 0 * 30.4 * 5.00 = 0",
+  "note": "The near-zero / control-only boundary. A correct cost impl must report ~$0 and not divide-by-zero or NaN."
+}

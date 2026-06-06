@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-permissive-denial",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL: the canonical logrotate_t -> shadow_t:file read denial but with permissive=1. A permissive denial did NOT actually block (avc.c:721-722). f4 contract #6: report it as informational, NEVER turn it into an allow. Targets a naive impl that maps every avc:denied record to an allow without checking the permissive flag.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": true, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "Permissive",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). Here they DISAGREE on purpose: audit2why IGNORES the permissive flag and replays the access, reporting the underlying TeAllowable gap; the offline FLOOR reads permissive=1 directly from the record and decides report-not-suggest. The floor's Permissive decision is the operative one (do not emit an allow).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read;  (BOGUS for a permissive denial - audit2allow ignores permissive= and emits the allow anyway, prepending only a '#!!!! This avc has a dontaudit rule' comment)",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)  (the same bogus suggestion, expanded to the broad macro)",
+    "narrower_than_R_by": "N/A for the allow comparison - this is a report-only scenario. The POINT is that audit2allow emits an allow at all (it ignores permissive=1); RuleSteward's correct output is NO allow, only an informational report. expected.te is intentionally rule-free (header + require{}, zero allow rules) and compiles to prove the report-only/empty-grant shape is valid.",
+    "audit2why_category": "TeAllowable (audit2why ignores the permissive flag; the underlying access is a plain TE gap)",
+    "expected_is_subset_of_N": null,
+    "expected_strictly_narrower_than_R": null
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Permissive denial (permissive=1): the domain was running permissive so the access was NOT blocked. Suggesting an allow may grant access only observed because the domain was permissive. Report as informational; if the access is genuinely needed, the operator must decide and add the allow deliberately.",
+    "suspected_trap": "A naive impl that maps every `avc: denied` record to `allow SDOMAIN TTYPE:TCLASS { PERMS };` without inspecting the permissive= field would emit `allow logrotate_t shadow_t:file read;` for a denial that never actually blocked - exactly what audit2allow does (it ignores permissive=). The floor heuristic catches this offline from the permissive=1 field alone."
+  }
+}

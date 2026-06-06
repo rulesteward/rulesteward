@@ -1,0 +1,33 @@
+{
+  "id": "rocky9-comm-spaces-quotes",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL parser-quoting: companion fields comm=/exe=/proctitle= carry literal spaces and embedded escaped quotes (the ausearch -i interpreted form a human pastes), and the raw-audit.log companion (denials.ausearch.txt) HEX-encodes the same values without quotes (the kernel/auditd encoding for special-char values). The parser must not split on the internal spaces, must handle the escaped inner quotes, and must decode the hex form - all WITHOUT corrupting the four SELinux fields. These fields only enrich the human explanation (f4 section 1.3); they never change the rule.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable",
+      "comm": "my cat", "exe": "/usr/local/bin/my cat",
+      "proctitle": "/usr/local/bin/my cat --opt=\"quoted value\" /tmp/data" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). The awkward companion fields are enrichment only; the SELinux fields are clean, so this is a plain TeAllowable read.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read;  (audit2allow ignores comm/exe/proctitle entirely; the spaces/quotes do not affect its output)",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)  (the broad macro form)",
+    "narrower_than_R_by": "omits the auth_read_shadow() macro (attribute + 5-perm shadow_t padding + 6-perm etc_t:dir). expected.te emits only the single denied `read`.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A parser that tokenizes the line by splitting on whitespace would break comm=\"my cat\" (space inside the quotes) into two tokens, mis-aligning everything after it - potentially mis-reading scontext/tcontext or dropping the denial. Embedded escaped quotes in proctitle=\"... --opt=\\\"quoted value\\\" ...\" compound the trap. And the raw-audit.log hex form (comm=2F62... = /bin/my cat) must be decoded, not treated as a literal token. The parser must isolate the four SELinux fields robustly regardless of how messy the enrichment fields are."
+  }
+}

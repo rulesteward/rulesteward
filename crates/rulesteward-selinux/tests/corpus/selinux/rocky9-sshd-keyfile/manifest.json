@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-sshd-keyfile",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A relabeled SSH host key: sshd_t denied read+open on a default_t file (a host key file that lost its sshd_key_t label, e.g. moved/restored from a backup). Maps to one clean narrow allow; audit2allow -R substitutes the broad files_read_default_files() interface.",
+  "denials": [
+    { "sdomain": "sshd_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read", "open"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow sshd_t default_t:file { read open };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow sshd_t default_t:file { open read };",
+    "audit2allow_R": "files_read_default_files(sshd_t)",
+    "narrower_than_R_by": "-R substitutes the files_read_default_files() interface macro, which grants read+open+getattr+ioctl+lock (read_file_perms padding) on ALL default_t files plus list/getattr on default_t dirs - far broader than the denied { read open } on the single file class. Our expected.te emits exactly `allow sshd_t default_t:file { read open };` - the 2 denied perms, no macro, no perm padding, no dir grant.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl mirroring the -R default would emit files_read_default_files(sshd_t), granting sshd read of EVERY default_t file (and dirs) system-wide instead of the one denied access. For a security-sensitive daemon like sshd this is exactly the over-broadening triage exists to refuse. The real fix is also a relabel (restorecon the host key to sshd_key_t)."
+  }
+}

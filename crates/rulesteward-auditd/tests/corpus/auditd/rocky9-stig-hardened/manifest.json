@@ -1,0 +1,119 @@
+{
+  "id": "rocky9-stig-hardened",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A realistic STIG/CIS hardened ruleset: identity + audit-config file watches, an auid-narrowed privileged execve rule, the rare time-change syscalls, and the -e 2 immutable finalize. The big realistic cost case (catalog #2).",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/sudoers -p wa -k actions",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/audit/ -p wa -k auditconfig",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "auditconfig",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execpriv",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "execpriv",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0018492,
+    "gbPerDayTypical": 0.020436,
+    "gbPerDayHigh": 0.20412,
+    "costPerMonthLow": 0.28,
+    "costPerMonthTypical": 3.11,
+    "costPerMonthHigh": 31.03
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Mixed byte constants: the four -w watches are 900 B/event (no EXECVE record, f3 3.3) while the execve/syscall rules are 1200 B. A naive impl applying one flat byte constant mis-sizes the total. The -e 2 finalize is a control rule (NEGATIVE, single CONFIG_CHANGE) and must NOT be mis-tiered as a volume-generating syscall rule. The execve rule is auid-narrowed (MEDIUM ~0.3x), not the unrestricted HIGH band."
+}

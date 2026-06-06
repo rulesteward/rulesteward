@@ -1,0 +1,30 @@
+{
+  "id": "rocky9-permissive-plus-constraint",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE, TWO DECLINE SIGNALS STACKED: a denial that is BOTH permissive=1 (did not actually block) AND an MCS constraint violation (s0:c0 vs s0:c5). floor=Permissive (report-not-suggest wins at the floor); authoritative=Constraint (audit2why ignores the permissive flag and replays the policy). Either way the answer is DECLINE.",
+  "denials": [
+    { "sdomain": "container_t", "ttype": "container_file_t", "tclass": "file",
+      "perms": ["write"], "permissive": true, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "Permissive",
+  "_kinds_note": "floor=Permissive: permissive=1 takes precedence at the floor (report-not-suggest, f4 contract #6) - the denial did not block, so an allow may grant access only seen because the domain was permissive. (The s0:c0 vs s0:c5 level mismatch would ALSO drive MlsSuspected, but Permissive is the dominant/most-conservative floor label.) authoritative=Constraint: audit2why IGNORES the permissive bit entirely (it re-derives the category by libsepol replay; f4 section 8) and reports the mlsconstrain. Both signals point to DECLINE.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow container_t container_file_t:file write;  (BOGUS on both counts - ignores the permissive flag AND the constraint)",
+    "audit2allow_R": "same BOGUS allow plus the constraint comment block",
+    "narrower_than_R_by": "N/A - decline scenario. expected.te is rule-free and compiles exit 0.",
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "mlsconstrain file { write setattr append unlink link rename } ((h1 dom h2 -Fail-) or (t1 != mcs_constrained_type -Fail-)); Constraint DENIED. Possible cause is the source level (s0:c0) and target level (s0:c5) are different. (audit2why output is byte-identical whether permissive=0 or 1.)"
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Permissive denial (did not block) AND an MCS constraint violation (source category {c0} does not dominate target {c5}). Reported informational, NOT auto-allowed; and a TE allow cannot fix the constraint anyway.",
+    "suspected_trap": "A naive impl might (a) auto-allow the permissive denial (contract #6 violation), or (b) emit the BOGUS allow for the constraint, or both. The floor must apply Permissive precedence (report-not-suggest); the authoritative layer independently confirms Constraint. Both paths decline; an impl that suggests an allow fails twice over."
+  }
+}

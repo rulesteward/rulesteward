@@ -1,0 +1,54 @@
+{
+  "id": "rocky9-field-compare",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Parser-stress: a -C field-comparison rule (-C uid!=euid, the privilege-transition idiom) plus a 10-field AND'ed syscall rule near the 64-field limit. Both valid auditctl grammar (f3 section 2.3-2.4). Catches a parser that chokes on -C or on long -F chains.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -C 'uid!=euid' -k priv_escalation",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "priv_escalation",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "execve narrowed by a uid!=euid field-comparison (privilege transition). -C maps to AUDIT_COMPARE_UID_TO_EUID (libaudit.c:1158). Narrowed => MEDIUM (~0.3x unrestricted execve, f3 section 6)."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset' -F 'success=1' -F 'arch=b64' -F 'exit>=0' -F 'uid!=root' -F 'gid!=0' -F 'a0=0' -F 'sessionid!=unset' -k narrowed_openat",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "narrowed_openat",
+      "rate_band": {
+        "low": 300,
+        "typical": 5000,
+        "high": 50000
+      },
+      "note": "openat narrowed by 9 AND'ed -F fields (auid>=1000 excludes daemon noise). Heavily narrowed => low end of MEDIUM. 10 fields total, well under the 64-field limit (auditctl(8))."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00216,
+    "gbPerDayTypical": 0.024,
+    "gbPerDayHigh": 0.24,
+    "costPerMonthLow": 0.33,
+    "costPerMonthTypical": 3.65,
+    "costPerMonthHigh": 36.48
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "A naive parser that does not handle the -C field-comparison flag (distinct from -F; -C takes two field NAMES and a comparator, mapping to AUDIT_COMPARE_* per libaudit.c:1137-1180) will fail to parse rule A, or mis-tier it. A parser with a low -F field cap will reject rule B's 10-field chain even though auditctl allows up to 64. Both rules are MEDIUM additive (narrowed); a model that ignores the narrowing and tiers the bare -S execve / -S openat as HIGH over-warns."
+}

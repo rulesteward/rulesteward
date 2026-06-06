@@ -1,0 +1,67 @@
+{
+  "id": "rocky9-mac-policy",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "The MAC-policy audit set (catalog #25): /etc/selinux/ + /usr/share/selinux/ directory watches plus the MAC-label setxattr syscall rules. Directory watches are recursive (f3 2.2); the setxattr rules are auid-narrowed and rare (LOW).",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/selinux/ -p wa -k mac-policy",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /usr/share/selinux/ -p wa -k mac-policy",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S setxattr -S lsetxattr -S fsetxattr -F 'auid>=1000' -F 'auid!=unset' -k mac-policy",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 2.52e-05,
+    "gbPerDayTypical": 0.001236,
+    "gbPerDayHigh": 0.01236,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.19,
+    "costPerMonthHigh": 1.88
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "/etc/selinux/ is a DIRECTORY watch -- recursive to the subtree bottom (f3 2.2), so it covers the whole policy tree, but on a stable host policy rarely changes (LOW-MEDIUM, not HIGH). The setxattr syscall rules are auid-narrowed and target MAC-label changes (rare, LOW). Mixed byte constants (900 watch / 1200 syscall). A naive impl might over-warn on the recursive dir watch or under-rank the setxattr group breadth."
+}

@@ -1,0 +1,40 @@
+{
+  "scenario": "rocky9-prepend-vs-append",
+  "ordering_note": "CRITICAL: -A PREPENDS (inserts at front), -a APPENDS (f3 section 2.3, auditctl(8) -A/-a). The textual line 2 (-A ...never) is INSERTED in FRONT of line 1 (-a ...always). Effective match order: [never (uid=0), always]. So the never rule wins for uid=0 and SUPPRESSES root execve, exactly like scenario 9 but achieved via -A prepend rather than file position. A cost model that orders rules by TEXT LINE rather than by -A/-a insertion semantics gets the suppression direction WRONG.",
+  "effective_order": [
+    "-A exit,never -S execve -F 'uid=0'  (prepended; FIRST)",
+    "-a always,exit -S execve -k execve_all  (appended; SECOND)"
+  ],
+  "rules": [
+    {
+      "line": "-A exit,never -S execve -F 'uid=0'",
+      "kind": "syscall",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "prepend": true,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "PREPENDED (-A) so it sits at the FRONT of the list, before the always rule. Action never => suppressive. Suppresses uid=0 execve. Contributes 0 additive volume."
+    },
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "prepend": false,
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "APPENDED; sits behind the prepended never rule. Net is reduced by the suppressed uid=0 slice (workload-dependent)."
+    }
+  ],
+  "dominant_tier": "HIGH (additive), with a prepended NEGATIVE/suppressive rule reducing it",
+  "rate_band_basis": "f3 section 6: always execve HIGH; the prepended never is 0 (suppressive). Contrast scenario 33 (never AFTER always does NOT suppress)."
+}

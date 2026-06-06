@@ -1,0 +1,41 @@
+{
+  "id": "rocky8-live-from-log-execve",
+  "os": 8,
+  "kernel": "4.18.0-553.el8_10.x86_64",
+  "profile": "oracle-fixture",
+  "adversarial": false,
+  "tier": "vm-live",
+  "measured": true,
+  "intent": "From-log oracle: execve-heavy slice. A real audit.log slice captured with a known execve rule. The cost --from-log reader should reproduce these per-key counts exactly.",
+  "validation": {
+    "method": "auditctl live-load on rocky8",
+    "verdict": "valid"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=unset -k wc_s4_execve_short",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "wc_s4_execve_short",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000,
+        "unit": "events/day"
+      }
+    }
+  ],
+  "from_log": {
+    "present": true,
+    "measured_counts": {
+      "wc_s4_execve_short": 106
+    },
+    "workload": "100x /bin/true executions (for-loop also spawns seq etc.)",
+    "mean_bytes_per_event": 1262.3,
+    "note_kernel_4_18": "execve events: SYSCALL + EXECVE + CWD + 2xPATH (exe + dynamic linker) + PROCTITLE. 2 PATH records per event (executable + /lib64/ld-linux-x86-64.so.2)."
+  },
+  "cost_pending_constant": false,
+  "byte_constant_bytes": 1200,
+  "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1"
+}

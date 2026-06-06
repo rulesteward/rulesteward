@@ -1,0 +1,16 @@
+{
+  "scenario": "rocky9-never-suppress",
+  "ordering_note": "Rules evaluate in LOAD ORDER (= file order here; both appended with -a), first match wins (f3 §2.3; catalog #28/#33). The never rule is listed FIRST, so it wins for uid=0 and suppresses root execve before the always rule sees it. Position matters: the inverse (never AFTER always, catalog #33) would NOT suppress.",
+  "rules": [
+    { "line": "-a never,exit -S execve -F 'uid=0'",
+      "kind": "syscall", "tier": "NEGATIVE", "direction": "suppressive", "key": null,
+      "rate_band": { "low": 0, "typical": 0, "high": 0 },
+      "note": "never action => SUPPRESSIVE. Contributes 0 additive volume; it REDUCES the always rule's net by removing root (uid=0) execve. A naive impl that counts this as additive HIGH execve volume overstates cost. Positioned FIRST so it actually suppresses (f3 §3.5)." },
+    { "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall", "tier": "HIGH", "direction": "additive", "key": "execve_all",
+      "rate_band": { "low": 5000, "typical": 50000, "high": 500000 },
+      "note": "unrestricted execve additive HIGH, BUT its net is reduced by the preceding never rule (root execve removed). The band below reflects the net after suppression of the uid=0 slice (modeled as the unrestricted band; the suppression removes daemon-root noise but the rate is workload-dependent, f3 §5)." }
+  ],
+  "dominant_tier": "HIGH (additive), with a NEGATIVE/suppressive rule reducing it",
+  "rate_band_basis": "f3 §6: always execve low5k/typ50k/high500k; never rule is 0 (suppressive), reducing the always net for uid=0 traffic"
+}

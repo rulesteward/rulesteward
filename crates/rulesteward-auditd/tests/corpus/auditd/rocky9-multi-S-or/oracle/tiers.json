@@ -1,0 +1,26 @@
+{
+  "scenario": "rocky9-multi-S-or",
+  "or_note": "Multiple -S on one rule OR together (f3 section 2.3); the rule fires on open OR openat OR openat2. All three are hot file-open syscalls (openat alone produced a 7284-line/2s burst, f3 section 3.5). The rule's volume is the SUM over the three syscalls, ~3x a single -S open. A model that counts 'one rule = one syscall' understates ~3x.",
+  "rules": [
+    {
+      "line": "-a always,exit -S open -S openat -S openat2 -k file_open",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "file_open",
+      "syscalls": [
+        "open",
+        "openat",
+        "openat2"
+      ],
+      "rate_band": {
+        "low": 15000,
+        "typical": 150000,
+        "high": 1500000
+      },
+      "note": "3 OR'd hot file-open syscalls. Volume = SUM over the three (~3x a single open). HIGH (f3 section 3.5 openat burst). 1200 B/event."
+    }
+  ],
+  "dominant_tier": "HIGH (additive)",
+  "rate_band_basis": "f3 section 6/3.5: hot file-open syscalls HIGH; band is the SUM over the 3 OR'd syscalls, ~3x single."
+}

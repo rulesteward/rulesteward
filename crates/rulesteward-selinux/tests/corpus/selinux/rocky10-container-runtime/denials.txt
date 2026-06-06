@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438945.330:30501): avc:  denied  { read getattr } for  pid=6022 comm="bash" name="config.yaml" dev="dm-0" ino=600551 scontext=system_u:system_r:container_t:s0:c123,c456 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0

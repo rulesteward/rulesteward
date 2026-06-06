@@ -1,0 +1,22 @@
+{
+  "scenario": "rocky9-filesystem-list",
+  "list_note": "The 'filesystem' filter list (flagtab.h:25-29 AUDIT_FILTER_FS) is a DISTINCT list from 'exit'/'task'/'user'/'exclude'. It matches filesystem-type access (here fstype=ext4, fieldtab.h fstype). A parser that only recognizes 'exit' and 'task' will reject this valid rule. Narrowed by auid>=1000 => MEDIUM additive.",
+  "rules": [
+    {
+      "line": "-a always,filesystem -F fstype=ext4 -F 'auid>=1000' -F 'auid!=unset' -k fs_ext4",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "fs_ext4",
+      "list": "filesystem",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "filesystem filter list (distinct from exit). Matches ext4 access narrowed by auid. MEDIUM additive. 1200 B/event."
+    }
+  ],
+  "dominant_tier": "MEDIUM (additive)",
+  "rate_band_basis": "f3 section 6: narrowed (auid>=1000) syscall MEDIUM. The filesystem list is a parser-coverage point, not an extreme tier."
+}

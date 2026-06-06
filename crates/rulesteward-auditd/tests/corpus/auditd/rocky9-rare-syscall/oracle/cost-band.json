@@ -1,0 +1,50 @@
+{
+  "scenario": "rocky9-rare-syscall",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "adjtimex_settimeofday": {
+      "gbPerDay": {
+        "low": 1e-06,
+        "typical": 2.4e-05,
+        "high": 0.00012
+      },
+      "costPerMonth": {
+        "low": 0.0,
+        "typical": 0.0,
+        "high": 0.02
+      }
+    },
+    "clock_settime": {
+      "gbPerDay": {
+        "low": 1e-06,
+        "typical": 2.4e-05,
+        "high": 0.00012
+      },
+      "costPerMonth": {
+        "low": 0.0,
+        "typical": 0.0,
+        "high": 0.02
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 2e-06,
+      "typical": 4.8e-05,
+      "high": 0.00024
+    },
+    "costPerMonth": {
+      "low": 0.0,
+      "typical": 0.01,
+      "high": 0.04
+    }
+  },
+  "math": "1200 B/event. LOW band typ 20/day: 20*1200/1e9 = 0.000024 GB/day -> 0.000024*30.4*5 = $0.00/mo (rounds to ~$0.004). Total both rules typ 40/day -> ~$0.01/mo. Near-zero cost is the correct answer; the trap is reporting HIGH cost.",
+  "rare_note": "Both rules LOW. The dollar figure is effectively zero; a naive 'any syscall = HIGH' model would report a 1000x+ overstatement."
+}

@@ -1,0 +1,55 @@
+{
+  "id": "rocky8-live-logrotate-shadow-avc",
+  "os": 8,
+  "kernel": "4.18.0-553.el8_10.x86_64",
+  "selinux_policy": "selinux-policy-3.14.3-139.el8_10.2",
+  "policy_file": "policy.31",
+  "policy_compiled_version": 31,
+  "policy_runtime_version": 33,
+  "checkmodule_version_range": "4-19",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Real AVC capture: logrotate_t denied read on shadow_t:file. The canonical anchor scenario from f4. Captured via semodule -DB on Rocky 8 kernel 4.18.",
+  "denials": [
+    {
+      "sdomain": "logrotate_t",
+      "ttype": "shadow_t",
+      "tclass": "file",
+      "perms": ["read"],
+      "permissive": false,
+      "kind": "TeAllowable",
+      "raw_avc": "type=AVC msg=audit(1780454002.048:9146): avc:  denied  { read } for  pid=8742 comm=\"mycat\" name=\"f1\" dev=\"vda5\" ino=109053166 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0"
+    }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file { read };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read;",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "omits auth_read_shadow macro: drops typeattribute can_read_shadow_passwords, drops open/getattr/ioctl/lock padding, drops etc_t:dir grant",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "Must run audit2why with semodule -DB active AND -p policy.31. Without -DB, audit2why says Unknown/dontaudit."
+  },
+  "kernel_4_18_field_set_notes": [
+    "AVC record fields present: avc-verdict, perms, pid, comm, name, dev, ino, scontext, tcontext, tclass, permissive",
+    "SYSCALL companion record: arch, syscall=257 (openat), success=no, exit=-13 (EACCES), a0-a3, items, ppid, pid, auid, uid-gid-euid etc., tty, ses, comm, exe, subj, key",
+    "ENRICHED decoded fields in SYSCALL (kernel 4.18): ARCH=x86_64 SYSCALL=openat AUID=unset UID=root ... appended immediately after key=(null) with NO SPACE delimiter",
+    "PATH companion record: item=0, name, inode, dev, mode, ouid, ogid, rdev, obj (SELinux context), nametype=NORMAL, cap_fp, cap_fi, cap_fe, cap_fver, cap_frootid",
+    "ENRICHED in PATH: OUID=root OGID=root appended at end without delimiter",
+    "policy.31 vs policy.33: Rocky 8 compiles policy at version 31 (checkmodule module language 4-19), but the kernel-supported policyvers is 33. This is a compiled-vs-runtime version difference."
+  ],
+  "cross_version_field_set_comparison": {
+    "rocky8_kernel_4_18": "policy.31, AVC fields as above, ENRICHED with no-space suffix",
+    "rocky9_kernel_5_14": "policy.33 (expected), check rocky9 anchor for comparison",
+    "rocky10_kernel_6_12": "policy.33 (expected), check rocky10 anchor for comparison",
+    "finding": "Field SET is identical across kernel versions (same AVC format since kernel 3.x). The ENRICHED decoding appended format differs: kernel 4.18 appends with no delimiter vs newer kernels which use a space before the decoded field."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "Naive impl may include too-broad allow from auth_read_shadow macro. The expected narrow allow is exactly: allow logrotate_t shadow_t:file { read }; -- no open, no getattr, no etc_t."
+  },
+  "note_dontaudit": "WITHOUT semodule -DB, this AVC is dontaudit'd in the stock policy and never appears in audit.log. semodule -DB is required to capture it. semodule -B restores the original policy. This is the canonical example from f4 section 0 (the blocker discovered during grounding)."
+}

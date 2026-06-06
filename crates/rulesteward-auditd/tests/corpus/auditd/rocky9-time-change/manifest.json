@@ -1,0 +1,67 @@
+{
+  "id": "rocky9-time-change",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "The standard time-change set (catalog #22): -S adjtimex/settimeofday/clock_settime (b64+b32 paired) + -w /etc/localtime -p wa. LOW tier -- these syscalls are rarely called. A naive 'any syscall rule = HIGH' impl over-warns.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    },
+    {
+      "line": "-w /etc/localtime -p wa -k time-change",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 1.44e-05,
+    "gbPerDayTypical": 0.000672,
+    "gbPerDayHigh": 0.00624,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.1,
+    "costPerMonthHigh": 0.95
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "These ARE syscall rules but they are LOW tier (rare syscalls, f3 3.5), not HIGH. A naive 'any -S rule = HIGH execve-band' impl over-warns by ~1000x. The b64/b32 pair is intentional 32+64-bit coverage (catalog #30), NOT a redundant duplicate -- do not collapse them. The localtime watch is 900 B (f3 3.3), the syscall rules 1200 B."
+}

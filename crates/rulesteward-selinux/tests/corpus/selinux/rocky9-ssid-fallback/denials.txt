@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:23902): avc:  denied  { read } for  pid=14601 comm="mycat" ssid=42 tsid=99 tclass=file permissive=0

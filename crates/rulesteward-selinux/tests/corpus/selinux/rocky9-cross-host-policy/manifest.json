@@ -1,0 +1,31 @@
+{
+  "id": "rocky9-cross-host-policy",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "oracle-fixture",
+  "adversarial": false,
+  "intent": "POSITIVE FIXTURE, THE --policy CROSS-HOST AUTHORITATIVE PATH: a denial set PLUS a separate binary policy (policy.cross-host) copied from a DIFFERENT host, to fixture rulesteward selinux triage --policy <file>. The record's contexts (rsbnd_parent_t, tmp_t) are VALID in the supplied policy, so the libsepol replay resolves them against THAT policy (not the live one) and computes TeAllowable. Proves offline cross-host triage works.",
+  "denials": [
+    { "sdomain": "rsbnd_parent_t", "ttype": "tmp_t", "tclass": "file",
+      "perms": ["write"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow rsbnd_parent_t tmp_t:file write;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative=TeAllowable (audit2why against policy.cross-host: 'Missing type enforcement (TE) allow rule'). rsbnd_parent_t is NOT a bounded type, so write on tmp_t:file is simply a missing TE allow - the narrow allow IS the correct fix. floor=none (same role system_r, same level s0, permissive=0).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow rsbnd_parent_t tmp_t:file write;  (CORRECT narrow fix; expected.te equals -N)",
+    "audit2allow_R": "not computed against the cross-host policy (no interface info for the custom types); see audit2allow-R.te",
+    "narrower_than_R_by": "expected.te is a strict subset of -N (identical, single perm).",
+    "audit2why_category": "TeAllowable",
+    "audit2why_detail": "Missing type enforcement (TE) allow rule. You can use audit2allow to generate a loadable module to allow this access.",
+    "audit2why_policy": "policy.cross-host (shipped in this scenario dir; a copy of a DIFFERENT host's policy.33 == _policies/policy.bounds). The point is that triage resolves the record's contexts against the SUPPLIED policy file, enabling offline cross-host analysis."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl that only reads the LIVE /sys/fs/selinux/policy cannot do cross-host triage at all - it would fail to resolve rsbnd_parent_t (undefined in the live policy) and either crash or mislabel. The fixture proves --policy <file> must drive the authoritative replay, not the live policy."
+  }
+}

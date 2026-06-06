@@ -1,0 +1,34 @@
+{
+  "scenario": "rocky9-field-compare",
+  "parser_note": "Parser-stress scenario: a -C field-comparison rule and a near-many-F (10-field) AND'ed rule. All valid auditctl tokens (f3 section 2.3-2.4). Both narrowed -> MEDIUM additive. The point is parser robustness on -C and multi-F, not an extreme tier.",
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -C 'uid!=euid' -k priv_escalation",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "priv_escalation",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "execve narrowed by a uid!=euid field-comparison (privilege transition). -C maps to AUDIT_COMPARE_UID_TO_EUID (libaudit.c:1158). Narrowed => MEDIUM (~0.3x unrestricted execve, f3 section 6)."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset' -F 'success=1' -F 'arch=b64' -F 'exit>=0' -F 'uid!=root' -F 'gid!=0' -F 'a0=0' -F 'sessionid!=unset' -k narrowed_openat",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "narrowed_openat",
+      "rate_band": {
+        "low": 300,
+        "typical": 5000,
+        "high": 50000
+      },
+      "note": "openat narrowed by 9 AND'ed -F fields (auid>=1000 excludes daemon noise). Heavily narrowed => low end of MEDIUM. 10 fields total, well under the 64-field limit (auditctl(8))."
+    }
+  ],
+  "dominant_tier": "MEDIUM (additive)",
+  "rate_band_basis": "f3 section 6: narrowed syscall ~0.3x unrestricted. execve-with-C-compare and a 9-field-narrowed openat both MEDIUM; openat lower due to heavy narrowing."
+}

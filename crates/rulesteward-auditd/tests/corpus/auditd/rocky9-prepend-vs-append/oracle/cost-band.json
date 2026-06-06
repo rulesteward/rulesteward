@@ -1,0 +1,46 @@
+{
+  "scenario": "rocky9-prepend-vs-append",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "correct_model": {
+    "comment": "Total = the additive always rule only. The prepended never rule contributes 0 and REDUCES the net (removes uid=0 execve). Net <= the always rule alone.",
+    "eventsPerDay": {
+      "low": 5000,
+      "typical": 50000,
+      "high": 500000
+    },
+    "gbPerDay": {
+      "low": 0.006,
+      "typical": 0.06,
+      "high": 0.6
+    },
+    "costPerMonth": {
+      "low": 0.91,
+      "typical": 9.12,
+      "high": 91.2
+    },
+    "math": "always execve ~1200 B. typical 50000*1200/1e9 = 0.06 GB/day -> $9.12/mo. The prepended never subtracts the uid=0 slice (workload-dependent, f3 section 5), so net <= $9.12/mo typical."
+  },
+  "naive_wrong_model": {
+    "comment": "A naive impl that (a) orders by text line and so thinks the never rule is SECOND and inert (like scenario 33), OR (b) counts the never rule as additive HIGH, gets the wrong net.",
+    "ordered_by_text_wrong": "would treat never as not-suppressing (scenario-33 behavior) -> net = full always band, MISSING the suppression",
+    "additive_wrong": {
+      "eventsPerDay": {
+        "low": 10000,
+        "typical": 100000,
+        "high": 1000000
+      },
+      "costPerMonth": {
+        "low": 1.82,
+        "typical": 18.24,
+        "high": 182.4
+      },
+      "error": "~2x overstatement if the never is counted as additive."
+    }
+  }
+}

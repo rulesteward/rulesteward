@@ -1,0 +1,34 @@
+{
+  "schema": "selinux-scenario-v1",
+  "scenario_id": "rocky10-live-avc-capture",
+  "tier": "vm-live",
+  "os": "rocky10",
+  "kernel": "6.12.0-211.16.1.el10_2.0.1.x86_64",
+  "selinux_policy": "selinux-policy-42.1.18-4.el10",
+  "policy_version": 33,
+  "getenforce": "Enforcing",
+  "method": "semodule -DB (disable dontaudit globally) then semodule -B (re-enable). Fully reversible.",
+  "measured": true,
+  "description": "Real AVC denials captured from existing confined domains after semodule -DB on Rocky 10.2 (el10, kernel 6.12, selinux-policy-42).",
+  "avc_domains_captured": [
+    "setroubleshootd_t",
+    "systemd_user_runtimedir_t",
+    "sshd_session_t",
+    "sshd_t",
+    "init_t",
+    "logrotate_t"
+  ],
+  "total_avc_events": 56,
+  "unique_avc_lines": 78,
+  "semodule_state": {
+    "pre_DB_count": 367,
+    "post_B_count": 367,
+    "restored": true
+  },
+  "getenforce_restored": "Enforcing",
+  "raw_files": [
+    "r10-all-avc.log",
+    "r10-avc-unique.log"
+  ],
+  "audit_format_note": "audit 4.0.3 on el10: AVC record format IDENTICAL to audit 3.x. Fields: type=AVC, msg=audit(timestamp:serial), avc: denied {permission} for pid=N comm=S scontext=S tcontext=S tclass=C permissive=0|1. No new fields in audit 4.x AVC records. The selinux-policy-42 on el10 contains more builtin permissive types (21 builtin vs fewer on el8/el9) reflecting newer systemd/virtd components."
+}

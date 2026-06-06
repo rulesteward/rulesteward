@@ -1,0 +1,31 @@
+{
+  "id": "rocky10-container-runtime",
+  "os": 10,
+  "image": "fapolicyd10",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A container process (container_t with an MCS category pair s0:c123,c456) denied read+getattr on a host bind-mounted file labeled default_t (the host file was not relabeled to container_file_t for the mount). Container-host case on el10. Maps to one clean narrow allow; audit2allow -R substitutes files_read_default_files().",
+  "denials": [
+    { "sdomain": "container_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read", "getattr"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow container_t default_t:file { read getattr };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay; audit2why reports 'should be dontaudit'd' which is the TeAllowable wording on a dontaudit'd access, identical to scenario 1). floor_label in {none, Permissive, MlsSuspected, RoleSuspected}. IMPORTANT floor note: scontext carries MCS categories (s0:c123,c456) while tcontext is plain s0. This is NOT an MLS/MCS mismatch the floor should flag - an MCS subject with categories DOMINATES a category-free object at the same sensitivity (s0), so the access is MCS-permitted and the denial is purely a TE gap. A floor heuristic that naively string-compares the level fields and flags MlsSuspected would be WRONG here.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow container_t default_t:file { getattr read };",
+    "audit2allow_R": "files_read_default_files(container_t)",
+    "narrower_than_R_by": "-R substitutes files_read_default_files() (read_file_perms padding on ALL default_t files + default_t dir list) for container_t. Our expected.te emits exactly `allow container_t default_t:file { read getattr };` - the 2 denied perms only, no macro, no padding, no dir grant.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "Two traps. (1) A naive floor that compares the scontext level (s0:c123,c456) to the tcontext level (s0) and declares MlsSuspected would WRONGLY decline - an MCS subject with categories dominates a category-free object at the same sensitivity, so this is a plain TE denial, not a constraint. (2) Mirroring -R would emit files_read_default_files(container_t), granting the container read of all default_t files. The narrow fix is the 2 denied perms; the real remedy is relabeling the bind-mounted host path to container_file_t with the :z/:Z mount flag."
+  }
+}

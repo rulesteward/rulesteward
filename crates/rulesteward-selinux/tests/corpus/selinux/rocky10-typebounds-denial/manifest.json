@@ -1,0 +1,31 @@
+{
+  "id": "rocky10-typebounds-denial",
+  "os": 10,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE: a typebounds violation (rsbnd_child_t bounded by rsbnd_parent_t, requesting write on tmp_t:file the parent lacks). A bounded domain can never exceed its parent's perms regardless of any TE allow on the child. NOT record-detectable - only the policy-backed authoritative layer (audit2why with the typebounds module loaded) identifies it. RuleSteward must DETECT-and-DECLINE. (Built in the fapolicyd9 container; the AVC->category transform is policyvers-33-invariant across el8/9/10, so this is filed os:10 to represent the el10 lane of the version matrix.)",
+  "denials": [
+    { "sdomain": "rsbnd_child_t", "ttype": "tmp_t", "tclass": "file",
+      "perms": ["write"], "permissive": false, "kind": "Bounds" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Bounds",
+  "floor_label": "none",
+  "_kinds_note": "Authoritative=Bounds (audit2why replay against policy.bounds which CONTAINS the typebounds rule). floor=none: the record has same role (system_r), same level (s0), normal file/perm vocab - NOTHING for the offline heuristic to flag. This is the key Bounds property: it is invisible to the record-only floor and needs the policy.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow rsbnd_child_t tmp_t:file write;  (BOGUS - the bound is enforced above the TE vector; adding the allow to the child does nothing)",
+    "audit2allow_R": "not computed against policy.bounds (no interface info for the custom types); see audit2allow-R.te",
+    "narrower_than_R_by": "N/A - decline scenario. expected.te is rule-free and compiles exit 0.",
+    "audit2why_category": "Bounds",
+    "audit2why_detail": "Typebounds violation. Add an allow rule for the parent type.",
+    "audit2why_policy": "_policies/policy.bounds (targeted policy.33 with the bounds_test typebounds module loaded; built via _policies/build-bounds-policy.sh). Against STOCK policy the contexts rsbnd_child_t/rsbnd_parent_t are undefined (BADSCON), NOT Bounds - the typebounds rule MUST be loaded at replay time."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Typebounds violation: rsbnd_child_t is bounded by a parent type that lacks write on tmp_t:file. A bounded domain cannot exceed its parent's perms. The fix is to add the perm to the PARENT type, not the child (audit2why: 'Add an allow rule for the parent type').",
+    "suspected_trap": "A naive impl emits allow rsbnd_child_t tmp_t:file write; which audit2allow -N also emits. It compiles and loads but the kernel STILL denies the child (the bound is checked above the TE allow vector). Crucially, the OFFLINE floor cannot catch this at all (floor=none) - this fixture proves the policy-backed authoritative layer is mandatory, not optional."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "source": "rocky8-live-from-log-execve/audit-sample.log",
+  "measured_on": "rocky8 kernel 4.18.0-553.el8_10.x86_64",
+  "per_key_counts": {
+    "wc_s4_execve_short": 106
+  },
+  "bytes_per_event_mean": 1262.3,
+  "bytes_per_event_min": 925,
+  "bytes_per_event_max": 1397,
+  "path_records_per_event": 2,
+  "note": "106 events from 100 /bin/true invocations (the for-loop spawns seq and other commands). The --from-log reader should count events with key=wc_s4_execve_short and report 106."
+}

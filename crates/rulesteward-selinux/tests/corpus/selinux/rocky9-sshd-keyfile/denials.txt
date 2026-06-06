@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438912.501:30201): avc:  denied  { read open } for  pid=4011 comm="sshd" name="ssh_host_ed25519_key" dev="vda4" ino=300221 scontext=system_u:system_r:sshd_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0

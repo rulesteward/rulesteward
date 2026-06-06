@@ -1,0 +1,32 @@
+{
+  "id": "rocky9-mls-write-down",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE: an MLS/MCS constraint denial (container_t at level s0:c0 writing container_file_t at s0:c5 - a write-down/category-mismatch). A raw TE allow CANNOT fix a constraint violation. RuleSteward must DETECT-and-DECLINE (f4 contract #8), emitting NO allow. Verifies BOTH the authoritative layer (audit2why=Constraint) and the offline floor heuristic (level mismatch -> MlsSuspected).",
+  "denials": [
+    { "sdomain": "container_t", "ttype": "container_file_t", "tclass": "file",
+      "perms": ["write"], "permissive": false, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "MlsSuspected",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). Here BOTH layers agree the denial is not a TE allow: the authoritative layer says Constraint (policy replay), the floor independently flags MlsSuspected from the s0:c0 vs s0:c5 LEVEL mismatch in the record alone.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow container_t container_file_t:file write;  (BOGUS - audit2allow emits this even though it prepends a '#!!!! This avc is a constraint violation' comment; the allow will NOT grant the access because the constraint check is independent of the TE allow vector)",
+    "audit2allow_R": "same BOGUS `allow container_t container_file_t:file write;` plus the constraint comment block",
+    "narrower_than_R_by": "N/A for the allow comparison - this is a decline scenario. The POINT is that BOTH audit2allow -N and -R emit a bogus allow that does not help; RuleSteward's correct output is NO allow at all. expected.te is intentionally rule-free (header + empty require{}, zero allow rules) and compiles to prove the declined/empty-grant shape is valid.",
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "mlsconstrain file { ... } ((h1 dom h2 -Fail-) or (t1 != mcs_constrained_type -Fail-)); Constraint DENIED. Possible cause is the source level (s0:c0) and target level (s0:c5) are different.",
+    "expected_is_subset_of_N": null,
+    "expected_strictly_narrower_than_R": null
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "MLS/MCS constraint violation: source level s0:c0 does not dominate target level s0:c5. A TE allow cannot fix a constraint denial; the fix is an MLS/MCS policy or labeling change, not an allow rule.",
+    "suspected_trap": "A naive impl that pipes the record to audit2allow (or just maps the AVC fields to `allow SDOMAIN TTYPE:TCLASS { PERMS };` unconditionally) emits the BOGUS `allow container_t container_file_t:file write;` - a wrong fix that compiles, loads, and STILL does not grant the access, misleading the operator into thinking they fixed it. Worse, the floor's MlsSuspected flag (level mismatch) is record-detectable here, so even the offline layer should catch it without the policy."
+  }
+}

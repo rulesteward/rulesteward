@@ -1,0 +1,37 @@
+{
+  "scenario": "rocky10-watch-vs-syscall-equiv",
+  "equivalence_note": "f3 section 2.2: a -w file watch desugars to a -F path=... -F perm=... exit-list syscall rule. The two rules below express the SAME audit intent and the cost model MUST assign them the SAME tier, direction, byte shape (900 B file-watch event), and rate band. The TRAP is treating the watch form and the syscall form as different cost.",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k passwd_watch",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_watch",
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "Single-file write+attr watch. -p wa = AUDIT_PERM_WRITE (26 syscalls) + AUDIT_PERM_ATTR (23 syscalls) on this path (permtab.h, f3 section 2.4). 900 B/event (file-watch, no EXECVE)."
+    },
+    {
+      "line": "-a always,exit -F path=/etc/passwd -F perm=wa -k passwd_syscall",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_syscall",
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "EQUIVALENT desugared form of the watch above (f3 section 2.2). Identical underlying perm-group coverage and identical 900 B/event file-watch shape. MUST be priced equal to the -w form."
+    }
+  ],
+  "dominant_tier": "MEDIUM (additive)",
+  "rate_band_basis": "Single-file write/attr access on /etc/passwd; modeled like the #11 passwd_write band (low100/typ2000/high20000). The two forms share the band by construction.",
+  "equivalence_assertion": "rate_band[watch] == rate_band[syscall]; bytesPerEvent[watch] == bytesPerEvent[syscall] == 900; tier and direction equal. A cost impl that prices them differently is WRONG."
+}

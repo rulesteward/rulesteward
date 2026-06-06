@@ -1,0 +1,119 @@
+{
+  "scenario": "rocky10-cis-benchmark",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch perm=wa (f3 2.2/2.4)"
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch"
+    },
+    {
+      "line": "-w /etc/sudoers.d/ -p wa -k actions",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "directory watch, recursive subtree (f3 2.2)"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "auid-narrowed execve ~0.3x (f3 6)"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "rare time syscalls (f3 3.5 LOW)"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S mount -F 'auid>=1000' -F 'auid!=unset' -k mounts",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mounts",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "mount syscall, rare on a stable host (f3 3.5 LOW)"
+    },
+    {
+      "line": "-w /var/log/sudo.log -p wa -k actions",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "note": "sudo log watch; medium write traffic"
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "immutable finalize (auditctl(8) -e 2, f3 2.1)"
+    }
+  ],
+  "dominant_tier": "MEDIUM (identity watches + auid-narrowed execve + sudo-log); LOW (time/mount syscalls + dir watch); NEGATIVE control",
+  "rate_band_basis": "f3 6: auid-narrowed execve ~0.3x; time/mount syscalls LOW (1-100/day); identity watches LOW-traffic; sudo.log MEDIUM write watch. Mixed bytes."
+}

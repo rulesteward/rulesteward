@@ -1,0 +1,42 @@
+{
+  "id": "rocky9-process-signal",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A tclass=process signal denial (keepalived_t denied signal to httpd_t). Exercises the process class perm vocabulary; process:signal is usually TE-allowable but is sometimes a constraint - here audit2why confirms it is a clean missing-TE-allow.",
+  "denials": [
+    {
+      "sdomain": "keepalived_t",
+      "ttype": "httpd_t",
+      "tclass": "process",
+      "perms": [
+        "signal"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [
+    "allow keepalived_t httpd_t:process signal;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). For decline scenarios these MAY disagree on purpose.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow keepalived_t httpd_t:process signal;",
+    "audit2allow_R": "apache_signal(keepalived_t)",
+    "narrower_than_R_by": "audit2allow -R substitutes the apache_signal() interface macro (a refpolicy interface that grants signal-class access to httpd-related domains). Our expected.te emits exactly `allow keepalived_t httpd_t:process signal;` - the single denied process:signal, no macro.",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "audit2why reports 'Missing type enforcement (TE) allow rule'. process:signal CAN be a constraint in some policies, but the authoritative libsepol replay confirms this specific denial is TE-allowable (a plain missing allow). The corpus records both the class-can-be-constraint caveat and the verified TeAllowable result.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "process:signal looks constraint-ish (cross-domain process access often hits the process-class constrain), so a naive impl might decline it. The authoritative layer must replay it and confirm TeAllowable before declining. Also: the perm vocabulary is process-class (signal/sigkill/...), not file."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "id": "rocky9-cross-triple-no-union",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Same source domain (logrotate_t) denied on TWO DIFFERENT target types: var_log_t:file read and var_t:file write. Tests f4 contract #5 - perms are unioned WITHIN a (sdomain, ttype, tclass) triple but NEVER across triples. A naive grouper keyed only on sdomain (or sdomain+tclass, ignoring ttype) would wrongly union read+write into one rule spanning both types.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "var_log_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "var_t", "tclass": "file",
+      "perms": ["write"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [
+    "allow logrotate_t var_log_t:file read;",
+    "allow logrotate_t var_t:file write;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "Both denials are TeAllowable. NOTE: audit2why reports the var_log_t:file read as 'would be allowed by active policy' (logrotate legitimately reads logs in shipped policy) - the AVC text is still a real-kernel-valid INPUT record (a captured AVC does not retroactively change because policy would now allow it). The var_t:file write is a genuine TE gap. Both are valid parser/grouper inputs. floor_label none (same role, same level s0 on both).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t var_log_t:file read; allow logrotate_t var_t:file write; (TWO separate lines - audit2allow keys its merge on the (type,type,class) triple, so it does NOT union read and write across the two different target types)",
+    "audit2allow_R": "files_rw_var_files(logrotate_t) + logging_read_generic_logs(logrotate_t) (TWO different interface macros, each broad: files_rw_var_files grants rw on ALL var_t files, logging_read_generic_logs grants read on all generic log types)",
+    "narrower_than_R_by": "-R substitutes two broad interfaces (files_rw_var_files grants WRITE+read+more on all var_t; logging_read_generic_logs grants read on the whole logging type set). Our expected.te keeps two raw allows on SEPARATE lines: var_log_t:file read and var_t:file write, perms NOT crossed. var_t gets only write (not rw), var_log_t gets only read.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A grouper keyed on sdomain alone (or sdomain+tclass, dropping ttype) would union the perms into a single rule like `allow logrotate_t { var_log_t var_t }:file { read write };` - granting WRITE to var_log_t and READ to var_t, neither of which was denied. The (sdomain, ttype, tclass) triple MUST be the full grouping key; perms union only within a triple. audit2allow -N gets this right; a hand-rolled grouper might not."
+  }
+}

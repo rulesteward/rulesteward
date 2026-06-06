@@ -1,0 +1,67 @@
+{
+  "id": "rocky9-stig-finalize",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A STIG set ending in -e 2 (immutable finalize) (catalog #20). The -e 2 is a single CONFIG_CHANGE at load, otherwise volume-neutral; it must NOT be mis-tiered as additive volume.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.001812,
+    "gbPerDayTypical": 0.0186,
+    "gbPerDayHigh": 0.186,
+    "costPerMonthLow": 0.28,
+    "costPerMonthTypical": 2.83,
+    "costPerMonthHigh": 28.27
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The -e 2 finalize is the trap: it emits exactly ONE CONFIG_CHANGE record at load (~184 B, f3 3.2), then is volume-neutral. A naive impl that sees -e 2 as 'a rule' and assigns it a syscall-class rate band would invent ongoing volume that does not exist. It must be tiered NEGATIVE/zero, like -D/-b/-f (f3 2.1)."
+}

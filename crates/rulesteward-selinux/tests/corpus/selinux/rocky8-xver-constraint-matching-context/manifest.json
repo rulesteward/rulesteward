@@ -1,0 +1,37 @@
+{
+  "id": "rocky8-xver-constraint-matching-context",
+  "os": 8,
+  "image": "fapolicyd8",
+  "policyvers": 31,
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE - cross-version check of the critical floor-blind-spot case. Same rscons.cil type-attribute constraint scenario as rocky9-constraint-matching-context, replayed against el8 (policyvers 31). Uses a privileged container with bind-mount to install rscons.cil via semodule -n (semodule cannot rename within the overlayfs without --privileged bind-mount to tmpfs). El8 result: Constraint DENIED, same bucket as el9.",
+  "denials": [
+    { "sdomain": "rscons_src_t", "ttype": "rscons_tgt_t", "tclass": "process",
+      "perms": ["signal"], "permissive": false, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds}; floor_label in {none, Permissive, MlsSuspected, RoleSuspected}. Same as rocky9: authoritative=Constraint, floor=none (floor blind spot confirmed on el8 too).",
+  "oracle": {
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "constrain process { signal } ((t2 == rscons_exempt -Fail-)); Constraint DENIED",
+    "policyvers": 31,
+    "container": "fapolicyd8 (RHEL 8.10, selinux-policy-3.14.3-139.el8_10.2)",
+    "custom_policy_note": "rscons.cil installed via semodule -n (no reload) into a bind-mounted tmpfs copy of the module store, then policy.cons.el8 dumped from /var/lib/selinux/targeted/active/policy.kern. The oracle uses policy.cons.el8, not stock policy.31."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Type-attribute constraint violation: a constrain on process signal requires the target to carry the rscons_exempt attribute, which rscons_tgt_t lacks. A TE allow cannot fix a constraint.",
+    "suspected_trap": "A floor-only impl sees matching role (system_r) and matching level (s0), finds nothing to flag, and SUGGESTS the narrow allow - which is WRONG (the constraint blocks it regardless). Only an impl that consults the authoritative policy layer gets this right. Confirmed on both el8 and el9."
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-constraint-matching-context",
+    "rocky9_bucket": "Constraint",
+    "el8_bucket": "Constraint",
+    "buckets_match": true,
+    "policyvers_note": "The type-attribute constraint semantics (constrain ... (eq t2 <attr>)) are enforced identically by libsepol on policyvers 31 and policyvers 33. The Constraint bucket is stable across el8/el9.",
+    "toolchain_note": "semodule -n with --privileged bind-mount is required on el8 containers because overlayfs cross-device rename fails without it. The rocky9 scenario ran on a live VM where semodule worked natively."
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "rocky8-httpd-docroot",
+  "os": 8,
+  "image": "fapolicyd8",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Mislabeled web docroot: httpd_t denied read+getattr on a default_t file (very common real denial when content is dropped into a path that did not inherit httpd_sys_content_t). Maps to one clean narrow allow.",
+  "denials": [
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read", "getattr"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow httpd_t default_t:file { read getattr };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow httpd_t default_t:file { getattr read };",
+    "audit2allow_R": "allow httpd_t default_t:file { getattr read };",
+    "narrower_than_R_by": "EQUAL in this case - default_t has no narrowing refpolicy interface, so audit2allow -R emitted the SAME raw allow as -N (no macro substitution fired). This is a realistic data point: not every denial has an over-broad macro to refuse. expected.te equals both. The narrow contract still holds trivially (exact perm set, no padding, no attribute, no unrelated type). Note: the canonical real fix is a relabel (restorecon / semanage fcontext to httpd_sys_content_t), not an allow at all - triage should suggest the allow but a relabel caveat is the better operator advice.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": false
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive impl that assumes -R always over-broadens would invent a macro-vs-raw narrowing diff here and over-state its value; in THIS scenario -R and -N are identical, so the real triage value is (a) emitting the exact { read getattr } set and (b) noting the underlying problem is a mislabel (restorecon to httpd_sys_content_t) rather than blindly suggesting a permanent allow on default_t."
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "rocky9-capability",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A tclass=capability denial (logrotate_t denied dac_override against itself). Exercises the capability perm vocabulary (no path/ino/name object fields) and the scontext==tcontext 'self' rendering that audit2allow uses for capability checks.",
+  "denials": [
+    {
+      "sdomain": "logrotate_t",
+      "ttype": "logrotate_t",
+      "tclass": "capability",
+      "perms": [
+        "dac_override"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [
+    "allow logrotate_t self:capability dac_override;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). For decline scenarios these MAY disagree on purpose.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t self:capability dac_override;",
+    "audit2allow_R": "allow logrotate_t self:capability dac_override;",
+    "narrower_than_R_by": "For the capability class audit2allow -R emits NO interface macro - it produces the identical raw self-allow as -N. This is an honest oracle datapoint: -R does NOT always over-broaden; capability self-grants have no covering refpolicy interface, so the narrow allow and the macro baseline coincide. RuleSteward's output must equal both here.",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "audit2why reports 'Unknown - would be allowed by active policy' because logrotate_t self:capability dac_override is ALREADY granted in shipped policy; this is a TE-allowable access (a missing-allow shape), not a constraint/bounds issue.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": false,
+    "expected_equals_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive parser that expects file-class object fields (name=/ino=/path=) may choke on a capability AVC that lacks them, or may try to emit a target TYPE other than the source (capability is a self-check: scontext==tcontext, audit2allow renders 'self'). It must use the capability perm vocabulary (dac_override from the cap common), not invent file perms."
+  }
+}

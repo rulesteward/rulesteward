@@ -1,0 +1,54 @@
+{
+  "id": "rocky9-perm-watch-expansion",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "The perm-expansion breadth trap (f3 \u00a72.4, permtab.h). Two -w watches on /etc/passwd, one -p r and one -p w. The -p chars expand to whole syscall GROUPS (r=21 syscalls, w=26 syscalls), so a naive 'one rule = one syscall' cost model understates each watch's breadth ~20x+.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p r -k passwd_read",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_read",
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      },
+      "perm_expands_to_syscalls": 21
+    },
+    {
+      "line": "-w /etc/passwd -p w -k passwd_write",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_write",
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 26
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00132,
+    "gbPerDayTypical": 0.0264,
+    "gbPerDayHigh": 0.264,
+    "costPerMonthLow": 0.2,
+    "costPerMonthTypical": 4.01,
+    "costPerMonthHigh": 40.13
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "A naive impl treating '-w PATH -p r' as a single read syscall (or as one undifferentiated 'watch' unit) understates the rule's breadth: -p r expands to 21 read syscalls and -p w to 26 write syscalls (permtab.h, f3 \u00a72.4), 42 distinct in the union. The cost model must reflect that a perm-watch fires across a 20+ syscall group. Uses 900 B/event (pure file-watch, no EXECVE record, f3 \u00a73.3) -- a second sub-trap if the impl blindly applies the 1200 B execve constant to file watches."
+}

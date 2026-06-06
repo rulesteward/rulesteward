@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:24011): avc:  denied  { dyntransition } for  pid=15002 comm="newrole" scontext=staff_u:staff_r:newrole_t:s0 tcontext=staff_u:sysadm_r:newrole_t:s0 tclass=process permissive=0

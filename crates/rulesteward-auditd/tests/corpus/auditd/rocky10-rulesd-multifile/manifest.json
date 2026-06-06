@@ -1,0 +1,93 @@
+{
+  "id": "rocky10-rulesd-multifile",
+  "os": 10,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A rules.d/ of several files (10-base, 30-identity, 50-exec, 99-finalize) to exercise the filename-order augenrules merge (f3 2.5, catalog #5). The compiled audit.rules MUST concatenate in filename order: control first, watch+syscall middle, -e 2 last.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-D",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    },
+    {
+      "line": "-b 8192",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.001812,
+    "gbPerDayTypical": 0.0186,
+    "gbPerDayHigh": 0.186,
+    "costPerMonthLow": 0.28,
+    "costPerMonthTypical": 2.83,
+    "costPerMonthHigh": 28.27
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The augenrules merge is FILENAME-ORDER (f3 2.5): 10-base, 30-identity, 50-exec, 99-finalize. A cost impl that reads files in directory-iteration order (not filename-sorted) could place -e 2 (finalize) before the syscall rules or mis-order a never/always pair. The -e 2 finalize must stay LAST and be tiered NEGATIVE, not as a volume rule. Mixed byte constants (900 watch / 1200 syscall)."
+}

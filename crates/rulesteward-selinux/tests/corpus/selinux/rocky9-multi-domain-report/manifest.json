@@ -1,0 +1,42 @@
+{
+  "id": "rocky9-multi-domain-report",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "oracle-fixture",
+  "adversarial": false,
+  "intent": "Denials from THREE distinct confined domains (httpd_t, logrotate_t, sshd_t) interleaved in one log, with httpd_t hitting two triples (file + dir). Fixtures the grouped triage REPORT output: per-domain sections, stable ordering, correct grouping of multiple triples under one domain. This is the report-shape oracle (audit2allow -N emits #===== per-domain section headers).",
+  "denials": [
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read", "getattr"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "var_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "sshd_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read", "open"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "dir",
+      "perms": ["search"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [
+    "allow httpd_t default_t:file { read getattr };",
+    "allow httpd_t default_t:dir search;",
+    "allow logrotate_t var_t:file read;",
+    "allow sshd_t default_t:file { read open };"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "All TeAllowable. audit2why reports the httpd_t default_t:dir search as 'would be allowed by active policy' (httpd searches default dirs in shipped policy) but it is a valid input record. floor_label none for all.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "Per-domain sections: #= httpd_t = { allow httpd_t default_t:dir search; allow httpd_t default_t:file { getattr read }; } #= logrotate_t = { allow logrotate_t var_t:file read; } #= sshd_t = { allow sshd_t default_t:file { open read }; }. The two httpd_t triples (file + dir) are grouped under one domain section.",
+    "audit2allow_R": "Per-domain: httpd_t -> files_read_default_files(httpd_t) + files_search_default(httpd_t); logrotate_t -> files_read_var_files(logrotate_t); sshd_t -> files_read_default_files(sshd_t). Every raw denial replaced by a broad interface macro.",
+    "narrower_than_R_by": "-R replaces all four raw allows with broad interfaces (files_read_default_files grants read_file_perms on ALL default_t files; files_search_default; files_read_var_files). Our expected.te keeps four exact raw allows grouped per (domain,type,class). The report ORDERING and per-domain grouping is the fixture target.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "The denials are interleaved (httpd, logrotate, sshd, then httpd again - the second httpd denial is OUT of source-order with the first). A report that groups by first-seen order without re-collecting later denials for an already-seen domain would either (a) put the httpd dir:search in a second stray httpd section, or (b) drop it. Correct triage groups ALL httpd_t triples under one httpd_t section regardless of log position, with deterministic ordering. Also tests multi-domain section separation and that each domain's allows stay narrow."
+  }
+}

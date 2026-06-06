@@ -1,0 +1,21 @@
+{
+  "scenario": "rocky10-cis-benchmark",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "total": {
+    "gbPerDayLow": 0.0019584,
+    "gbPerDayTypical": 0.022272,
+    "gbPerDayHigh": 0.22224,
+    "costPerMonthLow": 0.30,
+    "costPerMonthTypical": 3.39,
+    "costPerMonthHigh": 33.78
+  },
+  "math": "Sum additive rules events*1200/1e9: 2 identity @500*1200 + sudoers dir 500*1200 + execve 15000*1200 + time 30*1200 + mount 30*1200 + sudo.log 2000*1200. $/mo = gb/day*30.4*5.00. -e 2 contributes 0. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event (locked 2026-06-03)."
+}

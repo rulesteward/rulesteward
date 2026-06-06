@@ -1,0 +1,93 @@
+{
+  "id": "rocky8-cis-file-watches",
+  "os": 8,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A CIS-style set of -w file watches with -p wa -k keys (catalog #3). Pure file-watch events -> 900 B/event (no EXECVE record, f3 3.3). All additive, LOW-MEDIUM volume.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/group -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/gshadow -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/hosts -p wa -k cis_network",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_network",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/sysconfig/network -p wa -k cis_network",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_network",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 6e-05,
+    "gbPerDayTypical": 0.003,
+    "gbPerDayHigh": 0.03,
+    "costPerMonthLow": 0.01,
+    "costPerMonthTypical": 0.46,
+    "costPerMonthHigh": 4.56
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "All watch events are 900 B (no EXECVE record, f3 3.3); a naive impl applying the 1200 B execve constant to file watches over-sizes ~33%. All rules are write/attr watches (perm=wa), not reads, so volume is bounded by config-change frequency (LOW), not by read traffic."
+}
