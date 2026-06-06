@@ -123,6 +123,15 @@ pub enum FapolicydCommand {
     /// Lint fapolicyd rule files (unprivileged, no daemon)
     Lint(LintArgs),
     /// Simulate a workload against a rule set (which rule decides each access)
+    ///
+    /// Statically replays each access in the workload against the rule set and
+    /// reports the deciding rule. Some rule predicates cannot be resolved
+    /// statically: `pattern=` rules depend on runtime process ancestry and are
+    /// treated as not-evaluable; `ftype=` needs real MIME detection of the target
+    /// file, which simulation does not perform. A trust DB marks a file "trusted"
+    /// by presence, but the daemon's runtime `integrity` re-check (sha256 / size)
+    /// can still mark an on-disk-modified file untrusted at exec time. `--trustdb`
+    /// resolves trust the workload omits (workload-supplied trust always wins).
     Simulate(SimulateArgs),
     /// Explain a FANOTIFY denial from the audit log
     Explain(ExplainArgs),
@@ -498,12 +507,38 @@ pub struct TrustdbStaleArgs {
 #[derive(Debug, Subcommand)]
 pub enum SelinuxCommand {
     /// Triage `SELinux` AVCs
+    ///
+    /// Classifies `SELinux` AVC denials and suggests next steps. A record-only floor
+    /// classifier always runs; passing `--policy <FILE>` adds authoritative
+    /// categorization by replaying each denial against the binary policy.
+    ///
+    /// Limitations: only plain type-enforcement (TE) denials are fixable with an
+    /// `allow` rule. Constraint (MLS / MCS), RBAC role, and typebounds denials are
+    /// NOT TE-allowable; triage reports them but never emits an allow for them.
+    /// Permissive-mode denials (the access was not actually blocked) are reported
+    /// but never auto-allowed.
     Triage(TriageArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AuditdCommand {
     /// auditd cost calculator
+    ///
+    /// Estimates SIEM ingest volume and cost from auditd rules. The result is a
+    /// band (low / typical / high), not a guarantee.
+    ///
+    /// What IS predictable from the rules (f3 5.1): which rules fire, their
+    /// additive-vs-suppressive direction, and a per-rule volume tier. Suppressive
+    /// rules (`never`, `exclude`) contribute zero volume. Each event is sized at a
+    /// fixed 1200 bytes ENRICHED (900 RAW).
+    ///
+    /// What is NOT predictable from the rules alone (f3 5.2): the real event rate,
+    /// the PATH-record multiplier, and rule interaction on a live host. Pass
+    /// `--from-log <FILE>` to ground the estimate in measured counts from a
+    /// captured audit log.
+    ///
+    /// Cost assumes ingest-based SIEM pricing (USD per decimal GB via
+    /// `--price-per-gb`, default $5.00), not Splunk-style workload/compute pricing.
     Cost(CostArgs),
 }
 
