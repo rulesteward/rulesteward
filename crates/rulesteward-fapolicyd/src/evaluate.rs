@@ -289,6 +289,51 @@ fn eval_trust_field(
     }
 }
 
+/// `true` when `value` is a `SetRef` whose resolved members contain the
+/// `untrusted` macro token. Used by the EXE arm to decide whether the embedded
+/// trust macro applies (f1 §1.4 line 164; rules.c:1443-1463).
+fn set_contains_untrusted(value: &AttrValue, sets: &SetTable) -> bool {
+    match value {
+        AttrValue::SetRef(name) => sets
+            .get(name)
+            .is_some_and(|members| members.iter().any(|m| m == "untrusted")),
+        _ => false,
+    }
+}
+
+/// Evaluate `exe=<set>` when the set CONTAINS the `untrusted` macro token.
+///
+/// fapolicyd's EXE case OR-s the `untrusted` macro with exact string membership:
+/// match IFF (subject is NOT trusted, via the macro) OR (the exe path is an
+/// exact member of the set). The macro is the deciding factor only when no
+/// literal member matched; in that case `Trust::Unknown` downgrades to
+/// `NotEvaluable` exactly like the bare `exe=untrusted` arm.
+///
+/// Precondition: `set_contains_untrusted(value, sets)` is `true`.
+fn eval_exe_setref_with_untrusted_macro(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    // Literal exact-membership leg (independent of trust). An absent exe fact
+    // widens (Match), the standard absent-fact behaviour.
+    let literal = match &facts.exe {
+        None => FieldEval::Match,
+        Some(exe_path) => exact_string_match(exe_path, value, sets),
+    };
+    if literal == FieldEval::Match {
+        return (FieldEval::Match, None);
+    }
+    // No literal member matched: the `untrusted` macro is the deciding factor.
+    // Reuse `eval_trust_field` so Match/NoMatch/NotEvaluable (and the Unknown
+    // downgrade reason) mirror the bare `exe=untrusted` arm exactly.
+    eval_trust_field(
+        facts.subj_trust,
+        &AttrValue::Int(0),
+        "subj trust unknown (no trust DB)",
+    )
+}
+
 /// Evaluate one subject-side attribute against the facts.
 /// Returns `(FieldEval, Option<reason_string>)` where the reason is non-None
 /// only for `NotEvaluable` cases.
@@ -322,8 +367,18 @@ fn eval_subject_field(
                 &AttrValue::Int(0),
                 "subj trust unknown (no trust DB)",
             ),
-            // Any other value (incl. the literal "trusted", or a non-literal
-            // SetRef/Int): literal exe path match.
+            // A SetRef whose resolved members CONTAIN the `untrusted` macro
+            // token: real fapolicyd's EXE case OR-s the `untrusted` macro with
+            // exact set membership (f1 §1.4 line 164; rules.c:1443-1463). So the
+            // match is (set contains "untrusted" AND subject NOT trusted) OR
+            // (exe path is an exact member). The macro path mirrors the bare
+            // `exe=untrusted` Trust::Unknown -> NotEvaluable downgrade when it is
+            // the deciding factor (no literal member matched).
+            None if set_contains_untrusted(value, sets) => {
+                eval_exe_setref_with_untrusted_macro(value, sets, facts)
+            }
+            // Any other value (incl. the literal "trusted", or a SetRef without
+            // the `untrusted` token, or an Int): literal exe path match.
             _ => match &facts.exe {
                 None => (FieldEval::Match, None),
                 Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
@@ -2186,6 +2241,208 @@ mod tests {
         assert!(
             v.uncertain.is_some(),
             "exe=untrusted with Unknown trust must downgrade to a Possible/uncertain verdict"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #126 round-3: `exe=<SET>` where the set CONTAINS the `untrusted` macro
+    // token. Real fapolicyd resolves `exe=%apps` via `attr_set_check_str`, and
+    // the EXE case ALSO honours the `untrusted` macro when the SET contains it
+    // (f1 grounding §1.4 line 164: "EXACT string membership ... plus the
+    // `untrusted` macro: if the set contains `untrusted` AND the subject is not
+    // in the trust DB, match immediately"; upstream rules.c:1443-1463). So the
+    // EXE match for a set is: (set contains "untrusted" AND subject NOT trusted)
+    // OR (exe path is an EXACT member of the set). The macro path mirrors the
+    // bare-literal `exe=untrusted` behaviour, INCLUDING the Trust::Unknown ->
+    // NotEvaluable downgrade when the macro is the deciding factor.
+    //
+    // Pre-round-3 the exe arm fell to `exact_string_match` for any SetRef, which
+    // does literal set membership ONLY - it never honours the embedded macro, so
+    // it MISSES the macro fire. These pin the OR-ed semantics on `evaluate()`.
+    // -----------------------------------------------------------------------
+
+    /// Set `%apps = untrusted,/usr/bin/foo`, rule `exe=%apps`, subject is
+    /// untrusted and its exe is NOT a literal member -> the embedded `untrusted`
+    /// macro must FIRE (set contains "untrusted" AND `subj_trust=No`). A
+    /// literal-set-membership-only impl returns `NoMatch` and never denies. RED
+    /// until the `SetRef` macro path lands.
+    #[test]
+    fn exe_setref_with_untrusted_member_fires_for_untrusted_subject() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("apps", &["untrusted", "/usr/bin/foo"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "apps")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/tmp/payload".to_string());
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "set %apps contains the `untrusted` macro and the subject is untrusted: \
+             the deny rule must FIRE via the macro, not fall through to literal membership"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=No is decisive, not uncertain"
+        );
+    }
+
+    /// Same `%apps = untrusted,/usr/bin/foo`, but the subject IS trusted and its
+    /// exe is NOT a literal member: the macro must NOT fire (trusted) AND there
+    /// is no literal membership match -> the deny rule is skipped and the
+    /// ruleset falls through to the rule-2 Allow. An impl that fires the macro
+    /// regardless of trust state would wrongly Deny here.
+    #[test]
+    fn exe_setref_with_untrusted_member_no_fire_for_trusted_subject() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("apps", &["untrusted", "/usr/bin/foo"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "apps")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "trusted subject + exe not a literal member: macro does NOT fire and there is \
+             no literal match, so the deny rule is skipped and the verdict is the rule-2 Allow"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (allow) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "subj_trust=Yes + literal NoMatch is decisive, not uncertain"
+        );
+    }
+
+    /// Same `%apps = untrusted,/usr/bin/foo`, subject trust Unknown, exe not a
+    /// literal member: the embedded `untrusted` macro is the deciding factor and
+    /// trust is unknown -> `NotEvaluable` downgrade (mirrors the bare-literal
+    /// `exe=untrusted` Unknown behaviour). The deny rule (rule 1) downgrades to
+    /// a possible match; the verdict is the rule-2 Allow but `uncertain` is set.
+    /// An impl that resolves the `SetRef` to literal membership only would return
+    /// a DECISIVE `NoMatch` (`uncertain=None`), losing the downgrade.
+    #[test]
+    fn exe_setref_with_untrusted_member_unknown_trust_is_uncertain() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("apps", &["untrusted", "/usr/bin/foo"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "apps")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 2 allow is the decisive match"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "the decisive rule is rule 2 (allow)"
+        );
+        assert!(
+            v.uncertain.is_some(),
+            "exe=%apps (set contains `untrusted`) with Unknown trust and no literal match \
+             must downgrade to an uncertain verdict, mirroring bare exe=untrusted"
+        );
+    }
+
+    /// Same `%apps = untrusted,/usr/bin/foo`, but the subject's exe IS a literal
+    /// member (`/usr/bin/foo`): the EXACT-membership path matches regardless of
+    /// trust state (here subject is TRUSTED). This pins that literal membership
+    /// is OR-ed independently of the macro - the macro never fires for a trusted
+    /// subject, yet the literal match still denies.
+    #[test]
+    fn exe_setref_literal_member_matches_regardless_of_trust() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("apps", &["untrusted", "/usr/bin/foo"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "apps")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/foo".to_string());
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe `/usr/bin/foo` is an EXACT member of %apps: the literal-membership path \
+             matches independently of trust (subject is trusted, the macro does NOT fire)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(
+            v.source,
+            Source::Rule,
+            "a decisive literal-membership match"
+        );
+        assert!(
+            v.uncertain.is_none(),
+            "an exact literal-membership match is decisive, not uncertain"
         );
     }
 }

@@ -357,7 +357,7 @@ fn filehash_on_demand_hash_mismatch_does_not_match() {
 /// mutation survivors in `evaluate.rs:379` and `trustdb.rs:164`).
 ///
 /// When the workload names an object `path` that does NOT exist on disk and OMITS
-/// `sha256`, `sha256_file` returns `Ok(None)` (NotFound branch, `trustdb.rs:164`).
+/// `sha256`, `sha256_file` returns `Ok(None)` (`NotFound` branch, `trustdb.rs:164`).
 /// `evaluate_query` propagates that as `sha256 = None, sha256_unhashable = false`.
 /// `evaluate.rs:382` then hits `None => Match` (the standard absent-fact-widening
 /// path, rules.c:1572-1575), so the `sha256hash=` object constraint WIDENS and rule
@@ -366,13 +366,14 @@ fn filehash_on_demand_hash_mismatch_does_not_match() {
 /// The two mutation survivors both flip this to deny:
 /// - `evaluate.rs:379` mutant (`facts.sha256_unhashable` -> `true`): the unhashable
 ///   guard fires even though `sha256_unhashable = false`, routing to `NoMatch`.
-/// - `trustdb.rs:164` mutant (NotFound guard -> `false`): NotFound propagates as
+/// - `trustdb.rs:164` mutant (`NotFound` guard -> `false`): `NotFound` propagates as
 ///   `Err` => `sha256_unhashable = true`, same `NoMatch` outcome.
+///
 /// Either way the verdict flips to deny at rule 2, killing this test.
 ///
 /// Grounding: absent-path widening is the standard absent-fact skip documented in
 /// f1 grounding §1.4 ~line 173 (rules.c:1572-1575). It is DISTINCT from the
-/// present-but-unhashable FILE_HASH error-as-denial (rules.c:1606-1611) pinned by
+/// present-but-unhashable `FILE_HASH` error-as-denial (rules.c:1606-1611) pinned by
 /// `filehash_present_but_unhashable_is_denied_not_widened` below.
 ///
 /// This test PASSES against the current (correct) impl (regression pin); it does NOT
@@ -386,8 +387,7 @@ fn filehash_absent_object_path_widens_not_denied() {
         "/tmp/does-not-exist-rulesteward-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0xdeadbeef)
+            .map_or(0xdead_beef, |d| d.subsec_nanos())
     ));
     // Confirm the path truly does not exist (smoke-guard; not a test assertion).
     assert!(

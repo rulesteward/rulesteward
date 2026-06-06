@@ -24,7 +24,7 @@
 
 use std::fmt::Write as _;
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use rulesteward_fapolicyd::trustdb::{self, TrustDb};
@@ -430,12 +430,16 @@ fn evaluate_query(
     //                      `sha256 = None` AND set `sha256_unhashable = true`, so
     //                      the `filehash=` constraint is `NoMatch` (deny), not widen.
     let (sha256, sha256_unhashable) = match (&query.sha256, &query.path) {
-        (None, Some(p)) if ctx.ruleset_uses_filehash => {
-            match trustdb::sha256_file(std::path::Path::new(p)) {
-                Ok(opt) => (opt, false),
-                Err(_) => (None, true),
+        (None, Some(p)) if ctx.ruleset_uses_filehash => match trustdb::sha256_file(Path::new(p)) {
+            Ok(opt) => (opt, false),
+            Err(e) => {
+                eprintln!(
+                    "simulate: could not hash object {p}: {e}; treating as unhashable \
+                         (deny per FILE_HASH error-as-denial)"
+                );
+                (None, true)
             }
-        }
+        },
         _ => (query.sha256.clone(), false),
     };
 
