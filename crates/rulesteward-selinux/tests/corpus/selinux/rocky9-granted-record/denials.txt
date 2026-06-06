@@ -1,0 +1,2 @@
+type=AVC msg=audit(1780438805.959:23904): avc:  granted  { read } for  pid=14601 comm="mycat" name="data" dev="vda4" ino=109061505 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780438805.959:23905): avc:  denied  { write } for  pid=14601 comm="mycat" name="out" dev="vda4" ino=109061506 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:var_log_t:s0 tclass=file permissive=0

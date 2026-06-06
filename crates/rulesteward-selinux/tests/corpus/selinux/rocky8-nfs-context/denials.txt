@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438923.117:30301): avc:  denied  { read getattr } for  pid=3120 comm="httpd" name="report.pdf" dev="0:42" ino=400331 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:nfs_t:s0 tclass=file permissive=0

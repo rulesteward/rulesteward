@@ -1,0 +1,63 @@
+{
+  "id": "rocky10-huge-denial-log",
+  "os": 10,
+  "image": "fapolicyd10",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "A large log: 420 AVC records that collapse to 15 distinct (sdomain, ttype, tclass) triples across 12 confined domains. Each triple is repeated ~28 times (the flood). Tests grouping correctness, dedup (420 records MUST become 15 allows, not 420), output that does not flood, and performance at scale. Also a fidelity guard: every type used is a real type in the el10 targeted policy (a synthetic type that does not resolve would be silently dropped by audit2allow - see RUN-note below).",
+  "denials": [
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "file", "perms": ["read","getattr"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "dir", "perms": ["search"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "httpd_t", "ttype": "var_log_t", "tclass": "file", "perms": ["append"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "var_t", "tclass": "file", "perms": ["read","write"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "var_log_t", "tclass": "dir", "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "sshd_t", "ttype": "default_t", "tclass": "file", "perms": ["read","open"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "init_t", "ttype": "default_t", "tclass": "file", "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "crond_t", "ttype": "user_home_t", "tclass": "file", "perms": ["getattr"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "postfix_smtp_t", "ttype": "mail_spool_t", "tclass": "file", "perms": ["write"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "named_t", "ttype": "default_t", "tclass": "file", "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "syslogd_t", "ttype": "var_t", "tclass": "dir", "perms": ["search","write"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "auditd_t", "ttype": "default_t", "tclass": "file", "perms": ["getattr"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "chronyd_t", "ttype": "default_t", "tclass": "file", "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "gpsd_t", "ttype": "default_t", "tclass": "file", "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "mysqld_t", "ttype": "default_t", "tclass": "file", "perms": ["read","write"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [
+    "allow httpd_t default_t:file { read getattr };",
+    "allow httpd_t default_t:dir search;",
+    "allow httpd_t var_log_t:file append;",
+    "allow logrotate_t var_t:file { read write };",
+    "allow logrotate_t var_log_t:dir read;",
+    "allow sshd_t default_t:file { read open };",
+    "allow init_t default_t:file read;",
+    "allow crond_t user_home_t:file getattr;",
+    "allow postfix_smtp_t mail_spool_t:file write;",
+    "allow named_t default_t:file read;",
+    "allow syslogd_t var_t:dir { search write };",
+    "allow auditd_t default_t:file getattr;",
+    "allow chronyd_t default_t:file read;",
+    "allow gpsd_t default_t:file read;",
+    "allow mysqld_t default_t:file { read write };"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "All 15 triples TeAllowable. floor_label none for all (same role, level s0). Some triples (httpd dir:search, var_log:append, crond user_home getattr, logrotate var_log:dir read) report 'allowed in current policy' in audit2allow comments - still valid input records.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "record_count": 420,
+    "distinct_triple_count": 15,
+    "audit2allow_N": "15 allow lines (one per distinct triple), grouped into per-domain #===== sections; audit2allow deduplicates the 420 records to 15 rules. Our expected.te allow set is IDENTICAL to -N (perm-order normalized).",
+    "audit2allow_R": "Each raw allow replaced by a broad refpolicy interface macro per domain (files_read_default_files, files_search_default, files_append_log_files, etc.). Far broader than the exact per-triple perm sets.",
+    "narrower_than_R_by": "-R substitutes a broad interface for nearly every triple (default_t/var_t/var_log_t all have read/write/append _perms macros that pad the perm set and may grant on whole type families). expected.te keeps 15 exact raw allows, each the literal denied perm union for its triple.",
+    "audit2why_category": "TeAllowable",
+    "oracle_wall_seconds": 9.47,
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "Three traps. (1) FLOOD: a naive impl that emits one allow per RECORD would print 420 identical-ish lines instead of 15 - triage MUST dedup by triple. (2) GROUPING: 15 triples across 12 domains with httpd_t holding 3 triples; the report must group all of a domain's triples together with deterministic ordering. (3) FIDELITY (corpus-build lesson): two of the original synthetic types (ntpd_t, rsyslogd_t) do NOT exist in the el10 targeted policy and were SILENTLY DROPPED by audit2allow - replaced with the real domains gpsd_t and syslogd_t. A triage impl replaying against a policy must surface (not silently drop) a record whose context type is undefined in the supplied policy, else denials vanish without warning."
+  }
+}

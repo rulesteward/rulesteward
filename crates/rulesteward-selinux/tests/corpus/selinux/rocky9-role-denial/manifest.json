@@ -1,0 +1,30 @@
+{
+  "id": "rocky9-role-denial",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE: an RBAC/role constraint denial (newrole_t self dyntransition, role staff_r -> sysadm_r). The TE allow exists, so the role constraint is the sole binding reason. A raw TE allow cannot fix it. RuleSteward must DETECT-and-DECLINE. Distinct from scenario 39 by using a different role pair (staff_r -> sysadm_r vs staff_r -> system_r).",
+  "denials": [
+    { "sdomain": "newrole_t", "ttype": "newrole_t", "tclass": "process",
+      "perms": ["dyntransition"], "permissive": false, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "RoleSuspected",
+  "_kinds_note": "Here BOTH layers agree: authoritative=Constraint (role constrain DENIED via replay), floor=RoleSuspected (scontext role staff_r vs tcontext role sysadm_r mismatch, record-detectable). On the targeted policy RBAC collapses into the Constraint bucket; there is no distinct RBAC string (f4 section 8).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow newrole_t self:process dyntransition;  (BOGUS - the role constraint blocks it regardless of the TE allow, which already exists)",
+    "audit2allow_R": "same BOGUS allow newrole_t self:process dyntransition; plus the constraint comment block",
+    "narrower_than_R_by": "N/A - decline scenario. expected.te is rule-free and compiles exit 0.",
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "constrain process { transition noatsecure siginh rlimitinh dyntransition } ((r1 == r2 -Fail-) or ... (t1 == can_system_change -Fail-) and (r2 == system_r -Fail-) or (t1 == process_uncond_exempt -Fail-)); Constraint DENIED. Possible cause is the source role (staff_r) and target role (sysadm_r) are different."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "RBAC/role constraint violation: source role staff_r differs from target role sysadm_r on a process dyntransition. A TE allow cannot fix a role constraint; the fix is an RBAC change (role_allow / authorize the role for the type).",
+    "suspected_trap": "A naive impl emits the BOGUS allow newrole_t self:process dyntransition; (audit2allow does exactly this). The TE allow already EXISTS, so adding it again changes nothing - the role constraint still blocks. The floor's RoleSuspected flag (role mismatch) catches it offline."
+  }
+}

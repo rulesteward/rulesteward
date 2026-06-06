@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438934.882:30401): avc:  denied  { read open } for  pid=1 comm="systemd" name="app.env" dev="vda4" ino=500441 scontext=system_u:system_r:init_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0

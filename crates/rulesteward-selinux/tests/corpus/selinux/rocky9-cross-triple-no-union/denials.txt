@@ -1,0 +1,2 @@
+type=AVC msg=audit(1780439001.100:31001): avc:  denied  { read } for  pid=7001 comm="logrotate" name="messages" dev="vda4" ino=700111 scontext=system_u:system_r:logrotate_t:s0 tcontext=system_u:object_r:var_log_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780439001.250:31002): avc:  denied  { write } for  pid=7001 comm="logrotate" name="state.tmp" dev="vda4" ino=700222 scontext=system_u:system_r:logrotate_t:s0 tcontext=system_u:object_r:var_t:s0 tclass=file permissive=0

@@ -1,0 +1,77 @@
+{
+  "id": "rocky9-tclass-exotic",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Four denials across exotic object classes (key, fd, dbus, kernel_service), each with class-specific perm vocabulary the parser must pass through verbatim. Four separate triples -> four separate allow lines, no cross-class union.",
+  "denials": [
+    {
+      "sdomain": "crond_t",
+      "ttype": "crond_t",
+      "tclass": "key",
+      "perms": [
+        "read",
+        "write",
+        "search"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    },
+    {
+      "sdomain": "httpd_t",
+      "ttype": "init_t",
+      "tclass": "fd",
+      "perms": [
+        "use"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    },
+    {
+      "sdomain": "NetworkManager_t",
+      "ttype": "system_dbusd_t",
+      "tclass": "dbus",
+      "perms": [
+        "send_msg"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    },
+    {
+      "sdomain": "init_t",
+      "ttype": "kernel_t",
+      "tclass": "kernel_service",
+      "perms": [
+        "use_as_override"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [
+    "allow crond_t self:key { read search write };",
+    "allow httpd_t init_t:fd use;",
+    "allow NetworkManager_t system_dbusd_t:dbus send_msg;",
+    "allow init_t kernel_t:kernel_service use_as_override;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). For decline scenarios these MAY disagree on purpose.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow crond_t self:key { read search write }; allow httpd_t init_t:fd use; allow NetworkManager_t system_dbusd_t:dbus send_msg; allow init_t kernel_t:kernel_service use_as_override;",
+    "audit2allow_R": "dbus_send_system_bus(NetworkManager_t); init_use_fds(httpd_t); allow crond_t self:key { read search write }; allow init_t kernel_t:kernel_service use_as_override;",
+    "narrower_than_R_by": "audit2allow -R over-broadens the dbus and fd denials to interface macros (dbus_send_system_bus(), init_use_fds()) but leaves the key self-grant and the kernel_service grant as raw allows (no covering macro exists for those exotic classes). Our expected.te emits all four as raw narrow allows - matching -N exactly and narrower than -R on the two macro-substituted triples.",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "key/fd/dbus replay as 'would be allowed by active policy' (already-granted TE shape); kernel_service replays as a clean 'Missing TE allow'. All four are TeAllowable. Each exotic class uses its own perm vocabulary: key {read write search}, fd {use}, dbus {send_msg}, kernel_service {use_as_override} - all verified present in the policy class definitions.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A parser that only understands file/dir/process classes will fail to pass through exotic perms (key:search, fd:use, dbus:send_msg, kernel_service:use_as_override) verbatim, or may union perms across the four DIFFERENT classes into one rule. Correct output is four separate triple-scoped allows, each with its class-specific perm set passed through unchanged. The key denial is a self-check (scontext==tcontext -> 'self')."
+  }
+}

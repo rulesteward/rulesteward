@@ -1,0 +1,32 @@
+{
+  "id": "rocky9-path-escapes",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL parser path-decoding: the name= field is HEX-encoded (the auditd encoding for a path with special bytes): 2F746D702F2266696C6520C3A9 = /tmp/\"file <e-acute> (embedded double-quote + a UTF-8 multibyte char C3A9). The ausearch companion (denials.ausearch.txt) shows the same path with octal escapes (\\303\\251) and a literal escaped quote. The parser must decode/pass these path bytes through WITHOUT mangling the SELinux fields, treating the path as opaque enrichment (f4 section 1.3) - it never feeds the TE rule.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable",
+      "name_hex": "2F746D702F2266696C6520C3A9", "name_decoded": "/tmp/\"file é" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file read;"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). The path bytes are enrichment only; the SELinux fields are clean, so this is a plain TeAllowable read.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t shadow_t:file read;  (audit2allow ignores name= entirely; the encoded path does not affect its output)",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)  (the broad macro form)",
+    "narrower_than_R_by": "omits the auth_read_shadow() macro (attribute + 5-perm shadow_t padding + 6-perm etc_t:dir). expected.te emits only the single denied `read`.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A parser that naively un-hexes name= and then re-tokenizes the line could re-introduce the embedded quote/space into the field stream and mis-align later fields. A parser that assumes name= is always ASCII may corrupt the UTF-8 C3A9 bytes. The path is opaque enrichment: decode it for display only, never let its bytes feed the rule or break the SELinux-field parse. The TE rule depends only on the tcontext TYPE (shadow_t), never on the object pathname."
+  }
+}

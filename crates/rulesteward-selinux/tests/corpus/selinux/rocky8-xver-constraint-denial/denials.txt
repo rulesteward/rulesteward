@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:24010): avc:  denied  { relabelto } for  pid=15001 comm="restorecon" name="data" dev="vda4" ino=400100 scontext=system_u:system_r:container_t:s0 tcontext=system_u:object_r:container_file_t:s0-s0:c0.c1023 tclass=file permissive=0

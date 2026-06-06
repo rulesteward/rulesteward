@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:23907): avc:  denied  { read } for  pid=14601 comm="my cat" exe="/usr/local/bin/my cat" proctitle="/usr/local/bin/my cat --opt=\"quoted value\" /tmp/data" scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0

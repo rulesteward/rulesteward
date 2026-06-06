@@ -1,0 +1,30 @@
+{
+  "id": "rocky9-mcs-category",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "NEGATIVE FIXTURE: an MCS category mismatch (container_t at s0:c0 reading container_file_t at s0:c5 - two disjoint categories). The MCS mlsconstrain blocks the read. RuleSteward must DETECT-and-DECLINE. Distinct from scenario 14 (s0 vs s0:c0 dominance) by exercising two non-overlapping categories.",
+  "denials": [
+    { "sdomain": "container_t", "ttype": "container_file_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "Constraint",
+  "floor_label": "MlsSuspected",
+  "_kinds_note": "BOTH layers agree: authoritative=Constraint (mlsconstrain DENIED), floor=MlsSuspected (scontext level s0:c0 vs tcontext level s0:c5 mismatch). MCS surfaces as the single Constraint bucket (f4 section 8).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow container_t container_file_t:file read;  (BOGUS)",
+    "audit2allow_R": "same BOGUS allow container_t container_file_t:file read; plus the constraint comment block",
+    "narrower_than_R_by": "N/A - decline scenario. expected.te is rule-free and compiles exit 0.",
+    "audit2why_category": "Constraint",
+    "audit2why_detail": "mlsconstrain file { ioctl read lock execute execute_no_trans } ((h1 dom h2 -Fail-) or (t1 != mcs_constrained_type -Fail-)); Constraint DENIED. Possible cause is the source level (s0:c0) and target level (s0:c5) are different."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "MCS category mismatch: source category set {c0} does not dominate target category set {c5}. A TE allow cannot fix an MCS constraint; the fix is an MCS category or labeling change.",
+    "suspected_trap": "A naive impl emits the BOGUS allow container_t container_file_t:file read;. The floor's MlsSuspected flag (s0:c0 vs s0:c5 level mismatch) catches it offline."
+  }
+}

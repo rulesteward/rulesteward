@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438805.959:26002): avc:  denied  { signal } for  pid=14601 comm="killer" scontext=staff_u:staff_r:staff_t:s0 tcontext=system_u:system_r:auditd_t:s0 tclass=process permissive=0

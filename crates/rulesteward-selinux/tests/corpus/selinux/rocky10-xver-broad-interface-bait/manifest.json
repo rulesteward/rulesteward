@@ -1,0 +1,40 @@
+{
+  "id": "rocky10-xver-broad-interface-bait",
+  "os": "rocky10",
+  "policyvers": 35,
+  "image": "fapolicyd10",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Cross-version replay of rocky9-broad-interface-bait against el10 policyvers 35. logrotate_t -> shadow_t:file { read, getattr }. Verifies that audit2allow -R still picks auth_read_shadow() on el10 (selinux-policy-42), and that the TeAllowable bucket classification is stable. Both el9 and el10 audit2why return 'Unknown - should be dontaudit'd' for this access (dontaudit rule present in both selinux-policy 38 and 42); audit2allow -N and -R still emit the allow.",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "logrotate_t", "ttype": "shadow_t", "tclass": "file",
+      "perms": ["getattr"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t shadow_t:file { getattr read };"],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_audit2why_note": "audit2why returns 'Unknown - should be dontaudit'd by active policy' on BOTH el9 and el10. The dontaudit rule is present in both policy versions. audit2allow -N correctly emits the raw allow (logrotate_t shadow_t:file { getattr read }); audit2allow -R still uses auth_read_shadow() on el10. The bucket is stable.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2why_category": "Unknown - should be dontaudit'd (identical to el9 oracle output for both records)",
+    "audit2allow_R": "auth_read_shadow(logrotate_t)",
+    "narrower_than_R_by": "Same as el9: auth_read_shadow() expands to typeattribute can_read_shadow_passwords + open/ioctl/lock padding + etc_t:dir grant. Our expected.te: allow logrotate_t shadow_t:file { getattr read }; - exact 2 denied perms only.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-broad-interface-bait",
+    "rocky9_bucket": "TeAllowable",
+    "el10_bucket": "TeAllowable",
+    "buckets_match": true,
+    "_note": "Both el9 and el10 audit2why return identical 'Unknown/dontaudit' text. The auth_read_shadow() macro is present in selinux-policy-42/el10 with the same over-broadening profile as el9."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "An impl using audit2allow -R on el10 still gets auth_read_shadow(logrotate_t) - same over-broadening macro, same profile on selinux-policy-42 as on el9 38."
+  }
+}

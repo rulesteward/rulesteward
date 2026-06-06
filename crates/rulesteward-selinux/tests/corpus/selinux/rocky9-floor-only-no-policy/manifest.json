@@ -1,0 +1,32 @@
+{
+  "id": "rocky9-floor-only-no-policy",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "oracle-fixture",
+  "adversarial": false,
+  "intent": "POSITIVE FIXTURE, THE MANDATORY NO-POLICY OFFLINE FLOOR PATH: explicitly a no-policy fixture. No binary policy is supplied; the expected output is the record-only floor (heuristic labels + a narrow allow WITH a caveat). Proves the always-on offline path works with zero policy input (offline cross-host analysis is core - spec). The denial is a realistic mislabeled-log case (logrotate_t reading var_log_t).",
+  "denials": [
+    { "sdomain": "logrotate_t", "ttype": "var_log_t", "tclass": "file",
+      "perms": ["read","getattr"], "permissive": false, "kind": "TeAllowable-by-floor-default" }
+  ],
+  "expected_narrow_allow": ["allow logrotate_t var_log_t:file { getattr read };"],
+  "authoritative_category": "NOT_COMPUTED_no_policy",
+  "floor_label": "none",
+  "_kinds_note": "floor=none: scontext (system_r, s0) and tcontext (object_r, s0) share the LEVEL (s0); the floor does NOT treat object_r (the universal object role) as a role mismatch (flagging it would false-flag every file denial). permissive=0, so no Permissive flag. The floor therefore falls through to its default: SUGGEST the narrow allow + a caveat. authoritative_category is intentionally NOT computed (no policy) - the value of this fixture is the no-policy PATH and the mandatory caveat, not a verified category.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow logrotate_t var_log_t:file { getattr read };  (matches expected.te; -N is itself a no-reference-policy raw baseline)",
+    "audit2allow_R": "see audit2allow-R.te (a -R run was captured against stock policy for reference, but this fixture's contract is the NO-POLICY floor path)",
+    "narrower_than_R_by": "expected.te is the exact perm union { getattr read } on one triple; -R would expand to a logging_* interface adding perm padding + possibly a dir grant. expected.te omits all of that.",
+    "audit2why_category": "NOT_COMPUTED",
+    "audit2why_detail": "NO-POLICY fixture: audit2why intentionally not run. Without -p and without a live /sys/fs/selinux/policy (a --rm container has none), audit2why cannot replay - which is exactly the offline condition this fixture documents. The floor must operate from the record alone.",
+    "audit2why_policy": "NONE"
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "caveat_required": "Without a policy, the floor CANNOT rule out a constraint/bounds violation (it cannot distinguish this from scenario 41). The suggested allow MUST carry a caveat: 'suggested from the record alone; supply --policy to confirm this is a missing TE allow and not a constraint/bounds denial'.",
+    "suspected_trap": "A naive impl might (a) require a policy and refuse to run at all (breaking the mandatory offline path), or (b) emit the allow with NO caveat (over-confident - it has not ruled out a constraint). The correct behavior is suggest-with-caveat."
+  }
+}

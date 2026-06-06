@@ -1,0 +1,43 @@
+{
+  "id": "rocky8-xver-permissive-denial",
+  "os": 8,
+  "image": "fapolicyd8",
+  "policyvers": 31,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "ADVERSARIAL: the canonical logrotate_t -> shadow_t:file read denial but with permissive=1. A permissive denial did NOT actually block (avc.c:721-722). f4 contract #6: report it as informational, NEVER turn it into an allow. Targets a naive impl that maps every avc:denied record to an allow without checking the permissive flag.",
+  "denials": [
+    {
+      "sdomain": "logrotate_t",
+      "ttype": "shadow_t",
+      "tclass": "file",
+      "perms": [
+        "read"
+      ],
+      "permissive": true,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "Permissive",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay against policyvers 31). floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic).",
+  "oracle": {
+    "audit2why_category": "TeAllowable",
+    "audit2why_detail": "Unknown - should be dontaudit'd by active policy. The underlying TE gap exists; audit2why reports dontaudit presence, same message as el9.",
+    "policyvers": 31,
+    "container": "fapolicyd8 (RHEL 8.10, selinux-policy-3.14.3-139.el8_10.2)"
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Permissive denial (permissive=1): the domain was running permissive so the access was NOT blocked. Suggesting an allow may grant access only observed because the domain was permissive. Report as informational; if the access is genuinely needed, the operator must decide and add the allow deliberately.",
+    "suspected_trap": "A naive impl that maps every `avc: denied` record to `allow SDOMAIN TTYPE:TCLASS { PERMS };` without inspecting the permissive= field would emit `allow logrotate_t shadow_t:file read;` for a denial that never actually blocked - exactly what audit2allow does (it ignores permissive=). The floor heuristic catches this offline from the permissive=1 field alone."
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-permissive-denial",
+    "rocky9_bucket": "TeAllowable",
+    "el8_bucket": "TeAllowable",
+    "buckets_match": true,
+    "policyvers_note": "Both el8 and el9 ship a dontaudit for logrotate_t -> shadow_t:file read. The audit2why message ('Unknown - should be dontaudit') is identical across policy versions. Authoritative bucket TeAllowable is stable."
+  }
+}

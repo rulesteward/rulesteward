@@ -1,0 +1,4 @@
+type=AVC msg=audit(1780439020.100:33001): avc:  denied  { read getattr } for  pid=9001 comm="httpd" name="page.html" dev="vda4" ino=900111 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780439020.200:33002): avc:  denied  { read } for  pid=9002 comm="logrotate" name="custom.log" dev="vda4" ino=900222 scontext=system_u:system_r:logrotate_t:s0 tcontext=system_u:object_r:var_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780439020.300:33003): avc:  denied  { read open } for  pid=9003 comm="sshd" name="authorized_keys" dev="vda4" ino=900333 scontext=system_u:system_r:sshd_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=file permissive=0
+type=AVC msg=audit(1780439020.400:33004): avc:  denied  { search } for  pid=9001 comm="httpd" name="uploads" dev="vda4" ino=900444 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:default_t:s0 tclass=dir permissive=0

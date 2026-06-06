@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780438902.300:30201): avc:  denied  { bpf } for  pid=24050 comm="systemd-resolve" capability=39 scontext=system_u:system_r:systemd_resolved_t:s0 tcontext=system_u:system_r:systemd_resolved_t:s0 tclass=capability2 permissive=0

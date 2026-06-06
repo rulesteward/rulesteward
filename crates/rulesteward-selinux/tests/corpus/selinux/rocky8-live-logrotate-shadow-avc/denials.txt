@@ -1,0 +1,1 @@
+type=AVC msg=audit(1780454002.048:9146): avc:  denied  { read } for  pid=8742 comm="mycat" name="f1" dev="vda5" ino=109053166 scontext=system_u:system_r:logrotate_t:s0 tcontext=unconfined_u:object_r:shadow_t:s0 tclass=file permissive=0

@@ -1,0 +1,40 @@
+{
+  "id": "rocky8-xver-role-dyntransition",
+  "os": 8,
+  "image": "fapolicyd8",
+  "policyvers": 31,
+  "profile": "constraint",
+  "adversarial": true,
+  "intent": "DIVERGENCE FINDING - cross-version check reveals a real policy-content divergence. The rocky9-role-dyntransition scenario uses the context staff_u:system_r:newrole_t:s0, which is VALID in el9 (staff_u has roles: staff_r, sysadm_r, system_r, unconfined_r) but INVALID in el8 (staff_u has roles: staff_r, sysadm_r, unconfined_r - system_r is NOT in el8 staff_u). The el8 libsepol rejects the context with BADSCON (invalid security context) before it can classify the denial category. This is a real user-definition divergence between selinux-policy-3.14 (el8) and selinux-policy-38 (el9).",
+  "denials": [
+    { "sdomain": "newrole_t", "ttype": "newrole_t", "tclass": "process",
+      "perms": ["dyntransition"], "permissive": false, "kind": "Constraint" }
+  ],
+  "expected_narrow_allow": [],
+  "authoritative_category": "BADSCON",
+  "floor_label": "RoleSuspected",
+  "_kinds_note": "authoritative_category for el8 is BADSCON (not a real bucket - the policy rejects the security context before replay). The el9 bucket is Constraint. This IS a divergence. The floor_label RoleSuspected is based on the record alone (role mismatch: staff_r vs system_r) and is correct for both versions.",
+  "oracle": {
+    "audit2why_output": "libsepol.context_from_record: invalid security context: 'staff_u:system_r:newrole_t:s0'\nlibsepol.context_from_record: could not create context structure\nlibsepol.context_from_string: could not create context structure\nlibsepol.sepol_context_to_sid: could not convert staff_u:system_r:newrole_t:s0 to sid",
+    "audit2why_category": "BADSCON",
+    "policyvers": 31,
+    "container": "fapolicyd8 (RHEL 8.10, selinux-policy-3.14.3-139.el8_10.2)",
+    "el9_audit2why_category": "Constraint",
+    "el9_audit2why_detail": "constrain process { transition noatsecure siginh rlimitinh dyntransition } ((r1 == r2 -Fail-) or ... (t1 == can_system_change -Fail-) and (r2 == system_r) ...) DENIED. Source role (staff_r) differs from target role (system_r)."
+  },
+  "triage_expectation": {
+    "should_suggest_allow": false,
+    "should_decline_with_reason": "Role constraint violation (el9) or invalid security context (el8). On el9, source role staff_r differs from target role system_r; the role constraint blocks it. On el8, the denial context is outright invalid (staff_u cannot use system_r in the el8 user definition). Either way, a TE allow cannot fix this.",
+    "suspected_trap": "An impl that only looks at the AVC record (floor heuristic) sees staff_r vs system_r and correctly flags RoleSuspected on both versions. An authoritative-layer impl must handle both the Constraint case (el9) and the BADSCON case (el8) gracefully - BADSCON should be a distinct decline reason or at minimum treated as 'cannot classify, not a TE problem'."
+  },
+  "xver_baseline": {
+    "scenario": "rocky9-role-dyntransition",
+    "rocky9_bucket": "Constraint",
+    "el8_bucket": "BADSCON",
+    "buckets_match": false,
+    "divergence_type": "POLICY_CONTENT_DIVERGENCE",
+    "divergence_explanation": "El8 selinux-policy-3.14 (el8_10) staff_u definition: roles {staff_r, sysadm_r, unconfined_r}. El9 selinux-policy-38 staff_u definition: roles {staff_r, sysadm_r, system_r, unconfined_r}. System_r was added to staff_u between selinux-policy-3.14 and 38. The tcontext staff_u:system_r:newrole_t:s0 is valid on el9 and can be replayed as a Constraint denial. On el8, libsepol rejects it as BADSCON (invalid security context) before any policy replay.",
+    "policyvers_note": "The policyvers difference (31 vs 33) is NOT the cause of the divergence. The cause is the selinux-policy USER DEFINITION of staff_u changing between RHEL 8 and RHEL 9. The AVC format and record itself is valid; the el8 policy simply does not recognize staff_u:system_r as a valid (user, role) combination.",
+    "verified_by": "seinfo --user staff_u -x on both el8 (fapolicyd8) and el9 (fapolicyd9) containers confirms the user definitions differ."
+  }
+}

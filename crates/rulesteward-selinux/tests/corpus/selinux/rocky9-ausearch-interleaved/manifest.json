@@ -1,0 +1,54 @@
+{
+  "id": "rocky9-ausearch-interleaved",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Several audit events interleaved in one ausearch-style dump, each with companion SYSCALL/PATH/PROCTITLE records sharing one audit(TS:SERIAL) serial. Tests correct grouping by serial AND that two AVCs with the SAME (sdomain,ttype,tclass) triple but DIFFERENT serials (events :40001 read and :40003 getattr, both httpd_t->default_t:file) union into ONE allow, while the unrelated crond_t->tmp_t:file write (event :40002) stays a separate rule.",
+  "denials": [
+    {
+      "sdomain": "httpd_t",
+      "ttype": "default_t",
+      "tclass": "file",
+      "perms": [
+        "read",
+        "getattr"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    },
+    {
+      "sdomain": "crond_t",
+      "ttype": "tmp_t",
+      "tclass": "file",
+      "perms": [
+        "write"
+      ],
+      "permissive": false,
+      "kind": "TeAllowable"
+    }
+  ],
+  "expected_narrow_allow": [
+    "allow httpd_t default_t:file { getattr read };",
+    "allow crond_t tmp_t:file write;"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "authoritative_category in {TeAllowable, Constraint, Bounds} (libsepol/audit2why replay); floor_label in {none, Permissive, MlsSuspected, RoleSuspected} (record-only heuristic). For decline scenarios these MAY disagree on purpose.",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow crond_t tmp_t:file write; allow httpd_t default_t:file { getattr read };",
+    "audit2allow_R": "files_manage_generic_tmp_files(crond_t); files_read_default_files(httpd_t)",
+    "narrower_than_R_by": "audit2allow -R substitutes files_manage_generic_tmp_files() for the crond_t write (manage = far more than write: create/unlink/rename/setattr/...) and files_read_default_files() for the httpd_t reads. Our expected.te emits the two raw triple-scoped allows with exactly the unioned denied perms.",
+    "audit2why_category": "TeAllowable",
+    "audit2why_note": "All three denials replay as TeAllowable (the crond_t->tmp_t:write shows 'would be allowed by active policy' = already-granted TE shape). NOTE: the SAME triple appears under two serials (:40001 read, :40003 getattr) - the parser must group by triple across serials and union perms, NOT emit a third rule keyed on serial.",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A naive grouper might key on the audit serial (treating each event as its own group), emitting THREE rules incl. a duplicate httpd_t->default_t:file split into read and getattr. Correct grouping is by (sdomain,ttype,tclass): events :40001 and :40003 union to one httpd_t->default_t:file { getattr read } rule; :40002 is a separate crond_t->tmp_t:file write. Also tests pulling exe=/path=/comm= from the companion SYSCALL/PATH/PROCTITLE records keyed on each serial."
+  }
+}

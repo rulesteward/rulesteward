@@ -1,0 +1,69 @@
+{
+  "os": "rocky10",
+  "capture_method": "semodule -DB / semodule -B",
+  "domains": {
+    "setroubleshootd_t": {
+      "count": 28,
+      "denial_types": ["write", "setattr"],
+      "target_type": "rpm_var_lib_t",
+      "target_class": "file",
+      "target_names": ["rpmdb.sqlite-wal", "rpmdb.sqlite-shm"],
+      "audit2why_category": "Missing TE allow rule",
+      "audit2allow_N": "allow setroubleshootd_t rpm_var_lib_t:file { setattr write };",
+      "note": "setroubleshootd (SELinux troubleshooter daemon) was attempting to access RPM database files it is not allowed to write. These were pre-existing denials from before semodule -DB (dontaudit silenced them normally).",
+      "permissive": false
+    },
+    "systemd_user_runtimedir_t": {
+      "count": 12,
+      "denial_types": ["net_admin"],
+      "target_type": "self",
+      "target_class": "capability",
+      "audit2allow_N": "allow systemd_user_runtimedir_t self:capability net_admin;",
+      "note": "systemd-user-runtime-dir attempting net_admin capability (CAP_NET_ADMIN=12). Triggered on each SSH session login. Likely setting up per-user runtime directory network namespacing.",
+      "permissive": false
+    },
+    "sshd_session_t": {
+      "count": 6,
+      "denial_types": ["siginh", "noatsecure", "rlimitinh"],
+      "target_type": "chkpwd_t",
+      "target_class": "process",
+      "audit2why_category": "Missing TE allow rule",
+      "audit2allow_N": "allow sshd_session_t chkpwd_t:process { noatsecure rlimitinh siginh };",
+      "note": "sshd_session_t (new in el10 - sshd-session split from sshd) does not have full process privilege inheritance rights over chkpwd_t. This is a known policy gap in selinux-policy-42 for the new sshd-session binary introduced in OpenSSH 9.x.",
+      "permissive_some": true,
+      "permissive_note": "Some of these were permissive=1 (in the semanage permissive list: sshd_session_t is a builtin permissive type)"
+    },
+    "sshd_t": {
+      "count": 3,
+      "denial_types": ["siginh"],
+      "target_type": "sshd_session_t",
+      "target_class": "process",
+      "audit2allow_N": "allow sshd_t sshd_session_t:process siginh;",
+      "note": "sshd_t (main SSH daemon) cannot inherit signal disposition into sshd_session_t (new separate domain). Policy gap for the OpenSSH session-separation introduced in el10."
+    },
+    "init_t": {
+      "count": 6,
+      "denial_types": ["siginh"],
+      "target_types": ["chkpwd_t", "unconfined_t"],
+      "target_class": "process",
+      "audit2allow_N": "allow init_t chkpwd_t:process siginh; allow init_t unconfined_t:process siginh;",
+      "note": "systemd (init_t) cannot inherit signal disposition into chkpwd_t or unconfined_t. PAM authentication path via unix_chkpwd triggers this. Normal for the init_t -> child domain transition."
+    },
+    "logrotate_t": {
+      "count": 1,
+      "denial_types": ["read"],
+      "target_type": "shadow_t",
+      "target_class": "file",
+      "audit2why_category": "Missing TE allow rule",
+      "audit2allow_N": "allow logrotate_t shadow_t:file read;",
+      "note": "logrotate attempting to read a file mislabeled as shadow_t (actual file was /tmp/r10-s1-readonly-5486 which had been chcon'd or naturally labeled shadow_t). This was from the S1 measurement setup where the runner user created a file in /tmp that got shadow_t label.",
+      "measurement_artifact": true
+    }
+  },
+  "el10_specific_findings": [
+    "sshd_session_t is a NEW domain in el10 (OpenSSH 9.x session-process separation). Does not exist on el8/el9. Policy gap with sshd_t and init_t siginh is an el10-specific finding.",
+    "systemd_user_runtimedir_t net_admin denial appears on every SSH session login - el10-specific policy gap.",
+    "selinux-policy-42 has 21 builtin permissive types (vs fewer on el8/el9), reflecting newer system components.",
+    "audit 4.0.3 AVC record format is IDENTICAL to audit 3.x - no new fields. The 'ausearch version 4.0.3' note is the only visible change."
+  ]
+}

@@ -32,5 +32,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# Test-only: the #101 corpus oracle decodes the vendored solid zstd archive of
+# the three stock binary policies (policy.31/.33/.35) in-process. `tar` + `zstd`
+# stream the archive; `tempfile` (already a workspace dep) holds the unpacked
+# policies for the process lifetime. None ship in the binary.
+tar = "0.4"
+zstd = "0.13"
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

@@ -1,0 +1,39 @@
+{
+  "id": "rocky9-multi-class-same-target",
+  "os": 9,
+  "image": "fapolicyd9",
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Same source domain (httpd_t) and same target TYPE (default_t) but THREE different object classes: file{read}, lnk_file{read}, chr_file{read write}. Tests that perms are NEVER unioned across classes - one allow line per (sdomain, ttype, tclass) triple. The class is part of the grouping key; perms (and the valid perm vocabulary) differ per class.",
+  "denials": [
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "lnk_file",
+      "perms": ["read"], "permissive": false, "kind": "TeAllowable" },
+    { "sdomain": "httpd_t", "ttype": "default_t", "tclass": "chr_file",
+      "perms": ["read", "write"], "permissive": false, "kind": "TeAllowable" }
+  ],
+  "expected_narrow_allow": [
+    "allow httpd_t default_t:file read;",
+    "allow httpd_t default_t:lnk_file read;",
+    "allow httpd_t default_t:chr_file { read write };"
+  ],
+  "authoritative_category": "TeAllowable",
+  "floor_label": "none",
+  "_kinds_note": "All three TeAllowable. floor_label none (same role, level s0 throughout).",
+  "oracle": {
+    "checkmodule_exit": 0,
+    "package_exit": 0,
+    "audit2allow_N": "allow httpd_t default_t:chr_file { read write }; allow httpd_t default_t:file read; allow httpd_t default_t:lnk_file read; (THREE separate lines - audit2allow keys on the class, so the three classes are never merged)",
+    "audit2allow_R": "allow httpd_t default_t:chr_file { read write }; files_read_default_files(httpd_t); files_read_default_symlinks(httpd_t) (the file and lnk_file denials become two separate macros; chr_file stays raw because no interface matched it)",
+    "narrower_than_R_by": "-R substitutes files_read_default_files() (read_file_perms padding on ALL default_t files) and files_read_default_symlinks() (read on all default_t symlinks) for the file and lnk_file denials. Our expected.te keeps all THREE as exact raw allows per class: file read, lnk_file read, chr_file { read write }. No macro, no perm padding, no cross-class union.",
+    "audit2why_category": "TeAllowable",
+    "expected_is_subset_of_N": true,
+    "expected_strictly_narrower_than_R": true
+  },
+  "triage_expectation": {
+    "should_suggest_allow": true,
+    "should_decline_with_reason": null,
+    "suspected_trap": "A grouper keyed on (sdomain, ttype) but NOT tclass would try to union file+lnk_file+chr_file perms into one rule like `allow httpd_t default_t:??? { read write };` - which is both semantically wrong (read on a chr_file is a different capability than read on a file) and may be UNCOMPILABLE if it picks one class but includes another class's perms. The class is mandatory in the grouping key. Also tests that chr_file's { read write } is preserved exactly while file/lnk_file keep only read."
+  }
+}
