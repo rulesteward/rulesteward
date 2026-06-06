@@ -224,12 +224,14 @@ pub struct SimulateArgs {
     #[arg(long, value_name = "FILE")]
     pub workload: PathBuf,
 
-    /// Trust DB path (reserved; not yet consulted - see issue #127).
+    /// Read-only fapolicyd trust DB consulted to resolve trust the workload
+    /// omits (#127).
     ///
-    /// The argument is accepted but the DB is not read this round: subject and
-    /// object trust are taken from the workload's `trust`/`subjTrust`/`objTrust`
-    /// fields (defaulting to Unknown when absent). Passing this flag emits a
-    /// note on stderr so the caller knows the DB is not being used.
+    /// Opened with `READ_ONLY | NO_LOCK`. For any side whose trust the workload
+    /// left unset, a path PRESENT in the DB resolves to trusted and an ABSENT
+    /// path to untrusted; workload-supplied `trust`/`subjTrust`/`objTrust` always
+    /// takes priority. When a `filehash=`/`sha256hash=` rule needs the object's
+    /// hash and the workload omits it, the object file is hashed on demand.
     #[arg(long, value_name = "PATH")]
     pub trustdb: Option<PathBuf>,
 
