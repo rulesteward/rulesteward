@@ -150,6 +150,14 @@ exclude_globs = [
 # and ARE killed by `filehash_present_but_unhashable_is_denied_not_widened` and the
 # on-demand-hash oracle tests.) Excluded by name, not `#[mutants::skip]`, so the
 # rationale stays here in reviewable config.
+#
+# NOTE: the `sha256_unhashable=true` -> `NoMatch` arm of `eval_object_field` in
+# evaluate.rs is also pinned root-independently by the unit tests
+# `unhashable_object_yields_nomatch_at_evaluator_layer` and
+# `absent_object_hash_widens_sha256hash_constraint` (added #126/#127 round-3).
+# The integration test `filehash_present_but_unhashable_is_denied_not_widened`
+# (simulate_trustdb_resolution.rs) self-skips under root (chmod 000 is a no-op
+# when DAC is bypassed); the unit tests fire regardless of uid.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",

@@ -2445,4 +2445,207 @@ mod tests {
             "an exact literal-membership match is decisive, not uncertain"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // #126 round-3 regression pin: literal member in a set containing the
+    // `untrusted` macro is decisive even when `subj_trust=Unknown`.
+    //
+    // The four existing `exe_setref_*` tests above do NOT cover the combination
+    // of (a) literal exact-member hit AND (b) Unknown trust in the same call.
+    // A wrong impl that short-circuits to `eval_trust_field` BEFORE checking
+    // literal membership (i.e. checks the `untrusted` macro leg first and
+    // returns `NotEvaluable` on Unknown trust before ever testing the literal
+    // `exe_path in members` leg) would produce `PossibleMatch`/uncertain here
+    // instead of the decisive `Match` the correct impl returns.
+    //
+    // Ground truth (f1 §1.4 line 164; rules.c:1443-1463): the EXE switch does
+    // EXACT string membership FIRST, then the `untrusted` macro only when no
+    // literal member matched. Exact set membership is trust-independent: the
+    // literal leg fires regardless of trust state.
+    // -----------------------------------------------------------------------
+
+    /// Set `%apps = {"untrusted", "/usr/bin/foo"}`, rule 1 `deny perm=any exe=%apps
+    /// : all`, rule 2 `allow perm=any all : all`. The subject's exe IS an exact
+    /// member (`/usr/bin/foo`) but `subj_trust=Unknown`.
+    ///
+    /// Expected: decisive Deny at rule 1. The literal-membership leg must fire
+    /// BEFORE the `untrusted` macro leg; trust state is irrelevant when a literal
+    /// member already matched.
+    ///
+    /// A wrong impl that evaluates the `untrusted` macro first returns
+    /// `NotEvaluable` (because `subj_trust=Unknown`), upgrades rule 1 to
+    /// `PossibleMatch`, then falls through to the rule-2 Allow - asserting
+    /// `uncertain.is_some()` and `decision=Allow`, which would FAIL this test.
+    #[test]
+    fn exe_setref_literal_member_decisive_even_with_unknown_trust() {
+        use crate::facts::Trust;
+
+        let sets = SetTable::from_entries(&[set_def("apps", &["untrusted", "/usr/bin/foo"])]);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "apps")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/foo".to_string()); // exact member of %apps
+        facts.subj_trust = Trust::Unknown; // trust DB not consulted
+
+        let v = evaluate(&rules, &sets, &facts);
+
+        // Literal exact-membership is trust-independent: the Deny must be decisive.
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe=/usr/bin/foo is an exact member of %apps: the deny rule must fire \
+             decisively even when subj_trust=Unknown (literal membership checks trust \
+             state only when NO literal member matched)"
+        );
+        assert_eq!(v.matched_rule, Some(1), "the deny rule is rule 1");
+        assert_eq!(v.source, Source::Rule, "a decisive rule matched");
+        assert!(
+            v.uncertain.is_none(),
+            "exact literal-membership match is decisive, not uncertain: {:?}",
+            v.uncertain
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #127: present-but-unhashable => NoMatch at the EVALUATOR layer,
+    // uid-independent (root-safe regression pin).
+    //
+    // The existing `filehash_present_but_unhashable_is_denied_not_widened`
+    // integration test (simulate_trustdb_resolution.rs ~490) constructs the
+    // `sha256_unhashable=true` path via `chmod 000` + the real simulate binary.
+    // That test SELF-SKIPS when the test runner is root (uid=0), because
+    // `chmod 000` has no effect under DAC bypass. The self-hosted CI runners
+    // ARE root. This leaves the evaluator's `None if sha256_unhashable => NoMatch`
+    // arm unpinned in that environment.
+    //
+    // These two unit tests build `AccessFacts` DIRECTLY (no filesystem, no
+    // chmod), so they fire regardless of uid. They pin the arm at the evaluator
+    // layer, orthogonal to the integration test which pins the end-to-end CLI
+    // path (non-root environments).
+    //
+    // Ground truth: rules.c:1606-1611 FILE_HASH error-as-denial (`return 0`);
+    // rules.c:1572-1575 object-absent skip/widen. f1 grounding §1.4 sha256hash row.
+    // -----------------------------------------------------------------------
+
+    /// Present-but-unhashable object: the `sha256hash=` constraint yields
+    /// `NoMatch` (error-as-denial, rules.c:1606-1611), so the `allow` rule does
+    /// NOT fire and the verdict falls through to the `deny_audit` catch-all.
+    ///
+    /// `sha256=None, sha256_unhashable=true` is DISTINCT from the absent-object
+    /// case (`sha256=None, sha256_unhashable=false`) which WIDENS to Match.
+    /// This test pins the `sha256_unhashable=true` -> `NoMatch` arm of
+    /// `eval_object_field` without touching the filesystem.
+    #[test]
+    fn unhashable_object_yields_nomatch_at_evaluator_layer() {
+        // Rule 1: allow perm=open all : sha256hash=<64 zeros>
+        // Rule 2: deny_audit perm=any all : all
+        let all_zeros = "0".repeat(64);
+        let rules = vec![
+            rule(
+                Decision::Allow,
+                Some(Perm::Open),
+                vec![Attr::All],
+                vec![kv("sha256hash", &all_zeros)],
+            ),
+            rule(
+                Decision::DenyAudit,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        // AccessFacts built directly: present file whose hash could not be computed.
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/x".to_string());
+        facts.sha256 = None;
+        facts.sha256_unhashable = true; // present-but-unhashable
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+
+        // The sha256hash= constraint must yield NoMatch (not Match/widen), so rule 1
+        // allow does NOT fire and rule 2 deny_audit is the decisive match.
+        assert_eq!(
+            v.decision,
+            Decision::DenyAudit,
+            "present-but-unhashable object: sha256hash= must be NoMatch (error-as-denial \
+             per rules.c:1606-1611), rule 1 allow must NOT fire, rule 2 deny_audit decides"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 2 (deny_audit catch-all) is the decisive match"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 2 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "sha256_unhashable is a decisive NoMatch, not uncertain"
+        );
+    }
+
+    /// Absent object (`sha256=None`, `sha256_unhashable=false`) WIDENS to Match:
+    /// the `sha256hash=` constraint is SKIPPED (rules.c:1572-1575), so the
+    /// `allow` rule fires.
+    ///
+    /// This is the contrast case for `unhashable_object_yields_nomatch_at_evaluator_layer`:
+    /// together they pin the absent(false)-vs-unhashable(true) distinction at the
+    /// evaluator layer, uid-independent.
+    #[test]
+    fn absent_object_hash_widens_sha256hash_constraint() {
+        let all_zeros = "0".repeat(64);
+        let rules = vec![
+            rule(
+                Decision::Allow,
+                Some(Perm::Open),
+                vec![Attr::All],
+                vec![kv("sha256hash", &all_zeros)],
+            ),
+            rule(
+                Decision::DenyAudit,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+
+        // AccessFacts: sha256 absent AND sha256_unhashable=false (object simply absent).
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = Some("/x".to_string());
+        facts.sha256 = None;
+        facts.sha256_unhashable = false; // truly absent, not unhashable
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+
+        // Absent fact widens: sha256hash= constraint is skipped (Match), so rule 1
+        // allow fires.
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "absent sha256 (sha256_unhashable=false) must WIDEN the sha256hash= constraint \
+             (rules.c:1572-1575 skip/widen), so rule 1 allow fires"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(1),
+            "rule 1 (allow) fires because the absent sha256 widens the sha256hash= constraint"
+        );
+        assert_eq!(v.source, Source::Rule, "rule 1 is a decisive match");
+        assert!(
+            v.uncertain.is_none(),
+            "absent-object widening is decisive, not uncertain"
+        );
+    }
 }
