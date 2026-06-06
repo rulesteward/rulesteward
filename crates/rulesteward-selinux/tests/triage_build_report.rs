@@ -35,7 +35,9 @@
 //! The exact field names and nesting are up to P3; these tests parse the JSON
 //! with `serde_json::Value` and check the semantics, not the field names.
 
-use rulesteward_selinux::{DenialGroup, DenialKind, build_report};
+use rulesteward_selinux::{
+    DenialGroup, DenialKind, build_report, build_report_with_already_allows,
+};
 
 /// Walk a `serde_json::Value` tree looking for any field whose key contains
 /// "permissive" and whose value is the boolean `true`.
@@ -447,5 +449,92 @@ fn r7_non_teallowable_groups_have_no_suggested_allow_in_json() {
             && !json2.contains("allow newrole_t"),
         "TC-R7: RoleSuspected group must NOT have a suggested allow rule in JSON; \
          got:\n{json2}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TC-R8: already-allows explanation perm-display format - kills triage.rs:254 mutant
+//
+// Source: triage.rs `already_allows_explanation` (private fn, reached via
+// `build_report_with_already_allows`). The branch at line 254 selects:
+//   - single perm  -> bare form: `denied read on`  (no braces)
+//   - multiple perms -> braced form: `denied { read write } on`
+//
+// The `== with !=` mutant at line 254 flips the branch: single perm would
+// produce the braced form and multiple perms would produce a nonsensical
+// "bare" form (the single-entry join). Both assertions below fail under the
+// mutant, killing it.
+//
+// Perm ordering: DenialGroup.perms is a BTreeSet<String>, so iteration order
+// is alphabetical. ["read","write"] -> "read write" in the joined output.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r8a_already_allows_single_perm_uses_bare_form_not_braced() {
+    // A single-perm Reason(0) group: "read" only.
+    let groups = vec![make_group(
+        "logrotate_t",
+        "shadow_t",
+        "file",
+        &["read"],
+        false,
+        DenialKind::ContextInvalid,
+    )];
+    // Pass `|_| true` so the group is routed through already_allows_explanation.
+    let report = build_report_with_already_allows(&groups, |_| true);
+    let json = serde_json::to_string(&report).expect("serialize");
+
+    // BARE form: "denied read on" (no braces around a single perm).
+    assert!(
+        json.contains("denied read on"),
+        "TC-R8a: single-perm already-allows explanation must use the BARE form \
+         'denied read on' (no braces); got:\n{json}"
+    );
+    // The braced form MUST NOT appear for a single perm.
+    assert!(
+        !json.contains("{ read }"),
+        "TC-R8a: single-perm already-allows explanation must NOT use the braced \
+         form '{{ read }}'; got:\n{json}"
+    );
+}
+
+#[test]
+fn r8b_already_allows_multi_perm_uses_braced_form() {
+    // A multi-perm Reason(0) group: "read" + "write".
+    // BTreeSet alphabetical order -> "read write" in the join.
+    let groups = vec![make_group(
+        "httpd_t",
+        "httpd_sys_content_t",
+        "file",
+        &["read", "write"],
+        false,
+        DenialKind::ContextInvalid,
+    )];
+    // Pass `|_| true` so the group is routed through already_allows_explanation.
+    let report = build_report_with_already_allows(&groups, |_| true);
+    let json = serde_json::to_string(&report).expect("serialize");
+
+    // BRACED form: "{ read write }" (both perms present, alphabetical order).
+    // Use individual sub-checks to be order-robust against any future sort change:
+    // assert the opening brace, both words, and closing brace are all present.
+    assert!(
+        json.contains("{ "),
+        "TC-R8b: multi-perm already-allows explanation must use the braced form \
+         (opening brace); got:\n{json}"
+    );
+    assert!(
+        json.contains(" read ") || json.contains("{ read"),
+        "TC-R8b: multi-perm already-allows explanation must contain 'read'; got:\n{json}"
+    );
+    assert!(
+        json.contains("write"),
+        "TC-R8b: multi-perm already-allows explanation must contain 'write'; got:\n{json}"
+    );
+    // The bare single-string "denied read on" or "denied write on" (no braces) MUST NOT
+    // appear when there are multiple perms - the mutant would produce exactly this.
+    assert!(
+        !json.contains("denied read on") && !json.contains("denied write on"),
+        "TC-R8b: multi-perm already-allows explanation must NOT use the bare \
+         single-perm form; got:\n{json}"
     );
 }
