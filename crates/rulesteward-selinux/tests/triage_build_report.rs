@@ -12,17 +12,20 @@
 //! The frozen `TriageReport { groups: Vec<DenialGroup> }` is the Phase-0
 //! placeholder shape. P3 MAY reshape it (add per-group explanation + suggestion
 //! fields). These tests assert what MUST be true AFTER P3 fills the body:
-//! that the output is a valid JSON envelope, that `TeAllowable` groups include
-//! the narrow suggest rule, and that non-TeAllowable groups are reported without
-//! a suggested allow.
+//! that the output is a valid JSON envelope, that `TeAllowable` (and, per the
+//! round-3 contract change, `Permissive`) groups include the narrow suggest rule,
+//! and that the decline kinds (MLS/role/constraint/bounds/context-invalid) are
+//! reported without a suggested allow.
 //!
 //! ## `TriageReport` renderer contract (pinned by these tests)
 //!
 //! The JSON produced by `serde_json::to_string(&build_report(&groups))` must
 //! include per-group rendered output. The minimum required shape per group is:
 //!
-//! - `suggested_rule`: present and non-null for `TeAllowable` groups; absent or
-//!   null for `Permissive` / `MlsSuspected` / `RoleSuspected` groups.
+//! - `suggested_rule`: present and non-null for `TeAllowable` groups and (as of
+//!   the round-3 sanctioned contract change) `Permissive` groups; absent or null
+//!   for `MlsSuspected` / `RoleSuspected` (and constraint/bounds/context-invalid)
+//!   groups.
 //! - `explanation`: present and non-empty for every group (f4 §6.2).
 //! - `any_permissive`: the literal boolean `true` or `false` (not just the
 //!   field name substring in a key).
@@ -279,16 +282,29 @@ fn r5_permissive_denial_preserves_permissive_true_in_report() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-R5b: Permissive denial report does NOT contain a suggested allow rule
+// TC-R5b: Permissive denial report DOES contain a suggested allow rule (round-3
+//          SANCTIONED contract change), AND still carries permissive=true.
 //
-// Source: f4 §2.5 invariant 6 (permissive=1 -> report only, no allow).
+// SANCTIONED CONTRACT CHANGE (user decision 2026-06-05): this test previously
+// asserted that a permissive denial's JSON suggested_rule was ABSENT (f4 §2.5
+// invariant 6: "permissive=1 -> report only, no allow"). The user explicitly
+// REVERSED invariant 6 for the JSON path too (round-2 had already reversed it
+// for the HUMAN render via the PERMISSIVE-MODE banner; round-3 extends that
+// reversal to the machine-readable JSON for CONSISTENCY). The JSON now populates
+// `suggested_rule` for permissive denials; the per-entry `permissive: true`
+// field (asserted by TC-R5 / re-asserted below) is the machine-readable caveat
+// in place of the human banner.
 //
-// Companion to TC-R5: verifies the permissive flag actually suppresses the
-// suggested allow in the JSON output, not just that the flag is carried.
+// The suggested rule MUST be IDENTICAL to what the human path emits for the same
+// (source, target, class, perm): the bare single-perm `allow logrotate_t
+// shadow_t:file read;` (no braces), via the shared `format_narrow_allow` helper.
+//
+// This is the companion to TC-R5: R5 pins the permissive flag is carried; R5b
+// now pins that the suggested allow IS present alongside it.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn r5b_permissive_denial_report_has_no_suggested_allow() {
+fn r5b_permissive_denial_report_has_suggested_allow_and_permissive_flag() {
     let groups = vec![make_group(
         "logrotate_t",
         "shadow_t",
@@ -300,12 +316,28 @@ fn r5b_permissive_denial_report_has_no_suggested_allow() {
     let report = build_report(&groups);
     let json = serde_json::to_string(&report).expect("serialize");
 
-    // The JSON must NOT contain a suggested allow rule for this triple.
+    // The JSON MUST contain the bare single-perm suggested allow rule for this
+    // triple - identical to the human path's render (shared format_narrow_allow).
     assert!(
-        !json.contains("allow logrotate_t shadow_t:file read;")
-            && !json.contains("allow logrotate_t shadow_t:file { read };"),
-        "TC-R5b: Permissive denial report must NOT contain a suggested allow rule \
-         (f4 §2.5 inv.6); got:\n{json}"
+        json.contains("allow logrotate_t shadow_t:file read;"),
+        "TC-R5b (round-3 contract change): Permissive denial report MUST contain the \
+         suggested allow rule 'allow logrotate_t shadow_t:file read;' (reversal of \
+         f4 §2.5 inv.6 extended to the JSON path); got:\n{json}"
+    );
+    // It must NOT use the brace form for a single-perm group (canon: bare).
+    assert!(
+        !json.contains("allow logrotate_t shadow_t:file { read }"),
+        "TC-R5b: single-perm suggested allow must be the bare form, not braced; got:\n{json}"
+    );
+
+    // The permissive flag MUST still be carried as boolean true (the
+    // machine-readable caveat that replaces the human banner). Re-asserted here so
+    // the rule and the caveat are pinned together in one test.
+    let v: serde_json::Value = serde_json::from_str(&json).expect("must parse as JSON");
+    assert!(
+        has_permissive_true(&v),
+        "TC-R5b: report JSON must still carry a permissive-keyed field with boolean \
+         value `true` alongside the suggested rule; got:\n{json}"
     );
 }
 

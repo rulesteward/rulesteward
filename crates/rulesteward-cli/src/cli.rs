@@ -357,6 +357,21 @@ pub struct TriageArgs {
     /// Write output to FILE instead of stdout.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Option<PathBuf>,
+
+    /// Binary `SELinux` policy file to replay denials against (read-only).
+    ///
+    /// When supplied, each AVC denial is authoritatively categorized by
+    /// replaying it against this policy via libsepol
+    /// (`sepol_compute_av_reason_buffer`). The authoritative verdict overrides
+    /// the record-only floor classifier when present; the floor is the fallback
+    /// when `--policy` is not supplied or when a context in the denial is not
+    /// defined in the supplied policy (cross-host / cross-version mismatch).
+    ///
+    /// A `--policy` that cannot be LOADED is a hard error (exit 2): the run does
+    /// NOT silently fall back to the floor, since the operator explicitly asked
+    /// for authoritative analysis.
+    #[arg(long, value_name = "FILE")]
+    pub policy: Option<PathBuf>,
 }
 
 /// Trust-DB subcommands.

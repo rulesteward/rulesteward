@@ -9,16 +9,18 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [features]
-# `authoritative-categorizer` is the OPT-IN libsepol replay layer (P5 / #105):
-# the `categorize` module + the `rulesteward-selinux-sys` FFI it wraps. Off by
-# default so the shipped binary links no libsepol (~224 KiB; f4b section 7) and
-# carries no LGPL-2.1 obligation (#110). Enabling it pulls in
-# `rulesteward-selinux-sys` AND turns on its `vendored` feature, which is what
-# makes that crate's build.rs compile libsepol from the in-tree source and link it
-# statically (#106/#107/#120). Without this feature the `-sys` rlib still compiles
-# (it is a workspace member) but its build.rs is a no-op and no libsepol is built
-# or linked. The #109 known-answer tests (tests/known_answer_*.rs) run only when
-# this feature is built (the CI feature job per #121).
+# `authoritative-categorizer` is the libsepol replay layer (P5 / #105, #124):
+# the `categorize` module + the `rulesteward-selinux-sys` FFI it wraps. Now
+# DEFAULT-ON (#124) so a plain `cargo build`/`cargo test -p rulesteward-cli`
+# links libsepol and the `--policy` triage path is available without any
+# `--features` argument. Enabling it pulls in `rulesteward-selinux-sys` AND
+# turns on its `vendored` feature, which is what makes that crate's build.rs
+# compile libsepol from the in-tree source and link it statically
+# (#106/#107/#120). Without this feature the `-sys` rlib still compiles
+# (it is a workspace member) but its build.rs is a no-op and no libsepol is
+# built or linked. The #109 known-answer tests (tests/known_answer_*.rs) run
+# only when this feature is built (the CI feature job per #121).
+default = ["authoritative-categorizer"]
 authoritative-categorizer = [
     "dep:rulesteward-selinux-sys",
     "rulesteward-selinux-sys/vendored",
