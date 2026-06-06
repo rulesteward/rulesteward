@@ -1,0 +1,49 @@
+{
+  "scenario": "rocky9-mac-policy",
+  "rules": [
+    {
+      "line": "-w /etc/selinux/ -p wa -k mac-policy",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "DIRECTORY watch on /etc/selinux -- recursive subtree (f3 2.2)"
+    },
+    {
+      "line": "-w /usr/share/selinux/ -p wa -k mac-policy",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "policy-module dir watch, recursive, low churn"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S setxattr -S lsetxattr -S fsetxattr -F 'auid>=1000' -F 'auid!=unset' -k mac-policy",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mac-policy",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "MAC-label setxattr syscalls, auid-narrowed; rare for unprivileged users (f3 3.5 LOW)"
+    }
+  ],
+  "dominant_tier": "MEDIUM (/etc/selinux dir watch); LOW (policy-module dir + setxattr syscalls)",
+  "rate_band_basis": "f3 2.2/3.5/6: directory watches recursive but on low-churn policy trees -> LOW-MEDIUM; setxattr auid-narrowed and rare -> LOW. Mixed bytes (900 watch / 1200 syscall)."
+}

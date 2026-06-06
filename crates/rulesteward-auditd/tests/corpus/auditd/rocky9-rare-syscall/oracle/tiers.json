@@ -1,0 +1,34 @@
+{
+  "scenario": "rocky9-rare-syscall",
+  "rare_note": "adjtimex, settimeofday, clock_settime are administrative time-setting syscalls, fired a handful of times per day at most (f3 section 3.5: rare syscalls = LOW, 1-100/day). A naive 'any -S rule is HIGH' classifier over-warns by orders of magnitude.",
+  "rules": [
+    {
+      "line": "-a always,exit -S adjtimex -S settimeofday -k time_change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time_change",
+      "rate_band": {
+        "low": 1,
+        "typical": 20,
+        "high": 100
+      },
+      "note": "adjtimex + settimeofday OR'd. Rare administrative syscalls => LOW (1-100/day, f3 section 3.5/6)."
+    },
+    {
+      "line": "-a always,exit -S clock_settime -k time_change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time_change",
+      "rate_band": {
+        "low": 1,
+        "typical": 20,
+        "high": 100
+      },
+      "note": "clock_settime, same time_change key. Rare => LOW. (Shares key with the rule above; per-key total sums the two, scenario 31 territory.)"
+    }
+  ],
+  "dominant_tier": "LOW (additive)",
+  "rate_band_basis": "f3 section 6: rare syscall LOW 1-100/day. Time-setting syscalls fire rarely on a stable host."
+}

@@ -1,0 +1,64 @@
+{
+  "scenario": "rocky9-no-key-rules",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "execve_nokey": {
+      "gbPerDay": {
+        "low": 0.006,
+        "typical": 0.06,
+        "high": 0.6
+      },
+      "costPerMonth": {
+        "low": 0.91,
+        "typical": 9.12,
+        "high": 91.2
+      }
+    },
+    "shadow_watch_nokey": {
+      "gbPerDay": {
+        "low": 0.00012,
+        "typical": 0.0024,
+        "high": 0.024
+      },
+      "costPerMonth": {
+        "low": 0.02,
+        "typical": 0.36,
+        "high": 3.65
+      }
+    },
+    "openat_narrowed_nokey": {
+      "gbPerDay": {
+        "low": 0.0018,
+        "typical": 0.018,
+        "high": 0.18
+      },
+      "costPerMonth": {
+        "low": 0.27,
+        "typical": 2.74,
+        "high": 27.36
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.00792,
+      "typical": 0.0804,
+      "high": 0.804
+    },
+    "costPerMonth": {
+      "low": 1.20,
+      "typical": 12.22,
+      "high": 122.21
+    }
+  },
+  "math": "execve typ 50000*1200/1e9 = 0.06 GB/day -> $9.12/mo. shadow watch typ 2000*1200/1e9 = 0.0024 GB/day -> $0.36/mo. narrowed openat typ 15000*1200/1e9 = 0.018 GB/day -> $2.74/mo. Total typical ~ $12.22/mo. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event (locked 2026-06-03).",
+  "key_note": "All additive. The missing keys do NOT change the cost; they only make the volume unattributable in per-key aggregation (an Option-2 low-value flag, f3 section 7)."
+}

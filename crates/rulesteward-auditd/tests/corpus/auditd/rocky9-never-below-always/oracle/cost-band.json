@@ -1,0 +1,33 @@
+{
+  "scenario": "rocky9-never-below-always",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "correct_model": {
+    "comment": "Cost = the FULL always rule. The trailing never rule is INERT (first-match-wins: always already recorded uid=0). NO reduction.",
+    "eventsPerDay": {
+      "low": 5000,
+      "typical": 50000,
+      "high": 500000
+    },
+    "gbPerDay": {
+      "low": 0.006,
+      "typical": 0.06,
+      "high": 0.6
+    },
+    "costPerMonth": {
+      "low": 0.91,
+      "typical": 9.12,
+      "high": 91.2
+    },
+    "math": "always execve ~1200 B. typical 50000*1200/1e9 = 0.06 GB/day -> $9.12/mo. The trailing never does NOT subtract anything (it never matches first for execve). Net = $9.12/mo typical, FULL band."
+  },
+  "naive_wrong_model": {
+    "comment": "A naive impl that treats ANY never rule as suppressive regardless of position WRONGLY subtracts the uid=0 slice here.",
+    "error": "It would report net < $9.12/mo (subtracting a suppression that never happens, because the always rule matched uid=0 FIRST). The correct answer is the FULL $9.12/mo typical. Position (never AFTER always = INERT) is the load-bearing assertion; this is the exact INVERSE of scenario 9, where the same two rules in the opposite order DO suppress."
+  }
+}

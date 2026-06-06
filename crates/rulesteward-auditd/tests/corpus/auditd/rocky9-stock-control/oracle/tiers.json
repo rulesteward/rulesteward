@@ -1,0 +1,15 @@
+{
+  "scenario": "rocky9-stock-control",
+  "rules": [
+    { "line": "-D", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null,
+      "note": "delete-all directive (auditctl(8) -D); volume-neutral, emits no runtime events" },
+    { "line": "-b 8192", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null,
+      "note": "kernel backlog buffer count; configures subsystem, zero event volume" },
+    { "line": "--backlog_wait_time 60000", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null,
+      "note": "backlog wait time; configures subsystem, zero event volume" },
+    { "line": "-f 1", "kind": "control", "tier": "NEGATIVE", "direction": "neutral", "key": null,
+      "note": "failure mode 1=printk; configures subsystem, zero event volume" }
+  ],
+  "dominant_tier": "NEGATIVE",
+  "rate_band_basis": "f3 §3.5 / §6: control rules are volume-neutral, 0 events/day"
+}

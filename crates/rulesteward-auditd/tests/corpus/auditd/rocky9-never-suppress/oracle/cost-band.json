@@ -1,0 +1,17 @@
+{
+  "scenario": "rocky9-never-suppress",
+  "assumptions": { "pricePerGb": 5.00, "currency": "USD", "bytesPerEvent": 1200, "logFormat": "enriched", "rateSource": "assumed" },
+  "correct_model": {
+    "comment": "Total cost = ADDITIVE rules only. The never rule contributes 0 and REDUCES the always rule's net (it removes the uid=0 execve slice). Net cost <= the always rule alone.",
+    "eventsPerDay": { "low": 5000, "typical": 50000, "high": 500000 },
+    "gbPerDay": { "low": 0.006, "typical": 0.06, "high": 0.6 },
+    "costPerMonth": { "low": 0.91, "typical": 9.12, "high": 91.20 },
+    "math": "always execve ~1200 B/event. typical 50000*1200/1e9 = 0.06 GB/day; 0.06*30.4*5.00 = $9.12/mo. The never rule subtracts the suppressed uid=0 portion (workload-dependent, f3 §5), so the TRUE net is <= $9.12/mo typical."
+  },
+  "naive_wrong_model": {
+    "comment": "A naive impl that counts the never rule as ADDITIVE HIGH execve volume DOUBLE-counts execve volume.",
+    "eventsPerDay": { "low": 10000, "typical": 100000, "high": 1000000 },
+    "costPerMonth": { "low": 1.82, "typical": 18.24, "high": 182.40 },
+    "error": "~2x overstatement (the never rule's HIGH band added on top of the always rule's). The correct answer is <= the single always rule; the never rule never adds."
+  }
+}

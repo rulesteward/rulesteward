@@ -1,0 +1,48 @@
+{
+  "scenario": "rocky9-exclude-msgtype",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed (f3 section 6 rate bands)",
+    "bytesNote": "All events 1200 B/event (locked single constant, 2026-06-03). The PROCTITLE exclude removes ~100 B from each execve event; the PATH exclude removes ~200 B from each file-touch event. The cost band below reflects the ADDITIVE rules priced at the full 1200 B/event (upper bound). True net is <= this band. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event."
+  },
+  "correct_model": {
+    "comment": "Cost band = additive rules only. Both exclude rules contribute 0 additive volume and REDUCE net bytes. Net cost <= this band.",
+    "eventsPerDay_execve": {
+      "low": 1500,
+      "typical": 15000,
+      "high": 150000
+    },
+    "eventsPerDay_watches_combined": {
+      "low": 20,
+      "typical": 200,
+      "high": 2000
+    },
+    "gbPerDay": {
+      "low": 0.001824,
+      "typical": 0.01824,
+      "high": 0.1824
+    },
+    "costPerMonth": {
+      "low": 0.28,
+      "typical": 2.77,
+      "high": 27.72
+    },
+    "math": "execve (MEDIUM, 1200 B): typical 15000*1200/1e9 = 0.018 GB/day. Watches (1200 B): typical 200*1200/1e9 = 0.00024 GB/day. Total typical: 0.01824 GB/day. Cost: 0.01824*30.4*5 = $2.77/mo. True net is <= $2.77/mo. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event (locked 2026-06-03).",
+    "note": "Net <= band. The PROCTITLE exclude removes ~100 B per execve event; the PATH exclude removes ~200 B per watch event. The exact suppression benefit is workload-dependent (f3 section 5)."
+  },
+  "naive_wrong_model": {
+    "comment": "A naive impl treats 'always' action in the exclude rules as additive (same as 'always,exit'). Counts each exclude rule as its own MEDIUM-tier syscall rule.",
+    "eventsPerDay_naive": {
+      "typical": 45000
+    },
+    "costPerMonth_naive": {
+      "typical": 8.21
+    },
+    "error": "~3x overstatement of typical cost. The two exclude rules contribute 0 additive volume; they only suppress. Counting them as additive MEDIUM (15000 events * 1200 B each) adds two spurious MEDIUM bands, inflating cost from $2.77/mo to ~$8.21/mo. Direction (suppressive, not additive) is the load-bearing assertion."
+  }
+}

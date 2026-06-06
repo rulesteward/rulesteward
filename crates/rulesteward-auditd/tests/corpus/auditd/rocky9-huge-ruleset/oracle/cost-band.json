@@ -1,0 +1,56 @@
+{
+  "scenario": "rocky9-huge-ruleset",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "byte_constant_bytes": 1200,
+    "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1",
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "dominant_contributor": "the single -S execve rule (~$9.12/mo typical alone) dwarfs the 180 watches combined",
+  "execve_alone": {
+    "gbPerDay": {
+      "low": 0.006,
+      "typical": 0.06,
+      "high": 0.6
+    },
+    "costPerMonth": {
+      "low": 0.91,
+      "typical": 9.12,
+      "high": 91.2
+    }
+  },
+  "all_watches_combined": {
+    "events": {
+      "low": 2000,
+      "typical": 40000,
+      "high": 400000
+    },
+    "gbPerDay": {
+      "low": 0.0024,
+      "typical": 0.048,
+      "high": 0.48
+    },
+    "costPerMonth": {
+      "low": 0.36,
+      "typical": 7.30,
+      "high": 72.96
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.0102,
+      "typical": 0.126,
+      "high": 1.26
+    },
+    "costPerMonth": {
+      "low": 1.55,
+      "typical": 19.15,
+      "high": 191.52
+    }
+  },
+  "math": "execve typ 50000*1200/1e9 = 0.06 GB/day -> $9.12/mo (dominates). 200 watches typ 40000*1200/1e9 = 0.048 GB/day -> $7.30/mo combined. file_access MEDIUM syscall typ 15000*1200/1e9 -> $2.74/mo. Total typical ~$19.15/mo. Standardized from mixed (900 watch/1200 syscall) to single 1200 B/event (locked 2026-06-03).",
+  "flood_note": "The correct output RANKS and surfaces the dominant execve rule, NOT a flat dump of all 212 rules. The 200 watches are collectively minor relative to the execve rule but not negligible at all-1200B."
+}

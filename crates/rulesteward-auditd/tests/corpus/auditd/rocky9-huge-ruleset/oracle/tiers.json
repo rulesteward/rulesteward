@@ -1,0 +1,36 @@
+{
+  "scenario": "rocky9-huge-ruleset",
+  "dominant_tier": "HIGH (additive; one execve rule dominates the ranking)",
+  "ranking_note": "212 valid rules (200 single-file watches + 8 syscall rules + 4 control). The cost model MUST RANK by volume: the single unrestricted -S execve rule dominates everything; the 200 single-file watches are individually LOW and collectively a minor share. Output must NOT flood with all 212 lines equally weighted (f3 section 5.1: reliably RANK).",
+  "dominant_rule": "-a always,exit -S execve -k execve_all (HIGH, dominates)",
+  "tier_summary": {
+    "HIGH": [
+      "-a always,exit -S execve -k execve_all"
+    ],
+    "MEDIUM": [
+      "-a always,exit -S openat -F 'auid>=1000' ... -k file_access",
+      "-a always,exit -S connect -k network",
+      "-a always,exit -F arch=b64 -S setuid -S setgid -F 'auid>=1000' -k identity_change"
+    ],
+    "LOW": [
+      "time_change",
+      "modules",
+      "mounts",
+      "tracing",
+      "200 single-file -w watches (LOW each)"
+    ],
+    "NEGATIVE": [
+      "-D",
+      "-b 8192",
+      "--backlog_wait_time 60000",
+      "-f 1"
+    ]
+  },
+  "execve_band": {
+    "low": 5000,
+    "typical": 50000,
+    "high": 500000
+  },
+  "rate_band_basis": "f3 section 6: execve HIGH dominates; openat/connect/identity MEDIUM; rare syscalls + single-file watches LOW; control NEGATIVE.",
+  "note": "Per-rule tiers omitted line-by-line for brevity given the count; the ranking and the dominant rule are the assertion. See tier_summary."
+}

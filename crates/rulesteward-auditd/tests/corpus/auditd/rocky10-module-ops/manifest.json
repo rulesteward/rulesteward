@@ -1,0 +1,54 @@
+{
+  "id": "rocky10-module-ops",
+  "os": 10,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "Kernel module load/unload auditing (catalog #27): -a always,exit -S init_module -S finit_module -S delete_module (b64+b32 paired) on el10 (audit 4.0.3). LOW-MEDIUM -- modules load mostly at boot, occasionally at runtime.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k modules",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "modules",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S init_module -S finit_module -S delete_module -k modules",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "modules",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 2e-06,
+    "gbPerDayTypical": 0.00012,
+    "gbPerDayHigh": 0.0012,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.02,
+    "costPerMonthHigh": 0.18
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "These syscall rules are LOW-MEDIUM (module load/unload is mostly boot-time), NOT HIGH despite being -S syscall rules (f3 3.5 -- a naive 'any syscall = HIGH' impl over-warns). The b64/b32 pair is intentional 32+64-bit coverage (catalog #30 arch-paired), NOT a redundant duplicate -- do not collapse the two rules into one or count them as redundant. 1200 B/event (syscall-class)."
+}

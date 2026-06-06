@@ -1,0 +1,77 @@
+{
+  "scenario": "rocky8-pci-dss",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k pci_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "pci_identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity FIM watch perm=wa"
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k pci_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "pci_identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity FIM watch"
+    },
+    {
+      "line": "-w /bin/ -p wa -k pci_binaries",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "pci_binaries",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      },
+      "note": "DIRECTORY watch on /bin -- RECURSIVE subtree (f3 2.2), HIGH breadth"
+    },
+    {
+      "line": "-w /sbin/ -p wa -k pci_binaries",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "pci_binaries",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      },
+      "note": "DIRECTORY watch on /sbin -- RECURSIVE subtree (f3 2.2), HIGH breadth"
+    },
+    {
+      "line": "-w /etc/cron.d/ -p wa -k pci_jobs",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "pci_jobs",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "directory watch, low churn"
+    }
+  ],
+  "dominant_tier": "HIGH (recursive /bin and /sbin directory watches); MEDIUM (identity files); LOW (cron.d)",
+  "rate_band_basis": "f3 2.2/6: directory watch is recursive to subtree bottom -> HIGH band (1k/20k/200k, like a broad dir watch); identity files LOW-traffic. 900 B/event (file watches, f3 3.3)."
+}

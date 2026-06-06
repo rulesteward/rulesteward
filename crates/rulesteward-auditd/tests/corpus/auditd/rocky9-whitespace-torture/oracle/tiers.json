@@ -1,0 +1,48 @@
+{
+  "scenario": "rocky9-whitespace-torture",
+  "whitespace_note": "The file deliberately uses column-0 comments, indented comments (spaces AND tabs), inline # comments after a rule, blank lines, multiple spaces between tokens, tab-indented rules, and trailing whitespace. All valid for augenrules/auditctl line parsing (f3 section 2: line-oriented, # starts a comment). The parser must tokenize on arbitrary whitespace, strip inline comments, and skip blanks/comment lines. The 3 actual rules are unaffected by the formatting.",
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "trailing whitespace after the rule; must be stripped. HIGH execve, 1200 B."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset' -k file_access",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "file_access",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "tab-indented with multiple spaces between tokens; must normalize. Narrowed openat MEDIUM, 1200 B."
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k passwd_watch",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "passwd_watch",
+      "perm_expands_to_syscalls": 49,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "note": "inline # comment after a tab; comment must be stripped. Single-file write/attr watch, 900 B."
+    }
+  ],
+  "dominant_tier": "HIGH (additive)",
+  "rate_band_basis": "f3 section 6: execve HIGH; narrowed openat MEDIUM; single-file watch like #11. Whitespace does not change tiers."
+}

@@ -1,0 +1,58 @@
+{
+  "id": "rocky9-key-collision",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Key collision (catalog #31): two different rules (execve HIGH, init_module/finit_module LOW) sharing one -k access. Per-key aggregation must attribute correctly and not conflate the two rules' volumes as a single rule.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k access",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "access",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "unrestricted execve HIGH. Shares key=access with the module rule but is a DISTINCT rule."
+    },
+    {
+      "line": "-a always,exit -S init_module -S finit_module -k access",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "access",
+      "syscalls": [
+        "init_module",
+        "finit_module"
+      ],
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      },
+      "note": "module-load syscalls, rare => LOW. SAME key=access. Must NOT be conflated with the execve rule despite the shared key."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.006001,
+    "gbPerDayTypical": 0.06006,
+    "gbPerDayHigh": 0.6006,
+    "costPerMonthLow": 0.91,
+    "costPerMonthTypical": 9.13,
+    "costPerMonthHigh": 91.29
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Two rules share -k access but are distinct (execve HIGH vs module-load LOW). A model that assumes a key uniquely identifies a rule will conflate them: it may count only one rule's volume under the key, or mis-attribute the combined per-key total to a single rule's tier. Correct behavior: per-RULE tiering keeps execve=HIGH and modules=LOW distinct, while --from-log per-KEY aggregation may legitimately SUM both into the access bucket (f3 section 7 item 1). The rule-vs-key distinction is the load-bearing logic."
+}

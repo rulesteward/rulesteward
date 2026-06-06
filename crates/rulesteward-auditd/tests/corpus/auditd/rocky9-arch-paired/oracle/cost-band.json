@@ -1,0 +1,54 @@
+{
+  "scenario": "rocky9-arch-paired",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "execve_b64": {
+      "gbPerDay": {
+        "low": 0.0018,
+        "typical": 0.018,
+        "high": 0.18
+      },
+      "costPerMonth": {
+        "low": 0.27,
+        "typical": 2.74,
+        "high": 27.36
+      }
+    },
+    "execve_b32": {
+      "gbPerDay": {
+        "low": 1.2e-05,
+        "typical": 0.00024,
+        "high": 0.0024
+      },
+      "costPerMonth": {
+        "low": 0.0,
+        "typical": 0.04,
+        "high": 0.36
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.001812,
+      "typical": 0.01824,
+      "high": 0.1824
+    },
+    "costPerMonth": {
+      "low": 0.28,
+      "typical": 2.77,
+      "high": 27.72
+    }
+  },
+  "math": "1200 B/event. b64 typ 15000*1200/1e9 = 0.018 GB/day -> $2.74/mo. b32 typ 200*1200/1e9 = 0.00024 GB/day -> $0.04/mo. Total typ = $2.77/mo computed from the summed event rate (15200*1200/1e9*30.4*5.00); the per-rule-rounded figures sum to $2.78, a sub-cent rounding-order artifact (the machine field total uses $2.77).",
+  "naive_wrong_model": {
+    "comment": "Two failure modes.",
+    "dedup_wrong": "A model that sees two identical-except-arch rules and DEDUPS them counts only b64, dropping the b32 (32-bit) coverage; reports $2.74/mo and silently loses 32-bit auditing.",
+    "double_count_wrong": "A model that treats arch as irrelevant and double-counts the SAME execve volume twice over-states (would count b64 volume x2 = $5.48/mo). Correct: SUM the two DISTINCT arch slices (b64 + small b32) = ~$2.77/mo."
+  }
+}

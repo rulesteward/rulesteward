@@ -1,0 +1,73 @@
+{
+  "scenario": "rocky9-exclude-msgtype",
+  "exclude_note": "The two exclude-list rules (-a always,exclude -F msgtype=PROCTITLE and -F msgtype=PATH) SUPPRESS their named record types from every audit event group (f3 section 2.3/3.5). PROCTITLE is appended to execve-group events (~100 B); PATH is emitted for file-path operations (~200 B). Both are direction=suppressive and contribute 0 additive volume. The additive rules (execve, two watches) produce the events that these excludes then trim.",
+  "rules": [
+    {
+      "line": "-a always,exclude -F msgtype=PROCTITLE",
+      "kind": "exclude",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "Drops PROCTITLE sub-records (~100 B each, AUDIT_PROCTITLE=1327) from execve-group events. Contributes 0 additive volume. Reduces per-execve-event bytes by ~100 B (1200 -> ~1100 B). A naive impl that treats 'always,exclude' as 'always,exit' counts this as additive MEDIUM volume - that is the trap."
+    },
+    {
+      "line": "-a always,exclude -F msgtype=PATH",
+      "kind": "exclude",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "Drops PATH sub-records (~200 B each, AUDIT_PATH=1302) from file-touch event groups. Contributes 0 additive volume. Reduces per-watch-event bytes by ~200 B (900 -> ~700 B). Same trap as PROCTITLE exclude above: a naive impl adds a spurious MEDIUM band."
+    },
+    {
+      "line": "-a always,exit -S execve -F 'auid>=1000' -F 'auid!=unset' -k user_cmds",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "user_cmds",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "auid-filtered execve: ~0.3x the unrestricted form (MEDIUM per f3 section 6). 1200 B/event base; PROCTITLE exclude reduces effective bytes to ~1100 B/event. The rate band is the same as unrestricted * 0.3 per f3 section 6."
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "rate_band": {
+        "low": 10,
+        "typical": 100,
+        "high": 1000
+      },
+      "note": "Single-file watch on a hardened host (few writes/day). 900 B/event base (no EXECVE record, f3 section 3.3); PATH exclude reduces effective bytes to ~700 B/event."
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "rate_band": {
+        "low": 10,
+        "typical": 100,
+        "high": 1000
+      },
+      "note": "Same as /etc/passwd watch above. Same key 'identity' (shared key; per-key aggregation must attribute both watches together, not conflate as a single rule). 900 B/event base; PATH exclude reduces effective bytes to ~700 B/event."
+    }
+  ],
+  "dominant_tier": "MEDIUM (additive execve rule), with two NEGATIVE/suppressive excludes reducing per-event bytes",
+  "rate_band_basis": "f3 section 6: auid-filtered execve MEDIUM (low1.5k/typ15k/high150k). Watches LOW (single hardened-host files, few writes/day). Excludes NEGATIVE/suppressive (0 additive, reduce bytes)."
+}

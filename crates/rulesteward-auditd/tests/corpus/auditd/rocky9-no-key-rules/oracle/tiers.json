@@ -1,0 +1,48 @@
+{
+  "scenario": "rocky9-no-key-rules",
+  "key_note": "None of these rules carry a -k key. They still emit events and MUST be tiered. The missing key is an Option-2 'unattributable / low-value' signal (f3 section 7 item 2), not a parse error. key=null on every rule; --from-log per-key aggregation cannot attribute their volume (it lands in an unkeyed bucket).",
+  "rules": [
+    {
+      "line": "-a always,exit -S execve",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "unrestricted execve HIGH, but UNATTRIBUTABLE (no key). 1200 B/event."
+    },
+    {
+      "line": "-w /etc/shadow -p wa",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "single-file write/attr watch, no key. 900 B/event (file-watch)."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset'",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "narrowed openat MEDIUM (~0.3x unrestricted), no key. 1200 B/event."
+    }
+  ],
+  "dominant_tier": "HIGH (additive, but unattributable)",
+  "rate_band_basis": "f3 section 6: execve HIGH; single-file watch like #11 write band; narrowed openat ~0.3x. Mixed byte shapes (1200 syscall, 900 watch)."
+}

@@ -1,0 +1,35 @@
+{
+  "scenario": "rocky10-module-ops",
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k modules",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "modules",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      },
+      "note": "module ops OR'd (auditctl(8) -S, f3 2.3); LOW-MEDIUM -- modules load mostly at boot (f3 3.5)"
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S init_module -S finit_module -S delete_module -k modules",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "modules",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 50,
+        "high": 500
+      },
+      "note": "32-bit arch pairing (NOT a duplicate; intentional 32+64-bit coverage, catalog #30)"
+    }
+  ],
+  "dominant_tier": "LOW-MEDIUM (init_module/finit_module/delete_module; mostly boot-time)",
+  "rate_band_basis": "f3 3.5/6: module ops are infrequent (boot + occasional runtime) -> LOW-MEDIUM band (1/50/500/day). b64+b32 paired. 1200 B/event (syscall, f3 3.3)."
+}

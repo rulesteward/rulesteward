@@ -1,0 +1,46 @@
+{
+  "id": "rocky9-multi-S-or",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Multiple -S OR'd on one rule (f3 section 2.3). -S open -S openat -S openat2 fires on any of the three hot file-open syscalls; volume is the SUM, ~3x a single syscall. Catches a 'one rule = one syscall' model that understates breadth.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S open -S openat -S openat2 -k file_open",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "file_open",
+      "syscalls": [
+        "open",
+        "openat",
+        "openat2"
+      ],
+      "rate_band": {
+        "low": 15000,
+        "typical": 150000,
+        "high": 1500000
+      },
+      "note": "3 OR'd hot file-open syscalls. Volume = SUM over the three (~3x a single open). HIGH (f3 section 3.5 openat burst). 1200 B/event."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.018,
+    "gbPerDayTypical": 0.18,
+    "gbPerDayHigh": 1.8,
+    "costPerMonthLow": 2.74,
+    "costPerMonthTypical": 27.36,
+    "costPerMonthHigh": 273.6
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Multiple -S selectors OR together (f3 section 2.3): this one rule fires on open, openat, OR openat2. A naive 'one rule contributes one syscall's volume' model counts ~1/3 of the real volume (~$9.12/mo instead of ~$27.36/mo typical). All three are hot file-open syscalls (openat alone produced a 7284-line burst in 2s, f3 section 3.5). The cost model must SUM the volume over every named -S syscall."
+}

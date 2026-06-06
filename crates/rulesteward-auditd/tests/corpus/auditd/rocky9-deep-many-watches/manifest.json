@@ -1,0 +1,57 @@
+{
+  "id": "rocky9-deep-many-watches",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Deep / many watches (catalog #39): 20 single-file watches on long deep paths + one recursive /etc/security/ directory watch. Parser handles long paths; ranking must put the recursive dir watch above all 20 file watches; path depth is not a volume signal.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rule_count": 21,
+  "rules": [
+    {
+      "line": "-w /etc/security/ -p wa -k security_tree",
+      "kind": "watch",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "security_tree",
+      "is_dir": true,
+      "perm_expands_to_syscalls": 49,
+      "rate_band": {
+        "low": 1000,
+        "typical": 20000,
+        "high": 200000
+      },
+      "note": "RECURSIVE dir watch (f3 section 2.2); dominates. 900 B/event."
+    },
+    {
+      "line": "-w /etc/security/limits.d/99-custom-nofile.conf -p wa -k deepwatch_0 (representative of 20 deep file watches)",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "deepwatch_0",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "one of 20 single-file write/attr watches on deep paths; LOW each, 900 B. Path depth is not a volume signal."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00144,
+    "gbPerDayTypical": 0.0288,
+    "gbPerDayHigh": 0.288,
+    "costPerMonthLow": 0.22,
+    "costPerMonthTypical": 4.38,
+    "costPerMonthHigh": 43.78
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Two traps. (1) The one RECURSIVE /etc/security/ directory watch (recursive subtree, f3 section 2.2) is HIGH and out-weighs all 20 single-file watches combined (~$2.74/mo vs ~$0.55/mo); a model that treats a directory watch as a single path (ignoring recursion) under-ranks it. (2) Path DEPTH is NOT a volume signal: a deep nested path does not generate more events than a shallow one. A model that weights by path length or component count mis-ranks. Correct ranking: recursive dir watch first, then the file watches collectively minor. Parser must handle the long paths without truncation."
+}

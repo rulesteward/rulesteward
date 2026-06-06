@@ -1,0 +1,67 @@
+{
+  "id": "rocky9-login-watches",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "The login-record watch set (catalog #24): /var/log/lastlog, /var/run/faillock, /var/log/faillog with -p wa -k logins. lastlog is written on every login (MEDIUM), faillock/faillog only on failed auth (LOW).",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /var/log/lastlog -p wa -k logins",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      }
+    },
+    {
+      "line": "-w /var/run/faillock -p wa -k logins",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /var/log/faillog -p wa -k logins",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00048,
+    "gbPerDayTypical": 0.0036,
+    "gbPerDayHigh": 0.036,
+    "costPerMonthLow": 0.07,
+    "costPerMonthTypical": 0.55,
+    "costPerMonthHigh": 5.47
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "lastlog is MEDIUM (touched on EVERY login) while faillock/faillog are LOW (only on FAILED auth). A naive impl tiering all three identically over- or under-states. All file-watch events are 900 B (f3 3.3). /var/run/faillock is a directory watch (recursive, f3 2.2) but low-churn in practice."
+}

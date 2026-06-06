@@ -1,0 +1,38 @@
+{
+  "scenario": "rocky9-never-below-always",
+  "ordering_note": "KEY ORDERING TRAP (inverse of scenario 9). Rules evaluate in LOAD ORDER, first match wins (f3 section 2.3). The always rule is listed FIRST, so uid=0 execve matches 'always' and is RECORDED before the never rule (line 2) is consulted. The never rule is therefore INERT for the execve traffic the always rule already catches -- it does NOT suppress. The full always volume stands (no reduction). A model that treats ANY never rule as suppressive regardless of position WRONGLY subtracts volume here.",
+  "effective_order": [
+    "-a always,exit -S execve -k execve_all  (FIRST; records uid=0)",
+    "-a never,exit -S execve -F 'uid=0'  (SECOND; never reached for the matched traffic; INERT)"
+  ],
+  "rules": [
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "FIRST in load order; records ALL execve including uid=0. Full HIGH volume stands; the later never rule does NOT reduce it."
+    },
+    {
+      "line": "-a never,exit -S execve -F 'uid=0'",
+      "kind": "syscall",
+      "tier": "NEGATIVE",
+      "direction": "inert",
+      "key": null,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "INERT: placed AFTER the always rule, so first-match-wins means the always already recorded uid=0 execve before this never is consulted. It SUPPRESSES NOTHING here (it would only matter for syscalls the always rule does not catch first). direction=inert (NOT suppressive; the never is dead for this traffic). Contrast scenario 9 (never ABOVE always => suppressive)."
+    }
+  ],
+  "dominant_tier": "HIGH (additive); the trailing never is INERT (suppresses nothing)",
+  "rate_band_basis": "f3 section 6: always execve HIGH, FULL band (no suppression). The trailing never contributes 0 AND removes nothing because the always matched first."
+}

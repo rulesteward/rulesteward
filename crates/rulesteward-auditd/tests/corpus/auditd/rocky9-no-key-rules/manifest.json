@@ -1,0 +1,68 @@
+{
+  "id": "rocky9-no-key-rules",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Rules with NO -k key (f3 section 7 item 2, the 'unattributable / low-value' flag territory). The cost model must still tier them; the missing key is a noise signal, not a parse error. Mixes a HIGH unkeyed execve, a watch, and a narrowed openat.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S execve",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "unrestricted execve HIGH, but UNATTRIBUTABLE (no key). 1200 B/event."
+    },
+    {
+      "line": "-w /etc/shadow -p wa",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "perm_expands_to_syscalls": 49,
+      "note": "single-file write/attr watch, no key. 900 B/event (file-watch)."
+    },
+    {
+      "line": "-a always,exit -S openat -F 'auid>=1000' -F 'auid!=unset'",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": null,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "narrowed openat MEDIUM (~0.3x unrestricted), no key. 1200 B/event."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.00792,
+    "gbPerDayTypical": 0.0804,
+    "gbPerDayHigh": 0.804,
+    "costPerMonthLow": 1.2,
+    "costPerMonthTypical": 12.22,
+    "costPerMonthHigh": 122.21
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "A naive impl might (a) treat a missing -k as a PARSE ERROR (it is not; -k is optional, auditctl(8)) and refuse the rule, or (b) drop unkeyed rules from the volume total entirely (they still emit events and cost money). The correct behavior: tier and cost them normally (HIGH execve, MEDIUM watch, MEDIUM narrowed openat) AND flag the missing key as an attributability/noise signal for Option-2, with key=null in --from-log aggregation rather than crashing on the unkeyed bucket."
+}

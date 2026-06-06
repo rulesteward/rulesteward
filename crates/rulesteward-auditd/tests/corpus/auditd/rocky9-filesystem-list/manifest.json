@@ -1,0 +1,42 @@
+{
+  "id": "rocky9-filesystem-list",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "filesystem filter-list rule (f3 section 2.3, flagtab.h AUDIT_FILTER_FS). A valid filter list distinct from exit/task/user/exclude, matching on fstype. Catches a parser that only recognizes the common 'exit' list.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,filesystem -F fstype=ext4 -F 'auid>=1000' -F 'auid!=unset' -k fs_ext4",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "fs_ext4",
+      "list": "filesystem",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "filesystem filter list (distinct from exit). Matches ext4 access narrowed by auid. MEDIUM additive. 1200 B/event."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0018,
+    "gbPerDayTypical": 0.018,
+    "gbPerDayHigh": 0.18,
+    "costPerMonthLow": 0.27,
+    "costPerMonthTypical": 2.74,
+    "costPerMonthHigh": 27.36
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The 'filesystem' filter list is one of five valid lists (task/exit/user/exclude/filesystem, flagtab.h:25-29) but is far less common than 'exit'. A naive parser that hardcodes only 'exit'/'task' will REJECT this valid rule as an unknown list, producing a spurious parse error (exit 5). The cost model must accept all five lists. The rule itself is MEDIUM additive (narrowed by auid>=1000); the load-bearing point is list-name coverage."
+}

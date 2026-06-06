@@ -1,0 +1,68 @@
+{
+  "scenario": "rocky9-key-collision",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "execve_access": {
+      "gbPerDay": {
+        "low": 0.006,
+        "typical": 0.06,
+        "high": 0.6
+      },
+      "costPerMonth": {
+        "low": 0.91,
+        "typical": 9.12,
+        "high": 91.2
+      }
+    },
+    "modules_access": {
+      "gbPerDay": {
+        "low": 1e-06,
+        "typical": 6e-05,
+        "high": 0.0006
+      },
+      "costPerMonth": {
+        "low": 0.0,
+        "typical": 0.01,
+        "high": 0.09
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.006001,
+      "typical": 0.06006,
+      "high": 0.6006
+    },
+    "costPerMonth": {
+      "low": 0.91,
+      "typical": 9.13,
+      "high": 91.29
+    }
+  },
+  "perKey": {
+    "access": {
+      "comment": "key=access sums BOTH rules (correct per-key view)",
+      "eventsPerDay": {
+        "low": 5001,
+        "typical": 50050,
+        "high": 500500
+      },
+      "costPerMonth": {
+        "low": 0.91,
+        "typical": 9.13,
+        "high": 91.29
+      }
+    }
+  },
+  "math": "1200 B/event. execve typ 50000 -> $9.12/mo. modules typ 50 -> ~$0.01/mo. Total/per-key(access) typ ~$9.13/mo. The two are distinct rules sharing one key.",
+  "naive_wrong_model": {
+    "comment": "A model that treats one key = one rule conflates the two rules.",
+    "error": "If the impl assumes a key uniquely identifies a rule, it either (a) drops one rule's volume (counts only the first execve, missing modules, or vice versa) or (b) mis-attributes the combined per-key volume to a single (wrong) rule's tier. Per-key aggregation MAY sum (correct), but per-RULE tiering must keep execve=HIGH and modules=LOW separate."
+  }
+}

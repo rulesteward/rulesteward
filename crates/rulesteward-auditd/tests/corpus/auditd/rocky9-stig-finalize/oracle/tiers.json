@@ -1,0 +1,49 @@
+{
+  "scenario": "rocky9-stig-finalize",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "identity watch perm=wa"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "auid-narrowed execve ~0.3x (f3 6)"
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "immutable finalize: a SINGLE CONFIG_CHANGE at load, otherwise volume-NEUTRAL. Must NOT be mis-tiered as a volume rule (f3 2.1, catalog #20)."
+    }
+  ],
+  "dominant_tier": "MEDIUM (auid-narrowed execve + identity watch); the -e 2 finalize is NEGATIVE (control)",
+  "rate_band_basis": "f3 2.1/6: -e 2 produces ONE CONFIG_CHANGE at load (~184 B once, f3 3.2), not a per-day stream; tiered NEGATIVE/zero. execve auid-narrowed MEDIUM."
+}

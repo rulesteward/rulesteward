@@ -1,0 +1,49 @@
+{
+  "scenario": "rocky9-login-watches",
+  "rules": [
+    {
+      "line": "-w /var/log/lastlog -p wa -k logins",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      },
+      "note": "lastlog written on every login; MEDIUM traffic"
+    },
+    {
+      "line": "-w /var/run/faillock -p wa -k logins",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "faillock dir watch; low churn (only failed auth)"
+    },
+    {
+      "line": "-w /var/log/faillog -p wa -k logins",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "logins",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "faillog watch; low churn"
+    }
+  ],
+  "dominant_tier": "MEDIUM (lastlog, written every login); LOW (faillock/faillog, failed-auth only)",
+  "rate_band_basis": "f3 6: lastlog touched per login (MEDIUM single-file write band 100/2k/20k); faillock/faillog only on failures (LOW). 900 B/event (f3 3.3)."
+}

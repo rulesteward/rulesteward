@@ -1,0 +1,22 @@
+{
+  "scenario": "rocky9-perm-watch-expansion",
+  "assumptions": { "pricePerGb": 5.00, "currency": "USD", "bytesPerEvent": 1200, "byte_constant_bytes": 1200, "byte_constant_basis": "locked 2026-06-03 single-constant; see FOLLOWUPS.md FU-1", "logFormat": "enriched", "rateSource": "assumed" },
+  "perRule": {
+    "passwd_read": {
+      "eventsPerDay": { "low": 1000, "typical": 20000, "high": 200000 },
+      "gbPerDay": { "low": 0.0012, "typical": 0.024, "high": 0.24 },
+      "costPerMonth": { "low": 0.18, "typical": 3.65, "high": 36.48 }
+    },
+    "passwd_write": {
+      "eventsPerDay": { "low": 100, "typical": 2000, "high": 20000 },
+      "gbPerDay": { "low": 0.00012, "typical": 0.0024, "high": 0.024 },
+      "costPerMonth": { "low": 0.02, "typical": 0.36, "high": 3.65 }
+    }
+  },
+  "total": {
+    "gbPerDay": { "low": 0.00132, "typical": 0.0264, "high": 0.264 },
+    "costPerMonth": { "low": 0.20, "typical": 4.01, "high": 40.13 }
+  },
+  "math": "file-watch event ~1200 B. gb/day = events * 1200 / 1e9; $/month = gb/day * 30.4 * 5.00. read typical: 20000*1200/1e9 = 0.024 GB/day -> 0.024*30.4*5 = $3.65/mo. write typical: 2000*1200/1e9 = 0.0024 GB/day -> $0.36/mo. Total typical = $4.01/mo. Standardized from 900 to 1200 B/event (locked 2026-06-03).",
+  "breadth_note": "The volume is driven by the permtab syscall-group expansion: -p r covers 21 read syscalls and -p w covers 26 write syscalls (permtab.h, f3 section 2.4). A 'one rule = one syscall' model would under-rank these watches' breadth, even though the dollar band is rate-driven."
+}

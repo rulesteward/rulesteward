@@ -1,0 +1,105 @@
+{
+  "scenario": "rocky9-stig-hardened",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch path=/etc/passwd perm=wa (auditctl(8) -w/-p/-k, f3 2.2); -p w/a -> permtab.h write+attr groups (f3 2.4)"
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch path=/etc/shadow perm=wa"
+    },
+    {
+      "line": "-w /etc/sudoers -p wa -k actions",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch path=/etc/sudoers perm=wa"
+    },
+    {
+      "line": "-w /etc/audit/ -p wa -k auditconfig",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "auditconfig",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "directory watch path=/etc/audit/ perm=wa; recursive subtree (f3 2.2)"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execpriv",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "execpriv",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "action always (actiontab.h:23-25), list exit (flagtab.h:25-29), arch=b64 + auid comparison fields (fieldtab.h, f3 2.4), single-quoted (f3 1)"
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      },
+      "note": "rare time syscalls OR'd (auditctl(8) -S, f3 2.3); LOW rate (f3 3.5)"
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "control -e 2 immutable finalize (auditctl(8) -e [0..2], f3 2.1); single CONFIG_CHANGE, volume-neutral"
+    }
+  ],
+  "dominant_tier": "MEDIUM (auid-narrowed execve + identity watches); LOW time-change; NEGATIVE control",
+  "rate_band_basis": "f3 6: auid-narrowed execve ~0.3x unrestricted (1.5k/15k/150k); identity watches LOW-traffic; time syscalls LOW (1-100/day); -e 2 control = 0"
+}

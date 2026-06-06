@@ -1,0 +1,50 @@
+{
+  "scenario": "rocky9-field-compare",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "perRule": {
+    "priv_escalation": {
+      "gbPerDay": {
+        "low": 0.0018,
+        "typical": 0.018,
+        "high": 0.18
+      },
+      "costPerMonth": {
+        "low": 0.27,
+        "typical": 2.74,
+        "high": 27.36
+      }
+    },
+    "narrowed_openat": {
+      "gbPerDay": {
+        "low": 0.00036,
+        "typical": 0.006,
+        "high": 0.06
+      },
+      "costPerMonth": {
+        "low": 0.05,
+        "typical": 0.91,
+        "high": 9.12
+      }
+    }
+  },
+  "total": {
+    "gbPerDay": {
+      "low": 0.00216,
+      "typical": 0.024,
+      "high": 0.24
+    },
+    "costPerMonth": {
+      "low": 0.33,
+      "typical": 3.65,
+      "high": 36.48
+    }
+  },
+  "math": "1200 B/event (syscall). priv_escalation typical 15000*1200/1e9 = 0.018 GB/day -> $2.74/mo. narrowed_openat typical 5000*1200/1e9 = 0.006 GB/day -> $0.91/mo. Total typical = $3.65/mo.",
+  "parser_note": "No suppression here; both additive. The scenario's value is parser robustness on -C field-comparison and a 10-field AND chain, not an extreme dollar figure."
+}

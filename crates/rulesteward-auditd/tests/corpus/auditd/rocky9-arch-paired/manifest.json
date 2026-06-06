@@ -1,0 +1,54 @@
+{
+  "id": "rocky9-arch-paired",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Arch-paired b64 + b32 execve rules (f3 section 2.4). The same syscall declared once per ABI to catch 64-bit AND 32-bit binaries. The double-entry is intentional coverage, NOT a redundant duplicate. Catches a model that dedups (losing 32-bit coverage) or double-counts the same volume.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve_cmd",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "execve_cmd",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "64-bit ABI execve, narrowed by auid>=1000 (MEDIUM). The bulk of process starts on a modern host."
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve_cmd",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "execve_cmd",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "32-bit ABI execve, SAME key. Distinct arch filter, NOT a duplicate. Small but nonzero slice (few 32-bit processes on a modern host). Deduping it loses 32-bit coverage."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.001812,
+    "gbPerDayTypical": 0.01824,
+    "gbPerDayHigh": 0.1824,
+    "costPerMonthLow": 0.28,
+    "costPerMonthTypical": 2.77,
+    "costPerMonthHigh": 27.72
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "The two rules differ ONLY in -F arch (b64 vs b32; libaudit.c:1419-1422). They are NOT duplicates: a 32-bit process makes 32-bit syscalls matched only by arch=b32, so both are needed for full coverage. Trap (a): a dedup/redundancy detector flags them as identical and counts only one, silently dropping the 32-bit slice. Trap (b): a model ignoring arch double-counts the SAME (64-bit) execve volume twice. Correct: SUM two DISTINCT arch slices (b64 dominant MEDIUM + b32 small LOW) = ~$2.77/mo, NOT $2.74 (dedup) and NOT $5.48 (double-count)."
+}

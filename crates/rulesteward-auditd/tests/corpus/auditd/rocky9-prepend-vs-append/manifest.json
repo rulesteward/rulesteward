@@ -1,0 +1,57 @@
+{
+  "id": "rocky9-prepend-vs-append",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Prepend-vs-append ordering (f3 section 2.3, catalog #28). -A prepends a never rule to the FRONT of the list even though it appears on the second text line, so it suppresses an -a always rule listed first. The cost model must order by -A/-a insertion semantics, not text line.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-A exit,never -S execve -F 'uid=0'",
+      "kind": "syscall",
+      "tier": "NEGATIVE",
+      "direction": "suppressive",
+      "key": null,
+      "prepend": true,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      },
+      "note": "PREPENDED (-A) so it sits at the FRONT of the list, before the always rule. Action never => suppressive. Suppresses uid=0 execve. Contributes 0 additive volume."
+    },
+    {
+      "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall",
+      "tier": "HIGH",
+      "direction": "additive",
+      "key": "execve_all",
+      "prepend": false,
+      "rate_band": {
+        "low": 5000,
+        "typical": 50000,
+        "high": 500000
+      },
+      "note": "APPENDED; sits behind the prepended never rule. Net is reduced by the suppressed uid=0 slice (workload-dependent)."
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.006,
+    "gbPerDayTypical": 0.06,
+    "gbPerDayHigh": 0.6,
+    "costPerMonthLow": 0.91,
+    "costPerMonthTypical": 9.12,
+    "costPerMonthHigh": 91.2,
+    "note": "Additive always rule alone; the prepended never (-A) suppresses uid=0, reducing the net. True net <= these numbers."
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "A cost model that determines suppression by TEXT-LINE order will see the never rule on line 2 (after the always on line 1) and conclude it does NOT suppress (scenario-33 behavior). But -A PREPENDS (auditctl(8)), so the never rule is actually FIRST in match order and DOES suppress uid=0 execve. The correct net is <= the always rule alone (suppressed uid=0 slice removed); a text-order model over-counts by including the suppressed slice, and an additive-never model over-counts ~2x. The -A vs -a insertion semantics are the load-bearing logic."
+}

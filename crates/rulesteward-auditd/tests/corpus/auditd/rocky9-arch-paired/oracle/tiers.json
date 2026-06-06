@@ -1,0 +1,34 @@
+{
+  "scenario": "rocky9-arch-paired",
+  "arch_note": "arch=b64 and arch=b32 are DISTINCT filters (libaudit.c:1419-1422). A 32-bit process issues 32-bit syscalls matched ONLY by arch=b32, so the paired rules cover both ABIs. They are NOT a duplicate: deduping loses 32-bit coverage; the cost is the SUM of the two arch slices (b64 dominant, b32 a small-but-nonzero slice). f3 section 2.4.",
+  "rules": [
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve_cmd",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "execve_cmd",
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      },
+      "note": "64-bit ABI execve, narrowed by auid>=1000 (MEDIUM). The bulk of process starts on a modern host."
+    },
+    {
+      "line": "-a always,exit -F arch=b32 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve_cmd",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "execve_cmd",
+      "rate_band": {
+        "low": 10,
+        "typical": 200,
+        "high": 2000
+      },
+      "note": "32-bit ABI execve, SAME key. Distinct arch filter, NOT a duplicate. Small but nonzero slice (few 32-bit processes on a modern host). Deduping it loses 32-bit coverage."
+    }
+  ],
+  "dominant_tier": "MEDIUM (additive, b64) + LOW (b32); SUM of two arch slices",
+  "rate_band_basis": "f3 section 6: narrowed execve MEDIUM (b64 bulk); b32 a small real slice. Total = sum of both arches; they are NOT redundant."
+}

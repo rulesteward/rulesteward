@@ -1,0 +1,43 @@
+{
+  "scenario": "rocky9-multi-S-or",
+  "assumptions": {
+    "pricePerGb": 5.0,
+    "currency": "USD",
+    "bytesPerEvent": 1200,
+    "logFormat": "enriched",
+    "rateSource": "assumed"
+  },
+  "correct_model": {
+    "comment": "Volume sums over the 3 OR'd syscalls.",
+    "eventsPerDay": {
+      "low": 15000,
+      "typical": 150000,
+      "high": 1500000
+    },
+    "gbPerDay": {
+      "low": 0.018,
+      "typical": 0.18,
+      "high": 1.8
+    },
+    "costPerMonth": {
+      "low": 2.74,
+      "typical": 27.36,
+      "high": 273.6
+    },
+    "math": "3 OR'd open-family syscalls, ~1200 B/event. typical 150000*1200/1e9 = 0.18 GB/day -> 0.18*30.4*5 = $27.36/mo."
+  },
+  "naive_wrong_model": {
+    "comment": "A naive 'one rule = one syscall' model counts only one open syscall's volume.",
+    "eventsPerDay": {
+      "low": 5000,
+      "typical": 50000,
+      "high": 500000
+    },
+    "costPerMonth": {
+      "low": 0.91,
+      "typical": 9.12,
+      "high": 91.2
+    },
+    "error": "~3x UNDERSTATEMENT ($9.12/mo instead of $27.36/mo typical). The rule fires on all 3 OR'd syscalls."
+  }
+}

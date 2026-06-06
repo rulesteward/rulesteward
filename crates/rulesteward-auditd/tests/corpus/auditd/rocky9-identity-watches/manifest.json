@@ -1,0 +1,93 @@
+{
+  "id": "rocky9-identity-watches",
+  "os": 9,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "The canonical identity watch set (catalog #23): /etc/group, /etc/passwd, /etc/shadow, /etc/gshadow, /etc/security/opasswd, all -p wa -k identity. Five watches sharing ONE key -- per-key aggregation must attribute correctly.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/group -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/gshadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/security/opasswd -p wa -k identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 6e-05,
+    "gbPerDayTypical": 0.003,
+    "gbPerDayHigh": 0.03,
+    "costPerMonthLow": 0.01,
+    "costPerMonthTypical": 0.46,
+    "costPerMonthHigh": 4.56
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Five DISTINCT watch rules share ONE -k identity key. Per-key aggregation must sum all five rules' volume under 'identity', not attribute it to a single rule (catalog #31 key-collision territory). All file-watch events are 900 B (f3 3.3), not 1200. These are write/attr watches (perm=wa), LOW-traffic on a stable host, not HIGH."
+}

@@ -1,0 +1,77 @@
+{
+  "scenario": "rocky8-cis-file-watches",
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch perm=wa -> permtab write+attr groups (f3 2.4)"
+    },
+    {
+      "line": "-w /etc/group -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch perm=wa"
+    },
+    {
+      "line": "-w /etc/gshadow -p wa -k cis_identity",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_identity",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch perm=wa"
+    },
+    {
+      "line": "-w /etc/hosts -p wa -k cis_network",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_network",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch perm=wa"
+    },
+    {
+      "line": "-w /etc/sysconfig/network -p wa -k cis_network",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "cis_network",
+      "bytes_per_event": 900,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      },
+      "note": "watch perm=wa"
+    }
+  ],
+  "dominant_tier": "MEDIUM (identity write watches); LOW (network-config watches)",
+  "rate_band_basis": "f3 6: file-watch (write) events are LOW-traffic on a stable host; 900 B/event (f3 3.3). No HIGH/dir-watch here."
+}

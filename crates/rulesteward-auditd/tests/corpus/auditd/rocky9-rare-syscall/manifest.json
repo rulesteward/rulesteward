@@ -1,0 +1,54 @@
+{
+  "id": "rocky9-rare-syscall",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "Rare-syscall LOW tier (f3 section 3.5): -S adjtimex/settimeofday/clock_settime (the canonical CIS/STIG time-change set) fire 1-100 times/day. Engineered to catch a naive 'any syscall rule = HIGH volume' classifier that over-warns.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-a always,exit -S adjtimex -S settimeofday -k time_change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time_change",
+      "rate_band": {
+        "low": 1,
+        "typical": 20,
+        "high": 100
+      },
+      "note": "adjtimex + settimeofday OR'd. Rare administrative syscalls => LOW (1-100/day, f3 section 3.5/6)."
+    },
+    {
+      "line": "-a always,exit -S clock_settime -k time_change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time_change",
+      "rate_band": {
+        "low": 1,
+        "typical": 20,
+        "high": 100
+      },
+      "note": "clock_settime, same time_change key. Rare => LOW. (Shares key with the rule above; per-key total sums the two, scenario 31 territory.)"
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 2e-06,
+    "gbPerDayTypical": 4.8e-05,
+    "gbPerDayHigh": 0.00024,
+    "costPerMonthLow": 0.0,
+    "costPerMonthTypical": 0.01,
+    "costPerMonthHigh": 0.04
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "A naive impl that tiers every -S syscall rule as HIGH (because it 'audits a syscall') over-warns massively here: adjtimex/settimeofday/clock_settime are administrative time-setting calls fired a few times a day at most (f3 section 3.5 LOW, 1-100/day). The correct cost is ~$0.01/mo; a 'any syscall = HIGH (50k/day)' model reports ~$9/mo, a 1000x overstatement. The classifier must distinguish hot syscalls (execve/openat) from rare ones (the syscall-name -> tier mapping is the load-bearing logic)."
+}

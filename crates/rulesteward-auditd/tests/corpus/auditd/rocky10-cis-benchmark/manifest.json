@@ -1,0 +1,132 @@
+{
+  "id": "rocky10-cis-benchmark",
+  "os": 10,
+  "profile": "realistic",
+  "adversarial": false,
+  "intent": "A full CIS RHEL10 audit ruleset (catalog #19): identity watches, an auid-narrowed execve, rare time/mount syscalls, a sudo-log watch, and the -e 2 finalize. The broad realistic case on el10 (audit 4.0.3). Mixed byte constants.",
+  "rs_commit": "fe89260",
+  "validation": {
+    "method": "grammar-only",
+    "verdict": "valid",
+    "log": "validation.log"
+  },
+  "rules": [
+    {
+      "line": "-w /etc/passwd -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/shadow -p wa -k identity",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "identity",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-w /etc/sudoers.d/ -p wa -k actions",
+      "kind": "watch",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 10,
+        "typical": 500,
+        "high": 5000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec",
+      "kind": "syscall",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "exec",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1500,
+        "typical": 15000,
+        "high": 150000
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "time-change",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    },
+    {
+      "line": "-a always,exit -F arch=b64 -S mount -F 'auid>=1000' -F 'auid!=unset' -k mounts",
+      "kind": "syscall",
+      "tier": "LOW",
+      "direction": "additive",
+      "key": "mounts",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 1,
+        "typical": 30,
+        "high": 100
+      }
+    },
+    {
+      "line": "-w /var/log/sudo.log -p wa -k actions",
+      "kind": "watch",
+      "tier": "MEDIUM",
+      "direction": "additive",
+      "key": "actions",
+      "bytes_per_event": 1200,
+      "rate_band": {
+        "low": 100,
+        "typical": 2000,
+        "high": 20000
+      }
+    },
+    {
+      "line": "-e 2",
+      "kind": "control",
+      "tier": "NEGATIVE",
+      "direction": "neutral",
+      "key": null,
+      "bytes_per_event": 0,
+      "rate_band": {
+        "low": 0,
+        "typical": 0,
+        "high": 0
+      }
+    }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.0019584,
+    "gbPerDayTypical": 0.022272,
+    "gbPerDayHigh": 0.22224,
+    "costPerMonthLow": 0.3,
+    "costPerMonthTypical": 3.39,
+    "costPerMonthHigh": 33.78
+  },
+  "from_log": {
+    "present": false,
+    "measured_counts": null
+  },
+  "suspected_trap": "Broad realistic ruleset spanning all three rule varieties (control/watch/syscall) and both byte constants (900 watch / 1200 syscall). A cost impl must NOT flat-rate it. The execve is auid-narrowed (MEDIUM, not unrestricted HIGH); mount/time are LOW despite being syscall rules (a 'any syscall = HIGH' impl over-warns, f3 3.5). The -e 2 is control (NEGATIVE)."
+}

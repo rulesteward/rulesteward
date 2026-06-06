@@ -1,0 +1,25 @@
+{
+  "id": "rocky9-never-suppress",
+  "os": 9,
+  "profile": "adversarial",
+  "adversarial": true,
+  "intent": "The headline NEGATIVE-volume trap (f3 §3.5): a never,exit rule placed ABOVE an always,exit rule on the same syscall. The never rule SUPPRESSES (reduces) volume, it does not add. Engineered to catch a cost impl that counts every -S execve rule as additive HIGH volume.",
+  "rs_commit": "fe89260",
+  "validation": { "method": "grammar-only", "verdict": "valid", "log": "validation.log" },
+  "rules": [
+    { "line": "-a never,exit -S execve -F 'uid=0'",
+      "kind": "syscall", "tier": "NEGATIVE", "direction": "suppressive", "key": null,
+      "rate_band": { "low": 0, "typical": 0, "high": 0 },
+      "note": "MUST reduce, not add; naive impl counts this as additive HIGH execve volume. Listed FIRST so it actually suppresses (load order, first match wins, f3 §2.3)." },
+    { "line": "-a always,exit -S execve -k execve_all",
+      "kind": "syscall", "tier": "HIGH", "direction": "additive", "key": "execve_all",
+      "rate_band": { "low": 5000, "typical": 50000, "high": 500000 } }
+  ],
+  "cost_band": {
+    "gbPerDayLow": 0.006, "gbPerDayTypical": 0.06, "gbPerDayHigh": 0.6,
+    "costPerMonthLow": 0.91, "costPerMonthTypical": 9.12, "costPerMonthHigh": 91.20,
+    "note": "This band is the ADDITIVE always rule alone; the never rule contributes 0 and reduces the net by the suppressed uid=0 slice (workload-dependent). The TRUE net is <= these numbers."
+  },
+  "from_log": { "present": false, "measured_counts": null },
+  "suspected_trap": "The never,exit -S execve rule (listed FIRST, so it genuinely suppresses) must be treated as SUPPRESSIVE (direction=suppressive, tier NEGATIVE) and contribute 0 additive volume -- it REDUCES the always rule's net by removing root (uid=0) execve. A naive impl that counts it as additive HIGH execve volume DOUBLE-counts execve and overstates cost ~2x (would report ~$18.24/mo typical instead of <=$9.12/mo). Direction and position (never-above-always) are the load-bearing assertions; contrast catalog #33 where a never placed AFTER an always does NOT suppress."
+}

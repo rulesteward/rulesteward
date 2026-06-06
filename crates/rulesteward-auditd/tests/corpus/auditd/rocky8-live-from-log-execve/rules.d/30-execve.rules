@@ -1,0 +1,3 @@
+## Execve syscall rule - from-log oracle scenario
+## This is the canonical narrowed execve audit rule
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=unset -k wc_s4_execve_short
