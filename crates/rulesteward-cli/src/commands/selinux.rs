@@ -17,7 +17,7 @@ use crate::cli::{HumanJsonFormat, SelinuxCommand, TriageArgs};
 use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS};
 use crate::output::json::render_envelope;
 use rulesteward_selinux::{
-    AvcDenial, DenialGroup, DenialKind, Policy, ReplayOutcome, build_report,
+    AvcDenial, DenialGroup, DenialKind, Policy, ReplayOutcome, build_report_with_already_allows,
     categorize_with_outcome, emit_te, group_denials, parse_avc, render_human,
 };
 
@@ -86,7 +86,20 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
             HumanJsonFormat::Json => render_envelope(
                 "selinux-triage",
                 SELINUX_TRIAGE_SCHEMA_VERSION,
-                &build_report(&groups),
+                // Thread the Reason(0) "already allows" distinction into the JSON
+                // path too (#122), mirroring `render_human_with_already_allows`:
+                // a group whose authoritative replay was the Reason(0) sub-case
+                // gets the DISTINCT "policy already allows" explanation instead of
+                // the BADSCON "does not define" template. The signal is carried by
+                // `already_allows_groups` (from `ReplayOutcome`), NOT by
+                // `DenialKind`, which stays frozen.
+                &build_report_with_already_allows(&groups, |group| {
+                    already_allows_groups.contains(&(
+                        group.source_type.clone(),
+                        group.target_type.clone(),
+                        group.tclass.clone(),
+                    ))
+                }),
             ),
         }
     };

@@ -119,6 +119,39 @@ pub fn build_report(groups: &[DenialGroup]) -> TriageReport {
     TriageReport { groups: entries }
 }
 
+/// Build the machine-readable triage report, substituting the Reason(0) "already
+/// allows" explanation for groups flagged as already-allowed (#122).
+///
+/// This is the JSON twin of `commands::selinux::render_human_with_already_allows`:
+/// `is_already_allows(group)` returns `true` for a group whose authoritative
+/// replay was the `Reason(0)` "the supplied policy already allows this access"
+/// sub-case (the CLI tracks this in its `already_allows_groups` set, since the
+/// distinction is carried by `ReplayOutcome` - NOT by `DenialKind`, which is
+/// frozen with both Reason(0) and BADSCON mapping to `ContextInvalid`).
+///
+/// For an already-allows group the explanation is the DISTINCT "policy already
+/// allows" message ([`already_allows_explanation`]); every other group is built
+/// exactly as [`build_report`] does. The human and JSON paths stay consistent:
+/// a Reason(0) group says the policy already allows the access on both, and a
+/// true BADSCON group keeps the "does not define" wording on both.
+#[must_use]
+pub fn build_report_with_already_allows(
+    groups: &[DenialGroup],
+    is_already_allows: impl Fn(&DenialGroup) -> bool,
+) -> TriageReport {
+    let entries = groups
+        .iter()
+        .map(|group| {
+            if is_already_allows(group) {
+                build_already_allows_entry(group)
+            } else {
+                build_entry(group)
+            }
+        })
+        .collect();
+    TriageReport { groups: entries }
+}
+
 /// Render the human-readable triage output for all denial groups.
 ///
 /// Each group produces a block separated by a blank line. Empty input returns
@@ -183,6 +216,53 @@ fn build_entry(group: &DenialGroup) -> TriageEntry {
         suggested_rule,
         explanation,
     }
+}
+
+/// Build a `TriageEntry` for a Reason(0) "already allows" group (#122).
+///
+/// The `kind` stays `ContextInvalid` (the enum is frozen; Reason(0) and BADSCON
+/// both map to it) but the explanation is the DISTINCT "policy already allows"
+/// message, and NO allow is suggested (none is needed - the supplied policy
+/// already permits the access). This mirrors
+/// `commands::selinux::render_already_allows_group` on the human path so the two
+/// outputs agree.
+fn build_already_allows_entry(group: &DenialGroup) -> TriageEntry {
+    let perms: Vec<String> = group.perms.iter().cloned().collect();
+    TriageEntry {
+        source_type: group.source_type.clone(),
+        target_type: group.target_type.clone(),
+        tclass: group.tclass.clone(),
+        perms,
+        any_permissive: group.any_permissive,
+        kind: group.kind,
+        suggested_rule: None,
+        explanation: already_allows_explanation(group),
+    }
+}
+
+/// The DISTINCT "policy already allows" explanation for a Reason(0) group (#122).
+///
+/// Worded to satisfy the #122 distinction: it MUST contain "already allow" and
+/// MUST NOT contain the bad-context "does not define" wording (both contexts ARE
+/// defined - the policy simply already permits the access). Kept consistent with
+/// the human path's `render_already_allows_group`.
+fn already_allows_explanation(group: &DenialGroup) -> String {
+    let src = &group.source_type;
+    let tgt = &group.target_type;
+    let cls = &group.tclass;
+    let perms: Vec<&str> = group.perms.iter().map(String::as_str).collect();
+    let perm_display = if perms.len() == 1 {
+        perms[0].to_string()
+    } else {
+        format!("{{ {} }}", perms.join(" "))
+    };
+    format!(
+        "NOTED (policy mismatch): domain '{src}' was denied {perm_display} \
+         on {cls} '{tgt}', but the supplied policy already allows this access. \
+         The denial likely came from a different policy version or a different host. \
+         No allow rule is needed for the supplied policy; \
+         verify you are analyzing the policy that was active when the denial occurred."
+    )
 }
 
 /// Render one `DenialGroup` as a human-readable block.

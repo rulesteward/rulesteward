@@ -623,3 +623,119 @@ fn triage_policy_load_failure_exits_nonzero() {
         // pin the exact code to prove a graceful error path.
         .code(EXIT_ERRORS);
 }
+
+// ---------------------------------------------------------------------------
+// Test 7: Reason(0) distinct explanation in the JSON path too (locked #122)
+// ---------------------------------------------------------------------------
+//
+// THE BUG (impl-aware adversarial round-3 finding): the #122 Reason(0) vs BADSCON
+// distinction is threaded into the HUMAN render path
+// (`render_human_with_already_allows` in commands/selinux.rs receives the
+// `already_allows_groups` set), but the JSON `--format json` path
+// (commands/selinux.rs ~lines 86-90) calls `build_report` WITHOUT the
+// already-allows distinction. So `selinux triage --record <reason-zero-AVC>
+// --policy <p> --format json` emits the BADSCON `ContextInvalid` explanation
+// ("...the supplied policy does not define one of the security contexts...") for a
+// Reason(0) already-allowed denial - factually wrong (the contexts ARE defined;
+// the policy already allows the access). The human path is correct; the JSON path
+// leaks the forbidden "does not define" wording.
+//
+// This is the JSON TWIN of `triage_policy_reason_zero_has_distinct_already_allows_message`.
+//
+// Grounding: issue #122 (Reason(0) and BADSCON warrant DIFFERENT operator
+// messages); f4b-selinux-libsepol-categorization-grounding.md:104 (reason==0 =>
+// the policy already allows it); f4-selinux-triage-grounding.md:616 (BADSCON =
+// policy does not define a context). DenialKind stays FROZEN (both still map to
+// ContextInvalid); the distinction is carried via the ReplayOutcome already-allows
+// signal into the JSON path, mirroring the human path.
+//
+// Why a wrong impl fails (the same discrimination as the human twin, but read out
+// of the machine-readable `groups[0].explanation` field instead of stdout text):
+//   1. The current impl leaves both sub-cases on the untouched `ContextInvalid`
+//      JSON explanation, so the Reason(0) `explanation` lacks "already allow"
+//      (assertion A fails) and carries "does not define" (assertion A' fails).
+//   2. An impl that makes BOTH say "already allow" fails the BADSCON
+//      `not(contains("already allow"))` assertion (B').
+
+/// Run `selinux triage --record <record> --policy <policy> --format json`,
+/// parse the #62 envelope, and return `groups[0].explanation` as a String.
+///
+/// Asserts the envelope shape on the way (kind/schemaVersion/groups) so a
+/// regression in the envelope is caught here too, not just in a unit test.
+fn triage_json_explanation(record_contents: &str, policy_name: &str) -> String {
+    let record = write_record(record_contents);
+    let policy = selinux_fixture(policy_name);
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(record.path())
+        .arg("--policy")
+        .arg(&policy)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).expect("UTF-8 stdout (JSON triage)");
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("parse JSON envelope ({e}):\n{text}"));
+    assert_eq!(
+        v["kind"],
+        serde_json::json!("selinux-triage"),
+        "envelope kind must be selinux-triage:\n{text}"
+    );
+    assert!(
+        v["schemaVersion"].is_number(),
+        "envelope must carry schemaVersion:\n{text}"
+    );
+    let groups = v["groups"].as_array().expect("`groups` must be an array");
+    assert_eq!(
+        groups.len(),
+        1,
+        "single-record triage must yield exactly one group:\n{text}"
+    );
+    groups[0]["explanation"]
+        .as_str()
+        .unwrap_or_else(|| panic!("groups[0].explanation must be a string:\n{text}"))
+        .to_string()
+}
+
+#[test]
+fn triage_policy_reason_zero_has_distinct_already_allows_message_json() {
+    // (A) reason==0: allow.policy explicitly allows the access -> ReplayOutcome::Reason(0).
+    let allowed_expl = triage_json_explanation(AVC_REASON_ZERO, "allow.policy");
+    // (B) true bad-context: zzz_undefined_t is not defined in allow.policy -> BADSCON.
+    let badscon_expl = triage_json_explanation(AVC_BADSCON, "allow.policy");
+
+    // (A) reason==0 JSON explanation MUST carry the distinct "already allow"
+    //     phrasing. Matched on the substring so it is robust to
+    //     "already allows" / "already allowed".
+    assert!(
+        allowed_expl.contains("already allow"),
+        "the reason==0 sub-case JSON explanation must tell the operator the \
+         supplied policy ALREADY ALLOWS the denied access (#122); got:\n{allowed_expl}"
+    );
+    // (A') reason==0 JSON explanation MUST NOT carry the bad-context "does not
+    //      define" wording; both contexts ARE defined here.
+    assert!(
+        !allowed_expl.contains("does not define"),
+        "the reason==0 (already-allows) JSON explanation must NOT use the \
+         bad-context \"does not define\" wording; both contexts ARE defined. \
+         got:\n{allowed_expl}"
+    );
+
+    // (B) BADSCON JSON explanation MUST carry its OWN bad-context phrase.
+    assert!(
+        badscon_expl.contains("does not define"),
+        "the true bad-context (BADSCON) JSON explanation must use the bad-context \
+         \"does not define one of the security contexts\" wording; got:\n{badscon_expl}"
+    );
+    // (B') BADSCON JSON explanation MUST NOT claim the policy already allows.
+    assert!(
+        !badscon_expl.contains("already allow"),
+        "the true bad-context (BADSCON) JSON explanation must NOT say the policy \
+         already allows the access; that wording is reserved for reason==0. \
+         got:\n{badscon_expl}"
+    );
+}
