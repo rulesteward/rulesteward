@@ -141,6 +141,30 @@ exclude_globs = [
 # In both cases `< p` and `<= p` produce identical results for all reachable inputs.
 # Excluded by name, not `#[mutants::skip]`, so the rationale stays here in reviewable
 # config.
+#
+# `ruleset_uses_filehash` (simulate.rs) and the `ctx.ruleset_uses_filehash` match
+# guard in `evaluate_query` are both an OPTIMIZATION GUARD, not a correctness gate:
+# they only decide WHETHER to hash the object file on demand. Forcing either to
+# `true` (the `-> bool with true` / `match guard ... with true` mutants) makes the
+# on-demand hashing path run UNCONDITIONALLY - i.e. it hashes the object even when no
+# rule carries a `filehash=`/`sha256hash=` field. But `facts.sha256` /
+# `facts.sha256_unhashable` are READ by exactly one evaluator arm: the
+# `sha256hash`|`filehash` object arm. If no rule references that field, the computed
+# hash (or the unhashable flag) is never observed by `evaluate()`, so the verdict is
+# byte-identical. The mutants only add redundant I/O with no verdict-observable
+# effect: genuine equivalent mutants. (The sibling `-> false`/`with false` mutants
+# would SKIP hashing when a filehash rule DOES need it, breaking the #127 deny path,
+# and ARE killed by `filehash_present_but_unhashable_is_denied_not_widened` and the
+# on-demand-hash oracle tests.) Excluded by name, not `#[mutants::skip]`, so the
+# rationale stays here in reviewable config.
+#
+# NOTE: the `sha256_unhashable=true` -> `NoMatch` arm of `eval_object_field` in
+# evaluate.rs is also pinned root-independently by the unit tests
+# `unhashable_object_yields_nomatch_at_evaluator_layer` and
+# `absent_object_hash_widens_sha256hash_constraint` (added #126/#127 round-3).
+# The integration test `filehash_present_but_unhashable_is_denied_not_widened`
+# (simulate_trustdb_resolution.rs) self-skips under root (chmod 000 is a no-op
+# when DAC is bypassed); the unit tests fire regardless of uid.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
@@ -181,6 +205,8 @@ exclude_re = [
     # and total are therefore identical to the original.  Genuine equivalent mutant:
     # the separator-skip is an optimisation, not a correctness boundary.
     'replace \|\| with && in parse_fanotify_denials',
+    'replace ruleset_uses_filehash -> bool with true',
+    'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
 ]
 
 # Tests are mixed unit + proptest + insta; proptest property runs especially

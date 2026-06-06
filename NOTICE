@@ -7,12 +7,15 @@ See LICENSE for the full text.
 Third-party components
 ======================
 
-libsepol 3.10 (SELinux userspace), LGPL-2.1, statically linked under the
-authoritative-categorizer feature.
+libsepol 3.10 (SELinux userspace), LGPL-2.1, statically linked into the
+DEFAULT build.
 
-  - Used only when RuleSteward is built with the optional
-    `authoritative-categorizer` Cargo feature. The default build links no
-    libsepol and carries no LGPL obligation.
+  - As of #124 the `authoritative-categorizer` feature is DEFAULT-ON, so a
+    plain `cargo build` / the shipped release binary statically links
+    libsepol 3.10 and carries the LGPL-2.1 obligation. (A
+    `cargo build --no-default-features` build links NO libsepol and is the
+    clean Apache-2.0-only build with no LGPL obligation -- see "Licensing
+    posture" below.)
   - Built from the libsepol 3.10 source vendored in-tree at
     crates/rulesteward-selinux-sys/vendor/libsepol/ and statically linked
     (the build recipe + version pin are in that directory's README.txt; the
@@ -22,8 +25,38 @@ authoritative-categorizer feature.
     corresponding libsepol source is included in this repository under
     crates/rulesteward-selinux-sys/vendor/libsepol/ (upstream:
     https://github.com/SELinuxProject/selinux, release 3.10), satisfying the
-    LGPL-2.1 source-availability requirement for any feature-enabled binary.
+    LGPL-2.1 source-availability requirement for the shipped binary.
 
 The single-static-binary distribution model is preserved: libsepol is linked
-into the feature-enabled binary as a static archive (LGPL-2.1 permits static
-linking with this notice and the accompanying license text).
+into the default binary as a static archive (LGPL-2.1 permits static linking
+with this notice and the accompanying license text, given the complete
+corresponding source and the ability to relink -- both satisfied here).
+
+Licensing posture
+=================
+
+The DEFAULT build (Apache-2.0 engine + statically-linked LGPL-2.1 libsepol):
+
+  - The RuleSteward engine remains Apache-2.0 (see LICENSE).
+  - libsepol 3.10 (LGPL-2.1) is statically linked. The LGPL-2.1 full text is
+    in LICENSES/LGPL-2.1.txt; the complete corresponding source is vendored
+    in-tree at crates/rulesteward-selinux-sys/vendor/libsepol/.
+
+The clean Apache-2.0-only build:
+
+  - `cargo build --no-default-features` (equivalently, building
+    rulesteward-cli with its default feature off) links NO libsepol and
+    carries no LGPL obligation. This is the build for downstreams that want
+    an Apache-2.0-only artifact.
+
+Why static linking of an LGPL-2.1 library is permitted here (LGPL-2.1 section 6):
+an open-source application may distribute a binary that statically links an
+LGPL-2.1 library when (a) the complete corresponding source of the library is
+provided -- it is vendored in-tree at
+crates/rulesteward-selinux-sys/vendor/libsepol/ and travels with the source
+release; (b) relinking the application against a modified library is possible
+-- the static archive is reproducibly built from that vendored source via
+crates/rulesteward-selinux-sys/build.rs, so a recipient can rebuild libsepol
+and relink; and (c) the LGPL-2.1 license text + this notice ship with the
+binary -- LICENSES/LGPL-2.1.txt and this NOTICE are attached to every release
+and installed by the RPM. All three conditions are satisfied.

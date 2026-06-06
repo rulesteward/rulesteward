@@ -8,6 +8,22 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+# DEFAULT-ON (#124): a plain `cargo build -p rulesteward-cli` (or any default
+# workspace build) turns on the libsepol-backed `--policy` triage path by
+# enabling `rulesteward-selinux`'s `authoritative-categorizer` feature, which in
+# turn compiles + statically links the vendored libsepol 3.10 (LGPL-2.1). This
+# bundles an LGPL obligation into the default build (see NOTICE / LICENSING.md).
+#
+# `cargo build -p rulesteward-cli --no-default-features` is the clean
+# Apache-2.0-only build: it links NO libsepol and carries no LGPL obligation
+# (guarded by the `apache-only-build` CI job). This is the ONLY libsepol-free
+# build path, since `rulesteward-selinux`'s OWN `default = ["authoritative-
+# categorizer"]` is a transitive default a top-level `--no-default-features`
+# cannot otherwise reach (hence `default-features = false` on the dep below).
+default = ["authoritative-categorizer"]
+authoritative-categorizer = ["rulesteward-selinux/authoritative-categorizer"]
+
 [lib]
 name = "rulesteward_cli"
 path = "src/lib.rs"
@@ -20,6 +36,11 @@ path = "src/main.rs"
 rulesteward-core = { workspace = true }
 rulesteward-auditd = { workspace = true }
 rulesteward-fapolicyd = { workspace = true }
+# The workspace declaration sets `default-features = false` for this dep (the cli
+# is its only consumer), so `rulesteward-selinux`'s own
+# `default = ["authoritative-categorizer"]` does NOT fire transitively. The
+# libsepol/LGPL layer is instead gated behind THIS crate's `default` feature
+# (above), making `--no-default-features` the clean Apache-2.0-only build.
 rulesteward-selinux = { workspace = true }
 clap = { workspace = true }
 ariadne = { workspace = true }
@@ -74,4 +95,11 @@ assets = [
     # carry its license. As a plain file it installs regardless of nodocs. (The man
     # page stays %doc -- genuinely optional documentation, fine to skip.)
     { source = "LICENSE", dest = "/usr/share/licenses/rulesteward/LICENSE", mode = "644" },
+    # The default build statically links libsepol 3.10 (LGPL-2.1, #124), so the
+    # RPM MUST also ship the LGPL-2.1 full text + the NOTICE. Plain (non-%doc)
+    # files for the same reason LICENSE is: minimal RHEL/Rocky hosts default to
+    # `tsflags=nodocs` (skips %doc), but a shipped binary must always carry the
+    # license + notice for the LGPL-2.1 library it links.
+    { source = "LICENSES/LGPL-2.1.txt", dest = "/usr/share/licenses/rulesteward/LGPL-2.1.txt", mode = "644" },
+    { source = "NOTICE", dest = "/usr/share/licenses/rulesteward/NOTICE", mode = "644" },
 ]

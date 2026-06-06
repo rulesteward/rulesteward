@@ -56,6 +56,14 @@ jobs:
           # future major bumps from drifting in unobserved).
           # Bump deliberately when reviewing the mutation baseline.
           tool: cargo-mutants@27.0.0
+      # The authoritative-categorizer feature is DEFAULT-ON (#124), so `cargo
+      # mutants` builds the workspace -- including the vendored libsepol C source
+      # compiled by crates/rulesteward-selinux-sys/build.rs (needs `make` + a C
+      # compiler; `musl-tools` for the musl target's musl-gcc). The per-PR/CI
+      # default jobs (ci.yml) already install these; the nightly mutants job
+      # needs the same. Mirror ci.yml's pattern.
+      - name: Install build deps (make, gcc, musl-tools)
+        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
       # Baseline + scope live in crates/rulesteward-fapolicyd/MUTATION-BASELINE.md
       # and .cargo/mutants.toml respectively. cargo-mutants 27+ exits non-zero
       # by default when a genuine survivor exists OR any test times out (the old
@@ -70,5 +78,16 @@ jobs:
       # -j2               2 cargo jobs on a 4-core/8GB runner (~2 cores + ~4GB
       #                   each) -- safe headroom; higher -j risks CPU-contention
       #                   spurious timeouts, which also fail the gate (exit 3).
+      # --test-workspace true  (#129) run the ENTIRE workspace's tests against
+      #                   every mutant, not just the mutated package's tests
+      #                   (cargo-mutants' default). Cross-crate-covered code -- e.g.
+      #                   rulesteward-fapolicyd register.rs, asserted by the
+      #                   rulesteward-cli e2e oracle, not by an in-crate test --
+      #                   otherwise shows FALSE survivors here because the mutated
+      #                   package's own tests don't reach it. This nightly is the
+      #                   COMPREHENSIVE run, so it can afford the full-workspace
+      #                   test cost. Deliberately NOT set in .cargo/mutants.toml:
+      #                   the per-PR scoped runs pass an explicit --test-package and
+      #                   must keep the cheaper default scoping.
       - name: cargo mutants
-        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/8 -j2 --sharding round-robin
+        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/8 -j2 --sharding round-robin --test-workspace true

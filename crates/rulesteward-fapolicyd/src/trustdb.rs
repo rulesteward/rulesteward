@@ -149,6 +149,24 @@ fn stream_hex<D: sha2::Digest>(file: &mut std::fs::File) -> Result<String, std::
     Ok(to_hex(&hasher.finalize()))
 }
 
+/// Compute the lowercase-hex SHA-256 digest of the file at `path`, streaming it
+/// in fixed-size chunks (never slurping the whole file into memory).
+///
+/// Returns `Ok(Some(hex))` on success, `Ok(None)` when the file does not exist
+/// (the caller falls back to its low-confidence / `NotEvaluable` behavior), and
+/// `Err` for any other I/O failure. Used by `simulate` for on-demand object
+/// hashing when a `filehash=`/`sha256hash=` rule needs the object's hash and the
+/// workload omits it (#127). Reuses the same `stream_hex` helper `verify_entry`
+/// uses, so the encoding is identical.
+pub fn sha256_file(path: &Path) -> Result<Option<String>, std::io::Error> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    stream_hex::<Sha256>(&mut file).map(Some)
+}
+
 /// Verify a single `TrustEntry` against the file currently on disk.
 ///
 /// Reads the file at `entry.path`, computes its size and digest (algorithm

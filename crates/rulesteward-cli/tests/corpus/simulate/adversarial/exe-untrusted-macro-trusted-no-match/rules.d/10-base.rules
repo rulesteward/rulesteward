@@ -1,0 +1,2 @@
+deny_audit perm=any exe=untrusted : all
+allow perm=any all : all

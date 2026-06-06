@@ -163,6 +163,33 @@ impl Policy {
 /// denial, distinct from the expected undefined-CONTEXT case), and
 /// [`CategorizeError::ComputeFailed`] on a hard libsepol replay error.
 pub fn categorize(denial: &AvcDenial, policy: &Policy) -> Result<DenialKind, CategorizeError> {
+    Ok(categorize_with_outcome(denial, policy)?.0)
+}
+
+/// Authoritatively categorize one AVC denial, returning both the [`DenialKind`]
+/// AND the underlying [`ReplayOutcome`].
+///
+/// This is a NON-BREAKING sibling of [`categorize`] (existing callers/tests are
+/// unaffected - [`categorize`] still exists with its original signature). The
+/// richer return type exists so the CLI layer can distinguish the two sub-cases
+/// that both map to `DenialKind::ContextInvalid`:
+///
+/// - `ReplayOutcome::Reason(0)` - the supplied policy ALREADY ALLOWS the access
+///   (D8 / locked decision #122). The operator message should say "already
+///   allows" to diagnose the policy/host mismatch.
+/// - `ReplayOutcome::BadContext` - the policy does not define a context in the
+///   denial (BADSCON/BADTCON). The operator message should say "does not define".
+///
+/// Both map to `DenialKind::ContextInvalid` (the enum is FROZEN at 7 variants;
+/// no 8th variant is added). The distinction lives at the `ReplayOutcome` layer.
+///
+/// # Errors
+///
+/// Same as [`categorize`].
+pub fn categorize_with_outcome(
+    denial: &AvcDenial,
+    policy: &Policy,
+) -> Result<(DenialKind, ReplayOutcome), CategorizeError> {
     // `permissive` is intentionally NOT read here: categorization replays the
     // policy, it does not interpret the log (see the fn docs + the frozen
     // permissive-flip invariant). The four replay inputs are the contexts, the
@@ -207,5 +234,5 @@ pub fn categorize(denial: &AvcDenial, policy: &Policy) -> Result<DenialKind, Cat
             }
         }
     };
-    Ok(kind)
+    Ok((kind, outcome))
 }
