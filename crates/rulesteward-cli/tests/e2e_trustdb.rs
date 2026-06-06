@@ -119,6 +119,56 @@ fn trustdb_list_json_emits_envelope_of_objects_exit_zero() {
     }
 }
 
+/// `trustdb list --format csv` over a fixture DB exits 0 and emits a valid,
+/// rectangular CSV (#64): a stable header row plus one data row per entry, every
+/// row carrying the same column count, terminated by a trailing newline. Asserts
+/// the WIRE FORMAT (header + column count) the way the JSON test asserts the
+/// envelope shape.
+#[test]
+fn trustdb_list_csv_emits_rectangular_table_exit_zero() {
+    let db_dir = tempfile::tempdir().expect("tempdir");
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[
+            ("/usr/bin/ls", value_bytes(1, 111, KNOWN_SHA256).as_slice()),
+            ("/usr/bin/cat", value_bytes(1, 222, KNOWN_SHA256).as_slice()),
+        ],
+    );
+
+    let assert = bin()
+        .args(["fapolicyd", "trustdb", "list", "--format", "csv"])
+        .arg(db_dir.path())
+        .assert()
+        .success();
+    let out = assert.get_output();
+    assert_eq!(out.status.code(), Some(0), "list --format csv must exit 0");
+
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    assert!(
+        stdout.ends_with('\n'),
+        "csv output must end with a trailing newline"
+    );
+    let mut lines = stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("source,size,digest,path,weak"),
+        "first line must be the stable CSV header"
+    );
+    let data: Vec<&str> = lines.collect();
+    assert_eq!(
+        data.len(),
+        2,
+        "two fixture rows must produce two CSV data rows"
+    );
+    for row in &data {
+        assert_eq!(
+            row.split(',').count(),
+            5,
+            "each data row must have 5 columns: {row}"
+        );
+    }
+}
+
 /// `trustdb list` annotates a weak (MD5 32-hex) digest entry on both the human
 /// and JSON surfaces, and leaves a strong (SHA256 64-hex) entry unannotated.
 /// Functional smoke for the report side of the fapd-W11 weak-hash surfacing.

@@ -9,6 +9,7 @@
 use rulesteward_fapolicyd::{DiskVerdict, TrustEntry, TrustSource};
 use serde::Serialize;
 
+use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
 
 /// Schema version for the `trust-entries` JSON kind (CC-2 / #63). Bumps only on a
@@ -165,6 +166,30 @@ pub fn render_list(rows: &[ListRow], json: bool) -> String {
         }
         out
     }
+}
+
+/// Render a `list` report as RFC-4180 CSV (#64 / CC-3).
+///
+/// Columns (stable order): `source,size,digest,path,weak`. The `weak` column
+/// holds the weak-hash algorithm name (e.g. `MD5`) implied by the digest length,
+/// or is empty for strong (SHA256/SHA512) digests. One row per trust entry; no
+/// aggregate/summary rows (a single rectangular table, per the locked CSV policy).
+#[must_use]
+pub fn render_csv_list(rows: &[ListRow]) -> String {
+    let headers = &["source", "size", "digest", "path", "weak"];
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                source_label(r.source).to_owned(),
+                r.size.to_string(),
+                r.digest.clone(),
+                r.path.clone(),
+                r.weak.unwrap_or("").to_owned(),
+            ]
+        })
+        .collect();
+    to_csv(headers, &body)
 }
 
 /// Render a `check` / `diff` (vs-disk) / `stale` report.
@@ -368,5 +393,74 @@ mod tests {
             }
             .is_divergence()
         );
+    }
+
+    // -- #64: `trustdb list --format csv` renderer ----------------------------
+
+    /// CSV list output has a stable header, one row per entry, the weak-hash
+    /// algorithm in its own column (empty for strong digests), and a trailing
+    /// newline. Columns are aggregate-free (one row per trust entry).
+    #[test]
+    fn list_csv_header_rows_and_weak_column() {
+        let rows = vec![
+            ListRow {
+                path: "/usr/bin/ls".to_owned(),
+                source: TrustSource::RpmDb,
+                size: 111,
+                digest: "a".repeat(64),
+                weak: None,
+            },
+            ListRow {
+                path: "/usr/bin/weak".to_owned(),
+                source: TrustSource::FileDb,
+                size: 10,
+                digest: "b".repeat(32),
+                weak: Some("MD5"),
+            },
+        ];
+        let csv = render_csv_list(&rows);
+        let strong_row = format!("rpm,111,{},/usr/bin/ls,", "a".repeat(64));
+        let weak_row = format!("file,10,{},/usr/bin/weak,MD5", "b".repeat(32));
+        let mut lines = csv.lines();
+        assert_eq!(
+            lines.next(),
+            Some("source,size,digest,path,weak"),
+            "stable header row"
+        );
+        assert_eq!(
+            lines.next(),
+            Some(strong_row.as_str()),
+            "strong row: empty weak column"
+        );
+        assert_eq!(
+            lines.next(),
+            Some(weak_row.as_str()),
+            "weak row: MD5 in the weak column"
+        );
+        assert_eq!(lines.next(), None, "exactly two data rows, no extras");
+        assert!(csv.ends_with('\n'), "csv must end with a trailing newline");
+    }
+
+    /// A path containing a comma is RFC-4180 quoted (delegated to `to_csv`).
+    #[test]
+    fn list_csv_quotes_path_with_comma() {
+        let rows = vec![ListRow {
+            path: "/usr/bin/a,b".to_owned(),
+            source: TrustSource::RpmDb,
+            size: 1,
+            digest: "c".repeat(64),
+            weak: None,
+        }];
+        let csv = render_csv_list(&rows);
+        assert!(
+            csv.contains("\"/usr/bin/a,b\""),
+            "a path with a comma must be quoted; got:\n{csv}"
+        );
+    }
+
+    /// Empty input yields a header-only CSV with a trailing newline (no data rows).
+    #[test]
+    fn list_csv_empty_is_header_only() {
+        assert_eq!(render_csv_list(&[]), "source,size,digest,path,weak\n");
     }
 }
