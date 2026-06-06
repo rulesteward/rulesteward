@@ -516,7 +516,8 @@ pub enum SelinuxCommand {
     /// `allow` rule. Constraint (MLS / MCS), RBAC role, and typebounds denials are
     /// NOT TE-allowable; triage reports them but never emits an allow for them.
     /// Permissive-mode denials (the access was not actually blocked) are reported
-    /// but never auto-allowed.
+    /// with a caveat banner and a suggested allow, but the suggestion is never
+    /// auto-applied (triage is read-only).
     Triage(TriageArgs),
 }
 
