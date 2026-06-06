@@ -8,6 +8,7 @@
 //! The `--policy` flag and the already-allows rendering for the Reason(0) sub-case
 //! were added by the CODE-WIRE step (#124, #122).
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::anyhow;
@@ -150,9 +151,9 @@ fn apply_authoritative_categorizer(
     policy_path: Option<&Path>,
     denials: &[AvcDenial],
     groups: &mut [DenialGroup],
-) -> anyhow::Result<std::collections::HashSet<(String, String, String)>> {
+) -> anyhow::Result<HashSet<(String, String, String)>> {
     let Some(path) = policy_path else {
-        return Ok(std::collections::HashSet::new());
+        return Ok(HashSet::new());
     };
 
     // Load the policy once; all group replays share the loaded policydb. A load
@@ -160,16 +161,14 @@ fn apply_authoritative_categorizer(
     let policy =
         Policy::load(path).map_err(|e| anyhow!("could not load policy {}: {e}", path.display()))?;
 
-    let mut already_allows: std::collections::HashSet<(String, String, String)> =
-        std::collections::HashSet::new();
+    let mut already_allows: HashSet<(String, String, String)> = HashSet::new();
 
     for group in groups.iter_mut() {
         // Collect the DISTINCT raw context pairs for this group. Two AVCs that
         // share the (source_type, target_type, tclass) triple but differ in MLS
         // level / role land in ONE group, yet replay to DIFFERENT verdicts; we
         // must replay each distinct context, not just the first representative.
-        let mut seen_contexts: std::collections::HashSet<(String, String)> =
-            std::collections::HashSet::new();
+        let mut seen_contexts: HashSet<(String, String)> = HashSet::new();
         let context_pairs: Vec<(String, String)> = denials
             .iter()
             .filter(|d| {
@@ -275,7 +274,7 @@ fn apply_authoritative_categorizer(
 /// renderer) so that no existing rendering logic is duplicated here.
 fn render_human_with_already_allows(
     groups: &[DenialGroup],
-    already_allows_groups: &std::collections::HashSet<(String, String, String)>,
+    already_allows_groups: &HashSet<(String, String, String)>,
 ) -> String {
     if already_allows_groups.is_empty() {
         // Fast path: no already-allows groups, delegate entirely to the standard renderer.

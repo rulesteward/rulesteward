@@ -924,3 +924,112 @@ fn h16_end_to_end_corpus_single_perm_read() {
         "TC-H16: end-to-end render must NOT emit auth_read_shadow() macro; got:\n{out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TC-H17 / TC-H18: permissive DECLINE-kind denials must NOT emit a self-
+// contradictory PERMISSIVE-MODE banner.
+//
+// Round-2 impl-aware adversarial finding: `render_group_human` gated the
+// PERMISSIVE-MODE banner ONLY on `any_permissive`, independent of `kind`. For a
+// permissive denial whose authoritative verdict is a DECLINE kind (Constraint,
+// Bounds, MlsSuspected, RoleSuspected, ContextInvalid) NO allow is emitted
+// (TC-H13/H14 pin the no-allow behaviour). But the banner text promises "The
+// suggested allow below ... before applying it" - so on a permissive DECLINE the
+// banner promised an allow that never appears (self-contradictory output).
+//
+// Grounding:
+// - "Constraint / Bounds decline => no allow": f4 §8 + the existing TC-H13/H14
+//   `!out.contains("allow ...")` assertions above.
+// - "the banner accompanies an allow": f4-selinux-triage-grounding.md ~line 434
+//   (the banner is the caveat that PRECEDES the suggested allow) + TC-H4, which
+//   pins banner+allow together for the permissive TeAllowable/Permissive case.
+//
+// Invariant pinned: IF the PERMISSIVE-MODE banner is present, THEN a
+// `Suggested fix:` line MUST also be present (banner never stands alone). The
+// banner's "suggested allow below" promise MUST be absent when no allow exists.
+// ---------------------------------------------------------------------------
+
+/// The self-contradictory promise the banner makes - present only when an allow
+/// is actually suggested. Pinned verbatim so a permissive DECLINE never leaks it.
+const BANNER_ALLOW_PROMISE: &str = "suggested allow below";
+
+#[test]
+fn h17_permissive_constraint_no_banner_promising_absent_allow() {
+    // A permissive=1 denial whose authoritative verdict is Constraint: no allow
+    // is appropriate (TC-H13), so the banner promising one must NOT appear.
+    let groups = vec![make_group(
+        "container_t",
+        "container_file_t",
+        "file",
+        &["relabelto"],
+        true, // any_permissive=true - the trigger for the buggy banner
+        DenialKind::Constraint,
+    )];
+    let out = render_human(&groups);
+
+    // No allow for a Constraint denial (unchanged from TC-H13).
+    assert!(
+        !out.contains("allow container_t container_file_t:file"),
+        "TC-H17: must NOT emit allow for a permissive Constraint denial; got:\n{out}"
+    );
+
+    // The banner's "suggested allow below" promise must be ABSENT - there is no
+    // allow for it to refer to.
+    assert!(
+        !out.contains(BANNER_ALLOW_PROMISE),
+        "TC-H17: a permissive DECLINE (Constraint) must NOT emit the banner's \
+         '{BANNER_ALLOW_PROMISE}' promise when no allow is suggested; got:\n{out}"
+    );
+
+    // Core invariant: banner present => Suggested fix line present.
+    assert!(
+        !out.contains(PERMISSIVE_BANNER_MARKER) || out.contains("Suggested fix:"),
+        "TC-H17 invariant: if the PERMISSIVE-MODE banner is present a 'Suggested fix:' \
+         line MUST also be present (banner never stands alone); got:\n{out}"
+    );
+
+    // The decline wording is still surfaced.
+    let lower = out.to_lowercase();
+    assert!(
+        lower.contains("constraint") || lower.contains("not a te allow"),
+        "TC-H17: the Constraint decline wording must still be present; got:\n{out}"
+    );
+}
+
+#[test]
+fn h18_permissive_bounds_no_banner_promising_absent_allow() {
+    // A permissive=1 denial whose authoritative verdict is Bounds: no allow
+    // is appropriate (TC-H14), so the banner promising one must NOT appear.
+    let groups = vec![make_group(
+        "child_t",
+        "some_t",
+        "file",
+        &["read"],
+        true, // any_permissive=true - the trigger for the buggy banner
+        DenialKind::Bounds,
+    )];
+    let out = render_human(&groups);
+
+    assert!(
+        !out.contains("allow child_t some_t:file"),
+        "TC-H18: must NOT emit allow for a permissive Bounds denial; got:\n{out}"
+    );
+
+    assert!(
+        !out.contains(BANNER_ALLOW_PROMISE),
+        "TC-H18: a permissive DECLINE (Bounds) must NOT emit the banner's \
+         '{BANNER_ALLOW_PROMISE}' promise when no allow is suggested; got:\n{out}"
+    );
+
+    assert!(
+        !out.contains(PERMISSIVE_BANNER_MARKER) || out.contains("Suggested fix:"),
+        "TC-H18 invariant: if the PERMISSIVE-MODE banner is present a 'Suggested fix:' \
+         line MUST also be present (banner never stands alone); got:\n{out}"
+    );
+
+    let lower = out.to_lowercase();
+    assert!(
+        lower.contains("bounds") || lower.contains("typebounds"),
+        "TC-H18: the Bounds decline wording must still be present; got:\n{out}"
+    );
+}

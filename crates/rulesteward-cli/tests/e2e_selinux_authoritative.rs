@@ -123,6 +123,22 @@ const AVC_REASON_ZERO: &str = r#"type=AVC msg=audit(1700000000.006:1006): avc:  
 /// bits=0x2 CONSTRAINT; the byte-identical reason buffer at ~line 358).
 const AVC_MLS_CONSTRAINT: &str = r#"type=AVC msg=audit(1700000000.002:1002): avc:  denied  { read } for  pid=1002 comm="probe" scontext=u1:r_a:src_t:s0:c0.c1 tcontext=u1:r_a:tgt_t:s1:c0.c1 tclass=file permissive=0"#;
 
+/// PERMISSIVE twin of [`AVC_MLS_CONSTRAINT`]: byte-identical except
+/// `permissive=1`. The authoritative categorizer IGNORES the permissive flag
+/// (frozen `permissive_flag_is_ignored_by_categorizer` invariant), so libsepol
+/// still returns reason bit 0x2 (`SEPOL_COMPUTEAV_CONS`) -> `DenialKind::Constraint`
+/// (a DECLINE kind: NO allow is emitted, per TC-H13). But the floor sets
+/// `any_permissive = true`. This is the round-2 impl-aware adversarial miss: the
+/// PERMISSIVE-MODE banner was gated ONLY on `any_permissive`, so a permissive
+/// DECLINE printed a banner promising "the suggested allow below" while emitting
+/// NO allow (self-contradictory). The banner must be suppressed when no allow is
+/// suggested.
+///
+/// Grounding: "Constraint decline = no allow" is f4 §8 + TC-H13/H14;
+/// "permissive flag is ignored by the authoritative categorizer" is the frozen
+/// categorizer invariant reused by `triage_policy_permissive_emits_allow_with_banner`.
+const AVC_MLS_CONSTRAINT_PERMISSIVE: &str = r#"type=AVC msg=audit(1700000000.022:1022): avc:  denied  { read } for  pid=1022 comm="probe" scontext=u1:r_a:src_t:s0:c0.c1 tcontext=u1:r_a:tgt_t:s1:c0.c1 tclass=file permissive=1"#;
+
 /// TE-allowed (reason==0 / "already allows") TWIN of [`AVC_MLS_CONSTRAINT`] that
 /// shares the SAME grouping triple `(src_t, tgt_t, file)`: identical except the
 /// TARGET MLS level is `s0` (not `s1`). With both contexts at level `s0`, the
@@ -500,6 +516,67 @@ fn triage_policy_permissive_emits_allow_with_banner() {
             || msg.contains("allow src_t tgt_t:file { write };"),
         "permissive denial under --policy MUST now get a suggested allow \
          (f4-inv-6 reversal); got:\n{msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5b: permissive DECLINE under --policy must NOT print a self-
+// contradictory banner (round-2 impl-aware adversarial miss)
+// ---------------------------------------------------------------------------
+//
+// `AVC_MLS_CONSTRAINT_PERMISSIVE` is the permissive twin of the MLS-constraint
+// record: the authoritative categorizer (which ignores the permissive flag)
+// returns `Constraint`, a DECLINE kind, so NO allow is emitted (per TC-H13). The
+// floor still sets `any_permissive = true`. Before the fix, the PERMISSIVE-MODE
+// banner was gated only on `any_permissive`, so this case printed a banner whose
+// text promises "The suggested allow below ... before applying it" while no allow
+// followed - a self-contradictory message. The banner must be suppressed when no
+// allow is suggested; the Constraint decline wording already explains why.
+//
+// Grounding: "Constraint = no allow" is f4 §8 + TC-H13; "the banner accompanies
+// an allow" is f4-selinux-triage-grounding.md ~line 434 (caveat-PRECEDES-allow).
+
+#[test]
+fn triage_policy_permissive_decline_suppresses_banner() {
+    let record = write_record(AVC_MLS_CONSTRAINT_PERMISSIVE);
+    let policy = selinux_fixture("kat.policy");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(record.path())
+        .arg("--policy")
+        .arg(&policy)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let msg = String::from_utf8(out).expect("UTF-8 stdout (permissive decline --policy)");
+
+    // No allow for a Constraint decline (unchanged from the enforcing case).
+    assert!(
+        !msg.contains("allow src_t tgt_t:file"),
+        "permissive Constraint denial under --policy MUST NOT emit an allow; got:\n{msg}"
+    );
+    // The banner promises "the suggested allow below" - it must NOT appear when no
+    // allow is emitted (self-contradictory message guard).
+    assert!(
+        !msg.contains("suggested allow below"),
+        "permissive Constraint denial under --policy MUST NOT print the banner's \
+         'suggested allow below' promise when no allow follows; got:\n{msg}"
+    );
+    // Invariant: banner present => Suggested fix line present.
+    assert!(
+        !msg.contains(PERMISSIVE_BANNER_MARKER) || msg.contains("Suggested fix:"),
+        "permissive Constraint denial: if the PERMISSIVE-MODE banner is present a \
+         'Suggested fix:' line MUST also be present; got:\n{msg}"
+    );
+    // The authoritative Constraint decline wording is still surfaced.
+    assert!(
+        msg.contains("authoritative policy analysis"),
+        "permissive Constraint denial under --policy MUST still surface the \
+         authoritative Constraint decline wording; got:\n{msg}"
     );
 }
 

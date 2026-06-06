@@ -69,9 +69,11 @@ pub enum DenialKind {
     /// The denial had `permissive=1`: the access was NOT actually blocked.
     ///
     /// Round-2 reversal of f4 §2.5 invariant 6 (user decision 2026-06-05): the
-    /// HUMAN triage render now offers a suggested allow gated behind a
-    /// PERMISSIVE-MODE caveat banner; the machine-readable `build_report` JSON
-    /// keeps `suggested_rule = null` for this kind (see `triage.rs`).
+    /// HUMAN triage render offers a suggested allow gated behind a PERMISSIVE-MODE
+    /// caveat banner. Round-3 (2026-06-05) extended the reversal to the JSON path:
+    /// `build_report` now POPULATES `suggested_rule` for this kind too (the same
+    /// narrow allow the human path emits), with `any_permissive: true` as the
+    /// machine-readable caveat. See `triage.rs`.
     Permissive,
 }
 

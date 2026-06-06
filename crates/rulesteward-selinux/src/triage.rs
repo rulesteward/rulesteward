@@ -13,15 +13,20 @@
 //! 3. Exact perm set only - no perm-set expansion.
 //! 4. No unrelated types.
 //! 5. One rule per (sdomain, ttype, tclass) triple.
-//! 6. REVERSED (round-2, user decision 2026-06-05): a `permissive=1` denial NOW
+//! 6. REVERSED (round-2, owner decision 2026-06-05): a `permissive=1` denial NOW
 //!    gets a suggested allow, preceded by a top-level PERMISSIVE-MODE caveat
 //!    banner so the operator knows the access was logged-not-enforced and must be
 //!    reviewed before allowing. The original invariant 6 ("Permissive groups are
-//!    reported but NO allow is emitted") was the locked f4 §2.5 inv.6; the user
-//!    explicitly reversed it (f4-selinux-triage-grounding.md line 294-296). The
-//!    banner is keyed on `any_permissive` (not the `kind`), so it also fires on
-//!    the authoritative `--policy` path where the verdict may be `TeAllowable`
-//!    with `any_permissive == true`.
+//!    reported but NO allow is emitted") was the locked f4 §2.5 inv.6 (still
+//!    stated as the old behaviour at f4-selinux-triage-grounding.md line 294-296);
+//!    the SOURCE of the reversal is the owner decision of 2026-06-05, not those
+//!    doc lines. The banner is emitted only when an allow is actually suggested
+//!    for the group (round-3 adversarial fix): it is keyed on
+//!    `any_permissive && suggested_rule.is_some()` so it fires on a permissive
+//!    `TeAllowable`/`Permissive` group (an allow IS suggested) but is suppressed
+//!    on a permissive DECLINE group (Constraint/Bounds/MlsSuspected/
+//!    RoleSuspected/ContextInvalid - no allow), where a banner promising "the
+//!    suggested allow below" would be self-contradictory.
 //!
 //!    EXTENDED (round-3, user decision 2026-06-05): the reversal of inv.6 now
 //!    also applies to the MACHINE-READABLE JSON `build_report` path, not just the
@@ -198,8 +203,13 @@ fn render_group_human(group: &DenialGroup) -> String {
 
     let mut out = String::new();
     // Caveat-first: the PERMISSIVE-MODE banner precedes everything else so the
-    // operator reads the warning before the suggested allow.
-    if group.any_permissive {
+    // operator reads the warning before the suggested allow. It is emitted ONLY
+    // when an allow is actually suggested (`suggested_rule.is_some()`): the banner
+    // text promises "the suggested allow below", so for a permissive DECLINE kind
+    // (Constraint / Bounds / MlsSuspected / RoleSuspected / ContextInvalid - all
+    // of which yield no allow) the banner would be self-contradictory. The decline
+    // explanation already states why no allow applies; no banner is needed there.
+    if group.any_permissive && suggested_rule.is_some() {
         out.push_str(PERMISSIVE_BANNER);
         out.push('\n');
     }
