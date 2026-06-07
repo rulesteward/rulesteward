@@ -3,21 +3,27 @@
 //! Predicts fapolicyd's load-time rejection of a `%set` assigned to an attribute
 //! whose value type the set is incompatible with (e.g. a STRING-typed set on
 //! `uid=`). Grounded in cited `fapolicyd --debug --permissive` runtime output
-//! from three pinned images (1.3.2-el8 / 1.4.3-el9 / 1.4.5-el10); see
-//! `.private-docs/fapd-e07-grounding.md`.
+//! from three pinned images (1.3.2-el8 / 1.4.5-el9_8 / 1.4.5-el10; re-grounded
+//! 2026-06-07, #163); see `.private-docs/fapd-e07-grounding.md`.
 //!
 //! Model (full bidirectional, EXACT - matches fapolicyd across versions):
-//!   * Each attribute has a version-INVARIANT type category
+//!   * Each attribute has a type category
 //!     ([`crate::attrs::AttrTypeCategory`]): `Unsigned` / `Signed` / `Str` /
-//!     `Permissive` / `NoSet`.
+//!     `Permissive` / `NoSet`. Most are version-invariant, but `pid`/`ppid` and
+//!     `gid` DIVERGE across the 1.3.2 -> 1.4.x boundary (resolved per-version by
+//!     [`crate::attrs::type_category_for`]): pid/ppid are `Unsigned` on rhel8
+//!     (accept a numeric set) but `Signed` on rhel9+ (reject every set); `gid`
+//!     is `Permissive` on rhel8 but `Unsigned` on rhel9+ (reject string/mixed).
 //!   * A `%set`'s type is inferred version-DIVERGENTLY: rhel8 (1.3.2) by the
 //!     first element, rhel9/rhel10 (1.4.x) STRING-if-any-non-numeric.
 //!   * Firing gates on OUTCOME-invariance: under an explicit `--target`, fire
 //!     iff the mismatch holds for that version; under `None`, fire iff it holds
 //!     on ALL supported versions (so universal mismatches fire without
-//!     `--target`, version-divergent ones only under it).
-//!   * `gid` (`Permissive`) is never flagged; `pattern`/`trust` (`NoSet`) are
-//!     owned by fapd-E04, so E07 defers there rather than double-reporting.
+//!     `--target`, version-divergent ones only under it). Because the category
+//!     itself can diverge, a numeric set on `pid=` (accepted on rhel8, rejected
+//!     on rhel9+) fires only under `--target rhel9`/`rhel10`, not under `None`.
+//!   * `pattern`/`trust` (`NoSet`) are owned by fapd-E04, so E07 defers there
+//!     rather than double-reporting.
 
 use std::path::Path;
 
@@ -64,16 +70,15 @@ pub(crate) fn walk(
                 // Literals (Str/Int) are fapd-E02's concern; `Attr::All` has no value.
                 continue;
             };
-            let Some(category) = attrs::type_category(key) else {
+            let Some(base) = attrs::type_category(key) else {
                 // Unknown attribute - fapd-E01's concern, not E07's.
                 continue;
             };
-            // `gid` (Permissive) never mismatches; `pattern`/`trust` (NoSet) are
-            // already flagged by fapd-E04, so E07 defers to avoid double-reporting.
-            if matches!(
-                category,
-                AttrTypeCategory::Permissive | AttrTypeCategory::NoSet
-            ) {
+            // `pattern`/`trust` (NoSet, version-invariant) are already flagged by
+            // fapd-E04, so E07 defers to avoid double-reporting. (Permissive is NOT
+            // skipped up front: `gid` is Permissive only on rhel8 - on rhel9+ it is
+            // Unsigned and CAN mismatch, so the per-version gate below decides.)
+            if matches!(base, AttrTypeCategory::NoSet) {
                 continue;
             }
             let Some(values) = macro_map.get(name) else {
@@ -86,12 +91,19 @@ pub(crate) fn walk(
             }
             // Outcome-invariance gate: under an explicit target, fire iff the
             // mismatch holds for that version; under `None`, fire iff it holds on
-            // every supported version (universal mismatches only).
+            // every supported version (universal mismatches only). The attribute's
+            // CATEGORY is resolved per-version (pid/ppid/gid diverge), so a finding
+            // that is version-divergent (e.g. a numeric set on `pid=`, accepted on
+            // rhel8 but rejected on rhel9+) only fires under an explicit target.
             let fires = match target {
-                Some(v) => fires_for(values, category, v),
-                None => ALL_TARGETS.iter().all(|&v| fires_for(values, category, v)),
+                Some(v) => fires_for(values, key, v),
+                None => ALL_TARGETS.iter().all(|&v| fires_for(values, key, v)),
             };
             if fires {
+                // The message names the expected type at the relevant version: the
+                // explicit target, or the newest supported version under `None`.
+                let msg_version = target.unwrap_or(TargetVersion::Rhel10);
+                let category = attrs::type_category_for(key, msg_version).unwrap_or(base);
                 diags.push(anchored(
                     Severity::Error,
                     "fapd-E07",
@@ -106,10 +118,18 @@ pub(crate) fn walk(
     diags
 }
 
-/// Whether assigning the set `values` to an attribute of `category` is a type
-/// mismatch under `version` (i.e. fapolicyd would reject it at load time).
-fn fires_for(values: &[String], category: AttrTypeCategory, version: TargetVersion) -> bool {
-    compat_mismatch(infer_numeric(values, version), category)
+/// Whether assigning the set `values` to attribute `key` is a type mismatch under
+/// `version` (i.e. fapolicyd would reject it at load time). The category is
+/// resolved per-version (`pid`/`ppid`/`gid` diverge); `Permissive`/`NoSet`
+/// attributes never mismatch under any version.
+fn fires_for(values: &[String], key: &str, version: TargetVersion) -> bool {
+    let Some(category) = attrs::type_category_for(key, version) else {
+        return false;
+    };
+    match category {
+        AttrTypeCategory::Permissive | AttrTypeCategory::NoSet => false,
+        _ => compat_mismatch(infer_numeric(values, version), category),
+    }
 }
 
 /// Whether a set inferred as `numeric` (vs string) is type-incompatible with an
@@ -177,10 +197,11 @@ mod tests {
     //! Every assertion is grounded in `.private-docs/fapd-e07-grounding.md`'s
     //! cited runtime output. Key facts:
     //!   * Attribute type categories: UNSIGNED `uid`/`auid`/`sessionid`;
-    //!     SIGNED `pid`/`ppid` (a positive-int set types UNSIGNED on the subject
-    //!     side, so EVEN `1,2,3` is rejected); STRING `comm`/`exe`/`dir`/`ftype`/
-    //!     `path`/`device`/`filehash`/`sha256hash`; PERMISSIVE `gid` (accepts
-    //!     group names - NEVER flagged); NO-SET `pattern`/`trust`.
+    //!     STRING `comm`/`exe`/`dir`/`ftype`/`path`/`device`/`filehash`/
+    //!     `sha256hash`; NO-SET `pattern`/`trust`. VERSION-DIVERGENT (#163):
+    //!     `pid`/`ppid` are UNSIGNED on rhel8 (accept a numeric set) but SIGNED
+    //!     on rhel9+ (reject every set); `gid` is PERMISSIVE on rhel8 (never
+    //!     flagged) but UNSIGNED on rhel9+ (a string/mixed set is flagged).
     //!   * Set-type inference is VERSION-DIVERGENT: rhel8 (1.3.2) types by the
     //!     FIRST element; rhel9/rhel10 (1.4.x) type STRING if ANY element is
     //!     non-numeric.
@@ -535,26 +556,41 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // SIGNED quirk: pid/ppid expect SIGNED, but a positive-int set types
-    // UNSIGNED on the subject side, so EVEN a positive-int set is rejected.
-    // Universal across versions.
+    // pid/ppid are VERSION-DIVERGENT (#163, re-grounded 2026-06-07 via
+    // `rpm -q fapolicyd` on fapolicyd8=1.3.2-el8 and fapolicyd9=1.4.5-el9_8):
+    //   * rhel8 (1.3.2): pid/ppid are INT/UNSIGNED - a positive-int set LOADS,
+    //     a string set is rejected ("STRING type to INT").
+    //   * rhel9/rhel10 (1.4.5): pid/ppid are SIGNED - a positive-int set types
+    //     UNSIGNED != SIGNED, so EVERY set is rejected.
+    // The old all-version SIGNED model emitted a FALSE POSITIVE on rhel8.
     // -----------------------------------------------------------------
 
     #[test]
-    fn int_set_on_pid_ppid_fires_e07_on_every_context() {
-        // Grounding contradiction #2: `%t=1,2,3` on pid= is REJECTED
-        // (`UNSIGNED ... SIGNED expected`) on every version - a positive-int set
-        // can never satisfy a SIGNED attr. This is the cell that distinguishes the
-        // EXACT model from a NUMERIC-collapsed one (which would accept it).
+    fn int_set_on_pid_ppid_fires_only_under_rhel9_plus() {
+        // A positive-int set `%t=1,2,3` on pid=/ppid= LOADS on 1.3.2 (rhel8) but is
+        // REJECTED on 1.4.5 (rhel9/rhel10). Version-divergent: it must NOT fire
+        // under rhel8 or None (rhel8 accepts it -> not a universal mismatch), and
+        // MUST fire under an explicit rhel9/rhel10 target. This is the #163 fix:
+        // the old model fired on every context (a false positive on el8).
         for attr in ["pid", "ppid"] {
             let src = format!("%t=1,2,3\nallow {attr}=%t : all\n");
-            for ctx in ALL_CONTEXTS {
+            for ctx in [None, Some(TargetVersion::Rhel8)] {
+                let diags = lint_src(&src, ctx);
+                assert_eq!(
+                    e07_count(&diags),
+                    0,
+                    "positive-int set on {attr}= must NOT fire fapd-E07 under {ctx:?} \
+                     (fapolicyd 1.3.2 LOADS it; not a universal mismatch); got codes={:?}",
+                    codes(&diags),
+                );
+            }
+            for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
                 let diags = lint_src(&src, ctx);
                 assert_eq!(
                     e07_count(&diags),
                     1,
-                    "positive-int set on {attr}= (SIGNED) must fire fapd-E07 under {ctx:?} \
-                     (the grounded pid/ppid quirk); got codes={:?}",
+                    "positive-int set on {attr}= must fire fapd-E07 under {ctx:?} \
+                     (fapolicyd 1.4.5 rejects: SIGNED expected); got codes={:?}",
                     codes(&diags),
                 );
             }
@@ -562,40 +598,75 @@ mod tests {
     }
 
     #[test]
-    fn string_set_on_pid_fires_e07_on_every_context() {
-        // A STRING set on pid= is also rejected on every version (STRING is not
-        // SIGNED). Guards that the SIGNED handling is not numeric-only.
-        let src = "%t=abc,def\nallow pid=%t : all\n";
+    fn string_set_on_pid_ppid_fires_on_every_context() {
+        // A STRING set on pid=/ppid= is rejected on EVERY version: rhel8 (1.3.2)
+        // types pid INT and rejects a string set ("STRING type to INT"); rhel9/10
+        // (1.4.5) type pid SIGNED and reject any set. Universal mismatch -> fires
+        // under None too. Guards that the rhel8 INT handling rejects strings.
+        for attr in ["pid", "ppid"] {
+            let src = format!("%t=abc,def\nallow {attr}=%t : all\n");
+            for ctx in ALL_CONTEXTS {
+                let diags = lint_src(&src, ctx);
+                assert_eq!(
+                    e07_count(&diags),
+                    1,
+                    "string set on {attr}= must fire fapd-E07 under {ctx:?}; got codes={:?}",
+                    codes(&diags),
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // gid is VERSION-DIVERGENT (#163, re-grounded 2026-06-07):
+    //   * rhel8 (1.3.2): gid is PERMISSIVE (accepts group NAMES) - string,
+    //     numeric, AND mixed sets all LOAD.
+    //   * rhel9/rhel10 (1.4.5): gid is UNSIGNED - a numeric set LOADS, but a
+    //     STRING or MIXED set types STRING != UNSIGNED and is REJECTED.
+    // The old all-version PERMISSIVE model emitted a FALSE NEGATIVE on 1.4.5.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn numeric_set_on_gid_never_fires_e07() {
+        // A numeric set on gid= LOADS on every version (rhel8 PERMISSIVE accepts
+        // it; rhel9/10 UNSIGNED accepts a numeric set). Never fires.
+        let src = "%t=1,2,3\nallow gid=%t : all\n";
         for ctx in ALL_CONTEXTS {
             let diags = lint_src(src, ctx);
             assert_eq!(
                 e07_count(&diags),
-                1,
-                "string set on pid= (SIGNED) must fire fapd-E07 under {ctx:?}; got codes={:?}",
+                0,
+                "numeric set on gid= must NEVER fire fapd-E07 under {ctx:?}; got codes={:?}",
                 codes(&diags),
             );
         }
     }
 
-    // -----------------------------------------------------------------
-    // PERMISSIVE: gid accepts group names, so NO set is ever flagged.
-    // -----------------------------------------------------------------
-
     #[test]
-    fn any_set_on_gid_never_fires_e07() {
-        // Grounding contradiction #1: gid is PERMISSIVE (accepts group NAMES) -
-        // string, numeric, AND mixed sets all LOAD on rhel8 and rhel9. E07 must
-        // NEVER flag gid. A wrong impl that treats gid as numeric (the old assumed
-        // map) fires on the string/mixed cases and dies here.
-        for values in ["abc,def", "1,2,3", "1,abc"] {
+    fn string_or_mixed_set_on_gid_fires_only_under_rhel9_plus() {
+        // A STRING (`abc,def`) or MIXED (`1,abc`) set on gid= LOADS on 1.3.2
+        // (rhel8: gid PERMISSIVE) but is REJECTED on 1.4.5 (rhel9/10: gid UNSIGNED,
+        // a non-all-numeric set types STRING). Version-divergent: no fire under
+        // rhel8/None, fire under rhel9/rhel10. This is the #163 false-negative fix.
+        for values in ["abc,def", "1,abc"] {
             let src = format!("%t={values}\nallow gid=%t : all\n");
-            for ctx in ALL_CONTEXTS {
+            for ctx in [None, Some(TargetVersion::Rhel8)] {
                 let diags = lint_src(&src, ctx);
                 assert_eq!(
                     e07_count(&diags),
                     0,
-                    "set %t={values} on gid= (PERMISSIVE) must NEVER fire fapd-E07 under {ctx:?}; \
-                     got codes={:?}",
+                    "gid=%t ({values}) must NOT fire fapd-E07 under {ctx:?} \
+                     (fapolicyd 1.3.2 LOADS it); got codes={:?}",
+                    codes(&diags),
+                );
+            }
+            for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+                let diags = lint_src(&src, ctx);
+                assert_eq!(
+                    e07_count(&diags),
+                    1,
+                    "gid=%t ({values}) must fire fapd-E07 under {ctx:?} \
+                     (fapolicyd 1.4.5 rejects: UNSIGNED expected); got codes={:?}",
                     codes(&diags),
                 );
             }
