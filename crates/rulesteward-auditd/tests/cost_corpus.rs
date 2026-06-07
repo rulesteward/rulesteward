@@ -191,35 +191,43 @@ const NON_NULL_COST_BAND: &[&str] = &[
     "rocky9-stock-control",
 ];
 
-/// Syscall-tier scenarios xfailed because of known code gaps (not test errors).
-/// These are genuine code limitations, tracked as follow-up issue #140.
-/// See inline FINDING comments below.
+/// Syscall-tier scenarios xfailed because of known limitations (not test errors).
+///
+/// Two distinct classes remain after the #140 Finding-2 deterministic fixes
+/// landed (`finit_module` -> `LOW_SYSCALLS` greened `rocky9-key-collision`;
+/// `list==Filesystem` -> MEDIUM greened `rocky9-filesystem-list`):
+///
+/// - **Finding 1 (content-aware, NON-deterministic):** the per-rule tier depends
+///   on the watched path/binary's real-world churn, which is NOT in the rule AST.
+///   A pure static classifier cannot reproduce these (see the `sudo`=MEDIUM vs
+///   `su`/`passwd`=LOW split inside `rocky9-priv-commands`). Tracked by #140
+///   Finding 1; not fixable without a content-aware volume model.
+/// - **Finding 2 (deterministic, DEFERRED):** real, fixable static gaps deferred
+///   to a #140 follow-up (arch-aware demotion + `-C` field-comparison parsing).
 const XFAIL_SYSCALL: &[&str] = &[
-    // FINDING (#140): rocky10-watch-vs-syscall-equiv - `-F path=... -F perm=wa` (no -S)
-    // code classifies Low (no syscalls listed = pure field-filter), oracle expects MEDIUM.
-    // Code gap: path+perm filter rules without explicit -S should be MEDIUM.
+    // FINDING (#140 Finding 1, content-aware): rocky10-watch-vs-syscall-equiv -
+    // `-F path=/etc/passwd -F perm=wa` (no -S) -> oracle MEDIUM. Same AST shape as
+    // the `su`/`passwd` rules in rocky9-priv-commands that the oracle rates LOW;
+    // the tier difference is driven by the watched PATH's churn (/etc/passwd vs
+    // /usr/bin/su), which is not derivable from the rule. NOT deterministically
+    // fixable; belongs to the non-deterministic Finding 1, not a static code gap.
     "rocky10-watch-vs-syscall-equiv",
-    // FINDING (#140): rocky9-arch-paired - arch=b32 execve narrowed by auid:
-    // code returns MEDIUM (execve in HIGH_SYSCALLS, narrowed by -F -> HIGH->MEDIUM),
-    // oracle expects LOW (b32 ABI fires far less often on modern hosts).
-    // Code gap: no arch-aware rate differentiation.
+    // FINDING (#140 Finding 2, DEFERRED): rocky9-arch-paired - arch=b32 execve
+    // narrowed by auid: code returns MEDIUM (execve in HIGH_SYSCALLS, -F demotes
+    // HIGH->MEDIUM), oracle expects LOW (b32 ABI fires far less often on modern
+    // x86_64 hosts). Deterministic but needs arch-aware demotion; deferred to a
+    // #140 follow-up.
     "rocky9-arch-paired",
-    // FINDING (#140): rocky9-field-compare - rule A uses `-C uid!=euid` (field-comparison).
-    // parse_target returns Err (unexpected token `-C`); cannot match rules by position.
-    // Code gap: parser does not support the -C flag.
+    // FINDING (#140 Finding 2, DEFERRED): rocky9-field-compare - rule uses
+    // `-C uid!=euid` (field-comparison). parse_target returns Err (unexpected
+    // token `-C`); cannot match rules by position. Deterministic but needs parser
+    // `-C` support; deferred to a #140 follow-up.
     "rocky9-field-compare",
-    // FINDING (#140): rocky9-filesystem-list - `-a always,filesystem -F fstype=...` (no -S):
-    // code classifies Low (no syscalls = pure field-filter), oracle expects MEDIUM.
-    // Code gap: filesystem-list filter rules without -S should be MEDIUM.
-    "rocky9-filesystem-list",
-    // FINDING (#140): rocky9-key-collision - `-S init_module -S finit_module`:
-    // `finit_module` is not in LOW_SYSCALLS so the all-low check fails -> code returns MEDIUM.
-    // Oracle expects LOW (both are rare module-load syscalls).
-    // Code gap: finit_module missing from LOW_SYSCALLS.
-    "rocky9-key-collision",
-    // FINDING (#140): rocky9-priv-commands - `-F path=/usr/bin/sudo -F perm=x` (no -S):
-    // code classifies Low (no syscalls = pure field-filter), oracle expects MEDIUM for sudo.
-    // Code gap: path+perm=x filter rules without explicit -S should be MEDIUM.
+    // FINDING (#140 Finding 1, content-aware): rocky9-priv-commands - three
+    // byte-identical `-F path=<bin> -F perm=x` rules (no -S) the oracle rates
+    // differently (sudo=MEDIUM, su=LOW, passwd=LOW) purely by which binary is
+    // watched. No pure-AST classifier can reproduce this; belongs to the
+    // non-deterministic Finding 1.
     "rocky9-priv-commands",
 ];
 
