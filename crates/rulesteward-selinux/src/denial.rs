@@ -208,6 +208,41 @@ fn extract_level(ctx: &str) -> Option<&str> {
     if level.is_empty() { None } else { Some(level) }
 }
 
+/// The sensitivity component of an MCS/MLS level: the substring before the first
+/// `:` (`"s0:c1,c2"` -> `"s0"`, `"s0"` -> `"s0"`). A sensitivity RANGE
+/// (`"s0-s15"`) is returned whole and so never compares equal to a bare
+/// sensitivity, which keeps the dominance check conservatively scoped to the
+/// single-level MCS case (#141).
+fn level_sensitivity(level: &str) -> &str {
+    level.split(':').next().unwrap_or(level)
+}
+
+/// `true` iff the subject level `s` dominates a CATEGORY-FREE object level `t`:
+/// the two share a sensitivity AND the object carries no MCS categories. The
+/// empty category set is dominated by any category set, so an MCS subject of the
+/// same sensitivity accessing a category-free object is no MLS/MCS violation
+/// (#141). Minimal refinement: ONLY the category-free-object case is handled
+/// here; broader MLS-range dominance is out of scope for the floor heuristic.
+///
+/// # MCS scope (deliberate; full-MLS write limitation)
+///
+/// This applies the MCS *dominance* rule (`l1 dom l2`) regardless of the denied
+/// permission, which is correct under MCS - the RHEL/Rocky default targeted
+/// policy - where dominance governs BOTH read and write. It is intentionally
+/// perm-blind. Under a FULL-MLS policy a write-family op (`write` / `create` /
+/// `setattr` / `relabelfrom` / `append` / `rename`) requires level EQUALITY
+/// (`l1 eq l2`), not dominance, so a same-sensitivity write to a category-free
+/// object with differing categories IS a real `mlsconstrain` violation. The
+/// record-only floor heuristic does NOT model that rarer full-MLS write case
+/// (it would over-flag the common MCS case); the authoritative `--policy`
+/// libsepol categorizer is the correct path for full-MLS deployments. This
+/// MCS-scoped behavior is pinned by
+/// `tests::test_write_to_category_free_object_is_te_allowable_mcs_scope`.
+fn subject_dominates_catfree_object(s: &str, t: &str) -> bool {
+    // `t` is category-free when it has no `:` after the sensitivity.
+    !t.contains(':') && level_sensitivity(s) == level_sensitivity(t)
+}
+
 /// Apply the record-only FLOOR classifier in priority order:
 ///
 /// 1. `any_permissive` -> [`DenialKind::Permissive`]
@@ -225,8 +260,14 @@ fn classify_floor(any_permissive: bool, scontext_raw: &str, tcontext_raw: &str) 
     let tlevel = extract_level(tcontext_raw);
     // Only flag as MLS when at least one side has a level AND they differ.
     // Both-missing means no level information: treat as equal (no MLS context).
+    //
+    // Minimal MCS-dominance refinement (#141): a subject level that DOMINATES a
+    // category-free object level of the same sensitivity is NOT a violation (the
+    // empty category set is dominated by any category set), so do not flag it. We
+    // only special-case the category-free-object case; full MLS-range dominance is
+    // broader and deliberately out of scope for the record-only floor heuristic.
     let levels_differ = match (slevel, tlevel) {
-        (Some(s), Some(t)) => s != t,
+        (Some(s), Some(t)) => s != t && !subject_dominates_catfree_object(s, t),
         (Some(_), None) | (None, Some(_)) => true, // one side has level, other does not
         (None, None) => false,
     };
@@ -534,5 +575,111 @@ mod tests {
             "first group must be a_t (sorts before z_t)"
         );
         assert_eq!(groups[1].source_type, "z_t");
+    }
+
+    // -----------------------------------------------------------------------
+    // Anchor 7: MCS category-free dominance (#141)
+    // -----------------------------------------------------------------------
+
+    /// An MCS subject WITH categories (`s0:c123,c456`) accessing a category-FREE
+    /// object (`s0`) of the SAME sensitivity does NOT violate MLS/MCS: the empty
+    /// category set is dominated by any category set, so the subject dominates
+    /// the object. Must classify `TeAllowable`, NOT `MlsSuspected` (#141).
+    #[test]
+    fn test_mcs_subject_dominates_category_free_object() {
+        let denials = vec![make_denial(
+            "container_t",
+            "default_t",
+            "file",
+            &["read"],
+            Some(false),
+            "system_u:system_r:container_t:s0:c123,c456",
+            "system_u:object_r:default_t:s0",
+        )];
+        let groups = group_denials(&denials);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].kind,
+            DenialKind::TeAllowable,
+            "MCS subject dominating a category-free object must NOT be MlsSuspected"
+        );
+    }
+
+    /// Reverse of dominance: the SUBJECT is category-free (`s0`) and the OBJECT
+    /// carries a category (`s0:c5`). The subject does NOT dominate (it lacks the
+    /// object's category), so this STAYS `MlsSuspected`. Guards that the #141
+    /// exception is asymmetric (object-category-free only).
+    #[test]
+    fn test_subject_missing_object_category_stays_mls_suspected() {
+        let denials = vec![make_denial(
+            "t1",
+            "t2",
+            "file",
+            &["read"],
+            Some(false),
+            "system_u:system_r:t1:s0",
+            "system_u:object_r:t2:s0:c5",
+        )];
+        let groups = group_denials(&denials);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].kind,
+            DenialKind::MlsSuspected,
+            "subject lacking the object's category does not dominate -> MlsSuspected"
+        );
+    }
+
+    /// The category-free-dominance exception requires EQUAL sensitivity. A
+    /// subject `s0:c1,c2` vs a category-free object at a DIFFERENT sensitivity
+    /// (`s1`) is not dominated, so it stays `MlsSuspected`. Guards that the
+    /// exception checks sensitivity, not just object-category-freeness.
+    #[test]
+    fn test_category_free_object_different_sensitivity_stays_mls_suspected() {
+        let denials = vec![make_denial(
+            "t1",
+            "t2",
+            "file",
+            &["read"],
+            Some(false),
+            "system_u:system_r:t1:s0:c1,c2",
+            "system_u:object_r:t2:s1",
+        )];
+        let groups = group_denials(&denials);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].kind,
+            DenialKind::MlsSuspected,
+            "category-free object at a different sensitivity is not dominated -> MlsSuspected"
+        );
+    }
+
+    /// PINNED DECISION (MCS scope, #141): the category-free dominance exemption
+    /// is perm-blind, so a WRITE-family op (here `write`) from an MCS subject
+    /// (`s0:c1`) to a category-free object (`s0`) classifies `TeAllowable`, the
+    /// same as the read case. This is correct under MCS (the RHEL/Rocky default,
+    /// where dominance governs read AND write). Under a full-MLS policy a write
+    /// requires level EQUALITY, so this would be a real violation - but the
+    /// record-only floor heuristic deliberately does NOT model that rarer case
+    /// (the authoritative `--policy` categorizer does). This test pins the chosen
+    /// behavior so it cannot silently drift; see `subject_dominates_catfree_object`.
+    #[test]
+    fn test_write_to_category_free_object_is_te_allowable_mcs_scope() {
+        let denials = vec![make_denial(
+            "foo_t",
+            "bar_t",
+            "file",
+            &["write"],
+            Some(false),
+            "system_u:system_r:foo_t:s0:c1",
+            "system_u:object_r:bar_t:s0",
+        )];
+        let groups = group_denials(&denials);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].kind,
+            DenialKind::TeAllowable,
+            "MCS-scoped floor: a write to a category-free object of the same sensitivity \
+             is TeAllowable (full-MLS write-equality is out of floor scope, covered by --policy)"
+        );
     }
 }

@@ -104,20 +104,14 @@ const SYNTHETIC_SCOPE_OUT: &[&str] = &[
 /// change) and reported; they are still asserted normally in the AUTHORITATIVE
 /// layer if their category is in scope.
 ///
-// FINDING #141: rocky10-container-runtime -- floor expected `none` vs actual
-// `MlsSuspected`. The denial is `container_t (s0:c123,c456) -> default_t:file`:
-// an MCS subject WITH categories accessing a category-FREE object (level `s0`).
-// The floor classifier (denial.rs `classify_floor` rule 2) flags any level
-// string inequality as `MlsSuspected`, so `s0:c123,c456` != `s0` trips it. The
-// corpus author judged this `none` because an MCS subject dominates a
-// category-free object (no MLS/MCS violation; INDEX.md: "MCS subject dominates
-// category-free object; floor=none"). This is a real floor-heuristic gap: the
-// level comparison is naive string-inequality, not MLS dominance. The
-// AUTHORITATIVE category (TeAllowable) is CORRECT and still asserted via the
-// Reason(0)-tolerance rule. Small, well-scoped heuristic gap (not a large
-// rewrite) -> xfail + report, per the findings policy (NOT an ARCHITECTURE-HALT).
-// Tracked as issue #141.
-const FLOOR_XFAIL: &[&str] = &["rocky10-container-runtime"];
+/// Now EMPTY: the one former finding (#141, `rocky10-container-runtime`) is
+/// RESOLVED. `classify_floor` now implements minimal MCS category-free dominance
+/// (an MCS subject with categories dominates a category-free object of the same
+/// sensitivity), so `container_t (s0:c123,c456) -> default_t:file (s0)` correctly
+/// classifies `TeAllowable` (floor `none`) instead of `MlsSuspected`. The const
+/// is kept (like `AUTH_XFAIL`) so the xfail-enumeration guard can assert it stays
+/// empty.
+const FLOOR_XFAIL: &[&str] = &[];
 
 // AUTHORITATIVE-layer FINDINGS: scenarios whose `categorize` output disagrees
 // with the manifest `authoritative_category` for a reason that is NOT the
