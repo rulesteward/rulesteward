@@ -33,12 +33,16 @@ pub enum AuditRule {
         is_dir: bool,
     },
 
-    /// Syscall rule: `-a list,action ... -S ... -F ... -k ...` (or `-A` for prepend).
+    /// Syscall rule: `-a list,action ... -S ... -F ... -C ... -k ...` (or `-A` for prepend).
     Syscall {
         list: FilterList,
         action: Action,
         syscalls: Vec<String>,
         fields: Vec<FieldFilter>,
+        /// Inter-field comparisons from `-C field op field` (auditctl(8) `-C`).
+        /// Distinct from `fields` (`-F field op value`): both operands are FIELD
+        /// names, not a field-and-literal. AND'ed with `fields` and each other.
+        field_compares: Vec<FieldComparison>,
         prepend: bool,
         key: Option<String>,
     },
@@ -114,6 +118,20 @@ pub struct FieldFilter {
     pub field: AuditField,
     pub op: CompareOp,
     pub value: String,
+}
+
+/// One `-C field op field` inter-field comparison (auditctl(8) `-C`).
+///
+/// Unlike [`FieldFilter`], BOTH operands are field names (e.g. `uid != euid`
+/// maps to `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158, flagging a privilege
+/// transition). Only the equality operators are valid: `op` is always
+/// [`CompareOp::Eq`] or [`CompareOp::Ne`] (man auditctl: "There are 2 operators
+/// supported - equal, and not equal").
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldComparison {
+    pub left: AuditField,
+    pub op: CompareOp,
+    pub right: AuditField,
 }
 
 /// The 46 `-F` field names from `/tmp/audit-src/lib/fieldtab.h:24-72`.

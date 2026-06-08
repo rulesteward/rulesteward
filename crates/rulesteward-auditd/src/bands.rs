@@ -11,7 +11,7 @@
 //!   - Control / `never` / `exclude` list: 0.
 //! - Never/exclude direction is SUPPRESSIVE (f3 section 3.5).
 
-use crate::ast::{Action, AuditRule, FilterList};
+use crate::ast::{Action, AuditField, AuditRule, FilterList};
 
 /// Volume tier for a single rule.
 ///
@@ -95,6 +95,34 @@ const LOW_SYSCALLS: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Tier demotion helpers
+// ---------------------------------------------------------------------------
+
+/// Demote one volume tier (HIGH -> MEDIUM -> LOW), saturating at LOW.
+///
+/// `Negative` is unreachable here (suppressive rules return before any demotion)
+/// but is mapped to itself so the match stays total.
+fn demote(tier: VolumeTier) -> VolumeTier {
+    match tier {
+        VolumeTier::High => VolumeTier::Medium,
+        VolumeTier::Medium | VolumeTier::Low => VolumeTier::Low,
+        VolumeTier::Negative => VolumeTier::Negative,
+    }
+}
+
+/// Whether an `arch=` field VALUE selects a 32-bit ABI.
+///
+/// `b32` is auditctl's canonical 32-bit ABI selector (libaudit.c:1419; `b64` is
+/// the 64-bit form). A rule pinned to `b32` fires far less often than its b64
+/// sibling on a modern `x86_64` host, so it earns an extra tier demotion (#161,
+/// oracle rocky9-arch-paired). Machine-name forms (`i386` etc.) are accepted by
+/// auditctl but are normalized and do not appear in generated rules.d files; they
+/// are out of scope until grounding shows them in real rules.
+fn is_32bit_arch(value: &str) -> bool {
+    value == "b32"
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -124,6 +152,7 @@ pub fn classify_rule(rule: &AuditRule) -> (VolumeTier, Direction) {
             list,
             syscalls,
             fields,
+            field_compares,
             ..
         } => {
             // Exclude-list rules suppress record types regardless of action.
@@ -143,8 +172,10 @@ pub fn classify_rule(rule: &AuditRule) -> (VolumeTier, Direction) {
                 return (VolumeTier::Medium, Direction::Additive);
             }
 
-            // Additive rule: classify by syscall name and narrowing.
-            let is_narrowed = !fields.is_empty();
+            // Additive rule: classify by syscall name and narrowing. A `-C`
+            // inter-field comparison narrows the syscall exactly like a `-F`
+            // filter (oracle rocky9-field-compare, #161), so either one counts.
+            let is_narrowed = !fields.is_empty() || !field_compares.is_empty();
 
             // Determine base tier from syscall name(s).
             let base_tier = if syscalls.is_empty() {
@@ -160,15 +191,22 @@ pub fn classify_rule(rule: &AuditRule) -> (VolumeTier, Direction) {
             };
 
             // Narrowing with -F demotes one tier (HIGH -> MEDIUM; MEDIUM -> LOW; LOW stays LOW).
-            let tier = if is_narrowed {
-                match base_tier {
-                    VolumeTier::High => VolumeTier::Medium,
-                    VolumeTier::Medium | VolumeTier::Low => VolumeTier::Low,
-                    VolumeTier::Negative => VolumeTier::Negative,
-                }
+            let mut tier = if is_narrowed {
+                demote(base_tier)
             } else {
                 base_tier
             };
+
+            // A rule narrowed to the 32-bit ABI (`-F arch=b32`) fires far less
+            // often than its b64 sibling on a modern x86_64 host, so it demotes
+            // ONE more tier (#161, oracle rocky9-arch-paired). `b64` selects the
+            // dominant ABI and is intentionally NOT extra-demoted.
+            if fields
+                .iter()
+                .any(|f| f.field == AuditField::Arch && is_32bit_arch(&f.value))
+            {
+                tier = demote(tier);
+            }
 
             (tier, Direction::Additive)
         }
@@ -233,6 +271,7 @@ mod tests {
             action: Action::Always,
             syscalls: syscalls.iter().map(ToString::to_string).collect(),
             fields,
+            field_compares: vec![],
             prepend: false,
             key: None,
         }
@@ -286,6 +325,7 @@ mod tests {
                 ff(AuditField::Fstype, CompareOp::Eq, "ext4"),
                 ff(AuditField::Auid, CompareOp::Ge, "1000"),
             ],
+            field_compares: vec![],
             prepend: false,
             key: None,
         };
@@ -307,6 +347,7 @@ mod tests {
                 action: Action::Always,
                 syscalls: vec![],
                 fields: vec![ff(AuditField::Fstype, CompareOp::Eq, fstype)],
+                field_compares: vec![],
                 prepend: false,
                 key: None,
             };
@@ -328,6 +369,7 @@ mod tests {
             action: Action::Never,
             syscalls: vec![],
             fields: vec![ff(AuditField::Fstype, CompareOp::Eq, "ext4")],
+            field_compares: vec![],
             prepend: false,
             key: None,
         };
@@ -349,6 +391,106 @@ mod tests {
             classify_rule(&rule).0,
             VolumeTier::Low,
             "no-S exit field-filter rule stays LOW (not broadened by the filesystem fix)"
+        );
+    }
+
+    // -- arch-aware demotion (#161, rocky9-arch-paired) -----------------------
+
+    /// `-F arch=b32 -S execve -F auid>=1000` classifies LOW: a 32-bit-ABI execve
+    /// fires far less often than the b64 form on a modern `x86_64` host. execve is
+    /// HIGH, the `-F` narrowing demotes to MEDIUM, and the `arch=b32` selector
+    /// demotes ONE more tier to LOW (oracle rocky9-arch-paired). Before #161 the
+    /// classifier ignored the arch field and returned MEDIUM.
+    #[test]
+    fn arch_b32_execve_narrowed_demotes_to_low() {
+        let rule = syscall_rule(
+            &["execve"],
+            vec![
+                ff(AuditField::Arch, CompareOp::Eq, "b32"),
+                ff(AuditField::Auid, CompareOp::Ge, "1000"),
+            ],
+        );
+        assert_eq!(
+            classify_rule(&rule),
+            (VolumeTier::Low, Direction::Additive),
+            "arch=b32 narrowed execve -> LOW (rare 32-bit ABI on a modern host)"
+        );
+    }
+
+    /// The b64 sibling of the paired rule stays MEDIUM: arch=b64 selects the
+    /// DOMINANT ABI and must NOT trigger the extra demotion. Guards against the
+    /// b32 fix accidentally demoting every arch-narrowed rule.
+    #[test]
+    fn arch_b64_execve_narrowed_stays_medium() {
+        let rule = syscall_rule(
+            &["execve"],
+            vec![
+                ff(AuditField::Arch, CompareOp::Eq, "b64"),
+                ff(AuditField::Auid, CompareOp::Ge, "1000"),
+            ],
+        );
+        assert_eq!(
+            classify_rule(&rule),
+            (VolumeTier::Medium, Direction::Additive),
+            "arch=b64 narrowed execve -> MEDIUM (the dominant ABI is not extra-demoted)"
+        );
+    }
+
+    /// `arch=b32` as the ONLY field still demotes twice: execve HIGH -> MEDIUM
+    /// (the arch field counts as narrowing) -> LOW (the b32 selector). Pins the
+    /// documented edge case so the intent is explicit, not incidental.
+    #[test]
+    fn arch_b32_alone_execve_demotes_to_low() {
+        let rule = syscall_rule(
+            &["execve"],
+            vec![ff(AuditField::Arch, CompareOp::Eq, "b32")],
+        );
+        assert_eq!(
+            classify_rule(&rule).0,
+            VolumeTier::Low,
+            "arch=b32 alone on execve -> LOW (narrowed then b32-demoted)"
+        );
+    }
+
+    /// The b32 demotion saturates at LOW: applied to an already-LOW syscall
+    /// (`mount`) it does not underflow past `Low`.
+    #[test]
+    fn arch_b32_on_low_syscall_saturates_low() {
+        let rule = syscall_rule(&["mount"], vec![ff(AuditField::Arch, CompareOp::Eq, "b32")]);
+        assert_eq!(
+            classify_rule(&rule).0,
+            VolumeTier::Low,
+            "arch=b32 on a LOW syscall stays LOW (demotion saturates)"
+        );
+    }
+
+    // -- -C field-comparison narrowing (#161, rocky9-field-compare) -----------
+
+    /// A `-C` inter-field comparison narrows the syscall exactly like a `-F`
+    /// filter even when there are NO `-F` fields: `-S execve -C uid!=euid` is
+    /// HIGH demoted once to MEDIUM (oracle rocky9-field-compare, rule A). Before
+    /// #161 a `-C`-only rule had empty `fields`, so `is_narrowed` was false and it
+    /// classified HIGH.
+    #[test]
+    fn field_comparison_narrows_execve_to_medium() {
+        use crate::ast::FieldComparison;
+        let rule = AuditRule::Syscall {
+            list: FilterList::Exit,
+            action: Action::Always,
+            syscalls: vec!["execve".to_string()],
+            fields: vec![],
+            field_compares: vec![FieldComparison {
+                left: AuditField::Uid,
+                op: CompareOp::Ne,
+                right: AuditField::Euid,
+            }],
+            prepend: false,
+            key: None,
+        };
+        assert_eq!(
+            classify_rule(&rule),
+            (VolumeTier::Medium, Direction::Additive),
+            "execve narrowed by a -C comparison -> MEDIUM (a -C narrows like a -F)"
         );
     }
 }

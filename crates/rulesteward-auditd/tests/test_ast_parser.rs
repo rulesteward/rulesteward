@@ -118,6 +118,7 @@ fn syscall_always_exit_execve_parses() {
             action,
             syscalls,
             fields,
+            field_compares,
             prepend,
             key,
         } => {
@@ -125,6 +126,7 @@ fn syscall_always_exit_execve_parses() {
             assert_eq!(action, &Action::Always);
             assert_eq!(syscalls, &["execve".to_string()]);
             assert!(fields.is_empty(), "no -F flags expected");
+            assert!(field_compares.is_empty(), "no -C flags expected");
             assert!(!prepend, "should be -a not -A");
             assert_eq!(key.as_deref(), Some("execve"));
         }
