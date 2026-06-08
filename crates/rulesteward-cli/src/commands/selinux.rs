@@ -18,7 +18,9 @@ use crate::output::json::render_envelope;
 // Floor (always-on) surface: parse / group / emit / build + render the report.
 // These compile in BOTH the default build and the clean Apache-2.0-only
 // `--no-default-features` build (no libsepol).
-use rulesteward_selinux::{emit_te, group_denials, parse_avc, render_human};
+use rulesteward_selinux::{
+    emit_te, group_denials, parse_avc, policy_reclassification_hint, render_human,
+};
 
 // Floor report builder, used directly only by the clean Apache-2.0-only build
 // (the feature-on path renders via `build_report_with_already_allows`).
@@ -137,6 +139,22 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
             ),
         }
     };
+
+    // #166: on the FLOOR path (no --policy) surface a hint that --policy would
+    // likely reclassify the floor's least-precise MlsSuspected/RoleSuspected
+    // declines. Output-only and emitted to STDERR so it never pollutes the stdout
+    // report (or a -o file). Not applicable to --emit-te (a distinct output mode).
+    // When --policy WAS supplied, `groups` were already reclassified, so we skip.
+    #[cfg(feature = "authoritative-categorizer")]
+    let policy_supplied = args.policy.is_some();
+    #[cfg(not(feature = "authoritative-categorizer"))]
+    let policy_supplied = false;
+    if !args.emit_te
+        && !policy_supplied
+        && let Some(hint) = policy_reclassification_hint(&groups)
+    {
+        eprintln!("{hint}");
+    }
 
     write_output(&rendered, args.output.as_deref())?;
     Ok(EXIT_CLEAN)

@@ -172,6 +172,38 @@ pub fn render_human(groups: &[DenialGroup]) -> String {
     out
 }
 
+/// A `--policy` reclassification hint for the floor path (#166).
+///
+/// The record-only FLOOR classifier is deliberately conservative: it DECLINES
+/// (suggests no allow) on `MlsSuspected`/`RoleSuspected` groups. Validated against
+/// real RHEL boot denials, two of the MOST COMMON ones (a ranged `sshd_t ->
+/// shadow_t` read; an `init_t -> unconfined_t` siginh) land in that bucket, even
+/// though the authoritative libsepol categorizer reclassifies both as
+/// `TeAllowable`. When such a group is present and the caller did NOT supply
+/// `--policy`, return a hint pointing at the authoritative path; otherwise `None`.
+///
+/// This is OUTPUT-ONLY: it does not change the conservative floor heuristic (that
+/// is deliberately out of scope - `--policy` is the correct precision path).
+#[must_use]
+pub fn policy_reclassification_hint(groups: &[DenialGroup]) -> Option<String> {
+    let n = groups
+        .iter()
+        .filter(|g| matches!(g.kind, DenialKind::MlsSuspected | DenialKind::RoleSuspected))
+        .count();
+    if n == 0 {
+        return None;
+    }
+    let plural = if n == 1 { "" } else { "s" };
+    Some(format!(
+        "hint: {n} group{plural} classified as a suspected MLS/role denial by the \
+         record-only floor (the conservative default declines to suggest an allow \
+         for these). Re-run with `--policy <binary-policy>` (e.g. \
+         /etc/selinux/<type>/policy/policy.<ver>) to check them against the \
+         authoritative policy via libsepol; this often reclassifies a common \
+         boot-time MLS/role denial as a concrete allow suggestion."
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Core: narrow allow rule formatter
 // ---------------------------------------------------------------------------
