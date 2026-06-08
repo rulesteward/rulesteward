@@ -11,7 +11,7 @@
 //!   - Control / `never` / `exclude` list: 0.
 //! - Never/exclude direction is SUPPRESSIVE (f3 section 3.5).
 
-use crate::ast::{Action, AuditField, AuditRule, FilterList};
+use crate::ast::{Action, AuditField, AuditRule, CompareOp, FilterList};
 
 /// Volume tier for a single rule.
 ///
@@ -197,14 +197,15 @@ pub fn classify_rule(rule: &AuditRule) -> (VolumeTier, Direction) {
                 base_tier
             };
 
-            // A rule narrowed to the 32-bit ABI (`-F arch=b32`) fires far less
+            // A rule PINNED to the 32-bit ABI (`-F arch=b32`) fires far less
             // often than its b64 sibling on a modern x86_64 host, so it demotes
-            // ONE more tier (#161, oracle rocky9-arch-paired). `b64` selects the
-            // dominant ABI and is intentionally NOT extra-demoted.
-            if fields
-                .iter()
-                .any(|f| f.field == AuditField::Arch && is_32bit_arch(&f.value))
-            {
+            // ONE more tier (#161, oracle rocky9-arch-paired). The pin is an
+            // EQUALITY on `b32`: `arch=b64` selects the dominant ABI and
+            // `arch!=b32` selects the dominant ABI by exclusion - neither is
+            // extra-demoted, so the operator matters, not just the value.
+            if fields.iter().any(|f| {
+                f.field == AuditField::Arch && f.op == CompareOp::Eq && is_32bit_arch(&f.value)
+            }) {
                 tier = demote(tier);
             }
 
@@ -461,6 +462,28 @@ mod tests {
             classify_rule(&rule).0,
             VolumeTier::Low,
             "arch=b32 on a LOW syscall stays LOW (demotion saturates)"
+        );
+    }
+
+    /// `-F arch!=b32` selects the NON-32-bit (dominant) ABI, exactly like
+    /// `arch=b64`, so it must NOT trigger the extra demotion: execve HIGH ->
+    /// MEDIUM (narrowed) and stops there. The b32 demotion keys on PINNING to
+    /// 32-bit (`arch == b32`), so it must inspect the operator, not just the
+    /// value string `"b32"`. (Adversarial review #161: an operator-blind check
+    /// would wrongly demote this to LOW.)
+    #[test]
+    fn arch_ne_b32_execve_stays_medium() {
+        let rule = syscall_rule(
+            &["execve"],
+            vec![
+                ff(AuditField::Arch, CompareOp::Ne, "b32"),
+                ff(AuditField::Auid, CompareOp::Ge, "1000"),
+            ],
+        );
+        assert_eq!(
+            classify_rule(&rule),
+            (VolumeTier::Medium, Direction::Additive),
+            "arch!=b32 selects the dominant ABI -> MEDIUM (only arch=b32 extra-demotes)"
         );
     }
 
