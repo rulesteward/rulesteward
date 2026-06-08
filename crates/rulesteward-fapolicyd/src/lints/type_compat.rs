@@ -12,10 +12,14 @@
 //!     `Permissive` / `NoSet`. Most are version-invariant, but `pid`/`ppid` and
 //!     `gid` DIVERGE across the 1.3.2 -> 1.4.x boundary (resolved per-version by
 //!     [`crate::attrs::type_category_for`]): pid/ppid are `Unsigned` on rhel8
-//!     (accept a numeric set) but `Signed` on rhel9+ (reject every set); `gid`
-//!     is `Permissive` on rhel8 but `Unsigned` on rhel9+ (reject string/mixed).
-//!   * A `%set`'s type is inferred version-DIVERGENTLY: rhel8 (1.3.2) by the
-//!     first element, rhel9/rhel10 (1.4.x) STRING-if-any-non-numeric.
+//!     (accept a positive-int set) but `Signed` on rhel9+ (accept ONLY a SIGNED
+//!     set - all ints with a negative member - rejecting positive-int and string
+//!     sets); `gid` is `Permissive` on rhel8 but `Unsigned` on rhel9+ (reject
+//!     string/mixed).
+//!   * A `%set`'s type is inferred version-DIVERGENTLY into UNSIGNED / SIGNED /
+//!     STRING ([`SetType`]): rhel8 (1.3.2) by the first element (no SIGNED type);
+//!     rhel9/rhel10 (1.4.x) STRING if any member is non-integer, else SIGNED if
+//!     any is negative, else UNSIGNED.
 //!   * Firing gates on OUTCOME-invariance: under an explicit `--target`, fire
 //!     iff the mismatch holds for that version; under `None`, fire iff it holds
 //!     on ALL supported versions (so universal mismatches fire without
@@ -128,35 +132,68 @@ fn fires_for(values: &[String], key: &str, version: TargetVersion) -> bool {
     };
     match category {
         AttrTypeCategory::Permissive | AttrTypeCategory::NoSet => false,
-        _ => compat_mismatch(infer_numeric(values, version), category),
+        _ => compat_mismatch(infer_set_type(values, version), category),
     }
 }
 
-/// Whether a set inferred as `numeric` (vs string) is type-incompatible with an
-/// attribute of `category`. `Permissive`/`NoSet` never reach here (filtered in
-/// `walk`); they return `false` to keep the match total.
-fn compat_mismatch(numeric: bool, category: AttrTypeCategory) -> bool {
+/// fapolicyd's three-way set value type. A `%set` assigned to a numeric attribute
+/// is accepted iff its inferred type EXACTLY matches the attribute's expected
+/// type (UNSIGNED `uid`/rhel8-`pid`/rhel9-`gid`; SIGNED rhel9-`pid`; STRING `exe`
+/// etc.). Grounded 2026-06-07 against the daemon (#163): a SIGNED set (a negative
+/// member) loads on a SIGNED `pid=` but an UNSIGNED set does not, and vice versa.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetType {
+    /// Every member is a non-negative integer (e.g. `1,2,3`).
+    Unsigned,
+    /// Every member is an integer and at least one is negative (e.g. `-1`, `1,-2`).
+    Signed,
+    /// At least one member is not an integer (e.g. `abc`, `1,abc`).
+    Str,
+}
+
+/// Whether a set of `set_type` is type-incompatible with an attribute of
+/// `category` (fapolicyd rejects it at load time). The numeric categories require
+/// an EXACT type match; `Permissive`/`NoSet` never reach here (filtered in
+/// `fires_for`) but return `false` to keep the match total.
+fn compat_mismatch(set_type: SetType, category: AttrTypeCategory) -> bool {
     match category {
-        // Unsigned accepts a numeric set; a string set is rejected.
-        AttrTypeCategory::Unsigned => !numeric,
-        // Signed rejects ANY set: a numeric set types unsigned on the subject
-        // side (mismatch), and a string set is not signed either.
-        AttrTypeCategory::Signed => true,
-        // String accepts a string set; a numeric set is rejected.
-        AttrTypeCategory::Str => numeric,
+        AttrTypeCategory::Unsigned => set_type != SetType::Unsigned,
+        AttrTypeCategory::Signed => set_type != SetType::Signed,
+        AttrTypeCategory::Str => set_type != SetType::Str,
         AttrTypeCategory::Permissive | AttrTypeCategory::NoSet => false,
     }
 }
 
-/// fapolicyd's version-divergent set-type inference: rhel8 (1.3.2) types a set by
-/// its FIRST element; rhel9/rhel10 (1.4.x) type it STRING if ANY element is
-/// non-numeric. Returns `true` when the set is numeric-typed under `version`.
-/// `values` is never empty (the caller skips empty sets).
-fn infer_numeric(values: &[String], version: TargetVersion) -> bool {
+/// fapolicyd's version-divergent set-type inference (grounded 2026-06-07):
+/// rhel8 (1.3.2) types a set by its FIRST element only and has no SIGNED type (a
+/// leading `-` makes the first element a non-INT -> STRING); rhel9/rhel10 (1.4.x)
+/// type by ALL elements: STRING if any is non-integer, else SIGNED if any is
+/// negative, else UNSIGNED. `values` is never empty (the caller skips empty sets).
+fn infer_set_type(values: &[String], version: TargetVersion) -> SetType {
     match version {
-        TargetVersion::Rhel8 => values.first().is_some_and(|v| looks_int(v)),
-        TargetVersion::Rhel9 | TargetVersion::Rhel10 => values.iter().all(|v| looks_int(v)),
+        TargetVersion::Rhel8 => {
+            if values.first().is_some_and(|v| looks_int(v)) {
+                SetType::Unsigned
+            } else {
+                SetType::Str
+            }
+        }
+        TargetVersion::Rhel9 | TargetVersion::Rhel10 => {
+            if !values.iter().all(|v| looks_signed_int(v)) {
+                SetType::Str
+            } else if values.iter().any(|v| v.starts_with('-')) {
+                SetType::Signed
+            } else {
+                SetType::Unsigned
+            }
+        }
     }
+}
+
+/// Whether `v` is an integer fapolicyd 1.4.x would accept as a SIGNED or UNSIGNED
+/// set member: an optional leading `-` followed by [`looks_int`] digits.
+fn looks_signed_int(v: &str) -> bool {
+    looks_int(v.strip_prefix('-').unwrap_or(v))
 }
 
 /// The fapd-E07 diagnostic message. Under an explicit `--target` it names the
@@ -199,12 +236,14 @@ mod tests {
     //!   * Attribute type categories: UNSIGNED `uid`/`auid`/`sessionid`;
     //!     STRING `comm`/`exe`/`dir`/`ftype`/`path`/`device`/`filehash`/
     //!     `sha256hash`; NO-SET `pattern`/`trust`. VERSION-DIVERGENT (#163):
-    //!     `pid`/`ppid` are UNSIGNED on rhel8 (accept a numeric set) but SIGNED
-    //!     on rhel9+ (reject every set); `gid` is PERMISSIVE on rhel8 (never
-    //!     flagged) but UNSIGNED on rhel9+ (a string/mixed set is flagged).
-    //!   * Set-type inference is VERSION-DIVERGENT: rhel8 (1.3.2) types by the
-    //!     FIRST element; rhel9/rhel10 (1.4.x) type STRING if ANY element is
-    //!     non-numeric.
+    //!     `pid`/`ppid` are UNSIGNED on rhel8 (accept a positive-int set) but
+    //!     SIGNED on rhel9+ (accept ONLY a signed-int set, reject positive-int and
+    //!     string sets); `gid` is PERMISSIVE on rhel8 (never flagged) but UNSIGNED
+    //!     on rhel9+ (a string/mixed set is flagged).
+    //!   * Set-type inference is VERSION-DIVERGENT + three-way (UNSIGNED / SIGNED
+    //!     / STRING): rhel8 (1.3.2) types by the FIRST element (no SIGNED type);
+    //!     rhel9/rhel10 (1.4.x) STRING if any member is non-integer, else SIGNED
+    //!     if any is negative, else UNSIGNED.
     //!   * Firing gates on OUTCOME-invariance: under `--target Some(v)`, fire iff
     //!     the mismatch holds for v; under `None`, fire iff it holds for ALL of
     //!     rhel8/rhel9/rhel10 (so universal mismatches fire without `--target`,
@@ -611,6 +650,64 @@ mod tests {
                     e07_count(&diags),
                     1,
                     "string set on {attr}= must fire fapd-E07 under {ctx:?}; got codes={:?}",
+                    codes(&diags),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn negative_int_set_on_pid_ppid_matches_daemon_signedness() {
+        // GROUNDED 2026-06-07 (docker, fapolicyd 1.3.2-el8 vs 1.4.5-el9_8/el10;
+        // found by the #163 impl-aware adversarial review): fapolicyd's set-type
+        // inference is three-way (UNSIGNED / SIGNED / STRING). pid/ppid are SIGNED
+        // on 1.4.5, so they ACCEPT a SIGNED set (all ints, >=1 negative) and reject
+        // an UNSIGNED set (all positive). A `%t=-1,-2` set types SIGNED on 1.4.5
+        // (LOADS -> no fire) but STRING-by-first-element on 1.3.2 (rejected "to
+        // INT" -> fires). The old `Signed => reject-every-set` shortcut fired on
+        // EVERY context here, a false positive on rhel9/rhel10.
+        for attr in ["pid", "ppid"] {
+            let src = format!("%t=-1,-2\nallow {attr}=%t : all\n");
+            let r8 = lint_src(&src, Some(TargetVersion::Rhel8));
+            assert_eq!(
+                e07_count(&r8),
+                1,
+                "negative-int set on {attr}= must fire under rhel8 (1.3.2 types it \
+                 STRING by first element); got codes={:?}",
+                codes(&r8),
+            );
+            for ctx in [
+                None,
+                Some(TargetVersion::Rhel9),
+                Some(TargetVersion::Rhel10),
+            ] {
+                let diags = lint_src(&src, ctx);
+                assert_eq!(
+                    e07_count(&diags),
+                    0,
+                    "negative-int set on {attr}= must NOT fire under {ctx:?} \
+                     (fapolicyd 1.4.5 types it SIGNED, which pid/ppid accept; not a \
+                     universal mismatch so suppressed under None); got codes={:?}",
+                    codes(&diags),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_sign_int_set_on_pid_ppid_never_fires() {
+        // `%t=1,-2` LOADS on every version: 1.3.2 types by the first element (`1`
+        // is INT); 1.4.5 types the whole set SIGNED (a negative member), which
+        // pid/ppid accept. So it never fires under any context.
+        for attr in ["pid", "ppid"] {
+            let src = format!("%t=1,-2\nallow {attr}=%t : all\n");
+            for ctx in ALL_CONTEXTS {
+                let diags = lint_src(&src, ctx);
+                assert_eq!(
+                    e07_count(&diags),
+                    0,
+                    "mixed-sign set on {attr}= must NEVER fire under {ctx:?} \
+                     (loads on all versions); got codes={:?}",
                     codes(&diags),
                 );
             }

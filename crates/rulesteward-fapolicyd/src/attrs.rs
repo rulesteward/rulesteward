@@ -70,10 +70,11 @@ pub enum AttrTypeCategory {
     /// Unsigned integer (`uid`, `auid`, `sessionid` always; `pid`/`ppid` on
     /// rhel8; `gid` on rhel9+): accepts a numeric set, rejects a string set.
     Unsigned,
-    /// Signed integer (`pid`, `ppid` on rhel9+/1.4.x): fapolicyd types a
-    /// positive-int set as UNSIGNED on the subject side, so EVEN `1,2,3` is
-    /// rejected here - no normal set ever satisfies a signed attribute (a
-    /// grounded fapolicyd quirk). On rhel8 (1.3.2) pid/ppid are `Unsigned`.
+    /// Signed integer (`pid`, `ppid` on rhel9+/1.4.x): accepts ONLY a SIGNED set
+    /// (all integers with at least one negative member, e.g. `-1` or `1,-2`). A
+    /// positive-int set types UNSIGNED and a non-integer set types STRING, so both
+    /// are rejected ("UNSIGNED/STRING ... SIGNED expected"). On rhel8 (1.3.2)
+    /// pid/ppid are `Unsigned` (first-element typing, no SIGNED type).
     Signed,
     /// String (`comm`, `exe` subject; `dir`, `ftype`, `path`, `device`,
     /// `filehash`, `sha256hash` object/either): accepts a string set, rejects a
