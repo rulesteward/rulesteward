@@ -560,6 +560,10 @@ fn fmt_action(action: &rulesteward_auditd::Action) -> &'static str {
 fn fmt_field(field: &rulesteward_auditd::AuditField) -> &'static str {
     use rulesteward_auditd::AuditField;
     match field {
+        AuditField::A0 => "a0",
+        AuditField::A1 => "a1",
+        AuditField::A2 => "a2",
+        AuditField::A3 => "a3",
         AuditField::Arch => "arch",
         AuditField::Auid => "auid",
         AuditField::DevMajor => "devmajor",
@@ -632,6 +636,21 @@ mod tests {
         assert_eq!(tier_str(VolumeTier::Medium), "medium");
         assert_eq!(tier_str(VolumeTier::Low), "low");
         assert_eq!(tier_str(VolumeTier::Negative), "negative");
+    }
+
+    #[test]
+    fn fmt_field_renders_syscall_argument_fields_a0_to_a3() {
+        // #164: the a0..a3 syscall-argument fields must render their fieldtab.h
+        // names (guards a copy-paste typo like A2 => "a1" in the fmt_field arms,
+        // and confirms they reach the renderer at all).
+        use super::fmt_field;
+        use rulesteward_auditd::AuditField;
+        assert_eq!(fmt_field(&AuditField::A0), "a0");
+        assert_eq!(fmt_field(&AuditField::A1), "a1");
+        assert_eq!(fmt_field(&AuditField::A2), "a2");
+        assert_eq!(fmt_field(&AuditField::A3), "a3");
+        // Anchor: an existing field still renders (guards an accidental reorder).
+        assert_eq!(fmt_field(&AuditField::Arch), "arch");
     }
 
     // -- #64: `auditd cost --format csv` (per-rule table ONLY) ----------------

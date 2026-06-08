@@ -120,6 +120,12 @@ pub struct FieldFilter {
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuditField {
+    // Syscall argument registers a0..a3 (`-F a0=...`): narrow a syscall by an
+    // argument value (e.g. `ioctl` request, `socketcall`/`socket` family). #164.
+    A0,
+    A1,
+    A2,
+    A3,
     Arch,
     Auid,
     DevMajor,
