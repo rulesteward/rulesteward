@@ -678,6 +678,27 @@ mod tests {
         assert_eq!(hex, KNOWN_SHA256);
     }
 
+    /// The `fuzz-targets` shim `fuzz_hooks::parse_trust_value_fuzz` must be a
+    /// faithful pass-through to `parse_trust_value` (it exists only so the
+    /// nightly fuzz crate can reach the crate-private parser). Compiled only
+    /// under the `fuzz-targets` feature, where the shim itself is compiled, so it
+    /// kills the constant-return mutants on the shim (which would otherwise
+    /// return `Default::default()` / size 0 or 1 / empty-or-"xyzzy" instead of
+    /// the real parsed tuple). The default-features mutation gate never compiles
+    /// the shim, so those same mutants are documented as cfg-phantoms in
+    /// `.cargo/mutants.toml`; this test is what actually exercises the shim.
+    #[cfg(feature = "fuzz-targets")]
+    #[test]
+    fn parse_trust_value_fuzz_shim_matches_parser() {
+        // Asymmetric (src != size) so a field-swap/constant mutant cannot pass.
+        let raw = value_bytes(2, 987_654, KNOWN_SHA256);
+        let (src, size, hex) = super::fuzz_hooks::parse_trust_value_fuzz(&raw)
+            .expect("well-formed value must parse through the shim");
+        assert_eq!(src, TrustSource::FileDb, "src int 2 must map to FileDb");
+        assert_eq!(size, 987_654, "size field must round-trip through the shim");
+        assert_eq!(hex, KNOWN_SHA256, "sha256 hex field must round-trip");
+    }
+
     #[test]
     fn parse_trust_value_wrong_field_count_is_malformed() {
         // Only two fields (missing the hash).

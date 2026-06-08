@@ -165,6 +165,37 @@ exclude_globs = [
 # The integration test `filehash_present_but_unhashable_is_denied_not_widened`
 # (simulate_trustdb_resolution.rs) self-skips under root (chmod 000 is a no-op
 # when DAC is bypassed); the unit tests fire regardless of uid.
+#
+# `parse_audit_event` (fanotify.rs) skips blank / "----" separator lines with
+# `if trimmed.is_empty() || trimmed == "----" { continue; }`. The `|| -> &&`
+# mutant changes the guard to "skip only if BOTH empty AND equal to '----'",
+# which is never true (an empty string cannot equal "----"). With the mutant the
+# blank/"----" lines are no longer skipped and fall through the three
+# `if trimmed.contains("type=FANOTIFY"|"type=SYSCALL"|"type=PATH")` arms -- none
+# of which match a blank or "----" line -- so no field is assigned and the parsed
+# AuditEvent is byte-identical. Verified: with the mutant applied, all 518
+# fapolicyd lib tests + the 22 explain_fanotify_parse integration tests pass.
+# Genuine equivalent mutant (same separator-skip-is-an-optimisation shape already
+# documented above for doctor.rs::parse_fanotify_denials). NOTE: the nightly
+# --test-workspace run reports this mutant as a TIMEOUT (not a survivor) under
+# 8-shard + concurrent load; excluding the equivalent removes that flake too.
+#
+# `fuzz_hooks::parse_trust_value_fuzz` (trustdb.rs) is a `#[doc(hidden)]` shim
+# behind the non-default `fuzz-targets` feature; it only re-exports the
+# crate-private `parse_trust_value` for the nightly fuzz crate. Its four
+# constant-return mutants are unkillable by construction:
+#   - Under the gate's DEFAULT features the module is cfg'd OUT, so the mutated
+#     source line is never compiled; the binary is identical and every test
+#     passes -> cargo-mutants reports "missed" (a phantom, same out-of-compiled-
+#     scope class as the excluded selinux-sys FFI).
+#   - Under `--features fuzz-targets` the mutants are UNVIABLE: they construct the
+#     tuple with `Default::default()` for `TrustSource`, which does not implement
+#     `Default` (E0277), so they fail to compile.
+# Either way no test can kill them. The shim's real behaviour IS covered, under
+# the feature it lives in, by
+# `trustdb::tests::parse_trust_value_fuzz_shim_matches_parser` (asserts the shim
+# round-trips a well-formed value through `parse_trust_value`). Excluded by name
+# (not `#[mutants::skip]`) so the rationale stays in reviewable config.
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
@@ -207,9 +238,19 @@ exclude_re = [
     'replace \|\| with && in parse_fanotify_denials',
     'replace ruleset_uses_filehash -> bool with true',
     'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
+    'replace \|\| with && in parse_audit_event',
+    'replace fuzz_hooks::parse_trust_value_fuzz',
 ]
 
-# Tests are mixed unit + proptest + insta; proptest property runs especially
-# can be slow, so generous timeout (90s) avoids false-positive "timed out"
-# survivors that aren't really survivors.
-minimum_test_timeout = 90.0
+# Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
+# `timeout-minutes` in mutants.yml). cargo-mutants auto-sets the per-mutant test
+# timeout to max(this floor, baseline_test_time x multiplier); the floor binds here.
+#
+# The nightly gate runs `--test-workspace true`, so EVERY mutant re-runs the entire
+# workspace suite (unit + proptest + insta). That takes ~100-110s/mutant, which
+# exceeded the old 90s floor -> cargo-mutants killed every mutant as a false TIMEOUT
+# (exit 3) before it could be evaluated, so all 8 shards failed without testing a
+# single mutant. Raise the floor to 180s: comfortably above the observed
+# workspace-suite duration (with headroom for proptest variance / runner load),
+# while still bounding a genuinely hung mutant.
+minimum_test_timeout = 180.0
