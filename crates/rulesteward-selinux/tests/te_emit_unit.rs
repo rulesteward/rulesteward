@@ -472,19 +472,34 @@ fn test_section_order_header_require_allow() {
 // produce allow rules.
 // ---------------------------------------------------------------------------
 
-/// Empty group slice must produce well-formed output (no panic) with no allow rules.
-/// The module header must still be present.
+/// #165: an empty group slice must NOT produce a fake, uncompilable module. A
+/// bare `module NAME 1.0;` and an empty `require {}` are BOTH rejected by
+/// checkmodule, so zero denials emit an explanatory comment instead. No panic, no
+/// `module` declaration, no `require` block, no `allow` rules.
 #[test]
-fn test_empty_groups_no_panic_no_allow() {
+fn test_empty_groups_emit_comment_not_fake_module() {
     let te = emit_te(&[], Some("empty_mod"));
     // Must not panic (tested by getting here).
     assert!(
-        te.contains("module empty_mod 1.0;"),
-        "empty input must still produce a module header line"
+        te.starts_with('#'),
+        "zero-denial output must be an explanatory comment, got:\n{te}"
+    );
+    assert!(
+        !te.contains("module "),
+        "zero-denial output must NOT declare a module (it would not compile):\n{te}"
+    );
+    assert!(
+        !te.contains("require {"),
+        "zero-denial output must omit the require block (an empty `require {{}}` is \
+         uncompilable):\n{te}"
     );
     assert!(
         !te.contains("allow "),
-        "empty input must produce no allow rules"
+        "zero-denial output must produce no allow rules:\n{te}"
+    );
+    assert!(
+        te.ends_with('\n'),
+        "output must end with a trailing newline (machine-output invariant):\n{te}"
     );
 }
 
