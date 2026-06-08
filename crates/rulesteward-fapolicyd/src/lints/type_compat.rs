@@ -171,7 +171,14 @@ fn compat_mismatch(set_type: SetType, category: AttrTypeCategory) -> bool {
 fn infer_set_type(values: &[String], version: TargetVersion) -> SetType {
     match version {
         TargetVersion::Rhel8 => {
-            if values.first().is_some_and(|v| looks_int(v)) {
+            // 1.3.2 types a set by its FIRST element and types that element INT iff
+            // its first CHARACTER is an ASCII digit (isdigit-style): `1abc`/`12`
+            // -> INT (load); `-1`/`+1`/`abc` -> STRING. It has no SIGNED type.
+            let first_is_intish = values
+                .first()
+                .and_then(|v| v.bytes().next())
+                .is_some_and(|b| b.is_ascii_digit());
+            if first_is_intish {
                 SetType::Unsigned
             } else {
                 SetType::Str
@@ -755,6 +762,62 @@ mod tests {
                     codes(&lint_src(&src, ctx)),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn partial_int_first_member_types_intish_on_rhel8() {
+        // GROUNDED 2026-06-07 (found by the #163 adversarial review, round 3):
+        // fapolicyd 1.3.2 types a set's FIRST element INT iff its first CHARACTER
+        // is a digit (isdigit-style), so a partial-int like `1abc` types INT on
+        // rhel8 (LOADS on an integer attr) but STRING on rhel9/rhel10 (all-element
+        // typing). The old all-digits `looks_int` rhel8 check fired a false
+        // positive on rhel8/None.
+        // Integer attrs: `1abc` loads on rhel8 (no fire) but is rejected on
+        // rhel9/10 (fire); divergent -> suppressed under None.
+        for attr in ["pid", "uid", "sessionid"] {
+            let src = format!("%t=1abc\nallow {attr}=%t : all\n");
+            for ctx in [None, Some(TargetVersion::Rhel8)] {
+                assert_eq!(
+                    e07_count(&lint_src(&src, ctx)),
+                    0,
+                    "`1abc` on {attr}= must LOAD on rhel8 (first char is a digit) -> \
+                     no fire under {ctx:?}; got codes={:?}",
+                    codes(&lint_src(&src, ctx)),
+                );
+            }
+            for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+                assert_eq!(
+                    e07_count(&lint_src(&src, ctx)),
+                    1,
+                    "`1abc` on {attr}= must fire on {ctx:?} (1.4.5 types it STRING); \
+                     got codes={:?}",
+                    codes(&lint_src(&src, ctx)),
+                );
+            }
+        }
+        // STRING attr `exe`: an INT-by-first-element set is rejected on rhel8
+        // (fire) but loads on rhel9/10 as a STRING set (no fire).
+        let exe = "%t=1abc\nallow exe=%t : all\n";
+        assert_eq!(
+            e07_count(&lint_src(exe, Some(TargetVersion::Rhel8))),
+            1,
+            "`1abc` on exe= must fire under rhel8 (INT-by-first-element on a STRING \
+             attr); got codes={:?}",
+            codes(&lint_src(exe, Some(TargetVersion::Rhel8))),
+        );
+        for ctx in [
+            None,
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ] {
+            assert_eq!(
+                e07_count(&lint_src(exe, ctx)),
+                0,
+                "`1abc` on exe= must NOT fire under {ctx:?} (STRING set on STRING \
+                 attr on 1.4.5); got codes={:?}",
+                codes(&lint_src(exe, ctx)),
+            );
         }
     }
 
