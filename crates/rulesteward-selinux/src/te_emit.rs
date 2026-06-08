@@ -52,9 +52,21 @@ const DEFAULT_MODULE_NAME: &str = "local";
 /// - [`DenialKind::Permissive`] groups are silently skipped (f4 §2.5
 ///   invariant 6): the access was not actually blocked, so auto-suggesting an
 ///   `allow` could grant unintended access.
+/// - Zero denial groups produce an explanatory comment, NOT a module: a bare
+///   `module NAME 1.0;` and an empty `require {}` are both rejected by
+///   checkmodule, so there is no valid no-op module to emit (#165).
 /// - The output always ends with a trailing newline.
 #[must_use]
 pub fn emit_te(groups: &[DenialGroup], module_name: Option<&str>) -> String {
+    // A checkmodule-valid module needs a non-empty body: a bare `module NAME 1.0;`
+    // is rejected ("syntax error"), as is an empty `require {}` (confirmed on
+    // el8/el9/el10). With zero denial groups there is nothing to require or allow,
+    // so emit an explanatory comment instead of a fake, uncompilable module (#165).
+    // The trailing newline preserves the machine-output invariant.
+    if groups.is_empty() {
+        return "# rulesteward: no SELinux denials to allow; nothing to emit.\n".to_string();
+    }
+
     let name = module_name.unwrap_or(DEFAULT_MODULE_NAME);
 
     // -- Collect require-block items (one pass over ALL groups) ---------------
@@ -82,8 +94,9 @@ pub fn emit_te(groups: &[DenialGroup], module_name: Option<&str>) -> String {
     // 1. Header
     let _ = writeln!(out, "module {name} 1.0;");
 
-    // 2. Require block (always emitted; checkmodule accepts an empty require
-    //    block, which is what we produce for zero-group input).
+    // 2. Require block. `groups` is non-empty here (zero-group input returned the
+    //    comment above), and every group contributes a source and target type, so
+    //    `types` always has content - the require block is never empty.
     out.push('\n');
     out.push_str("require {\n");
     for t in &types {

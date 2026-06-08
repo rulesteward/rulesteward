@@ -415,7 +415,9 @@ mod tests {
         // `device=` on the SUBJECT side is object-only on 1.4.x (rhel9/rhel10)
         // -> fapd-E06. Message names `device`, the version, and the target.
         for (t, ver) in [
-            (TargetVersion::Rhel9, "1.4.3"),
+            // RHEL 9.8 rebased fapolicyd 1.4.3 -> 1.4.5 (re-grounded 2026-06-07),
+            // so rhel9 and rhel10 now both report 1.4.5.
+            (TargetVersion::Rhel9, "1.4.5"),
             (TargetVersion::Rhel10, "1.4.5"),
         ] {
             let diags = run(6, vec![kv("device", "/dev/sda")], vec![Attr::All], Some(t));

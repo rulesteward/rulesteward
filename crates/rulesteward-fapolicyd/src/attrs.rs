@@ -67,19 +67,22 @@ pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 /// separately) diverges across versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrTypeCategory {
-    /// Unsigned integer (`uid`, `auid`, `sessionid`): accepts a numeric set,
-    /// rejects a string set.
+    /// Unsigned integer (`uid`, `auid`, `sessionid` always; `pid`/`ppid` on
+    /// rhel8; `gid` on rhel9+): accepts a numeric set, rejects a string set.
     Unsigned,
-    /// Signed integer (`pid`, `ppid`): fapolicyd types a positive-int set as
-    /// UNSIGNED on the subject side, so EVEN `1,2,3` is rejected here - no normal
-    /// set ever satisfies a signed attribute (a grounded fapolicyd quirk).
+    /// Signed integer (`pid`, `ppid` on rhel9+/1.4.x): accepts ONLY a SIGNED set
+    /// (all integers with at least one negative member, e.g. `-1` or `1,-2`). A
+    /// positive-int set types UNSIGNED and a non-integer set types STRING, so both
+    /// are rejected ("UNSIGNED/STRING ... SIGNED expected"). On rhel8 (1.3.2)
+    /// pid/ppid are `Unsigned` (first-element typing, no SIGNED type).
     Signed,
     /// String (`comm`, `exe` subject; `dir`, `ftype`, `path`, `device`,
     /// `filehash`, `sha256hash` object/either): accepts a string set, rejects a
     /// numeric set.
     Str,
-    /// Permissive (`gid`): accepts group NAMES as well as numbers, so string,
-    /// numeric, and mixed sets all load - fapd-E07 never flags it.
+    /// Permissive (`gid` on rhel8/1.3.2): accepts group NAMES as well as numbers,
+    /// so string, numeric, and mixed sets all load - fapd-E07 never flags it.
+    /// On rhel9+ (1.4.x) `gid` is `Unsigned` (a string/mixed set IS flagged).
     Permissive,
     /// No set accepted (`pattern`, `trust`): a `%set` here is already an Error via
     /// fapd-E04 (macro in `pattern=`/`trust=`), so fapd-E07 DEFERS to fapd-E04
@@ -113,6 +116,12 @@ const NO_SET_ATTRS: &[&str] = &["pattern", "trust"];
 
 /// The fapolicyd value-type category for `name`, or `None` for an unknown
 /// attribute (unknown names are fapd-E01's concern) or the special `all` token.
+///
+/// This is the version-INVARIANT baseline (it reflects the fapolicyd 1.4.x view
+/// for `pid`/`ppid` = `Signed` and the 1.3.2 view for `gid` = `Permissive`).
+/// `pid`/`ppid`/`gid` are actually version-DIVERGENT in category; callers that
+/// must be version-correct (fapd-E07) use [`type_category_for`] instead. The
+/// invariant attributes (`Unsigned`/`Str`/`NoSet`) are identical across both.
 #[must_use]
 pub fn type_category(name: &str) -> Option<AttrTypeCategory> {
     if UNSIGNED_ATTRS.contains(&name) {
@@ -128,6 +137,43 @@ pub fn type_category(name: &str) -> Option<AttrTypeCategory> {
     } else {
         None
     }
+}
+
+/// The fapolicyd value-type category for `name` under a specific `version`.
+///
+/// Most attributes are version-invariant and delegate to [`type_category`].
+/// `pid`/`ppid` and `gid` diverge across the 1.3.2 -> 1.4.x boundary, grounded
+/// 2026-06-07 via `rpm -q fapolicyd` on fapolicyd8 (1.3.2-el8) and fapolicyd9
+/// (1.4.5-el9_8), reproduced with `fapolicyd --debug --permissive` (see #163 and
+/// `.private-docs/fapd-e07-grounding.md`):
+///
+/// - `pid`/`ppid`: `Unsigned` on rhel8 (1.3.2 accepts a positive-int set, rejects
+///   a string set), `Signed` on rhel9/rhel10 (1.4.5 rejects EVERY set because a
+///   positive-int set types UNSIGNED, not SIGNED).
+/// - `gid`: `Permissive` on rhel8 (1.3.2 accepts group NAMES, so any set loads),
+///   `Unsigned` on rhel9/rhel10 (1.4.5 accepts a numeric set but rejects a
+///   string/mixed set as STRING != UNSIGNED).
+#[must_use]
+pub fn type_category_for(
+    name: &str,
+    version: crate::version::TargetVersion,
+) -> Option<AttrTypeCategory> {
+    use crate::version::TargetVersion;
+    if SIGNED_ATTRS.contains(&name) {
+        // pid/ppid: INT/UNSIGNED on 1.3.2, SIGNED on 1.4.x.
+        return Some(match version {
+            TargetVersion::Rhel8 => AttrTypeCategory::Unsigned,
+            TargetVersion::Rhel9 | TargetVersion::Rhel10 => AttrTypeCategory::Signed,
+        });
+    }
+    if PERMISSIVE_ATTRS.contains(&name) {
+        // gid: PERMISSIVE on 1.3.2, UNSIGNED on 1.4.x.
+        return Some(match version {
+            TargetVersion::Rhel8 => AttrTypeCategory::Permissive,
+            TargetVersion::Rhel9 | TargetVersion::Rhel10 => AttrTypeCategory::Unsigned,
+        });
+    }
+    type_category(name)
 }
 
 #[must_use]

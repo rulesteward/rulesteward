@@ -459,6 +459,10 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
 /// Covers all 46 names from `fieldtab.h:24-72`.
 fn parse_audit_field(s: &str) -> Option<AuditField> {
     match s {
+        "a0" => Some(AuditField::A0),
+        "a1" => Some(AuditField::A1),
+        "a2" => Some(AuditField::A2),
+        "a3" => Some(AuditField::A3),
         "arch" => Some(AuditField::Arch),
         "auid" | "loginuid" => Some(AuditField::Auid),
         "devmajor" => Some(AuditField::DevMajor),
@@ -567,6 +571,34 @@ mod tests {
         // an explicit len-boundary regression anchor.
         let parsed = parse_line("-a exit,always -S open -k 'x'", 1);
         assert!(parsed.is_ok(), "two-char balanced quote should parse");
+    }
+
+    // --- #164: syscall-argument fields a0..a3 ---
+    #[test]
+    fn parses_syscall_argument_filters_a0_through_a3() {
+        // -F a0..a3 are real fieldtab.h names used by CIS/STIG rules to narrow a
+        // syscall by argument (e.g. `ioctl` by request, `socket` by family). They
+        // must parse into FieldFilters, not fail with "unknown field" (exit 5).
+        use crate::ast::{AuditField, CompareOp};
+        for (name, field) in [
+            ("a0", AuditField::A0),
+            ("a1", AuditField::A1),
+            ("a2", AuditField::A2),
+            ("a3", AuditField::A3),
+        ] {
+            let line = format!("-a always,exit -S ioctl -F {name}=2 -k probe");
+            let parsed = parse_line(&line, 1)
+                .unwrap_or_else(|e| panic!("`-F {name}=2` must parse; got error: {e:?}"));
+            match parsed {
+                AuditRule::Syscall { fields, .. } => assert!(
+                    fields
+                        .iter()
+                        .any(|f| f.field == field && f.op == CompareOp::Eq && f.value == "2"),
+                    "`-F {name}=2` must produce a {field:?} FieldFilter; got {fields:?}"
+                ),
+                other => panic!("expected Syscall rule for `-F {name}=2`, got {other:?}"),
+            }
+        }
     }
 
     // --- -D control rule ---

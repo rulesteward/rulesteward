@@ -240,3 +240,45 @@ fn test_default_module_name_compiles() {
          checkmodule stderr:\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Anchor F: All-Permissive module compiles (#165).
+//
+// `checkmodule` REJECTS an empty `require {}` block ("local.te:4:ERROR 'syntax
+// error' at token '}'", reproduced on el8/el9/el10) AND a bare `module NAME 1.0;`.
+// The interesting non-degenerate case is an all-Permissive group set: it produces
+// NO `allow` rules but DOES populate the require block, so it must still compile.
+// (The truly-zero-denial case emits an explanatory comment, validated structurally
+// in `te_emit_unit::test_empty_groups_emit_comment_not_fake_module`.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_all_permissive_module_compiles() {
+    let Some(_) = find_checkmodule() else {
+        eprintln!("SKIP test_all_permissive_module_compiles: checkmodule not in PATH");
+        return;
+    };
+    // A Permissive group: emit_te skips its `allow` rule but still requires its
+    // types/class, so the module has a populated require block and no allow rules.
+    let permissive = DenialGroup {
+        source_type: "httpd_t".to_string(),
+        target_type: "shadow_t".to_string(),
+        tclass: "file".to_string(),
+        perms: ["read"].iter().map(ToString::to_string).collect(),
+        any_permissive: true,
+        kind: DenialKind::Permissive,
+    };
+    let te = emit_te(std::slice::from_ref(&permissive), Some("permmod"));
+    assert!(
+        !te.contains("allow "),
+        "an all-Permissive set must emit no allow rules:\n{te}"
+    );
+    let (ok, stderr) = checkmodule_compile(&te, "all_permissive");
+    assert!(
+        ok,
+        "an all-Permissive module (require block, no allow rules) must still compile \
+         with checkmodule -M -m (#165).\n\
+         emitted .te:\n{te}\n\
+         checkmodule stderr:\n{stderr}"
+    );
+}

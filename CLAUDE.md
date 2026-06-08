@@ -22,6 +22,54 @@ Canonical commands live in the `justfile` (each recipe mirrors a CI gate verbati
 
 Prefix noisy commands with `rtk`; use `rtk proxy <cmd>` when output is parsed by another tool (a diff fed to `cargo mutants --in-diff`, JSON fed to `jq`).
 
+## Additional cargo tooling installed (use when relevant)
+
+Beyond the `just` recipes above, these cargo subcommands are on PATH. They are
+not part of the standard `just ci` gate; reach for them for the specific job:
+
+- `cargo-nextest` - faster local test runner (`cargo nextest run`). Good for quick
+  iteration, but the CI gate runs `cargo test` via `just test`, so match that
+  before pushing.
+- `cargo-deny` - dependency advisories + license/ban policy (`cargo deny check`).
+  Complements `cargo audit`; run before a dependency change.
+- `cargo-insta` - snapshot-test review (`cargo insta review`) for `.snap` fixtures.
+- `cargo-about` - SPDX license attribution; relevant to the `-license` crate and
+  distribution attribution.
+- `cargo-cyclonedx` / `cargo-auditable` - SBOM generation and embedded dependency
+  audit metadata for the release binary / supply-chain.
+- `cargo-fuzz` - fuzz targets for correctness work.
+- `cargo-generate-rpm` - RPM packaging of the release binary (a distribution
+  option alongside the musl static binary).
+
+Run noisy invocations through `rtk` (generic passthrough); use `rtk proxy <cmd>`
+when the output feeds another tool.
+
+
+# MCP Servers - tool-augmented lookups
+
+Prefer these over training-recall or hand-rolled `gh`/`curl` sequences (see also
+`~/.claude/rules/skills-plugins-mcp.md`). All are plugin-installed today; there is
+no committed `.mcp.json` yet (deferred, see the Parallel Development Protocol
+section). Schemas load on demand via `ToolSearch`.
+
+- `cratesio` - crates.io registry. Reach for it BEFORE adding or bumping a
+  dependency: `search_crates`, `get_crate_info` / `get_crate_features`,
+  `compare_crates` / `find_alternatives`, `crate_health_check`,
+  `audit_dependencies` (OSV.dev advisories), `get_dependency_tree`. Authoritative
+  for crate metadata; pairs with the locked-crates list in Project Context.
+- `docsrs` - Rust API docs from docs.rs (`search_crate`, `lookup_crate_items`,
+  `lookup_item`, `lookup_impl_block`). Use for exact dependency API shapes
+  (chumsky, ariadne, heed, clap, jsonwebtoken) instead of guessing signatures.
+- `context7` - broader library / framework / CLI docs (`resolve-library-id` then
+  `query-docs`). docsrs is sharper for Rust crates; context7 for cross-ecosystem.
+- `serena` - Rust symbol navigation / LSP-backed find-symbol, references, and
+  symbol-scoped edits.
+- `github` - GitHub issue / PR / release operations. Prefer over the `gh` CLI for
+  GitHub ops (issue read/write, pull_request_read, create/merge PR, list_issues);
+  plain `git` and `rtk gh` stay fine for local and read-only use.
+- `claude-mem` (mcp-search) - cross-session memory / search. Use to recall prior
+  sessions' decisions and findings before re-deriving them.
+
 
 # Superpowers - Development Skills
 
@@ -116,9 +164,11 @@ survivors route back to the test-author) is half of the Adversarial Testing Loop
 the adversarial-adequacy measure during a milestone; the CI `mutants.yml` nightly run
 remains the project-wide net. They are complementary, not redundant.
 
-**MCP servers (context7 + serena):** these back the "prefer Context7 over training
-recall" guidance and Rust symbol navigation. They are currently installed as Claude
-plugins (`enabledPlugins`), NOT as a committed repo `.mcp.json`. A repo `.mcp.json`
-(the deferred Task 3) is tracked as a follow-up pending a fresh-clone test of whether
+**MCP servers (context7, serena, cratesio, docsrs, github, claude-mem):** see the
+`# MCP Servers` section above for when to reach for each. They back the "prefer
+Context7/docsrs over training recall" guidance, Rust symbol navigation, crate
+registry lookups, and GitHub ops. They are currently installed as Claude plugins
+(`enabledPlugins`), NOT as a committed repo `.mcp.json`. A repo `.mcp.json` (the
+deferred Task 3) is tracked as a follow-up pending a fresh-clone test of whether
 the plugin form survives a clone/CI without the plugins; do not assume a committed
 `.mcp.json` exists yet.

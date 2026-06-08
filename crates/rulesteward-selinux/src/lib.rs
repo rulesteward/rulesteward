@@ -16,7 +16,10 @@ mod avc_tests;
 pub use avc::{AvcDenial, AvcParseError, Verdict, parse_avc};
 pub use denial::{DenialGroup, DenialKind, group_denials};
 pub use te_emit::emit_te;
-pub use triage::{TriageReport, build_report, build_report_with_already_allows, render_human};
+pub use triage::{
+    TriageReport, build_report, build_report_with_already_allows, policy_reclassification_hint,
+    render_human,
+};
 
 // The authoritative libsepol categorizer (P5 / #105, now default-ON per #124):
 // it links libsepol statically (#106/#107), gated behind the

@@ -1033,3 +1033,92 @@ fn h18_permissive_bounds_no_banner_promising_absent_allow() {
         "TC-H18: the Bounds decline wording must still be present; got:\n{out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TC-H19: --policy reclassification hint (#166)
+//
+// The record-only FLOOR over-declines two of the most common RHEL boot denials
+// as MlsSuspected/RoleSuspected. When such a group is present (and no --policy
+// was supplied), triage must surface a hint that `--policy` would likely
+// reclassify them. This is OUTPUT-ONLY: the floor heuristic is unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn policy_hint_present_for_floor_mls_or_role_suspected_groups() {
+    use rulesteward_selinux::policy_reclassification_hint;
+    for kind in [DenialKind::MlsSuspected, DenialKind::RoleSuspected] {
+        let groups = [make_group(
+            "sshd_t",
+            "shadow_t",
+            "file",
+            &["read"],
+            false,
+            kind,
+        )];
+        let hint = policy_reclassification_hint(&groups)
+            .unwrap_or_else(|| panic!("a {kind:?} floor group must yield a --policy hint"));
+        assert!(
+            hint.contains("--policy"),
+            "the hint must point the operator at --policy: {hint}"
+        );
+        // One group -> SINGULAR "1 group" (pins the count + plural branch).
+        assert!(
+            hint.contains("1 group classified") && !hint.contains("1 groups"),
+            "a single {kind:?} group must read '1 group' (singular): {hint}"
+        );
+    }
+    // Two suspected groups -> PLURAL "2 groups" (kills the `n == 1` plural mutant).
+    let two = [
+        make_group(
+            "sshd_t",
+            "shadow_t",
+            "file",
+            &["read"],
+            false,
+            DenialKind::MlsSuspected,
+        ),
+        make_group(
+            "init_t",
+            "unconfined_t",
+            "process",
+            &["siginh"],
+            false,
+            DenialKind::RoleSuspected,
+        ),
+    ];
+    let hint = policy_reclassification_hint(&two).expect("two suspected groups must yield a hint");
+    assert!(
+        hint.contains("2 groups classified"),
+        "two suspected groups must read '2 groups' (plural): {hint}"
+    );
+}
+
+#[test]
+fn no_policy_hint_without_suspected_groups() {
+    use rulesteward_selinux::policy_reclassification_hint;
+    // TeAllowable + Constraint groups: the floor is NOT imprecise for these, so
+    // no MLS/role reclassification hint (the hint is scoped to the floor's least
+    // precise verdicts only).
+    let groups = [
+        make_group(
+            "logrotate_t",
+            "shadow_t",
+            "file",
+            &["read"],
+            false,
+            DenialKind::TeAllowable,
+        ),
+        make_group(
+            "x_t",
+            "y_t",
+            "file",
+            &["read"],
+            false,
+            DenialKind::Constraint,
+        ),
+    ];
+    assert!(
+        policy_reclassification_hint(&groups).is_none(),
+        "no MlsSuspected/RoleSuspected groups must yield no hint"
+    );
+}

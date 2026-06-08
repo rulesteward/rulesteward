@@ -1,4 +1,8 @@
-# fapd-E07 (SIGNED quirk): `pid=` is SIGNED, but a positive-int set types
-# UNSIGNED on the subject side, so even `1,2,3` is rejected on every version.
+# fapd-E07 (#163, VERSION-DIVERGENT): a positive-int set on `pid=` LOADS on
+# fapolicyd 1.3.2 (rhel8: pid is INT/UNSIGNED, accepts numbers) but is REJECTED
+# on 1.4.5 (rhel9/rhel10: pid is SIGNED). Under the DEFAULT context (no
+# --target) E07 does NOT fire - rhel8 accepts it, so it is not a universal
+# mismatch. It fires only under --target rhel9/rhel10 (see the type_compat unit
+# tests for the per-target assertions). This trap pins the clean default path.
 %t=1,2,3
 allow pid=%t : all
