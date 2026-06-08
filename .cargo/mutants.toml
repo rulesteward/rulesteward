@@ -242,7 +242,15 @@ exclude_re = [
     'replace fuzz_hooks::parse_trust_value_fuzz',
 ]
 
-# Tests are mixed unit + proptest + insta; proptest property runs especially
-# can be slow, so generous timeout (90s) avoids false-positive "timed out"
-# survivors that aren't really survivors.
-minimum_test_timeout = 90.0
+# Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
+# `timeout-minutes` in mutants.yml). cargo-mutants auto-sets the per-mutant test
+# timeout to max(this floor, baseline_test_time x multiplier); the floor binds here.
+#
+# The nightly gate runs `--test-workspace true`, so EVERY mutant re-runs the entire
+# workspace suite (unit + proptest + insta). That takes ~100-110s/mutant, which
+# exceeded the old 90s floor -> cargo-mutants killed every mutant as a false TIMEOUT
+# (exit 3) before it could be evaluated, so all 8 shards failed without testing a
+# single mutant. Raise the floor to 180s: comfortably above the observed
+# workspace-suite duration (with headroom for proptest variance / runner load),
+# while still bounding a genuinely hung mutant.
+minimum_test_timeout = 180.0
