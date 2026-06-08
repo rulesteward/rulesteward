@@ -125,13 +125,24 @@ fn getent_resolve(kind: IdKind, value: &str) -> Resolution {
     };
     let result = Command::new("getent").arg(database).arg(value).status();
     match result {
-        Ok(status) => match status.code() {
-            Some(0) => Resolution::Found,
-            Some(2) => Resolution::NotFound,
-            _ => Resolution::Error,
-        },
+        Ok(status) => map_getent_status(status.code()),
         // Spawn failure (getent not found, permission denied, etc.) - conservative.
         Err(_) => Resolution::Error,
+    }
+}
+
+/// Map a `getent` process exit code to a [`Resolution`] (POSIX / glibc getent
+/// convention): `0` -> `Found`, `2` -> `NotFound`, anything else (incl. a
+/// signal-terminated process with no code) -> `Error`.
+///
+/// Extracted from [`getent_resolve`] so the mapping is unit-testable without a
+/// live `getent`. See the `getent_status_code_maps_to_resolution` test for why
+/// the host-gated real-getent test cannot cover the `Some(0)` arm.
+fn map_getent_status(code: Option<i32>) -> Resolution {
+    match code {
+        Some(0) => Resolution::Found,
+        Some(2) => Resolution::NotFound,
+        _ => Resolution::Error,
     }
 }
 
@@ -743,6 +754,23 @@ mod tests {
             getent_resolve(IdKind::Group, "4294967294"),
             Resolution::NotFound
         );
+    }
+
+    // Pure exit-code -> Resolution mapping, tested independently of the host
+    // getent binary. This is the killing test for the `Some(0) => Found` arm:
+    // the host-gated `getent_resolve_maps_real_exit_codes` test CANNOT kill the
+    // `delete Some(0) arm` mutant, because its `real_getent_usable()` guard itself
+    // calls `getent_resolve(User, "0")` -- the mutant makes that return Error, the
+    // guard returns false, and the test self-skips. Mapping the code in a pure fn
+    // breaks that self-defeating dependency so the mutant is killed deterministically
+    // on every host (no getent required).
+    #[test]
+    fn getent_status_code_maps_to_resolution() {
+        assert_eq!(map_getent_status(Some(0)), Resolution::Found);
+        assert_eq!(map_getent_status(Some(2)), Resolution::NotFound);
+        assert_eq!(map_getent_status(Some(1)), Resolution::Error);
+        assert_eq!(map_getent_status(Some(127)), Resolution::Error);
+        assert_eq!(map_getent_status(None), Resolution::Error);
     }
 
     // ---------------------------------------------------------------------------

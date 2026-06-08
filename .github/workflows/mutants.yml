@@ -22,11 +22,16 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 45
+    # Per-shard ceiling. Raised 45 -> 90 to give headroom as the mutant count
+    # grows (and for slower self-hosted runners / cold caches); a shard that
+    # legitimately needs longer than 45 min should not be killed mid-sweep,
+    # since a timed-out shard fails the gate (exit 3) the same as a survivor.
+    timeout-minutes: 90
     strategy:
       # Shard the full mutant suite (~900 mutants) across the 8-runner pool so
       # the sweep finishes in one wave (~112 mutants/shard, ~18 min) instead of
-      # running serially (~4.8h, which overran the 45-min ceiling).
+      # running serially (~4.8h, which overran the original 45-min ceiling that
+      # motivated sharding; the per-shard ceiling is now 90 min, see above).
       # fail-fast MUST stay false: a survivor (or any non-zero shard exit) must
       # not cancel its siblings -- otherwise the other shards' results are lost
       # and the run surfaces as "canceled".
