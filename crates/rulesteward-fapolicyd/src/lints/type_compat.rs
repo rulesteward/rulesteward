@@ -130,10 +130,9 @@ fn fires_for(values: &[String], key: &str, version: TargetVersion) -> bool {
     let Some(category) = attrs::type_category_for(key, version) else {
         return false;
     };
-    match category {
-        AttrTypeCategory::Permissive | AttrTypeCategory::NoSet => false,
-        _ => compat_mismatch(infer_set_type(values, version), category),
-    }
+    // `compat_mismatch` already returns `false` for `Permissive`/`NoSet`, so no
+    // early-out is needed here (and `NoSet` is skipped before `walk` calls us).
+    compat_mismatch(infer_set_type(values, version), category)
 }
 
 /// fapolicyd's three-way set value type. A `%set` assigned to a numeric attribute
@@ -153,8 +152,8 @@ enum SetType {
 
 /// Whether a set of `set_type` is type-incompatible with an attribute of
 /// `category` (fapolicyd rejects it at load time). The numeric categories require
-/// an EXACT type match; `Permissive`/`NoSet` never reach here (filtered in
-/// `fires_for`) but return `false` to keep the match total.
+/// an EXACT type match; `Permissive` accepts any set and `NoSet` is owned by
+/// fapd-E04, so both return `false` (never a mismatch here).
 fn compat_mismatch(set_type: SetType, category: AttrTypeCategory) -> bool {
     match category {
         AttrTypeCategory::Unsigned => set_type != SetType::Unsigned,
@@ -191,9 +190,11 @@ fn infer_set_type(values: &[String], version: TargetVersion) -> SetType {
 }
 
 /// Whether `v` is an integer fapolicyd 1.4.x would accept as a SIGNED or UNSIGNED
-/// set member: an optional leading `-` followed by [`looks_int`] digits.
+/// set member: an optional leading sign (`-` or `+`, strtol-style) followed by
+/// [`looks_int`] digits. Only a leading `-` makes the member negative (the SIGNED
+/// determination in [`infer_set_type`] keys on `-`, so `+1` stays UNSIGNED).
 fn looks_signed_int(v: &str) -> bool {
-    looks_int(v.strip_prefix('-').unwrap_or(v))
+    looks_int(v.strip_prefix(['-', '+']).unwrap_or(v))
 }
 
 /// The fapd-E07 diagnostic message. Under an explicit `--target` it names the
@@ -709,6 +710,49 @@ mod tests {
                     "mixed-sign set on {attr}= must NEVER fire under {ctx:?} \
                      (loads on all versions); got codes={:?}",
                     codes(&diags),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leading_plus_int_set_types_numeric_like_the_daemon() {
+        // GROUNDED 2026-06-07 (docker, found by the #163 impl-aware adversarial
+        // review): fapolicyd 1.4.x accepts a leading `+` as an integer
+        // (strtol-style), so `+1` types UNSIGNED on rhel9/rhel10 (a `+` does NOT
+        // make a set SIGNED; only a `-` does). The set-type inference must treat
+        // `+1` as a number, not a string.
+        // `+1` on uid (UNSIGNED): LOADS on rhel9/10 -> no fire.
+        let uid = "%t=+1\nallow uid=%t : all\n";
+        for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+            assert_eq!(
+                e07_count(&lint_src(uid, ctx)),
+                0,
+                "`+1` on uid= (UNSIGNED) must LOAD on {ctx:?}; got codes={:?}",
+                codes(&lint_src(uid, ctx)),
+            );
+        }
+        // `+1` on exe (STRING): an UNSIGNED set on a STRING attr is REJECTED on
+        // rhel9/10 -> fire (a false negative under the old `+`-as-STRING bug).
+        let exe = "%t=+1\nallow exe=%t : all\n";
+        for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+            assert_eq!(
+                e07_count(&lint_src(exe, ctx)),
+                1,
+                "`+1` on exe= (STRING) must fire fapd-E07 on {ctx:?}; got codes={:?}",
+                codes(&lint_src(exe, ctx)),
+            );
+        }
+        // `+1,-2` on pid/ppid (SIGNED on rhel9/10): a negative member makes it a
+        // SIGNED set, which pid/ppid accept -> LOADS -> no fire.
+        for attr in ["pid", "ppid"] {
+            let src = format!("%t=+1,-2\nallow {attr}=%t : all\n");
+            for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+                assert_eq!(
+                    e07_count(&lint_src(&src, ctx)),
+                    0,
+                    "`+1,-2` on {attr}= (SIGNED) must LOAD on {ctx:?}; got codes={:?}",
+                    codes(&lint_src(&src, ctx)),
                 );
             }
         }
