@@ -11,7 +11,8 @@ pub mod parser;
 
 // Re-export the primary public surface for convenience.
 pub use ast::{
-    Action, AuditField, AuditRule, CompareOp, ControlRule, FieldFilter, FilterList, PermBits,
+    Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
+    FilterList, PermBits,
 };
 pub use bands::{Direction, RateBand, VolumeTier};
 pub use cost::{CostBand, LogFormat};

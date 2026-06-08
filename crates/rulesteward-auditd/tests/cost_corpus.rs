@@ -212,17 +212,11 @@ const XFAIL_SYSCALL: &[&str] = &[
     // /usr/bin/su), which is not derivable from the rule. NOT deterministically
     // fixable; belongs to the non-deterministic Finding 1, not a static code gap.
     "rocky10-watch-vs-syscall-equiv",
-    // FINDING (#140 Finding 2, DEFERRED): rocky9-arch-paired - arch=b32 execve
-    // narrowed by auid: code returns MEDIUM (execve in HIGH_SYSCALLS, -F demotes
-    // HIGH->MEDIUM), oracle expects LOW (b32 ABI fires far less often on modern
-    // x86_64 hosts). Deterministic but needs arch-aware demotion; deferred to a
-    // #140 follow-up.
-    "rocky9-arch-paired",
-    // FINDING (#140 Finding 2, DEFERRED): rocky9-field-compare - rule uses
-    // `-C uid!=euid` (field-comparison). parse_target returns Err (unexpected
-    // token `-C`); cannot match rules by position. Deterministic but needs parser
-    // `-C` support; deferred to a #140 follow-up.
-    "rocky9-field-compare",
+    // NOTE: rocky9-arch-paired (arch=b32 demotion) and rocky9-field-compare
+    // (`-C` field-comparison parsing) were the two deterministic #140 Finding 2
+    // gaps. Both are now FIXED in #161 (arch-aware demotion in bands.rs + `-C`
+    // parsing into FieldComparison), so they are no longer xfailed and assert
+    // their oracle tiers directly.
     // FINDING (#140 Finding 1, content-aware): rocky9-priv-commands - three
     // byte-identical `-F path=<bin> -F perm=x` rules (no -S) the oracle rates
     // differently (sudo=MEDIUM, su=LOW, passwd=LOW) purely by which binary is

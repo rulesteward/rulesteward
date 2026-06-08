@@ -489,6 +489,7 @@ fn fmt_rule(rule: &AuditRule) -> String {
             action,
             syscalls,
             fields,
+            field_compares,
             prepend,
             key,
         } => {
@@ -501,6 +502,17 @@ fn fmt_rule(rule: &AuditRule) -> String {
             }
             for f in fields {
                 write!(s, " -F {}{}{}", fmt_field(&f.field), fmt_op(&f.op), f.value).unwrap();
+            }
+            // `-C` inter-field comparisons (both operands are field names).
+            for c in field_compares {
+                write!(
+                    s,
+                    " -C {}{}{}",
+                    fmt_field(&c.left),
+                    fmt_op(&c.op),
+                    fmt_field(&c.right)
+                )
+                .unwrap();
             }
             if let Some(k) = key {
                 write!(s, " -k {k}").unwrap();
@@ -651,6 +663,35 @@ mod tests {
         assert_eq!(fmt_field(&AuditField::A3), "a3");
         // Anchor: an existing field still renders (guards an accidental reorder).
         assert_eq!(fmt_field(&AuditField::Arch), "arch");
+    }
+
+    #[test]
+    fn fmt_rule_round_trips_dash_c_field_comparison() {
+        // #161: a -C inter-field comparison must render back as `-C left op right`.
+        // Dropping it would silently lose the privilege-transition clause from the
+        // echoed rule text (the content bug the functional-smoke rule targets). A
+        // `-C` is NOT a `-F`, so it renders with its own flag and two field names.
+        use super::fmt_rule;
+        use rulesteward_auditd::ast::{Action, AuditRule, FieldComparison, FilterList};
+        use rulesteward_auditd::{AuditField, CompareOp};
+        let rule = AuditRule::Syscall {
+            list: FilterList::Exit,
+            action: Action::Always,
+            syscalls: vec!["execve".to_string()],
+            fields: vec![],
+            field_compares: vec![FieldComparison {
+                left: AuditField::Uid,
+                op: CompareOp::Ne,
+                right: AuditField::Euid,
+            }],
+            prepend: false,
+            key: Some("priv".to_string()),
+        };
+        let rendered = fmt_rule(&rule);
+        assert!(
+            rendered.contains("-C uid!=euid"),
+            "fmt_rule must render the -C comparison verbatim; got {rendered:?}"
+        );
     }
 
     // -- #64: `auditd cost --format csv` (per-rule table ONLY) ----------------

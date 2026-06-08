@@ -29,6 +29,7 @@ fn syscall_always_exit(syscalls: Vec<&str>, key: Option<&str>) -> AuditRule {
         action: Action::Always,
         syscalls: syscalls.into_iter().map(str::to_string).collect(),
         fields: vec![],
+        field_compares: vec![],
         prepend: false,
         key: key.map(str::to_string),
     }
@@ -40,6 +41,7 @@ fn syscall_never_exit(syscalls: Vec<&str>) -> AuditRule {
         action: Action::Never,
         syscalls: syscalls.into_iter().map(str::to_string).collect(),
         fields: vec![],
+        field_compares: vec![],
         prepend: false,
         key: None,
     }
@@ -56,6 +58,7 @@ fn syscall_exclude(msgtype: &str) -> AuditRule {
             op: CompareOp::Eq,
             value: msgtype.to_string(),
         }],
+        field_compares: vec![],
         prepend: false,
         key: None,
     }
@@ -510,6 +513,7 @@ fn default_rate_band_narrowed_execve_is_0_3x() {
                 value: "unset".to_string(),
             },
         ],
+        field_compares: vec![],
         prepend: false,
         key: Some("execve".to_string()),
     };

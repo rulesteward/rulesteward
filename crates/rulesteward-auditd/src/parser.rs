@@ -15,7 +15,8 @@
 use std::path::Path;
 
 use crate::ast::{
-    Action, AuditField, AuditRule, CompareOp, ControlRule, FieldFilter, FilterList, PermBits,
+    Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
+    FilterList, PermBits,
 };
 
 /// A parse error on a single line.
@@ -332,6 +333,7 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
 
     let mut syscalls: Vec<String> = Vec::new();
     let mut fields: Vec<FieldFilter> = Vec::new();
+    let mut field_compares: Vec<FieldComparison> = Vec::new();
     let mut key: Option<String> = None;
 
     // Flags after `-a/-A <list,action>`. Each flag consumes its argument with a
@@ -351,6 +353,12 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
                 let fspec = rest.next().ok_or_else(|| err("-F requires a field spec"))?;
                 fields.push(parse_field_filter(fspec, lineno)?);
             }
+            "-C" => {
+                let cspec = rest
+                    .next()
+                    .ok_or_else(|| err("-C requires a field-comparison spec"))?;
+                field_compares.push(parse_field_compare(cspec, lineno)?);
+            }
             "-k" => {
                 key = Some(
                     rest.next()
@@ -369,6 +377,7 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
         action,
         syscalls,
         fields,
+        field_compares,
         prepend,
         key,
     })
@@ -416,6 +425,20 @@ fn parse_action(s: &str) -> Option<Action> {
     }
 }
 
+/// The `-F`/`-C` comparison operators, longest-match-first so two-char operators
+/// (`&=`, `!=`, `<=`, `>=`) are found before their single-char prefixes.
+/// `auditctl(8)`: `= != < > <= >= & &=`.
+const OPS_BY_LEN: &[(&str, CompareOp)] = &[
+    ("&=", CompareOp::BitAndEq),
+    ("!=", CompareOp::Ne),
+    ("<=", CompareOp::Le),
+    (">=", CompareOp::Ge),
+    ("&", CompareOp::BitAnd),
+    ("<", CompareOp::Lt),
+    (">", CompareOp::Gt),
+    ("=", CompareOp::Eq),
+];
+
 /// Parse a `-F field op value` specification.
 ///
 /// Operators: `= != < > <= >= & &=` from `auditctl(8)`.
@@ -425,19 +448,7 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
         message: format!("in -F '{spec}': {msg}"),
     };
 
-    // Find the operator by trying longest matches first (&=, !=, <=, >=) then single-char.
-    let ops_by_len: &[(&str, CompareOp)] = &[
-        ("&=", CompareOp::BitAndEq),
-        ("!=", CompareOp::Ne),
-        ("<=", CompareOp::Le),
-        (">=", CompareOp::Ge),
-        ("&", CompareOp::BitAnd),
-        ("<", CompareOp::Lt),
-        (">", CompareOp::Gt),
-        ("=", CompareOp::Eq),
-    ];
-
-    for (op_str, op) in ops_by_len {
+    for (op_str, op) in OPS_BY_LEN {
         if let Some(pos) = spec.find(op_str) {
             let field_str = &spec[..pos];
             let value_str = &spec[pos + op_str.len()..];
@@ -447,6 +458,43 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
                 field,
                 op: op.clone(),
                 value: value_str.to_string(),
+            });
+        }
+    }
+
+    Err(err("no operator found"))
+}
+
+/// Parse a `-C field op field` inter-field comparison (`auditctl(8) -C`).
+///
+/// Both operands are field names (not a field-and-literal). auditctl supports
+/// ONLY the equality operators here (man auditctl: "There are 2 operators
+/// supported - equal, and not equal"), so a relational operator like `>=` is a
+/// parse error rather than being silently accepted.
+fn parse_field_compare(spec: &str, lineno: usize) -> Result<FieldComparison, ParseError> {
+    let err = |msg: &str| ParseError {
+        line: lineno,
+        message: format!("in -C '{spec}': {msg}"),
+    };
+
+    for (op_str, op) in OPS_BY_LEN {
+        if let Some(pos) = spec.find(op_str) {
+            // auditctl `-C` accepts only `=` and `!=`.
+            if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+                return Err(err(&format!(
+                    "operator '{op_str}' is not valid for -C (only = and != are supported)"
+                )));
+            }
+            let left_str = &spec[..pos];
+            let right_str = &spec[pos + op_str.len()..];
+            let left = parse_audit_field(left_str)
+                .ok_or_else(|| err(&format!("unknown field '{left_str}'")))?;
+            let right = parse_audit_field(right_str)
+                .ok_or_else(|| err(&format!("unknown field '{right_str}'")))?;
+            return Ok(FieldComparison {
+                left,
+                op: op.clone(),
+                right,
             });
         }
     }
@@ -599,6 +647,88 @@ mod tests {
                 other => panic!("expected Syscall rule for `-F {name}=2`, got {other:?}"),
             }
         }
+    }
+
+    // --- #161: -C inter-field comparison ---
+
+    /// `-C 'uid!=euid'` is an inter-field comparison (auditctl(8) `-C f!=f`,
+    /// `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158). Both operands are FIELD names,
+    /// not a field and a literal value, so it parses into a `FieldComparison` on
+    /// the rule's `field_compares`, NOT into the `-F` `fields` vec. Before #161 the
+    /// parser rejected `-C` with "unexpected token".
+    #[test]
+    fn parses_field_comparison_uid_ne_euid() {
+        use crate::ast::{AuditField, CompareOp, FieldComparison};
+        let parsed = parse_line("-a always,exit -S execve -C 'uid!=euid' -k priv", 1)
+            .expect("`-C 'uid!=euid'` must parse");
+        match parsed {
+            AuditRule::Syscall {
+                field_compares,
+                fields,
+                ..
+            } => {
+                assert_eq!(
+                    field_compares,
+                    vec![FieldComparison {
+                        left: AuditField::Uid,
+                        op: CompareOp::Ne,
+                        right: AuditField::Euid,
+                    }],
+                    "`-C 'uid!=euid'` must produce one FieldComparison(uid != euid)"
+                );
+                assert!(
+                    fields.is_empty(),
+                    "a `-C` comparison must NOT be stored as a `-F` field filter"
+                );
+            }
+            other => panic!("expected Syscall rule for the -C line, got {other:?}"),
+        }
+    }
+
+    /// `-C` accepts the equality operator too (`uid=euid`).
+    #[test]
+    fn field_comparison_accepts_eq_operator() {
+        use crate::ast::{AuditField, CompareOp, FieldComparison};
+        let parsed = parse_line("-a always,exit -S execve -C 'auid=uid'", 1)
+            .expect("`-C 'auid=uid'` must parse");
+        match parsed {
+            AuditRule::Syscall { field_compares, .. } => assert_eq!(
+                field_compares,
+                vec![FieldComparison {
+                    left: AuditField::Auid,
+                    op: CompareOp::Eq,
+                    right: AuditField::Uid,
+                }]
+            ),
+            other => panic!("expected Syscall rule, got {other:?}"),
+        }
+    }
+
+    /// auditctl `-C` supports ONLY `=` and `!=` (man auditctl: "There are 2
+    /// operators supported - equal, and not equal"). A relational operator like
+    /// `>=` must be rejected, not silently accepted.
+    #[test]
+    fn field_comparison_rejects_non_equality_operator() {
+        let err = parse_line("-a always,exit -S execve -C 'uid>=euid'", 1)
+            .expect_err("`-C 'uid>=euid'` must be rejected (only = and != are valid)");
+        assert!(
+            err.message.contains("-C"),
+            "the error should name the -C flag; got {:?}",
+            err.message
+        );
+    }
+
+    /// A `-C` whose operand is not a known field name must error (here the left
+    /// side `bogus` is not an auditd field).
+    #[test]
+    fn field_comparison_rejects_unknown_field() {
+        let err = parse_line("-a always,exit -S execve -C 'bogus!=euid'", 1)
+            .expect_err("`-C 'bogus!=euid'` must be rejected (unknown field)");
+        assert!(
+            err.message.contains("bogus"),
+            "the error should name the unknown field; got {:?}",
+            err.message
+        );
     }
 
     // --- -D control rule ---
