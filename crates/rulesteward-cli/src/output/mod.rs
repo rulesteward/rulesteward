@@ -33,14 +33,20 @@ pub enum RenderError {
 ///
 /// `sources` maps `source_id` values to raw source-file content. Only the
 /// human renderer uses this; json and sarif renderers ignore it.
+///
+/// `pass` carries the SARIF per-check coverage attestation for
+/// `--sarif-include-pass` (#137). It is only meaningful for `OutputFormat::Sarif`;
+/// the human and json renderers ignore it. Pass `None` for every non-SARIF call
+/// and for SARIF runs without the flag (byte-identical to the pre-#137 output).
 pub fn render(
     format: OutputFormat,
     diags: &[Diagnostic],
     sources: &BTreeMap<String, String>,
+    pass: Option<&sarif::PassInfo>,
 ) -> Result<String, RenderError> {
     match format {
         OutputFormat::Human => Ok(human::render(diags, sources)),
         OutputFormat::Json => Ok(json::render(diags)),
-        OutputFormat::Sarif => sarif::render(diags),
+        OutputFormat::Sarif => sarif::render(diags, pass),
     }
 }

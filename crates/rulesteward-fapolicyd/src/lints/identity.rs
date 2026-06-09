@@ -10,7 +10,7 @@
 //! resolver (`w05_with_resolver`) so the bulk of the tests mock getent.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use rulesteward_core::{Diagnostic, Severity};
 
@@ -123,7 +123,16 @@ fn getent_resolve(kind: IdKind, value: &str) -> Resolution {
         IdKind::User => "passwd",
         IdKind::Group => "group",
     };
-    let result = Command::new("getent").arg(database).arg(value).status();
+    // Suppress the child's stdout/stderr: only the exit code is consumed
+    // (`map_getent_status`). Without this, getent's matched-line stdout (e.g.
+    // `root:x:0:0:...`) is inherited by our process and leaks into rulesteward's
+    // own stdout, corrupting machine-readable `--format json` / `sarif` output.
+    let result = Command::new("getent")
+        .arg(database)
+        .arg(value)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     match result {
         Ok(status) => map_getent_status(status.code()),
         // Spawn failure (getent not found, permission denied, etc.) - conservative.

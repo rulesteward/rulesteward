@@ -5,15 +5,15 @@ use std::path::{Path, PathBuf};
 
 use rulesteward_core::Diagnostic;
 use rulesteward_fapolicyd::{
-    Entry, LintContext, TrustDb, TrustSource, check_layout, collect_macro_names, lint_cross_file,
-    lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly, parse_rules_file,
-    verify_entry,
+    Entry, LintContext, TrustDb, TrustSource, catalog, check_layout, collect_macro_names,
+    lint_cross_file, lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly,
+    parse_rules_file, verify_entry,
 };
 use thiserror::Error;
 
 use super::trustdb_compute;
 use crate::cli::{
-    FapolicydCommand, LintArgs, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
+    FapolicydCommand, LintArgs, OutputFormat, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand,
     TrustdbDiffArgs, TrustdbFormat, TrustdbListArgs, TrustdbListFormat, TrustdbStaleArgs,
 };
 use crate::exit_code::{
@@ -214,17 +214,6 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
 }
 
 fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
-    // `--sarif-include-pass` is reserved and not yet implemented (#137). Surface
-    // an honest note when it is set rather than silently ignoring it, so the
-    // operator never believes they received pass-result attestation. SARIF
-    // output is unchanged in this release.
-    if args.sarif_include_pass {
-        eprintln!(
-            "note: --sarif-include-pass is reserved and has no effect in this release \
-             (pass-result emission is tracked in #137)"
-        );
-    }
-
     let trustdb = match &args.against_trustdb {
         Some(p) => {
             if !p.is_dir() {
@@ -340,7 +329,16 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
         all_diags.extend(lint_weak_digests(db));
     }
 
-    let rendered = match output::render(args.format, &all_diags, &sources) {
+    let pass_info = sarif_pass_info(
+        args,
+        trustdb.is_some(),
+        single_file,
+        &parsed,
+        tool_err,
+        &all_diags,
+    );
+
+    let rendered = match output::render(args.format, &all_diags, &sources, pass_info.as_ref()) {
         Ok(s) => s,
         Err(RenderError::Serialization(msg)) => {
             eprintln!("error: rendering {:?} output: {msg}", args.format);
@@ -352,6 +350,56 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
     }
 
     Ok(exit_code::compute(&all_diags, tool_err))
+}
+
+/// Build the SARIF per-check coverage payload (#137) for a `--sarif-include-pass`
+/// SARIF run, or `None` for any other run (which keeps SARIF output byte-identical
+/// to the pre-#137 form). [`catalog::evaluated`] is the single source of truth for
+/// which checks actually ran given the run's gates (`--target`,
+/// `--check-identities`, `--against-trustdb` + `--report-orphans`, single-file vs
+/// directory); the clean subset (evaluated minus the codes that fired) is emitted
+/// as `kind:"pass"`.
+fn sarif_pass_info(
+    args: &LintArgs,
+    trustdb_present: bool,
+    single_file: bool,
+    parsed: &[(PathBuf, Vec<Entry>)],
+    tool_err: bool,
+    all_diags: &[Diagnostic],
+) -> Option<output::sarif::PassInfo> {
+    if !(args.sarif_include_pass && matches!(args.format, OutputFormat::Sarif)) {
+        return None;
+    }
+    // Coverage attestation is only emitted for a fully-analyzed, non-empty
+    // policy. A parse failure (fapd-F01) or an unreadable file (`tool_err`) means
+    // the policy was not fully read, and zero Rule/SetDefinition entries means
+    // there was no content to validate. In those cases claiming the always-on
+    // checks "passed" would overstate coverage, so suppress the attestation
+    // entirely (no `rules[]`, no pass results) - #137 owner decision.
+    let has_rule_content = parsed
+        .iter()
+        .flat_map(|(_, entries)| entries)
+        .any(|e| matches!(e, Entry::Rule(_) | Entry::SetDefinition { .. }));
+    let parse_failed = tool_err || all_diags.iter().any(|d| d.code.as_ref() == "fapd-F01");
+    if !has_rule_content || parse_failed {
+        return None;
+    }
+    let inputs = catalog::EvalInputs {
+        trustdb: trustdb_present,
+        check_identities: args.check_identities,
+        report_orphans: args.report_orphans,
+        target: args.target.map(Into::into),
+        single_file,
+    };
+    let rules = catalog::evaluated(inputs);
+    let fired: std::collections::HashSet<&str> =
+        all_diags.iter().map(|d| d.code.as_ref()).collect();
+    let passes = rules
+        .iter()
+        .copied()
+        .filter(|c| !fired.contains(c.code))
+        .collect();
+    Some(output::sarif::PassInfo { rules, passes })
 }
 
 // Returns `(files_to_lint, optional_layout_diagnostic)`.

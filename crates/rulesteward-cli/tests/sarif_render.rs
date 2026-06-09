@@ -166,7 +166,7 @@ fn load_sarif_schema() -> Value {
 #[test]
 fn sarif_render_validates_against_official_schema() {
     let diags = sample_diags();
-    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources())
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
         .expect("SARIF render must return Ok(String) for a real implementation");
 
     let instance: Value =
@@ -200,7 +200,7 @@ fn sarif_render_validates_against_official_schema() {
 #[test]
 fn sarif_render_has_expected_structure() {
     let diags = sample_diags();
-    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources())
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
         .expect("SARIF render must return Ok(String) for a real implementation");
     let v: Value = serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
 

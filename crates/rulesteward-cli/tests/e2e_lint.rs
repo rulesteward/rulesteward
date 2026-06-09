@@ -7,7 +7,9 @@
 //! `rulesteward-fapolicyd`).
 
 use assert_cmd::Command;
+use boon::{Compiler, Schemas};
 use predicates::prelude::*;
+use serde_json::Value;
 use std::io::Write;
 
 fn write_tmp(contents: &str) -> tempfile::NamedTempFile {
@@ -635,23 +637,112 @@ fn write_rules_d(parent: &std::path::Path, filename: &str, content: &str) -> std
     rules_d
 }
 
-/// `--sarif-include-pass` is RESERVED / no-op in this release (#65 / #137):
-/// SARIF stdout is byte-identical with and without the flag, the exit code is
-/// unchanged, and a one-line stderr note tells the operator the flag has no
-/// effect yet and points at the tracking issue. Without the flag, no note.
+// --- #137: --sarif-include-pass per-check coverage attestation -------------
+
+/// Validate a SARIF JSON string against the bundled official OASIS SARIF 2.1.0
+/// schema (same fixture + boon harness as `sarif_render.rs`). Panics on a
+/// schema violation so a malformed pass-augmented log fails the test loudly.
+fn assert_valid_sarif(rendered: &str) {
+    let instance: Value = serde_json::from_str(rendered).expect("SARIF stdout must parse as JSON");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sarif-2.1.0.schema.json"
+    );
+    let schema: Value = serde_json::from_slice(&std::fs::read(path).expect("read schema fixture"))
+        .expect("schema fixture parses");
+    let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(schema_id, schema)
+        .expect("add SARIF schema");
+    let mut schemas = Schemas::new();
+    let idx = compiler
+        .compile(schema_id, &mut schemas)
+        .expect("compile SARIF schema");
+    if let Err(e) = schemas.validate(&instance, idx) {
+        panic!("pass-augmented SARIF failed schema validation:\n{e}\n--- instance ---\n{rendered}");
+    }
+}
+
+/// The `ruleId`s declared in `runs[0].tool.driver.rules[]` (the evaluated-check
+/// catalog). Empty when the key is absent.
+fn sarif_rule_ids(v: &Value) -> Vec<String> {
+    v.pointer("/runs/0/tool/driver/rules")
+        .and_then(Value::as_array)
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|r| r.get("id").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `ruleId`s of results with `kind == "pass"`.
+fn sarif_pass_result_ids(v: &Value) -> Vec<String> {
+    v.pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .map(|results| {
+            results
+                .iter()
+                .filter(|r| r.get("kind").and_then(Value::as_str) == Some("pass"))
+                .filter_map(|r| r.get("ruleId").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Run `fapolicyd lint --format sarif [extra args] <rules_d>` and return parsed
+/// stdout JSON plus the raw stdout string and stderr.
+fn run_sarif_lint(rules_d: &std::path::Path, extra: &[&str]) -> (Value, String, String) {
+    let mut args = vec!["fapolicyd", "lint", "--format", "sarif"];
+    args.extend_from_slice(extra);
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(&args)
+        .arg(rules_d)
+        .assert()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    (v, stdout, stderr)
+}
+
+/// Flag-OFF guard: without `--sarif-include-pass`, SARIF output carries NO
+/// `tool.driver.rules[]` and NO `kind:"pass"` results, and there is no stderr
+/// note. This pins byte-shape compatibility with the pre-#137 output.
 #[test]
-fn sarif_include_pass_is_reserved_noop_with_stderr_note() {
+fn sarif_without_pass_flag_has_no_rules_or_pass_results() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+    let (v, _stdout, stderr) = run_sarif_lint(&rules_d, &[]);
+
+    assert!(
+        sarif_rule_ids(&v).is_empty(),
+        "without the flag, tool.driver.rules[] must be absent/empty"
+    );
+    assert!(
+        sarif_pass_result_ids(&v).is_empty(),
+        "without the flag, there must be no kind:\"pass\" results"
+    );
+    assert!(
+        !stderr.contains("--sarif-include-pass"),
+        "no reserved-flag note must appear (the flag now has an effect); got: {stderr}"
+    );
+}
+
+/// Flag-ON: on a clean rules.d, `--sarif-include-pass` emits a non-empty
+/// `tool.driver.rules[]` and `kind:"pass"` results for evaluated-clean checks,
+/// the log stays schema-valid, exit code is 0, and pass results carry NO
+/// `locations` (per-check coverage attestation is analysis-wide).
+#[test]
+fn sarif_with_pass_flag_emits_rules_and_pass_results_valid_schema() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
 
-    let base = Command::cargo_bin("rulesteward")
-        .expect("binary")
-        .args(["fapolicyd", "lint", "--format", "sarif"])
-        .arg(&rules_d)
-        .assert();
-    let base_out = base.get_output().clone();
-
-    let withflag = Command::cargo_bin("rulesteward")
+    Command::cargo_bin("rulesteward")
         .expect("binary")
         .args([
             "fapolicyd",
@@ -661,37 +752,246 @@ fn sarif_include_pass_is_reserved_noop_with_stderr_note() {
             "--sarif-include-pass",
         ])
         .arg(&rules_d)
-        .assert();
-    let with_out = withflag.get_output().clone();
+        .assert()
+        .code(0);
 
-    assert_eq!(
-        with_out.stdout, base_out.stdout,
-        "--sarif-include-pass must NOT change SARIF stdout in this release (reserved/no-op)"
+    let (v, stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+    assert_valid_sarif(&stdout);
+
+    let rule_ids = sarif_rule_ids(&v);
+    assert!(
+        !rule_ids.is_empty(),
+        "flag-on must populate tool.driver.rules[] with the evaluated checks"
     );
-    assert_eq!(
-        with_out.status.code(),
-        base_out.status.code(),
-        "the reserved flag must not change the exit code"
+    let pass_ids = sarif_pass_result_ids(&v);
+    assert!(
+        !pass_ids.is_empty(),
+        "a clean rules.d must yield kind:\"pass\" coverage results, got none"
+    );
+    // Pass results are analysis-wide coverage: they must NOT carry a location.
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array");
+    for r in results {
+        if r.get("kind").and_then(Value::as_str) == Some("pass") {
+            assert!(
+                r.get("locations").is_none(),
+                "pass results must omit locations (analysis-wide attestation): {r}"
+            );
+            assert_eq!(
+                r.get("level").and_then(Value::as_str),
+                Some("none"),
+                "pass results must have level \"none\": {r}"
+            );
+        }
+    }
+}
+
+/// False-attestation guard (the correctness core): a conditional check must
+/// appear in `tool.driver.rules[]` ONLY when its gate is on. Uses the
+/// `--target` gate (fapd-E06) - subprocess-free and deterministic, unlike the
+/// `--check-identities`/getent gate. A naive "all codes minus fired" would
+/// attest E06 coverage even when `--target` is absent and the check never ran.
+#[test]
+fn sarif_pass_coverage_respects_target_gate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+
+    let (without, _o1, _e1) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+    assert!(
+        !sarif_rule_ids(&without).contains(&"fapd-E06".to_string()),
+        "fapd-E06 must NOT be attested without --target (the version-divergence check never ran)"
     );
 
-    let stderr = String::from_utf8(with_out.stderr.clone()).expect("utf8 stderr");
+    let (with, _o2, _e2) = run_sarif_lint(&rules_d, &["--sarif-include-pass", "--target", "rhel9"]);
     assert!(
-        stderr.contains("--sarif-include-pass"),
-        "stderr must name the reserved flag; got: {stderr}"
+        sarif_rule_ids(&with).contains(&"fapd-E06".to_string()),
+        "fapd-E06 must be attested (in rules[]) once --target runs it"
+    );
+}
+
+/// A code that FIRED is excluded from the pass set; a clean evaluated code
+/// still appears as a pass. Fixture fires fapd-E01 (unknown attribute); W08 is
+/// clean and evaluated.
+#[test]
+fn sarif_pass_excludes_fired_codes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(
+        dir.path(),
+        "10-mixed.rules",
+        "allow uid=0 bogusattr=x : all\n",
+    );
+    let (v, _stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+
+    let pass_ids = sarif_pass_result_ids(&v);
+    assert!(
+        !pass_ids.contains(&"fapd-E01".to_string()),
+        "fapd-E01 fired, so it must NOT also be attested as a pass; passes={pass_ids:?}"
+    );
+    // The fired code must still be present as a finding (not silently dropped).
+    let finding_ids: Vec<String> = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results")
+        .iter()
+        .filter(|r| r.get("kind").and_then(Value::as_str) != Some("pass"))
+        .filter_map(|r| r.get("ruleId").and_then(Value::as_str).map(String::from))
+        .collect();
+    assert!(
+        finding_ids.contains(&"fapd-E01".to_string()),
+        "fapd-E01 must appear as a finding result; findings={finding_ids:?}"
     );
     assert!(
-        stderr.contains("reserved") || stderr.contains("no effect"),
-        "stderr must say the flag is reserved / has no effect; got: {stderr}"
+        pass_ids.contains(&"fapd-W08".to_string()),
+        "fapd-W08 is clean + evaluated, so it must be attested as a pass; passes={pass_ids:?}"
     );
+}
+
+/// Regression (getent stdout leak): `--check-identities` shells out to
+/// `getent`, whose matched-line stdout must NOT leak into rulesteward's own
+/// stdout - it would corrupt machine-readable `--format json`/`sarif`. Before
+/// the fix, `getent passwd 0` printed `root:x:0:0:...` ahead of the SARIF JSON
+/// (identity.rs used `.status()`, which inherits the child's stdout). stdout
+/// must be pure, parseable SARIF.
+#[test]
+fn check_identities_does_not_leak_getent_output_to_stdout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-id.rules", "allow uid=0 : all\n");
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "lint",
+            "--format",
+            "sarif",
+            "--check-identities",
+        ])
+        .arg(&rules_d)
+        .assert()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     assert!(
-        stderr.contains("137"),
-        "stderr note should reference tracking issue #137; got: {stderr}"
+        !stdout.contains("root:x:"),
+        "getent output must not leak into stdout; got:\n{stdout}"
+    );
+    let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout must be valid SARIF JSON (no leading getent line), parse error {e}:\n{stdout}"
+        )
+    });
+    assert_eq!(v.get("version").and_then(Value::as_str), Some("2.1.0"));
+}
+
+/// #137 + getent (the canonical issue example): with the getent leak fixed,
+/// `--check-identities` makes fapd-W05 an evaluated check, so it appears in
+/// `tool.driver.rules[]`; without it, it does not. The `--target` test pins the
+/// same plumbing subprocess-free; this exercises the W05/getent path end to end.
+#[test]
+fn sarif_pass_coverage_includes_w05_only_with_check_identities() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-clean.rules", "allow uid=0 : all\n");
+
+    let (without, _o, _e) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+    assert!(
+        !sarif_rule_ids(&without).contains(&"fapd-W05".to_string()),
+        "fapd-W05 must NOT be attested without --check-identities"
     );
 
-    let base_stderr = String::from_utf8(base_out.stderr.clone()).expect("utf8 stderr");
+    let (with, _o2, _e2) =
+        run_sarif_lint(&rules_d, &["--sarif-include-pass", "--check-identities"]);
     assert!(
-        !base_stderr.contains("--sarif-include-pass"),
-        "no reserved-flag note must appear when the flag is absent; got: {base_stderr}"
+        sarif_rule_ids(&with).contains(&"fapd-W05".to_string()),
+        "fapd-W05 must be attested in rules[] with --check-identities"
+    );
+}
+
+/// Coverage attestation must be SUPPRESSED on a parse failure: a rules.d with a
+/// file that does not parse (fapd-F01) means the policy was never fully read, so
+/// claiming the always-on checks "passed" would overstate coverage. The F01
+/// finding is still present; rules[] and pass results are not.
+#[test]
+fn sarif_pass_suppressed_on_parse_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-broken.rules", "!!!garbage line\n");
+    let (v, _stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+
+    assert!(
+        sarif_rule_ids(&v).is_empty(),
+        "parse failure must suppress tool.driver.rules[] coverage attestation"
+    );
+    assert!(
+        sarif_pass_result_ids(&v).is_empty(),
+        "parse failure must suppress kind:\"pass\" results"
+    );
+    // The parse failure itself is still reported as a finding.
+    let finding_ids: Vec<String> = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results")
+        .iter()
+        .filter_map(|r| r.get("ruleId").and_then(Value::as_str).map(String::from))
+        .collect();
+    assert!(
+        finding_ids.contains(&"fapd-F01".to_string()),
+        "the parse failure must still be reported as fapd-F01; got {finding_ids:?}"
+    );
+}
+
+/// Coverage attestation must be SUPPRESSED on an EMPTY rules.d (no rule files):
+/// no policy content was analyzed, so attesting "checks passed" is meaningless.
+#[test]
+fn sarif_pass_suppressed_on_empty_rules_d() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir_all(&rules_d).expect("create empty rules.d");
+    let (v, _stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+
+    assert!(
+        sarif_rule_ids(&v).is_empty(),
+        "empty rules.d must suppress tool.driver.rules[] (no content analyzed)"
+    );
+    assert!(
+        sarif_pass_result_ids(&v).is_empty(),
+        "empty rules.d must suppress kind:\"pass\" results"
+    );
+}
+
+/// Coverage attestation must be SUPPRESSED when the input has no rule content
+/// (only comments/blanks parse): the checks had nothing to validate.
+#[test]
+fn sarif_pass_suppressed_when_only_comments() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "10-comments.rules", "# just a comment\n\n");
+    let (v, _stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+
+    assert!(
+        sarif_rule_ids(&v).is_empty(),
+        "comment-only input must suppress rules[] (no rule content analyzed)"
+    );
+    assert!(
+        sarif_pass_result_ids(&v).is_empty(),
+        "comment-only input must suppress kind:\"pass\" results"
+    );
+}
+
+/// Compliance-safe semantic: a parse failure in ONE file suppresses coverage
+/// for the WHOLE run even when sibling files parse cleanly - you cannot attest
+/// a policy you could not fully read. The clean file's content is analyzed, but
+/// the F01 in the broken file means coverage is incomplete, so no passes.
+#[test]
+fn sarif_pass_suppressed_when_any_file_fails_to_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir_all(&rules_d).expect("create rules.d");
+    std::fs::write(rules_d.join("10-ok.rules"), "allow uid=0 : all\n").expect("write ok");
+    std::fs::write(rules_d.join("20-broken.rules"), "!!!garbage\n").expect("write broken");
+    let (v, _stdout, _stderr) = run_sarif_lint(&rules_d, &["--sarif-include-pass"]);
+
+    assert!(
+        sarif_rule_ids(&v).is_empty() && sarif_pass_result_ids(&v).is_empty(),
+        "any parse failure must suppress coverage for the whole run (incomplete read)"
     );
 }
 
