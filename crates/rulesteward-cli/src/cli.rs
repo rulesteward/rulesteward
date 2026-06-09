@@ -192,13 +192,16 @@ pub struct LintArgs {
     #[arg(long)]
     pub check_identities: bool,
 
-    /// (reserved; no effect yet) Additionally emit SARIF `kind:"pass"` results
-    /// for evaluated-but-clean rules. Only meaningful with `--format sarif`.
+    /// Additionally emit SARIF `kind:"pass"` results attesting per-check
+    /// coverage: one pass per `fapd-` check that ran and was clean, plus a
+    /// `tool.driver.rules[]` catalog of the checks that ran. Only meaningful
+    /// with `--format sarif` (ignored for human/json).
     ///
-    /// The flag parses and is accepted from this release per the locked
-    /// output-format policy (#65), but pass-result emission semantics are not
-    /// yet implemented; the run prints a note and SARIF output is unchanged.
-    /// Tracked in #137.
+    /// "Ran" respects the run's gates: a conditional check (e.g. fapd-W05 needs
+    /// `--check-identities`, fapd-W06 needs `--against-trustdb`, fapd-E06 needs
+    /// `--target`) is only attested when its gate is on, so coverage is never
+    /// claimed for a check that did not execute. Off by default; SARIF output is
+    /// unchanged unless this flag is set (#137).
     #[arg(long)]
     pub sarif_include_pass: bool,
 }

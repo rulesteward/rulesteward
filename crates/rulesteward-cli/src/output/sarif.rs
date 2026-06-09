@@ -15,12 +15,33 @@
 //!   * `column`   -> `region.startColumn`
 
 use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_fapolicyd::catalog::LintCode;
 use serde_sarif::sarif::{
-    ArtifactLocation, Location, Message, PhysicalLocation, Region, Result as SarifResult,
-    ResultLevel, Run, Sarif, Tool, ToolComponent,
+    ArtifactLocation, Location, Message, MultiformatMessageString, PhysicalLocation, Region,
+    ReportingConfiguration, ReportingDescriptor, Result as SarifResult, ResultKind, ResultLevel,
+    Run, Sarif, Tool, ToolComponent,
 };
 
 use super::RenderError;
+
+/// Per-check coverage attestation payload for `--sarif-include-pass` (#137).
+///
+/// `rules` are every `fapd-` check that EVALUATED for this run (used to
+/// populate `tool.driver.rules[]`); `passes` are the subset that evaluated AND
+/// produced no finding (emitted as `kind:"pass"` results). Both are catalog
+/// entries so the renderer has each code's id, severity, and description.
+/// Constructed by the lint command from
+/// [`rulesteward_fapolicyd::catalog::evaluated`] minus the codes that fired.
+///
+/// When `--sarif-include-pass` is off the renderer is given `None`, producing
+/// byte-identical output to the pre-#137 form (no `rules[]`, no pass results).
+#[derive(Debug)]
+pub struct PassInfo {
+    /// Every evaluated check (populates `tool.driver.rules[]`).
+    pub rules: Vec<&'static LintCode>,
+    /// Evaluated-and-clean checks (emitted as `kind:"pass"` results).
+    pub passes: Vec<&'static LintCode>,
+}
 
 /// The driver name recorded in `tool.driver.name`.
 const DRIVER_NAME: &str = "rulesteward";
@@ -70,11 +91,56 @@ fn diagnostic_to_result(diag: &Diagnostic) -> SarifResult {
         .build()
 }
 
+/// Build a `tool.driver.rules[]` entry (`ReportingDescriptor`) for a catalog
+/// code: its id, a `shortDescription`, and the severity-mapped default level.
+fn rule_descriptor(c: &LintCode) -> ReportingDescriptor {
+    ReportingDescriptor::builder()
+        .id(c.code.to_string())
+        .short_description(
+            MultiformatMessageString::builder()
+                .text(c.description.to_string())
+                .build(),
+        )
+        .default_configuration(
+            ReportingConfiguration::builder()
+                // `ReportingConfiguration.level` is `Option<serde_json::Value>`;
+                // a `ResultLevel` serializes to its camelCase string
+                // ("error"/"warning"/"note"). Serializing a fieldless enum
+                // cannot fail, so the `unwrap_or_default` is unreachable defense.
+                .level(serde_json::to_value(severity_to_level(c.severity)).unwrap_or_default())
+                .build(),
+        )
+        .build()
+}
+
+/// Build a `kind:"pass"` coverage result for a clean evaluated check.
+///
+/// No `locations` is set: per-check coverage attestation ("this check ran over
+/// the rule set and was clean") is analysis-wide, not anchored to a single
+/// source line. `level` is `none`, the SARIF convention for a pass.
+fn pass_result(c: &LintCode) -> SarifResult {
+    SarifResult::builder()
+        .rule_id(c.code.to_string())
+        .kind(ResultKind::Pass)
+        .level(ResultLevel::None)
+        .message(
+            Message::builder()
+                .text(format!("{} evaluated; no findings", c.code))
+                .build(),
+        )
+        .build()
+}
+
 /// Render diagnostics as a SARIF 2.1.0 log serialized to pretty JSON.
 ///
 /// Diagnostic order is preserved in `runs[0].results[]`. The returned string
 /// has no trailing newline added beyond what `serde_json` produces (pretty
 /// JSON already ends without one); the dispatcher / CLI print it verbatim.
+///
+/// `pass` carries the per-check coverage attestation for `--sarif-include-pass`
+/// (#137): `Some(..)` appends a `tool.driver.rules[]` catalog and one
+/// `kind:"pass"` result per evaluated-and-clean check; `None` is byte-identical
+/// to the pre-#137 output (no `rules[]`, findings only).
 ///
 /// # Errors
 /// Returns [`RenderError::Serialization`] if `serde_json` fails to serialize
@@ -82,14 +148,34 @@ fn diagnostic_to_result(diag: &Diagnostic) -> SarifResult {
 /// (every field is a plain JSON-representable type), but the SARIF log is
 /// serialized via the fallible `serde_json::to_string_pretty`, so the error
 /// path is surfaced rather than silently `expect`-ed.
-pub fn render(diags: &[Diagnostic]) -> Result<String, RenderError> {
-    let results: Vec<SarifResult> = diags.iter().map(diagnostic_to_result).collect();
+pub fn render(diags: &[Diagnostic], pass: Option<&PassInfo>) -> Result<String, RenderError> {
+    let mut results: Vec<SarifResult> = diags.iter().map(diagnostic_to_result).collect();
+    if let Some(pass) = pass {
+        results.extend(pass.passes.iter().map(|c| pass_result(c)));
+    }
 
-    let driver = ToolComponent::builder()
-        .name(DRIVER_NAME)
-        .version(env!("CARGO_PKG_VERSION").to_string())
-        .information_uri(INFORMATION_URI)
-        .build();
+    // Only attach `tool.driver.rules[]` when pass coverage is requested, so the
+    // flag-off output stays byte-identical to the pre-#137 form. (TypedBuilder
+    // setters change the builder type, hence two distinct build chains rather
+    // than a conditional `.rules(..)` on one builder.)
+    let driver = match pass {
+        None => ToolComponent::builder()
+            .name(DRIVER_NAME)
+            .version(env!("CARGO_PKG_VERSION").to_string())
+            .information_uri(INFORMATION_URI)
+            .build(),
+        Some(pass) => ToolComponent::builder()
+            .name(DRIVER_NAME)
+            .version(env!("CARGO_PKG_VERSION").to_string())
+            .information_uri(INFORMATION_URI)
+            .rules(
+                pass.rules
+                    .iter()
+                    .map(|c| rule_descriptor(c))
+                    .collect::<Vec<_>>(),
+            )
+            .build(),
+    };
 
     let run = Run::builder()
         .tool(Tool::builder().driver(driver).build())
@@ -133,13 +219,13 @@ mod tests {
     fn render_output_ends_with_trailing_newline() {
         // Machine-readable output must end with a newline for shell-pipeline
         // safety, matching the JSON renderer (output/json.rs).
-        let out = render(&[]).expect("render empty");
+        let out = render(&[], None).expect("render empty");
         assert!(out.ends_with('\n'), "SARIF output must end with a newline");
     }
 
     #[test]
     fn empty_diags_render_valid_sarif_with_empty_results() {
-        let out = render(&[]).expect("render empty");
+        let out = render(&[], None).expect("render empty");
         let v: Value = serde_json::from_str(&out).expect("parse JSON");
         assert_eq!(v.get("version").and_then(Value::as_str), Some("2.1.0"));
         let results = v
@@ -163,7 +249,7 @@ mod tests {
                 2,
             ),
         ];
-        let out = render(&diags).expect("render");
+        let out = render(&diags, None).expect("render");
         let v: Value = serde_json::from_str(&out).expect("parse");
         let results = v
             .pointer("/runs/0/results")

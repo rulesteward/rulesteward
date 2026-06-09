@@ -17,6 +17,7 @@
 //! * `cross_db` - trust-DB cross-pass (fapd-X01), CLI-invoked.
 //! * `trust_hash` - trust-DB weak-digest surfacing (fapd-W11), CLI-invoked.
 
+pub mod catalog;
 pub(crate) mod cross_db;
 mod cross_file;
 mod deprecation;
