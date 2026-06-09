@@ -8,6 +8,10 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::model::{CheckResult, CheckStatus, CommandOutcome, SystemProbe};
+use crate::commands::container_check::{
+    Report as ContainerReport, Severity as ContainerSeverity,
+    worst_severity as container_worst_severity,
+};
 use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
 
 // ---------------------------------------------------------------------------
@@ -311,16 +315,63 @@ fn check_ignore_mounts_cmd(probe: &dyn SystemProbe) -> CheckResult {
     }
 }
 
-/// Check 9: container-check (stub -- Skip with note per design decision #4).
-fn check_container(_probe: &dyn SystemProbe) -> CheckResult {
-    // Design decision #4: container-check subcommand is not yet implemented.
-    // This check emits Skip so it appears in the report without implying
-    // the deployment is unhealthy.
+/// Check 9: container-runtime risk (#134, #175).
+///
+/// Delegates to the container-check classifier. [`run`](super::run) builds the
+/// report from a live `ContainerProbe` and passes `Some(&report)`; `None` (only
+/// in isolated unit tests) yields `Unknown`. The classifier's findings map to a
+/// single scorecard verdict here: HIGH -> Fail, baseline WARN -> Warn, INFO or
+/// none -> Ok, RHCOS -> Warn (fapolicyd is not the supported control path).
+fn check_container(container: Option<&ContainerReport>) -> CheckResult {
+    let Some(report) = container else {
+        return CheckResult {
+            name: "container-check",
+            status: CheckStatus::Unknown,
+            detail: "container-check did not run".to_string(),
+            remediation: None,
+        };
+    };
+
+    if report.rhcos.is_rhcos {
+        return CheckResult {
+            name: "container-check",
+            status: CheckStatus::Warn,
+            detail: format!("RHCOS/OpenShift node: {}", report.rhcos.detail),
+            remediation: Some(
+                "fapolicyd does not fully support OpenShift/RHCOS app control (RHEL-114562); \
+                 see `rulesteward fapolicyd container-check`"
+                    .to_string(),
+            ),
+        };
+    }
+
+    let n = report.findings.len();
+    let (status, detail) = match container_worst_severity(report) {
+        Some(ContainerSeverity::High) => (
+            CheckStatus::Fail,
+            format!("{n} container-runtime risk finding(s); worst severity HIGH"),
+        ),
+        Some(ContainerSeverity::Warn) => (
+            CheckStatus::Warn,
+            "a container runtime is active on this fapolicyd host".to_string(),
+        ),
+        Some(ContainerSeverity::Info) => (
+            CheckStatus::Ok,
+            "container-runtime advisory only (no enforcing-mode risk)".to_string(),
+        ),
+        None => (
+            CheckStatus::Ok,
+            "no container runtime active; no namespace risk".to_string(),
+        ),
+    };
+    let remediation = matches!(status, CheckStatus::Fail | CheckStatus::Warn)
+        .then(|| "run `rulesteward fapolicyd container-check` for details".to_string());
+
     CheckResult {
         name: "container-check",
-        status: CheckStatus::Skip,
-        detail: "container-check not yet implemented (tracked separately)".to_string(),
-        remediation: None,
+        status,
+        detail,
+        remediation,
     }
 }
 
@@ -516,7 +567,11 @@ fn cmd_outcome_to_result(
 // ---------------------------------------------------------------------------
 
 /// Run all 13 doctor checks, returning a Vec of results in declaration order.
-pub fn run_checks(probe: &dyn SystemProbe, rules_dir: &Path) -> Vec<CheckResult> {
+pub fn run_checks(
+    probe: &dyn SystemProbe,
+    rules_dir: &Path,
+    container: Option<&ContainerReport>,
+) -> Vec<CheckResult> {
     vec![
         check_service(probe),
         check_kernel(probe),
@@ -526,7 +581,7 @@ pub fn run_checks(probe: &dyn SystemProbe, rules_dir: &Path) -> Vec<CheckResult>
         check_trustdb_cmd(probe),
         check_watch_fs_cmd(probe),
         check_ignore_mounts_cmd(probe),
-        check_container(probe),
+        check_container(container),
         check_rpm_plugin(probe),
         check_disk_space(probe),
         check_denial_rate(probe),
@@ -952,16 +1007,69 @@ mod tests {
     // Check 9: container-check always Skip (design decision #4)
     // -------------------------------------------------------------------------
 
+    /// Build a synthetic container-check report for the doctor #9 mapping tests.
+    fn container_report(
+        is_rhcos: bool,
+        findings: Vec<crate::commands::container_check::Finding>,
+    ) -> ContainerReport {
+        ContainerReport {
+            runtimes: vec![],
+            findings,
+            rhcos: crate::commands::container_check::RhcosStatus {
+                is_rhcos,
+                detail: "synthetic".to_string(),
+            },
+            fapolicyd_running: true,
+            deep: None,
+        }
+    }
+
+    fn cfinding(severity: ContainerSeverity) -> crate::commands::container_check::Finding {
+        crate::commands::container_check::Finding {
+            code: "synthetic",
+            severity,
+            detail: String::new(),
+        }
+    }
+
     #[test]
-    fn check_container_is_always_skip() {
-        let probe = FakeProbe::default();
-        let result = check_container(&probe);
-        assert_eq!(result.status, CheckStatus::Skip);
+    fn check_container_none_is_unknown_not_stub() {
+        // #134: the old "not yet implemented" Skip stub is gone.
+        let result = check_container(None);
+        assert_eq!(result.status, CheckStatus::Unknown);
         assert!(
-            result.detail.contains("not yet implemented"),
+            !result.detail.contains("not yet implemented"),
             "{}",
             result.detail
         );
+    }
+
+    #[test]
+    fn check_container_high_finding_maps_to_fail() {
+        let report = container_report(false, vec![cfinding(ContainerSeverity::High)]);
+        assert_eq!(check_container(Some(&report)).status, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn check_container_warn_finding_maps_to_warn() {
+        let report = container_report(false, vec![cfinding(ContainerSeverity::Warn)]);
+        assert_eq!(check_container(Some(&report)).status, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn check_container_info_or_none_maps_to_ok() {
+        let info = container_report(false, vec![cfinding(ContainerSeverity::Info)]);
+        assert_eq!(check_container(Some(&info)).status, CheckStatus::Ok);
+        let empty = container_report(false, vec![]);
+        assert_eq!(check_container(Some(&empty)).status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn check_container_rhcos_maps_to_warn() {
+        let report = container_report(true, vec![]);
+        let result = check_container(Some(&report));
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("RHCOS"));
     }
 
     // -------------------------------------------------------------------------
@@ -1225,21 +1333,26 @@ mod tests {
     fn run_checks_returns_exactly_13_results() {
         // All probe methods unconfigured -- every check returns Unknown or Skip.
         let probe = FakeProbe::default();
-        let results = run_checks(&probe, &fake_path());
+        let results = run_checks(&probe, &fake_path(), None);
         assert_eq!(results.len(), 13, "doctor must run exactly 13 checks");
     }
 
     #[test]
-    fn run_checks_container_check_is_skip_regardless_of_probe() {
-        // Container-check (#9, index 8) is always Skip (design decision #4).
+    fn run_checks_container_check_at_index_8_uses_report() {
+        // Container-check is #9 (index 8) and now reflects the classifier report.
         let probe = FakeProbe::default();
-        let results = run_checks(&probe, &fake_path());
+        let empty = container_report(false, vec![]);
+        let results = run_checks(&probe, &fake_path(), Some(&empty));
         let cc = &results[8];
         assert_eq!(
             cc.name, "container-check",
             "index 8 must be container-check"
         );
-        assert_eq!(cc.status, CheckStatus::Skip, "container-check must be Skip");
+        assert_eq!(
+            cc.status,
+            CheckStatus::Ok,
+            "an empty container report (no active runtime) maps to Ok"
+        );
     }
     // -------------------------------------------------------------------------
     // parse_kernel_version

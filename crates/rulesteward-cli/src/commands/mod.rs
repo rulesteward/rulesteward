@@ -3,6 +3,7 @@
 
 pub mod auditd;
 pub mod completions;
+pub mod container_check;
 pub mod doctor;
 pub mod explain;
 pub mod fapolicyd;

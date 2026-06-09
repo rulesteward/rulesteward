@@ -111,10 +111,15 @@ fn doctor_human_format_does_not_panic() {
         .stdout(predicate::str::contains("Summary:"));
 }
 
-/// `fapolicyd doctor --format json` must include the container-check entry as
-/// `Skip` (design decision #4 -- container-check not yet implemented).
+/// `fapolicyd doctor --format json` must include the container-check entry and
+/// it must now be wired to the real classifier (#134/#175), NOT the old stub.
+///
+/// The exact status varies by host (Ok on a bare CI host with no runtime, up to
+/// Fail on a host with an active runtime + enforcing fapolicyd + tmpfs/mark), so
+/// we assert the rewire happened rather than a fixed verdict: a valid non-skip
+/// status, and no "not yet implemented" placeholder.
 #[test]
-fn doctor_json_container_check_is_skip() {
+fn doctor_json_container_check_is_wired() {
     let output = bin()
         .args(["fapolicyd", "doctor", "--format", "json"])
         .output()
@@ -129,17 +134,18 @@ fn doctor_json_container_check_is_skip() {
         .find(|c| c["name"].as_str() == Some("container-check"))
         .expect("container-check entry must be present in the checks array");
 
-    assert_eq!(
-        cc["status"].as_str(),
-        Some("skip"),
-        "container-check status must be 'skip' (design decision #4)"
+    let status = cc["status"].as_str().unwrap_or("");
+    assert_ne!(status, "skip", "container-check is no longer a Skip stub");
+    assert!(
+        ["ok", "warn", "fail", "unknown"].contains(&status),
+        "container-check status must be a real verdict, got {status:?}"
     );
     assert!(
-        cc["detail"]
+        !cc["detail"]
             .as_str()
             .unwrap_or("")
             .contains("not yet implemented"),
-        "container-check detail must say 'not yet implemented'"
+        "container-check detail must not carry the old stub text"
     );
 }
 

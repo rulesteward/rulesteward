@@ -137,16 +137,19 @@ pub enum FapolicydCommand {
     Explain(ExplainArgs),
     /// Build the exception register: every effective allow grant, with drift
     Report(ReportArgs),
-    // The remaining no-op stubs below are hidden so the CLI does not advertise
-    // commands that do nothing yet. NOTE: `hide` removes them from `--help` but
-    // clap_complete 4.6.5 still lists them in generated completions (accepted
-    // limitation; see e2e_completions.rs).
-    /// (stub) Container-runtime detection
-    #[command(hide = true)]
-    ContainerCheck,
+    /// Detect container runtimes and warn about fapolicyd's namespace limits
+    ///
+    /// Detects podman/Docker/containerd/CRI-O/Kubernetes/RHCOS on the host and
+    /// flags the known fapolicyd namespace-awareness limitation (RHEL-114562).
+    /// Exit 0 = no risk, 1 = WARN, 2 = HIGH, 3 = RHCOS (unsupported).
+    ContainerCheck(ContainerCheckArgs),
     /// Trust database operations (read-only)
     #[command(subcommand)]
     Trustdb(TrustdbCommand),
+    // The remaining no-op stub below is hidden so the CLI does not advertise a
+    // command that does nothing yet. NOTE: `hide` removes it from `--help` but
+    // clap_complete 4.6.5 still lists it in generated completions (accepted
+    // limitation; see e2e_completions.rs).
     /// (stub) Migrate legacy fapolicyd.rules to rules.d/
     #[command(hide = true)]
     Migrate,
@@ -365,6 +368,30 @@ pub struct DoctorArgs {
     pub format: HumanJsonFormat,
 
     /// Rules directory to lint as part of the health check
+    /// (defaults to /etc/fapolicyd/rules.d/).
+    #[arg(long, value_name = "DIR", hide = true)]
+    pub rules_dir: Option<std::path::PathBuf>,
+}
+
+/// Arguments for `rulesteward fapolicyd container-check` (#175).
+///
+/// Detects container runtimes and reports fapolicyd namespace-limitation risk.
+/// The default run is unprivileged and uses only cheap probes; `--deep` (root)
+/// additionally reads `fapolicyd-cli --dump-db` and `ausearch` for evidence
+/// (which annotates findings but never changes their severity).
+#[derive(Debug, Parser)]
+pub struct ContainerCheckArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Gather extra evidence from the running daemon (requires root): trust-DB
+    /// coverage of runtime binaries and recent denial counts. Evidence-only:
+    /// it enriches findings but does not change the verdict or exit code.
+    #[arg(long)]
+    pub deep: bool,
+
+    /// Rules directory to scan for an `allow exe=/usr/bin/crun` rule
     /// (defaults to /etc/fapolicyd/rules.d/).
     #[arg(long, value_name = "DIR", hide = true)]
     pub rules_dir: Option<std::path::PathBuf>,

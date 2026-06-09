@@ -51,6 +51,12 @@ examine_globs = [
     # (covered by the e2e graceful-degradation test + live VM smoke); their mutants are
     # excluded by name in exclude_re below.
     "crates/rulesteward-cli/src/commands/doctor/**/*.rs",
+    # fapolicyd container-check (#175; last v0.2 deliverable): the pure classifier
+    # (detect/classify/exit_code/downgrade), the renderers, and the conf/dump-db/
+    # rules/ausearch parsers in probe.rs are real branching logic covered by the
+    # FakeProbe unit tests. The LiveContainerProbe shell-out methods have no unit
+    # tests (e2e graceful-degradation + live VM smoke); excluded by name below.
+    "crates/rulesteward-cli/src/commands/container_check/**/*.rs",
     # P0 (v0.2 round 2) generic CSV serializer: RFC-4180 escaping branches.
     "crates/rulesteward-cli/src/output/csv.rs",
     # feat-report register renderers (output/register.rs): the trustJoin shape
@@ -210,6 +216,14 @@ exclude_re = [
     # parse_kernel_version, parse_lint_counts, worst_exit_code, renderers) stays
     # in scope and is killed by the FakeProbe unit tests.
     '<impl SystemProbe for LiveProbe>',
+    # container-check LiveContainerProbe shell-out methods (#175): same rationale
+    # as the doctor LiveProbe above. The real OS access (which/systemctl/test/rpm/
+    # ausearch/fapolicyd-cli dispatch) has no unit tests by design; it is covered
+    # by the e2e graceful-degradation test + live VM smoke. The PURE parsers in
+    # probe.rs (parse_effective_conf, crun_covered_in_rules, dump_db_trusted,
+    # count_runtime_denials) and the classifier stay in scope, killed by FakeProbe
+    # + parser unit tests.
+    '<impl ContainerProbe for LiveContainerProbe>',
     # `read_fapolicyd_mode` is a one-line delegation wrapper:
     #   `read_fapolicyd_mode_from(Path::new("/etc/fapolicyd/fapolicyd.conf"))`
     # On the test/CI machine /etc/fapolicyd/fapolicyd.conf does not exist, so

@@ -40,7 +40,15 @@ pub fn run(args: &DoctorArgs) -> anyhow::Result<i32> {
         .unwrap_or_else(|| Path::new(DEFAULT_RULES_DIR));
 
     let probe = LiveProbe;
-    let results = run_checks(&probe, rules_dir);
+
+    // Check #9 reuses the container-check classifier (#134). Build its report
+    // from a live ContainerProbe and pass it in as plain data so `run_checks`
+    // stays pure over `SystemProbe` (and OS-free in unit tests).
+    let container_probe = crate::commands::container_check::LiveContainerProbe;
+    let container_report =
+        crate::commands::container_check::classify(&container_probe, rules_dir, false);
+
+    let results = run_checks(&probe, rules_dir, Some(&container_report));
 
     let output = match args.format {
         HumanJsonFormat::Human => render_human(&results),
