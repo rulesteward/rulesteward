@@ -1,7 +1,7 @@
 //! fapolicyd rule evaluator - pure, side-effect-free.
 //!
 //! `evaluate` walks a load-ordered `&[Rule]` (first-match wins,
-//! policy.c:1126-1134) and returns a `Verdict`. No IO, no filesystem access,
+//! policy.c:1126-1134 (fapolicyd 1.4.5)) and returns a `Verdict`. No IO, no filesystem access,
 //! no daemon contact.
 //!
 //! The match semantics mirror §1 of
@@ -21,7 +21,7 @@ use crate::facts::{AccessFacts, FieldEval, RuleOutcome, SetTable, Trust};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     /// The matched rule's decision, or `Allow` when the ruleset fell through
-    /// (policy.c:1164: `else decision = ALLOW`).
+    /// (policy.c:1164 (fapolicyd 1.4.5): `else decision = ALLOW`).
     pub decision: Decision,
     /// 1-based rule number of the decisive rule, or `None` on fallthrough.
     pub matched_rule: Option<usize>,
@@ -39,7 +39,7 @@ pub enum Source {
     /// A decisive rule matched.
     Rule,
     /// No rule matched; the implicit fallthrough-Allow applies
-    /// (policy.c:1164).
+    /// (policy.c:1164 (fapolicyd 1.4.5)).
     Fallthrough,
 }
 
@@ -75,7 +75,7 @@ const SYSTEMDIRS: &[&str] = &[
 // Internal: perm check
 // ---------------------------------------------------------------------------
 
-/// `check_access` (rules.c:1340-1353): does the rule's perm match the event?
+/// `check_access` (rules.c:1340-1353 (fapolicyd 1.4.5)): does the rule's perm match the event?
 /// `None` means "no perm specified" -> defaults to `open` (man page:
 /// "If none are given, then open is assumed").
 fn check_access(rule_perm: Option<Perm>, facts_perm: Perm) -> bool {
@@ -148,7 +148,7 @@ fn int_set_contains(fact_val_i64: i64, rule_value: &AttrValue, sets: &SetTable) 
     }
 }
 
-/// PREFIX match (`attr_set_check_pstr`, rules.c:412-446): the fact path matches
+/// PREFIX match (`attr_set_check_pstr`, rules.c:412-446 (fapolicyd 1.4.5)): the fact path matches
 /// if ANY entry in `rule_value` is a strncmp-prefix of `fact_path`.
 fn prefix_string_match(fact_path: &str, rule_value: &AttrValue, sets: &SetTable) -> FieldEval {
     let prefixes: Vec<&str> = match rule_value {
@@ -206,11 +206,11 @@ fn prefix_from_list(fact_path: &str, list: &[&str]) -> FieldEval {
 // Internal: uid/gid intersection helpers
 // ---------------------------------------------------------------------------
 
-/// `avl_intersection`-style uid match (rules.c:1391-1402): any fact uid in
+/// `avl_intersection`-style uid match (rules.c:1391-1402 (fapolicyd 1.4.5)): any fact uid in
 /// the rule's uid set matches. Returns `FieldEval::Match` on any overlap.
 fn uid_intersection_match(fact_uids: &[u32], rule_value: &AttrValue, sets: &SetTable) -> FieldEval {
     if fact_uids.is_empty() {
-        // Absent fact: widen (rules.c:1376-1379).
+        // Absent fact: widen (rules.c:1376-1379 (fapolicyd 1.4.5)).
         return FieldEval::Match;
     }
     for &fact_uid in fact_uids {
@@ -221,7 +221,7 @@ fn uid_intersection_match(fact_uids: &[u32], rule_value: &AttrValue, sets: &SetT
     FieldEval::NoMatch
 }
 
-/// gid intersection match (rules.c:1413-1417): any fact gid in the rule's gid set.
+/// gid intersection match (rules.c:1413-1417 (fapolicyd 1.4.5)): any fact gid in the rule's gid set.
 fn gid_intersection_match(fact_gids: &[u32], rule_value: &AttrValue, sets: &SetTable) -> FieldEval {
     if fact_gids.is_empty() {
         return FieldEval::Match;
@@ -247,7 +247,7 @@ fn eval_optional_int<T: Into<i64> + Copy>(
     sets: &SetTable,
 ) -> FieldEval {
     match fact {
-        None => FieldEval::Match, // absent fact widens (rules.c:1376-1379)
+        None => FieldEval::Match, // absent fact widens (rules.c:1376-1379 (fapolicyd 1.4.5))
         Some(v) => {
             if int_set_contains(v.into(), value, sets) {
                 FieldEval::Match
@@ -291,7 +291,7 @@ fn eval_trust_field(
 
 /// `true` when `value` is a `SetRef` whose resolved members contain the
 /// `untrusted` macro token. Used by the EXE arm to decide whether the embedded
-/// trust macro applies (f1 §1.4 line 164; rules.c:1443-1463).
+/// trust macro applies (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)).
 fn set_contains_untrusted(value: &AttrValue, sets: &SetTable) -> bool {
     match value {
         AttrValue::SetRef(name) => sets
@@ -402,7 +402,7 @@ fn eval_subject_field(
         "exe" => match as_str_literal(value) {
             // #126: `exe=untrusted` is a TRUST MACRO - real fapolicyd has NO
             // symmetric `trusted` macro; only `untrusted` is special in the EXE
-            // case (f1 grounding §1.4 ~line 164; upstream rules.c:1443-1463; live
+            // case (f1 grounding §1.4 ~line 164; upstream rules.c:1443-1463 (fapolicyd 1.4.5); live
             // fapolicyd 1.4.5). The macro evaluates against the SUBJECT trust
             // state, NOT the exe path. Reuse `eval_trust_field` so the
             // NotEvaluable/Match/NoMatch return shape (and the simulate confidence
@@ -418,7 +418,7 @@ fn eval_subject_field(
             ),
             // A SetRef whose resolved members CONTAIN the `untrusted` macro
             // token: real fapolicyd's EXE case OR-s the `untrusted` macro with
-            // exact set membership (f1 §1.4 line 164; rules.c:1443-1463). So the
+            // exact set membership (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)). So the
             // match is (set contains "untrusted" AND subject NOT trusted) OR
             // (exe path is an exact member). The macro path mirrors the bare
             // `exe=untrusted` Trust::Unknown -> NotEvaluable downgrade when it is
@@ -504,13 +504,13 @@ fn eval_object_field(
         "sha256hash" | "filehash" => match &facts.sha256 {
             // #127: the object is PRESENT on disk but its hash could NOT be
             // computed (e.g. EACCES). FILE_HASH treats a hash-lookup error as a
-            // denial (rules.c:1606-1611: "Treat errors as denial for file hash
+            // denial (rules.c:1606-1611 (fapolicyd 1.4.5): "Treat errors as denial for file hash
             // lookups" -> `return 0`), so the constraint is `NoMatch` - DISTINCT
             // from object-absent. Pinned by
             // `filehash_present_but_unhashable_is_denied_not_widened`.
             None if facts.sha256_unhashable => (FieldEval::NoMatch, None),
             // Object ABSENT (no hash, not flagged unhashable): widen (skip), the
-            // standard absent-fact behavior (rules.c:1572-1575).
+            // standard absent-fact behavior (rules.c:1572-1575 (fapolicyd 1.4.5)).
             None => (FieldEval::Match, None),
             Some(h) => (exact_string_match(h, value, sets), None),
         },
@@ -527,7 +527,7 @@ fn eval_object_field(
                 (FieldEval::NotEvaluable, Some(reason))
             }
             Some(ft) => {
-                // ftype=any always matches (rules.c:1587-1591).
+                // ftype=any always matches (rules.c:1587-1591 (fapolicyd 1.4.5)).
                 let fe = match value {
                     AttrValue::Str(s) if s == "any" => FieldEval::Match,
                     _ => exact_string_match(ft, value, sets),
@@ -586,14 +586,14 @@ fn eval_object_field(
 /// Evaluate one rule against the facts. Returns `RuleOutcome` and, when the
 /// outcome is `PossibleMatch`, a string describing the unevaluable construct.
 fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome, Option<String>) {
-    // check_access (rules.c:1340-1353)
+    // check_access (rules.c:1340-1353 (fapolicyd 1.4.5))
     if !check_access(rule.perm, facts.perm) {
         return (RuleOutcome::NoMatch, None);
     }
 
     let mut possible_reason: Option<String> = None;
 
-    // check_subject: all subject attrs AND'ed (rules.c:1381-1517).
+    // check_subject: all subject attrs AND'ed (rules.c:1381-1517 (fapolicyd 1.4.5)).
     for attr in &rule.subject {
         match attr {
             Attr::All => {
@@ -623,7 +623,7 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
         }
     }
 
-    // check_object: all object attrs AND'ed (rules.c:1577-1664).
+    // check_object: all object attrs AND'ed (rules.c:1577-1664 (fapolicyd 1.4.5)).
     for attr in &rule.object {
         match attr {
             Attr::All => {
@@ -663,9 +663,9 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
 /// Walk the load-ordered rule slice and return a `Verdict`.
 ///
 /// Implements the fapolicyd match loop from `process_event_with_source()`
-/// (policy.c:1126-1164):
-/// - First-match wins (policy.c:1126-1134).
-/// - Fallthrough defaults to `Allow` (policy.c:1164).
+/// (policy.c:1126-1164 (fapolicyd 1.4.5)):
+/// - First-match wins (policy.c:1126-1134 (fapolicyd 1.4.5)).
+/// - Fallthrough defaults to `Allow` (policy.c:1164 (fapolicyd 1.4.5)).
 /// - A `PossibleMatch` before the decisive rule is recorded in
 ///   `Verdict::uncertain`.
 ///
@@ -682,7 +682,7 @@ pub fn evaluate(rules: &[Rule], sets: &SetTable, facts: &AccessFacts) -> Verdict
             RuleOutcome::Decisive(decision) => {
                 return Verdict {
                     decision,
-                    matched_rule: Some(idx + 1), // 1-based (policy.c:1155)
+                    matched_rule: Some(idx + 1), // 1-based (policy.c:1155 (fapolicyd 1.4.5))
                     source: Source::Rule,
                     uncertain,
                 };
@@ -701,7 +701,7 @@ pub fn evaluate(rules: &[Rule], sets: &SetTable, facts: &AccessFacts) -> Verdict
         }
     }
 
-    // Fallthrough: policy.c:1164 `else decision = ALLOW`
+    // Fallthrough: policy.c:1164 (fapolicyd 1.4.5) `else decision = ALLOW`
     Verdict {
         decision: Decision::Allow,
         matched_rule: None,
@@ -785,7 +785,7 @@ mod tests {
     /// `ftype=any` matches even when the file type is statically unknown
     /// (facts.ftype absent): the rule is DECISIVE, not uncertain. Pins the
     /// `s == "any"` special-case guard in the absent-ftype branch
-    /// (rules.c:1587-1591). Kills the `s == "any" -> false/!=` mutants.
+    /// (rules.c:1587-1591 (fapolicyd 1.4.5)). Kills the `s == "any" -> false/!=` mutants.
     #[test]
     fn ftype_any_matches_when_facts_ftype_absent() {
         // deny perm=any all : ftype=any   (facts carry NO ftype -> None)
@@ -995,11 +995,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Semantic 1: first-match-wins (f1 §1.1, policy.c:1126)
+    // Semantic 1: first-match-wins (f1 §1.1, policy.c:1126 (fapolicyd 1.4.5))
     // -----------------------------------------------------------------------
 
     /// Two rules both match the facts; the FIRST in load order decides.
-    /// (f1 §1.1, policy.c:1126-1134)
+    /// (f1 §1.1, policy.c:1126-1134 (fapolicyd 1.4.5))
     #[test]
     fn first_match_wins_first_rule_decides() {
         let rules = vec![
@@ -1032,11 +1032,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Semantic 2: fallthrough = ALLOW (f1 §1.2, policy.c:1164)
+    // Semantic 2: fallthrough = ALLOW (f1 §1.2, policy.c:1164 (fapolicyd 1.4.5))
     // -----------------------------------------------------------------------
 
     /// No rule matches -> `Allow` + `Fallthrough` + `matched_rule = None`.
-    /// (f1 §1.2, policy.c:1164)
+    /// (f1 §1.2, policy.c:1164 (fapolicyd 1.4.5))
     #[test]
     fn fallthrough_when_no_rule_matches_is_allow() {
         // A rule constraining uid=999, but facts have uid=0 -> no match.
@@ -1054,7 +1054,7 @@ mod tests {
         assert_eq!(
             verdict.decision,
             Decision::Allow,
-            "fallthrough must be Allow (policy.c:1164)"
+            "fallthrough must be Allow (policy.c:1164 (fapolicyd 1.4.5))"
         );
         assert_eq!(
             verdict.matched_rule, None,
@@ -1130,7 +1130,7 @@ mod tests {
     /// A rule constraining `uid=0` but the fact's uid vec is EMPTY (absent) ->
     /// the constraint is SKIPPED, so the rule can still match on its other
     /// constraints.
-    /// (f1 §1.4, rules.c:1376-1379 "None must WIDEN not narrow")
+    /// (f1 §1.4, rules.c:1376-1379 (fapolicyd 1.4.5) "None must WIDEN not narrow")
     #[test]
     fn absent_uid_fact_widens_not_narrows() {
         let rules = vec![rule(
@@ -2180,7 +2180,7 @@ mod tests {
     // LITERAL exe-path compare, NOT a macro.
     //
     // Ground truth (real fapolicyd, f1 grounding §1.4 line ~164; upstream
-    // `src/library/rules.c` EXE case `rules.c:1443-1463`; live fapolicyd 1.4.5):
+    // `src/library/rules.c` EXE case `rules.c:1443-1463` (fapolicyd 1.4.5); live fapolicyd 1.4.5):
     // the EXE switch does EXACT string membership PLUS exactly one special token,
     // the `untrusted` macro ("if the set contains `untrusted` AND the subject is
     // not in the trust DB, match immediately"). There is NO `trusted` macro;
@@ -2265,7 +2265,7 @@ mod tests {
     /// `exe=trusted` is a LITERAL exe-path compare, NOT a trust macro.
     ///
     /// Grounding: real fapolicyd has NO `trusted` macro - only `untrusted` is
-    /// special in the EXE case (f1 §1.4 line ~164; upstream `rules.c:1443-1463`;
+    /// special in the EXE case (f1 §1.4 line ~164; upstream `rules.c:1443-1463` (fapolicyd 1.4.5);
     /// live fapolicyd 1.4.5). So `exe=trusted` does EXACT string membership: it
     /// matches only if the exe path is literally the string "trusted".
     ///
@@ -2373,7 +2373,7 @@ mod tests {
     // the EXE case ALSO honours the `untrusted` macro when the SET contains it
     // (f1 grounding §1.4 line 164: "EXACT string membership ... plus the
     // `untrusted` macro: if the set contains `untrusted` AND the subject is not
-    // in the trust DB, match immediately"; upstream rules.c:1443-1463). So the
+    // in the trust DB, match immediately"; upstream rules.c:1443-1463 (fapolicyd 1.4.5)). So the
     // EXE match for a set is: (set contains "untrusted" AND subject NOT trusted)
     // OR (exe path is an EXACT member of the set). The macro path mirrors the
     // bare-literal `exe=untrusted` behaviour, INCLUDING the Trust::Unknown ->
@@ -2581,7 +2581,7 @@ mod tests {
     // `exe_path in members` leg) would produce `PossibleMatch`/uncertain here
     // instead of the decisive `Match` the correct impl returns.
     //
-    // Ground truth (f1 §1.4 line 164; rules.c:1443-1463): the EXE switch does
+    // Ground truth (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)): the EXE switch does
     // EXACT string membership FIRST, then the `untrusted` macro only when no
     // literal member matched. Exact set membership is trust-independent: the
     // literal leg fires regardless of trust state.
@@ -2659,12 +2659,12 @@ mod tests {
     // layer, orthogonal to the integration test which pins the end-to-end CLI
     // path (non-root environments).
     //
-    // Ground truth: rules.c:1606-1611 FILE_HASH error-as-denial (`return 0`);
-    // rules.c:1572-1575 object-absent skip/widen. f1 grounding §1.4 sha256hash row.
+    // Ground truth: rules.c:1606-1611 (fapolicyd 1.4.5) FILE_HASH error-as-denial (`return 0`);
+    // rules.c:1572-1575 (fapolicyd 1.4.5) object-absent skip/widen. f1 grounding §1.4 sha256hash row.
     // -----------------------------------------------------------------------
 
     /// Present-but-unhashable object: the `sha256hash=` constraint yields
-    /// `NoMatch` (error-as-denial, rules.c:1606-1611), so the `allow` rule does
+    /// `NoMatch` (error-as-denial, rules.c:1606-1611 (fapolicyd 1.4.5)), so the `allow` rule does
     /// NOT fire and the verdict falls through to the `deny_audit` catch-all.
     ///
     /// `sha256=None, sha256_unhashable=true` is DISTINCT from the absent-object
@@ -2705,7 +2705,7 @@ mod tests {
             v.decision,
             Decision::DenyAudit,
             "present-but-unhashable object: sha256hash= must be NoMatch (error-as-denial \
-             per rules.c:1606-1611), rule 1 allow must NOT fire, rule 2 deny_audit decides"
+             per rules.c:1606-1611 (fapolicyd 1.4.5)), rule 1 allow must NOT fire, rule 2 deny_audit decides"
         );
         assert_eq!(
             v.matched_rule,
@@ -2720,7 +2720,7 @@ mod tests {
     }
 
     /// Absent object (`sha256=None`, `sha256_unhashable=false`) WIDENS to Match:
-    /// the `sha256hash=` constraint is SKIPPED (rules.c:1572-1575), so the
+    /// the `sha256hash=` constraint is SKIPPED (rules.c:1572-1575 (fapolicyd 1.4.5)), so the
     /// `allow` rule fires.
     ///
     /// This is the contrast case for `unhashable_object_yields_nomatch_at_evaluator_layer`:
@@ -2758,7 +2758,7 @@ mod tests {
             v.decision,
             Decision::Allow,
             "absent sha256 (sha256_unhashable=false) must WIDEN the sha256hash= constraint \
-             (rules.c:1572-1575 skip/widen), so rule 1 allow fires"
+             (rules.c:1572-1575 (fapolicyd 1.4.5) skip/widen), so rule 1 allow fires"
         );
         assert_eq!(
             v.matched_rule,
@@ -3674,6 +3674,170 @@ mod tests {
         assert!(
             v.uncertain.is_none(),
             "a pure prefix NoMatch (no untrusted macro involved) is decisive, not uncertain"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #142 (pin, option b): the three `untrusted` trust-macro arms evaluate
+    // against the SUBJECT/OBJECT trust state REGARDLESS of whether the path fact
+    // (`facts.exe` / `facts.path`) is present. Every OTHER macro test sets the
+    // path fact, so the absent-path behavior was unpinned. These lock it: with
+    // the path fact = `None`, the verdict must be IDENTICAL to the present-path
+    // case - trust-driven, not path-driven. A future change that gated a macro
+    // on path-presence (widen-on-absent, the rules.c skip-absent-field model)
+    // would break these and must be a deliberate, reviewed contract change.
+    // -----------------------------------------------------------------------
+
+    /// Subject `exe=untrusted` with `facts.exe = None`: trust-driven matrix.
+    #[test]
+    fn exe_untrusted_macro_absent_exe_is_trust_driven() {
+        use crate::facts::Trust;
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("exe", "untrusted")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = None;
+
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent exe + subj_trust=No must STILL fire exe=untrusted (trust-driven)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none(), "subj_trust=No is decisive");
+
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "absent exe + subj_trust=Yes must NOT fire -> fallthrough allow"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(v.uncertain.is_none(), "subj_trust=Yes is decisive");
+
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(v.decision, Decision::Allow);
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(
+            v.uncertain.is_some(),
+            "absent exe + Unknown trust must downgrade to uncertain, same as present-exe"
+        );
+    }
+
+    /// Subject `dir=untrusted` with `facts.exe = None`: trust-driven matrix.
+    #[test]
+    fn dir_untrusted_macro_absent_exe_is_trust_driven() {
+        use crate::facts::Trust;
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("dir", "untrusted")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = None;
+
+        facts.subj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent exe + subj_trust=No must STILL fire dir=untrusted (trust-driven)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+
+        facts.subj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "absent exe + subj_trust=Yes must NOT fire -> fallthrough allow"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(v.uncertain.is_none());
+
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(v.decision, Decision::Allow);
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(
+            v.uncertain.is_some(),
+            "absent exe + Unknown trust must downgrade to uncertain"
+        );
+    }
+
+    /// Object `dir=untrusted` with `facts.path = None`: obj-trust-driven matrix.
+    #[test]
+    fn object_dir_untrusted_macro_absent_path_is_trust_driven() {
+        use crate::facts::Trust;
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv("dir", "untrusted")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.path = None;
+
+        facts.obj_trust = Trust::No;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent path + obj_trust=No must STILL fire object dir=untrusted (trust-driven)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+
+        facts.obj_trust = Trust::Yes;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "absent path + obj_trust=Yes must NOT fire -> fallthrough allow"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(v.uncertain.is_none());
+
+        facts.obj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(v.decision, Decision::Allow);
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(
+            v.uncertain.is_some(),
+            "absent path + Unknown obj trust must downgrade to uncertain"
         );
     }
 }

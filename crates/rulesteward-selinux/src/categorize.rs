@@ -21,9 +21,9 @@
 //! # Categorization contract (f4 section 8 + f4b section 1.3)
 //!
 //! Map the libsepol reason bitmask to a [`DenialKind`], mirroring `audit2why`'s
-//! TE-before-CONS-before-RBAC-before-BOUNDS precedence (`audit2why.c:386-431`):
+//! TE-before-CONS-before-RBAC-before-BOUNDS precedence (`audit2why.c:386-431` (libselinux 3.10)):
 //!
-//! | libsepol reason bit (`services.h:49-52`) | [`DenialKind`] |
+//! | libsepol reason bit (`services.h:49-52` (libsepol 3.10)) | [`DenialKind`] |
 //! |---|---|
 //! | `SEPOL_COMPUTEAV_TE` (0x1)     | [`DenialKind::TeAllowable`] |
 //! | `SEPOL_COMPUTEAV_CONS` (0x2)   | [`DenialKind::Constraint`] |
@@ -59,7 +59,7 @@ use crate::{AvcDenial, DenialKind};
 /// denial referenced a class/permission the policy does not know (which, unlike
 /// an undefined CONTEXT, is a malformed-input condition rather than the expected
 /// cross-host mismatch). Return-code mapping is issue #107 (BADTCLASS /
-/// BADPERM / BADCOMPUTE; f4b section 9 / `audit2why.c:13-19`).
+/// BADPERM / BADCOMPUTE; f4b section 9 / `audit2why.c:13-19` (libselinux 3.10)).
 #[derive(Debug, thiserror::Error)]
 pub enum CategorizeError {
     /// The binary policy file could not be opened or parsed by libsepol
@@ -217,7 +217,7 @@ pub fn categorize_with_outcome(
         ReplayOutcome::BadContext => DenialKind::ContextInvalid,
         ReplayOutcome::Reason(bits) => {
             // Precedence mirrors audit2why: TE before CONS/RBAC before BOUNDS
-            // (module docs reason-bit table; audit2why.c:386-431).
+            // (module docs reason-bit table; audit2why.c:386-431 (libselinux 3.10)).
             if bits & REASON_TE != 0 {
                 DenialKind::TeAllowable
             } else if bits & (REASON_CONS | REASON_RBAC) != 0 {

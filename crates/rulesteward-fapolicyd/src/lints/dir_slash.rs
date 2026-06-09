@@ -1,5 +1,5 @@
 //! fapd-W08 - a `dir=` value missing its trailing slash. fapolicyd matches
-//! `dir=` by byte-prefix (non-slash-bounded `strncmp`, attr-sets.c:124-129),
+//! `dir=` by byte-prefix (non-slash-bounded `strncmp`, attr-sets.c:124-129 (fapolicyd 1.4.5)),
 //! so `dir=/usr/bin` also matches `/usr/binary`. fapolicyd.rules(5):128-129
 //! recommends ending `dir=` values with `/`. Both literal string values and
 //! `%setref` expansions are checked; an undefined macro emits nothing (fapd-E03

@@ -3,7 +3,7 @@
 //! Every load-bearing assertion in this file is grounded in a cited primary
 //! source: the hand-validated `narrow.te` that compiled + loaded + was removed
 //! on el9 (f4 grounding doc §3.1 + §3.3), the kernel AVC format
-//! (`security/selinux/avc.c:659-722`), and the 8-invariant narrowness contract
+//! (`security/selinux/avc.c:659-722 (Linux v6.12)`), and the 8-invariant narrowness contract
 //! (f4 §2.5). These tests are written BLIND to the implementation.
 //!
 //! Test naming convention: `test_<area>_<scenario>`.

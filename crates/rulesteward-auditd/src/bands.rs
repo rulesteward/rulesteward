@@ -112,7 +112,7 @@ fn demote(tier: VolumeTier) -> VolumeTier {
 
 /// Whether an `arch=` field VALUE selects a 32-bit ABI.
 ///
-/// `b32` is auditctl's canonical 32-bit ABI selector (libaudit.c:1419; `b64` is
+/// `b32` is auditctl's canonical 32-bit ABI selector (libaudit.c:1419 (audit 3bfa048); `b64` is
 /// the 64-bit form). A rule pinned to `b32` fires far less often than its b64
 /// sibling on a modern `x86_64` host, so it earns an extra tier demotion (#161,
 /// oracle rocky9-arch-paired). Machine-name forms (`i386` etc.) are accepted by

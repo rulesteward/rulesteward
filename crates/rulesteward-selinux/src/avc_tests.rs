@@ -24,7 +24,7 @@ mod tests {
         // verdict
         assert_eq!(d.verdict, Verdict::Denied, "verdict must be Denied");
 
-        // perms (f4 §1.1 avc.c:670)
+        // perms (f4 §1.1 avc.c:670 (Linux v6.12 security/selinux/avc.c))
         assert_eq!(d.perms, vec!["read".to_string()]);
 
         // SELinux type fields
@@ -32,7 +32,7 @@ mod tests {
         assert_eq!(d.target_type, "shadow_t");
         assert_eq!(d.tclass, "file");
 
-        // permissive=0 -> Some(false) = truly enforcing (f4 §1.1 avc.c:721-722)
+        // permissive=0 -> Some(false) = truly enforcing (f4 §1.1 avc.c:721-722 (Linux v6.12 security/selinux/avc.c))
         assert_eq!(d.permissive, Some(false));
 
         // audit(EPOCH:SERIAL) decomposed
@@ -102,7 +102,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
     }
 
     // -----------------------------------------------------------------------
-    // EDGE CASE: double spaces (f4 §1.1 avc.c:659)
+    // EDGE CASE: double spaces (f4 §1.1 avc.c:659 (Linux v6.12 security/selinux/avc.c))
     // The kernel emits "avc:  denied  { ... } for  " with two spaces after
     // the colon AND two spaces between the verdict and the brace.
     // -----------------------------------------------------------------------
@@ -118,7 +118,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
     }
 
     // -----------------------------------------------------------------------
-    // EDGE CASE: granted verdict -> permissive is None (f4 §1.1 avc.c:721)
+    // EDGE CASE: granted verdict -> permissive is None (f4 §1.1 avc.c:721 (Linux v6.12 security/selinux/avc.c))
     // A granted/audited-allow record has no permissive= field.
     // -----------------------------------------------------------------------
 
@@ -135,7 +135,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
     }
 
     // -----------------------------------------------------------------------
-    // EDGE CASE: multi-perm brace (f4 §1.1 avc.c:670-675)
+    // EDGE CASE: multi-perm brace (f4 §1.1 avc.c:670-675 (Linux v6.12 security/selinux/avc.c))
     // "{ getattr read }" -> perms=["getattr","read"]
     // -----------------------------------------------------------------------
 
@@ -149,7 +149,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
     }
 
     // -----------------------------------------------------------------------
-    // EDGE CASE: raw 0x%x hex residual token inside braces (avc.c:677)
+    // EDGE CASE: raw 0x%x hex residual token inside braces (avc.c:677 (Linux v6.12 security/selinux/avc.c))
     // "{ read 0x4 }" -> perms=["read","0x4"] (preserved, not an error)
     // -----------------------------------------------------------------------
 
@@ -170,7 +170,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
     }
 
     // -----------------------------------------------------------------------
-    // EDGE CASE: ssid=/tsid= numeric fallback (avc.c:709,714)
+    // EDGE CASE: ssid=/tsid= numeric fallback (avc.c:709,714 (Linux v6.12 security/selinux/avc.c))
     // When context cannot be resolved the kernel emits ssid=NNN / tsid=NNN.
     // Must not panic; scontext_raw = "ssid=NNN", tcontext_raw = "tsid=NNN",
     // source_type = "ssid=NNN", target_type = "tsid=NNN" (surface the raw sid).
@@ -269,7 +269,7 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
 
     // -----------------------------------------------------------------------
     // EDGE CASE: permissive=1 (permissive denial - did NOT actually block)
-    // f4 §1.1 avc.c:721-722: permissive=1 means the domain is permissive.
+    // f4 §1.1 avc.c:721-722 (Linux v6.12 security/selinux/avc.c): permissive=1 means the domain is permissive.
     // -----------------------------------------------------------------------
 
     #[test]

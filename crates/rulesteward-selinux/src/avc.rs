@@ -12,12 +12,12 @@
 //!
 //! - **Tolerant by default**: unknown `k=v` fields are silently ignored; double
 //!   spaces in the verdict/perm-brace area are accepted (they are what the kernel
-//!   emits, per `avc.c:659`).
+//!   emits, per `avc.c:659` (Linux v6.12 security/selinux/avc.c)).
 //! - **Hex residual perm tokens preserved**: when the kernel encounters unknown
-//!   permission bits it emits `0x%x` inside the braces (`avc.c:677`). These are
+//!   permission bits it emits `0x%x` inside the braces (`avc.c:677` (Linux v6.12 security/selinux/avc.c)). These are
 //!   stored verbatim in [`AvcDenial::perms`].
 //! - **`ssid=`/`tsid=` fallback**: when a SID cannot be resolved to a context
-//!   string the kernel emits `ssid=NNN`/`tsid=NNN` (`avc.c:709,714`). We store
+//!   string the kernel emits `ssid=NNN`/`tsid=NNN` (`avc.c:709,714` (Linux v6.12 security/selinux/avc.c)). We store
 //!   the raw token (e.g. `"ssid=42"`) in both `*_raw` and `source_type`/`target_type`
 //!   so callers can detect and handle the numeric form. This is the most informative
 //!   representation that does not require fabricating a fake context string.
@@ -49,7 +49,7 @@ pub struct AvcDenial {
     /// `Denied` or `Granted` (audited allow).
     pub verdict: Verdict,
     /// Permission tokens from the `{ ... }` brace list. May contain a raw
-    /// `0x%x` hex token for unknown kernel permission bits (`avc.c:677`).
+    /// `0x%x` hex token for unknown kernel permission bits (`avc.c:677` (Linux v6.12 security/selinux/avc.c)).
     pub perms: Vec<String>,
     /// The TYPE component of `scontext` (`user:role:TYPE[:level]`). This is
     /// the source domain used in a TE allow rule.
@@ -61,7 +61,7 @@ pub struct AvcDenial {
     pub tclass: String,
     /// `Some(false)` = enforcing denial (real block), `Some(true)` = permissive
     /// denial (did NOT actually block), `None` = granted record (no `permissive=`
-    /// field emitted by kernel for grants, per `avc.c:721`).
+    /// field emitted by kernel for grants, per `avc.c:721` (Linux v6.12 security/selinux/avc.c)).
     pub permissive: Option<bool>,
     /// Full raw source context string (`user:role:type[:level]`).
     pub scontext_raw: String,
@@ -238,7 +238,7 @@ fn parse_single_avc_line(
     let (timestamp, serial) = parse_audit_timestamp_serial(line);
 
     // Locate "avc: " and parse verdict + perm brace.
-    // Kernel emits: "avc:  denied  { ... } for  " (two spaces each, avc.c:659).
+    // Kernel emits: "avc:  denied  { ... } for  " (two spaces each, avc.c:659 (Linux v6.12 security/selinux/avc.c)).
     let avc_pos = line
         .find("avc: ")
         .ok_or(AvcParseError::MissingField("avc: marker"))?;
@@ -282,7 +282,7 @@ fn parse_single_avc_line(
         .map(str::trim_start)
         .ok_or(AvcParseError::MissingField("'for' keyword"))?;
 
-    // -- scontext= or ssid= fallback (avc.c:711 / avc.c:709) --
+    // -- scontext= or ssid= fallback (avc.c:711 / avc.c:709 (Linux v6.12 security/selinux/avc.c)) --
     let (scontext_raw, source_type) =
         if let Some(sctx) = extract_plain_value(after_for, "scontext=") {
             let stype = extract_type_from_context(&sctx);
@@ -294,7 +294,7 @@ fn parse_single_avc_line(
             return Err(AvcParseError::MissingField("scontext= or ssid="));
         };
 
-    // -- tcontext= or tsid= fallback (avc.c:716 / avc.c:714) --
+    // -- tcontext= or tsid= fallback (avc.c:716 / avc.c:714 (Linux v6.12 security/selinux/avc.c)) --
     let (tcontext_raw, target_type) =
         if let Some(tctx) = extract_plain_value(after_for, "tcontext=") {
             let ttype = extract_type_from_context(&tctx);
@@ -306,11 +306,11 @@ fn parse_single_avc_line(
             return Err(AvcParseError::MissingField("tcontext= or tsid="));
         };
 
-    // -- tclass= (avc.c:719) --
+    // -- tclass= (avc.c:719 (Linux v6.12 security/selinux/avc.c)) --
     let tclass =
         extract_plain_value(after_for, "tclass=").ok_or(AvcParseError::MissingField("tclass="))?;
 
-    // -- permissive= only on denial records (avc.c:721-722) --
+    // -- permissive= only on denial records (avc.c:721-722 (Linux v6.12 security/selinux/avc.c)) --
     let permissive = if verdict == Verdict::Denied {
         extract_plain_value(after_for, "permissive=").map(|v| v == "1")
     } else {

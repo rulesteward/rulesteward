@@ -2,10 +2,10 @@
 //!
 //! # Grounding
 //! - Rule varieties, flag grammar: `man 7 audit.rules`, `auditctl(8)` \[VM\].
-//! - Filter lists: `/tmp/audit-src/lib/flagtab.h:25-29`.
-//! - Actions: `/tmp/audit-src/lib/actiontab.h:23-25`.
-//! - Perm classes -> syscall groups: `/tmp/audit-src/lib/permtab.h:28-31`.
-//! - 46 `-F` field names: `/tmp/audit-src/lib/fieldtab.h:24-72`.
+//! - Filter lists: `/tmp/audit-src/lib/flagtab.h:25-29` (audit 3bfa048).
+//! - Actions: `/tmp/audit-src/lib/actiontab.h:23-25` (audit 3bfa048).
+//! - Perm classes -> syscall groups: `/tmp/audit-src/lib/permtab.h:28-31` (audit 3bfa048).
+//! - 46 `-F` field names: `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048).
 //! - `rules.d/` concat in filename order: `augenrules(8)` \[VM\].
 //! - Corpus fixtures at `tests/fixtures/rules/` and `tests/fixtures/rulesd/`.
 
@@ -675,12 +675,12 @@ fn fixture_never_suppress_load_order_preserved() {
 // (kills the ~40 "delete match arm <field>" mutation survivors in parser.rs)
 // --------------------------------------------------------------------------
 
-/// Every field name from `fieldtab.h:24-72` must map to the correct `AuditField`
+/// Every field name from `fieldtab.h:24-72` (audit 3bfa048) must map to the correct `AuditField`
 /// variant. One table-driven test: each entry is `(field_name_string, expected_variant)`.
 /// Exercises each arm of `parse_audit_field` by embedding the field name in a
 /// `-F field=0` filter inside a parseable syscall rule.
 ///
-/// Grounded: `/tmp/audit-src/lib/fieldtab.h:24-72` (46 canonical field names).
+/// Grounded: `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048) (46 canonical field names).
 /// Note: `loginuid` is an alias for `auid` (same variant, one entry); `msgtype` is
 /// also present. Total distinct names tested: 41 (40 single-name arms + 1 alias arm).
 ///
@@ -956,7 +956,7 @@ fn parse_line_unquoted_token_passes_through_unchanged() {
 /// Two mutation survivors: delete "user" arm; delete "filesystem" arm.
 /// Both are valid `auditctl(8)` filter lists from `flagtab.h`.
 ///
-/// Grounded: `/tmp/audit-src/lib/flagtab.h:25-29` -- task/exit/user/exclude/filesystem.
+/// Grounded: `/tmp/audit-src/lib/flagtab.h:25-29` (audit 3bfa048) -- task/exit/user/exclude/filesystem.
 /// "user" and "filesystem" are the two arms not already covered by existing tests.
 #[test]
 fn parse_filter_list_user_recognized() {
@@ -992,7 +992,7 @@ fn parse_filter_list_filesystem_recognized() {
 ///
 /// Mutation survivor: delete "possible" arm.
 ///
-/// Grounded: `/tmp/audit-src/lib/actiontab.h:23-25` lists never/possible/always.
+/// Grounded: `/tmp/audit-src/lib/actiontab.h:23-25` (audit 3bfa048) lists never/possible/always.
 /// "possible" is a real (if uncommon) auditctl action value. The AST variant
 /// `Action::Possible` is defined and documented in `ast.rs`.
 /// Therefore this is NOT an equivalent mutant -- a rules file with `possible` as

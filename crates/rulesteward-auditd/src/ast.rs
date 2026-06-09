@@ -4,10 +4,10 @@
 //!
 //! # Grounding
 //! - Rule varieties (control/watch/syscall): `man 7 audit.rules` \[VM\].
-//! - Filter lists: `/tmp/audit-src/lib/flagtab.h:25-29`.
-//! - Actions: `/tmp/audit-src/lib/actiontab.h:23-25`.
-//! - Perm classes: `/tmp/audit-src/lib/permtab.h:28-31`.
-//! - 46 `-F` field names: `/tmp/audit-src/lib/fieldtab.h:24-72`.
+//! - Filter lists: `/tmp/audit-src/lib/flagtab.h:25-29` (audit 3bfa048).
+//! - Actions: `/tmp/audit-src/lib/actiontab.h:23-25` (audit 3bfa048).
+//! - Perm classes: `/tmp/audit-src/lib/permtab.h:28-31` (audit 3bfa048).
+//! - 46 `-F` field names: `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048).
 
 /// One line from an auditd rules file (after comment-stripping).
 ///
@@ -67,7 +67,7 @@ pub enum ControlRule {
     RateLimit(u64),
 }
 
-/// Filter lists from `flagtab.h:25-29`.
+/// Filter lists from `flagtab.h:25-29` (audit 3bfa048).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterList {
     Task,
@@ -77,7 +77,7 @@ pub enum FilterList {
     Filesystem,
 }
 
-/// Rule actions from `actiontab.h:23-25`.
+/// Rule actions from `actiontab.h:23-25` (audit 3bfa048).
 ///
 /// `Never` and `Exclude`-list rules are SUPPRESSIVE (volume = 0, direction = negative).
 /// `Always` is ADDITIVE (contributes event volume).
@@ -92,7 +92,7 @@ pub enum Action {
     Always,
 }
 
-/// Permission bits for `-w` watches, from `auditctl(8) -p` and `permtab.h:28-31`.
+/// Permission bits for `-w` watches, from `auditctl(8) -p` and `permtab.h:28-31` (audit 3bfa048).
 ///
 /// Each bit maps to a group of syscalls:
 /// - `exec` -> `execve`, `execveat`
@@ -112,7 +112,7 @@ pub struct PermBits {
 
 /// One `-F field op value` filter predicate.
 ///
-/// Field names from `fieldtab.h:24-72` (46 canonical names).
+/// Field names from `fieldtab.h:24-72` (audit 3bfa048) (46 canonical names).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldFilter {
     pub field: AuditField,
@@ -123,7 +123,7 @@ pub struct FieldFilter {
 /// One `-C field op field` inter-field comparison (auditctl(8) `-C`).
 ///
 /// Unlike [`FieldFilter`], BOTH operands are field names (e.g. `uid != euid`
-/// maps to `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158, flagging a privilege
+/// maps to `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158 (audit 3bfa048), flagging a privilege
 /// transition). Only the equality operators are valid: `op` is always
 /// [`CompareOp::Eq`] or [`CompareOp::Ne`] (man auditctl: "There are 2 operators
 /// supported - equal, and not equal").
@@ -134,7 +134,7 @@ pub struct FieldComparison {
     pub right: AuditField,
 }
 
-/// The 46 `-F` field names from `/tmp/audit-src/lib/fieldtab.h:24-72`.
+/// The 46 `-F` field names from `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuditField {
