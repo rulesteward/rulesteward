@@ -59,12 +59,15 @@ pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
     }
 }
 
+const CRUN_PATHS: [&str; 2] = ["/usr/bin/crun", "/usr/bin/runc"];
+
 /// Scan rules text for an allow rule that covers `exe=/usr/bin/crun` (or runc).
 ///
 /// Coverage (per the locked decision) is "any allow rule covering crun": an
-/// `allow*` rule whose subject either names `exe=/usr/bin/crun`/`runc` or is the
-/// catch-all `all` (which permits the runtime by default). A spawning-UID-scoped
-/// rule still counts (we treat "any allow rule covering crun" as coverage).
+/// `allow*` rule whose subject either names `exe=/usr/bin/crun`/`runc`, names
+/// `exe=%set` where the set contains crun/runc (fapolicyd resolves set
+/// membership), or is the catch-all `all` (which permits the runtime by
+/// default). A spawning-UID-scoped rule still counts.
 #[must_use]
 pub fn crun_covered_in_rules(rules_text: &str) -> CrunRuleCoverage {
     let Ok(entries) = parse_rules_file(rules_text, Path::new("<rules>")) else {
@@ -72,6 +75,19 @@ pub fn crun_covered_in_rules(rules_text: &str) -> CrunRuleCoverage {
             covered: false,
             detail: "rules could not be parsed".to_string(),
         };
+    };
+
+    // First pass: collect set definitions (name -> members) so an `exe=%set`
+    // rule can be resolved regardless of definition/use order.
+    let mut sets: std::collections::HashMap<&str, &[String]> = std::collections::HashMap::new();
+    for entry in &entries {
+        if let Entry::SetDefinition { name, values, .. } = entry {
+            sets.insert(name.as_str(), values.as_slice());
+        }
+    }
+    let set_covers_crun = |name: &str| {
+        sets.get(name)
+            .is_some_and(|members| members.iter().any(|m| CRUN_PATHS.contains(&m.as_str())))
     };
 
     for entry in &entries {
@@ -87,16 +103,25 @@ pub fn crun_covered_in_rules(rules_text: &str) -> CrunRuleCoverage {
                         detail: format!("allow-all rule on line {} covers the runtime", rule.line),
                     };
                 }
-                Attr::Kv { key, value, .. } if key == "exe" => {
-                    if let AttrValue::Str(path) = value
-                        && (path == "/usr/bin/crun" || path == "/usr/bin/runc")
-                    {
+                Attr::Kv { key, value, .. } if key == "exe" => match value {
+                    AttrValue::Str(path) if CRUN_PATHS.contains(&path.as_str()) => {
                         return CrunRuleCoverage {
                             covered: true,
                             detail: format!("allow rule on line {} covers {path}", rule.line),
                         };
                     }
-                }
+                    AttrValue::SetRef(name) if set_covers_crun(name) => {
+                        return CrunRuleCoverage {
+                            covered: true,
+                            detail: format!(
+                                "allow rule on line {} covers the runtime via set %{name}",
+                                rule.line
+                            ),
+                        };
+                    }
+                    // A non-matching exe literal/set/int does not establish coverage.
+                    _ => {}
+                },
                 // Any other subject attr (a non-exe Kv) does not establish crun coverage.
                 Attr::Kv { .. } => {}
             }
@@ -388,6 +413,27 @@ mod tests {
             !c.covered,
             "a deny rule for crun + an allow rule for rpm is not coverage"
         );
+    }
+
+    #[test]
+    fn crun_coverage_found_via_set_member() {
+        // fapolicyd resolves `exe=%set` to set membership; a set containing crun
+        // counts as coverage (definition may precede or follow the rule).
+        let rules =
+            "%runtimes=/usr/bin/crun,/usr/bin/runc\nallow perm=execute exe=%runtimes : all\n";
+        let c = crun_covered_in_rules(rules);
+        assert!(
+            c.covered,
+            "exe=%set with a crun member must count as coverage"
+        );
+        assert!(c.detail.contains("set %runtimes"), "{}", c.detail);
+    }
+
+    #[test]
+    fn crun_coverage_absent_when_set_lacks_crun() {
+        let rules = "%tools=/usr/bin/rpm,/usr/bin/dnf\nallow perm=execute exe=%tools : all\n";
+        let c = crun_covered_in_rules(rules);
+        assert!(!c.covered, "an exe set without crun/runc is not coverage");
     }
 
     #[test]

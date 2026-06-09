@@ -369,6 +369,16 @@ mod tests {
         assert!(!f.detail.contains("paid-product-url"));
         assert!(!f.detail.contains('<'));
         assert_eq!(exit_code(&report), 2);
+        // The baseline WARN is mutually exclusive with a HIGH trigger: a HIGH
+        // host must NOT also carry the namespace-limitation WARN (which would
+        // inflate summary.warn). This pins the `&& !tmpfs_watched` guard.
+        assert_eq!(report.findings.len(), 1, "exactly the tmpfs HIGH, no WARN");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.code != "namespace-limitation")
+        );
     }
 
     #[test]
@@ -383,6 +393,14 @@ mod tests {
             .expect("mark HIGH finding present");
         assert_eq!(f.severity, Severity::High);
         assert_eq!(exit_code(&report), 2);
+        // Mutual exclusivity with the baseline WARN (pins the `&& !mark` guard).
+        assert_eq!(report.findings.len(), 1, "exactly the mark HIGH, no WARN");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.code != "namespace-limitation")
+        );
     }
 
     #[test]
@@ -473,6 +491,20 @@ mod tests {
         // The HIGH finding is still listed in the body...
         assert!(report.findings.iter().any(|f| f.severity == Severity::High));
         // ...but RHCOS wins the exit code.
+        assert_eq!(exit_code(&report), 3);
+    }
+
+    #[test]
+    fn rhcos_alone_with_no_findings_is_exit_3() {
+        // Pins that the RHCOS check short-circuits BEFORE worst_severity: an
+        // RHCOS host with zero findings still exits 3, not 0.
+        let mut p = FakeProbe::new();
+        p.rhcos = RhcosStatus {
+            is_rhcos: true,
+            detail: "rhcos detected".into(),
+        };
+        let report = classify_fake(&p, false);
+        assert!(report.findings.is_empty());
         assert_eq!(exit_code(&report), 3);
     }
 
