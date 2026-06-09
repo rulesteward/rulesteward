@@ -52,9 +52,10 @@ pub fn run(cmd: FapolicydCommand) -> anyhow::Result<i32> {
         FapolicydCommand::Simulate(args) => crate::commands::simulate::run(args),
         FapolicydCommand::Report(args) => crate::commands::report::run(args),
         FapolicydCommand::Doctor(args) => crate::commands::doctor::run(&args),
-        FapolicydCommand::ContainerCheck | FapolicydCommand::Migrate => {
+        FapolicydCommand::ContainerCheck(args) => crate::commands::container_check::run(&args),
+        FapolicydCommand::Migrate => {
             eprintln!(
-                "rulesteward fapolicyd <subcommand>: not yet implemented in v{}",
+                "rulesteward fapolicyd migrate: not yet implemented in v{}",
                 env!("CARGO_PKG_VERSION")
             );
             Ok(EXIT_NO_OP)
