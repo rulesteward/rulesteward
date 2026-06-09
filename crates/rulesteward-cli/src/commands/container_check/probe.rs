@@ -5,6 +5,7 @@
 //! parsers (`parse_effective_conf`, `crun_covered_in_rules`, `dump_db_trusted`,
 //! `count_runtime_denials`) carry the real logic and are unit-tested here.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -17,7 +18,14 @@ use super::model::{
 use crate::commands::doctor::parse_fanotify_denials;
 
 const DEFAULT_CONF: &str = "/etc/fapolicyd/fapolicyd.conf";
-const RUNTIME_BINS: [&str; 3] = ["/usr/bin/crun", "/usr/bin/runc", "/usr/bin/conmon"];
+/// Subject paths that mark a FANOTIFY denial as container-runtime-related,
+/// counted by [`count_runtime_denials`].
+const RUNTIME_DENIAL_SUBJECTS: [&str; 4] = [
+    "/usr/bin/crun",
+    "/usr/bin/runc",
+    "/usr/bin/conmon",
+    "/usr/bin/podman",
+];
 
 // ===========================================================================
 // Pure parsers (unit-tested; in the mutation gate)
@@ -79,7 +87,7 @@ pub fn crun_covered_in_rules(rules_text: &str) -> CrunRuleCoverage {
 
     // First pass: collect set definitions (name -> members) so an `exe=%set`
     // rule can be resolved regardless of definition/use order.
-    let mut sets: std::collections::HashMap<&str, &[String]> = std::collections::HashMap::new();
+    let mut sets: HashMap<&str, &[String]> = HashMap::new();
     for entry in &entries {
         if let Entry::SetDefinition { name, values, .. } = entry {
             sets.insert(name.as_str(), values.as_slice());
@@ -167,7 +175,7 @@ pub fn dump_db_trusted(dump_db_text: &str, bins: &RuntimeBinaries) -> DeepTrust 
 pub fn count_runtime_denials(pairs: &[(String, String, u64)]) -> u64 {
     pairs
         .iter()
-        .filter(|(subj, _, _)| RUNTIME_BINS.contains(&subj.as_str()) || subj == "/usr/bin/podman")
+        .filter(|(subj, _, _)| RUNTIME_DENIAL_SUBJECTS.contains(&subj.as_str()))
         .map(|(_, _, c)| c)
         .sum()
 }
@@ -313,6 +321,9 @@ impl ContainerProbe for LiveContainerProbe {
     }
 
     fn effective_conf(&self, _rules_dir: &Path) -> EffectiveConf {
+        // `rules_dir` is unused by the live impl: the conf path is fixed at
+        // DEFAULT_CONF. The parameter exists for trait-signature symmetry with
+        // `crun_rule_coverage`, which does scan `rules_dir`.
         match std::fs::read_to_string(DEFAULT_CONF) {
             Ok(text) => parse_effective_conf(&text, true),
             Err(_) => parse_effective_conf("", false),
