@@ -211,4 +211,47 @@ mod tests {
         assert!(out.contains("No risk findings."));
         assert!(!out.contains('<'), "no placeholder leakage");
     }
+
+    #[test]
+    fn json_summary_tallies_every_severity() {
+        // Pins each severity_counts branch (high/warn/info) independently.
+        let f = |code, sev| Finding {
+            code,
+            severity: sev,
+            detail: String::new(),
+        };
+        let out = render_json(&report_with(vec![
+            f("a", Severity::High),
+            f("b", Severity::Warn),
+            f("c", Severity::Info),
+            f("d", Severity::Info),
+        ]));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["summary"]["high"], 1);
+        assert_eq!(v["summary"]["warn"], 1);
+        assert_eq!(v["summary"]["info"], 2);
+    }
+
+    #[test]
+    fn human_deep_section_renders_each_trust_state() {
+        use crate::commands::container_check::model::{DeepDenials, DeepTrust};
+        let mut report = report_with(vec![]);
+        report.deep = Some(DeepEvidence {
+            trust: DeepTrust {
+                crun_trusted: Some(true),
+                runc_trusted: Some(false),
+                conmon_trusted: None,
+            },
+            denials: DeepDenials {
+                total: 3,
+                runtime_denials: 2,
+            },
+        });
+        let out = render_human(&report);
+        // Pins fmt_trust's three arms and the denial-count line.
+        assert!(out.contains("crun=trusted"), "{out}");
+        assert!(out.contains("runc=UNTRUSTED"), "{out}");
+        assert!(out.contains("conmon=n/a"), "{out}");
+        assert!(out.contains("3 total, 2 from runtime binaries"), "{out}");
+    }
 }

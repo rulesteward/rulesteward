@@ -486,4 +486,47 @@ mod tests {
             "crun(3) + podman(2), not bash"
         );
     }
+
+    #[test]
+    fn crun_coverage_requires_exe_key_not_other_attrs() {
+        // A non-exe subject attr whose value happens to be a runtime path must
+        // NOT establish coverage: only `exe=` does. Pins the `key == "exe"` guard.
+        let rules = "allow perm=open comm=/usr/bin/crun : all\n";
+        let c = crun_covered_in_rules(rules);
+        assert!(
+            !c.covered,
+            "a comm= attr with a crun-path value is not exe coverage"
+        );
+    }
+
+    // The live-I/O helpers shell out / hit the filesystem but are deterministic
+    // for known inputs, so they are unit-tested directly (the host-dependent
+    // ContainerProbe impl methods are not -- those are mutation-excluded).
+    #[test]
+    fn cmd_ok_reflects_exit_status() {
+        assert!(ok("true", &[]), "/usr/bin/true exits 0");
+        assert!(!ok("false", &[]), "/usr/bin/false exits non-zero");
+        assert!(
+            !ok("definitely-not-a-real-binary-xyzzy", &[]),
+            "a missing binary is not ok"
+        );
+    }
+
+    #[test]
+    fn path_exists_and_dir_nonempty_reflect_filesystem() {
+        assert!(path_exists("/"), "/ exists");
+        assert!(!path_exists("/no/such/path/xyzzy"), "bogus path absent");
+        assert!(dir_nonempty("/"), "/ has entries");
+        assert!(!dir_nonempty("/no/such/dir/xyzzy"), "missing dir is empty");
+    }
+
+    #[test]
+    fn capture_returns_command_stdout() {
+        assert_eq!(capture("printf", &["%s", "hi"]), "hi");
+        assert_eq!(
+            capture("definitely-not-a-real-binary-xyzzy", &[]),
+            "",
+            "a missing binary captures empty"
+        );
+    }
 }
