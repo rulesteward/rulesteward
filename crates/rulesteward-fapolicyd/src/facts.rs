@@ -3,7 +3,7 @@
 //! `AccessFacts` represents what is statically knowable about one access attempt.
 //! Every field is `Option<...>` or a `Vec<...>` where the daemon would derive the
 //! value at runtime; `None` / empty means "fact absent" and widens the match
-//! (rules.c:1374-1377: a rule field whose corresponding runtime value is NULL is
+//! (rules.c:1374-1377 (fapolicyd 1.4.5): a rule field whose corresponding runtime value is NULL is
 //! SKIPPED, not failed).
 //!
 //! `SetTable` is the compiled `%set` name->members map built from `Entry::SetDefinition`
@@ -112,7 +112,7 @@ impl SetTable {
 /// Facts about one access attempt that `evaluate` uses to walk the ruleset.
 ///
 /// `None` on any optional field means "fact absent": the daemon skips a rule
-/// field constraining that fact (rules.c:1374-1377), so `None` widens the
+/// field constraining that fact (rules.c:1374-1377 (fapolicyd 1.4.5)), so `None` widens the
 /// match rather than narrowing it. The caller must supply all facts it has;
 /// missing facts are an honest representation of what is unknown, not an
 /// optimization.
@@ -123,71 +123,71 @@ impl SetTable {
 pub struct AccessFacts {
     /// Permission requested: `Open` or `Execute`. Always known; `Any` means
     /// the caller does not know (widens to match both).
-    /// (rules.c:1340-1353, `check_access`)
+    /// (rules.c:1340-1353 (fapolicyd 1.4.5), `check_access`)
     pub perm: Perm,
 
     /// Subject executable path.
-    /// EXACT string membership match (rules.c:1443-1463).
+    /// EXACT string membership match (rules.c:1443-1463 (fapolicyd 1.4.5)).
     pub exe: Option<String>,
 
     /// Subject `comm` (process name, up to 15 bytes).
-    /// EXACT string membership match (rules.c:1466-1475).
+    /// EXACT string membership match (rules.c:1466-1475 (fapolicyd 1.4.5)).
     pub comm: Option<String>,
 
     /// Object path.
-    /// EXACT string membership match (rules.c:1595-1602).
+    /// EXACT string membership match (rules.c:1595-1602 (fapolicyd 1.4.5)).
     pub path: Option<String>,
 
     /// Object device path (e.g. `/dev/sda`).
-    /// EXACT string membership match (rules.c:1603-1617).
+    /// EXACT string membership match (rules.c:1603-1617 (fapolicyd 1.4.5)).
     pub device: Option<String>,
 
     /// Subject UIDs: the process's full credential set (real/eff/saved/fs).
-    /// ANY overlap with the rule's uid set matches (rules.c:1391-1402,
+    /// ANY overlap with the rule's uid set matches (rules.c:1391-1402 (fapolicyd 1.4.5),
     /// `avl_intersection`). An empty `Vec` is treated as "absent" (widens).
     pub uids: Vec<u32>,
 
     /// Subject GIDs: all supplementary groups + primary.
-    /// ANY overlap with the rule's gid set matches (rules.c:1413-1417).
+    /// ANY overlap with the rule's gid set matches (rules.c:1413-1417 (fapolicyd 1.4.5)).
     /// An empty `Vec` is treated as "absent" (widens).
     pub gids: Vec<u32>,
 
-    /// Audit UID. Exact membership in the rule's integer set (rules.c:1384-1390).
+    /// Audit UID. Exact membership in the rule's integer set (rules.c:1384-1390 (fapolicyd 1.4.5)).
     pub auid: Option<u32>,
 
-    /// Session ID. Exact membership in the rule's integer set (rules.c:1384-1390).
+    /// Session ID. Exact membership in the rule's integer set (rules.c:1384-1390 (fapolicyd 1.4.5)).
     pub sessionid: Option<u32>,
 
-    /// Subject PID. Exact membership in the rule's integer set (rules.c:1403-1409).
+    /// Subject PID. Exact membership in the rule's integer set (rules.c:1403-1409 (fapolicyd 1.4.5)).
     pub pid: Option<i32>,
 
-    /// Subject PPID. Exact membership in the rule's integer set (rules.c:1403-1409).
+    /// Subject PPID. Exact membership in the rule's integer set (rules.c:1403-1409 (fapolicyd 1.4.5)).
     pub ppid: Option<i32>,
 
     /// Subject trust status.
     /// Exact boolean match: `Yes` matches `trust=1`, `No` matches `trust=0`
-    /// (rules.c:1435-1439).
+    /// (rules.c:1435-1439 (fapolicyd 1.4.5)).
     pub subj_trust: Trust,
 
     /// Object trust status.
     /// Exact boolean match: `Yes` matches `trust=1`, `No` matches `trust=0`
-    /// (rules.c:1579-1584).
+    /// (rules.c:1579-1584 (fapolicyd 1.4.5)).
     pub obj_trust: Trust,
 
     /// Object MIME type as reported by libmagic (e.g. `text/plain`).
     /// EXACT string membership match when present; `None` means "not known
     /// statically" -> the evaluator returns `NotEvaluable` for `ftype=` rules
-    /// (rules.c:1587-1591, f1 §2.3).
+    /// (rules.c:1587-1591 (fapolicyd 1.4.5), f1 §2.3).
     pub ftype: Option<String>,
 
     /// Object SHA-256 hex digest.
-    /// EXACT string membership match (rules.c:1603-1617).
+    /// EXACT string membership match (rules.c:1603-1617 (fapolicyd 1.4.5)).
     pub sha256: Option<String>,
 
     /// #127: the object path is PRESENT on disk but its hash could NOT be
     /// computed (e.g. EACCES while opening it for on-demand hashing). When
     /// `true` AND `sha256` is `None`, a `filehash=`/`sha256hash=` constraint
-    /// evaluates to `NoMatch` (`FILE_HASH` error-as-denial, rules.c:1606-1611)
+    /// evaluates to `NoMatch` (`FILE_HASH` error-as-denial, rules.c:1606-1611 (fapolicyd 1.4.5))
     /// rather than widening - DISTINCT from the object-absent case (path does
     /// not exist), where `sha256 == None` keeps the skip/widen behavior.
     ///

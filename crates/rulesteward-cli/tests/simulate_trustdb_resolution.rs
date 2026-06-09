@@ -360,7 +360,7 @@ fn filehash_on_demand_hash_mismatch_does_not_match() {
 /// `sha256`, `sha256_file` returns `Ok(None)` (`NotFound` branch, `trustdb.rs:164`).
 /// `evaluate_query` propagates that as `sha256 = None, sha256_unhashable = false`.
 /// `evaluate.rs:382` then hits `None => Match` (the standard absent-fact-widening
-/// path, rules.c:1572-1575), so the `sha256hash=` object constraint WIDENS and rule
+/// path, rules.c:1572-1575 (fapolicyd 1.4.5)), so the `sha256hash=` object constraint WIDENS and rule
 /// 1 (`allow`) fires.
 ///
 /// The two mutation survivors both flip this to deny:
@@ -372,8 +372,8 @@ fn filehash_on_demand_hash_mismatch_does_not_match() {
 /// Either way the verdict flips to deny at rule 2, killing this test.
 ///
 /// Grounding: absent-path widening is the standard absent-fact skip documented in
-/// f1 grounding §1.4 ~line 173 (rules.c:1572-1575). It is DISTINCT from the
-/// present-but-unhashable `FILE_HASH` error-as-denial (rules.c:1606-1611) pinned by
+/// f1 grounding §1.4 ~line 173 (rules.c:1572-1575 (fapolicyd 1.4.5)). It is DISTINCT from the
+/// present-but-unhashable `FILE_HASH` error-as-denial (rules.c:1606-1611 (fapolicyd 1.4.5)) pinned by
 /// `filehash_present_but_unhashable_is_denied_not_widened` below.
 ///
 /// This test PASSES against the current (correct) impl (regression pin); it does NOT
@@ -431,7 +431,7 @@ fn filehash_absent_object_path_widens_not_denied() {
     assert_eq!(
         result["decision"], "allow",
         "absent object path: sha256_file returns Ok(None) (NotFound), sha256_unhashable \
-         stays false, the sha256hash= field WIDENS (None => Match, rules.c:1572-1575), \
+         stays false, the sha256hash= field WIDENS (None => Match, rules.c:1572-1575 (fapolicyd 1.4.5)), \
          so rule 1 allow fires. Both mutant survivors flip this to deny."
     );
     assert_eq!(
@@ -452,10 +452,10 @@ fn filehash_absent_object_path_widens_not_denied() {
 ///
 /// Grounding (real fapolicyd): the `FILE_HASH` case returns 0 (= the constraint does
 /// NOT match, deny/fall-through) when the object is present but its hash backend
-/// yields nothing - `src/library/rules.c:1606-1611`:
+/// yields nothing - `src/library/rules.c:1606-1611` (fapolicyd 1.4.5):
 /// `if (!obj->o) { /* Treat errors as denial for file hash lookups */ if (type == FILE_HASH) return 0; break; }`.
 /// This error-as-denial path is DISTINCT from the
-/// object-NULL skip-widening at `rules.c:1572-1575`. See f1 grounding §1.4 line ~173
+/// object-NULL skip-widening at `rules.c:1572-1575` (fapolicyd 1.4.5). See f1 grounding §1.4 line ~173
 /// and the canonical NFS oracle
 /// `/mnt/side-projects/fapolicyd-simulate-corpus/canonical/adversarial/filehash-missing-object-present-deny/`
 /// (the canonical workload OMITS `sha256`, exercising the on-demand path; the repo
@@ -547,7 +547,7 @@ fn filehash_present_but_unhashable_is_denied_not_widened() {
     assert_eq!(
         result["decision"], "deny",
         "present-but-unhashable object: the sha256hash= rule must NOT match \
-         (FILE_HASH error-as-denial, rules.c:1606-1611), so rule 1 allow does not \
+         (FILE_HASH error-as-denial, rules.c:1606-1611 (fapolicyd 1.4.5)), so rule 1 allow does not \
          fire and the verdict is rule 2 deny_audit. The buggy widening impl wrongly \
          allows at rule 1."
     );

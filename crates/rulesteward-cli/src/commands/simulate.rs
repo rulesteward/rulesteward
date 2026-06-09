@@ -422,7 +422,7 @@ fn evaluate_query(
     // On-demand object hashing (#127): when a `filehash=`/`sha256hash=` rule
     // needs the object's hash and the workload omitted `sha256`, hash the object
     // `path` now. Three outcomes, distinguished so the filehash field evaluates
-    // correctly (rules.c:1606-1611 treats a hash-lookup error as a denial):
+    // correctly (rules.c:1606-1611 (fapolicyd 1.4.5) treats a hash-lookup error as a denial):
     //   - `Ok(Some(h))`  : hashed OK -> use the digest.
     //   - `Ok(None)`     : object ABSENT (NotFound) -> leave `sha256 = None`;
     //                      the absent-fact-widening / NotEvaluable behavior applies.

@@ -504,7 +504,7 @@ fn parse_field_compare(spec: &str, lineno: usize) -> Result<FieldComparison, Par
 
 /// Map a field name string to `AuditField`.
 ///
-/// Covers all 46 names from `fieldtab.h:24-72`.
+/// Covers all 46 names from `fieldtab.h:24-72` (audit 3bfa048).
 fn parse_audit_field(s: &str) -> Option<AuditField> {
     match s {
         "a0" => Some(AuditField::A0),
@@ -652,7 +652,7 @@ mod tests {
     // --- #161: -C inter-field comparison ---
 
     /// `-C 'uid!=euid'` is an inter-field comparison (auditctl(8) `-C f!=f`,
-    /// `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158). Both operands are FIELD names,
+    /// `AUDIT_COMPARE_UID_TO_EUID`, libaudit.c:1158 (audit 3bfa048)). Both operands are FIELD names,
     /// not a field and a literal value, so it parses into a `FieldComparison` on
     /// the rule's `field_compares`, NOT into the `-F` `fields` vec. Before #161 the
     /// parser rejected `-C` with "unexpected token".

@@ -54,17 +54,17 @@ type SecurityClass = u16;
 /// `sepol_access_vector_t` (`flask_types.h`): a permission bitmask.
 type AccessVector = u32;
 
-/// Reason bit: a missing TE allow (`SEPOL_COMPUTEAV_TE`, `services.h:49`).
+/// Reason bit: a missing TE allow (`SEPOL_COMPUTEAV_TE`, `services.h:49` (libsepol 3.10)).
 pub const REASON_TE: u32 = 0x1;
 /// Reason bit: a constraint (MLS / user / role `constrain`) blocked the access
-/// (`SEPOL_COMPUTEAV_CONS`, `services.h:50`).
+/// (`SEPOL_COMPUTEAV_CONS`, `services.h:50` (libsepol 3.10)).
 pub const REASON_CONS: u32 = 0x2;
 /// Reason bit: an RBAC (`role_allow`) gap (`SEPOL_COMPUTEAV_RBAC`,
-/// `services.h:51`). For a `process` role change the role-change `constrain`
+/// `services.h:51` (libsepol 3.10)). For a `process` role change the role-change `constrain`
 /// fires first, so this is rarely the operative bit in practice (f4b 6.2).
 pub const REASON_RBAC: u32 = 0x4;
 /// Reason bit: a typebounds violation stripped the access
-/// (`SEPOL_COMPUTEAV_BOUNDS`, `services.h:52`).
+/// (`SEPOL_COMPUTEAV_BOUNDS`, `services.h:52` (libsepol 3.10)).
 pub const REASON_BOUNDS: u32 = 0x8;
 
 // ---------------------------------------------------------------------------
@@ -135,26 +135,26 @@ struct AvDecision {
 // `unsafe extern` block itself, so this scoped allow mirrors the call-site allows.
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    /// `debug.h:11` - toggle libsepol's stderr diagnostic callback. We turn it
+    /// `debug.h:11` (libsepol 3.10) - toggle libsepol's stderr diagnostic callback. We turn it
     /// OFF: a BADSCON (an undefined context) is an EXPECTED outcome we map to
     /// `ContextInvalid`, not an error to print.
     fn sepol_debug(on: c_int);
 
-    /// `policydb.h:60` - allocate an empty `sepol_policydb_t`.
+    /// `policydb.h:60` (libsepol 3.10) - allocate an empty `sepol_policydb_t`.
     fn sepol_policydb_create(p: *mut *mut SepolPolicydb) -> c_int;
-    /// `policydb.h:61` - free a `sepol_policydb_t` (and its inner `policydb`).
+    /// `policydb.h:61` (libsepol 3.10) - free a `sepol_policydb_t` (and its inner `policydb`).
     fn sepol_policydb_free(p: *mut SepolPolicydb);
-    /// `policydb.h:22` - allocate a `sepol_policy_file_t`.
+    /// `policydb.h:22` (libsepol 3.10) - allocate a `sepol_policy_file_t`.
     fn sepol_policy_file_create(pf: *mut *mut SepolPolicyFile) -> c_int;
-    /// `policydb.h:47` - point a policy-file wrapper at an open `FILE *`.
+    /// `policydb.h:47` (libsepol 3.10) - point a policy-file wrapper at an open `FILE *`.
     fn sepol_policy_file_set_fp(pf: *mut SepolPolicyFile, fp: *mut c_void);
-    /// `policydb.h:23` - free a `sepol_policy_file_t`.
+    /// `policydb.h:23` (libsepol 3.10) - free a `sepol_policy_file_t`.
     fn sepol_policy_file_free(pf: *mut SepolPolicyFile);
-    /// `policydb.h:113` - read a binary policy from the policy file into the
+    /// `policydb.h:113` (libsepol 3.10) - read a binary policy from the policy file into the
     /// owned policydb. Does NOT touch the global.
     fn sepol_policydb_read(p: *mut SepolPolicydb, pf: *mut SepolPolicyFile) -> c_int;
 
-    /// `policydb.h:667` - build the initial SID table `s` from policydb `p`.
+    /// `policydb.h:667` (libsepol 3.10) - build the initial SID table `s` from policydb `p`.
     /// Takes the RAW `policydb_t *`; we pass our `SepolPolicydb` (first-field
     /// cast, see [`SepolPolicydb`]).
     fn policydb_load_isids(p: *mut SepolPolicydb, s: *mut Sidtab) -> c_int;
@@ -165,13 +165,13 @@ unsafe extern "C" {
     /// `Box`), so there is no double-free with the `Box` drop.
     fn sepol_sidtab_destroy(s: *mut Sidtab);
 
-    /// `services.h:30` - install `p` as the global policydb the service functions
+    /// `services.h:30` (libsepol 3.10) - install `p` as the global policydb the service functions
     /// use. Takes the raw `policydb_t *` (first-field cast).
     fn sepol_set_policydb(p: *mut SepolPolicydb) -> c_int;
-    /// `services.h:31` - install `s` as the global sidtab.
+    /// `services.h:31` (libsepol 3.10) - install `s` as the global sidtab.
     fn sepol_set_sidtab(s: *mut Sidtab) -> c_int;
 
-    /// `services.h:158` - resolve a context string to a SID against the global
+    /// `services.h:158` (libsepol 3.10) - resolve a context string to a SID against the global
     /// policydb/sidtab. Returns < 0 (BADSCON) for a context the policy does not
     /// define.
     fn sepol_context_to_sid(
@@ -179,18 +179,18 @@ unsafe extern "C" {
         scontext_len: usize,
         out_sid: *mut SecurityId,
     ) -> c_int;
-    /// `services.h:95` - map a class name to its index against the global policy.
+    /// `services.h:95` (libsepol 3.10) - map a class name to its index against the global policy.
     fn sepol_string_to_security_class(
         class_name: *const c_char,
         tclass: *mut SecurityClass,
     ) -> c_int;
-    /// `services.h:102` - map a permission name (valid for `tclass`) to its AV bit.
+    /// `services.h:102` (libsepol 3.10) - map a permission name (valid for `tclass`) to its AV bit.
     fn sepol_string_to_av_perm(
         tclass: SecurityClass,
         perm_name: *const c_char,
         av: *mut AccessVector,
     ) -> c_int;
-    /// `services.h:69` - the categorizer. Fills `reason` with the
+    /// `services.h:69` (libsepol 3.10) - the categorizer. Fills `reason` with the
     /// TE/CONS/RBAC/BOUNDS bit union; allocates `reason_buf` (a human constraint
     /// string) which the caller must `free`.
     fn sepol_compute_av_reason_buffer(
@@ -431,7 +431,7 @@ impl Policy {
     /// [`GLOBAL_REPLAY_LOCK`] for the duration of the call (swap, never re-load),
     /// resolves the contexts/class/permissions, then computes the reason bitmask.
     /// The `perms` are OR-ed into one requested access vector, mirroring
-    /// `audit2why.c:358-376`.
+    /// `audit2why.c:358-376` (libselinux 3.10).
     ///
     /// Returns [`ReplayOutcome::BadContext`] (NOT an error) when either context is
     /// undefined in the policy.
@@ -485,7 +485,7 @@ impl Policy {
                 return Err(ReplayError::Compute { rc: -1 });
             }
 
-            // +1 to include the NUL in the length, exactly as audit2why.c:345.
+            // +1 to include the NUL in the length, exactly as audit2why.c:345 (libselinux 3.10).
             let mut ssid: SecurityId = 0;
             if sepol_context_to_sid(cscon.as_ptr(), scontext.len() + 1, &raw mut ssid) < 0 {
                 return Ok(ReplayOutcome::BadContext);
@@ -525,7 +525,7 @@ impl Policy {
                 &raw mut avd,
                 &raw mut reason,
                 &raw mut reason_buf,
-                0, // flags 0: only denied constraints in the buffer (audit2why.c:379)
+                0, // flags 0: only denied constraints in the buffer (audit2why.c:379 (libselinux 3.10))
             );
             if !reason_buf.is_null() {
                 free(reason_buf.cast::<c_void>());
