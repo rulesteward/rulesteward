@@ -42,8 +42,12 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/register.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
-    # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69).
-    "crates/rulesteward-cli/src/commands/simulate.rs",
+    # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69;
+    # split into simulate/{workload,evaluate,render}.rs + mod.rs in #146): the
+    # parsers, load_ruleset, evaluate_query, resolve_trust, and renderer are real
+    # branching logic covered by the simulate_oracle + simulate_trustdb_resolution
+    # integration tests. No LiveProbe-style shell-out seam exists here.
+    "crates/rulesteward-cli/src/commands/simulate/**/*.rs",
     # fapolicyd doctor (#76/#77/#78; split into doctor/{model,probe,checks,render}.rs
     # in #145): the 13 pure check-classification fns + run_checks + worst_exit_code +
     # renderers + kernel/df/ausearch parsers are real branching logic covered by the
@@ -148,7 +152,7 @@ exclude_globs = [
 # Excluded by name, not `#[mutants::skip]`, so the rationale stays here in reviewable
 # config.
 #
-# `ruleset_uses_filehash` (simulate.rs) and the `ctx.ruleset_uses_filehash` match
+# `ruleset_uses_filehash` (simulate/evaluate.rs) and the `ctx.ruleset_uses_filehash` match
 # guard in `evaluate_query` are both an OPTIMIZATION GUARD, not a correctness gate:
 # they only decide WHETHER to hash the object file on demand. Forcing either to
 # `true` (the `-> bool with true` / `match guard ... with true` mutants) makes the
