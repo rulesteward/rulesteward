@@ -10,7 +10,7 @@
 - **Unprivileged-friendly.** Static analysis paths never require root.
 - **No telemetry, ever.** No phone-home, no anonymous metrics.
 - **Exit-code-driven.** CI-grade exit codes (`0` clean / `1` warnings / `2` errors / `3` tool failure / `5` rule-parse-error).
-- **Multiple output formats.** Human (default), JSON, SARIF (roadmap).
+- **Multiple output formats.** Human (default), JSON, SARIF, and CSV (for tabular output).
 
 ## Modules
 

@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to RuleSteward are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.0] - 2026-06-10
+
+Second release. fapolicyd remains the most complete backend; SELinux and auditd
+gain real analysis paths this cycle. Read-only-by-default, no-telemetry, and
+CI-grade exit codes are unchanged.
+
+### Added
+
+- **fapolicyd `explain` and `simulate`.** `explain` annotates why a rule fires;
+  `simulate` evaluates a workload against the ruleset without touching the running
+  daemon. (#118, #130)
+- **fapolicyd `container-check`.** Flags rules that behave differently inside
+  containers. (#134, #176)
+- **`doctor` composite health check.** One command that probes the local fapolicyd
+  install and surfaces actionable findings. (#76, #77, #78, #133)
+- **SELinux `triage`.** Classifies AVC denials, with authoritative category
+  resolution backed by libsepol and an optional `--policy <file>` for full-MLS
+  scope. (#94, #105, #118, #122, #124, #135)
+- **SELinux `te-emit`.** Emits compilable Type Enforcement stanzas from denials.
+  (#102, #118)
+- **auditd cost analysis / `report`.** Estimates per-rule audit volume and emits an
+  exception register. (#118, #130, #139)
+- **SARIF output** with `--sarif-include-pass` per-check coverage attestation, for
+  code-scanning ingestion. (#137, #138, #172)
+- **`--format csv`** for `trustdb list` and auditd cost output. (#64, #138)
+- **auditd `-C` field-comparison parsing** and `arch=b32` demotion handling. (#161, #169)
+- **`SECURITY.md`** vulnerability-disclosure policy. (#160)
+
+### Changed
+
+- **libsepol 3.10 is now vendored and built from source, statically linked into the
+  default binary.** This makes SELinux category resolution authoritative out of the
+  box. The default build is LGPL-2.1 (libsepol) over Apache-2.0 (engine); the
+  release ships the LGPL-2.1 text, a NOTICE, and a written source offer. A pure
+  Apache-2.0, libsepol-free build remains available via `--no-default-features`.
+  (#110, #125, #135)
+- **Minimum Supported Rust Version raised to 1.88** (let-chains in the engine).
+- Output-format policy locked and documented across `--help`/man pages, with an
+  OSCAL design note. (#65, #138)
+- Internal refactor: `doctor`, `simulate`, and `fapolicyd` command modules split
+  into focused submodules (no behavior or CLI change). (#145, #146, #148)
+
+### Fixed
+
+- fapolicyd `fapd-E07` type model corrected to be version-divergent; auditd `a0`-`a3`
+  argument parsing; `te-emit` and `triage --policy` hint accuracy. (#168)
+- auditd cost-model Finding-2 subset and SELinux MCS floor dominance. (#162)
+- fapolicyd `dir=` handling and untrusted-macro absent-path behavior. (#139, #142)
+- Nightly mutation-testing gate made complete and hang-free; closed outstanding
+  cargo-mutants survivors. (#128, #132)
+
+## [0.1.0] - 2026-06-02
+
+Initial release. Cargo workspace (`-core`, `-fapolicyd`, `-sink`, `-cli`) with the
+fapolicyd lint backend, the `rulesteward` CLI, and a signed static
+`x86_64-unknown-linux-musl` binary plus RPM, SBOM, and cosign keyless signatures.
+
+[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rulesteward/rulesteward/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/rulesteward/rulesteward/releases/tag/v0.1.0
