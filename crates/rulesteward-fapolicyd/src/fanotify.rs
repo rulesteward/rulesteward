@@ -15,6 +15,8 @@
 //!
 //! Filled by pipeline P1 (issue #73).
 
+use rulesteward_core::extract_audit_field;
+
 use crate::ast::Perm;
 
 // ---------------------------------------------------------------------------
@@ -172,41 +174,6 @@ pub enum ParseError {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Extract `key=value` pairs from an audit record line body.
-///
-/// Handles both unquoted (`key=value`) and quoted (`key="value"`) forms.
-/// Returns `None` if the key is not found.
-///
-/// Requires that the key is preceded by whitespace or is at the start of the
-/// string, preventing `pid=` from matching inside `ppid=`.
-fn extract_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let search = format!("{key}=");
-    // Take the first occurrence of `key=` at a word boundary (start-of-line or
-    // preceded by whitespace), so `pid=` does not match inside `ppid=`. Scanning
-    // with `match_indices(..).find(..)` (rather than a hand-rolled
-    // `start = abs_pos + 1` cursor) means there is no loop-advance arithmetic a
-    // mutation could reverse into a non-terminating loop -- the old cursor hung
-    // under the `+ -> -` / `+ -> *` mutants. No `key=` needle here can
-    // self-overlap (no key passed in contains `=`), so `match_indices`
-    // (non-overlapping) selects the same occurrence the old `+1` walk did.
-    let (abs_pos, _) = line.match_indices(search.as_str()).find(|&(abs_pos, _)| {
-        abs_pos == 0
-            || line
-                .as_bytes()
-                .get(abs_pos - 1)
-                .is_some_and(u8::is_ascii_whitespace)
-    })?;
-    let after = &line[abs_pos + search.len()..];
-    // Quoted value: key="..."
-    if let Some(inner) = after.strip_prefix('"') {
-        let end = inner.find('"')?;
-        return Some(&inner[..end]);
-    }
-    // Unquoted: ends at next whitespace.
-    let end = after.find(char::is_whitespace).unwrap_or(after.len());
-    Some(&after[..end])
-}
-
 /// Extract the `audit(TS:SERIAL)` timestamp from a `msg=audit(TS:SERIAL):` field.
 fn extract_timestamp(line: &str) -> Option<&str> {
     let start = line.find("audit(")?;
@@ -226,32 +193,32 @@ fn parse_fanotify_line(line: &str) -> Result<(FanotifyRecord, String), ParseErro
 
     let timestamp = extract_timestamp(line).unwrap_or("").to_string();
 
-    let resp_str = extract_field(line, "resp")
+    let resp_str = extract_audit_field(line, "resp")
         .ok_or_else(|| ParseError::MalformedRecord("missing resp field".to_string()))?;
     let resp = resp_str
         .parse::<u32>()
         .map_err(|_| ParseError::MalformedRecord(format!("invalid resp value: {resp_str}")))?;
 
-    let fan_type_str = extract_field(line, "fan_type")
+    let fan_type_str = extract_audit_field(line, "fan_type")
         .ok_or_else(|| ParseError::MalformedRecord("missing fan_type field".to_string()))?;
     let fan_type = fan_type_str.parse::<u32>().map_err(|_| {
         ParseError::MalformedRecord(format!("invalid fan_type value: {fan_type_str}"))
     })?;
 
     // fan_info is HEX (kernel printf uses %X); parse with base 16.
-    let fan_info_str = extract_field(line, "fan_info")
+    let fan_info_str = extract_audit_field(line, "fan_info")
         .ok_or_else(|| ParseError::MalformedRecord("missing fan_info field".to_string()))?;
     let fan_info = u32::from_str_radix(fan_info_str, 16).map_err(|_| {
         ParseError::MalformedRecord(format!("invalid fan_info hex value: {fan_info_str}"))
     })?;
 
-    let subj_trust_str = extract_field(line, "subj_trust")
+    let subj_trust_str = extract_audit_field(line, "subj_trust")
         .ok_or_else(|| ParseError::MalformedRecord("missing subj_trust field".to_string()))?;
     let subj_trust_raw = subj_trust_str.parse::<u32>().map_err(|_| {
         ParseError::MalformedRecord(format!("invalid subj_trust value: {subj_trust_str}"))
     })?;
 
-    let obj_trust_str = extract_field(line, "obj_trust")
+    let obj_trust_str = extract_audit_field(line, "obj_trust")
         .ok_or_else(|| ParseError::MalformedRecord("missing obj_trust field".to_string()))?;
     let obj_trust_raw = obj_trust_str.parse::<u32>().map_err(|_| {
         ParseError::MalformedRecord(format!("invalid obj_trust value: {obj_trust_str}"))
@@ -346,10 +313,10 @@ pub fn parse_audit_event(input: &str) -> Result<AuditEvent, ParseError> {
     let mut perm: Option<Perm> = None;
 
     if let Some(sc) = syscall_line {
-        if let Some(pid_str) = extract_field(sc, "pid") {
+        if let Some(pid_str) = extract_audit_field(sc, "pid") {
             pid = pid_str.parse::<i32>().ok();
         }
-        if let Some(auid_str) = extract_field(sc, "auid")
+        if let Some(auid_str) = extract_audit_field(sc, "auid")
             && let Ok(raw) = auid_str.parse::<u32>()
         {
             // Sentinel u32::MAX means "not set" -> store as None.
@@ -357,10 +324,10 @@ pub fn parse_audit_event(input: &str) -> Result<AuditEvent, ParseError> {
                 auid = Some(raw);
             }
         }
-        if let Some(exe_str) = extract_field(sc, "exe") {
+        if let Some(exe_str) = extract_audit_field(sc, "exe") {
             exe = Some(exe_str.to_string());
         }
-        if let Some(syscall_str) = extract_field(sc, "syscall")
+        if let Some(syscall_str) = extract_audit_field(sc, "syscall")
             && let Ok(syscall_num) = syscall_str.parse::<u32>()
         {
             // syscall 59 is execve on x86_64 -> Execute; all others -> Open.
@@ -374,7 +341,7 @@ pub fn parse_audit_event(input: &str) -> Result<AuditEvent, ParseError> {
 
     // Extract object path from PATH record.
     let path = path_line
-        .and_then(|pl| extract_field(pl, "name"))
+        .and_then(|pl| extract_audit_field(pl, "name"))
         .map(String::from);
 
     Ok(AuditEvent {

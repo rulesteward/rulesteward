@@ -15,6 +15,7 @@ use super::model::{
     ContainerProbe, CrunRuleCoverage, DeepDenials, DeepTrust, EffectiveConf, FapolicydState,
     RhcosStatus, RuntimeBinaries, RuntimeStatus,
 };
+use crate::commands::conf::conf_value;
 use crate::commands::doctor::parse_fanotify_denials;
 
 const DEFAULT_CONF: &str = "/etc/fapolicyd/fapolicyd.conf";
@@ -38,28 +39,15 @@ const RUNTIME_DENIAL_SUBJECTS: [&str; 4] = [
 /// around `=` and may be commented with a leading `#` (ignored).
 #[must_use]
 pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
-    let mut watch_fs = Vec::new();
-    let mut allow_filesystem_mark = false;
-    for line in conf_text.lines() {
-        let t = line.trim();
-        if t.starts_with('#') {
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix("watch_fs") {
-            if let Some(val) = rest.trim_start().strip_prefix('=') {
-                watch_fs = val
-                    .trim()
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-        } else if let Some(rest) = t.strip_prefix("allow_filesystem_mark")
-            && let Some(val) = rest.trim_start().strip_prefix('=')
-        {
-            allow_filesystem_mark = val.trim() == "1";
-        }
-    }
+    let watch_fs = conf_value(conf_text, "watch_fs")
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let allow_filesystem_mark = conf_value(conf_text, "allow_filesystem_mark") == Some("1");
     EffectiveConf {
         watch_fs,
         allow_filesystem_mark,
@@ -396,6 +384,20 @@ mod tests {
         let c = parse_effective_conf("# watch_fs = tmpfs\n#allow_filesystem_mark = 1\n", true);
         assert!(c.watch_fs.is_empty());
         assert!(!c.allow_filesystem_mark);
+    }
+
+    #[test]
+    fn parse_conf_last_duplicate_wins() {
+        // fapolicyd resolves duplicate keys last-wins (daemon-config.c overwrites
+        // on each match); a later override must win so container-check reports the
+        // same effective conf the daemon actually loads (issue #192 finding).
+        let c = parse_effective_conf(
+            "allow_filesystem_mark = 0\nallow_filesystem_mark = 1\n",
+            true,
+        );
+        assert!(c.allow_filesystem_mark, "last allow_filesystem_mark wins");
+        let c2 = parse_effective_conf("watch_fs = ext4\nwatch_fs = xfs\n", true);
+        assert_eq!(c2.watch_fs, vec!["xfs".to_string()], "last watch_fs wins");
     }
 
     #[test]

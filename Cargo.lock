@@ -1173,6 +1173,7 @@ version = "0.2.1"
 name = "rulesteward-selinux"
 version = "0.2.1"
 dependencies = [
+ "rulesteward-core",
  "rulesteward-selinux-sys",
  "serde",
  "serde_json",

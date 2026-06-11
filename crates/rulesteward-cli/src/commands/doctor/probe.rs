@@ -8,9 +8,12 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use rulesteward_core::extract_audit_field;
+
 use super::model::{
     CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts, ServiceState, SystemProbe,
 };
+use crate::commands::conf::conf_value;
 
 // ---------------------------------------------------------------------------
 // LiveProbe -- real OS access (not unit-tested; covered by e2e / VM smoke)
@@ -83,15 +86,7 @@ impl SystemProbe for LiveProbe {
             .arg("--check-config")
             .output()
             .map_err(|e| format!("fapolicyd-cli not found: {e}"))?;
-        Ok(CommandOutcome {
-            success: out.status.success(),
-            message: String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .to_string()
-                .chars()
-                .take(200)
-                .collect(),
-        })
+        Ok(cli_check_outcome(out.status.success(), &out.stdout))
     }
 
     fn lint_rules(&self, rules_dir: &Path) -> Result<LintCounts, String> {
@@ -117,15 +112,7 @@ impl SystemProbe for LiveProbe {
             .arg("--check-trustdb")
             .output()
             .map_err(|e| format!("fapolicyd-cli not found: {e}"))?;
-        Ok(CommandOutcome {
-            success: out.status.success(),
-            message: String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .to_string()
-                .chars()
-                .take(200)
-                .collect(),
-        })
+        Ok(cli_check_outcome(out.status.success(), &out.stdout))
     }
 
     fn check_watch_fs(&self) -> Result<CommandOutcome, String> {
@@ -133,15 +120,7 @@ impl SystemProbe for LiveProbe {
             .arg("--check-watch_fs")
             .output()
             .map_err(|e| format!("fapolicyd-cli not found: {e}"))?;
-        Ok(CommandOutcome {
-            success: out.status.success(),
-            message: String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .to_string()
-                .chars()
-                .take(200)
-                .collect(),
-        })
+        Ok(cli_check_outcome(out.status.success(), &out.stdout))
     }
 
     fn check_ignore_mounts(&self) -> Result<Option<CommandOutcome>, String> {
@@ -158,15 +137,7 @@ impl SystemProbe for LiveProbe {
         {
             return Ok(None); // Skip: pre-v1.4 fapolicyd
         }
-        Ok(Some(CommandOutcome {
-            success: out.status.success(),
-            message: String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .to_string()
-                .chars()
-                .take(200)
-                .collect(),
-        }))
+        Ok(Some(cli_check_outcome(out.status.success(), &out.stdout)))
     }
 
     fn rpm_plugin_installed(&self) -> Result<bool, String> {
@@ -231,9 +202,7 @@ impl SystemProbe for LiveProbe {
         let conf_path = Path::new("/etc/fapolicyd/fapolicyd.conf");
         let conf_text = std::fs::read_to_string(conf_path)
             .map_err(|e| format!("cannot read {}: {e}", conf_path.display()))?;
-        let permissive_set = conf_text
-            .lines()
-            .any(|l| l.trim() == "permissive=1" || l.trim().starts_with("permissive = 1"));
+        let permissive_set = conf_value(&conf_text, "permissive") == Some("1");
 
         // Check for sha256hash= in any rules file.
         let deprecated_sha256hash = check_sha256hash_in_dir(rules_dir);
@@ -267,21 +236,18 @@ fn read_fapolicyd_mode() -> Option<String> {
 /// Inner implementation of `read_fapolicyd_mode` that accepts an explicit path
 /// so that unit tests can supply a temp file without touching the real system.
 ///
-/// Returns `Some("permissive")` if `permissive=1` (or `permissive = 1`) is set,
-/// `Some("enforcing")` if the file is readable but the key is absent or set to
-/// anything other than `1`, and `None` if the file cannot be read.
+/// Returns `Some("permissive")` if `permissive` is set to `1` (tolerant of any
+/// whitespace around `=`), `Some("enforcing")` if the file is readable but the
+/// key is absent or set to anything other than `1`, and `None` if the file cannot
+/// be read. Shares the `conf_value` reader with the misconfiguration check so the
+/// two cannot disagree on a line like `permissive =1` (issue #192, D2).
 fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(conf_path).ok()?;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("permissive") {
-            let val = trimmed.split('=').nth(1)?.trim();
-            if val == "1" {
-                return Some("permissive".to_string());
-            }
-        }
+    if conf_value(&text, "permissive") == Some("1") {
+        Some("permissive".to_string())
+    } else {
+        Some("enforcing".to_string())
     }
-    Some("enforcing".to_string())
 }
 
 /// Scan all `.rules` files in `rules_dir` for deprecated `sha256hash=`.
@@ -352,13 +318,13 @@ pub fn parse_fanotify_denials(raw: &str) -> (u64, Vec<(String, String, u64)>) {
             }
             if t.contains("type=FANOTIFY") {
                 // Extract resp= field (unquoted decimal).
-                if let Some(resp_val) = extract_kv(t, "resp") {
+                if let Some(resp_val) = extract_audit_field(t, "resp") {
                     fanotify_resp = resp_val.parse::<u32>().ok();
                 }
             } else if t.contains("type=SYSCALL") {
-                exe = extract_kv(t, "exe");
+                exe = extract_audit_field(t, "exe");
             } else if t.contains("type=PATH") {
-                obj_path = extract_kv(t, "name");
+                obj_path = extract_audit_field(t, "name");
             }
         }
 
@@ -383,27 +349,6 @@ pub fn parse_fanotify_denials(raw: &str) -> (u64, Vec<(String, String, u64)>) {
     (total, pairs)
 }
 
-/// Minimal key=value extractor for audit record lines (handles quoted and
-/// unquoted values; word-boundary match so `pid=` doesn't match inside
-/// `ppid=`).  Mirrors the logic in `rulesteward_fapolicyd::fanotify`.
-fn extract_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let needle = format!("{key}=");
-    let (abs_pos, _) = line.match_indices(needle.as_str()).find(|&(pos, _)| {
-        pos == 0
-            || line
-                .as_bytes()
-                .get(pos - 1)
-                .is_some_and(u8::is_ascii_whitespace)
-    })?;
-    let after = &line[abs_pos + needle.len()..];
-    if let Some(inner) = after.strip_prefix('"') {
-        let end = inner.find('"')?;
-        return Some(&inner[..end]);
-    }
-    let end = after.find(char::is_whitespace).unwrap_or(after.len());
-    Some(&after[..end])
-}
-
 /// Parse the JSON lint output and count severity=Error / severity=Warning diagnostics.
 fn parse_lint_counts(json_text: &str) -> Result<LintCounts, String> {
     let v: serde_json::Value =
@@ -424,9 +369,52 @@ fn parse_lint_counts(json_text: &str) -> Result<LintCounts, String> {
     Ok(LintCounts { errors, warnings })
 }
 
+/// Build a [`CommandOutcome`] from a finished `fapolicyd-cli` invocation's exit
+/// status and raw stdout.
+///
+/// Extracted so the four `LiveProbe::check_*` methods share one truncate-and-trim
+/// rule instead of repeating it (issue #192, D3). The spawn itself stays inline in
+/// each `LiveProbe` method -- that is the mutation-excluded I/O seam; only this
+/// pure formatting is shared and unit-tested. The message is trimmed and capped at
+/// 200 chars so a chatty fapolicyd-cli cannot bloat the JSON envelope.
+fn cli_check_outcome(success: bool, stdout: &[u8]) -> CommandOutcome {
+    CommandOutcome {
+        success,
+        message: String::from_utf8_lossy(stdout)
+            .trim()
+            .to_string()
+            .chars()
+            .take(200)
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -------------------------------------------------------------------------
+    // cli_check_outcome (D3): shared truncate + trim for fapolicyd-cli --check-*.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cli_check_outcome_caps_message_at_200_chars() {
+        let long = "x".repeat(250);
+        let oc = cli_check_outcome(true, long.as_bytes());
+        assert_eq!(
+            oc.message.chars().count(),
+            200,
+            "message must be capped at 200 chars"
+        );
+        assert!(oc.success, "success flag must pass through");
+    }
+
+    #[test]
+    fn cli_check_outcome_trims_surrounding_whitespace() {
+        let oc = cli_check_outcome(false, b"  check passed  \n");
+        assert_eq!(oc.message, "check passed");
+        assert!(!oc.success, "failure flag must pass through");
+    }
 
     // -------------------------------------------------------------------------
     // parse_lint_counts
@@ -507,11 +495,39 @@ mod tests {
     #[test]
     fn read_fapolicyd_mode_from_permissive_with_spaces_returns_permissive() {
         // `permissive = 1` (spaces around `=`) -> permissive.
-        // The impl uses `split('=').nth(1)?.trim()` so this works; this test
-        // pins that the trim() call is not accidentally mutated away.
         let dir = tempfile::tempdir().expect("tempdir");
         let conf = dir.path().join("fapolicyd.conf");
         std::fs::write(&conf, "permissive = 1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string())
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_last_duplicate_wins() {
+        // Duplicate `permissive` keys resolve last-wins (fapolicyd parity): a later
+        // `permissive=1` override means the daemon IS permissive, so doctor must
+        // report permissive, not enforcing. Misreporting enforcement state is
+        // security-relevant for a health-check tool (issue #192 adversarial finding).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive=0\npermissive=1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string())
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_space_before_equals_returns_permissive() {
+        // `permissive =1` (space ONLY before `=`) -> permissive. This is the
+        // exact variant the old strict misconfiguration scanner REJECTED while
+        // the mode probe accepted it (issue #192, D2); both now share `conf_value`
+        // so they cannot disagree.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive =1\n").unwrap();
         assert_eq!(
             read_fapolicyd_mode_from(&conf),
             Some("permissive".to_string())
@@ -605,23 +621,6 @@ type=FANOTIFY msg=audit(1600385147.372:590): resp=1 fan_type=1 fan_info=1 subj_t
         let (count, pairs) = parse_fanotify_denials("");
         assert_eq!(count, 0);
         assert!(pairs.is_empty());
-    }
-
-    #[test]
-    fn extract_kv_matches_key_at_position_zero() {
-        // The key sits at byte 0 (no preceding whitespace), exercising the
-        // `pos == 0` arm of the word-boundary guard. Kills the `== 0 -> != 0`
-        // mutant (which would underflow/miss the position-0 key and return None).
-        assert_eq!(extract_kv("resp=2 fan_type=0", "resp"), Some("2"));
-    }
-
-    #[test]
-    fn extract_kv_respects_word_boundary() {
-        // `subj_trust=2` must NOT match a search for `trust` (no whitespace
-        // before `trust=`): pins the boundary guard's whitespace arm.
-        assert_eq!(extract_kv("resp=2 subj_trust=2", "trust"), None);
-        // But a real whitespace-preceded `trust=` does match.
-        assert_eq!(extract_kv("resp=2 trust=1", "trust"), Some("1"));
     }
 
     #[test]
