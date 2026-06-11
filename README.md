@@ -64,6 +64,32 @@ rulesteward fapolicyd lint            # static-analyze /etc/fapolicyd/rules.d/
 rulesteward fapolicyd lint --help     # per-command help
 ```
 
+## How RuleSteward compares
+
+`fapolicyd` ships a first-party checker: `fapolicyd-cli --check-rules` validates
+rule syntax without loading the policy (exit `0` when valid), and
+`--check-rules --lint` adds a small fixed set of hardcoded "default-allow"
+policy-shape warnings. That is the right first stop for "is this rule file
+syntactically valid, and does it have an obvious open-by-default gap?"
+
+RuleSteward is the CI-grade semantic layer above that:
+
+| Capability | `fapolicyd-cli --check-rules --lint` | RuleSteward |
+| --- | --- | --- |
+| Syntax validation | yes | yes |
+| Policy-shape warnings | a small fixed set (default-allow reachability) | a documented lint-code taxonomy (25 fapolicyd codes today) |
+| Whole-ruleset analysis (shadowing, ordering, subsumption) | no | yes |
+| Machine-readable output | no (human text + exit code) | SARIF 2.1, JSON, CSV |
+| Exit-code taxonomy | binary (zero / non-zero) | documented `0`/`1`/`2`/`3`/`5` contract |
+| Version-aware linting | no | yes (`--target <fapolicyd-version>`) |
+| Trust-database analysis | no | yes |
+| Other policy backends | fapolicyd only | + SELinux denial triage / TE emission, auditd cost analysis |
+
+Use `fapolicyd-cli --check-rules` as your local syntax gate; reach for
+RuleSteward when you want CI-grade semantic analysis, machine-readable findings
+for a pipeline, version-targeted rules, and coverage beyond fapolicyd. The two
+are complementary, not mutually exclusive.
+
 ## License
 
 Engine: **Apache-2.0**. Rule templates (separate repo): **BSD-3-Clause**.
