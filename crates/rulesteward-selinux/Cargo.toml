@@ -27,6 +27,7 @@ authoritative-categorizer = [
 ]
 
 [dependencies]
+rulesteward-core = { workspace = true }
 rulesteward-selinux-sys = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

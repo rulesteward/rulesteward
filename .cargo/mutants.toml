@@ -24,6 +24,10 @@
 
 examine_globs = [
     "crates/rulesteward-core/src/diagnostic.rs",
+    # shared audit-record key=value extractor (word-boundary guarded), consumed by
+    # fanotify + doctor + avc (issue #192, D1). New top-level core file: must be
+    # listed explicitly or its mutation gate passes vacuously (allowlist).
+    "crates/rulesteward-core/src/audit.rs",
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
@@ -42,6 +46,10 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/register.rs",
     "crates/rulesteward-sink/src/**/*.rs",
     "crates/rulesteward-cli/src/commands/trustdb_compute.rs",
+    # shared fapolicyd.conf key reader (whitespace/comment tolerant), consumed by
+    # doctor + container_check (issue #192, D2). New file: list explicitly or the
+    # gate passes vacuously (allowlist).
+    "crates/rulesteward-cli/src/commands/conf.rs",
     # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69;
     # split into simulate/{workload,evaluate,render}.rs + mod.rs in #146): the
     # parsers, load_ruleset, evaluate_query, resolve_trust, and renderer are real
@@ -240,9 +248,11 @@ exclude_re = [
     # is to supply the production path, which is verified by the live VM smoke.
     # Genuine equivalent mutants for the test environment.
     'replace read_fapolicyd_mode -> Option<String>',
-    # (`extract_kv == 0 -> != 0` is NOT excluded: it is killed directly by
-    # `extract_kv_matches_key_at_position_zero`, which exercises the pos-0 guard
-    # arm. A real kill is strictly better than an equivalence exclusion.)
+    # (`extract_audit_field == 0 -> != 0` is NOT excluded: it is killed directly
+    # by `extract_audit_field_key_at_position_zero` in rulesteward-core, which
+    # exercises the pos-0 guard arm. The extractor moved out of doctor/probe.rs
+    # (formerly `extract_kv`) and fanotify.rs (formerly `extract_field`) into the
+    # single shared core helper in #192. A real kill beats an equivalence exclusion.)
     # `parse_fanotify_denials` block-skip guard: `t.is_empty() || t == "----"`.
     # The `|| -> &&` mutant changes the guard to "skip only if BOTH empty AND
     # equal to '----'", which is never true (an empty string cannot equal

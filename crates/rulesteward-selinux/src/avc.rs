@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 
+use rulesteward_core::extract_audit_field;
 use serde::Serialize;
 
 /// Verdict from a `type=AVC` record.
@@ -133,11 +134,11 @@ pub fn parse_avc(input: &str) -> Result<Vec<AvcDenial>, AvcParseError> {
         if line.starts_with("type=AVC ") || line.contains(" type=AVC ") {
             avc_lines.push((serial_str, line));
         } else if (line.starts_with("type=SYSCALL ") || line.contains(" type=SYSCALL "))
-            && let Some(exe) = extract_quoted_or_plain(line, "exe=")
+            && let Some(exe) = avc_field(line, "exe")
         {
             companion.entry(serial_str).or_default().exe = Some(exe);
         } else if (line.starts_with("type=PATH ") || line.contains(" type=PATH "))
-            && let Some(name) = extract_quoted_or_plain(line, "name=")
+            && let Some(name) = avc_field(line, "name")
         {
             companion.entry(serial_str).or_default().path = Some(name);
         }
@@ -184,41 +185,18 @@ fn parse_audit_timestamp_serial(line: &str) -> (Option<f64>, Option<u64>) {
     (ts_str.parse::<f64>().ok(), serial_str.parse::<u64>().ok())
 }
 
-/// Extract a value for a key, accepting both quoted (`key="val"`) and
-/// unquoted (`key=val`) forms. Returns `None` if the key is absent.
-fn extract_quoted_or_plain(line: &str, key: &str) -> Option<String> {
-    let start = line.find(key)? + key.len();
-    let rest = &line[start..];
-    if let Some(inner) = rest.strip_prefix('"') {
-        // Quoted form: delimited by the next '"'.
-        let end = inner.find('"')?;
-        Some(inner[..end].to_string())
-    } else {
-        // Unquoted form: delimited by the next space or end-of-string.
-        let end = rest.find(' ').unwrap_or(rest.len());
-        let val = &rest[..end];
-        if val.is_empty() {
-            None
-        } else {
-            Some(val.to_string())
-        }
-    }
-}
-
-/// Extract a plain (unquoted) value like `pid=14601` or `permissive=0`.
+/// Extract an audit `key=value` from an AVC line as an owned `String`.
 ///
-/// Stops at the first space or end-of-string. Does NOT match a quoted form
-/// (use [`extract_quoted_or_plain`] for fields that may be quoted).
-fn extract_plain_value(line: &str, key: &str) -> Option<String> {
-    let start = line.find(key)? + key.len();
-    let rest = &line[start..];
-    let end = rest.find(' ').unwrap_or(rest.len());
-    let val = &rest[..end];
-    if val.is_empty() {
-        None
-    } else {
-        Some(val.to_string())
-    }
+/// Thin wrapper over [`rulesteward_core::extract_audit_field`], which carries the
+/// word-boundary guard (so a search for `pid` does NOT match inside `ppid=`) plus
+/// the quoted/unquoted value handling. This replaces the two former hand-rolled
+/// extractors (`extract_quoted_or_plain` / `extract_plain_value`), which used a
+/// bare `line.find(key)` with no boundary guard (issue #192, D1). Every field this
+/// parser reads (`scontext`/`tclass`/`pid`/`ssid`/...) is unquoted in kernel
+/// output, so the quoted-aware core extractor returns the identical value for the
+/// plain ones. `key` is passed WITHOUT the trailing `=`.
+fn avc_field(line: &str, key: &str) -> Option<String> {
+    extract_audit_field(line, key).map(str::to_string)
 }
 
 /// Extract the TYPE component (third colon-delimited field) from a full `SELinux`
@@ -283,47 +261,44 @@ fn parse_single_avc_line(
         .ok_or(AvcParseError::MissingField("'for' keyword"))?;
 
     // -- scontext= or ssid= fallback (avc.c:711 / avc.c:709 (Linux v6.12 security/selinux/avc.c)) --
-    let (scontext_raw, source_type) =
-        if let Some(sctx) = extract_plain_value(after_for, "scontext=") {
-            let stype = extract_type_from_context(&sctx);
-            (sctx, stype)
-        } else if let Some(ssid) = extract_plain_value(after_for, "ssid=") {
-            let raw = format!("ssid={ssid}");
-            (raw.clone(), raw)
-        } else {
-            return Err(AvcParseError::MissingField("scontext= or ssid="));
-        };
+    let (scontext_raw, source_type) = if let Some(sctx) = avc_field(after_for, "scontext") {
+        let stype = extract_type_from_context(&sctx);
+        (sctx, stype)
+    } else if let Some(ssid) = avc_field(after_for, "ssid") {
+        let raw = format!("ssid={ssid}");
+        (raw.clone(), raw)
+    } else {
+        return Err(AvcParseError::MissingField("scontext= or ssid="));
+    };
 
     // -- tcontext= or tsid= fallback (avc.c:716 / avc.c:714 (Linux v6.12 security/selinux/avc.c)) --
-    let (tcontext_raw, target_type) =
-        if let Some(tctx) = extract_plain_value(after_for, "tcontext=") {
-            let ttype = extract_type_from_context(&tctx);
-            (tctx, ttype)
-        } else if let Some(tsid) = extract_plain_value(after_for, "tsid=") {
-            let raw = format!("tsid={tsid}");
-            (raw.clone(), raw)
-        } else {
-            return Err(AvcParseError::MissingField("tcontext= or tsid="));
-        };
+    let (tcontext_raw, target_type) = if let Some(tctx) = avc_field(after_for, "tcontext") {
+        let ttype = extract_type_from_context(&tctx);
+        (tctx, ttype)
+    } else if let Some(tsid) = avc_field(after_for, "tsid") {
+        let raw = format!("tsid={tsid}");
+        (raw.clone(), raw)
+    } else {
+        return Err(AvcParseError::MissingField("tcontext= or tsid="));
+    };
 
     // -- tclass= (avc.c:719 (Linux v6.12 security/selinux/avc.c)) --
-    let tclass =
-        extract_plain_value(after_for, "tclass=").ok_or(AvcParseError::MissingField("tclass="))?;
+    let tclass = avc_field(after_for, "tclass").ok_or(AvcParseError::MissingField("tclass="))?;
 
     // -- permissive= only on denial records (avc.c:721-722 (Linux v6.12 security/selinux/avc.c)) --
     let permissive = if verdict == Verdict::Denied {
-        extract_plain_value(after_for, "permissive=").map(|v| v == "1")
+        avc_field(after_for, "permissive").map(|v| v == "1")
     } else {
         None
     };
 
     // -- Optional AVC-line context fields --
-    let pid = extract_plain_value(after_for, "pid=").and_then(|v| v.parse::<u32>().ok());
-    let comm = extract_quoted_or_plain(after_for, "comm=");
-    let name = extract_quoted_or_plain(after_for, "name=");
+    let pid = avc_field(after_for, "pid").and_then(|v| v.parse::<u32>().ok());
+    let comm = avc_field(after_for, "comm");
+    let name = avc_field(after_for, "name");
 
     // exe: prefer AVC line, fall back to companion SYSCALL record.
-    let exe = extract_quoted_or_plain(after_for, "exe=").or(companion.exe);
+    let exe = avc_field(after_for, "exe").or(companion.exe);
     let path = companion.path;
 
     Ok(AvcDenial {
