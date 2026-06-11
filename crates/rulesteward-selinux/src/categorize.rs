@@ -12,11 +12,11 @@
 //! # Why this is feature-gated
 //!
 //! The replay needs libsepol statically linked under musl (issues #106 build.rs,
-//! #107 FFI). That is ~224 KiB of opt-in binary (f4b section 7), so the entire
-//! module - and the `rulesteward-selinux-sys` FFI it wraps - lives behind the
-//! `authoritative-categorizer` cargo feature. The default workspace build links
-//! no libsepol and pays nothing; only a feature-enabled build carries the LGPL
-//! obligations (#110).
+//! #107 FFI). That is ~224 KiB of binary (f4b section 7), so the entire module -
+//! and the `rulesteward-selinux-sys` FFI it wraps - lives behind the
+//! `authoritative-categorizer` cargo feature, which is DEFAULT-ON since #135. So
+//! a default `--workspace` build links libsepol and carries the LGPL obligation
+//! (#110); the `--no-default-features` build links no libsepol and pays nothing.
 //!
 //! # Categorization contract (f4 section 8 + f4b section 1.3)
 //!

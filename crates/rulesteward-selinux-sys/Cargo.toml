@@ -16,13 +16,16 @@ links = "sepol"
 build = "build.rs"
 
 [features]
-# `vendored` builds + statically links libsepol from the in-tree source. It is
-# default-OFF and is the ONLY thing that makes build.rs compile libsepol: a
-# default build (e.g. `cargo build/test --workspace`) compiles this crate's rlib
-# with a no-op build.rs and links NO libsepol (an rlib links no native libs), so
-# the default workspace build carries zero libsepol cost. `rulesteward-selinux`'s
-# `authoritative-categorizer` feature turns this on; the standalone `vendored`
-# build/link smoke test (tests/links_from_source.rs) runs under it too.
+# `vendored` builds + statically links libsepol from the in-tree source, and is
+# the ONLY thing that makes build.rs compile libsepol. This crate does not list it
+# as a default feature, but `rulesteward-selinux`'s `authoritative-categorizer`
+# turns it on and that is DEFAULT-ON since #135 -- so via feature unification a
+# default `cargo build/test --workspace` (which pulls in rulesteward-cli's
+# defaults) enables `vendored` and DOES compile + statically link libsepol. The
+# zero-libsepol-cost path is `--no-default-features` (or compiling this crate's
+# rlib alone): `vendored` stays off, build.rs is a no-op, and an rlib links no
+# native libs. The standalone `vendored` build/link smoke test
+# (tests/links_from_source.rs) runs under it too.
 vendored = []
 
 [dependencies]

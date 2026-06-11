@@ -102,4 +102,10 @@ assets = [
     # license + notice for the LGPL-2.1 library it links.
     { source = "LICENSES/LGPL-2.1.txt", dest = "/usr/share/licenses/rulesteward/LGPL-2.1.txt", mode = "644" },
     { source = "NOTICE", dest = "/usr/share/licenses/rulesteward/NOTICE", mode = "644" },
+    # liblmdb (via the LOCKED heed -> lmdb-master-sys) is statically linked into
+    # EVERY build under the permissive OpenLDAP Public License v2.8 (OLDAP-2.8),
+    # whose conditions 2+3 require the copyright notice + a verbatim license copy
+    # to accompany binary redistribution. Plain (non-%doc) for the same nodocs
+    # reason as LICENSE/LGPL above.
+    { source = "LICENSES/OLDAP-2.8.txt", dest = "/usr/share/licenses/rulesteward/OLDAP-2.8.txt", mode = "644" },
 ]

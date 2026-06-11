@@ -32,6 +32,21 @@ into the default binary as a static archive (LGPL-2.1 permits static linking
 with this notice and the accompanying license text, given the complete
 corresponding source and the ability to relink -- both satisfied here).
 
+liblmdb (OpenLDAP Lightning Memory-Mapped Database), OpenLDAP Public License
+v2.8 (SPDX OLDAP-2.8), statically linked into EVERY build.
+
+  - Reached via the LOCKED `heed` dependency -> `lmdb-master-sys`, whose `cc`
+    build script compiles the vendored liblmdb C and statically links it. Unlike
+    libsepol, liblmdb is NOT behind a feature: it is linked into every
+    rulesteward binary, including the `--no-default-features` Apache-2.0 build.
+  - License: the OpenLDAP Public License v2.8, a permissive BSD-style license.
+    The full text is in LICENSES/OLDAP-2.8.txt (a verbatim copy of liblmdb's
+    upstream LICENSE). OLDAP-2.8 requires that binary redistributions reproduce
+    the applicable copyright notice and a copy of the license; this NOTICE plus
+    LICENSES/OLDAP-2.8.txt satisfy that for the shipped binary and the RPM.
+  - Copyright 1999-2003 The OpenLDAP Foundation, Redwood City, California, USA.
+    OpenLDAP is a registered trademark of the OpenLDAP Foundation.
+
 Licensing posture
 =================
 
@@ -47,7 +62,10 @@ The clean Apache-2.0-only build:
   - `cargo build --no-default-features` (equivalently, building
     rulesteward-cli with its default feature off) links NO libsepol and
     carries no LGPL obligation. This is the build for downstreams that want
-    an Apache-2.0-only artifact.
+    an artifact free of any copyleft obligation. (It still statically links
+    the permissive OLDAP-2.8 liblmdb described above -- that carries only an
+    attribution obligation, no copyleft, and is satisfied by this NOTICE +
+    LICENSES/OLDAP-2.8.txt.)
 
 Why static linking of an LGPL-2.1 library is permitted here (LGPL-2.1 section 6):
 an open-source application may distribute a binary that statically links an

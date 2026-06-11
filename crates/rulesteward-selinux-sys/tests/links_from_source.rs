@@ -11,9 +11,9 @@
 //! categorizer logic.
 //!
 //! Gated on the `vendored` feature: that feature is what makes `build.rs` build
-//! and link libsepol at all (default builds compile the `-sys` rlib with a no-op
-//! `build.rs` and link no libsepol). Without the feature there is no archive to
-//! link against, so the test must not compile.
+//! and link libsepol at all (a build WITHOUT `vendored` compiles the `-sys` rlib
+//! with a no-op `build.rs` and links no libsepol). Without the feature there is
+//! no archive to link against, so the test must not compile.
 
 #![cfg(feature = "vendored")]
 

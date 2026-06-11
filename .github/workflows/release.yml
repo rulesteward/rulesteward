@@ -120,6 +120,12 @@ jobs:
           #    license/notice + source-availability obligations for the binary.
           cp LICENSES/LGPL-2.1.txt dist/LGPL-2.1.txt
           cp NOTICE dist/NOTICE
+          # liblmdb (via the LOCKED heed -> lmdb-master-sys) is statically linked
+          # into every build under the permissive OpenLDAP Public License v2.8.
+          # OLDAP-2.8 conditions 2+3 require the copyright notice + a verbatim
+          # license copy with binary redistribution; ship the license text (the
+          # NOTICE above carries the attribution).
+          cp LICENSES/OLDAP-2.8.txt dist/OLDAP-2.8.txt
           # Pointer to the complete corresponding libsepol source. The source is
           # vendored in-tree at the path below (it travels with the source release
           # tarball GitHub attaches automatically); this file makes the LGPL-2.1
@@ -142,7 +148,7 @@ jobs:
           section 6 relinking requirement.
           EOF
           # 6. checksums over every shipped asset (not over SHA256SUMS itself)
-          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json LGPL-2.1.txt NOTICE LGPL-2.1-SOURCE-OFFER.txt > SHA256SUMS )
+          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json LGPL-2.1.txt NOTICE LGPL-2.1-SOURCE-OFFER.txt OLDAP-2.8.txt > SHA256SUMS )
           echo "--- dist/ ---"; ls -l dist; echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
 
       - name: Upload dist artifact
@@ -202,6 +208,9 @@ jobs:
           # Assert they land on disk to guard the LGPL obligation against regression.
           test -f /usr/share/licenses/rulesteward/LGPL-2.1.txt
           test -f /usr/share/licenses/rulesteward/NOTICE
+          # liblmdb (OLDAP-2.8) is statically linked into every build; its
+          # license text must land on disk (plain, non-%doc) under nodocs too.
+          test -f /usr/share/licenses/rulesteward/OLDAP-2.8.txt
 
   publish:
     name: sign + publish GitHub Release
@@ -257,6 +266,7 @@ jobs:
             dist/LGPL-2.1.txt
             dist/NOTICE
             dist/LGPL-2.1-SOURCE-OFFER.txt
+            dist/OLDAP-2.8.txt
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/SHA256SUMS.pem
