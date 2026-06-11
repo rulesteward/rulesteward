@@ -54,13 +54,13 @@ jobs:
   # common case).
   fmt-clippy:
     name: fmt + clippy (ubuntu)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # dtolnay/rust-toolchain handles toolchain install + PATH declaratively.
-      # It assumes `rustup` exists; the persistent self-hosted runner should
-      # have it, but install it via apt first as a safety net (no-op if present).
+      # It assumes `rustup` exists; GitHub-hosted ubuntu-latest ships it, so this
+      # guard is a no-op there, but install it via apt as a safety net if absent.
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -108,7 +108,7 @@ jobs:
   # green path.
   check:
     name: ${{ matrix.label }} - test + musl smoke
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: [fmt-clippy, musl-build]
     strategy:
       fail-fast: false
@@ -277,7 +277,7 @@ jobs:
 
   coverage:
     name: cargo llvm-cov (workspace 80% + parser/lint 90%)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -318,7 +318,7 @@ jobs:
 
   musl-build:
     name: build static musl binary (ubuntu)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # Depends on fmt-clippy only. The merged `check` job (test + smoke)
     # consumes this artifact and so depends on musl-build downstream; the
     # prior gate `needs: check` would now be a dependency cycle. A red push
@@ -381,7 +381,7 @@ jobs:
   # workflow_dispatch events per the if: gate below.
   audit:
     name: cargo-audit
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # PR-only + manual: every change on this repo goes through a PR before
     # landing on main, so push-event audit would duplicate the PR signal.
     # workflow_dispatch is included so a maintainer can manually verify
@@ -419,7 +419,7 @@ jobs:
   # via taiki-e/install-action (~10-20s) instead of source-compile.
   deny:
     name: cargo-deny
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -444,7 +444,7 @@ jobs:
   # only passed because rust-cache restored pre-built artifacts.
   msrv:
     name: cargo check on MSRV (1.88)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -485,7 +485,7 @@ jobs:
   # fmt-clippy ubuntu pattern.
   selinux-feature:
     name: ${{ matrix.label }} - authoritative-categorizer (clippy + test)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: fmt-clippy
     strategy:
       fail-fast: false
@@ -548,7 +548,7 @@ jobs:
   # lacks.)
   selinux-feature-coverage:
     name: authoritative-categorizer coverage (ubuntu)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -586,7 +586,7 @@ jobs:
   # it until byte-reproducibility is established).
   libsepol-from-source:
     name: build libsepol.a from vendored source (standalone)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Install musl toolchain + make + binutils
@@ -620,7 +620,7 @@ jobs:
   # to catch). It builds, lints, and tests rulesteward-cli with the feature off.
   apache-only-build:
     name: apache-2.0-only build (no libsepol, no-default-features)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

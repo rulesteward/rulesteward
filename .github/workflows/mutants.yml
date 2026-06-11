@@ -21,19 +21,21 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # Per-shard ceiling. With 24 shards x -j1 (see below) each shard tests ~50
     # mutants serially; most are caught fast, a few run the full --test-workspace
     # suite (~100s) to completion, so a shard finishes well inside 2h. A timed-out
     # shard fails the gate (exit 3) the same as a survivor, so keep headroom.
     timeout-minutes: 120
     strategy:
-      # Shard the full mutant suite (~1195 mutants) into 24 shards. Only ~8
-      # self-hosted runners exist, so GitHub schedules the 24 jobs in ~3 waves of
-      # 8; total wall ~= 3 shard-durations. Why 24 (not 8): the gate runs
-      # --test-workspace (every mutant re-runs the whole workspace suite, slow)
-      # and -j1 (below) runs them serially, so ~50 mutants/shard keeps each JOB
-      # under the 2h ceiling -- 8 shards x ~150 mutants serial would need ~5-6h.
+      # Shard the full mutant suite (~1195 mutants) into 24 shards. The 24 jobs
+      # run on GitHub-hosted ubuntu-latest; the plan's max-concurrent-jobs cap
+      # decides how many run at once and GitHub queues the rest, so wall-clock is
+      # roughly ceil(24 / concurrent-cap) shard-durations. This is a nightly cron,
+      # so queueing is fine. Why 24 (not fewer): the gate runs --test-workspace
+      # (every mutant re-runs the whole workspace suite, slow) and -j1 (below)
+      # runs them serially, so ~50 mutants/shard keeps each JOB under the 2h
+      # ceiling -- 8 shards x ~150 mutants serial would need ~5-6h.
       # fail-fast MUST stay false: a survivor (or any non-zero shard exit) must
       # not cancel its siblings -- otherwise the other shards' results are lost
       # and the run surfaces as "canceled".

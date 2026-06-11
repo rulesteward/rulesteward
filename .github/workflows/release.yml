@@ -34,7 +34,7 @@ env:
 jobs:
   build:
     name: build static musl binary + assets
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
@@ -65,12 +65,13 @@ jobs:
       - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: cargo-binstall
-      # `--force` is required, not optional: this is a PERSISTENT self-hosted runner.
-      # binstall records a tool as "already installed" from a prior run, but a runner
-      # update can wipe ~/.cargo/bin while leaving that metadata -- so binstall would
-      # skip reinstalling and the next `cargo auditable` fails with "no such command"
-      # (observed in the v0.1.0-rc5 dry-run). --force always (re)installs the binaries,
-      # making the release independent of leftover runner state.
+      # `--force` always (re)installs the binaries rather than trusting binstall's
+      # "already installed" metadata. Harmless on GitHub-hosted runners (clean image
+      # each run); it also kept the release independent of leftover state back when
+      # this ran on a persistent self-hosted runner (a runner update could wipe
+      # ~/.cargo/bin while leaving the metadata, so binstall would skip the reinstall
+      # and the next `cargo auditable` failed with "no such command" -- observed in
+      # the v0.1.0-rc5 dry-run). Kept for robustness.
       - name: Install asset tools (auditable, generate-rpm, cyclonedx)
         run: cargo binstall -y --force cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9
 
@@ -155,7 +156,7 @@ jobs:
   rpm-smoke:
     name: smoke-install the RPM on Rocky
     needs: build
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     container:
       image: rockylinux/rockylinux:9
     defaults:
@@ -205,7 +206,7 @@ jobs:
   publish:
     name: sign + publish GitHub Release
     needs: [build, rpm-smoke]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     # Only this job needs write + OIDC. Scoped here rather than workflow-wide so
     # the build / smoke jobs run with least privilege.
     permissions:
@@ -234,13 +235,12 @@ jobs:
             dist/SHA256SUMS
           ls -l dist/SHA256SUMS.sig dist/SHA256SUMS.pem
 
-      # Create the Release via the GitHub API (softprops/action-gh-release), NOT the
-      # `gh` CLI: `gh` is not installed on the self-hosted runner, so a `gh release
-      # create` shell step exits 127. This JS action talks to the API directly using
-      # the job's GITHUB_TOKEN (contents: write above), uploads the asset globs, and
-      # marks rc/alpha/beta tags as prereleases via the expression below (the tag is
-      # consumed by the action, never interpolated into a shell). Pinned to @v2 to
-      # match the other major-version action pins in this repo.
+      # Create the Release via the GitHub API (softprops/action-gh-release) rather
+      # than a `gh release create` shell step. This JS action talks to the API
+      # directly using the job's GITHUB_TOKEN (contents: write above), uploads the
+      # asset globs, and marks rc/alpha/beta tags as prereleases via the expression
+      # below (the tag is consumed by the action, never interpolated into a shell).
+      # Pinned to @v3 to match the other major-version action pins in this repo.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
