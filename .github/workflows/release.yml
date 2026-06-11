@@ -114,7 +114,11 @@ jobs:
           #     enumerate it -- append its verbatim COPYRIGHT. The copyleft /
           #     vendored-C texts (LGPL-2.1, OLDAP-2.8) stay in their own dedicated
           #     assets below; this file is the permissive bulk.
-          cargo about generate about.hbs --target "$TARGET" -o dist/THIRD-PARTY-LICENSES
+          # --offline pins license resolution to the local crate sources + the
+          # committed about.toml (no clearlydefined.io network call at release
+          # time), matching the --locked discipline used elsewhere here. Verified
+          # locally to produce byte-identical coverage to the networked run.
+          cargo about generate about.hbs --target "$TARGET" --offline -o dist/THIRD-PARTY-LICENSES
           {
             printf '\n\n'
             printf '========================================================================\n'

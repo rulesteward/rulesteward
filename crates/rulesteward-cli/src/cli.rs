@@ -719,6 +719,14 @@ mod tests {
             help.contains("--sarif-include-pass"),
             "long help must still document the flag; got:\n{help}"
         );
+        // Positive lock on the corrected wording: the help must SAY the flag is
+        // functional, not merely omit "reserved" (which a future unrelated edit
+        // could satisfy without describing the flag at all).
+        assert!(
+            help.contains("adds per-check pass results"),
+            "long help must describe --sarif-include-pass as functional \
+             (the corrected #137 wording); got:\n{help}"
+        );
         assert!(
             !help.to_lowercase().contains("reserved"),
             "long help must not call --sarif-include-pass 'reserved' \
