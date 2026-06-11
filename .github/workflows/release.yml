@@ -72,8 +72,8 @@ jobs:
       # ~/.cargo/bin while leaving the metadata, so binstall would skip the reinstall
       # and the next `cargo auditable` failed with "no such command" -- observed in
       # the v0.1.0-rc5 dry-run). Kept for robustness.
-      - name: Install asset tools (auditable, generate-rpm, cyclonedx)
-        run: cargo binstall -y --force cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9
+      - name: Install asset tools (auditable, generate-rpm, cyclonedx, about)
+        run: cargo binstall -y --force cargo-auditable@0.7.4 cargo-generate-rpm@0.21.0 cargo-cyclonedx@0.5.9 cargo-about@0.9.0
 
       # Build the shipped binary with the dependency manifest embedded
       # (cargo-auditable writes a `.dep-v0` ELF section that `cargo audit bin` /
@@ -106,6 +106,22 @@ jobs:
           "$BIN" mangen dist
           # 2. the binary itself
           cp "$BIN" dist/rulesteward
+          # 2b. THIRD-PARTY-LICENSES: aggregate the permissive (MIT/Apache/BSD/...)
+          #     Rust crates statically linked into the binary (cargo-about reads
+          #     about.toml + about.hbs at the workspace root). Generated BEFORE the
+          #     RPM so the RPM asset below can bundle it. musl libc (MIT) is linked
+          #     statically but is NOT a Cargo dependency, so cargo-about cannot
+          #     enumerate it -- append its verbatim COPYRIGHT. The copyleft /
+          #     vendored-C texts (LGPL-2.1, OLDAP-2.8) stay in their own dedicated
+          #     assets below; this file is the permissive bulk.
+          cargo about generate about.hbs --target "$TARGET" -o dist/THIRD-PARTY-LICENSES
+          {
+            printf '\n\n'
+            printf '========================================================================\n'
+            printf 'musl libc (statically linked via the %s target; MIT)\n' "$TARGET"
+            printf '========================================================================\n'
+            cat LICENSES/musl-COPYRIGHT.txt
+          } >> dist/THIRD-PARTY-LICENSES
           # 3. RPM
           cargo generate-rpm -p crates/rulesteward-cli --target "$TARGET"
           cp "target/$TARGET/generate-rpm/"rulesteward-*.x86_64.rpm dist/
@@ -148,7 +164,7 @@ jobs:
           section 6 relinking requirement.
           EOF
           # 6. checksums over every shipped asset (not over SHA256SUMS itself)
-          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json LGPL-2.1.txt NOTICE LGPL-2.1-SOURCE-OFFER.txt OLDAP-2.8.txt > SHA256SUMS )
+          ( cd dist && sha256sum rulesteward rulesteward.1 rulesteward-*.x86_64.rpm rulesteward.cdx.json THIRD-PARTY-LICENSES LGPL-2.1.txt NOTICE LGPL-2.1-SOURCE-OFFER.txt OLDAP-2.8.txt > SHA256SUMS )
           echo "--- dist/ ---"; ls -l dist; echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
 
       - name: Upload dist artifact
@@ -211,16 +227,21 @@ jobs:
           # liblmdb (OLDAP-2.8) is statically linked into every build; its
           # license text must land on disk (plain, non-%doc) under nodocs too.
           test -f /usr/share/licenses/rulesteward/OLDAP-2.8.txt
+          # THIRD-PARTY-LICENSES (permissive Rust crates + musl libc, #185) is
+          # plain (non-%doc) too; assert it lands on disk under nodocs.
+          test -f /usr/share/licenses/rulesteward/THIRD-PARTY-LICENSES
 
   publish:
     name: sign + publish GitHub Release
     needs: [build, rpm-smoke]
     runs-on: ubuntu-latest
     # Only this job needs write + OIDC. Scoped here rather than workflow-wide so
-    # the build / smoke jobs run with least privilege.
+    # the build / smoke jobs run with least privilege. `attestations: write` lets
+    # the SLSA provenance step record an attestation to the GitHub attestation log.
     permissions:
       contents: write
       id-token: write
+      attestations: write
     steps:
       - name: Download dist artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -250,6 +271,21 @@ jobs:
       # asset globs, and marks rc/alpha/beta tags as prereleases via the expression
       # below (the tag is consumed by the action, never interpolated into a shell).
       # Pinned to @v3 to match the other major-version action pins in this repo.
+      # SLSA build-provenance attestation (#188). Records a signed provenance
+      # statement binding the distributed binary + RPM to this workflow run,
+      # commit, and builder. Stored in the GitHub attestation log and verifiable
+      # after release with `gh attestation verify <file> --repo rulesteward/rulesteward`.
+      # Reuses the ambient OIDC token (id-token: write); attestations: write lets
+      # the action post the attestation. Run here (not in build) to keep build/smoke
+      # least-privilege per this workflow's design; the subject is the exact artifact
+      # passed via the build artifact and published below, so the binding holds.
+      - name: Attest build provenance (binary + RPM)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/rulesteward
+            dist/rulesteward-*.x86_64.rpm
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
@@ -263,6 +299,7 @@ jobs:
             dist/rulesteward.1
             dist/rulesteward-*.x86_64.rpm
             dist/rulesteward.cdx.json
+            dist/THIRD-PARTY-LICENSES
             dist/LGPL-2.1.txt
             dist/NOTICE
             dist/LGPL-2.1-SOURCE-OFFER.txt

@@ -1,0 +1,30 @@
+# cargo-about configuration for the THIRD-PARTY-LICENSES aggregate (#185),
+# generated in release.yml and shipped with the binary + RPM.
+#
+# Scope: the ~190 permissive Rust crates statically linked into the musl release
+# binary. The two copyleft/vendored-C obligations are handled SEPARATELY and are
+# intentionally NOT in this file: libsepol (LGPL-2.1) via LICENSES/LGPL-2.1.txt +
+# the source offer, and liblmdb (OLDAP-2.8) via LICENSES/OLDAP-2.8.txt -- both
+# already attributed in NOTICE. This file covers the permissive bulk that MIT/BSD
+# notice-preservation conventionally requires shipping.
+#
+# `accepted` mirrors deny.toml's license allow list (keep them in sync); a crate
+# whose license is not accepted fails generation, which is the intended signal to
+# review a new license before shipping it.
+
+# Dev-dependencies are test/bench-only and are NOT in the shipped binary; exclude
+# them so the aggregate reflects what is actually redistributed. (The workspace's
+# own first-party crates are Apache-2.0 and may appear; they are genuinely part of
+# the statically linked binary, so listing them is accurate.)
+ignore-dev-dependencies = true
+
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unlicense",
+]

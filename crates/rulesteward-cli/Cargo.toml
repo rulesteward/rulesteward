@@ -116,4 +116,10 @@ assets = [
     # to accompany binary redistribution. Plain (non-%doc) for the same nodocs
     # reason as LICENSE/LGPL above.
     { source = "LICENSES/OLDAP-2.8.txt", dest = "/usr/share/licenses/rulesteward/OLDAP-2.8.txt", mode = "644" },
+    # THIRD-PARTY-LICENSES (#185): the aggregated permissive (MIT/Apache/BSD/...)
+    # attribution for the statically linked Rust crates + musl libc. Unlike the
+    # files above this is GENERATED (cargo-about) into dist/ by release.yml BEFORE
+    # `cargo generate-rpm` runs, so the source path is dist/, not a committed file.
+    # Plain (non-%doc) for the same nodocs reason as the licenses above.
+    { source = "dist/THIRD-PARTY-LICENSES", dest = "/usr/share/licenses/rulesteward/THIRD-PARTY-LICENSES", mode = "644" },
 ]
