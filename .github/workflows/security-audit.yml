@@ -1,0 +1,57 @@
+name: security-audit
+
+# Nightly re-audit of the dependency tree (#186). The cargo-audit / cargo-deny
+# jobs in ci.yml are PR- and dispatch-gated, so a new RustSec advisory published
+# against an UNCHANGED main is invisible until the next PR happens to run CI.
+# This workflow closes that detection-latency gap by re-running the same two
+# checks on a nightly schedule, so an advisory landing on a quiet main surfaces
+# within a day. For a security-adjacent tool this is also a public trust signal.
+#
+# Why a separate workflow instead of a schedule on ci.yml's audit/deny jobs:
+# GitHub Actions triggers are workflow-level, not job-level. Adding `schedule:`
+# to ci.yml would also run the full CI suite (fmt/clippy/test/cov/...) nightly,
+# since those jobs have no event guard. A dedicated workflow keeps the nightly
+# footprint to exactly these two dependency checks.
+#
+# Keep the tool versions + action SHAs in sync with the audit/deny jobs in
+# ci.yml (the PR-gated copies are the source of truth).
+
+on:
+  schedule:
+    # 07:00 UTC, staggered after the 04:00 mutants nightly. audit/deny are light
+    # (~1-2 min each) so runner contention is not a concern; the stagger is tidy.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# Least privilege: these jobs only read the checked-out source + lockfile.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # Prebuilt binary via taiki-e/install-action (~10-20s) instead of a
+      # from-source cargo install. Pinned for the same drift-prevention reason
+      # as the ci.yml copy.
+      - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-audit@0.22.1
+      - name: cargo audit
+        run: cargo audit
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-deny@0.19.7
+      - name: cargo deny check
+        run: cargo deny check --config deny.toml
