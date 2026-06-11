@@ -114,11 +114,15 @@ jobs:
           #     enumerate it -- append its verbatim COPYRIGHT. The copyleft /
           #     vendored-C texts (LGPL-2.1, OLDAP-2.8) stay in their own dedicated
           #     assets below; this file is the permissive bulk.
-          # --offline pins license resolution to the local crate sources + the
-          # committed about.toml (no clearlydefined.io network call at release
-          # time), matching the --locked discipline used elsewhere here. Verified
-          # locally to produce byte-identical coverage to the networked run.
-          cargo about generate about.hbs --target "$TARGET" --offline -o dist/THIRD-PARTY-LICENSES
+          # NOTE: do NOT add --offline here. cargo-about runs `cargo metadata`,
+          # which resolves the FULL cross-platform dependency graph (including
+          # Windows-cfg crates such as anstyle-wincon). This release build only
+          # compiled for the musl/Linux target, so those crates are never fetched;
+          # --offline then fails ("attempting to make an HTTP request, but --offline
+          # was specified"). The networked form fetches the remaining crate metadata
+          # from crates.io. (#185; the --offline form was caught by the v0.2.1-rc1
+          # dry-run. A prefetch-then-offline hardening is tracked as a follow-up.)
+          cargo about generate about.hbs --target "$TARGET" -o dist/THIRD-PARTY-LICENSES
           {
             printf '\n\n'
             printf '========================================================================\n'
