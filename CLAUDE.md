@@ -109,7 +109,6 @@ Make use of /superpowers skills whenever feasible.
     - 10 small, focused sessions are better than 1 sprawling session, so long as things stay on track.
 - When presenting options, always present a long form version of the question/comparions with pros, cons, and a recommendation.
 - Make use of subagents when a clean context is needed for research.
-- This specific project uses Rust, which the user does not have a deep understanding of.  Idiomatic Rust should be explained when being written.
 - Tokens are cheap, rework isn't.
     - It's better to spend more time, context, and thinking than to implement something that needs to be constantly reworked in the future.
 
