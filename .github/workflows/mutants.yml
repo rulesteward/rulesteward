@@ -44,16 +44,16 @@ jobs:
         # a [1..24] list would error on 24/24 AND silently skip shard 0's mutants.
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y rustup
           fi
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           # Pin via the documented `tool: name@version` syntax. The action
           # has no separate `version` input; the `cargo-mutants@27.0.0` form
