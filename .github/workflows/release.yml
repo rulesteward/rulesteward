@@ -36,7 +36,7 @@ jobs:
     name: build static musl binary + assets
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install stable Rust + musl target
         run: |
@@ -54,7 +54,7 @@ jobs:
       - name: Install build deps (make, gcc, musl-tools)
         run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-musl
 
@@ -62,7 +62,7 @@ jobs:
       # 2026-06-02. Installed via cargo-binstall (prebuilt binaries) rather than
       # source-compiled. Pinned for the same drift-prevention reason ci.yml pins
       # cargo-audit / cargo-deny.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
           tool: cargo-binstall
       # `--force` is required, not optional: this is a PERSISTENT self-hosted runner.
@@ -145,7 +145,7 @@ jobs:
           echo "--- dist/ ---"; ls -l dist; echo "--- SHA256SUMS ---"; cat dist/SHA256SUMS
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-dist
           path: dist/
@@ -165,7 +165,7 @@ jobs:
       - name: Pre-install tar (required by actions/download-artifact)
         run: dnf --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install tar gzip
       - name: Download dist artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-dist
           path: dist
@@ -213,13 +213,13 @@ jobs:
       id-token: write
     steps:
       - name: Download dist artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-dist
           path: dist
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # Keyless sign the checksums file. The ambient GitHub OIDC token (granted by
       # id-token: write) is exchanged for a short-lived Sigstore certificate; the
@@ -242,7 +242,7 @@ jobs:
       # consumed by the action, never interpolated into a shell). Pinned to @v2 to
       # match the other major-version action pins in this repo.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
