@@ -3,6 +3,13 @@ name = "rulesteward-selinux-sys"
 description = "libsepol FFI shim for RuleSteward (statically links libsepol 3.10; #106/#107)."
 version.workspace = true
 edition.workspace = true
+# Apache-2.0 (the crate's own Rust shim). The vendored libsepol C under
+# vendor/libsepol/ -- compiled + statically linked only under the `vendored`
+# feature -- is LGPL-2.1-or-later. Per RuleSteward's vendored-C attribution
+# policy (see deny.toml, which mirrors the lmdb-master-sys / OLDAP-2.8 treatment)
+# that obligation is met via NOTICE + LICENSES/LGPL-2.1.txt, NOT by widening this
+# SPDX field or the cargo-deny allow list (#189). The redistributed RPM/binary
+# names the combined license in its own RPM `License:` tag (rulesteward-cli).
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

@@ -76,7 +76,7 @@ OUTPUT FORMATS (locked policy, #65 / CC-4):\n\
          New optional fields and new kinds are additive; the version bumps only\n\
          on a breaking change.\n\
   sarif  lint only: FINDINGS ONLY (SARIF 2.1.0); not used for inventory/metrics.\n\
-         --sarif-include-pass is reserved for clean-rule pass results (#137).\n\
+         --sarif-include-pass adds per-check pass results for clean rules (#137).\n\
   csv    flat-row verbs only (report, trustdb list, auditd cost per-rule): one\n\
          rectangular RFC-4180 CSV table; aggregate totals stay in json/human.\n\
 \n\
@@ -706,6 +706,34 @@ mod tests {
         );
     }
 
+    /// Regression (#197): the top-level long help must NOT describe
+    /// `--sarif-include-pass` as "reserved". The flag became functional in
+    /// #137/#172 (it adds per-check pass results for clean rules); the stale
+    /// "reserved" wording lingered only in this `long_about` prose. The man page
+    /// is generated from this help, so this also guards the man page.
+    #[test]
+    fn long_help_does_not_call_sarif_include_pass_reserved() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("--sarif-include-pass"),
+            "long help must still document the flag; got:\n{help}"
+        );
+        // Positive lock on the corrected wording: the help must SAY the flag is
+        // functional, not merely omit "reserved" (which a future unrelated edit
+        // could satisfy without describing the flag at all).
+        assert!(
+            help.contains("adds per-check pass results"),
+            "long help must describe --sarif-include-pass as functional \
+             (the corrected #137 wording); got:\n{help}"
+        );
+        assert!(
+            !help.to_lowercase().contains("reserved"),
+            "long help must not call --sarif-include-pass 'reserved' \
+             (functional since #137); got:\n{help}"
+        );
+    }
+
     // -- Section 3d: trustdb clap-contract tests (GREEN; the tree is frozen) --
     // These pin the frozen subcommand surface: a future edit that drops a verb,
     // renames a flag, or relaxes a required-arg constraint breaks them.
@@ -1014,7 +1042,8 @@ mod tests {
     }
 
     /// `--sarif-include-pass` parses and defaults to false (#65 / #137). The flag
-    /// is reserved/no-op in this release; the parse contract still freezes here.
+    /// is functional since #137 (it adds per-check pass results for clean rules);
+    /// this test pins the opt-in parse contract.
     #[test]
     fn lint_args_sarif_include_pass_parses_and_defaults_false() {
         assert!(
