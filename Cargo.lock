@@ -1105,7 +1105,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rulesteward-auditd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "serde",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-fapolicyd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -1167,11 +1167,11 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-license"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "rulesteward-selinux"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rulesteward-selinux-sys",
  "serde",
@@ -1184,14 +1184,14 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-selinux-sys"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "rulesteward-sink"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "insta",
  "proptest",
