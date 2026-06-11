@@ -35,8 +35,10 @@ allow = [
 # Apache-2.0-compatible. We deliberately do NOT add OLDAP-2.8 to `allow` - no
 # crate declares it, so it would only produce an unmatched-allowance warning.
 # Its real obligation is attribution: the distributed musl binary's third-party
-# license notice must retain liblmdb's OpenLDAP copyright (packaging follow-up,
-# tracked in the session 3c-trustdb plan). Reintroducing a cc build script
+# license notice must retain liblmdb's OpenLDAP copyright. Satisfied (#183) by
+# the liblmdb section in the top-level NOTICE + the verbatim license text in
+# LICENSES/OLDAP-2.8.txt, both shipped in the release assets and the RPM.
+# Reintroducing a cc build script
 # partially reverses session 3-hardening's build-script removal - a deliberate,
 # documented tradeoff for the LOCKED heed trust-DB reader.
 # 0.93 is cargo-deny's default-recommended detection confidence floor.

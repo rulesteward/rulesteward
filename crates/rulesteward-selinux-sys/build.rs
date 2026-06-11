@@ -6,16 +6,19 @@
 //! This crate is a workspace member, so `cargo build/test/clippy --workspace`
 //! compiles its rlib even when nothing enables the libsepol layer. An rlib links
 //! no native libraries, so compiling the rlib does NOT need libsepol. We must
-//! therefore NOT run the (relatively expensive) C build on every default
-//! workspace build. The `vendored` Cargo feature gates it: build.rs returns early
-//! unless `CARGO_FEATURE_VENDORED` is set. `rulesteward-selinux`'s
-//! `authoritative-categorizer` feature is what turns `vendored` on (and is itself
-//! default-off), so:
-//!   - default `--workspace` build: no `make`, no libsepol, zero added cost;
-//!   - `--features authoritative-categorizer` build: libsepol compiled + linked.
+//! therefore NOT run the (relatively expensive) C build when nothing links
+//! libsepol. The `vendored` Cargo feature gates it: build.rs returns early unless
+//! `CARGO_FEATURE_VENDORED` is set. `rulesteward-selinux`'s
+//! `authoritative-categorizer` feature is what turns `vendored` on, and it is
+//! DEFAULT-ON since #135 (rulesteward-cli enables it by default), so:
+//!   - default `--workspace` build: `vendored` is on via feature unification, so
+//!     libsepol IS compiled and statically linked;
+//!   - `--no-default-features` build (or this -sys crate's rlib compiled alone):
+//!     `vendored` stays off, so `make` never runs and no libsepol is built -- the
+//!     libsepol-free Apache-2.0 path the gate exists to keep cheap.
 //!
-//! This preserves the spec contract "only a feature-enabled build compiles +
-//! links libsepol" even though this crate is always compiled.
+//! The `vendored` gate is what lets the libsepol-free builds skip the C build
+//! even though this crate is always compiled as a workspace member.
 //!
 //! # What it does (under the feature)
 //!
@@ -45,8 +48,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     // GATE: only build libsepol when the `vendored` feature is active. Without it
-    // this crate compiles as a plain rlib that links no native library, so a
-    // default workspace build pays nothing. See the module docs.
+    // this crate compiles as a plain rlib that links no native library (the
+    // --no-default-features path). The module docs above explain why a DEFAULT
+    // --workspace build DOES enable `vendored` (feature unification from the CLI
+    // default), and so does build + link libsepol.
     if env::var_os("CARGO_FEATURE_VENDORED").is_none() {
         return;
     }

@@ -4,9 +4,12 @@ Vendored libsepol source (RuleSteward `rulesteward-selinux-sys`)
 What this is
 ------------
 The pinned C source of libsepol, built from source by this crate's `build.rs`
-into a static `libsepol.a` and statically linked, ONLY when the default-off
-`authoritative-categorizer` Cargo feature is enabled. This replaces a previously
-committed prebuilt `libsepol.a` binary blob: shipping the source instead makes
+into a static `libsepol.a` and statically linked when the `vendored` feature is
+on. That feature is turned on by `rulesteward-selinux`'s
+`authoritative-categorizer`, which is DEFAULT-ON since #135 -- so the default
+RuleSteward build links libsepol, and `--no-default-features` is the
+libsepol-free Apache-2.0 build. This replaces a previously committed prebuilt
+`libsepol.a` binary blob: shipping the source instead makes
 the build auditable, diffable, and reproducible, and satisfies the LGPL-2.1
 source-availability obligation in-tree (no separate "relink source" deliverable
 needed).
@@ -29,9 +32,11 @@ License
 -------
 libsepol is LGPL-2.1. ./LICENSE is libsepol's upstream license text (verbatim).
 The repo also carries LICENSES/LGPL-2.1.txt and a top-level NOTICE recording
-that libsepol is a statically linked LGPL-2.1 component used only under the
-feature. The default RuleSteward binary links no libsepol and carries no LGPL
-obligation.
+that libsepol is a statically linked LGPL-2.1 component. Since #135 the
+categorizer is DEFAULT-ON, so the default RuleSteward binary DOES statically
+link libsepol and carries the LGPL-2.1 obligation (satisfied by LGPL-2.1.txt +
+NOTICE + this in-tree source). The `--no-default-features` build links no
+libsepol and carries no LGPL obligation.
 
 Build recipe (what build.rs runs)
 ---------------------------------
