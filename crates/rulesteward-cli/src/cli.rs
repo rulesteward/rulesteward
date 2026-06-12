@@ -146,13 +146,15 @@ pub enum FapolicydCommand {
     /// Trust database operations (read-only)
     #[command(subcommand)]
     Trustdb(TrustdbCommand),
-    // The remaining no-op stub below is hidden so the CLI does not advertise a
-    // command that does nothing yet. NOTE: `hide` removes it from `--help` but
-    // clap_complete 4.6.5 still lists it in generated completions (accepted
-    // limitation; see e2e_completions.rs).
-    /// (stub) Migrate legacy fapolicyd.rules to rules.d/
-    #[command(hide = true)]
-    Migrate,
+    /// Migrate a legacy fapolicyd.rules into the modern rules.d/ layout
+    ///
+    /// Moves a single-file `fapolicyd.rules` to `rules.d/99-migrated.rules`
+    /// (preserving comments + ordering), rewrites the deprecated `sha256hash=`
+    /// attribute to `filehash=`, and handles the coexistence trap (both layouts
+    /// present stops the daemon starting). Read-only by default (dry-run);
+    /// `--apply` writes the drop-in and MOVES (removes) the legacy file;
+    /// `--delete-legacy` is required only to migrate a dir that already has both.
+    Migrate(MigrateArgs),
     /// Run a composite health check on a live fapolicyd deployment.
     ///
     /// Runs 13 read-only checks and reports a pass/warn/fail scorecard.
@@ -254,6 +256,46 @@ pub struct ExplainArgs {
     /// Read-only trust DB for replaying trust facts (optional).
     #[arg(long, value_name = "PATH")]
     pub trustdb: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+}
+
+/// Arguments for `rulesteward fapolicyd migrate` (#187, spec §6.1).
+///
+/// Migrates a legacy single-file `fapolicyd.rules` into the modern `rules.d/`
+/// layout. Read-only by default: prints the migration plan and writes nothing
+/// unless `--apply` is given. `--from`/`--to` are the upgrade context and are
+/// validated (`from <= to`); the rule grammar is stable across rhel8/9/10, so
+/// the transforms today are the file-layout move + the `sha256hash=` ->
+/// `filehash=` deprecation.
+#[derive(Debug, Parser)]
+pub struct MigrateArgs {
+    /// Source RHEL release the ruleset is migrating FROM (rhel8/rhel9/rhel10).
+    #[arg(long, value_enum)]
+    pub from: TargetVersionArg,
+
+    /// Target RHEL release the ruleset is migrating TO (rhel8/rhel9/rhel10).
+    #[arg(long, value_enum)]
+    pub to: TargetVersionArg,
+
+    /// The fapolicyd config root holding `fapolicyd.rules` and/or `rules.d/`.
+    #[arg(long, value_name = "DIR")]
+    pub rules_dir: PathBuf,
+
+    /// Write the migrated `rules.d/` file to disk. Without it, migrate is a
+    /// read-only dry-run that prints the plan and changes nothing.
+    #[arg(long)]
+    pub apply: bool,
+
+    /// Authorize migrating a directory that ALREADY has both `fapolicyd.rules`
+    /// and `rules.d/*.rules` (the pre-existing coexistence trap that stops the
+    /// daemon starting): required to proceed in that case. The legacy file is
+    /// removed as part of the move on `--apply` regardless of this flag -- the
+    /// flag only gates acting on a dir that already has rules.d/ content.
+    #[arg(long)]
+    pub delete_legacy: bool,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]

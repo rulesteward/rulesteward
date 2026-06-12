@@ -34,8 +34,8 @@ pub use lints::catalog;
 pub use lints::cross_db::lint_orphans;
 pub use lints::trust_hash::lint_weak_digests;
 pub use lints::{
-    LintContext, check_layout, collect_macro_names, lint, lint_cross_file, lint_file,
-    lint_file_with_context, lint_with_context,
+    LintContext, check_layout, collect_macro_names, directory_has_rules_files, lint,
+    lint_cross_file, lint_file, lint_file_with_context, lint_with_context,
 };
 pub use load_order::fagenrules_cmp;
 pub use parser::{inline, parse_rules_file};

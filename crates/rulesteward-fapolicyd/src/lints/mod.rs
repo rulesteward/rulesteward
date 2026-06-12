@@ -37,7 +37,7 @@ mod validation;
 mod version_target;
 mod walker;
 
-pub use layout::check_layout;
+pub use layout::{check_layout, directory_has_rules_files};
 
 use std::path::Path;
 

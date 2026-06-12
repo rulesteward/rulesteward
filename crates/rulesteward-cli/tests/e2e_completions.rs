@@ -51,14 +51,11 @@ fn fish_completions_emit_non_empty_script() {
     );
 }
 
-// NOTE on hidden stubs + completions: `migrate` is now the only remaining no-op
-// stub carrying `#[command(hide = true)]`, which removes it from `--help`
-// (asserted in cli_help.rs::hidden_stub_subcommands_absent_from_help).
-// clap_complete 4.6.5 does NOT honor `hide` in generated completion scripts - the
-// stub still appears in the bash/zsh/fish output - so there is intentionally no
-// "absent from completions" assertion here. Accepted (the primary discovery
-// surface, --help, is clean; the stub prints "not yet implemented" + exit 9 if
-// invoked). Revisit if a future clap_complete honors `hide` for static generation.
+// NOTE: there are no longer any hidden `#[command(hide = true)]` no-op stubs -
+// migrate shipped in #187 (asserted visible in
+// cli_help.rs::all_fapolicyd_subcommands_visible_in_help). Every subcommand is a
+// real command, so it legitimately appears in both --help and the generated
+// bash/zsh/fish completions; no "absent from completions" carve-out is needed.
 
 #[test]
 fn unknown_shell_value_exits_three() {
