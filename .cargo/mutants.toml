@@ -91,12 +91,18 @@ examine_globs = [
     "crates/rulesteward-selinux/src/triage.rs",
     "crates/rulesteward-selinux/src/te_emit.rs",
     "crates/rulesteward-selinux/src/categorize.rs",
-    # selinux-sys FFI shim: EXCLUDED from mutation scope (removed in PR #128).
-    # It is the libsepol FFI (vendored in #125), built behind the default-off
-    # `vendored` feature and not yet wired into any consumer (#124), so it has
-    # 0% test coverage and every mutant is an unkillable survivor (they run with
-    # 0s test, pure gate noise). Restore to this list once #124 wires it in AND
-    # it has real test coverage. Tracked: #131.
+    # selinux-sys FFI shim: RESTORED per #131 (excluded in PR #128 when it had
+    # 0% coverage and no consumer). #124/#135 wired it into categorize.rs and
+    # made the vendored build default-on, and it now has a DIRECT vendored-gated
+    # known-answer suite (crates/rulesteward-selinux-sys/tests/
+    # known_answer_replay.rs) plus the cross-crate -selinux KAT under the
+    # nightly --test-workspace run. NOTE for LOCAL scoped runs: `vendored` is
+    # default-off on the -sys package itself, so a package-scoped
+    # `cargo mutants -p rulesteward-selinux-sys` MUST pass
+    # `--features rulesteward-selinux-sys/vendored` (or --test-workspace true,
+    # where workspace feature unification enables it) - without it the gated
+    # test binary compiles EMPTY and the gate passes vacuously.
+    "crates/rulesteward-selinux-sys/src/lib.rs",
 ]
 
 exclude_globs = [
@@ -273,6 +279,51 @@ exclude_re = [
     'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
     'replace \|\| with && in parse_audit_event',
     'replace fuzz_hooks::parse_trust_value_fuzz',
+    # selinux-sys FFI shim (#131): the 12 mutants below are the survivors of the
+    # restore gate run; every one is a genuine equivalent or a fault-injection-
+    # only failure arm, verified against the VENDORED libsepol source where the
+    # claim is load-bearing. The shim's logic mutants (rc inversions, context-
+    # site checks, perm-bitmask accumulation, reason passthrough) ARE in scope
+    # and killed by tests/known_answer_replay.rs.
+    # - silence_libsepol_debug -> (): toggles libsepol stderr diagnostics only
+    #   (BADSCON warnings); unobservable in-process without C-level fd capture.
+    'selinux-sys/src/lib\.rs:.*replace silence_libsepol_debug with \(\)',
+    # - Policy::load `||`->`&&` (lines 389/398) + `delete -` on the rc:-1
+    #   literals in the same arms (lines 393/403): the sepol_policydb_create /
+    #   sepol_policy_file_create alloc-failure guards; in practice rc==0 AND the
+    #   pointer is non-null, so both operators short-circuit identically.
+    #   Reaching the divergence requires OOM injection.
+    'selinux-sys/src/lib\.rs:.*replace \|\| with && in Policy::load',
+    'selinux-sys/src/lib\.rs:.*delete - in Policy::load',
+    # - Policy::replay `delete -` on rc:-1 (lines 481/485): the
+    #   sepol_set_policydb / sepol_set_sidtab failure arms. Those setters are
+    #   unconditional global assignments that always `return 0` (vendor
+    #   services.c:121-131); the arms are defensive dead code kept for ABI
+    #   drift, unreachable today.
+    'selinux-sys/src/lib\.rs:.*delete - in Policy::replay',
+    # - `+`->`*` on `scontext.len() + 1` (lines 490/494): len+1 vs len for
+    #   sepol_context_to_sid is a TRUE equivalent. vendor context.c
+    #   context_from_string copies con_str_len bytes and ALWAYS writes its own
+    #   NUL terminator, so including the trailing NUL in the length changes
+    #   nothing; the len==0/len==1 empty-context edge returns BadContext either
+    #   way. The +1 form is kept for audit2why.c:345 (libselinux 3.10) parity.
+    'selinux-sys/src/lib\.rs:.*replace \+ with \* in Policy::replay',
+    # - `delete !` on the reason_buf free guard (line 530): the inverted guard
+    #   calls free(NULL) (a C no-op) and leaks the real buffer; no in-process
+    #   observable.
+    'selinux-sys/src/lib\.rs:.*delete ! in Policy::replay',
+    # - `<`->`>` on the compute rc check, line 533 ONLY (line-anchored: the
+    #   same operator swap at the context/class/perm sites 490/494/499/508 IS
+    #   caught and must stay gated; if lib.rs line numbers shift this pattern
+    #   stops matching and the equivalent RESURFACES as a survivor - a visible
+    #   failure, never a silent gate shrink): sepol_compute_av_reason_buffer
+    #   returns 0 on success and negative only on hard failure (vendor
+    #   services.c), so rc>0 never occurs and the swap only re-routes an
+    #   unreachable arm.
+    'selinux-sys/src/lib\.rs:533:.*replace < with > in Policy::replay',
+    # - Drop -> () (line 552): pure in-process leak of the sidtab htable +
+    #   policydb; unobservable by a functional test (PR #170 precedent).
+    'selinux-sys/src/lib\.rs:.*replace <impl Drop for Policy>::drop with \(\)',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
