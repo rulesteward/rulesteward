@@ -47,7 +47,10 @@ pub fn directory_has_rules_files(dir: &Path) -> bool {
         // `ls` without `-a` omits entries whose name starts with `.`, so
         // dotfiles are never loaded by fapolicyd regardless of their suffix.
         let name = e.file_name();
-        let starts_with_dot = name.to_string_lossy().starts_with('.');
+        // OsStr's encoding is ASCII-transparent: a leading 0x2E byte always
+        // means `.` (no multi-byte char starts with an ASCII byte), so this
+        // equals the lossy-string check without the per-entry allocation.
+        let starts_with_dot = name.as_encoded_bytes().first() == Some(&b'.');
         !starts_with_dot && p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules")
     })
 }
