@@ -62,7 +62,7 @@ jobs:
       # 2026-06-02. Installed via cargo-binstall (prebuilt binaries) rather than
       # source-compiled. Pinned for the same drift-prevention reason ci.yml pins
       # cargo-audit / cargo-deny.
-      - uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
         with:
           tool: cargo-binstall
       # `--force` always (re)installs the binaries rather than trusting binstall's
