@@ -72,6 +72,18 @@ enum Layout {
     Both,
 }
 
+/// Outcome of the post-apply `fagenrules --check` verification (#211).
+///
+/// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
+/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent on the
+/// host: the check degrades gracefully and the exit code stays clean).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FagenrulesCheck {
+    status: &'static str,
+    detail: String,
+}
+
 /// Everything needed to render the migration outcome (human or JSON).
 ///
 /// A flat report DTO serialized straight to the JSON envelope. The bools are
@@ -100,6 +112,10 @@ struct MigratePlan {
     applied: bool,
     /// True when the legacy file was removed from disk.
     legacy_deleted: bool,
+    /// Post-apply `fagenrules --check` outcome (#211). `None` when the check
+    /// did not run (dry-run, no-work layouts, or pre-#211 behavior). Additive
+    /// optional field: `schemaVersion` stays 1 per CC-2 (breaking-only).
+    fagenrules_check: Option<FagenrulesCheck>,
 }
 
 /// Map a `--from`/`--to` value to its display string.
@@ -294,6 +310,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         delete_legacy: args.delete_legacy,
         applied: false,
         legacy_deleted: false,
+        fagenrules_check: None,
     };
     match layout {
         Layout::Neither => {
@@ -385,6 +402,8 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         delete_legacy: args.delete_legacy,
         applied,
         legacy_deleted,
+        // Populated by #211 (Lane B): the post-apply fagenrules verification.
+        fagenrules_check: None,
     };
     emit(&plan, args.format);
     Ok(EXIT_CLEAN)
@@ -413,6 +432,7 @@ mod tests {
             apply,
             delete_legacy,
             format: HumanJsonFormat::Human,
+            report: None,
         }
     }
 
@@ -446,6 +466,7 @@ mod tests {
             delete_legacy: false,
             applied: false,
             legacy_deleted: false,
+            fagenrules_check: None,
         }
     }
 
@@ -546,6 +567,22 @@ mod tests {
         assert_eq!(v["rulesMigrated"], serde_json::json!(2), "{out}");
         assert!(v.get("rulesDir").is_some(), "rulesDir key present: {out}");
         assert!(v.get("rules_dir").is_none(), "no snake_case keys: {out}");
+    }
+
+    #[test]
+    fn render_json_fagenrules_check_is_additive_null_pre_211() {
+        // Phase-0 freeze (session 6a): the #211 field exists as an ADDITIVE
+        // optional - null until Lane B populates it, schemaVersion stays 1
+        // (CC-2 breaking-only versioning). Pins both the camelCase key and
+        // the no-bump decision.
+        let out = render_json(&sample_plan());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("parse json");
+        assert_eq!(v["schemaVersion"], serde_json::json!(1));
+        assert!(
+            v.get("fagenrulesCheck").is_some(),
+            "fagenrulesCheck key must be present: {out}"
+        );
+        assert_eq!(v["fagenrulesCheck"], serde_json::Value::Null);
     }
 
     #[test]

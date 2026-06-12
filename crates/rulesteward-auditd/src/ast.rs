@@ -187,6 +187,26 @@ pub enum AuditField {
     Uid,
 }
 
+/// An [`AuditRule`] plus its provenance: source file, 1-based line, and the
+/// byte range of the raw line within that file.
+///
+/// Added in Phase 0 of session 6a (#193): `parse_target` concatenates all
+/// `rules.d/` files into one stream, and the semantic lint passes (duplicate,
+/// shadowing, ordering) need to know which file and line each rule came from
+/// to anchor diagnostics and reason about lexical load order. Plain data only
+/// (this file is excluded from the mutation gate by design).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocatedRule {
+    pub rule: AuditRule,
+    /// Source file the rule was parsed from.
+    pub file: std::path::PathBuf,
+    /// 1-based line number within `file`.
+    pub line: usize,
+    /// Byte range of the rule's raw line within `file`'s content (no trailing
+    /// newline), for ariadne anchoring and span-derived column backfill.
+    pub span: rulesteward_core::Span,
+}
+
 /// Comparison operators for `-F field op value`.
 ///
 /// From `auditctl(8) -F`: `=  !=  <  >  <=  >=  &  &=`

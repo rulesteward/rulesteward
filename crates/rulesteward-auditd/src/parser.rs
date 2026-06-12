@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::ast::{
     Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
-    FilterList, PermBits,
+    FilterList, LocatedRule, PermBits,
 };
 
 /// A parse error on a single line.
@@ -29,37 +29,66 @@ pub struct ParseError {
     pub message: String,
 }
 
+/// A parse error with file provenance (Phase 0, session 6a / #193).
+///
+/// Same shape as [`ParseError`] plus the source file, so the CLI can map each
+/// error to an `au-F01` diagnostic anchored in the right file. `line == 0`
+/// marks a file-level error (unreadable file / missing path).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocatedParseError {
+    pub file: std::path::PathBuf,
+    pub line: usize,
+    pub message: String,
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Parse a single rules file from a string.
+/// Parse a single rules file from a string, with provenance.
 ///
 /// Comments (`#` and everything after), blank lines, and lines with only
-/// whitespace are silently ignored. Each remaining line is one rule.
-/// Returns `Ok(rules)` on full success, or `Err(errors)` if any line failed to
-/// parse.
+/// whitespace are silently ignored. Each remaining line is one rule carrying
+/// `file`, its 1-based line number, and the byte range of its raw line.
 ///
 /// # Errors
-/// Returns `Err` when one or more lines contain unknown flags or malformed syntax.
-pub fn parse_rules_str(input: &str) -> Result<Vec<AuditRule>, Vec<ParseError>> {
+/// Returns `Err` when one or more lines contain unknown flags or malformed
+/// syntax; each error carries `file` and the failing 1-based line.
+pub fn parse_rules_str_located(
+    input: &str,
+    file: &Path,
+) -> Result<Vec<LocatedRule>, Vec<LocatedParseError>> {
     let mut rules = Vec::new();
     let mut errors = Vec::new();
 
-    for (line_idx, raw_line) in input.lines().enumerate() {
+    // Manual offset walk over `split('\n')` (not `lines()`) so each rule's span
+    // is the exact byte range of its raw line. A final empty segment after a
+    // trailing newline is skipped by the empty check; a trailing `\r` is
+    // whitespace, so `trim()` keeps parse behavior identical to `lines()`.
+    let mut offset = 0usize;
+    for (line_idx, raw_line) in input.split('\n').enumerate() {
         let lineno = line_idx + 1; // 1-based
 
         // Strip inline comments: find the first unquoted `#` and truncate there.
         let line = strip_comment(raw_line).trim().to_string();
 
-        if line.is_empty() {
-            continue;
+        if !line.is_empty() {
+            match parse_line(&line, lineno) {
+                Ok(rule) => rules.push(LocatedRule {
+                    rule,
+                    file: file.to_path_buf(),
+                    line: lineno,
+                    span: offset..offset + raw_line.len(),
+                }),
+                Err(e) => errors.push(LocatedParseError {
+                    file: file.to_path_buf(),
+                    line: e.line,
+                    message: e.message,
+                }),
+            }
         }
 
-        match parse_line(&line, lineno) {
-            Ok(rule) => rules.push(rule),
-            Err(e) => errors.push(e),
-        }
+        offset += raw_line.len() + 1; // +1 for the '\n' separator
     }
 
     if errors.is_empty() {
@@ -69,61 +98,98 @@ pub fn parse_rules_str(input: &str) -> Result<Vec<AuditRule>, Vec<ParseError>> {
     }
 }
 
+/// Parse a single rules file from a string.
+///
+/// Thin wrapper over [`parse_rules_str_located`] that drops provenance.
+///
+/// # Errors
+/// Returns `Err` when one or more lines contain unknown flags or malformed syntax.
+pub fn parse_rules_str(input: &str) -> Result<Vec<AuditRule>, Vec<ParseError>> {
+    parse_rules_str_located(input, Path::new(""))
+        .map(|rules| rules.into_iter().map(|l| l.rule).collect())
+        .map_err(drop_error_provenance)
+}
+
+/// Parse a single rules file from a file path, with provenance.
+///
+/// # Errors
+/// Returns `Err` with a single `line: 0` error when the file cannot be read.
+pub fn parse_rules_file_located(path: &Path) -> Result<Vec<LocatedRule>, Vec<LocatedParseError>> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        vec![LocatedParseError {
+            file: path.to_path_buf(),
+            line: 0,
+            message: format!("cannot read {}: {e}", path.display()),
+        }]
+    })?;
+    parse_rules_str_located(&content, path)
+}
+
 /// Parse a single rules file from a file path.
+///
+/// Thin wrapper over [`parse_rules_file_located`] that drops provenance.
 ///
 /// # Errors
 /// Returns `Err` with `ParseError { line: 0, message: <io error> }` when the
 /// file cannot be read.
 pub fn parse_rules_file(path: &Path) -> Result<Vec<AuditRule>, Vec<ParseError>> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        vec![ParseError {
-            line: 0,
-            message: format!("cannot read {}: {e}", path.display()),
-        }]
-    })?;
-    parse_rules_str(&content)
+    parse_rules_file_located(path)
+        .map(|rules| rules.into_iter().map(|l| l.rule).collect())
+        .map_err(drop_error_provenance)
 }
 
-/// Resolve and parse a rules target.
+/// Enumerate the `*.rules` files of `dir` in `augenrules(8)` load order:
+/// filename-sorted (not full-path-sorted), regular files only.
+///
+/// Extracted from `parse_target` so the CLI lint shell can build its ariadne
+/// source map in the same order the parse consumes the files.
+///
+/// # Errors
+/// Returns a single file-level error when the directory cannot be read.
+pub fn rules_files_in_load_order(dir: &Path) -> Result<Vec<std::path::PathBuf>, LocatedParseError> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| LocatedParseError {
+            file: dir.to_path_buf(),
+            line: 0,
+            message: format!("cannot read directory {}: {e}", dir.display()),
+        })?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            let p = entry.path();
+            p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("rules")
+        })
+        .collect();
+
+    // Sort by filename (not full path) to match augenrules(8) behaviour.
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    Ok(entries.into_iter().map(|e| e.path()).collect())
+}
+
+/// Resolve and parse a rules target, with provenance.
 ///
 /// Mirrors the fapolicyd target-resolution shape used by `lint`/`report`:
 /// - If `path` is a file, parse that file.
 /// - If `path` is a directory, collect all `*.rules` files in filename order
 ///   (matching `augenrules(8)` lexical concat), then parse them concatenated.
-///
-/// On any I/O error the offending file is reported as `ParseError { line: 0 }`.
+///   Each rule keeps the file and line it came from.
 ///
 /// # Errors
-/// Returns `Err` when one or more rules contain parse errors.
-pub fn parse_target(path: &Path) -> Result<Vec<AuditRule>, Vec<ParseError>> {
+/// Returns `Err` when one or more rules contain parse errors, each carrying its
+/// source file; I/O failures are file-level errors (`line: 0`).
+pub fn parse_target_located(path: &Path) -> Result<Vec<LocatedRule>, Vec<LocatedParseError>> {
     if path.is_file() {
-        return parse_rules_file(path);
+        return parse_rules_file_located(path);
     }
 
     if path.is_dir() {
-        // Collect *.rules files in filename (lexical) order.
-        let mut entries: Vec<_> = std::fs::read_dir(path)
-            .map_err(|e| {
-                vec![ParseError {
-                    line: 0,
-                    message: format!("cannot read directory {}: {e}", path.display()),
-                }]
-            })?
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| {
-                let p = entry.path();
-                p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("rules")
-            })
-            .collect();
-
-        // Sort by filename (not full path) to match augenrules(8) behaviour.
-        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let files = rules_files_in_load_order(path).map_err(|e| vec![e])?;
 
         let mut all_rules = Vec::new();
         let mut all_errors = Vec::new();
 
-        for entry in entries {
-            match parse_rules_file(&entry.path()) {
+        for file in files {
+            match parse_rules_file_located(&file) {
                 Ok(rules) => all_rules.extend(rules),
                 Err(errs) => all_errors.extend(errs),
             }
@@ -135,11 +201,35 @@ pub fn parse_target(path: &Path) -> Result<Vec<AuditRule>, Vec<ParseError>> {
             Err(all_errors)
         }
     } else {
-        Err(vec![ParseError {
+        Err(vec![LocatedParseError {
+            file: path.to_path_buf(),
             line: 0,
             message: format!("path does not exist: {}", path.display()),
         }])
     }
+}
+
+/// Resolve and parse a rules target.
+///
+/// Thin wrapper over [`parse_target_located`] that drops provenance.
+///
+/// # Errors
+/// Returns `Err` when one or more rules contain parse errors.
+pub fn parse_target(path: &Path) -> Result<Vec<AuditRule>, Vec<ParseError>> {
+    parse_target_located(path)
+        .map(|rules| rules.into_iter().map(|l| l.rule).collect())
+        .map_err(drop_error_provenance)
+}
+
+/// Map located errors back to the legacy provenance-free [`ParseError`] shape
+/// (the wrapper functions' error contract).
+fn drop_error_provenance(errs: Vec<LocatedParseError>) -> Vec<ParseError> {
+    errs.into_iter()
+        .map(|e| ParseError {
+            line: e.line,
+            message: e.message,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -746,5 +836,167 @@ mod tests {
         // auditctl(8): -D with extra args is still DeleteAll.
         let parsed = parse_line("-D extra", 1).expect("-D extra should parse");
         assert_eq!(parsed, AuditRule::Control(ControlRule::DeleteAll));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Located parse API (Phase 0, session 6a / #193): provenance for lint passes
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod located_tests {
+    use std::io::Write;
+    use std::path::Path;
+
+    use super::{
+        parse_rules_str, parse_rules_str_located, parse_target_located, rules_files_in_load_order,
+    };
+    use crate::ast::{AuditRule, ControlRule};
+
+    /// Comments and blanks are skipped but line numbers stay 1-based against the
+    /// ORIGINAL file, and every rule carries the file it came from. Cross-file
+    /// lints (duplicate "across rules.d files", lexical-order shadowing) are
+    /// impossible without this attribution.
+    #[test]
+    fn located_str_records_line_numbers_and_file() {
+        let input = "# header comment\n-D\n\n-b 8192\n";
+        let file = Path::new("rules.d/10-base.rules");
+        let located = parse_rules_str_located(input, file).expect("fixture must parse");
+        assert_eq!(located.len(), 2, "two rules expected, got {located:?}");
+        assert_eq!(located[0].rule, AuditRule::Control(ControlRule::DeleteAll));
+        assert_eq!(located[0].line, 2, "-D sits on line 2 (1-based)");
+        assert_eq!(located[0].file, file);
+        assert_eq!(
+            located[1].rule,
+            AuditRule::Control(ControlRule::Backlog(8192))
+        );
+        assert_eq!(
+            located[1].line, 4,
+            "-b sits on line 4 (blank line 3 skipped)"
+        );
+        assert_eq!(located[1].file, file);
+    }
+
+    /// The span is the byte range of the rule's RAW line within the input (no
+    /// trailing newline), so ariadne can render the source line verbatim and
+    /// column backfill can derive from span.start.
+    #[test]
+    fn located_str_span_slices_to_raw_line() {
+        let input = "# c\n  -D  # trailing\n-b 1\n";
+        let file = Path::new("t.rules");
+        let located = parse_rules_str_located(input, file).expect("fixture must parse");
+        assert_eq!(located.len(), 2);
+        assert_eq!(
+            &input[located[0].span.clone()],
+            "  -D  # trailing",
+            "span must cover the raw line including indentation and inline comment"
+        );
+        assert_eq!(
+            &input[located[1].span.clone()],
+            "-b 1",
+            "span must cover exactly the raw line, no newline"
+        );
+    }
+
+    /// Parse errors carry the source file and the 1-based line, so the CLI can
+    /// map them to au-F01 diagnostics anchored at the right place.
+    #[test]
+    fn located_str_errors_carry_file_and_line() {
+        let input = "-D\n-Z bogus\n";
+        let file = Path::new("rules.d/99-bad.rules");
+        let errs = parse_rules_str_located(input, file).expect_err("-Z must fail");
+        assert_eq!(errs.len(), 1, "exactly one failing line, got {errs:?}");
+        assert_eq!(errs[0].file, file);
+        assert_eq!(errs[0].line, 2);
+        assert!(
+            errs[0].message.contains("unknown flag"),
+            "message should name the failure, got {:?}",
+            errs[0].message
+        );
+    }
+
+    /// The legacy `parse_rules_str` must stay a thin wrapper over the located
+    /// form: same rules, same order (behavior-preservation pin for the refactor).
+    #[test]
+    fn unlocated_wrapper_returns_same_rules_as_located() {
+        let input = "# c\n-D\n-b 8192\n-a always,exit -S execve -k exec\n";
+        let file = Path::new("t.rules");
+        let plain = parse_rules_str(input).expect("must parse");
+        let located = parse_rules_str_located(input, file).expect("must parse");
+        let unwrapped: Vec<AuditRule> = located.into_iter().map(|l| l.rule).collect();
+        assert_eq!(plain, unwrapped, "wrapper and located forms must agree");
+    }
+
+    /// Directory enumeration: *.rules only, sorted by FILENAME (augenrules(8)
+    /// lexical concat order), non-.rules and subdirectories ignored.
+    #[test]
+    fn rules_files_in_load_order_sorts_by_filename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["50-b.rules", "10-a.rules", "README.txt"] {
+            let mut f = std::fs::File::create(dir.path().join(name)).expect("create");
+            writeln!(f, "-D").expect("write");
+        }
+        std::fs::create_dir(dir.path().join("sub.rules")).expect("subdir");
+        let files = rules_files_in_load_order(dir.path()).expect("listable");
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["10-a.rules", "50-b.rules"],
+            "only *.rules files, filename-sorted"
+        );
+    }
+
+    /// Directory mode concatenates in load order and keeps per-file attribution:
+    /// the concatenated stream's provenance is exactly what the cross-file lints
+    /// consume.
+    #[test]
+    fn target_located_dir_concatenates_with_per_file_attribution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("50-late.rules"), "-b 1\n").expect("write");
+        std::fs::write(dir.path().join("10-early.rules"), "# c\n-D\n").expect("write");
+        let located = parse_target_located(dir.path()).expect("must parse");
+        assert_eq!(located.len(), 2);
+        assert_eq!(located[0].rule, AuditRule::Control(ControlRule::DeleteAll));
+        assert!(
+            located[0].file.ends_with("10-early.rules"),
+            "first rule must come from the lexically-first file, got {:?}",
+            located[0].file
+        );
+        assert_eq!(located[0].line, 2, "line is 1-based within ITS OWN file");
+        assert_eq!(located[1].rule, AuditRule::Control(ControlRule::Backlog(1)));
+        assert!(located[1].file.ends_with("50-late.rules"));
+        assert_eq!(located[1].line, 1);
+    }
+
+    /// A missing path is a single located error with line 0 (file-level).
+    #[test]
+    fn target_located_missing_path_errors() {
+        let errs = parse_target_located(Path::new("/nonexistent/6a/nothing"))
+            .expect_err("missing path must error");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 0, "file-level error uses line 0");
+        assert!(
+            errs[0].message.contains("does not exist"),
+            "got {:?}",
+            errs[0].message
+        );
+    }
+
+    /// Errors in one file of a directory carry THAT file's path.
+    #[test]
+    fn target_located_dir_errors_attribute_the_failing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("10-good.rules"), "-D\n").expect("write");
+        std::fs::write(dir.path().join("20-bad.rules"), "-Z nope\n").expect("write");
+        let errs = parse_target_located(dir.path()).expect_err("bad file must fail the parse");
+        assert_eq!(errs.len(), 1, "one failing line, got {errs:?}");
+        assert!(
+            errs[0].file.ends_with("20-bad.rules"),
+            "error must name the failing file, got {:?}",
+            errs[0].file
+        );
+        assert_eq!(errs[0].line, 1);
     }
 }
