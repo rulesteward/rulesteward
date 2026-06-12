@@ -29,6 +29,12 @@ on:
       - '**.md'
       - 'docs/**'
 
+# Least-privilege GITHUB_TOKEN: every job only checks out code, restores
+# caches, and moves artifacts (artifact transfer uses the Actions runtime
+# token, not this grant). No job writes to the repo or the API.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1

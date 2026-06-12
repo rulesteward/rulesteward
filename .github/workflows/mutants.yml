@@ -7,6 +7,11 @@ on:
     types: [labeled]
   workflow_dispatch:
 
+# Least-privilege GITHUB_TOKEN: the shards only check out code and restore
+# caches. No job writes to the repo or the API.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
