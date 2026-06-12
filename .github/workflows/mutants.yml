@@ -7,6 +7,11 @@ on:
     types: [labeled]
   workflow_dispatch:
 
+# Least-privilege GITHUB_TOKEN: the shards only check out code and restore
+# caches. No job writes to the repo or the API.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -22,28 +27,33 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: ubuntu-latest
-    # Per-shard ceiling. With 24 shards x -j1 (see below) each shard tests ~50
+    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~60
     # mutants serially; most are caught fast, a few run the full --test-workspace
-    # suite (~100s) to completion, so a shard finishes well inside 2h. A timed-out
-    # shard fails the gate (exit 3) the same as a survivor, so keep headroom.
+    # suite (~100s) to completion, so a shard finishes well inside 2h (recent
+    # nightlies: 5-10 min/shard). A timed-out shard fails the gate (exit 3) the
+    # same as a survivor, so keep headroom.
     timeout-minutes: 120
     strategy:
-      # Shard the full mutant suite (~1195 mutants) into 24 shards. The 24 jobs
-      # run on GitHub-hosted ubuntu-latest; the plan's max-concurrent-jobs cap
-      # decides how many run at once and GitHub queues the rest, so wall-clock is
-      # roughly ceil(24 / concurrent-cap) shard-durations. This is a nightly cron,
-      # so queueing is fine. Why 24 (not fewer): the gate runs --test-workspace
-      # (every mutant re-runs the whole workspace suite, slow) and -j1 (below)
-      # runs them serially, so ~50 mutants/shard keeps each JOB under the 2h
+      # Shard the full mutant suite (~1195 mutants) into 20 shards (the
+      # GitHub-hosted concurrent-job cap, so the whole run starts at once).
+      # Why 20 (not fewer): the gate runs --test-workspace (every mutant
+      # re-runs the whole workspace suite, slow) and -j1 (below) runs them
+      # serially, so ~60 mutants/shard keeps each JOB well under the 2h
       # ceiling -- 8 shards x ~150 mutants serial would need ~5-6h.
+      # The shard count appears in THREE places that must stay in sync: the
+      # job `name:` (/20), this matrix list (0..19), and the `--shard k/20`
+      # denominator on the cargo-mutants line. A 24->20 edit that missed the
+      # denominator silently dropped shards 20-23's mutants (~17%) from the
+      # gate (#216) -- round-robin assigns mutant i to shard i%DENOMINATOR,
+      # and no job ran those residues.
       # fail-fast MUST stay false: a survivor (or any non-zero shard exit) must
       # not cancel its siblings -- otherwise the other shards' results are lost
       # and the run surfaces as "canceled".
       fail-fast: false
       matrix:
         # cargo-mutants shard index k is ZERO-BASED (valid range 0..n-1; it
-        # enforces k < n). Shards 0/24..23/24 are a complete, disjoint partition;
-        # a [1..24] list would error on 24/24 AND silently skip shard 0's mutants.
+        # enforces k < n). Shards 0/20..19/20 are a complete, disjoint partition;
+        # a [1..20] list would error on 20/20 AND silently skip shard 0's mutants.
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -80,8 +90,8 @@ jobs:
       # "Any survivor at all is a regression" remains the gate; bump only on
       # deliberate baseline review.
       #
-      # --shard k/24      this runner's slice (k zero-based, 0..23).
-      # --sharding round-robin  assign mutant i to shard i%24, so each file's
+      # --shard k/20      this runner's slice (k zero-based, 0..19).
+      # --sharding round-robin  assign mutant i to shard i%20, so each file's
       #                   mutants spread across shards (vs `slice`, which would
       #                   pile one slow file's whole block onto a single shard).
       # -j1               run ONE mutant at a time per shard. Under --test-workspace
@@ -89,7 +99,7 @@ jobs:
       #                   -j2 ran two suites on a 4-core box at once, ~doubling each
       #                   test's wall time so EVERY mutant blew the per-mutant test
       #                   timeout (false TIMEOUT -> gate fail). Serial keeps each
-      #                   test at full speed; the 24-way shard recovers throughput.
+      #                   test at full speed; the 20-way shard recovers throughput.
       # --test-workspace true  (#129) run the ENTIRE workspace's tests against
       #                   every mutant, not just the mutated package's tests
       #                   (cargo-mutants' default). Cross-crate-covered code -- e.g.
@@ -102,4 +112,4 @@ jobs:
       #                   the per-PR scoped runs pass an explicit --test-package and
       #                   must keep the cheaper default scoping.
       - name: cargo mutants
-        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/24 -j1 --sharding round-robin --test-workspace true
+        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true
