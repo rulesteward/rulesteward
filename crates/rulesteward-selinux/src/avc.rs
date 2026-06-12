@@ -12,12 +12,12 @@
 //!
 //! - **Tolerant by default**: unknown `k=v` fields are silently ignored; double
 //!   spaces in the verdict/perm-brace area are accepted (they are what the kernel
-//!   emits, per `avc.c:659` (Linux v6.12 security/selinux/avc.c)).
+//!   emits, per `Linux v6.12 security/selinux/avc.c:659`).
 //! - **Hex residual perm tokens preserved**: when the kernel encounters unknown
-//!   permission bits it emits `0x%x` inside the braces (`avc.c:677` (Linux v6.12 security/selinux/avc.c)). These are
+//!   permission bits it emits `0x%x` inside the braces (`Linux v6.12 security/selinux/avc.c:677`). These are
 //!   stored verbatim in [`AvcDenial::perms`].
 //! - **`ssid=`/`tsid=` fallback**: when a SID cannot be resolved to a context
-//!   string the kernel emits `ssid=NNN`/`tsid=NNN` (`avc.c:709,714` (Linux v6.12 security/selinux/avc.c)). We store
+//!   string the kernel emits `ssid=NNN`/`tsid=NNN` (`Linux v6.12 security/selinux/avc.c:709,714`). We store
 //!   the raw token (e.g. `"ssid=42"`) in both `*_raw` and `source_type`/`target_type`
 //!   so callers can detect and handle the numeric form. This is the most informative
 //!   representation that does not require fabricating a fake context string.
@@ -50,7 +50,7 @@ pub struct AvcDenial {
     /// `Denied` or `Granted` (audited allow).
     pub verdict: Verdict,
     /// Permission tokens from the `{ ... }` brace list. May contain a raw
-    /// `0x%x` hex token for unknown kernel permission bits (`avc.c:677` (Linux v6.12 security/selinux/avc.c)).
+    /// `0x%x` hex token for unknown kernel permission bits (`Linux v6.12 security/selinux/avc.c:677`).
     pub perms: Vec<String>,
     /// The TYPE component of `scontext` (`user:role:TYPE[:level]`). This is
     /// the source domain used in a TE allow rule.
@@ -62,7 +62,7 @@ pub struct AvcDenial {
     pub tclass: String,
     /// `Some(false)` = enforcing denial (real block), `Some(true)` = permissive
     /// denial (did NOT actually block), `None` = granted record (no `permissive=`
-    /// field emitted by kernel for grants, per `avc.c:721` (Linux v6.12 security/selinux/avc.c)).
+    /// field emitted by kernel for grants, per `Linux v6.12 security/selinux/avc.c:721`).
     pub permissive: Option<bool>,
     /// Full raw source context string (`user:role:type[:level]`).
     pub scontext_raw: String,
@@ -126,10 +126,8 @@ pub fn parse_avc(input: &str) -> Result<Vec<AvcDenial>, AvcParseError> {
         // second, string-returning parser) means the anchor test's serial +
         // timestamp assertions also pin this correlation key - no internal-only
         // helper whose output is never surfaced.
-        let serial_str = parse_audit_timestamp_serial(line)
-            .1
-            .map(|serial| serial.to_string())
-            .unwrap_or_default();
+        let (_timestamp, serial) = parse_audit_timestamp_serial(line);
+        let serial_str = serial.map(|serial| serial.to_string()).unwrap_or_default();
 
         if line.starts_with("type=AVC ") || line.contains(" type=AVC ") {
             avc_lines.push((serial_str, line));
@@ -201,6 +199,13 @@ fn avc_field(line: &str, key: &str) -> Option<String> {
 
 /// Extract the TYPE component (third colon-delimited field) from a full `SELinux`
 /// context `user:role:type[:level]`.
+///
+/// Tolerant-by-default fallback: a malformed context with fewer than three
+/// colon-delimited fields returns the WHOLE context string unchanged (e.g.
+/// `user:role` -> `user:role`). Real kernel AVC records always carry full
+/// contexts, so this path only fires on hand-mangled input; returning the
+/// full string keeps the malformation visible downstream instead of hiding
+/// it behind an empty type.
 fn extract_type_from_context(ctx: &str) -> String {
     let mut parts = ctx.splitn(4, ':');
     parts.next(); // user
@@ -216,7 +221,7 @@ fn parse_single_avc_line(
     let (timestamp, serial) = parse_audit_timestamp_serial(line);
 
     // Locate "avc: " and parse verdict + perm brace.
-    // Kernel emits: "avc:  denied  { ... } for  " (two spaces each, avc.c:659 (Linux v6.12 security/selinux/avc.c)).
+    // Kernel emits: "avc:  denied  { ... } for  " (two spaces each, `Linux v6.12 security/selinux/avc.c:659`).
     let avc_pos = line
         .find("avc: ")
         .ok_or(AvcParseError::MissingField("avc: marker"))?;
@@ -260,7 +265,7 @@ fn parse_single_avc_line(
         .map(str::trim_start)
         .ok_or(AvcParseError::MissingField("'for' keyword"))?;
 
-    // -- scontext= or ssid= fallback (avc.c:711 / avc.c:709 (Linux v6.12 security/selinux/avc.c)) --
+    // -- scontext= or ssid= fallback (`Linux v6.12 security/selinux/avc.c:711,709`) --
     let (scontext_raw, source_type) = if let Some(sctx) = avc_field(after_for, "scontext") {
         let stype = extract_type_from_context(&sctx);
         (sctx, stype)
@@ -271,7 +276,7 @@ fn parse_single_avc_line(
         return Err(AvcParseError::MissingField("scontext= or ssid="));
     };
 
-    // -- tcontext= or tsid= fallback (avc.c:716 / avc.c:714 (Linux v6.12 security/selinux/avc.c)) --
+    // -- tcontext= or tsid= fallback (`Linux v6.12 security/selinux/avc.c:716,714`) --
     let (tcontext_raw, target_type) = if let Some(tctx) = avc_field(after_for, "tcontext") {
         let ttype = extract_type_from_context(&tctx);
         (tctx, ttype)
@@ -282,10 +287,10 @@ fn parse_single_avc_line(
         return Err(AvcParseError::MissingField("tcontext= or tsid="));
     };
 
-    // -- tclass= (avc.c:719 (Linux v6.12 security/selinux/avc.c)) --
+    // -- tclass= (`Linux v6.12 security/selinux/avc.c:719`) --
     let tclass = avc_field(after_for, "tclass").ok_or(AvcParseError::MissingField("tclass="))?;
 
-    // -- permissive= only on denial records (avc.c:721-722 (Linux v6.12 security/selinux/avc.c)) --
+    // -- permissive= only on denial records (`Linux v6.12 security/selinux/avc.c:721-722`) --
     let permissive = if verdict == Verdict::Denied {
         avc_field(after_for, "permissive").map(|v| v == "1")
     } else {

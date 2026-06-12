@@ -255,6 +255,39 @@ mod tests {
     use std::collections::HashSet;
     use std::io::Write;
 
+    // Multi-code fixture shared by `lint_aggregator_calls_all_walks_and_merges_
+    // diagnostics` and `all_lint_diagnostics_have_column_matching_line_col`.
+    // Content is byte-exact: span and line/col assertions pin it.
+    //
+    // The source is constructed so each walk fires on its own code:
+    //   walker::e01         -> `bogusattr=` (unknown attribute name)
+    //   validation::e02     -> `sha256hash=abc` (3 chars, not 64 hex)
+    //   macros::e03         -> `exe=%undefinedmacro` (unknown macro ref)
+    //   macros::s02         -> `%latemacro=` defined AFTER the first rule
+    //   deprecation::w07    -> `sha256hash=` (deprecated attribute name)
+    //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
+    //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
+    //                          so line 3 is unreachable (shadowed).
+    //   dir_slash::w08      -> `dir=/no/slash` on the object (no trailing slash)
+    //
+    // The parser strips the inline `# bad` BEFORE chumsky sees the line,
+    // so the rule itself parses cleanly; fapd-W03 is then re-detected from
+    // the raw source string by the source_scan walk.
+    //
+    // Line 3 is an exact copy of line 2: `allow` is terminal and the
+    // predicates are identical, so line 2 shadows line 3 -> fapd-W01 on
+    // line 3. The duplicate also re-fires fapd-E03 (still an undefined
+    // macro), but the aggregator test collects codes into a set so that
+    // does not perturb the other assertions.
+    //
+    // Line 4 defines `%latemacro` AFTER the first rule, firing fapd-S02
+    // (definition not at file top). The name is distinct from
+    // `%undefinedmacro` (so it does not satisfy the line 2/3 reference,
+    // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
+    // and its single string value is homogeneous (so no fapd-E05). Being
+    // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
+    const MULTI_CODE_FIXTURE: &str = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+
     #[test]
     fn lint_aggregator_calls_all_walks_and_merges_diagnostics() {
         // Pins the invariant: `lint()` invokes ALL seven walks (walker,
@@ -262,35 +295,8 @@ mod tests {
         // merges their diagnostics into the returned Vec. A mutant that drops
         // one walk from the aggregator body silently loses the corresponding
         // code from the output; this test fails fast in that case.
-        //
-        // The source is constructed so each walk fires on its own code:
-        //   walker::e01         -> `bogusattr=` (unknown attribute name)
-        //   validation::e02     -> `sha256hash=abc` (3 chars, not 64 hex)
-        //   macros::e03         -> `exe=%undefinedmacro` (unknown macro ref)
-        //   macros::s02         -> `%latemacro=` defined AFTER the first rule
-        //   deprecation::w07    -> `sha256hash=` (deprecated attribute name)
-        //   source_scan::w03    -> trailing `# bad` (inline comment past tokens)
-        //   reachability::w01   -> line 3 duplicates line 2's terminal rule,
-        //                          so line 3 is unreachable (shadowed).
-        //   dir_slash::w08      -> `dir=/no/slash` on the object (no trailing slash)
-        //
-        // The parser strips the inline `# bad` BEFORE chumsky sees the line,
-        // so the rule itself parses cleanly; fapd-W03 is then re-detected from
-        // the raw `source` string by the source_scan walk.
-        //
-        // Line 3 is an exact copy of line 2: `allow` is terminal and the
-        // predicates are identical, so line 2 shadows line 3 -> fapd-W01 on
-        // line 3. The duplicate also re-fires fapd-E03 (still an undefined
-        // macro), but `codes` is a set so that does not perturb the other
-        // assertions.
-        //
-        // Line 4 defines `%latemacro` AFTER the first rule, firing fapd-S02
-        // (definition not at file top). The name is distinct from
-        // `%undefinedmacro` (so it does not satisfy the line 2/3 reference,
-        // leaving fapd-E03 intact) and unreferenced (so it adds no E03/E04),
-        // and its single string value is homogeneous (so no fapd-E05). Being
-        // a SetDefinition rather than a Rule, it cannot perturb fapd-W01.
-        let source = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+        // See MULTI_CODE_FIXTURE for the per-line design rationale.
+        let source = MULTI_CODE_FIXTURE;
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
         f.write_all(source.as_bytes()).expect("write");
         let path = f.path().to_path_buf();
@@ -510,7 +516,7 @@ mod tests {
         // Smoke test: every diagnostic returned by lint() must have d.column ==
         // line_col(d.span, source).1, confirming the backfill is universal.
         // Uses the same multi-code fixture as lint_aggregator_calls_all_walks.
-        let src = "allow uid=0 bogusattr=x : sha256hash=abc dir=/no/slash # bad\nallow uid=0 : exe=%undefinedmacro\nallow uid=0 : exe=%undefinedmacro\n%latemacro=/usr/bin/foo\n";
+        let src = MULTI_CODE_FIXTURE;
         let p = std::path::Path::new("t.rules");
         let entries = parser::parse_rules_file(src, p).expect("should parse");
         let diags = lint(&entries, src, p);

@@ -92,7 +92,15 @@ fn main() {
     // pass neither. Overriding CFLAGS drops upstream's default `-Werror` (a newer
     // host gcc must not warn-as-error on upstream C we do not control). The `%.o`
     // rule adds `-fPIC` itself; we keep it here too for the host glibc build.
-    let cflags = "-I. -I../include -D_GNU_SOURCE -O2 -fno-semantic-interposition -fPIC";
+    let cflags = [
+        "-I.",
+        "-I../include",
+        "-D_GNU_SOURCE",
+        "-O2",
+        "-fno-semantic-interposition",
+        "-fPIC",
+    ]
+    .join(" ");
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
 
     let status = Command::new("make")

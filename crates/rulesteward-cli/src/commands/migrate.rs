@@ -33,6 +33,9 @@ const TARGET_FILE: &str = "99-migrated.rules";
 /// Legacy single-file rule set name.
 const LEGACY_FILE: &str = "fapolicyd.rules";
 
+/// Modern drop-in rules directory name (relative to `--rules-dir`).
+const MODERN_DIR: &str = "rules.d";
+
 /// The deprecated attribute and its modern replacement.
 const DEPRECATED_HASH: &str = "sha256hash=";
 const MODERN_HASH: &str = "filehash=";
@@ -130,7 +133,7 @@ fn compute_migration(legacy: &str) -> MigrationContent {
         // Comment lines (first non-blank char is `#`) are preserved verbatim:
         // fapolicyd honors only whole-line comments, and a `sha256hash=` inside a
         // comment is prose, not an attribute. Lines without the token are kept as-is.
-        if line.trim_start().starts_with('#') || !line.contains(DEPRECATED_HASH) {
+        if !line.contains(DEPRECATED_HASH) || line.trim_start().starts_with('#') {
             out_lines.push(line.to_string());
             continue;
         }
@@ -162,7 +165,7 @@ fn detect_layout(rules_dir: &Path) -> Layout {
     // guards) that the fapd-F02 layout lint uses, so migrate and the lint agree
     // on what counts as a modern rules.d/ -- a divergent copy here mis-detected a
     // dotfile-only rules.d/ as the coexistence trap (issue #187 adversarial review).
-    let modern = directory_has_rules_files(&rules_dir.join("rules.d"));
+    let modern = directory_has_rules_files(&rules_dir.join(MODERN_DIR));
     match (legacy, modern) {
         (false, false) => Layout::Neither,
         (false, true) => Layout::ModernOnly,
@@ -337,13 +340,13 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         .filter(|e| matches!(e, Entry::Rule(_)))
         .count();
     let migration = compute_migration(&legacy);
-    let target_path = args.rules_dir.join("rules.d").join(TARGET_FILE);
+    let target_path = args.rules_dir.join(MODERN_DIR).join(TARGET_FILE);
     let coexistence_trap = layout == Layout::Both;
 
     let mut applied = false;
     let mut legacy_deleted = false;
     if args.apply {
-        let rules_d = args.rules_dir.join("rules.d");
+        let rules_d = args.rules_dir.join(MODERN_DIR);
         if let Err(e) = std::fs::create_dir_all(&rules_d) {
             eprintln!("error: creating {}: {e}", rules_d.display());
             return Ok(EXIT_TOOL_FAILURE);
@@ -562,7 +565,7 @@ mod tests {
         let code = run(args(d.path(), false, false)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
         assert!(
-            !d.path().join("rules.d").join(TARGET_FILE).exists(),
+            !d.path().join(MODERN_DIR).join(TARGET_FILE).exists(),
             "dry-run must not write the migrated file"
         );
     }
@@ -573,7 +576,7 @@ mod tests {
         write(d.path(), "fapolicyd.rules", LEGACY_WITH_HASH);
         let code = run(args(d.path(), true, false)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
-        let target = d.path().join("rules.d").join(TARGET_FILE);
+        let target = d.path().join(MODERN_DIR).join(TARGET_FILE);
         let written = std::fs::read_to_string(&target).expect("migrated file written");
         assert!(written.contains("filehash=abc123"), "{written}");
         assert!(!written.contains("sha256hash="), "{written}");
@@ -597,7 +600,7 @@ mod tests {
             "trap without --delete-legacy must refuse"
         );
         assert!(
-            !d.path().join("rules.d").join(TARGET_FILE).exists(),
+            !d.path().join(MODERN_DIR).join(TARGET_FILE).exists(),
             "must not write on a refused migration"
         );
         assert!(
@@ -620,7 +623,7 @@ mod tests {
         );
         let code = run(args(d.path(), true, true)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
-        let target = std::fs::read_to_string(d.path().join("rules.d").join(TARGET_FILE)).unwrap();
+        let target = std::fs::read_to_string(d.path().join(MODERN_DIR).join(TARGET_FILE)).unwrap();
         assert!(target.contains("filehash=abc123"), "overwritten: {target}");
         assert!(
             !target.contains("stale junk"),
@@ -637,7 +640,7 @@ mod tests {
         let code = run(args(d.path(), true, true)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
         assert!(
-            d.path().join("rules.d").join(TARGET_FILE).exists(),
+            d.path().join(MODERN_DIR).join(TARGET_FILE).exists(),
             "wrote drop-in"
         );
         assert!(
@@ -653,7 +656,7 @@ mod tests {
         write(d.path(), "rules.d/10-x.rules", "allow perm=any all : all\n");
         let code = run(args(d.path(), false, true)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
-        assert!(!d.path().join("rules.d").join(TARGET_FILE).exists());
+        assert!(!d.path().join(MODERN_DIR).join(TARGET_FILE).exists());
         assert!(
             d.path().join("fapolicyd.rules").exists(),
             "dry-run must not delete even with --delete-legacy"
@@ -670,7 +673,7 @@ mod tests {
         );
         let code = run(args(d.path(), true, false)).unwrap();
         assert_eq!(code, EXIT_RULE_PARSE_ERROR);
-        assert!(!d.path().join("rules.d").join(TARGET_FILE).exists());
+        assert!(!d.path().join(MODERN_DIR).join(TARGET_FILE).exists());
     }
 
     #[test]
@@ -679,7 +682,7 @@ mod tests {
         write(d.path(), "rules.d/10-x.rules", "allow perm=any all : all\n");
         let code = run(args(d.path(), true, false)).unwrap();
         assert_eq!(code, EXIT_CLEAN);
-        assert!(!d.path().join("rules.d").join(TARGET_FILE).exists());
+        assert!(!d.path().join(MODERN_DIR).join(TARGET_FILE).exists());
     }
 
     #[test]
