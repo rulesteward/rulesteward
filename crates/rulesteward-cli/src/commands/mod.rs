@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod explain;
 pub mod fapolicyd;
 pub mod mangen;
+pub mod migrate;
 pub mod report;
 pub mod selinux;
 pub mod simulate;

@@ -30,7 +30,14 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
     ))
 }
 
-fn directory_has_rules_files(dir: &Path) -> bool {
+/// True when `dir` (a `rules.d/`) contains at least one top-level `*.rules` file
+/// that fapolicyd's `fagenrules` would actually load.
+///
+/// Shared by the fapd-F02 layout lint and `fapolicyd migrate` so both agree on
+/// what "rules.d has rules" means: dotfiles and subdirectory entries are excluded
+/// (see the body comment for the `fagenrules` grounding).
+#[must_use]
+pub fn directory_has_rules_files(dir: &Path) -> bool {
     let Ok(read) = std::fs::read_dir(dir) else {
         return false;
     };
