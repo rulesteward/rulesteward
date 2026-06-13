@@ -36,12 +36,15 @@
 //! A pair whose `canonical_key` values are EQUAL is a P1 au-W01 duplicate;
 //! w02 MUST skip it. Source: owner decision D2, normalize.rs.
 //!
-//! ## D4 (v1 subsumption is structural-only, no interval arithmetic)
-//! v1 subsumption: same filter list, earlier rule's syscall set is a SUPERSET
-//! (order-insensitive) of the later's, earlier field-predicate set is a SUBSET
-//! with EXACT predicate equality (field+op+value all equal). `-F auid>=1000`
-//! does NOT subsume `-F auid>=2000`; that would require interval arithmetic.
-//! Source: owner decision D4.
+//! ## Subsumption with interval arithmetic (#219, supersedes the v1 D4 pin)
+//! Subsumption: same filter list+action, earlier rule's syscall set is a
+//! SUPERSET (order-insensitive) of the later's, and every earlier field
+//! predicate is IMPLIED BY a later predicate on the same field
+//! (`value::implies`): exact match, a folded-equal value, a broader relational
+//! threshold (`-F auid>=1000` DOES subsume `-F auid>=2000`), or a relational
+//! range containing a later `=` point. Ne/bitmask/opaque operands match only
+//! exactly, and the uid/gid sentinel never participates in interval math.
+//! Source: #219 (was owner decision D4, v1 structural-only).
 //!
 //! ## Emission convention
 //! au-W02, au-E01, au-W03, au-W04 emit at the SHADOWED/UNREACHABLE/SUPPRESSED
@@ -331,22 +334,20 @@ fn w02_prepend_rule_file_late_effective_early_shadows_append_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: interval case auid>=1000 vs auid>=2000 does NOT fire (D4 pin)
+// Test 6: interval subsumption auid>=1000 subsumes auid>=2000 -> FIRES (#219)
 //
-// D4 explicitly rules out interval arithmetic. `-F auid>=1000` does NOT
-// structurally subsume `-F auid>=2000` because the values are different strings
-// and predicate equality requires field+op+value all equal.
-//
-// Adversarial: an impl that compares numeric values and decides that >=1000
-// covers >=2000 would fire incorrectly. This test pins the D4 scope boundary.
+// #219 (supersedes the v1 D4 pin): for a relational operator on a numeric/
+// uid/gid field, a BROADER threshold subsumes a NARROWER one. `auid>=1000`
+// matches a superset of `auid>=2000`'s traffic, so the later auid>=2000 rule
+// is shadowed (kernel first-match). The reverse (narrow before broad) must NOT
+// fire. Grounded by value::implies (interval containment).
 // ---------------------------------------------------------------------------
 #[test]
-fn w02_interval_comparison_does_not_fire_d4_pin() {
+fn w02_interval_subsumption_fires_219() {
     let input = concat!(
-        // Earlier: auid>=1000 (broadly: non-system users)
+        // Earlier: auid>=1000 (broad: all non-system users)
         "-a always,exit -S execve -F 'auid>=1000' -k exec_user\n",
-        // Later: auid>=2000 (more restrictive threshold)
-        // D4: >=1000 does NOT subsume >=2000 structurally; ">=1000" != ">=2000" verbatim.
+        // Later: auid>=2000 (narrower threshold) -- shadowed by the broader rule.
         "-a always,exit -S execve -F 'auid>=2000' -k exec_highuid\n",
     );
     let file = Path::new("10-interval.rules");
@@ -355,10 +356,157 @@ fn w02_interval_comparison_does_not_fire_d4_pin() {
 
     let diags = w02(&rules);
 
+    assert_eq!(
+        diags.len(),
+        1,
+        "auid>=1000 must subsume auid>=2000 (#219 interval subsumption), got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.code, "au-W02");
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.line, 2, "the narrower later rule (line 2) is shadowed");
     assert!(
-        diags.is_empty(),
-        "w02 must NOT fire when the only difference is a numeric field value \
-         (D4: no interval arithmetic in v1), got {diags:?}"
+        d.message.contains("10-interval.rules:1"),
+        "message must cite the broader rule, got {:?}",
+        d.message
+    );
+
+    // Reverse order: a narrow earlier rule does NOT subsume a broad later one.
+    let rev = concat!(
+        "-a always,exit -S execve -F 'auid>=2000' -k exec_highuid\n",
+        "-a always,exit -S execve -F 'auid>=1000' -k exec_user\n",
+    );
+    let rules_rev = parse_rules_str_located(rev, Path::new("10-rev.rules")).unwrap();
+    assert!(
+        w02(&rules_rev).is_empty(),
+        "auid>=2000 must NOT subsume auid>=1000 (narrow before broad)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6b: #219 interval-subsumption matrix (boundary, I2, fold, multi-field,
+// signed exit). Each row is a wrong-impl tripwire from the design matrix.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_gt_ge_boundary_fires_219() {
+    // auid>1000 (>= 1001) subsumes auid>=2000.
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid>1000' -k a\n",
+        "-a always,exit -S execve -F 'auid>=2000' -k b\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-b.rules")).unwrap();
+    assert_eq!(w02(&rules).len(), 1, "auid>1000 subsumes auid>=2000");
+}
+
+#[test]
+fn w02_eq_point_in_range_fires_219_i2() {
+    // I2: auid>=1000 subsumes the single point auid=1500.
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid>=1000' -k a\n",
+        "-a always,exit -S execve -F 'auid=1500' -k b\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-i2.rules")).unwrap();
+    assert_eq!(w02(&rules).len(), 1, "auid>=1000 subsumes auid=1500 (I2)");
+
+    // But auid=1500 (earlier) does NOT subsume auid>=1000 (later).
+    let rev = concat!(
+        "-a always,exit -S execve -F 'auid=1500' -k a\n",
+        "-a always,exit -S execve -F 'auid>=1000' -k b\n",
+    );
+    let rr = parse_rules_str_located(rev, Path::new("10-i2r.rules")).unwrap();
+    assert!(w02(&rr).is_empty(), "an = point does not subsume a range");
+}
+
+#[test]
+fn w02_value_spelling_fold_fires_with_different_keys_219() {
+    // auid!=-1 and auid!=4294967295 are the SAME predicate (folded). With
+    // different keys they are not canonical-equal (W01), so the later is a W02
+    // shadow. A verbatim-value impl would miss this.
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid!=-1' -k a\n",
+        "-a always,exit -S execve -F 'auid!=4294967295' -k b\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-fold.rules")).unwrap();
+    let diags = w02(&rules);
+    assert_eq!(
+        diags.len(),
+        1,
+        "folded-equal predicate + different key -> W02, got {diags:?}"
+    );
+    assert_eq!(diags[0].line, 2);
+}
+
+#[test]
+fn w02_multi_field_subsumption_219() {
+    // Every earlier predicate must be witnessed: auid>=1000 -F uid=0 subsumes
+    // auid>=2000 -F uid=0 (both predicates implied).
+    let both = concat!(
+        "-a always,exit -S execve -F 'auid>=1000' -F uid=0 -k a\n",
+        "-a always,exit -S execve -F 'auid>=2000' -F uid=0 -k b\n",
+    );
+    let r = parse_rules_str_located(both, Path::new("10-mf.rules")).unwrap();
+    assert_eq!(w02(&r).len(), 1, "both predicates witnessed -> shadow");
+
+    // If the later rule LACKS uid=0, the earlier uid=0 predicate is unwitnessed
+    // (the later rule also matches uid!=0 traffic the earlier excludes) -> n/f.
+    let missing = concat!(
+        "-a always,exit -S execve -F 'auid>=1000' -F uid=0 -k a\n",
+        "-a always,exit -S execve -F 'auid>=2000' -k b\n",
+    );
+    let r2 = parse_rules_str_located(missing, Path::new("10-mf2.rules")).unwrap();
+    assert!(
+        w02(&r2).is_empty(),
+        "earlier uid=0 has no witness in the later rule -> not subsumed"
+    );
+}
+
+#[test]
+fn w02_extra_later_predicate_does_not_block_219() {
+    // A later rule that is NARROWER (extra constraint) is still shadowed by the
+    // broader earlier rule: auid>=2000 subsumes auid>=2000 -F uid=0.
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid>=2000' -k a\n",
+        "-a always,exit -S execve -F 'auid>=2000' -F uid=0 -k b\n",
+    );
+    let r = parse_rules_str_located(input, Path::new("10-extra.rules")).unwrap();
+    assert_eq!(
+        w02(&r).len(),
+        1,
+        "extra later predicate does not block subsumption"
+    );
+}
+
+#[test]
+fn w02_signed_exit_interval_219() {
+    // exit is signed: exit>=-13 subsumes exit>=-5 (since -5 >= -13).
+    let input = concat!(
+        "-a always,exit -S execve -F 'exit>=-13' -k a\n",
+        "-a always,exit -S execve -F 'exit>=-5' -k b\n",
+    );
+    let r = parse_rules_str_located(input, Path::new("10-sx.rules")).unwrap();
+    assert_eq!(w02(&r).len(), 1, "exit>=-13 subsumes exit>=-5 (signed)");
+
+    // exit>=-13 does NOT subsume exit>=-20 (-20 < -13: later matches more).
+    let wider = concat!(
+        "-a always,exit -S execve -F 'exit>=-13' -k a\n",
+        "-a always,exit -S execve -F 'exit>=-20' -k b\n",
+    );
+    let r2 = parse_rules_str_located(wider, Path::new("10-sx2.rules")).unwrap();
+    assert!(w02(&r2).is_empty(), "exit>=-13 does not subsume exit>=-20");
+}
+
+#[test]
+fn w02_sentinel_in_relational_is_conservative_219() {
+    // auid>=0 (concrete 0) vs auid>=4294967295 (the unset sentinel): no interval
+    // math on the sentinel -> conservative, must NOT fire.
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid>=0' -k a\n",
+        "-a always,exit -S execve -F 'auid>=4294967295' -k b\n",
+    );
+    let r = parse_rules_str_located(input, Path::new("10-sent.rules")).unwrap();
+    assert!(
+        w02(&r).is_empty(),
+        "concrete 0 vs sentinel must not fire (conservative)"
     );
 }
 
@@ -985,6 +1133,46 @@ fn corpus_rocky10_rulesd_multifile_no_e01_no_w04() {
         w03_diags.is_empty(),
         "rocky10-rulesd-multifile: no never/exclude rules; no au-W03 expected, \
          got {w03_diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #219: au-W03 interval-aware disjointness (W03 tightened)
+//
+// A never rule only suppresses an always rule when they can co-match. With
+// interval reasoning a provably-disjoint never/always pair no longer fires
+// au-W03 (removing a false positive), while overlapping pairs still fire.
+// ---------------------------------------------------------------------------
+#[test]
+fn w03_disjoint_never_does_not_suppress_219() {
+    // never uid=0 vs always uid>=1000: no shared uid value -> disjoint -> the
+    // never cannot suppress the always -> no au-W03 (was a false positive).
+    let input = concat!(
+        "-a never,exit -S execve -F uid=0 -k root_sup\n",
+        "-a always,exit -S execve -F 'uid>=1000' -k user_exec\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-w03d.rules")).unwrap();
+    assert!(
+        w03(&rules).is_empty(),
+        "disjoint never/always must not fire au-W03, got {:?}",
+        w03(&rules)
+    );
+}
+
+#[test]
+fn w03_overlapping_never_still_suppresses_219() {
+    // never uid>=1000 vs always uid>=2000: overlapping ranges -> the never
+    // suppresses the always -> au-W03 still fires.
+    let input = concat!(
+        "-a never,exit -S execve -F 'uid>=1000' -k sup\n",
+        "-a always,exit -S execve -F 'uid>=2000' -k user_exec\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-w03o.rules")).unwrap();
+    assert_eq!(
+        w03(&rules).len(),
+        1,
+        "overlapping never/always must still fire au-W03, got {:?}",
+        w03(&rules)
     );
 }
 

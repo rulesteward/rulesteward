@@ -28,6 +28,7 @@ pub mod field_type;
 pub mod normalize;
 pub mod operator_validity;
 pub mod ordering;
+pub mod value;
 
 use rulesteward_core::{Diagnostic, Severity, Span};
 

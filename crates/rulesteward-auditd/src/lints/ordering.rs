@@ -2,12 +2,12 @@
 //!
 //! Pipeline P2 (#193):
 //! * au-W02 - shadowed rule: an earlier rule (in EFFECTIVE load order,
-//!   including `-A` prepend head-insertion) structurally subsumes a later rule
-//!   on the same filter list. v1 subsumption is STRUCTURAL-only (owner
-//!   decision D4): same filter list, syscall superset, field-predicate subset
-//!   with exact predicate equality; no interval arithmetic. Pairs that are
-//!   exactly canonical-equal are au-W01 (P1) and MUST be skipped here (owner
-//!   decision D2: skip when `canonical_key(a) == canonical_key(b)`).
+//!   including `-A` prepend head-insertion) subsumes a later rule on the same
+//!   filter list: syscall superset, and every earlier field predicate IMPLIED
+//!   BY a later predicate on the same field (#219 interval-aware implication via
+//!   [`crate::lints::value::implies`], superseding the v1 structural-only D4).
+//!   Pairs that are exactly canonical-equal are au-W01 (P1) and MUST be skipped
+//!   here (owner decision D2: skip when `canonical_key(a) == canonical_key(b)`).
 //! * au-E01 - unreachable rule after the `-e 2` lock: any rule appearing
 //!   after the lock line in the concatenated lexical stream never loads
 //!   (`auditctl(8)`: `-e 2` makes the config immutable until reboot).
@@ -35,10 +35,11 @@
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{
-    Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
-    FilterList, LocatedRule,
+    Action, AuditField, AuditRule, ControlRule, FieldComparison, FieldFilter, FilterList,
+    LocatedRule,
 };
 use crate::lints::normalize::canonical_key;
+use crate::lints::value::{disjoint, implies};
 
 use super::anchored;
 
@@ -103,12 +104,17 @@ fn syscall_superset(earlier: &[String], later: &[String]) -> bool {
     later.iter().all(|s| earlier.contains(s))
 }
 
-/// True when every predicate in `earlier` appears verbatim (field+op+value) in
-/// `later` - i.e. `earlier`'s predicate set is a SUBSET of `later`'s, so
-/// `earlier` is the broader (less constrained) rule. Multiplicity is ignored;
-/// real rules carry distinct predicates.
+/// True when every `earlier` predicate is IMPLIED BY some `later` predicate on
+/// the same field (#219): `later`'s matched value-set is a subset of
+/// `earlier`'s, so `earlier` is the broader (less constrained) rule. Implication
+/// covers exact match, folded-equal values, broader relational thresholds, and a
+/// relational range containing a later `=` point (see
+/// [`crate::lints::value::implies`]); Ne/bitmask/opaque operands match only
+/// exactly. Multiplicity is ignored; real rules carry distinct predicates.
 fn fields_subset(earlier: &[FieldFilter], later: &[FieldFilter]) -> bool {
-    earlier.iter().all(|f| later.contains(f))
+    earlier
+        .iter()
+        .all(|pe| later.iter().any(|pl| implies(pe, pl)))
 }
 
 /// As [`fields_subset`] for `-C` inter-field comparisons.
@@ -116,21 +122,24 @@ fn compares_subset(earlier: &[FieldComparison], later: &[FieldComparison]) -> bo
     earlier.iter().all(|c| later.contains(c))
 }
 
-/// D4 structural subsumption: `earlier` matches a superset of `later`'s
-/// traffic (broader syscall set AND a subset of its field predicates). No
-/// interval arithmetic - predicate equality is exact (`auid>=1000` does not
-/// subsume `auid>=2000`).
+/// Subsumption (#219): `earlier` matches a superset of `later`'s traffic - a
+/// broader syscall set AND every earlier field predicate implied by a later one
+/// (interval-aware, so `auid>=1000` subsumes `auid>=2000`). `-C` inter-field
+/// comparisons still match exactly.
 fn subsumes(earlier: &SyscallParts, later: &SyscallParts) -> bool {
     syscall_superset(earlier.syscalls, later.syscalls)
         && fields_subset(earlier.fields, later.fields)
         && compares_subset(earlier.field_compares, later.field_compares)
 }
 
-/// True when two same-list rules can match overlapping traffic, structurally.
-/// Syscall sets must intersect (empty = wildcard matches all). Two rules are
-/// taken as DISJOINT only when a shared field carries contradictory equality
-/// (`field = X` vs `field = Y`, `X != Y`); any other shape is conservatively
-/// treated as overlapping (no interval arithmetic, per D4's spirit).
+/// True when two same-list rules can match overlapping traffic. Syscall sets
+/// must intersect (empty = wildcard matches all). Two rules are DISJOINT when a
+/// shared field carries provably non-co-matching predicates (#219, via
+/// [`crate::lints::value::disjoint`]): contradictory equality (with uid/gid
+/// value folding) or non-overlapping numeric intervals. Because all `-F`
+/// predicates must match together, a single disjoint field means the rules
+/// cannot co-match. Anything not provably disjoint is conservatively treated as
+/// overlapping, so au-W03 never drops a real suppression warning.
 fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
     let syscalls_intersect = a.syscalls.is_empty()
         || b.syscalls.is_empty()
@@ -138,15 +147,11 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
     if !syscalls_intersect {
         return false;
     }
-    let contradictory = a.fields.iter().any(|fa| {
-        b.fields.iter().any(|fb| {
-            fa.field == fb.field
-                && fa.op == CompareOp::Eq
-                && fb.op == CompareOp::Eq
-                && fa.value != fb.value
-        })
-    });
-    !contradictory
+    let field_disjoint = a
+        .fields
+        .iter()
+        .any(|fa| b.fields.iter().any(|fb| disjoint(fa, fb)));
+    !field_disjoint
 }
 
 /// True for an exclude-list rule that suppresses the SYSCALL (1300) record
@@ -410,9 +415,10 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_syscalls_overlap_and_inequality_is_not_contradiction() {
-        // Empty (wildcard) syscalls intersect; `>=` thresholds are NOT a
-        // contradiction (no interval arithmetic), so the rules overlap.
+    fn wildcard_syscalls_overlap_and_same_direction_thresholds_overlap() {
+        // Empty (wildcard) syscalls intersect; auid>=1000 and auid>=2000 are
+        // same-direction thresholds whose ranges both extend to +inf, so the
+        // broader contains the narrower -> they overlap (#219).
         let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
         let a_fields = vec![field(AuditField::Auid, CompareOp::Ge, "1000")];
         let b_fields = vec![field(AuditField::Auid, CompareOp::Ge, "2000")];
@@ -437,11 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn eq_vs_relational_on_same_field_is_conservatively_overlapping() {
-        // `uid=0` (Eq) vs `uid>=1000` (Ge): only Eq-vs-Eq-with-different-values
-        // counts as a contradiction; an Eq-vs-relational pair is conservatively
-        // treated as overlapping (no interval arithmetic, D4 spirit). Pins that
-        // BOTH operands must be Eq for the disjointness short-circuit.
+    fn eq_outside_relational_range_is_disjoint_219() {
+        // #219 (W03 tightened): uid=0 (Eq) is OUTSIDE uid>=1000, so the two
+        // rules cannot co-match -- provably disjoint, so they do NOT overlap.
+        // (v1 treated Eq-vs-relational as conservatively overlapping.)
         let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
         let sc = vec!["execve".to_string()];
         let a_fields = vec![field(AuditField::Uid, CompareOp::Eq, "0")];
@@ -449,8 +454,55 @@ mod tests {
         let a = parts(&exit, &never, &sc, &a_fields, &[]);
         let b = parts(&exit, &always, &sc, &b_fields, &[]);
         assert!(
+            !traffic_overlaps(&a, &b),
+            "uid=0 is outside uid>=1000 -> provably disjoint -> no overlap"
+        );
+    }
+
+    #[test]
+    fn eq_inside_relational_range_overlaps_219() {
+        // uid=1500 IS inside uid>=1000 -> the rules overlap.
+        let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
+        let sc = vec!["execve".to_string()];
+        let a_fields = vec![field(AuditField::Uid, CompareOp::Eq, "1500")];
+        let b_fields = vec![field(AuditField::Uid, CompareOp::Ge, "1000")];
+        let a = parts(&exit, &never, &sc, &a_fields, &[]);
+        let b = parts(&exit, &always, &sc, &b_fields, &[]);
+        assert!(
             traffic_overlaps(&a, &b),
-            "Eq vs relational is not a contradiction -> overlap"
+            "uid=1500 is inside uid>=1000 -> overlap"
+        );
+    }
+
+    #[test]
+    fn opposite_relational_non_meeting_is_disjoint_219() {
+        // auid>=2000 and auid<1000 have no common value -> disjoint.
+        let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
+        let sc = vec!["execve".to_string()];
+        let a_fields = vec![field(AuditField::Auid, CompareOp::Ge, "2000")];
+        let b_fields = vec![field(AuditField::Auid, CompareOp::Lt, "1000")];
+        let a = parts(&exit, &never, &sc, &a_fields, &[]);
+        let b = parts(&exit, &always, &sc, &b_fields, &[]);
+        assert!(
+            !traffic_overlaps(&a, &b),
+            "auid>=2000 and auid<1000 are disjoint"
+        );
+    }
+
+    #[test]
+    fn eq_eq_folded_sentinel_still_overlaps_219() {
+        // auid=-1 and auid=4294967295 are the SAME value (folded), NOT a
+        // contradiction, so the rules overlap. A verbatim string-compare (the
+        // v1 Eq/Eq check) would wrongly call them disjoint.
+        let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
+        let sc = vec!["execve".to_string()];
+        let a_fields = vec![field(AuditField::Auid, CompareOp::Eq, "-1")];
+        let b_fields = vec![field(AuditField::Auid, CompareOp::Eq, "4294967295")];
+        let a = parts(&exit, &never, &sc, &a_fields, &[]);
+        let b = parts(&exit, &always, &sc, &b_fields, &[]);
+        assert!(
+            traffic_overlaps(&a, &b),
+            "auid=-1 and auid=4294967295 are the same value -> overlap"
         );
     }
 

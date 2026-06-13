@@ -12,12 +12,16 @@
 //!   construction).
 //! * The `-k` key DOES distinguish: a predicate-equal pair whose keys differ
 //!   is P2's shadow case (the later key never fires), not a P1 duplicate.
-//! * Values compare VERBATIM (owner decision D5): `auid!=-1`,
-//!   `auid!=4294967295`, and `auid!=unset` are spelled differently and stay
-//!   distinct in v1, a documented false-negative class (folding them needs
-//!   the field-type table, a Phase-0 dependency cycle).
+//! * Values are FOLDED by field type (#220, was the D5 false-negative): on a
+//!   uid/gid field the spellings `auid!=-1`, `auid!=4294967295`, and
+//!   `auid!=unset` denote the same kernel sentinel and share one key; concrete
+//!   numerics decimal-normalize. Folding is [`crate::lints::value::canonical_value`]
+//!   and never crosses field types (a concrete `pid=4294967295` or a signed
+//!   `exit=-1` is NOT the uid sentinel).
 
 use crate::ast::{AuditRule, PermBits};
+use crate::lints::field_type::field_type;
+use crate::lints::value::canonical_value;
 
 /// Opaque canonical identity of a rule's CONTENT (not its position).
 ///
@@ -60,7 +64,12 @@ pub fn canonical_key(rule: &AuditRule) -> CanonicalKey {
 
             let mut fs: Vec<String> = fields
                 .iter()
-                .map(|f| format!("{:?} {:?} {:?}", f.field, f.op, f.value))
+                .map(|f| {
+                    // Fold the value by field type (#220) so equivalent uid/gid
+                    // sentinel spellings share one key. Op and field stay verbatim.
+                    let v = canonical_value(field_type(&f.field), &f.value);
+                    format!("{:?} {:?} {:?}", f.field, f.op, v)
+                })
                 .collect();
             fs.sort_unstable();
 
@@ -223,16 +232,80 @@ mod tests {
     }
 
     #[test]
-    fn values_compare_verbatim_d5() {
-        // Owner decision D5: -1 / 4294967295 / unset are NOT folded in v1.
-        // This pins the documented false-negative class; the integration gate
-        // files the follow-up issue.
+    fn uid_sentinel_spellings_fold_220() {
+        // #220 (was D5): on a uid/gid field, -1 / 4294967295 / unset denote the
+        // same kernel sentinel and now fold to one canonical key.
         let a = rule("-a always,exit -S execve -F auid!=-1 -k x");
         let b = rule("-a always,exit -S execve -F auid!=4294967295 -k x");
-        assert_ne!(
+        let c = rule("-a always,exit -S execve -F auid!=unset -k x");
+        assert_eq!(
             canonical_key(&a),
             canonical_key(&b),
-            "values are verbatim in v1 (D5); folding is a tracked follow-up"
+            "auid!=-1 == auid!=4294967295"
+        );
+        assert_eq!(
+            canonical_key(&a),
+            canonical_key(&c),
+            "auid!=-1 == auid!=unset"
+        );
+    }
+
+    #[test]
+    fn gid_sentinel_spellings_fold_220() {
+        let a = rule("-a always,exit -S execve -F gid!=-1 -k x");
+        let b = rule("-a always,exit -S execve -F gid!=4294967295 -k x");
+        assert_eq!(canonical_key(&a), canonical_key(&b));
+    }
+
+    #[test]
+    fn big_value_does_not_fold_on_non_uid_fields_220() {
+        // pid is unsigned Numeric: 4294967295 is a concrete pid, NOT the
+        // sentinel. exit is signed: -1 and 4294967295 are different values. A
+        // naive impl that folded 4294967295/-1 globally would wrongly merge.
+        let pid_big = rule("-a always,exit -S execve -F pid=4294967295 -k x");
+        let pid_one = rule("-a always,exit -S execve -F pid=1 -k x");
+        assert_ne!(canonical_key(&pid_big), canonical_key(&pid_one));
+        let exit_m1 = rule("-a always,exit -S execve -F exit=-1 -k x");
+        let exit_big = rule("-a always,exit -S execve -F exit=4294967295 -k x");
+        assert_ne!(
+            canonical_key(&exit_m1),
+            canonical_key(&exit_big),
+            "exit is signed; -1 and 4294967295 are different values"
+        );
+    }
+
+    #[test]
+    fn sentinel_fold_is_per_field_220() {
+        // Folding is per (field, value): different fields never collapse.
+        let a = rule("-a always,exit -S execve -F auid!=-1 -k x");
+        let b = rule("-a always,exit -S execve -F euid!=-1 -k x");
+        assert_ne!(canonical_key(&a), canonical_key(&b));
+    }
+
+    #[test]
+    fn concrete_uid_not_folded_with_sentinel_220() {
+        // auid=0 (root) is a concrete uid, not the unset sentinel.
+        let a = rule("-a always,exit -S execve -F auid=0 -k x");
+        let b = rule("-a always,exit -S execve -F auid=unset -k x");
+        assert_ne!(canonical_key(&a), canonical_key(&b));
+    }
+
+    #[test]
+    fn op_is_preserved_under_folding_220() {
+        // Folding rewrites only the value, never the operator.
+        let ge_m1 = rule("-a always,exit -S execve -F auid>=-1 -k x");
+        let ge_big = rule("-a always,exit -S execve -F auid>=4294967295 -k x");
+        assert_eq!(
+            canonical_key(&ge_m1),
+            canonical_key(&ge_big),
+            "value folds, op kept"
+        );
+        let ge_unset = rule("-a always,exit -S execve -F auid>=unset -k x");
+        let le_unset = rule("-a always,exit -S execve -F auid<=unset -k x");
+        assert_ne!(
+            canonical_key(&ge_unset),
+            canonical_key(&le_unset),
+            "op distinguishes"
         );
     }
 
