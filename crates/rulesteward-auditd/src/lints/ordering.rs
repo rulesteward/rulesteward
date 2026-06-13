@@ -152,14 +152,18 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
 /// True for an exclude-list rule that suppresses the SYSCALL (1300) record
 /// type: `-a always,exclude -F msgtype=1300` (or the symbolic `msgtype=SYSCALL`).
 /// Every exit-list syscall rule produces SYSCALL records, so such an exclude
-/// silently swallows their output. `never,exclude` is an EXCEPTION (keep), not
-/// a suppressor, so only the `always` action qualifies.
+/// silently swallows their output.
+///
+/// The ACTION is NOT checked: on the exclude filter the action is ignored and
+/// defaults to `never` (`man auditctl`: "The action is ignored and uses its
+/// default of 'never'"; `man 7 audit.rules` likewise). So `never,exclude`,
+/// `always,exclude`, and `exclude,always` all suppress the named msgtype
+/// identically -- the auditctl EXAMPLES use them interchangeably.
 fn is_syscall_suppressing_exclude(rule: &AuditRule) -> bool {
     let Some(p) = syscall_parts(rule) else {
         return false;
     };
     *p.list == FilterList::Exclude
-        && *p.action == Action::Always
         && p.fields.iter().any(|f| {
             f.field == AuditField::MsgType
                 && (f.value == "1300" || f.value.eq_ignore_ascii_case("SYSCALL"))
@@ -444,12 +448,39 @@ mod tests {
     }
 
     #[test]
-    fn never_exclude_is_an_exception_not_a_suppressor() {
-        // `never,exclude` keeps the record type; only `always,exclude` drops it.
-        assert!(!is_syscall_suppressing_exclude(&exclude_msgtype(
+    fn exclude_action_is_ignored_so_never_exclude_also_suppresses() {
+        // On the exclude filter the action is ignored (defaults to `never`):
+        // `never,exclude`, `always,exclude`, and `possible,exclude` all drop the
+        // named msgtype identically (`man auditctl` / `man 7 audit.rules`).
+        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
             Action::Never,
             "1300"
         )));
+        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
+            Action::Possible,
+            "SYSCALL"
+        )));
+    }
+
+    #[test]
+    fn w03_never_exclude_suppresses_exit_always_rule() {
+        // Regression for the action-ignored exclude semantics: a `never,exclude`
+        // SYSCALL drop must fire au-W03 against a later exit-list always rule,
+        // exactly as `always,exclude` does.
+        let input = concat!(
+            "-a never,exclude -F msgtype=1300\n",
+            "-a always,exit -S execve -k exec_audit\n",
+        );
+        let rules = parse_rules_str_located(input, Path::new("10-nx.rules")).unwrap();
+        let diags = w03(&rules);
+        assert_eq!(
+            diags.len(),
+            1,
+            "never,exclude must suppress like always,exclude"
+        );
+        assert_eq!(diags[0].code, "au-W03");
+        assert_eq!(diags[0].line, 2, "anchored at the suppressed always rule");
+        assert!(diags[0].message.contains("10-nx.rules:1"));
     }
 
     #[test]
