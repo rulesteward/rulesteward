@@ -1,3 +1,3 @@
 # Second occurrence: syscalls in reversed order (normalized-equal).
-# au-W01 finding 1 of 2: anchored here, cites 10-first.rules.
+# au-E03 finding 1 of 2: anchored here, cites 10-first.rules (load-aborting swap).
 -a always,exit -S settimeofday -S adjtimex -k time-change

@@ -12,17 +12,21 @@
 //!
 //! # Severity boundary
 //!
-//! * **au-E03 (Error)** -- later rule is structurally identical to the
-//!   first occurrence, EXCLUDING the prepend flag (same field order, same syscall
-//!   order). The prepend flag is excluded because `auditctl -R` loads rules in
-//!   sequence, and the kernel clears `AUDIT_FILTER_PREPEND` after the first rule
-//!   is inserted (`kernel/auditfilter.c:1003`, audit 3bfa048), so at compare time
-//!   both rules have the same flags. `auditctl -R` aborts on `EEXIST`
-//!   (`auditctl.c:1680-1686`, audit 3bfa048): every rule after the duplicate
-//!   silently fails to load.
-//! * **au-W01 (Warning)** -- `canonical_key`-equal but NOT structurally identical
-//!   (field order swapped, syscall order swapped, `-a` vs `-A`, or prepend differs).
-//!   The kernel does NOT `EEXIST` on these; they load but are redundant waste.
+//! * **au-E03 (Error)** -- the later rule is a LOAD-ABORTING duplicate: the
+//!   kernel `EEXIST`s on it, so `auditctl -R` aborts and every rule after it
+//!   silently fails to load (`auditctl.c:1680-1686`, audit 3bfa048: on a rule
+//!   error `if (ignore == 0) { fclose(f); return -1; }`). The kernel compares
+//!   the SYSCALL set as a commutative bitmask (libaudit ORs each `-S` name into
+//!   `rule->mask`, `lib/libaudit.c:1021-1025`), so a `-S`-order-swapped OR
+//!   repetition-varying set is the SAME kernel rule and EEXISTs. Fields are
+//!   compared POSITIONALLY by the kernel, so field order DOES matter. The
+//!   prepend flag is excluded from the compare because the kernel clears
+//!   `AUDIT_FILTER_PREPEND` after the first rule is inserted
+//!   (`kernel/auditfilter.c:1003`); a later `-A` (prepend) rule is therefore
+//!   NOT an EEXIST (it carries the prepend bit the stored rule lacks).
+//! * **au-W01 (Warning)** -- `canonical_key`-equal but NOT load-aborting
+//!   (field order swapped, `-a` vs `-A`, or `-p` letter order). The kernel does
+//!   NOT `EEXIST` on these; they load but are redundant waste.
 
 use std::collections::HashMap;
 
@@ -31,7 +35,7 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::{AuditRule, LocatedRule};
 use crate::lints::normalize::canonical_key;
 
-/// Check if two AuditRules are structurally identical for EEXIST duplicate detection.
+/// Check if two `AuditRule`s are a load-aborting (`EEXIST`) duplicate pair.
 /// The comparison assumes the first rule's prepend bit is cleared by the kernel
 /// (kernel/auditfilter.c:1003, audit 3bfa048) and compares it as-is against the
 /// second rule's prepend bit.
@@ -62,14 +66,27 @@ fn rules_eexist_equal(first: &AuditRule, later: &AuditRule) -> bool {
             },
         ) => {
             // For EEXIST comparison:
-            // - All fields must be equal except prepend
-            // - The later rule's prepend must be false (i.e., -a not -A)
-            //   because the kernel only EXISTs if both have the same flags value.
-            //   The first rule's prepend was cleared to false, so the later rule
-            //   must also be false to match.
+            // - syscalls compare as a SORTED-DEDUPED SET: the kernel stores them
+            //   as a commutative bitmask (libaudit.c:1021-1025), so order and
+            //   repetition do not distinguish them at load -- a swapped/repeated
+            //   `-S` set is the SAME kernel rule and EEXISTs (au-E03).
+            // - fields/field_compares compare POSITIONALLY (the kernel compares
+            //   them in order), so a field-order swap is NOT an EEXIST (au-W01).
+            // - the later rule's prepend must be false (-a not -A): the kernel
+            //   clears the first rule's prepend bit after insertion, so a later
+            //   -A carries a prepend bit the stored rule lacks and does not EEXIST.
+            let syscalls_eq = {
+                let mut a: Vec<&str> = syscalls_a.iter().map(String::as_str).collect();
+                let mut b: Vec<&str> = syscalls_b.iter().map(String::as_str).collect();
+                a.sort_unstable();
+                a.dedup();
+                b.sort_unstable();
+                b.dedup();
+                a == b
+            };
             list_a == list_b
                 && action_a == action_b
-                && syscalls_a == syscalls_b
+                && syscalls_eq
                 && fields_a == fields_b
                 && field_compares_a == field_compares_b
                 && key_a == key_b

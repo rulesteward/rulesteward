@@ -1,3 +1,3 @@
 # Third occurrence: byte-identical to the first.
-# au-W01 finding 2 of 2: anchored here, also cites 10-first.rules (not 50-second.rules).
+# au-E03 finding 2 of 2: anchored here, also cites 10-first.rules (not 50-second.rules).
 -a always,exit -S adjtimex -S settimeofday -k time-change

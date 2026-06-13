@@ -110,19 +110,26 @@ fn cross_file_field_order_swap_fires_one_w01_at_later_file() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Syscall-order-swapped duplicate -- au-W01
+// Test 2: Syscall-order-swapped duplicate -- au-E03 (load-aborting)
 //
 // 10-open.rules  line 5: -a always,exit -S open -S close -k fs-access
 // 50-swapped.rules line 4: -a always,exit -S close -S open -k fs-access
 //
-// Adversarial: a derived-PartialEq impl sees syscalls=[open,close] vs
-// [close,open] as distinct Vec values and MISSES this.  Only an impl that
-// sorts syscalls before comparing (canonical_key) fires correctly.
-// Severity: Warning (au-W01) -- not PartialEq-equal, just canonical-equal.
+// The kernel stores -S syscalls as a commutative bitmask (libaudit ORs each
+// name into rule->mask, lib/libaudit.c:1021-1025), so "-S open -S close" and
+// "-S close -S open" are the SAME kernel rule. The second therefore EEXISTs and
+// auditctl -R aborts (auditctl.c:1680-1686): a LOAD-ABORTING duplicate -> au-E03
+// (Error), not a mere redundancy. (Owner decision, session 6a: the E03/W01
+// boundary is kernel-load-aborting, not literal AST byte-identity; verified
+// against libaudit + auditctl source.)
+//
+// Adversarial: a derived-PartialEq / order-sensitive-Vec impl sees
+// syscalls=[open,close] vs [close,open] as distinct and MISSES the E03
+// classification (emitting W01 or nothing). Only a set-comparing impl fires E03.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn syscall_order_swap_fires_w01() {
+fn syscall_order_swap_fires_e03() {
     let dir = fixture_dir("syscall-order");
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
@@ -132,12 +139,16 @@ fn syscall_order_swap_fires_w01() {
     assert_eq!(
         diags.len(),
         1,
-        "exactly 1 au-W01 for syscall-order swap, got {diags:?}"
+        "exactly 1 finding for syscall-order swap, got {diags:?}"
     );
 
     let d = &diags[0];
-    assert_eq!(d.severity, Severity::Warning, "au-W01 must be Warning");
-    assert_eq!(d.code, "au-W01", "code must be au-W01");
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "syscall-order-swapped duplicate is load-aborting -> au-E03 Error"
+    );
+    assert_eq!(d.code, "au-E03", "code must be au-E03");
     assert!(
         d.file.to_string_lossy().contains("50-swapped"),
         "anchored at 50-swapped.rules, got {:?}",
@@ -149,6 +160,35 @@ fn syscall_order_swap_fires_w01() {
         "message must cite 10-open.rules, got {:?}",
         d.message
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 2b: Repeated -S (same name twice) duplicate -- au-E03 (load-aborting)
+//
+// "-S open -S open" sets the same single bit as "-S open" (libaudit OR), so the
+// second rule EEXISTs at load just like the order-swap case. Pins that the set
+// comparison dedups, not just sorts.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_syscall_duplicate_fires_e03() {
+    let input = concat!(
+        "-a always,exit -S open -S open -k fs\n",
+        "-a always,exit -S open -k fs\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-rep.rules")).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w01(&rules);
+
+    assert_eq!(diags.len(), 1, "repeated-syscall duplicate must fire once");
+    assert_eq!(
+        diags[0].severity,
+        Severity::Error,
+        "repeated -S duplicate is load-aborting -> au-E03"
+    );
+    assert_eq!(diags[0].code, "au-E03");
+    assert_eq!(diags[0].line, 2, "anchored at the later (line 2) rule");
 }
 
 // ---------------------------------------------------------------------------
@@ -352,12 +392,13 @@ fn watch_perm_letter_order_swap_fires_e03() {
 // Both must cite 10-first.rules (not 50-second) as the first occurrence.
 // Adversarial: an impl that updates "first seen" on the 50-second duplicate
 // would cite 50-second for the 90-third finding.
-// Adversarial: an impl that emits Warning for all duplicates misses the E03
-// severity on 90-third.
+// Both findings are au-E03: 50-second is syscall-order-swapped (load-aborting
+// per the kernel commutative bitmask) and 90-third is byte-identical -- both
+// EEXIST and abort the load.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn triple_occurrence_mixed_yields_w01_and_e03_both_citing_first() {
+fn triple_occurrence_yields_two_e03_both_citing_first() {
     let dir = fixture_dir("triple-occurrence");
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 3, "exactly 3 rules expected");
@@ -393,18 +434,19 @@ fn triple_occurrence_mixed_yields_w01_and_e03_both_citing_first() {
         "one finding must be anchored at 90-third.rules, got {files:?}"
     );
 
-    // 50-second: syscall-order-swapped -> au-W01 (Warning).
+    // 50-second: syscall-order-swapped -> au-E03 (load-aborting per the kernel
+    // commutative bitmask: the swapped -S set is the SAME rule and EEXISTs).
     let second = diags
         .iter()
         .find(|d| d.file.to_string_lossy().contains("50-second"))
         .expect("50-second finding must exist");
     assert_eq!(
         second.severity,
-        Severity::Warning,
-        "50-second (syscall-order-swapped) must be au-W01 Warning, got {:?}",
+        Severity::Error,
+        "50-second (syscall-order-swapped) is load-aborting -> au-E03 Error, got {:?}",
         second.severity
     );
-    assert_eq!(second.code, "au-W01");
+    assert_eq!(second.code, "au-E03");
 
     // 90-third: byte-identical -> au-E03 (Error).
     let third = diags
