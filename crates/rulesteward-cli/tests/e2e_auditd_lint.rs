@@ -1,14 +1,9 @@
 //! e2e: `rulesteward auditd lint` via the real binary (#193, session 6a).
 //!
-//! Phase-0 CONTRACT PINS, landed `#[ignore]`: the semantic pass bodies are
-//! `todo!()` stubs until the P1/P2/P3 pipelines merge, so any clean-parse
-//! invocation would panic. The integration gate removes the `#[ignore]`
-//! attributes (and this header note) once all passes are live; until then the
-//! tests freeze the output contract (envelope shape, exit codes, human render)
-//! so no pipeline can drift it.
-//!
-//! The parse-error and tool-failure paths do NOT reach the stub dispatcher, so
-//! those tests run un-ignored from Phase 0 onward.
+//! These freeze the output contract end to end: envelope shape, exit codes, and
+//! human render across the live P1/P2/P3 semantic passes. (They were landed
+//! `#[ignore]`d during Phase 0 while the pass bodies were `todo!()` stubs; the
+//! integration gate enabled them once all passes merged.)
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -76,11 +71,10 @@ fn lint_unparseable_rules_human_names_file_and_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// Ignored until integration: these traverse the semantic dispatcher.
+// Full semantic dispatcher (all P1/P2/P3 passes live).
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_clean_ruleset_exits_zero_with_empty_diagnostics_json() {
     let dir = tempfile::tempdir().unwrap();
     write(
@@ -107,7 +101,6 @@ fn lint_clean_ruleset_exits_zero_with_empty_diagnostics_json() {
 }
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_clean_ruleset_human_prints_nothing() {
     let dir = tempfile::tempdir().unwrap();
     write(
@@ -124,24 +117,23 @@ fn lint_clean_ruleset_human_prints_nothing() {
 }
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_reordered_duplicate_warning_exits_one() {
-    // A normalized-equal-but-REORDERED duplicate (syscall order swapped) is
-    // au-W01 (Warning) -> exit 1: the kernel builds one syscall bitmask so the
-    // order does not change the loaded rule, but it does NOT EEXIST-collide
-    // (the rule still loads), so it is waste, not a load-abort. Contrast
-    // lint_load_aborting_duplicate_exits_two: an AST-structurally-identical
-    // dup IS a perm-mask/EEXIST collision -> au-E03.
+    // A normalized-equal-but-FIELD-REORDERED duplicate is au-W01 (Warning) ->
+    // exit 1: the kernel compares `-F` field predicates POSITIONALLY, so a
+    // field-order swap is a DIFFERENT rule to the kernel and does NOT EEXIST --
+    // the second rule loads, making it redundant waste, not a load-abort.
+    // Contrast: a SYSCALL-order swap IS a load-abort (commutative bitmask) and
+    // the watch perm-swap in lint_load_aborting_duplicate_exits_two -> au-E03.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
         "10-a.rules",
-        "-a always,exit -S open -S close -k io\n",
+        "-a always,exit -S execve -F auid>=1000 -F uid=0 -k io\n",
     );
     write(
         dir.path(),
         "50-b.rules",
-        "-a always,exit -S close -S open -k io\n",
+        "-a always,exit -S execve -F uid=0 -F auid>=1000 -k io\n",
     );
     lint_cmd()
         .args(["auditd", "lint"])
@@ -152,7 +144,6 @@ fn lint_reordered_duplicate_warning_exits_one() {
 }
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_load_aborting_duplicate_exits_two() {
     // An AST-structurally-identical duplicate is au-E03 (Error) -> exit 2: the
     // two watches resolve to the SAME path + perm bitmask + key, so the second
@@ -179,7 +170,6 @@ fn lint_load_aborting_duplicate_exits_two() {
 }
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_post_lock_rule_exits_two() {
     // A rule after `-e 2` -> au-E01 (Error) -> exit 2.
     let dir = tempfile::tempdir().unwrap();
@@ -197,7 +187,6 @@ fn lint_post_lock_rule_exits_two() {
 }
 
 #[test]
-#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
 fn lint_exact_duplicate_pair_yields_exactly_one_finding() {
     // The D2 cross-pipeline boundary, testable only with ALL passes live: an
     // exact-canonical-equal pair is au-W01 (P1) ONLY - P2's subsumption pass
