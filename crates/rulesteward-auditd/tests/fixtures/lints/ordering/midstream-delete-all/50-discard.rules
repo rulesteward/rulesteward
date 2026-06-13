@@ -1,0 +1,7 @@
+# -D after real rules have been loaded discards them.
+# grounding: auditctl(8) -D deletes ALL existing kernel audit rules. When -D appears
+# after rules that have already been loaded in the stream, those rules are discarded.
+# The standard pattern is -D at the top of the FIRST file; here it appears mid-stream.
+# au-W04 fires at this -D rule, naming the count of discarded rules before it.
+-D
+-a always,exit -S mount -k mount_after_D

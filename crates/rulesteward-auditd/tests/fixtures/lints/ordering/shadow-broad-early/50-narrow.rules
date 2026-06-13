@@ -1,0 +1,6 @@
+# Narrow rule: a subset of the broad rule above (auid>=1000 filter, different key).
+# grounding: D4 structural subsumption - earlier rule's syscall set {execve} is a
+# superset of this rule's {execve}, and earlier rule's field predicate set {} is a
+# SUBSET of this rule's {auid>=1000} (empty set is subset of any set).
+# au-W02 fires at THIS rule (the shadowed one); message cites 10-broad.rules:3.
+-a always,exit -S execve -F 'auid>=1000' -k exec_user

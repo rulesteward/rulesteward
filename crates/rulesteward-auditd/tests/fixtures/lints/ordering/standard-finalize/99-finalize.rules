@@ -1,0 +1,5 @@
+# Standard 99-finalize pattern: -e 2 as the very last line of the very last file.
+# grounding: auditctl(8) -e 2 makes config immutable; no rules follow, so nothing
+# is locked out. au-E01 fires nothing. This is the CORRECT pattern.
+-b 8192
+-e 2

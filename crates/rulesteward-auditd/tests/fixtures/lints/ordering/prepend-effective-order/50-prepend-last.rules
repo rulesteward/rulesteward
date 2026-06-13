@@ -1,0 +1,18 @@
+# Textual line 2 (-A = prepend): inserted at HEAD of exit list.
+# grounding: AUDIT_FILTER_PREPEND = 0x10 (kernel audit.h:185), set by auditctl.c:864
+# (audit-src 3bfa048). Each -A prepends to the head, so this rule lands FIRST in
+# effective order despite appearing second in file order. It has fewer fields than the
+# -a rule above ({} is a subset of the -a rule's empty predicate set, and same syscall
+# superset {execve}), so EFFECTIVE order means the narrow rule (-a, textual first) is
+# at the BACK and the broad rule (-A, textual second) is at the HEAD.
+#
+# Effective order (kernel's view):   [this -A rule FIRST] ... [the -a rule SECOND]
+# File order (naive text):           [the -a rule first] ... [this -A rule second]
+#
+# au-W02 fires at the -a rule in 10-append-first.rules (it is shadowed in EFFECTIVE
+# order by this broader -A rule). A file-order-only impl would get this BACKWARDS
+# (it would flag this file's rule, not the -a rule).
+# The -A rule here has the same syscall (execve) and empty field set (superset of -a's
+# empty field set = equal, which means same predicates but different keys => au-W02,
+# not au-W01: the -a rule has key "exec_broad", this -A rule has no key).
+-A always,exit -S execve

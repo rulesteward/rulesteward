@@ -1,0 +1,3 @@
+# Cross-file shadow: a broad rule in the early-named file.
+# grounding: augenrules(8) concatenates *.rules in filename (lexical) order.
+-a always,exit -S open -S close -F 'arch=b64' -k fs_access

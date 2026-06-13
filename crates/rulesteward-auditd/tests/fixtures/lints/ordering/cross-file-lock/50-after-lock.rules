@@ -1,0 +1,5 @@
+# This entire file is in a lexically-later file than the -e 2 above.
+# grounding: auditctl(8) -e 2 locks until reboot; any subsequent auditctl call fails.
+# Every rule in this file is unreachable. au-E01 fires at each one.
+-a always,exit -S mount -k mount_unreachable
+-b 8192
