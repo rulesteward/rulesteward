@@ -1,0 +1,5 @@
+# First occurrence: -A (prepend, AUDIT_FILTER_PREPEND = 0x10).
+# After insertion the kernel CLEARS the prepend bit in the stored entry:
+#   kernel/auditfilter.c:1003  entry->rule.flags &= ~AUDIT_FILTER_PREPEND
+# So the already-loaded entry has flags == 0.
+-A always,exit -S execve -F auid>=1000 -k exec

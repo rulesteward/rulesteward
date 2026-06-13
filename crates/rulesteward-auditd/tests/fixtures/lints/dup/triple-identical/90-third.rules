@@ -1,0 +1,6 @@
+# Third occurrence: byte-identical to 10-first.rules line 3.
+# au-E03 finding 2 of 2: anchored here (line 3), also cites 10-first.rules.
+# Adversarial: an impl that updates "first seen" to the second occurrence would
+# cite 50-second.rules instead of 10-first.rules here. The algorithm must keep
+# the original first occurrence in the map, never overwrite it.
+-a always,exit -S chown -F auid>=1000 -k perm-change-e03

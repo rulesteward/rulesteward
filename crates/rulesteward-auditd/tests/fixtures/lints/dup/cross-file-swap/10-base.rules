@@ -1,0 +1,3 @@
+# First occurrence: -F arch then -F uid.
+# Load order: 10-base.rules (this file) comes first.
+-a always,exit -F arch=b64 -F uid=0 -S execve -k privesc

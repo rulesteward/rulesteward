@@ -1,0 +1,6 @@
+# Second occurrence: -A again (flags == 0x10 at compare time).
+# Kernel compare: first.flags (cleared to 0) vs later.flags (0x10) => NOT equal
+#   (kernel/auditfilter.c:708  a->flags != b->flags returns 1).
+# audit_find_rule does NOT find a match -> NO EEXIST -> rule loads fine.
+# This is mere redundancy: au-W01 (Warning), NOT au-E03 (Error).
+-A always,exit -S execve -k exec

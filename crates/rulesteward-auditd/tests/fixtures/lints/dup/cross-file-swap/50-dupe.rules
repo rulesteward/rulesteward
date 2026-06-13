@@ -1,0 +1,4 @@
+# Duplicate: -F order swapped (-F uid=0 before -F arch=b64).
+# canonical_key sorts -F predicates so this is equal to the 10-base.rules rule.
+# au-W01 must fire here (later file), citing 10-base.rules line 3.
+-a always,exit -F uid=0 -F arch=b64 -S execve -k privesc

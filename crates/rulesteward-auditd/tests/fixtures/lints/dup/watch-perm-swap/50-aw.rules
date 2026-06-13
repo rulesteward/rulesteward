@@ -1,0 +1,3 @@
+# Duplicate: -p aw (attr then write). canonical_key produces the same
+# perm_letters "wa" as the 10-wa.rules rule. au-W01 must fire here.
+-w /etc/passwd -p aw -k identity

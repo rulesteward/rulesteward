@@ -35,6 +35,11 @@ pub const AU_CODES: &[LintCode] = &[
         description: "comparison operator is not valid for this field's type; auditctl rejects the rule at load time",
     },
     LintCode {
+        code: "au-E03",
+        severity: Severity::Error,
+        description: "load-aborting duplicate: a structurally identical earlier rule makes auditctl -R abort, so every later rule silently fails to load",
+    },
+    LintCode {
         code: "au-F01",
         severity: Severity::Fatal,
         description: "rules file does not parse",
@@ -69,7 +74,7 @@ mod tests {
     /// au-W04 is the P2 stretch lint (owner decision D6); if it is cut at
     /// integration, remove it HERE and from the catalog in the same commit.
     const ALL_CODES: &[&str] = &[
-        "au-E01", "au-E02", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
+        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
     ];
 
     #[test]
