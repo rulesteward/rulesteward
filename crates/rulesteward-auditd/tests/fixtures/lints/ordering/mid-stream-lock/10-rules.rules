@@ -1,0 +1,10 @@
+# Base rules loaded before the lock.
+-D
+-b 8192
+-a always,exit -S execve -F 'auid>=1000' -k exec_user
+-e 2
+# This rule appears after -e 2 in THE SAME FILE.
+# grounding: auditctl(8) -e 2 makes the config immutable until reboot;
+# subsequent auditctl invocations fail with EPERM. Any rule after the lock
+# in the concatenated stream never loads. au-E01 fires at this rule.
+-a always,exit -S mount -k mount_after_lock

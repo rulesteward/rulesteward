@@ -1,0 +1,2 @@
+# Standard rule: loaded normally.
+-a always,exit -S execve -F 'auid>=1000' -k exec_user

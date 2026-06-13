@@ -1,0 +1,11 @@
+# never-action BEFORE always on the same exit list and syscall: suppression conflict.
+# grounding: kernel first-match semantics (f3 section 2.3, flagtab.h:25-29 audit 3bfa048).
+# The never rule is first in EFFECTIVE order (it uses -a, no prepend), so it intercepts
+# uid=0 execve before the always rule can record it. au-W03 fires at the ALWAYS rule
+# (the suppressed rule), citing this never rule's file and line.
+#
+# Effective order (kernel's view):
+#   [never rule FIRST]  -> uid=0 execve suppressed
+#   [always rule SECOND] -> never reached for uid=0
+-a never,exit -S execve -F 'uid=0' -k exec_root_suppress
+-a always,exit -S execve -k exec_all

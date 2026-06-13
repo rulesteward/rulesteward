@@ -1,0 +1,4 @@
+# Textual line 1 (-a = append): goes to the BACK of the exit list.
+# grounding: AUDIT_FILTER_PREPEND = 0x10 (kernel audit.h:185); -a does NOT set it,
+# so this rule sits at the BACK in effective order (f3 section 2.3, auditctl.c:864).
+-a always,exit -S execve -k exec_broad

@@ -1,0 +1,6 @@
+# Cross-file shadow: the narrow rule in the later-named file.
+# grounding: D4 structural subsumption - earlier rule's syscall superset {open,close}
+# contains this rule's {open}, and earlier rule's field predicate {arch=b64} is an
+# EXACT subset of this rule's {arch=b64, auid>=1000}.
+# au-W02 fires at THIS rule; message cites 10-broad.rules.
+-a always,exit -S open -F 'arch=b64' -F 'auid>=1000' -k fs_access_user

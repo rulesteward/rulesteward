@@ -1,0 +1,3 @@
+# Broad rule: matches any execve (no field filters) -- subsumes the narrow rule below.
+# grounding: kernel first-match semantics per filter list (f3 section 2.3).
+-a always,exit -S execve -k exec_all
