@@ -1,0 +1,3 @@
+# Duplicate: -A (prepend) instead of -a (append). Content is identical;
+# only load-order position differs. au-W01 must fire here citing 10-append.rules.
+-A always,exit -S execve -F auid>=1000 -k exec

@@ -125,8 +125,40 @@ fn lint_clean_ruleset_human_prints_nothing() {
 
 #[test]
 #[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
-fn lint_duplicate_warning_exits_one() {
-    // Cross-file normalized duplicate -> au-W01 (Warning) -> exit 1.
+fn lint_reordered_duplicate_warning_exits_one() {
+    // A normalized-equal-but-REORDERED duplicate (syscall order swapped) is
+    // au-W01 (Warning) -> exit 1: the kernel builds one syscall bitmask so the
+    // order does not change the loaded rule, but it does NOT EEXIST-collide
+    // (the rule still loads), so it is waste, not a load-abort. Contrast
+    // lint_load_aborting_duplicate_exits_two: an AST-structurally-identical
+    // dup IS a perm-mask/EEXIST collision -> au-E03.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "10-a.rules",
+        "-a always,exit -S open -S close -k io\n",
+    );
+    write(
+        dir.path(),
+        "50-b.rules",
+        "-a always,exit -S close -S open -k io\n",
+    );
+    lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("au-W01"));
+}
+
+#[test]
+#[ignore = "enabled at the 6a integration gate: semantic passes are Phase-0 todo!() stubs"]
+fn lint_load_aborting_duplicate_exits_two() {
+    // An AST-structurally-identical duplicate is au-E03 (Error) -> exit 2: the
+    // two watches resolve to the SAME path + perm bitmask + key, so the second
+    // `auditctl -R` rule is rejected with EEXIST and the load ABORTS, silently
+    // dropping every later rule (auditctl.c). `-p wa` and `-p aw` are the same
+    // mask, so they are this load-aborting class, NOT mere reorder-waste.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -142,8 +174,8 @@ fn lint_duplicate_warning_exits_one() {
         .args(["auditd", "lint"])
         .arg(dir.path())
         .assert()
-        .code(1)
-        .stdout(predicate::str::contains("au-W01"));
+        .code(2)
+        .stdout(predicate::str::contains("au-E03"));
 }
 
 #[test]

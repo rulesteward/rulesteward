@@ -1,0 +1,5 @@
+# First occurrence: -a (append).
+# auditctl(8): -A prepends to the front of the list; the matching predicate
+# content is identical to -a. AUDIT_FILTER_PREPEND is a position flag only
+# (audit 3bfa048 src/auditctl.c:864, kernel audit.h:185 AUDIT_FILTER_PREPEND=0x10).
+-a always,exit -S execve -F auid>=1000 -k exec

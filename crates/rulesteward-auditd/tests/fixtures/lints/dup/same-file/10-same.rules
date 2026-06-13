@@ -1,0 +1,7 @@
+# Same-file duplicate: two identical rules in one file.
+# augenrules concatenates the file as-is; the kernel receives both lines.
+# au-W01 must fire on line 7 (the second rule), citing line 4 in this file.
+-a always,exit -S mount -F auid>=1000 -k mounts
+# some other rule between them
+-w /etc/fstab -p wa -k fstab
+-a always,exit -S mount -F auid>=1000 -k mounts

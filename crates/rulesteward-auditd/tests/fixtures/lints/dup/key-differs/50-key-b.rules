@@ -1,0 +1,3 @@
+# Same predicates, different -k key "execaudit".
+# Must NOT fire au-W01 (different canonical_key). P2 owns this case (au-W02).
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -k execaudit

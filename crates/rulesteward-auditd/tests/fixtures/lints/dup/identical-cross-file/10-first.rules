@@ -1,0 +1,6 @@
+# First occurrence: au-E03 load-aborting duplicate fixture.
+# This rule is STRUCTURALLY IDENTICAL (AuditRule::PartialEq) to the one in
+# 50-second.rules: same -F order, same -S order, same -a/-A flag, same -k key.
+# auditctl.c:1680-1686 (audit 3bfa048): kernel EEXIST -> fclose(f); return -1
+# aborts loading of any rules following the duplicate in the same -R invocation.
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -k privesc-e03

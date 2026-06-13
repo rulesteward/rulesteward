@@ -1,0 +1,4 @@
+# First occurrence: -A (prepend). After insertion the kernel clears the bit:
+#   kernel/auditfilter.c:1003  entry->rule.flags &= ~AUDIT_FILTER_PREPEND
+# The stored entry now has flags == 0.
+-A always,exit -S execve -k exec

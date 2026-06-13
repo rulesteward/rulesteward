@@ -1,0 +1,5 @@
+# First occurrence: -S open -S close.
+# libaudit builds one syscall bitmask (audit 3bfa048 lib/libaudit.c:1021-1025):
+#   rule->mask[word] |= AUDIT_BIT(scall)
+# so "-S open -S close" and "-S close -S open" set the same bits.
+-a always,exit -S open -S close -k fs-access

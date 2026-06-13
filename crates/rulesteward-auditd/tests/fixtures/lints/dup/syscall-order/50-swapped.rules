@@ -1,0 +1,4 @@
+# Duplicate: syscalls in reversed order. canonical_key sorts syscalls before
+# comparing, so this is identical to 10-open.rules line 5.
+# au-W01 must fire here citing 10-open.rules.
+-a always,exit -S close -S open -k fs-access

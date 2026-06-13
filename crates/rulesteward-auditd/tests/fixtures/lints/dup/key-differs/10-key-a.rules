@@ -1,0 +1,4 @@
+# First occurrence with key "execpriv".
+# A key-differing pair is P2's shadow case (au-W02), NOT au-W01 per owner
+# decision D2. The canonical_key includes the -k value (normalize.rs:74).
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -k execpriv
