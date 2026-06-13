@@ -1,0 +1,3 @@
+# First occurrence: triple-identical au-E03 fixture.
+# Three byte-identical rules -> two au-E03 findings, both citing THIS file line 3.
+-a always,exit -S chown -F auid>=1000 -k perm-change-e03

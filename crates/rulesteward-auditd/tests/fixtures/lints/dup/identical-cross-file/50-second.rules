@@ -1,0 +1,5 @@
+# Byte-identical duplicate: same -F order, same -S order, same -k key.
+# AuditRule::PartialEq is true. The kernel returns EEXIST; auditctl -R aborts
+# loading the remainder of the rules file (auditctl.c:1680-1686, audit 3bfa048).
+# au-E03 must fire here (later file), citing 10-first.rules line 7.
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -k privesc-e03

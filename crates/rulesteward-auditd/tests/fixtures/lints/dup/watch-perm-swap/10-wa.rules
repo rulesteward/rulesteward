@@ -1,0 +1,5 @@
+# First occurrence: -p wa (write then attr).
+# PermBits is order-free by construction (four bools r/w/x/a).
+# canonical_key emits perm_letters in canonical rwxa order, so
+# "-p wa" and "-p aw" produce the same perm_letters string "wa".
+-w /etc/passwd -p wa -k identity

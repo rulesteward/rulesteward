@@ -1,0 +1,5 @@
+# Later occurrence: -a (append, flags == 0 at compare time).
+# Kernel compare: first.flags (cleared to 0) vs later.flags (0) => equal.
+# audit_find_rule -> audit_compare_rule returns 0 -> EEXIST.
+# auditctl.c:1680-1686: fclose(f); return -1 -> au-E03 (Error).
+-a always,exit -S execve -F auid>=1000 -k exec

@@ -27,7 +27,7 @@ pub const EXIT_NO_OP: i32 = 9;
 ///
 /// Order matters:
 /// 1. `tool_err == true` → [`EXIT_TOOL_FAILURE`] (3).
-/// 2. Any `fapd-F01` → [`EXIT_RULE_PARSE_ERROR`] (5).
+/// 2. Any parse-failure code (`fapd-F01` / `au-F01`) → [`EXIT_RULE_PARSE_ERROR`] (5).
 /// 3. Any `Fatal` or `Error` → [`EXIT_ERRORS`] (2).
 /// 4. Any `Warning` → [`EXIT_WARNINGS`] (1).
 /// 5. Otherwise → [`EXIT_CLEAN`] (0).
@@ -36,7 +36,12 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     if tool_err {
         return EXIT_TOOL_FAILURE;
     }
-    if diags.iter().any(|d| d.code.as_ref() == "fapd-F01") {
+    // Each backend's parse-failure code maps to exit 5 (spec section 9.4 uses
+    // one numbering across modules; D3, session 6a).
+    if diags
+        .iter()
+        .any(|d| matches!(d.code.as_ref(), "fapd-F01" | "au-F01"))
+    {
         return EXIT_RULE_PARSE_ERROR;
     }
     if diags
@@ -95,6 +100,27 @@ mod tests {
             diag(Severity::Fatal, "fapd-F01"),
         ];
         assert_eq!(compute(&diags, false), EXIT_RULE_PARSE_ERROR);
+    }
+
+    #[test]
+    fn au_f01_returns_five() {
+        // D3 (session 6a): the auditd backend's parse-failure code au-F01 maps
+        // to the same EXIT_RULE_PARSE_ERROR as fapd-F01 (spec section 9.4:
+        // "auditd uses the same numbering"). Without the mapping, au-F01 is
+        // merely Fatal and would fall through to EXIT_ERRORS (2).
+        assert_eq!(
+            compute(&[diag(Severity::Fatal, "au-F01")], false),
+            EXIT_RULE_PARSE_ERROR
+        );
+    }
+
+    #[test]
+    fn au_w01_warning_returns_one() {
+        // The au- warning tier rides the same severity fall-through as fapd-.
+        assert_eq!(
+            compute(&[diag(Severity::Warning, "au-W01")], false),
+            EXIT_WARNINGS
+        );
     }
 
     #[test]

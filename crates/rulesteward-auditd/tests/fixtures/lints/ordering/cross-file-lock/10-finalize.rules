@@ -1,0 +1,4 @@
+# Lock appears in an early-named file (not 99-finalize).
+# grounding: augenrules(8) lexical concat order; this file loads BEFORE 50-after-lock.
+-a always,exit -S execve -k exec_before_lock
+-e 2

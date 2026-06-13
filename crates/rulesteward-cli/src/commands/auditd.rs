@@ -3,28 +3,121 @@
 //! Issue #90 -- pipeline P2.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use serde::Serialize;
 
-use crate::cli::{AuditdCommand, CostArgs, HumanJsonCsvFormat};
-use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+use crate::cli::{AuditdCommand, AuditdLintArgs, CostArgs, HumanJsonCsvFormat, HumanJsonFormat};
+use crate::exit_code::{self, EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
 use rulesteward_auditd::{
-    AuditRule, Direction,
+    AuditRule, Direction, LocatedRule,
     bands::{RateBand, VolumeTier, classify_rule, default_rate_band},
     cost::{CostBand, LogFormat, compute_cost_band, sum_rate_bands},
     from_log::count_events_by_key,
-    parser::parse_target,
+    lints,
+    parser::{parse_rules_str_located, parse_target, rules_files_in_load_order},
 };
 
 /// Schema version for the `auditd-cost` payload kind.
 /// Bumps only on a breaking change (field removal, rename, retype).
 const AUDITD_COST_SCHEMA_VERSION: u32 = 1;
 
+/// Schema version for the `auditd-lint` payload kind (#193, session 6a).
+/// Bumps only on a breaking change (field removal, rename, retype).
+const AUDITD_LINT_SCHEMA_VERSION: u32 = 1;
+
+/// Default lint target, mirroring where augenrules(8) reads rules from.
+const DEFAULT_AUDIT_RULES_D: &str = "/etc/audit/rules.d/";
+
 pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
     match cmd {
         AuditdCommand::Cost(args) => Ok(cost(&args)),
+        AuditdCommand::Lint(args) => Ok(lint(&args)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// auditd lint (#193, session 6a): the Phase-0 command shell. The semantic
+// passes live in rulesteward_auditd::lints (the crate owns the au- codes and
+// the mutation gate); this shell does target resolution, source-map staging,
+// rendering, and exit-code mapping only.
+// ---------------------------------------------------------------------------
+
+/// JSON payload for the `auditd-lint` envelope kind (CC-1).
+#[derive(Serialize)]
+struct AuditdLintPayload<'a> {
+    diagnostics: &'a [rulesteward_core::Diagnostic],
+}
+
+fn lint(args: &AuditdLintArgs) -> i32 {
+    let target = args
+        .path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_AUDIT_RULES_D));
+
+    let files = match resolve_lint_target(&target) {
+        Ok(files) => files,
+        Err(msg) => {
+            eprintln!("auditd lint: {msg}");
+            return EXIT_TOOL_FAILURE;
+        }
+    };
+
+    // Stage each file's raw text (keyed by display path, the diagnostics'
+    // source_id convention) and parse with provenance, in load order.
+    let mut sources = std::collections::BTreeMap::new();
+    let mut rules: Vec<LocatedRule> = Vec::new();
+    let mut diags: Vec<rulesteward_core::Diagnostic> = Vec::new();
+    for file in &files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("auditd lint: cannot read {}: {e}", file.display());
+                return EXIT_TOOL_FAILURE;
+            }
+        };
+        match parse_rules_str_located(&source, file) {
+            Ok(located) => rules.extend(located),
+            Err(errs) => diags.extend(errs.iter().map(lints::parse_error_to_diagnostic)),
+        }
+        sources.insert(file.display().to_string(), source);
+    }
+
+    // The semantic passes run only on a FULLY-parsed stream: with a file
+    // missing from the stream, cross-file duplicate/ordering/shadowing claims
+    // would be unsound. Parse failures exit 5 on their own (au-F01 -> D3).
+    if diags.is_empty() {
+        diags.extend(lints::lint(&rules));
+    }
+
+    let output = match args.format {
+        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
+        HumanJsonFormat::Json => render_envelope(
+            "auditd-lint",
+            AUDITD_LINT_SCHEMA_VERSION,
+            &AuditdLintPayload {
+                diagnostics: &diags,
+            },
+        ),
+    };
+    if !output.is_empty() {
+        print!("{output}");
+    }
+
+    exit_code::compute(&diags, false)
+}
+
+/// Resolve the lint target to a load-ordered file list: a single file is
+/// linted alone; a directory yields its `*.rules` files in augenrules order.
+fn resolve_lint_target(target: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    if target.is_file() {
+        Ok(vec![target.to_path_buf()])
+    } else if target.is_dir() {
+        rules_files_in_load_order(target).map_err(|e| e.message)
+    } else {
+        Err(format!("path does not exist: {}", target.display()))
     }
 }
 
@@ -826,5 +919,76 @@ mod tests {
             csv.contains("\"-a always,exit -S execve\""),
             "comma in rule text must be quoted:\n{csv}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// auditd lint shell tests (#193, session 6a Phase 0). These exercise ONLY the
+// shell's pure parts (target resolution, parse-error mapping, exit codes);
+// the semantic-pass dispatcher is stubbed until the pipelines land and is
+// covered by the (currently #[ignore]d) e2e contract tests at integration.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod lint_shell_tests {
+    use super::{lint, resolve_lint_target};
+    use crate::cli::{AuditdLintArgs, HumanJsonFormat};
+    use crate::exit_code::{EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+
+    fn args(path: &std::path::Path, format: HumanJsonFormat) -> AuditdLintArgs {
+        AuditdLintArgs {
+            path: Some(path.to_path_buf()),
+            format,
+        }
+    }
+
+    #[test]
+    fn resolve_file_mode_returns_single_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("audit.rules");
+        std::fs::write(&f, "-D\n").expect("write");
+        let files = resolve_lint_target(&f).expect("file target resolves");
+        assert_eq!(files, vec![f]);
+    }
+
+    #[test]
+    fn resolve_dir_returns_load_ordered_rules_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("50-b.rules"), "-D\n").expect("write");
+        std::fs::write(dir.path().join("10-a.rules"), "-D\n").expect("write");
+        std::fs::write(dir.path().join("notes.txt"), "x").expect("write");
+        let files = resolve_lint_target(dir.path()).expect("dir target resolves");
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["10-a.rules", "50-b.rules"]);
+    }
+
+    #[test]
+    fn resolve_missing_path_errors() {
+        let err = resolve_lint_target(std::path::Path::new("/nonexistent/6a/x"))
+            .expect_err("missing path must error");
+        assert!(err.contains("does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn lint_missing_target_exits_tool_failure() {
+        let a = args(
+            std::path::Path::new("/nonexistent/6a/x"),
+            HumanJsonFormat::Human,
+        );
+        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+    }
+
+    #[test]
+    fn lint_parse_error_exits_five_and_skips_semantic_passes() {
+        // An unparseable line maps to au-F01 -> exit 5 (D3). Crucially this
+        // must NOT invoke the semantic dispatcher (its passes are todo!()
+        // stubs until the pipelines land; a partial stream would also make
+        // cross-file claims unsound) - if it did, this test would panic.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("10-bad.rules"), "-Z bogus\n").expect("write");
+        let a = args(dir.path(), HumanJsonFormat::Json);
+        assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
     }
 }

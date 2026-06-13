@@ -9,6 +9,7 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rulesteward-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

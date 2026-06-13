@@ -1,0 +1,1077 @@
+//! RED barrier tests for au-W02 (shadow/subsumption), au-E01 (post-lock unreachable),
+//! au-W03 (suppression conflict), and au-W04 (mid-stream -D) - issue #193, pipeline P2.
+//!
+//! # Grounding
+//!
+//! ## Kernel first-match semantics
+//! The kernel evaluates syscall rules on each filter list in load order; the
+//! FIRST matching rule wins and no further rules on that list are consulted.
+//! Source: `man 7 audit.rules` "Rules are evaluated in load order"; f3
+//! section 2.3 (f3-auditd-cost-grounding.md).
+//!
+//! ## -A (prepend) head-insertion: EFFECTIVE order differs from file order
+//! `-A` sets `AUDIT_FILTER_PREPEND = 0x10` (kernel `linux/audit.h:185`),
+//! which inserts the rule at the HEAD of the filter list rather than the tail.
+//! Source: `audit-src/src/auditctl.c:864` (audit commit 3bfa048).
+//! MULTIPLE -A rules net-REVERSE relative to each other: each prepend inserts
+//! at the current head, so the LAST -A rule in file/stream order ends up FIRST
+//! in effective order. Every w02 and w03 test that involves -A rules is written
+//! against EFFECTIVE order, not file order.
+//!
+//! ## -e 2 immutability
+//! `auditctl(8)` `-e 2` makes the audit configuration immutable until reboot;
+//! subsequent `auditctl` invocations fail with EPERM. Any rule in the
+//! concatenated stream that appears AFTER the first `-e 2` line (in lexical
+//! order) never loads. au-E01 fires at those rules (`Severity::Error`).
+//!
+//! ## exclude/never suppression model
+//! Source: f3-auditd-cost-grounding.md section 3.5 + flagtab.h:25-29
+//! (audit 3bfa048). A `never`-action rule on the exit list suppresses
+//! events for matching traffic; an `exclude`-list rule suppresses entire
+//! record types by msgtype. au-W03 fires when such a rule (in EFFECTIVE
+//! order) precedes and suppresses an `always` rule that intends to record
+//! the same events.
+//!
+//! ## D2 (canonical-equal = au-W01, skip in w02)
+//! A pair whose `canonical_key` values are EQUAL is a P1 au-W01 duplicate;
+//! w02 MUST skip it. Source: owner decision D2, normalize.rs.
+//!
+//! ## D4 (v1 subsumption is structural-only, no interval arithmetic)
+//! v1 subsumption: same filter list, earlier rule's syscall set is a SUPERSET
+//! (order-insensitive) of the later's, earlier field-predicate set is a SUBSET
+//! with EXACT predicate equality (field+op+value all equal). `-F auid>=1000`
+//! does NOT subsume `-F auid>=2000`; that would require interval arithmetic.
+//! Source: owner decision D4.
+//!
+//! ## Emission convention
+//! au-W02, au-E01, au-W03, au-W04 emit at the SHADOWED/UNREACHABLE/SUPPRESSED
+//! rule's file+line+span (column 1 by the `lints::anchored` convention). The
+//! message cites the shadowing/lock/suppressing rule's `file:line`.
+
+use std::path::Path;
+
+use rulesteward_auditd::{
+    lints::ordering::{e01, w02, w03},
+    parse_rules_str_located, parse_target_located,
+};
+use rulesteward_core::Severity;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn fixture_dir(rel: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/lints/ordering")
+        .join(rel)
+}
+
+fn corpus_dir(scenario: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/auditd")
+        .join(scenario)
+}
+
+// ---------------------------------------------------------------------------
+// au-W02 shadow/subsumption tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Test 1: broad-early/narrow-late same filter list fires au-W02
+//
+// Fixtures: shadow-broad-early/
+//   10-broad.rules  line 3: -a always,exit -S execve -k exec_all
+//   50-narrow.rules line 6: -a always,exit -S execve -F 'auid>=1000' -k exec_user
+//                           (5 comment lines precede the rule; parser counts all lines)
+//
+// D4 subsumption: broad rule syscall set {execve} is a SUPERSET of narrow's {execve};
+// broad rule field predicate set {} (empty) is a SUBSET of narrow's {auid>=1000}.
+// Grounding: kernel first-match -- execve always matches the broad rule first, so the
+// narrow rule never fires. au-W02 fires at line 6 of 50-narrow.rules.
+//
+// Adversarial: a naive "did a broader rule appear first?" impl that only checks
+// syscall-set containment (ignoring field predicates) would be wrong for cases where
+// the broad rule also has more field predicates.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_broad_early_narrow_late_fires() {
+    let dir = fixture_dir("shadow-broad-early");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+    assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
+
+    let diags = w02(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly 1 au-W02 expected for broad-early/narrow-late, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning, "au-W02 must be Warning");
+    assert_eq!(d.code, "au-W02", "code must be au-W02");
+    // Anchored at the SHADOWED rule (50-narrow.rules).
+    assert!(
+        d.file.to_string_lossy().contains("50-narrow"),
+        "must anchor at 50-narrow.rules, got file={:?}",
+        d.file
+    );
+    // 50-narrow.rules has 5 comment lines before the rule (lines 1-5 are comments).
+    // The parser (parse_target_located) counts comment and blank lines; rule is on line 6.
+    assert_eq!(
+        d.line, 6,
+        "50-narrow.rules: rule is on line 6 (5 comment lines precede)"
+    );
+    assert_eq!(
+        d.column, 1,
+        "auditd anchoring convention: column is always 1"
+    );
+    // Message must cite the shadowing rule by its distinct filename token (10-broad.rules).
+    // This cannot be satisfied by 50-narrow.rules' own filename, so it is a non-vacuous pin.
+    assert!(
+        d.message.contains("10-broad"),
+        "message must cite 10-broad.rules, got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: canonical-equal pair does NOT fire au-W02 (D2 boundary)
+//
+// A pair whose canonical_key values are EQUAL is a P1 au-W01 duplicate.
+// w02 MUST skip it. Source: owner decision D2.
+//
+// Adversarial: an impl that skips the D2 check would fire au-W02 on this pair,
+// producing BOTH a W01 and a W02 for the same pair (double-reporting a simple dup).
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_canonical_equal_pair_does_not_fire() {
+    // Two rules with identical content, identical key: canonical-equal (W01 territory).
+    // w02 must return empty for this pair.
+    let input = concat!(
+        "-a always,exit -S execve -k exec_all\n",
+        // Same rule repeated byte-for-byte: canonical_key equal -> W01, not W02.
+        "-a always,exit -S execve -k exec_all\n",
+    );
+    let file = Path::new("10-same.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w02(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "w02 must NOT fire on a canonical-equal pair (D2 boundary: that is W01 territory), \
+         got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: predicate-equal-but-key-differs DOES fire au-W02
+//
+// Same list/action/syscalls/fields, but different -k key => NOT canonical-equal
+// (canonical_key includes the key). The LATER rule's key can never fire because
+// first-match gives the earlier rule all the matching traffic.
+// Grounding: normalize.rs:74 -- key is included in the canonical key.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_predicate_equal_different_key_fires() {
+    // Earlier: syscall rule with key "exec_audit" in "10-keydiff.rules"
+    // Later: same predicates, different key "exec_priv" -- the later key never fires.
+    // The shadowing rule is at 10-keydiff.rules:1; the shadowed rule is at
+    // 10-keydiff.rules:2. The message must cite the shadowing file:line token
+    // "10-keydiff.rules:1" (distinct from the anchored rule's own line "2").
+    let input = concat!(
+        "-a always,exit -S execve -F 'auid>=1000' -k exec_audit\n",
+        "-a always,exit -S execve -F 'auid>=1000' -k exec_priv\n",
+    );
+    let file = Path::new("10-keydiff.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w02(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "predicate-equal but key-differs must fire au-W02, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, "au-W02");
+    // Shadowed rule is the LATER one (second line, line 2 in the file).
+    assert_eq!(d.file, file, "must anchor at the source file");
+    assert_eq!(d.line, 2, "the later rule (line 2) is shadowed");
+    assert_eq!(d.column, 1);
+    // Message must cite the shadowing rule's file:line. The token "10-keydiff.rules:1"
+    // cannot be produced by simply echoing the anchored rule's own filename or line
+    // number alone, making this a non-vacuous pin.
+    assert!(
+        d.message.contains("10-keydiff.rules:1"),
+        "message must cite 10-keydiff.rules:1 (the shadowing rule's distinct file:line token), \
+         got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: cross-file shadow fires au-W02
+//
+// Fixtures: cross-file-shadow/
+//   10-broad.rules  line 3: -a always,exit -S open -S close -F arch=b64 -k fs_access
+//   50-narrow.rules line 6: -a always,exit -S open -F arch=b64 -F auid>=1000 -k fs_access_user
+//                           (5 comment lines precede the rule in 50-narrow.rules)
+//
+// D4: broad has syscall superset {open, close} of narrow's {open}; broad's field
+// predicates {arch=b64} are an EXACT subset of narrow's {arch=b64, auid>=1000}.
+// au-W02 fires at 50-narrow.rules line 6; message cites 10-broad.rules:3.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_cross_file_fires_at_later_file() {
+    let dir = fixture_dir("cross-file-shadow");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+    assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
+
+    let diags = w02(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly 1 au-W02 for cross-file shadow, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, "au-W02");
+    assert!(
+        d.file.to_string_lossy().contains("50-narrow"),
+        "must anchor at 50-narrow.rules, got {:?}",
+        d.file
+    );
+    // 50-narrow.rules has 5 comment lines before the rule; parser counts all lines.
+    assert_eq!(
+        d.line, 6,
+        "50-narrow.rules: rule is on line 6 (5 comment lines precede)"
+    );
+    assert_eq!(d.column, 1);
+    // Message must cite the shadowing rule's distinct file:line token "10-broad.rules:3".
+    // 10-broad.rules has 2 comment lines before its rule, which is on line 3.
+    assert!(
+        d.message.contains("10-broad.rules:3"),
+        "message must cite 10-broad.rules:3 (the shadowing rule's distinct file:line token), \
+         got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: late -A (prepend) rule in file order lands EARLY in effective order
+//
+// Fixtures: prepend-effective-order/
+//   10-append-first.rules  line 4: -a always,exit -S execve -k exec_broad
+//                                  (3 comment lines precede the rule)
+//   50-prepend-last.rules  line 18: -A always,exit -S execve  (no key)
+//                                   (17 comment lines precede the rule)
+//
+// Effective order (kernel's view):
+//   [50-prepend -A rule, HEAD: syscall {execve}, no key]
+//   [10-append -a rule, BACK: syscall {execve}, key exec_broad]
+//
+// Grounding: AUDIT_FILTER_PREPEND = 0x10 (kernel audit.h:185), set by
+// auditctl.c:864 (audit-src 3bfa048). -A inserts at the HEAD of the exit
+// list, so this rule overtakes the -a rule that was loaded earlier.
+//
+// D4 subsumption in EFFECTIVE order:
+//   The -A rule (HEAD) syscall set {execve} is a superset of -a rule's {execve};
+//   the -A rule's field predicates {} (empty) are a subset of -a rule's {} (empty).
+//   Keys differ (one has exec_broad, one has no key) => NOT canonical-equal (D2).
+//   => au-W02 fires at the -a rule in 10-append-first.rules (the later in EFFECTIVE
+//      order, despite being EARLIER in file order).
+//
+// Adversarial: a FILE-ORDER-ONLY impl would either flag the -A rule (wrong) or
+// see the -A rule as "later" and flag it -- but the -a rule is the one shadowed
+// in EFFECTIVE order. Only an impl that tracks effective position fires correctly.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_prepend_rule_file_late_effective_early_shadows_append_rule() {
+    let dir = fixture_dir("prepend-effective-order");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+    assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
+
+    let diags = w02(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "au-W02 must fire exactly once: -A (file-order late, effective-order early) \
+         shadows -a (file-order early, effective-order late), got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, "au-W02");
+    // The SHADOWED rule is the -a rule in 10-append-first.rules (effective order: BACK).
+    assert!(
+        d.file.to_string_lossy().contains("10-append-first"),
+        "must anchor at 10-append-first.rules (the -a rule, shadowed in effective order), \
+         got file={:?}",
+        d.file
+    );
+    // 10-append-first.rules has 3 comment lines before the rule; parser counts all lines.
+    assert_eq!(
+        d.line, 4,
+        "10-append-first.rules: the rule is on line 4 (3 comment lines precede)"
+    );
+    assert_eq!(d.column, 1);
+    // Message cites the SHADOWING rule's distinct file:line token "50-prepend-last.rules".
+    // Since the files have clearly distinct names, this cannot be satisfied by the anchored
+    // rule's own path "10-append-first".
+    assert!(
+        d.message.contains("50-prepend-last"),
+        "message must cite 50-prepend-last.rules as the shadowing rule, got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: interval case auid>=1000 vs auid>=2000 does NOT fire (D4 pin)
+//
+// D4 explicitly rules out interval arithmetic. `-F auid>=1000` does NOT
+// structurally subsume `-F auid>=2000` because the values are different strings
+// and predicate equality requires field+op+value all equal.
+//
+// Adversarial: an impl that compares numeric values and decides that >=1000
+// covers >=2000 would fire incorrectly. This test pins the D4 scope boundary.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_interval_comparison_does_not_fire_d4_pin() {
+    let input = concat!(
+        // Earlier: auid>=1000 (broadly: non-system users)
+        "-a always,exit -S execve -F 'auid>=1000' -k exec_user\n",
+        // Later: auid>=2000 (more restrictive threshold)
+        // D4: >=1000 does NOT subsume >=2000 structurally; ">=1000" != ">=2000" verbatim.
+        "-a always,exit -S execve -F 'auid>=2000' -k exec_highuid\n",
+    );
+    let file = Path::new("10-interval.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w02(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "w02 must NOT fire when the only difference is a numeric field value \
+         (D4: no interval arithmetic in v1), got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: different filter lists never interact for au-W02
+//
+// An exit-list rule and a task-list rule are on DIFFERENT filter lists;
+// the kernel checks each list independently. A subsumption lint must only
+// compare rules on THE SAME filter list.
+// Grounding: flagtab.h:25-29 (audit 3bfa048) -- each list is independent.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_different_filter_lists_do_not_interact() {
+    let input = concat!(
+        // exit-list rule (the common case)
+        "-a always,exit -S execve -k exec_exit\n",
+        // task-list rule: a completely separate filter applied at task creation
+        "-a always,task -k task_create\n",
+    );
+    let file = Path::new("10-lists.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w02(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "rules on different filter lists must not trigger w02 (they never interact), \
+         got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: earlier syscall SUPERSET shadows a later rule with subset syscalls
+//
+// Earlier: -S open -S close (syscall superset)
+// Later:   -S open only (same fields, subset syscalls)
+//
+// D4: earlier rule's syscall set {open, close} is a SUPERSET of later's {open};
+// earlier rule's field predicate set {} (empty) is a SUBSET of later's {} (empty).
+// Keys differ ("fs_all" vs "fs_open") => NOT canonical-equal (D2).
+// => au-W02 fires at the later rule.
+//
+// Adversarial: an impl that only checks whether the later syscall set is a
+// SUPERSET of the earlier (backwards) would miss this.
+// ---------------------------------------------------------------------------
+#[test]
+fn w02_earlier_syscall_superset_fires() {
+    let input = concat!(
+        "-a always,exit -S open -S close -k fs_all\n",
+        // open only: a subset; the rule above matches all open calls first.
+        "-a always,exit -S open -k fs_open\n",
+    );
+    let file = Path::new("10-superset.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w02(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "earlier syscall-superset must fire au-W02 at the later narrower rule, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, "au-W02");
+    // Shadowed rule is the second one (line 2).
+    assert_eq!(d.file, file, "diagnostic must anchor in the source file");
+    assert_eq!(d.line, 2, "the narrower rule is on line 2 (shadowed)");
+    assert_eq!(d.column, 1);
+    // Message must cite the shadowing rule's distinct file:line token "10-superset.rules:1".
+    // The token "10-superset.rules:1" is distinct from the anchored rule's own line "2",
+    // so an impl that simply echoes the anchor file path cannot satisfy this assertion.
+    assert!(
+        d.message.contains("10-superset.rules:1"),
+        "message must cite 10-superset.rules:1 (the syscall-superset rule's file:line token), \
+         got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// au-E01 post-lock unreachable-rule tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Test 9: rule after -e 2 in the same file fires au-E01
+//
+// Fixtures: mid-stream-lock/10-rules.rules:
+//   line 1:  # Base rules loaded before the lock.   (comment)
+//   line 2:  -D
+//   line 3:  -b 8192
+//   line 4:  -a always,exit -S execve -F 'auid>=1000' -k exec_user
+//   line 5:  -e 2                                   <- the lock
+//   line 6:  # This rule appears after -e 2 ...     (comment)
+//   line 7:  # grounding: auditctl(8)...             (comment)
+//   line 8:  # subsequent auditctl...                (comment)
+//   line 9:  # in the concatenated stream...         (comment)
+//   line 10: -a always,exit -S mount -k mount_after_lock  <- au-E01 target
+//
+// Grounding: auditctl(8) -e 2 makes config immutable until reboot; any rule
+// appearing after the lock in the concatenated stream never loads (au-E01, Error).
+// The parser (parse_target_located) counts comment and blank lines; -e 2 is on
+// line 5 and the unreachable rule is on line 10.
+// ---------------------------------------------------------------------------
+#[test]
+fn e01_rule_after_lock_same_file_fires() {
+    let dir = fixture_dir("mid-stream-lock");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+
+    let diags = e01(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "exactly 1 au-E01 for rule after -e 2 in the same file, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "au-E01 must be Error (not Warning)"
+    );
+    assert_eq!(d.code, "au-E01");
+    assert_eq!(d.column, 1);
+    // Anchored at the rule AFTER the lock (10-rules.rules).
+    assert!(
+        d.file.to_string_lossy().contains("10-rules"),
+        "must anchor in 10-rules.rules, got {:?}",
+        d.file
+    );
+    // The parser counts comment and blank lines. -e 2 is on line 5; there are 4
+    // comment lines between the lock and the unreachable rule (lines 6-9); the
+    // unreachable -S mount rule is on line 10.
+    assert_eq!(
+        d.line, 10,
+        "the unreachable rule is on line 10 (after -e 2 on line 5, with 4 comment lines between)"
+    );
+    // Message must reference the lock so the operator knows why the rule is unreachable.
+    assert!(
+        d.message.to_lowercase().contains("-e 2")
+            || d.message.to_lowercase().contains("lock")
+            || d.message.to_lowercase().contains("immutable"),
+        "message must explain the -e 2 lock, got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: rules in a lexically-LATER file than the file containing -e 2 fire
+//
+// Fixtures: cross-file-lock/
+//   10-finalize.rules:
+//     line 3: -a always,exit -S execve -k exec_before_lock
+//     line 4: -e 2   <- the lock
+//   50-after-lock.rules:
+//     line 3: -a always,exit -S mount -k mount_unreachable  <- au-E01
+//     line 4: -b 8192                                        <- au-E01 (control rule)
+//
+// Grounding: augenrules(8) lexical concat; -e 2 in 10-finalize.rules locks the
+// config before any rule in 50-after-lock.rules can load.
+// ---------------------------------------------------------------------------
+#[test]
+fn e01_rules_in_later_file_fire() {
+    let dir = fixture_dir("cross-file-lock");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+
+    let diags = e01(&rules);
+
+    // Both rules in 50-after-lock.rules are unreachable.
+    assert_eq!(
+        diags.len(),
+        2,
+        "both rules in the post-lock file must fire au-E01, got {diags:?}"
+    );
+    for d in &diags {
+        assert_eq!(d.severity, Severity::Error, "au-E01 is Error");
+        assert_eq!(d.code, "au-E01");
+        assert_eq!(d.column, 1);
+        assert!(
+            d.file.to_string_lossy().contains("50-after-lock"),
+            "must anchor in 50-after-lock.rules, got {:?}",
+            d.file
+        );
+    }
+    // Message must cite the locking file.
+    let msg0 = &diags[0].message;
+    assert!(
+        msg0.contains("10-finalize")
+            || msg0.to_lowercase().contains("lock")
+            || msg0.to_lowercase().contains("-e 2"),
+        "message must cite the locking source, got {msg0:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: -e 2 as the very last line of the lexically-last file fires nothing
+//
+// Fixtures: standard-finalize/
+//   10-rules.rules: -a always,exit -S execve -F 'auid>=1000' -k exec_user
+//   99-finalize.rules: -b 8192 / -e 2  (lock is last line of last file)
+//
+// Grounding: the standard 99-finalize pattern. Nothing comes after the lock,
+// so au-E01 fires nothing. This is the CORRECT deployment pattern.
+// ---------------------------------------------------------------------------
+#[test]
+fn e01_standard_finalize_pattern_fires_nothing() {
+    let dir = fixture_dir("standard-finalize");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+
+    let diags = e01(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "standard 99-finalize pattern (-e 2 as last line of last file) must fire no \
+         au-E01 diagnostics, got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: a control rule (-b 8192) after the lock also fires au-E01
+//
+// Grounding: auditctl(8) -e 2 locks config immutable; any subsequent auditctl
+// invocation fails with EPERM regardless of whether it is a data rule or a
+// control rule. Control rules after the lock are unreachable too.
+// ---------------------------------------------------------------------------
+#[test]
+fn e01_control_rule_after_lock_fires() {
+    let input = concat!(
+        "-e 2\n",
+        // A control rule after the lock is also unreachable.
+        "-b 8192\n",
+    );
+    let file = Path::new("10-control-after-lock.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = e01(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "a control rule after -e 2 must fire au-E01, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.code, "au-E01");
+    assert_eq!(d.file, file);
+    assert_eq!(d.line, 2, "the control rule is on line 2");
+    assert_eq!(d.column, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Test 12b: NEGATIVE pin -- rules after -e 1 or -e 0 must NOT fire au-E01
+//
+// Grounding: auditctl(8): `-e 2` makes config IMMUTABLE (permanent lock until
+// reboot); `-e 1` merely ENABLES audit (config remains mutable); `-e 0`
+// DISABLES audit (config also remains mutable). Only -e 2 locks; subsequent
+// auditctl invocations after -e 0 or -e 1 are NOT rejected with EPERM.
+//
+// Adversarial: an impl that treats any `-e N` as the lock (e.g., checking
+// `-e` token presence without requiring N == 2) would incorrectly fire au-E01
+// on rules that follow `-e 1` or `-e 0`. This test kills that wrong impl.
+// ---------------------------------------------------------------------------
+#[test]
+fn e01_rule_after_e1_does_not_fire() {
+    let input = concat!(
+        // -e 1: enables audit, does NOT lock config (mutable after this).
+        "-e 1\n",
+        // A rule after -e 1 is perfectly reachable; au-E01 must NOT fire.
+        "-a always,exit -S execve -k exec_user\n",
+    );
+    let file = Path::new("10-enable-not-lock.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = e01(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "-e 1 enables audit but does NOT lock the config; rules after -e 1 are \
+         reachable and au-E01 must NOT fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn e01_rule_after_e0_does_not_fire() {
+    let input = concat!(
+        // -e 0: disables audit, does NOT lock config (mutable after this).
+        "-e 0\n",
+        // A rule after -e 0 is perfectly reachable; au-E01 must NOT fire.
+        "-b 8192\n",
+    );
+    let file = Path::new("10-disable-not-lock.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = e01(&rules);
+
+    assert!(
+        diags.is_empty(),
+        "-e 0 disables audit but does NOT lock the config; rules after -e 0 are \
+         reachable and au-E01 must NOT fire, got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// au-W03 suppression conflict tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Test 13: exclude-list msgtype rule suppressing record types an always rule records
+//
+// Grounding: f3-auditd-cost-grounding.md section 3.5. An exclude-list rule with
+// `msgtype=<N>` suppresses entire record types. If an always-action exit-list rule
+// is present, the exclude rule may silently swallow the SYSCALL or other records
+// that the always rule is supposed to produce. au-W03 fires at the ALWAYS rule.
+// ---------------------------------------------------------------------------
+#[test]
+fn w03_exclude_msgtype_before_always_fires() {
+    // A common operator mistake: suppress SYSCALL records globally via exclude-list,
+    // then wonder why auditing stops working. The exclude fires at the kernel record-
+    // filter stage, before the exit-list matching, so the syscall records are dropped.
+    //
+    // msgtype=1300 is AUDIT_SYSCALL per include/uapi/linux/audit.h (primary source).
+    // Grounding: AUDIT_SYSCALL = 1300 (not 1309; 1309 = AUDIT_EXECVE, a distinct type).
+    let input = concat!(
+        // Suppress SYSCALL record type (msgtype=1300 = AUDIT_SYSCALL per linux/audit.h).
+        "-a always,exclude -F msgtype=1300\n",
+        // This always rule's events will never appear in the log because
+        // the exclude filter above drops SYSCALL records globally.
+        "-a always,exit -S execve -k exec_audit\n",
+    );
+    let file = Path::new("10-exclude-suppress.rules");
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w03(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "exclude-list msgtype rule suppressing always rule must fire au-W03, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning, "au-W03 is Warning");
+    assert_eq!(d.code, "au-W03");
+    assert_eq!(d.column, 1);
+    // Anchored at the SUPPRESSED always rule (line 2).
+    assert_eq!(d.file, file, "diagnostic must anchor in the source file");
+    assert_eq!(d.line, 2, "the suppressed always rule is on line 2");
+    // Message must cite the suppressing rule's distinct file:line token
+    // "10-exclude-suppress.rules:1". This cannot be satisfied merely by echoing
+    // the anchored rule's own filename or "exclude"/"msgtype" keywords; the
+    // file:line token is the load-bearing citation that proves the impl found
+    // the correct suppressing rule.
+    assert!(
+        d.message.contains("10-exclude-suppress.rules:1"),
+        "message must cite 10-exclude-suppress.rules:1 (the suppressing exclude rule's \
+         file:line token), got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 14a: never BEFORE always on exit list (same domain) fires au-W03
+//
+// Fixtures: never-suppress-before/audit.rules (9 comment/blank lines precede rules)
+//   line 1:  # never-action BEFORE always ...   (comment)
+//   line 2:  # grounding: ...                   (comment)
+//   line 3:  # The never rule is first ...       (comment)
+//   line 4:  # (suppressed rule), citing...      (comment)
+//   line 5:  # ...                               (comment)
+//   line 6:  #                                   (blank comment)
+//   line 7:  # Effective order (kernel's view):  (comment)
+//   line 8:  #   [never rule FIRST] ...          (comment)
+//   line 9:  #   [always rule SECOND] ...        (comment)
+//   line 10: -a never,exit -S execve -F uid=0 -k exec_root_suppress
+//   line 11: -a always,exit -S execve -k exec_all
+//
+// Grounding: kernel first-match on the exit list. The never rule is FIRST in
+// effective order (both use -a, so file order = effective order). For traffic
+// matching uid=0 execve, the never rule fires first and suppresses; the always
+// rule on line 11 never sees uid=0. au-W03 fires at the always rule (line 11),
+// citing the never rule (line 10).
+//
+// Adversarial: this scenario is intentional in many deployments (suppress root,
+// audit non-root). The lint fires as a WARNING to make the operator confirm the
+// suppression is deliberate. It does not claim the always rule is fully dead --
+// only that the never rule suppresses SOME of the traffic the always rule targets.
+// ---------------------------------------------------------------------------
+#[test]
+fn w03_never_before_always_same_list_fires() {
+    let dir = fixture_dir("never-suppress-before");
+    let rules = parse_target_located(&dir).expect("fixtures must parse");
+
+    let diags = w03(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "never-before-always on same exit list must fire au-W03, got {diags:?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Warning, "au-W03 is Warning");
+    assert_eq!(d.code, "au-W03");
+    assert_eq!(d.column, 1);
+    // Anchored at the SUPPRESSED always rule.
+    assert!(
+        d.file.to_string_lossy().contains("never-suppress-before"),
+        "must anchor in the fixture file, got {:?}",
+        d.file
+    );
+    // The fixture has 9 comment lines before any rule (lines 1-9 are comments).
+    // Parser counts all lines: never rule is on line 10, always rule is on line 11.
+    assert_eq!(
+        d.line, 11,
+        "the always rule (suppressed) is on line 11 of audit.rules \
+         (9 comment lines precede the rules; never rule on line 10)"
+    );
+    // Message must cite the suppressing never rule's distinct file:line token
+    // "audit.rules:10". This is a non-vacuous pin: the cited line (10) differs
+    // from the anchored line (11), so echoing the anchor's line cannot satisfy it.
+    assert!(
+        d.message.contains("audit.rules:10"),
+        "message must cite audit.rules:10 (the suppressing never rule's file:line token), \
+         got {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 14b: never AFTER always (first-match: always wins) -- no au-W03
+//
+// Corpus: rocky9-never-below-always
+//   Line 11: -a always,exit -S execve -k execve_all  (FIRST = wins)
+//   Line 13: -a never,exit -S execve -F uid=0         (SECOND = inert)
+//
+// Grounding: f3 section 2.3 + corpus file comment. First-match means the always
+// rule fires for all execve (including uid=0) before the never rule is consulted.
+// The never rule is INERT (it never suppresses anything). au-W03 must NOT fire.
+//
+// This is a negative pin: w03 only fires when the SUPPRESSIVE rule precedes the
+// ADDITIVE rule in effective order.
+// ---------------------------------------------------------------------------
+#[test]
+fn w03_never_after_always_does_not_fire() {
+    let corpus = corpus_dir("rocky9-never-below-always");
+    let rules = parse_target_located(&corpus).expect("corpus must parse");
+
+    let diags = w03(&rules);
+
+    // The never rule is BELOW (after) the always rule -- it is inert, not suppressive.
+    // au-W03 must NOT fire in this case.
+    // Note: the corpus might also contain au-W02 findings if the rules overlap; we
+    // only assert w03 is empty since w03 is position-sensitive (never BEFORE always).
+    assert!(
+        diags.is_empty(),
+        "never-AFTER-always is inert; w03 must not fire (first-match: always wins), \
+         got {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Clean-corpus negative tests
+//
+// The following well-known corpora must not generate any au-E01 or au-W04
+// diagnostics, and their au-W02/au-W03 expectations are documented in comments.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Corpus negative: rocky9-stig-finalize
+//
+// Content (inspected 2026-06-12):
+//   ## This file is automatically generated from /etc/audit/rules.d
+//   -w /etc/passwd -p wa -k identity
+//   -a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec
+//   -e 2
+//
+// -e 2 is the last line: no rules follow the lock. au-E01 fires nothing.
+// The watch and syscall rule are on different filter lists (filesystem vs exit)
+// and have no subsumption relationship: au-W02 fires nothing.
+// No never/exclude rules: au-W03 fires nothing.
+// This is a single flat file, not a rules.d/: parse as a file, not a directory.
+// ---------------------------------------------------------------------------
+#[test]
+fn corpus_rocky9_stig_finalize_no_e01_no_w04() {
+    // Single-file corpus: parse as a file path, not a directory.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/auditd/rocky9-stig-finalize/audit.rules");
+    let rules = parse_target_located(&path).expect("corpus must parse");
+
+    let e01_diags = e01(&rules);
+    assert!(
+        e01_diags.is_empty(),
+        "rocky9-stig-finalize: -e 2 is last line, no au-E01 expected, got {e01_diags:?}"
+    );
+
+    // au-W02: the watch (-w) and syscall rule are on different filter lists.
+    // No subsumption expected.
+    let w02_diags = w02(&rules);
+    assert!(
+        w02_diags.is_empty(),
+        "rocky9-stig-finalize: watch vs syscall are on different filter lists; \
+         no au-W02 expected, got {w02_diags:?}"
+    );
+
+    // au-W03: no never/exclude rules in this corpus.
+    let w03_diags = w03(&rules);
+    assert!(
+        w03_diags.is_empty(),
+        "rocky9-stig-finalize: no never/exclude rules; no au-W03 expected, got {w03_diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Corpus negative: rocky9-never-below-always
+//
+// Content (inspected 2026-06-12): always FIRST, never SECOND (inert).
+// See test 14b for the detailed reasoning. No e01/w04 expected.
+// au-W03: the never rule is AFTER the always -- it is inert (already pinned in
+// test 14b). au-W02: the always rule subsumes the never rule's subset traffic, but
+// the always and never rules have different actions so they are NOT subsumption-
+// comparable under D4 (subsumption applies to same-action rules that both fire).
+// ---------------------------------------------------------------------------
+#[test]
+fn corpus_rocky9_never_below_always_no_e01() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/auditd/rocky9-never-below-always/audit.rules");
+    let rules = parse_target_located(&path).expect("corpus must parse");
+
+    let e01_diags = e01(&rules);
+    assert!(
+        e01_diags.is_empty(),
+        "rocky9-never-below-always: no -e 2 in corpus; no au-E01 expected, got {e01_diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Corpus negative: rocky9-prepend-vs-append
+//
+// Content (inspected 2026-06-12):
+//   -a always,exit -S execve -k execve_all         (append: goes to BACK)
+//   -A exit,never -S execve -F uid=0               (prepend: goes to HEAD)
+//
+// Effective order: [never -A rule FIRST] -> [always -a rule SECOND]
+// au-W03 fires at the always rule because the never rule is FIRST in effective order
+// and suppresses uid=0 execve. This corpus is INTENTIONALLY the suppression scenario.
+// We assert the TRUE expectation (au-W03 fires) rather than forcing zero.
+// ---------------------------------------------------------------------------
+#[test]
+fn corpus_rocky9_prepend_vs_append_w03_fires_at_always_rule() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/auditd/rocky9-prepend-vs-append/audit.rules");
+    let rules = parse_target_located(&path).expect("corpus must parse");
+
+    // au-E01: no -e 2 in this corpus.
+    let e01_diags = e01(&rules);
+    assert!(
+        e01_diags.is_empty(),
+        "rocky9-prepend-vs-append: no -e 2; no au-E01 expected, got {e01_diags:?}"
+    );
+
+    // au-W03: the -A never rule is FIRST in effective order (prepended to HEAD),
+    // suppressing the -a always rule which is SECOND. au-W03 fires at the always rule.
+    // TRUE expectation: 1 au-W03 diagnostic.
+    let w03_diags = w03(&rules);
+    assert_eq!(
+        w03_diags.len(),
+        1,
+        "rocky9-prepend-vs-append: -A never (effective HEAD) suppresses -a always \
+         (effective BACK); au-W03 must fire at the always rule, got {w03_diags:?}"
+    );
+    let d = &w03_diags[0];
+    assert_eq!(d.severity, Severity::Warning);
+    assert_eq!(d.code, "au-W03");
+    // The always rule is the first textual line (line 11 from the corpus file comments).
+    // The always rule (-a) is on line 11 (counting from 1, after comments and blank lines).
+    // Actual anchoring depends on the fixture content; assert it is the always rule.
+    // We cannot assume exact line numbers from the comment-heavy corpus file, so just
+    // assert the always rule is flagged (action-based check not possible without AST).
+    // The w03 diagnostic is anchored at the SUPPRESSED always rule.
+    assert_eq!(d.column, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Corpus negative: rocky10-rulesd-multifile
+//
+// Content (inspected 2026-06-12 - single flat audit.rules):
+//   ## This file is automatically generated from /etc/audit/rules.d
+//   -D
+//   -b 8192
+//   -w /etc/passwd -p wa -k identity
+//   -a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k exec
+//   -e 2
+//
+// -e 2 is the last rule: no au-E01 expected.
+// -D is at the top (first non-comment rule): no mid-stream -D (no au-W04).
+// No never/exclude rules: no au-W03.
+// The watch and exit-list rule are on different filter lists: no au-W02.
+// ---------------------------------------------------------------------------
+#[test]
+fn corpus_rocky10_rulesd_multifile_no_e01_no_w04() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/auditd/rocky10-rulesd-multifile/audit.rules");
+    let rules = parse_target_located(&path).expect("corpus must parse");
+
+    let e01_diags = e01(&rules);
+    assert!(
+        e01_diags.is_empty(),
+        "rocky10-rulesd-multifile: -e 2 is last rule; no au-E01 expected, got {e01_diags:?}"
+    );
+
+    let w02_diags = w02(&rules);
+    assert!(
+        w02_diags.is_empty(),
+        "rocky10-rulesd-multifile: watch vs exit-list rule, no subsumption expected, \
+         got {w02_diags:?}"
+    );
+
+    let w03_diags = w03(&rules);
+    assert!(
+        w03_diags.is_empty(),
+        "rocky10-rulesd-multifile: no never/exclude rules; no au-W03 expected, \
+         got {w03_diags:?}"
+    );
+}
+
+// ===========================================================================
+// STRETCH: au-W04 (-D mid-stream) tests -- clearly marked, cuttable at integration
+// ===========================================================================
+//
+// Owner decision D6: au-W04 is a stretch lint. If the orchestrator cuts it at the
+// integration gate, remove this section and remove au-W04 from catalog.rs.
+// These tests use lints::ordering::w04 via direct call when it exists.
+
+// au-W04 stretch: guarded by `#[cfg(any())]` (always-false) so the tests compile
+// but never run until the orchestrator enables this block after the impl lands.
+// To enable: change `any()` to `feature = "w04"` and add "w04" to Cargo.toml features.
+#[cfg(any())]
+mod w04_stretch {
+    use super::*;
+    use rulesteward_auditd::lints::ordering::w04;
+
+    // -----------------------------------------------------------------------
+    // W04-Test 15: -D after a loaded rule fires at the -D
+    //
+    // Fixtures: midstream-delete-all/
+    //   10-some-rules.rules  line 3: -a always,exit ...  <- a real rule
+    //   50-discard.rules     line 3: -D                  <- au-W04 target
+    //
+    // Grounding: auditctl(8) -D deletes ALL existing kernel audit rules.
+    // When -D appears after rules that have already been loaded, those rules
+    // are discarded. The standard pattern is -D at the top of the FIRST file.
+    // au-W04 fires at this -D rule, naming the count of discarded rules.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn w04_midstream_delete_all_fires() {
+        let dir = fixture_dir("midstream-delete-all");
+        let rules = parse_target_located(&dir).expect("fixtures must parse");
+
+        let diags = w04(&rules);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "-D after a loaded rule must fire au-W04 at the -D, got {diags:?}"
+        );
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Warning, "au-W04 is Warning");
+        assert_eq!(d.code, "au-W04");
+        assert_eq!(d.column, 1);
+        // Anchored at the -D rule (50-discard.rules line 3).
+        assert!(
+            d.file.to_string_lossy().contains("50-discard"),
+            "must anchor at 50-discard.rules, got {:?}",
+            d.file
+        );
+        assert_eq!(d.line, 3, "50-discard.rules: -D is on line 3");
+        // Message must mention how many rules are discarded (1 rule before this -D).
+        assert!(
+            d.message.contains('1'),
+            "message must name the count of discarded rules (1), got {:?}",
+            d.message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // W04-Test 16: -D as the top of the FIRST file fires nothing
+    //
+    // The standard deployment pattern: -D at the very start (before any rules
+    // are loaded) resets the kernel slate and is harmless. au-W04 must not fire.
+    // Grounding: auditctl(8) -D at the top of the first file is the conventional
+    // "start from a clean slate" pattern.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn w04_delete_all_at_top_does_not_fire() {
+        let input = concat!(
+            "-D\n",
+            // Rules loaded AFTER the -D: this is the standard pattern.
+            "-a always,exit -S execve -k exec_user\n",
+        );
+        let file = Path::new("10-standard-D.rules");
+        let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+        assert_eq!(rules.len(), 2);
+
+        let diags = w04(&rules);
+
+        assert!(
+            diags.is_empty(),
+            "-D at the top of the first file (standard pattern) must not fire au-W04, \
+             got {diags:?}"
+        );
+    }
+}

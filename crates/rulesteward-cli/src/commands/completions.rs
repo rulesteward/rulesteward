@@ -157,7 +157,25 @@ fn positional_value_names(cmd: &clap::Command) -> Vec<String> {
 /// and conflicting `n/<word>/` rules (in tcsh's flat model the later duplicate
 /// shadows the real one). The single consolidated `n/help/(...)/` rule is added
 /// by the caller instead.
+///
+/// Two DISTINCT subcommands sharing a name (`fapolicyd lint` and `auditd lint`)
+/// would also emit shadowing duplicates, so same-word lists are merged into one
+/// `n/<word>/(union)/` rule - the same flat-model approximation the
+/// consolidated `n/help/` rule uses (tcsh cannot disambiguate the parent).
 fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
+    let mut lists: Vec<(String, Vec<String>)> = Vec::new();
+    collect_next_word_lists(cmd, &mut lists);
+    for (name, list) in lists {
+        if !list.is_empty() {
+            rules.push(format!("'n/{name}/({})/'", list.join(" ")));
+        }
+    }
+}
+
+/// The depth-first walk behind [`collect_next_word_rules`]: accumulates each
+/// word's completion list, unioning the lists of same-named subcommands in
+/// first-seen order (deterministic, byte-stable output).
+fn collect_next_word_lists(cmd: &clap::Command, acc: &mut Vec<(String, Vec<String>)>) {
     for sub in cmd.get_subcommands().filter(|sc| !sc.is_hide_set()) {
         if sub.get_name() == "help" {
             continue;
@@ -167,12 +185,18 @@ fn collect_next_word_rules(cmd: &clap::Command, rules: &mut Vec<String>) {
         // A leaf command with a positional value-enum (e.g. `completions <shell>`)
         // completes from its value set, mirroring the bash/zsh backends.
         list.extend(positional_value_names(sub));
-        if !list.is_empty() {
-            rules.push(format!("'n/{}/({})/'", sub.get_name(), list.join(" ")));
+        if let Some((_, existing)) = acc.iter_mut().find(|(n, _)| n == sub.get_name()) {
+            for item in list {
+                if !existing.contains(&item) {
+                    existing.push(item);
+                }
+            }
+        } else {
+            acc.push((sub.get_name().to_owned(), list));
         }
         // Recurse so e.g. `fapolicyd`'s child `lint` also gets its own
         // `n/lint/(--format --file ...)/` rule.
-        collect_next_word_rules(sub, rules);
+        collect_next_word_lists(sub, acc);
     }
 }
 

@@ -300,6 +300,13 @@ pub struct MigrateArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+
+    /// Also write a standalone markdown migration report (audit trail of every
+    /// rewrite, the file moved, rules unchanged, and the resulting layout) to
+    /// this path. Opt-in (#212): without the flag no report is written. Works
+    /// in both dry-run and --apply modes; a dry-run report documents the PLAN.
+    #[arg(long, value_name = "PATH")]
+    pub report: Option<PathBuf>,
 }
 
 /// Arguments for `rulesteward fapolicyd simulate` (spec §6.1).
@@ -613,6 +620,34 @@ pub enum AuditdCommand {
     /// Cost assumes ingest-based SIEM pricing (USD per decimal GB via
     /// `--price-per-gb`, default $5.00), not Splunk-style workload/compute pricing.
     Cost(CostArgs),
+
+    /// Semantic ruleset lint (#193)
+    ///
+    /// Statically analyzes an audit ruleset for semantic problems no load-time
+    /// check reports: duplicate rules across rules.d/ files (au-W01), rules
+    /// shadowed by an earlier broader rule (au-W02), rules unreachable after
+    /// the `-e 2` lock line (au-E01), exclude/never rules suppressing events an
+    /// always rule intends to record (au-W03), and comparison operators that
+    /// are invalid for a field's type and would make auditctl reject the rule
+    /// (au-E02).
+    ///
+    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
+    /// 2 errors, 3 tool failure, 5 unparseable rules (au-F01).
+    Lint(AuditdLintArgs),
+}
+
+/// Arguments for `rulesteward auditd lint` (#193, session 6a).
+#[derive(Debug, Parser)]
+pub struct AuditdLintArgs {
+    /// The audit rules to lint: a rules.d/ directory (analyzed in augenrules
+    /// load order) or a single .rules file (defaults to /etc/audit/rules.d/)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Output format (human | json; SARIF and CSV are not offered for this
+    /// verb per the locked output contracts CC-3/CC-4).
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
 }
 
 #[derive(Debug, Parser)]
@@ -662,6 +697,109 @@ mod tests {
             );
         } else {
             panic!("expected Fapolicyd(Lint(_))");
+        }
+    }
+
+    // --- session 6a Phase 0: auditd lint (#193) + migrate --report (#212) ---
+
+    /// `auditd lint` with no args: path defaults to None (the command substitutes
+    /// /etc/audit/rules.d/), format defaults to human.
+    #[test]
+    fn auditd_lint_parses_with_defaults() {
+        let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint"]);
+        assert!(cli.is_ok(), "bare `auditd lint` must parse, got: {cli:?}");
+        if let Ok(Cli {
+            command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+        }) = cli
+        {
+            assert!(args.path.is_none(), "positional path must default to None");
+            assert!(
+                matches!(args.format, HumanJsonFormat::Human),
+                "format must default to human"
+            );
+        } else {
+            panic!("expected Auditd(Lint(_))");
+        }
+    }
+
+    /// `auditd lint <PATH> --format json`: positional path + the json format.
+    /// human|json ONLY by type (locked CC-4: SARIF is fapolicyd-lint-only;
+    /// CC-3: lint is not a flat-row verb, no CSV).
+    #[test]
+    fn auditd_lint_parses_path_and_json_format() {
+        let cli = Cli::try_parse_from([
+            "rulesteward",
+            "auditd",
+            "lint",
+            "/etc/audit/rules.d",
+            "--format",
+            "json",
+        ]);
+        assert!(cli.is_ok(), "got: {cli:?}");
+        if let Ok(Cli {
+            command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+        }) = cli
+        {
+            assert_eq!(
+                args.path.as_deref(),
+                Some(std::path::Path::new("/etc/audit/rules.d"))
+            );
+            assert!(matches!(args.format, HumanJsonFormat::Json));
+        } else {
+            panic!("expected Auditd(Lint(_))");
+        }
+    }
+
+    /// `auditd lint --format sarif` must be REJECTED by the value enum (CC-4).
+    #[test]
+    fn auditd_lint_rejects_sarif_format() {
+        let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--format", "sarif"]);
+        assert!(cli.is_err(), "sarif must not be a valid auditd lint format");
+    }
+
+    /// `fapolicyd migrate --report <PATH>` (#212, owner decision D1): opt-in
+    /// report artifact path; absent by default (read-only-by-default).
+    #[test]
+    fn migrate_report_flag_parses_and_defaults_to_none() {
+        let base = [
+            "rulesteward",
+            "fapolicyd",
+            "migrate",
+            "--from",
+            "rhel8",
+            "--to",
+            "rhel9",
+            "--rules-dir",
+            "/etc/fapolicyd",
+        ];
+        let cli = Cli::try_parse_from(base);
+        assert!(cli.is_ok(), "got: {cli:?}");
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Migrate(args)),
+        }) = cli
+        {
+            assert!(args.report.is_none(), "--report must default to None");
+        } else {
+            panic!("expected Fapolicyd(Migrate(_))");
+        }
+
+        let with_report = Cli::try_parse_from(
+            base.iter()
+                .copied()
+                .chain(["--report", "/tmp/migration-report.md"]),
+        );
+        assert!(with_report.is_ok(), "got: {with_report:?}");
+        if let Ok(Cli {
+            command: TopCommand::Fapolicyd(FapolicydCommand::Migrate(args)),
+        }) = with_report
+        {
+            assert_eq!(
+                args.report.as_deref(),
+                Some(std::path::Path::new("/tmp/migration-report.md")),
+                "--report value must round-trip"
+            );
+        } else {
+            panic!("expected Fapolicyd(Migrate(_))");
         }
     }
 

@@ -7,14 +7,18 @@ pub mod ast;
 pub mod bands;
 pub mod cost;
 pub mod from_log;
+pub mod lints;
 pub mod parser;
 
 // Re-export the primary public surface for convenience.
 pub use ast::{
     Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
-    FilterList, PermBits,
+    FilterList, LocatedRule, PermBits,
 };
 pub use bands::{Direction, RateBand, VolumeTier};
 pub use cost::{CostBand, LogFormat};
 pub use from_log::{LogReadError, MeasuredRates};
-pub use parser::{ParseError, parse_rules_file, parse_rules_str, parse_target};
+pub use parser::{
+    LocatedParseError, ParseError, parse_rules_file, parse_rules_file_located, parse_rules_str,
+    parse_rules_str_located, parse_target, parse_target_located, rules_files_in_load_order,
+};

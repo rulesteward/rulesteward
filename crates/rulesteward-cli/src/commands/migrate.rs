@@ -15,14 +15,17 @@
 //! would drop comments, so re-emitting from the parsed AST is deliberately NOT
 //! used; the parser is used only to VALIDATE the legacy file before migrating.
 
+use std::io::ErrorKind;
 use std::path::Path;
 
-use rulesteward_fapolicyd::{Entry, directory_has_rules_files, parse_rules_file};
+use rulesteward_fapolicyd::{directory_has_rules_files, parse_rules_file};
 use serde::Serialize;
 
 use crate::cli::{HumanJsonFormat, MigrateArgs, TargetVersionArg};
 use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+
 use crate::output::json::render_envelope;
+use std::process::Command as ProcessCommand;
 
 /// Schema version for the `migrate` kind. Bumps only on a breaking payload change.
 const MIGRATE_SCHEMA_VERSION: u32 = 1;
@@ -72,6 +75,18 @@ enum Layout {
     Both,
 }
 
+/// Outcome of the post-apply `fagenrules --check` verification (#211).
+///
+/// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
+/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent on the
+/// host: the check degrades gracefully and the exit code stays clean).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FagenrulesCheck {
+    status: &'static str,
+    detail: String,
+}
+
 /// Everything needed to render the migration outcome (human or JSON).
 ///
 /// A flat report DTO serialized straight to the JSON envelope. The bools are
@@ -80,7 +95,7 @@ enum Layout {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MigratePlan {
+pub(crate) struct MigratePlan {
     from: &'static str,
     to: &'static str,
     rules_dir: String,
@@ -100,6 +115,10 @@ struct MigratePlan {
     applied: bool,
     /// True when the legacy file was removed from disk.
     legacy_deleted: bool,
+    /// Post-apply `fagenrules --check` outcome (#211). `None` when the check
+    /// did not run (dry-run, no-work layouts, or pre-#211 behavior). Additive
+    /// optional field: `schemaVersion` stays 1 per CC-2 (breaking-only).
+    fagenrules_check: Option<FagenrulesCheck>,
 }
 
 /// Map a `--from`/`--to` value to its display string.
@@ -118,6 +137,379 @@ fn version_rank(v: TargetVersionArg) -> u8 {
         TargetVersionArg::Rhel9 => 9,
         TargetVersionArg::Rhel10 => 10,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Probe abstraction (#211 Lane B skeleton, session 6a)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a `fagenrules`-family check invocation.
+///
+/// `success` mirrors the process exit code (0 = rules compile / are current;
+/// non-zero = failed). `detail` carries stderr or a human note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckOutcome {
+    pub(crate) success: bool,
+    pub(crate) detail: String,
+}
+
+/// Dependency-injection seam for the post-apply rules-file verification (#211).
+///
+/// `Ok(None)` means the verification binary is absent on this host: the caller
+/// degrades gracefully (`fagenrulesCheck.status` = `"unavailable"`, exit 0).
+/// `Ok(Some(outcome))` carries the result. `Err(msg)` is an unexpected spawn
+/// error (treated as `"unavailable"` with the error in `detail`, exit 0).
+///
+/// NOTE: `rules_dir` is the fapolicyd config root (the parent of `rules.d/`),
+/// not `rules.d/` itself. [`LiveMigrateProbe`] threads it through
+/// `fapolicyd-cli --check-rules`.
+pub(crate) trait MigrateProbe {
+    fn fagenrules_check(&self, rules_dir: &Path) -> Result<Option<CheckOutcome>, String>;
+}
+
+/// Live implementation that shells out to `fapolicyd-cli --check-rules`.
+///
+/// Wired into the CLI dispatch (`commands/fapolicyd/mod.rs`) via
+/// `run_with_probe`; the `run()` entry stays probe-free so its unit tests never
+/// shell out. Excluded from the mutation gate via `mutants.toml` `exclude_re`
+/// (it does real process I/O). Only reached after a successful `--apply`.
+pub(crate) struct LiveMigrateProbe;
+
+/// RAII guard: removes the file at the given path when dropped (best-effort).
+struct TmpGuard(std::path::PathBuf);
+impl Drop for TmpGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+impl MigrateProbe for LiveMigrateProbe {
+    fn fagenrules_check(&self, rules_dir: &Path) -> Result<Option<CheckOutcome>, String> {
+        // Assemble rules.d/*.rules in lexical filename order into a temp file,
+        // then run `fapolicyd-cli --check-rules <tmpfile>`.
+        //
+        // Exit 0 -> passed. Non-zero -> failed with stderr detail.
+        // ErrorKind::NotFound -> Ok(None) (binary absent, graceful degrade).
+        // Other spawn errors -> Err(message).
+        let rules_d = rules_dir.join(MODERN_DIR);
+
+        // Collect and sort rule files by filename (lexical order, per fagenrules
+        // semantics; dotfiles excluded by directory_has_rules_files convention).
+        let mut rule_files: Vec<std::path::PathBuf> = match std::fs::read_dir(&rules_d) {
+            Ok(rd) => rd
+                .filter_map(std::result::Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().and_then(|s| s.to_str()) == Some("rules")
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| !n.starts_with('.'))
+                })
+                .collect(),
+            Err(e) => return Err(format!("could not read {}: {e}", rules_d.display())),
+        };
+        rule_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        // Concatenate rules into a temp file.
+        // Use a uniquely-named file in the system temp dir (no dev-dep required).
+        let tmp_path = std::env::temp_dir().join(format!(
+            "rulesteward-migrate-check-{}.rules",
+            std::process::id()
+        ));
+        let mut combined = String::new();
+        for path in &rule_files {
+            match std::fs::read_to_string(path) {
+                Ok(content) => combined.push_str(&content),
+                Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+            }
+        }
+        if let Err(e) = std::fs::write(&tmp_path, &combined) {
+            return Err(format!("could not write temp rules file: {e}"));
+        }
+        // Ensure the temp file is removed when we're done (best-effort).
+        let _tmp_guard = TmpGuard(tmp_path.clone());
+
+        // Spawn fapolicyd-cli --check-rules <tmpfile>.
+        let output = match ProcessCommand::new("fapolicyd-cli")
+            .arg("--check-rules")
+            .arg(&tmp_path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("spawning fapolicyd-cli failed: {e}")),
+        };
+
+        let success = output.status.success();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let detail = if stderr.trim().is_empty() {
+            stdout
+        } else if stdout.trim().is_empty() {
+            stderr
+        } else {
+            format!("{stdout}{stderr}")
+        };
+
+        Ok(Some(CheckOutcome {
+            success,
+            detail: detail.trim_end().to_string(),
+        }))
+    }
+}
+
+/// Production entry point for the CLI dispatch (`commands/fapolicyd/mod.rs`).
+///
+/// Calls the probe after a successful apply (#211), emits stdout in the
+/// requested format, and writes a markdown report when `args.report` is
+/// set (#212). The report write happens after apply; if it fails the
+/// migration stays applied and the function returns `EXIT_TOOL_FAILURE`.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn run_with_probe(args: MigrateArgs, probe: &dyn MigrateProbe) -> anyhow::Result<i32> {
+    let format = args.format;
+    let (code, plan) = run_with_probe_to_plan(args, probe)?;
+    emit(&plan, format);
+    Ok(code)
+}
+
+/// Internal orchestration shared by `run_with_probe` and tests.
+///
+/// Runs the full migration logic, calls the probe after a successful apply
+/// (#211), and returns the final plan for rendering / report writing.
+///
+/// The function mirrors `run()` logic; `too_many_lines` is expected.
+#[allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::unnecessary_wraps
+)]
+pub(crate) fn run_with_probe_to_plan(
+    args: MigrateArgs,
+    probe: &dyn MigrateProbe,
+) -> anyhow::Result<(i32, MigratePlan)> {
+    let from = version_str(args.from);
+    let to = version_str(args.to);
+    if version_rank(args.from) > version_rank(args.to) {
+        eprintln!(
+            "error: --from {from} is newer than --to {to}; migrate does not downgrade rulesets"
+        );
+        let plan = MigratePlan {
+            from,
+            to,
+            rules_dir: args.rules_dir.display().to_string(),
+            layout: "error",
+            coexistence_trap: false,
+            legacy_file: None,
+            target_file: None,
+            rules_migrated: 0,
+            transformations: Vec::new(),
+            dry_run: !args.apply,
+            delete_legacy: args.delete_legacy,
+            applied: false,
+            legacy_deleted: false,
+            fagenrules_check: None,
+        };
+        return Ok((EXIT_TOOL_FAILURE, plan));
+    }
+    let rules_dir = args.rules_dir.display().to_string();
+    let dry_run = !args.apply;
+    let layout = detect_layout(&args.rules_dir);
+    let no_work_plan = |layout_str: &'static str| MigratePlan {
+        from,
+        to,
+        rules_dir: rules_dir.clone(),
+        layout: layout_str,
+        coexistence_trap: false,
+        legacy_file: None,
+        target_file: None,
+        rules_migrated: 0,
+        transformations: Vec::new(),
+        dry_run,
+        delete_legacy: args.delete_legacy,
+        applied: false,
+        legacy_deleted: false,
+        fagenrules_check: None,
+    };
+    match layout {
+        Layout::Neither => return Ok((EXIT_CLEAN, no_work_plan("nothing-to-migrate"))),
+        Layout::ModernOnly => return Ok((EXIT_CLEAN, no_work_plan("already-modern"))),
+        Layout::Both if !args.delete_legacy => {
+            eprintln!(
+                "error: coexistence trap: both {LEGACY_FILE} and rules.d/*.rules exist in {rules_dir}.\n\
+                 fapolicyd refuses to start with both present. Re-run with --delete-legacy to migrate\n\
+                 the legacy file into rules.d/{TARGET_FILE} and remove it."
+            );
+            return Ok((EXIT_ERRORS, no_work_plan("coexistence-trap-blocked")));
+        }
+        Layout::LegacyOnly | Layout::Both => {}
+    }
+    let legacy_path = args.rules_dir.join(LEGACY_FILE);
+    let Ok(legacy) = std::fs::read_to_string(&legacy_path) else {
+        return Ok((EXIT_TOOL_FAILURE, no_work_plan("read-error")));
+    };
+    if parse_rules_file(&legacy, &legacy_path).is_err() {
+        return Ok((EXIT_RULE_PARSE_ERROR, no_work_plan("parse-error")));
+    }
+    let entries = parse_rules_file(&legacy, &legacy_path).unwrap_or_default();
+    let rules_migrated = entries
+        .iter()
+        .filter(|e| matches!(e, rulesteward_fapolicyd::Entry::Rule(_)))
+        .count();
+    let migration = compute_migration(&legacy);
+    let target_path = args.rules_dir.join(MODERN_DIR).join(TARGET_FILE);
+    let coexistence_trap = layout == Layout::Both;
+    let mut applied = false;
+    let mut legacy_deleted = false;
+    if args.apply {
+        let rules_d = args.rules_dir.join(MODERN_DIR);
+        if std::fs::create_dir_all(&rules_d).is_err() {
+            return Ok((EXIT_TOOL_FAILURE, no_work_plan("mkdir-error")));
+        }
+        if std::fs::write(&target_path, &migration.content).is_err() {
+            return Ok((EXIT_TOOL_FAILURE, no_work_plan("write-error")));
+        }
+        applied = true;
+        if std::fs::remove_file(&legacy_path).is_err() {
+            return Ok((EXIT_TOOL_FAILURE, no_work_plan("remove-error")));
+        }
+        legacy_deleted = true;
+    }
+
+    // #211: after a successful apply, run the post-apply rules verification.
+    // The probe is invoked ONLY when the migration was applied: dry-run and the
+    // no-work layouts never reach here with `applied == true`, so a dry-run
+    // never shells out (the call-counting `FakeMigrateProbe` pins this).
+    let mut exit_code = EXIT_CLEAN;
+    let fagenrules_check = if applied {
+        match probe.fagenrules_check(&args.rules_dir) {
+            Ok(Some(outcome)) => {
+                let status = if outcome.success { "passed" } else { "failed" };
+                if !outcome.success {
+                    // D7: verification ran and FAILED -> exit 2. The migration
+                    // still stands (the files were already moved above).
+                    exit_code = EXIT_ERRORS;
+                }
+                Some(FagenrulesCheck {
+                    status,
+                    detail: outcome.detail,
+                })
+            }
+            // Binary absent: degrade gracefully, exit stays clean.
+            Ok(None) => Some(FagenrulesCheck {
+                status: "unavailable",
+                detail: "fapolicyd-cli not found; post-apply verification skipped".to_string(),
+            }),
+            // A spawn error is indistinguishable from "absent" to the operator.
+            Err(msg) => Some(FagenrulesCheck {
+                status: "unavailable",
+                detail: msg,
+            }),
+        }
+    } else {
+        None
+    };
+
+    let plan = MigratePlan {
+        from,
+        to,
+        rules_dir,
+        layout: if coexistence_trap {
+            "coexistence-trap"
+        } else {
+            "legacy-only"
+        },
+        coexistence_trap,
+        legacy_file: Some(legacy_path.display().to_string()),
+        target_file: Some(target_path.display().to_string()),
+        rules_migrated,
+        transformations: migration.transformations,
+        dry_run,
+        delete_legacy: args.delete_legacy,
+        applied,
+        legacy_deleted,
+        fagenrules_check,
+    };
+
+    // #212: write a standalone Markdown report when --report is set. The write
+    // happens AFTER the apply + verification, so a write failure leaves the
+    // migration applied and is surfaced as a tool failure (exit 3). Works in
+    // both dry-run and apply (D1).
+    //
+    // A report-write failure must NOT mask a substantive ruleset error: if the
+    // verification already FAILED (exit 2, D7), that is the operator-actionable
+    // result and wins over an incidental missing-sidecar tool fault. So the
+    // report-write failure only downgrades an otherwise-clean run to exit 3.
+    if let Some(report_path) = args.report.as_ref()
+        && std::fs::write(report_path, render_markdown_report(&plan)).is_err()
+        && exit_code == EXIT_CLEAN
+    {
+        exit_code = EXIT_TOOL_FAILURE;
+    }
+
+    Ok((exit_code, plan))
+}
+
+/// Render the migration plan as a standalone Markdown report (#212).
+///
+/// Includes the migration version pair, the legacy -> target move, a per-rewrite
+/// table (1-based line number, before, after), the rewritten/unchanged counts,
+/// the resulting layout, and -- only when the post-apply verification ran -- a
+/// fagenrules section. Deliberately carries NO timestamp (owner decision D1) so
+/// the report is reproducible and diff-stable.
+pub(crate) fn render_markdown_report(plan: &MigratePlan) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    let mode = if plan.dry_run {
+        "dry-run plan"
+    } else {
+        "applied"
+    };
+
+    let _ = writeln!(s, "# fapolicyd rule migration report ({mode})");
+    let _ = writeln!(s);
+    let _ = writeln!(s, "- Migration: {} -> {}", plan.from, plan.to);
+    let _ = writeln!(s, "- Config directory: {}", plan.rules_dir);
+    let _ = writeln!(s, "- Resulting layout: {}", plan.layout);
+    let _ = writeln!(s);
+
+    let _ = writeln!(s, "## Files");
+    if let (Some(legacy), Some(target)) = (&plan.legacy_file, &plan.target_file) {
+        let verb = if plan.legacy_deleted {
+            "Moved"
+        } else {
+            "Would move"
+        };
+        let _ = writeln!(s, "{verb} `{legacy}` -> `{target}`");
+    }
+    let _ = writeln!(s);
+
+    let rewritten = plan.transformations.len();
+    let unchanged = plan.rules_migrated.saturating_sub(rewritten);
+    let _ = writeln!(s, "## Rewrites");
+    if plan.transformations.is_empty() {
+        let _ = writeln!(s, "No attribute rewrites were needed.");
+    } else {
+        let _ = writeln!(s, "| line | before | after |");
+        let _ = writeln!(s, "|------|--------|-------|");
+        for t in &plan.transformations {
+            let _ = writeln!(s, "| {} | `{}` | `{}` |", t.line, t.before, t.after);
+        }
+    }
+    let _ = writeln!(s);
+    let _ = writeln!(s, "- Rules migrated: {}", plan.rules_migrated);
+    let _ = writeln!(s, "- Rules rewritten: {rewritten}");
+    let _ = writeln!(s, "- Rules unchanged: {unchanged}");
+
+    // #211 verification section: present only when the post-apply check ran.
+    if let Some(check) = &plan.fagenrules_check {
+        let _ = writeln!(s);
+        let _ = writeln!(s, "## Verification (fagenrules --check)");
+        let _ = writeln!(s, "- Status: {}", check.status);
+        if !check.detail.is_empty() {
+            let _ = writeln!(s, "- Detail: {}", check.detail);
+        }
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +645,18 @@ fn render_human(plan: &MigratePlan) -> String {
     if plan.dry_run {
         let _ = writeln!(s, "  Re-run with --apply to write.");
     }
+    // #211: emit verification result when the check ran.
+    if let Some(ref check) = plan.fagenrules_check {
+        let label = match check.status {
+            "passed" => "Verification passed",
+            "failed" => "Verification FAILED",
+            _ => "Verification unavailable (fapolicyd-cli not found; skipped)",
+        };
+        let _ = writeln!(s, "  {label}");
+        if !check.detail.is_empty() && check.status != "unavailable" {
+            let _ = writeln!(s, "    {}", check.detail);
+        }
+    }
     s
 }
 
@@ -264,6 +668,14 @@ fn render_json(plan: &MigratePlan) -> String {
 // Orchestration (I/O on --rules-dir; tempdir-tested)
 // ---------------------------------------------------------------------------
 
+/// Public entry point (used directly in unit tests and by the CLI dispatch).
+///
+/// For the live binary (`rulesteward fapolicyd migrate`), the CLI dispatch in
+/// `commands/fapolicyd/mod.rs` calls `run_with_probe(args, &LiveMigrateProbe)`
+/// which includes the post-apply verification (#211) and report write (#212).
+///
+/// `run()` itself keeps the no-probe path so pre-existing unit tests that call
+/// `run()` directly remain deterministic (they do not shell out to fapolicyd-cli).
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
     let from = version_str(args.from);
@@ -294,6 +706,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         delete_legacy: args.delete_legacy,
         applied: false,
         legacy_deleted: false,
+        fagenrules_check: None,
     };
     match layout {
         Layout::Neither => {
@@ -337,7 +750,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
     };
     let rules_migrated = entries
         .iter()
-        .filter(|e| matches!(e, Entry::Rule(_)))
+        .filter(|e| matches!(e, rulesteward_fapolicyd::Entry::Rule(_)))
         .count();
     let migration = compute_migration(&legacy);
     let target_path = args.rules_dir.join(MODERN_DIR).join(TARGET_FILE);
@@ -357,9 +770,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         }
         applied = true;
         // Move semantics (#187 owner decision): the migration ALWAYS removes the
-        // legacy file on --apply so the end state is a clean modern layout;
-        // leaving it would re-create the coexistence trap migrate exists to
-        // prevent. The Both case already required --delete-legacy to reach here.
+        // legacy file on --apply so the end state is a clean modern layout.
         if let Err(e) = std::fs::remove_file(&legacy_path) {
             eprintln!("error: deleting {}: {e}", legacy_path.display());
             return Ok(EXIT_TOOL_FAILURE);
@@ -385,6 +796,7 @@ pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         delete_legacy: args.delete_legacy,
         applied,
         legacy_deleted,
+        fagenrules_check: None,
     };
     emit(&plan, args.format);
     Ok(EXIT_CLEAN)
@@ -413,6 +825,7 @@ mod tests {
             apply,
             delete_legacy,
             format: HumanJsonFormat::Human,
+            report: None,
         }
     }
 
@@ -446,6 +859,7 @@ mod tests {
             delete_legacy: false,
             applied: false,
             legacy_deleted: false,
+            fagenrules_check: None,
         }
     }
 
@@ -546,6 +960,22 @@ mod tests {
         assert_eq!(v["rulesMigrated"], serde_json::json!(2), "{out}");
         assert!(v.get("rulesDir").is_some(), "rulesDir key present: {out}");
         assert!(v.get("rules_dir").is_none(), "no snake_case keys: {out}");
+    }
+
+    #[test]
+    fn render_json_fagenrules_check_is_additive_null_pre_211() {
+        // Phase-0 freeze (session 6a): the #211 field exists as an ADDITIVE
+        // optional - null until Lane B populates it, schemaVersion stays 1
+        // (CC-2 breaking-only versioning). Pins both the camelCase key and
+        // the no-bump decision.
+        let out = render_json(&sample_plan());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("parse json");
+        assert_eq!(v["schemaVersion"], serde_json::json!(1));
+        assert!(
+            v.get("fagenrulesCheck").is_some(),
+            "fagenrulesCheck key must be present: {out}"
+        );
+        assert_eq!(v["fagenrulesCheck"], serde_json::Value::Null);
     }
 
     #[test]
@@ -734,5 +1164,585 @@ mod tests {
         p.layout = "already-modern";
         let out = render_human(&p);
         assert!(out.to_lowercase().contains("already migrated"), "{out}");
+    }
+
+    // -----------------------------------------------------------------------
+    // FakeMigrateProbe (call-counting test double for #211/#212 tests)
+    // -----------------------------------------------------------------------
+
+    use std::cell::Cell;
+
+    /// Call-counting test double for `MigrateProbe`.
+    ///
+    /// Configured at construction time with a canned return value.  The test
+    /// inspects `call_count()` to verify the probe was (or was not) invoked.
+    #[allow(dead_code)]
+    struct FakeMigrateProbe {
+        result: Result<Option<CheckOutcome>, String>,
+        count: Cell<usize>,
+    }
+
+    impl FakeMigrateProbe {
+        fn success(detail: impl Into<String>) -> Self {
+            Self {
+                result: Ok(Some(CheckOutcome {
+                    success: true,
+                    detail: detail.into(),
+                })),
+                count: Cell::new(0),
+            }
+        }
+
+        fn failure(detail: impl Into<String>) -> Self {
+            Self {
+                result: Ok(Some(CheckOutcome {
+                    success: false,
+                    detail: detail.into(),
+                })),
+                count: Cell::new(0),
+            }
+        }
+
+        fn absent() -> Self {
+            Self {
+                result: Ok(None),
+                count: Cell::new(0),
+            }
+        }
+
+        fn spawn_error(msg: impl Into<String>) -> Self {
+            Self {
+                result: Err(msg.into()),
+                count: Cell::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.count.get()
+        }
+    }
+
+    impl MigrateProbe for FakeMigrateProbe {
+        fn fagenrules_check(&self, _rules_dir: &Path) -> Result<Option<CheckOutcome>, String> {
+            self.count.set(self.count.get() + 1);
+            self.result.clone()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: build apply-mode args pointing at a tempdir with a legacy file
+    // -----------------------------------------------------------------------
+
+    fn setup_legacy_dir() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "fapolicyd.rules", LEGACY_WITH_HASH);
+        d
+    }
+
+    fn apply_args(rules_dir: &Path) -> MigrateArgs {
+        MigrateArgs {
+            from: TargetVersionArg::Rhel8,
+            to: TargetVersionArg::Rhel9,
+            rules_dir: rules_dir.to_path_buf(),
+            apply: true,
+            delete_legacy: false,
+            format: HumanJsonFormat::Json,
+            report: None,
+        }
+    }
+
+    fn dry_run_args(rules_dir: &Path) -> MigrateArgs {
+        MigrateArgs {
+            from: TargetVersionArg::Rhel8,
+            to: TargetVersionArg::Rhel9,
+            rules_dir: rules_dir.to_path_buf(),
+            apply: false,
+            delete_legacy: false,
+            format: HumanJsonFormat::Json,
+            report: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // #211 probe tests (must be RED against the skeleton)
+    // -----------------------------------------------------------------------
+
+    /// Test #211-1: apply + probe success -> plan has `fagenrules_check.status ==
+    /// "passed"`, exit 0.
+    ///
+    /// RED: `run_with_probe_to_plan` skeleton never calls the probe and keeps
+    /// `fagenrules_check: None`, so `unwrap()` on `fagenrules_check` panics and
+    /// the status assertion fails.
+    #[test]
+    fn probe_success_sets_status_passed_and_exits_clean() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::success("Rules are current");
+        let (code, plan) = run_with_probe_to_plan(apply_args(d.path()), &probe).unwrap();
+        assert_eq!(code, EXIT_CLEAN, "probe success must yield exit 0");
+        // RED: probe must be called exactly once on apply.
+        assert_eq!(
+            probe.call_count(),
+            1,
+            "probe must be called exactly once on apply"
+        );
+        // The legacy file must be gone (moved).
+        assert!(
+            !d.path().join("fapolicyd.rules").exists(),
+            "legacy file must be moved on apply"
+        );
+        // RED: fagenrules_check must be Some with status "passed" - not None.
+        let check = plan
+            .fagenrules_check
+            .as_ref()
+            .expect("fagenrules_check must be Some after successful probe call");
+        assert_eq!(
+            check.status, "passed",
+            "probe success must set fagenrules_check.status to 'passed'; got {:?}",
+            check.status
+        );
+    }
+
+    /// Test #211-2: apply + probe failure -> plan has `fagenrules_check.status ==
+    /// "failed"`, exit 2 (D7), and the files were moved.
+    ///
+    /// RED: `run_with_probe_to_plan` skeleton always exits clean and keeps
+    /// `fagenrules_check: None`; both the exit-2 assertion and the status
+    /// assertion fail.
+    #[test]
+    fn probe_failure_exits_two_and_legacy_file_is_gone() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::failure("compiled.rules does not match");
+        let (code, plan) = run_with_probe_to_plan(apply_args(d.path()), &probe).unwrap();
+        // D7: check ran and FAILED -> exit 2 (EXIT_ERRORS).
+        assert_eq!(
+            code, EXIT_ERRORS,
+            "probe failure after apply must yield exit 2 (D7); got {code}"
+        );
+        // D7: the migration WAS applied even though verification failed.
+        assert!(
+            !d.path().join("fapolicyd.rules").exists(),
+            "legacy file must still be moved even when probe fails (D7)"
+        );
+        assert!(
+            d.path().join("rules.d").join("99-migrated.rules").exists(),
+            "target file must exist even when probe fails (D7)"
+        );
+        // RED: fagenrules_check must be Some with status "failed".
+        let check = plan
+            .fagenrules_check
+            .as_ref()
+            .expect("fagenrules_check must be Some after probe returned failure");
+        assert_eq!(
+            check.status, "failed",
+            "probe failure must set fagenrules_check.status to 'failed'; got {:?}",
+            check.status
+        );
+    }
+
+    /// Test #211-3: probe absent (`Ok(None)`) -> status "unavailable", exit 0.
+    ///
+    /// RED: `run_with_probe` skeleton never calls the probe, so `call_count`
+    /// stays at 0 and the `call_count >= 1` assertion fails.
+    /// Note: the exit-code assertion (`EXIT_CLEAN`) IS vacuously green in the
+    /// skeleton because the skeleton always exits clean - this is documented
+    /// as acceptable for the exit-code portion only. The `call_count` + status
+    /// assertions are RED.
+    #[test]
+    fn probe_absent_is_unavailable_and_exits_clean() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::absent();
+        let code = run_with_probe(apply_args(d.path()), &probe).unwrap();
+        assert_eq!(code, EXIT_CLEAN, "absent probe must yield exit 0");
+        // RED: probe must be called (its Ok(None) return drives "unavailable").
+        assert_eq!(
+            probe.call_count(),
+            1,
+            "probe must be called once so we can observe Ok(None) -> unavailable"
+        );
+    }
+
+    /// Test #211-4: dry-run -> probe NOT invoked (`call_count` == 0).
+    ///
+    /// This test is GREEN-BY-VACUITY in the skeleton: the skeleton never calls
+    /// the probe, so the assertion `call_count == 0` passes trivially.
+    /// Documented per the task brief: the only test allowed to be vacuously
+    /// green.
+    #[test]
+    fn dry_run_probe_not_invoked() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::success("should not be called");
+        let code = run_with_probe(dry_run_args(d.path()), &probe).unwrap();
+        assert_eq!(code, EXIT_CLEAN, "dry-run must exit clean");
+        assert_eq!(
+            probe.call_count(),
+            0,
+            "probe must NOT be called in dry-run mode"
+        );
+    }
+
+    /// Test #211-5: probe spawn error (Err) -> treat as "unavailable", exit 0.
+    ///
+    /// RED: `run_with_probe` skeleton never calls the probe, so `call_count`
+    /// stays at 0 and the `call_count >= 1` assertion fails.
+    #[test]
+    fn probe_spawn_error_treated_as_unavailable() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::spawn_error("permission denied spawning binary");
+        let code = run_with_probe(apply_args(d.path()), &probe).unwrap();
+        // A spawn error is indistinguishable from "binary absent" to the caller:
+        // degrade gracefully, exit 0.
+        assert_eq!(
+            code, EXIT_CLEAN,
+            "spawn error must degrade gracefully (exit 0)"
+        );
+        // RED: probe must be called for us to observe the Err return.
+        assert_eq!(
+            probe.call_count(),
+            1,
+            "probe called once even on spawn error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #212 render_markdown_report tests (must be RED against the skeleton)
+    // -----------------------------------------------------------------------
+
+    /// Build a plan suitable for #212 renderer testing: applied=true,
+    /// one sha256hash transformation, known file paths.
+    fn applied_plan_with_rewrite() -> MigratePlan {
+        MigratePlan {
+            from: "rhel8",
+            to: "rhel9",
+            rules_dir: "/etc/fapolicyd".to_string(),
+            layout: "legacy-only",
+            coexistence_trap: false,
+            legacy_file: Some("/etc/fapolicyd/fapolicyd.rules".to_string()),
+            target_file: Some("/etc/fapolicyd/rules.d/99-migrated.rules".to_string()),
+            rules_migrated: 3,
+            transformations: vec![Transformation {
+                line: 2,
+                kind: "sha256hash->filehash",
+                before: "allow perm=execute exe=/usr/bin/cat : sha256hash=abc123".to_string(),
+                after: "allow perm=execute exe=/usr/bin/cat : filehash=abc123".to_string(),
+            }],
+            dry_run: false,
+            delete_legacy: false,
+            applied: true,
+            legacy_deleted: true,
+            fagenrules_check: None,
+        }
+    }
+
+    /// Test #212-6: full-content markdown renderer.
+    ///
+    /// Asserts: 1-based line number present, before/after text present, the
+    /// rules-unchanged count present (3 total - 1 rewritten = 2 unchanged),
+    /// legacy -> target move present, resulting layout section present, no
+    /// timestamp anywhere (D1), and fagenrules section absent when check is None.
+    ///
+    /// RED: `render_markdown_report` panics with `todo!()` in the skeleton.
+    #[test]
+    fn render_markdown_report_full_content() {
+        let plan = applied_plan_with_rewrite();
+        // RED: this panics (todo!) until the implementer provides the body.
+        let md = render_markdown_report(&plan);
+
+        // 1-based line number of the rewrite.
+        assert!(
+            md.contains("line 2") || md.contains("| 2 |") || md.contains("| 2|"),
+            "markdown must contain the 1-based line number of the rewrite: {md}"
+        );
+        // Before/after content.
+        assert!(
+            md.contains("sha256hash=abc123"),
+            "markdown must contain the before-text: {md}"
+        );
+        assert!(
+            md.contains("filehash=abc123"),
+            "markdown must contain the after-text: {md}"
+        );
+        // Rules-unchanged count: 3 total rules, 1 rewritten => 2 unchanged.
+        // Must use an unambiguous substring so a renderer that omits or
+        // miscomputes the unchanged count fails this assertion (not vacuously
+        // green via "line 2" / "| 2 |" etc. which also contain '2').
+        assert!(
+            md.contains("2 unchanged")
+                || md.contains("unchanged: 2")
+                || md.contains("2 rules unchanged"),
+            "markdown must contain an unambiguous unchanged-rules-count phrase (e.g. '2 unchanged'): {md}"
+        );
+        // Moved-file section.
+        assert!(
+            md.contains("fapolicyd.rules"),
+            "markdown must mention the legacy file name: {md}"
+        );
+        assert!(
+            md.contains("99-migrated.rules"),
+            "markdown must mention the target file name: {md}"
+        );
+        // No timestamp: ensure no ISO-8601 date pattern leaks in (D1 compliance).
+        let has_timestamp = md.chars().filter(|c| *c == '-').count() >= 6
+            && (md.contains("2026") || md.contains("2025") || md.contains("T0"));
+        assert!(
+            !has_timestamp,
+            "markdown must NOT contain a timestamp (D1): {md}"
+        );
+        // No fagenrules section when check is None.
+        assert!(
+            !md.to_lowercase().contains("fagenrules"),
+            "fagenrules section must be absent when check is None: {md}"
+        );
+    }
+
+    /// Test #212-7: `render_markdown_report` includes fagenrules section
+    /// only when the check ran.
+    ///
+    #[test]
+    fn render_markdown_report_includes_fagenrules_section_when_check_ran() {
+        let mut plan = applied_plan_with_rewrite();
+        plan.fagenrules_check = Some(FagenrulesCheck {
+            status: "passed",
+            detail: "Rules are current".to_string(),
+        });
+        let md = render_markdown_report(&plan);
+        assert!(
+            md.to_lowercase().contains("fagenrules") || md.to_lowercase().contains("verification"),
+            "fagenrules section must appear when check ran: {md}"
+        );
+        // The status line is present...
+        assert!(md.contains("passed"), "status must appear: {md}");
+        // ...AND the detail line is rendered (it is gated on a non-empty detail,
+        // so this pins that the detail branch actually fires).
+        assert!(
+            md.contains("Rules are current"),
+            "the non-empty check detail must be rendered: {md}"
+        );
+    }
+
+    /// Test #212-8: absent --report -> no report file written anywhere.
+    ///
+    /// This is a behavioral test of the `run_with_probe` + report-write path.
+    /// RED: `run_with_probe` skeleton does not write any report, so the
+    /// "no file written" assertion is vacuously green. However, the test also
+    /// asserts that the report argument is `None` - which is already enforced
+    /// by the args helper. The RED aspect is the coupling: when the implementer
+    /// adds the report-write path, if they fail to gate it on `args.report.is_some()`,
+    /// they would write to a default path and break this test.
+    ///
+    /// Note: the truly RED assertion here is in test #212-9 (unwritable path).
+    /// This test is partially vacuous in the skeleton; we document it as the
+    /// "no-report" contract pin.
+    #[test]
+    fn no_report_flag_writes_no_report_file() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::absent();
+        // apply_args has report: None
+        let code = run_with_probe(apply_args(d.path()), &probe).unwrap();
+        assert_eq!(code, EXIT_CLEAN);
+        // Assert no extra files were written beyond the expected target.
+        let entries: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .collect();
+        // Only rules.d/ subdirectory should exist (legacy file was moved).
+        let non_rules_d: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file_name() != "rules.d")
+            .collect();
+        assert!(
+            non_rules_d.is_empty(),
+            "no extra files outside rules.d/ must be written when --report is absent: {:?}",
+            non_rules_d.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Test #212-9: unwritable --report path -> exit 3 (`EXIT_TOOL_FAILURE`),
+    /// migration still applied.
+    ///
+    /// Owner decision (test-author proposed, pin here): the report write happens
+    /// AFTER the apply; the apply stands even if the report write fails.
+    ///
+    /// RED: `run_with_probe` skeleton ignores `args.report`, so the exit-3
+    /// assertion fails (it exits 0 or 2 from the probe result, never 3 from
+    /// a report-write error).
+    #[test]
+    fn unwritable_report_path_exits_tool_failure_and_migration_applied() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::absent();
+        let bad_report = d.path().join("does_not_exist").join("report.md");
+        let code = run_with_probe(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel8,
+                to: TargetVersionArg::Rhel9,
+                rules_dir: d.path().to_path_buf(),
+                apply: true,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: Some(bad_report),
+            },
+            &probe,
+        )
+        .unwrap();
+        // The --report path is unwritable (parent dir doesn't exist) -> exit 3.
+        assert_eq!(
+            code, EXIT_TOOL_FAILURE,
+            "unwritable report path must yield exit 3 (EXIT_TOOL_FAILURE); got {code}"
+        );
+        // D1 corollary: the migration WAS applied even when report write fails.
+        assert!(
+            !d.path().join("fapolicyd.rules").exists(),
+            "migration must have applied (legacy file moved) before the report-write error"
+        );
+        assert!(
+            d.path().join("rules.d").join("99-migrated.rules").exists(),
+            "target file must exist after apply, even when report write fails"
+        );
+    }
+
+    /// Exit-code precedence: when verification FAILED (exit 2, D7) AND the
+    /// --report write also fails, the substantive ruleset error (exit 2) must
+    /// win -- a missing report sidecar (exit 3) must NOT mask it.
+    #[test]
+    fn probe_failure_with_unwritable_report_keeps_exit_two() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::failure("compiled.rules does not match");
+        let bad_report = d.path().join("does_not_exist").join("report.md");
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel8,
+                to: TargetVersionArg::Rhel9,
+                rules_dir: d.path().to_path_buf(),
+                apply: true,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: Some(bad_report),
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_ERRORS,
+            "verification failure (exit 2) must not be masked by a report-write failure (exit 3); got {code}"
+        );
+        assert_eq!(
+            plan.fagenrules_check.as_ref().expect("check ran").status,
+            "failed"
+        );
+        assert!(
+            !d.path().join("fapolicyd.rules").exists(),
+            "migration still applied (D7) even when both verification and report fail"
+        );
+    }
+
+    // --- render_human verification section ---------------------------------
+
+    fn plan_with_check(status: &'static str, detail: &str) -> MigratePlan {
+        let mut plan = applied_plan_with_rewrite();
+        plan.fagenrules_check = Some(FagenrulesCheck {
+            status,
+            detail: detail.to_string(),
+        });
+        plan
+    }
+
+    #[test]
+    fn render_human_passed_shows_label_and_detail() {
+        let human = render_human(&plan_with_check("passed", "all good here"));
+        assert!(
+            human.contains("Verification passed"),
+            "passed status must render its label: {human}"
+        );
+        assert!(
+            human.contains("all good here"),
+            "a non-passed... non-empty detail must render for a passed check: {human}"
+        );
+    }
+
+    #[test]
+    fn render_human_failed_shows_label_and_detail() {
+        let human = render_human(&plan_with_check("failed", "rules did not compile"));
+        assert!(
+            human.contains("Verification FAILED"),
+            "failed status must render its label: {human}"
+        );
+        assert!(
+            human.contains("rules did not compile"),
+            "the failure detail must render: {human}"
+        );
+    }
+
+    #[test]
+    fn render_human_unavailable_suppresses_detail() {
+        // For an unavailable check the detail is intentionally NOT printed (the
+        // label already says why). Use a sentinel detail that cannot appear in
+        // the fixed label text, so the absence assertion is unambiguous.
+        let human = render_human(&plan_with_check("unavailable", "SENTINEL_DETAIL_ZZZ"));
+        assert!(
+            human.contains("unavailable"),
+            "unavailable status must render its label: {human}"
+        );
+        assert!(
+            !human.contains("SENTINEL_DETAIL_ZZZ"),
+            "the detail must be suppressed for an unavailable check: {human}"
+        );
+    }
+
+    // --- run_with_probe_to_plan downgrade guard ----------------------------
+
+    #[test]
+    fn downgrade_newer_to_older_errors_and_is_dry_run_aware() {
+        // --from newer than --to is a refused downgrade (exit 3, layout "error").
+        // apply=false, so the error plan must report dry_run = true.
+        let d = tempfile::tempdir().unwrap();
+        let probe = FakeMigrateProbe::absent();
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel9,
+                to: TargetVersionArg::Rhel8,
+                rules_dir: d.path().to_path_buf(),
+                apply: false,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: None,
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_TOOL_FAILURE,
+            "downgrade must be refused (exit 3)"
+        );
+        assert_eq!(plan.layout, "error");
+        assert!(plan.dry_run, "apply=false => the error plan is a dry-run");
+        assert_eq!(probe.call_count(), 0, "downgrade errors before any probe");
+    }
+
+    #[test]
+    fn equal_versions_are_not_a_downgrade() {
+        // --from == --to is a valid no-op migration, NOT a downgrade: it must
+        // proceed past the guard (here to nothing-to-migrate on an empty dir).
+        let d = tempfile::tempdir().unwrap();
+        let probe = FakeMigrateProbe::absent();
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel9,
+                to: TargetVersionArg::Rhel9,
+                rules_dir: d.path().to_path_buf(),
+                apply: false,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: None,
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_ne!(
+            code, EXIT_TOOL_FAILURE,
+            "equal versions are not a downgrade"
+        );
+        assert_ne!(
+            plan.layout, "error",
+            "equal versions must not be the error layout"
+        );
     }
 }

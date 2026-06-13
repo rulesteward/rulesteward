@@ -85,6 +85,11 @@ examine_globs = [
     "crates/rulesteward-auditd/src/cost.rs",
     "crates/rulesteward-auditd/src/bands.rs",
     "crates/rulesteward-auditd/src/from_log.rs",
+    # auditd semantic lint family (#193, session 6a). Added in Phase 0 BEFORE
+    # the pass bodies exist: a new file outside this allowlist mutates zero
+    # times and its gate false-passes (the 4a vacuity lesson) - the allowlist
+    # entry must precede the code, never follow it.
+    "crates/rulesteward-auditd/src/lints/**/*.rs",
     # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",
@@ -247,6 +252,16 @@ exclude_re = [
     # count_runtime_denials) and the classifier stay in scope, killed by FakeProbe
     # + parser unit tests.
     '<impl ContainerProbe for LiveContainerProbe>',
+    # migrate LiveMigrateProbe shell-out (#211, session 6a): same rationale as
+    # the doctor LiveProbe above - the real `fagenrules --check` spawn has no
+    # unit-test seam; the pure outcome classification is FakeProbe-tested and
+    # stays in the gate. (Matches nothing until Lane B lands the impl.)
+    '<impl MigrateProbe for LiveMigrateProbe>',
+    # `TmpGuard::drop` (#211, session 6a): best-effort temp-file cleanup used
+    # only by the LiveMigrateProbe shell-out path. Deleting the body leaks a
+    # temp file but has no observable behavior any unit test can assert (the
+    # file name is process-id-scoped); same I/O-cleanup rationale as above.
+    '<impl Drop for TmpGuard>',
     # `read_fapolicyd_mode` is a one-line delegation wrapper:
     #   `read_fapolicyd_mode_from(Path::new("/etc/fapolicyd/fapolicyd.conf"))`
     # On the test/CI machine /etc/fapolicyd/fapolicyd.conf does not exist, so
