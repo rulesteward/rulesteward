@@ -147,9 +147,6 @@ fn version_rank(v: TargetVersionArg) -> u8 {
 ///
 /// `success` mirrors the process exit code (0 = rules compile / are current;
 /// non-zero = failed). `detail` carries stderr or a human note.
-// Skeleton: used by `FakeMigrateProbe` in tests and by `LiveMigrateProbe`;
-// the non-test call site is the #211 wiring the implementer adds.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CheckOutcome {
     pub(crate) success: bool,
@@ -164,22 +161,18 @@ pub(crate) struct CheckOutcome {
 /// error (treated as `"unavailable"` with the error in `detail`, exit 0).
 ///
 /// NOTE: `rules_dir` is the fapolicyd config root (the parent of `rules.d/`),
-/// not `rules.d/` itself. The implementer will thread this through whichever
-/// compilation-validator binary is chosen (`fagenrules`, `fapolicyd-cli`, etc.).
-// Skeleton: the non-test impl call site is the #211 wiring the implementer adds.
-#[allow(dead_code)]
+/// not `rules.d/` itself. [`LiveMigrateProbe`] threads it through
+/// `fapolicyd-cli --check-rules`.
 pub(crate) trait MigrateProbe {
     fn fagenrules_check(&self, rules_dir: &Path) -> Result<Option<CheckOutcome>, String>;
 }
 
-/// Live implementation that shells out to the real verification binary.
+/// Live implementation that shells out to `fapolicyd-cli --check-rules`.
 ///
-/// SKELETON ONLY (session 6a test-author phase): the body is a stub that will
-/// be replaced by the implementer. Excluded from the mutation gate via
-/// `mutants.toml` `exclude_re`. Never wired into `run()`; only `run_with_probe`
-/// calls it, and that path is gated behind `--apply` in the impl.
-// Skeleton: constructed by the #211 implementer when wiring run_with_probe.
-#[allow(dead_code)]
+/// Wired into the CLI dispatch (`commands/fapolicyd/mod.rs`) via
+/// `run_with_probe`; the `run()` entry stays probe-free so its unit tests never
+/// shell out. Excluded from the mutation gate via `mutants.toml` `exclude_re`
+/// (it does real process I/O). Only reached after a successful `--apply`.
 pub(crate) struct LiveMigrateProbe;
 
 /// RAII guard: removes the file at the given path when dropped (best-effort).
@@ -265,17 +258,13 @@ impl MigrateProbe for LiveMigrateProbe {
     }
 }
 
-/// Entry point used by tests and `run()`.
+/// Production entry point for the CLI dispatch (`commands/fapolicyd/mod.rs`).
 ///
 /// Calls the probe after a successful apply (#211), emits stdout in the
 /// requested format, and writes a markdown report when `args.report` is
 /// set (#212). The report write happens after apply; if it fails the
 /// migration stays applied and the function returns `EXIT_TOOL_FAILURE`.
-///
-/// SKELETON (session 6a test-author phase): the #211 probe wiring and the
-/// #212 report write are NOT yet connected; that is the implementer's job.
-// Skeleton: wired into the CLI by the implementer; unused until then.
-#[allow(dead_code, clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn run_with_probe(args: MigrateArgs, probe: &dyn MigrateProbe) -> anyhow::Result<i32> {
     let format = args.format;
     let (code, plan) = run_with_probe_to_plan(args, probe)?;
@@ -289,9 +278,7 @@ pub(crate) fn run_with_probe(args: MigrateArgs, probe: &dyn MigrateProbe) -> any
 /// (#211), and returns the final plan for rendering / report writing.
 ///
 /// The function mirrors `run()` logic; `too_many_lines` is expected.
-// Skeleton: called by `run_with_probe` (unused until implementer wires that in).
 #[allow(
-    dead_code,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::unnecessary_wraps
@@ -388,13 +375,39 @@ pub(crate) fn run_with_probe_to_plan(
         legacy_deleted = true;
     }
 
-    // #211 SKELETON: probe wiring is the implementer's task. The probe parameter
-    // is accepted here so the test double (FakeMigrateProbe) can be wired in
-    // for tests, but the implementer will add the actual call and status mapping.
-    #[allow(unused_variables)]
-    let _ = probe;
-    let fagenrules_check = None;
-    let exit_code = EXIT_CLEAN;
+    // #211: after a successful apply, run the post-apply rules verification.
+    // The probe is invoked ONLY when the migration was applied: dry-run and the
+    // no-work layouts never reach here with `applied == true`, so a dry-run
+    // never shells out (the call-counting `FakeMigrateProbe` pins this).
+    let mut exit_code = EXIT_CLEAN;
+    let fagenrules_check = if applied {
+        match probe.fagenrules_check(&args.rules_dir) {
+            Ok(Some(outcome)) => {
+                let status = if outcome.success { "passed" } else { "failed" };
+                if !outcome.success {
+                    // D7: verification ran and FAILED -> exit 2. The migration
+                    // still stands (the files were already moved above).
+                    exit_code = EXIT_ERRORS;
+                }
+                Some(FagenrulesCheck {
+                    status,
+                    detail: outcome.detail,
+                })
+            }
+            // Binary absent: degrade gracefully, exit stays clean.
+            Ok(None) => Some(FagenrulesCheck {
+                status: "unavailable",
+                detail: "fapolicyd-cli not found; post-apply verification skipped".to_string(),
+            }),
+            // A spawn error is indistinguishable from "absent" to the operator.
+            Err(msg) => Some(FagenrulesCheck {
+                status: "unavailable",
+                detail: msg,
+            }),
+        }
+    } else {
+        None
+    };
 
     let plan = MigratePlan {
         from,
@@ -416,20 +429,81 @@ pub(crate) fn run_with_probe_to_plan(
         legacy_deleted,
         fagenrules_check,
     };
+
+    // #212: write a standalone Markdown report when --report is set. The write
+    // happens AFTER the apply + verification, so a write failure leaves the
+    // migration applied and is surfaced as a tool failure (exit 3). Works in
+    // both dry-run and apply (D1).
+    if let Some(report_path) = args.report.as_ref()
+        && std::fs::write(report_path, render_markdown_report(&plan)).is_err()
+    {
+        exit_code = EXIT_TOOL_FAILURE;
+    }
+
     Ok((exit_code, plan))
 }
 
 /// Render the migration plan as a standalone Markdown report (#212).
 ///
-/// SKELETON (session 6a test-author phase): the body is the implementer's task.
-/// Must include: migration version pair, legacy -> target move, per-rewrite
-/// table (1-based line number, before, after), unchanged-rules count, resulting
-/// layout, and an optional fagenrules verification section. NO timestamp (D1).
-// Skeleton: called from run_with_probe when --report is set (implementer's task).
-#[allow(dead_code)]
+/// Includes the migration version pair, the legacy -> target move, a per-rewrite
+/// table (1-based line number, before, after), the rewritten/unchanged counts,
+/// the resulting layout, and -- only when the post-apply verification ran -- a
+/// fagenrules section. Deliberately carries NO timestamp (owner decision D1) so
+/// the report is reproducible and diff-stable.
 pub(crate) fn render_markdown_report(plan: &MigratePlan) -> String {
-    let _ = plan;
-    todo!("render_markdown_report: implementer task (#212)")
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    let mode = if plan.dry_run {
+        "dry-run plan"
+    } else {
+        "applied"
+    };
+
+    let _ = writeln!(s, "# fapolicyd rule migration report ({mode})");
+    let _ = writeln!(s);
+    let _ = writeln!(s, "- Migration: {} -> {}", plan.from, plan.to);
+    let _ = writeln!(s, "- Config directory: {}", plan.rules_dir);
+    let _ = writeln!(s, "- Resulting layout: {}", plan.layout);
+    let _ = writeln!(s);
+
+    let _ = writeln!(s, "## Files");
+    if let (Some(legacy), Some(target)) = (&plan.legacy_file, &plan.target_file) {
+        let verb = if plan.legacy_deleted {
+            "Moved"
+        } else {
+            "Would move"
+        };
+        let _ = writeln!(s, "{verb} `{legacy}` -> `{target}`");
+    }
+    let _ = writeln!(s);
+
+    let rewritten = plan.transformations.len();
+    let unchanged = plan.rules_migrated.saturating_sub(rewritten);
+    let _ = writeln!(s, "## Rewrites");
+    if plan.transformations.is_empty() {
+        let _ = writeln!(s, "No attribute rewrites were needed.");
+    } else {
+        let _ = writeln!(s, "| line | before | after |");
+        let _ = writeln!(s, "|------|--------|-------|");
+        for t in &plan.transformations {
+            let _ = writeln!(s, "| {} | `{}` | `{}` |", t.line, t.before, t.after);
+        }
+    }
+    let _ = writeln!(s);
+    let _ = writeln!(s, "- Rules migrated: {}", plan.rules_migrated);
+    let _ = writeln!(s, "- Rules rewritten: {rewritten}");
+    let _ = writeln!(s, "- Rules unchanged: {unchanged}");
+
+    // #211 verification section: present only when the post-apply check ran.
+    if let Some(check) = &plan.fagenrules_check {
+        let _ = writeln!(s);
+        let _ = writeln!(s, "## Verification (fagenrules --check)");
+        let _ = writeln!(s, "- Status: {}", check.status);
+        if !check.detail.is_empty() {
+            let _ = writeln!(s, "- Detail: {}", check.detail);
+        }
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
