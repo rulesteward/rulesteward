@@ -434,8 +434,14 @@ pub(crate) fn run_with_probe_to_plan(
     // happens AFTER the apply + verification, so a write failure leaves the
     // migration applied and is surfaced as a tool failure (exit 3). Works in
     // both dry-run and apply (D1).
+    //
+    // A report-write failure must NOT mask a substantive ruleset error: if the
+    // verification already FAILED (exit 2, D7), that is the operator-actionable
+    // result and wins over an incidental missing-sidecar tool fault. So the
+    // report-write failure only downgrades an otherwise-clean run to exit 3.
     if let Some(report_path) = args.report.as_ref()
         && std::fs::write(report_path, render_markdown_report(&plan)).is_err()
+        && exit_code == EXIT_CLEAN
     {
         exit_code = EXIT_TOOL_FAILURE;
     }
@@ -1588,6 +1594,41 @@ mod tests {
         assert!(
             d.path().join("rules.d").join("99-migrated.rules").exists(),
             "target file must exist after apply, even when report write fails"
+        );
+    }
+
+    /// Exit-code precedence: when verification FAILED (exit 2, D7) AND the
+    /// --report write also fails, the substantive ruleset error (exit 2) must
+    /// win -- a missing report sidecar (exit 3) must NOT mask it.
+    #[test]
+    fn probe_failure_with_unwritable_report_keeps_exit_two() {
+        let d = setup_legacy_dir();
+        let probe = FakeMigrateProbe::failure("compiled.rules does not match");
+        let bad_report = d.path().join("does_not_exist").join("report.md");
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel8,
+                to: TargetVersionArg::Rhel9,
+                rules_dir: d.path().to_path_buf(),
+                apply: true,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: Some(bad_report),
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_ERRORS,
+            "verification failure (exit 2) must not be masked by a report-write failure (exit 3); got {code}"
+        );
+        assert_eq!(
+            plan.fagenrules_check.as_ref().expect("check ran").status,
+            "failed"
+        );
+        assert!(
+            !d.path().join("fapolicyd.rules").exists(),
+            "migration still applied (D7) even when both verification and report fail"
         );
     }
 }
