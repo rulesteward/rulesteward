@@ -421,6 +421,39 @@ mod tests {
         assert!(traffic_overlaps(&a, &b));
     }
 
+    #[test]
+    fn wildcard_a_overlaps_concrete_b() {
+        // An empty (wildcard) `a` matches every syscall, so it overlaps a
+        // concrete `b`. Pins that the empty-set short-circuit is an OR, not an
+        // AND (a&b both-empty), of the two emptiness checks.
+        let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
+        let b_sc = vec!["execve".to_string()];
+        let a = parts(&exit, &never, &[], &[], &[]);
+        let b = parts(&exit, &always, &b_sc, &[], &[]);
+        assert!(
+            traffic_overlaps(&a, &b),
+            "wildcard never overlaps concrete always"
+        );
+    }
+
+    #[test]
+    fn eq_vs_relational_on_same_field_is_conservatively_overlapping() {
+        // `uid=0` (Eq) vs `uid>=1000` (Ge): only Eq-vs-Eq-with-different-values
+        // counts as a contradiction; an Eq-vs-relational pair is conservatively
+        // treated as overlapping (no interval arithmetic, D4 spirit). Pins that
+        // BOTH operands must be Eq for the disjointness short-circuit.
+        let (exit, never, always) = (FilterList::Exit, Action::Never, Action::Always);
+        let sc = vec!["execve".to_string()];
+        let a_fields = vec![field(AuditField::Uid, CompareOp::Eq, "0")];
+        let b_fields = vec![field(AuditField::Uid, CompareOp::Ge, "1000")];
+        let a = parts(&exit, &never, &sc, &a_fields, &[]);
+        let b = parts(&exit, &always, &sc, &b_fields, &[]);
+        assert!(
+            traffic_overlaps(&a, &b),
+            "Eq vs relational is not a contradiction -> overlap"
+        );
+    }
+
     // --- is_syscall_suppressing_exclude -----------------------------------
 
     fn exclude_msgtype(action: Action, value: &str) -> AuditRule {

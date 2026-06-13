@@ -59,11 +59,9 @@ pub const AU_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "suppression conflict: an exclude/never rule suppresses events an always rule intends to record",
     },
-    LintCode {
-        code: "au-W04",
-        severity: Severity::Warning,
-        description: "-D after rules have been loaded discards them; delete-all belongs at the top of the first file",
-    },
+    // au-W04 (-D after loaded rules) was the cuttable P2 stretch lint (owner
+    // decision D6); it was CUT at the 6a integration gate (no pass emits it),
+    // so it is intentionally absent from the catalog and the authoritative set.
 ];
 
 #[cfg(test)]
@@ -71,10 +69,10 @@ mod tests {
     use super::AU_CODES;
 
     /// The authoritative emitted set (session 6a allocation, owner-ratified).
-    /// au-W04 is the P2 stretch lint (owner decision D6); if it is cut at
-    /// integration, remove it HERE and from the catalog in the same commit.
+    /// au-W04 (the P2 `-D` stretch lint, owner decision D6) was CUT at the 6a
+    /// integration gate, so it is intentionally NOT in this set or the catalog.
     const ALL_CODES: &[&str] = &[
-        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
+        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03",
     ];
 
     #[test]

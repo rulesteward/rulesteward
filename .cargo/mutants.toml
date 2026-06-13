@@ -257,6 +257,11 @@ exclude_re = [
     # unit-test seam; the pure outcome classification is FakeProbe-tested and
     # stays in the gate. (Matches nothing until Lane B lands the impl.)
     '<impl MigrateProbe for LiveMigrateProbe>',
+    # `TmpGuard::drop` (#211, session 6a): best-effort temp-file cleanup used
+    # only by the LiveMigrateProbe shell-out path. Deleting the body leaks a
+    # temp file but has no observable behavior any unit test can assert (the
+    # file name is process-id-scoped); same I/O-cleanup rationale as above.
+    '<impl Drop for TmpGuard>',
     # `read_fapolicyd_mode` is a one-line delegation wrapper:
     #   `read_fapolicyd_mode_from(Path::new("/etc/fapolicyd/fapolicyd.conf"))`
     # On the test/CI machine /etc/fapolicyd/fapolicyd.conf does not exist, so

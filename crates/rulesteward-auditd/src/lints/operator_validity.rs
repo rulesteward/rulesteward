@@ -78,8 +78,11 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
             if invalid {
                 let field_name = field_name_str(&filter.field);
                 let op_str = op_str(op);
+                // Do NOT self-prefix the code: the renderer already prints the
+                // `[au-E02]` tag, so a `au-E02:` here would double it. (Matches
+                // every sibling pass, which emit a bare message.)
                 let msg = format!(
-                    "au-E02: invalid operator `{op_str}` for field `{field_name}` \
+                    "invalid operator `{op_str}` for field `{field_name}` \
                      -- auditctl rejects this at load time (operator not allowed for this field type)"
                 );
                 diags.push(anchored(

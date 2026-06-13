@@ -1497,7 +1497,6 @@ mod tests {
     /// Test #212-7: `render_markdown_report` includes fagenrules section
     /// only when the check ran.
     ///
-    /// RED: `render_markdown_report` panics with `todo!()` in the skeleton.
     #[test]
     fn render_markdown_report_includes_fagenrules_section_when_check_ran() {
         let mut plan = applied_plan_with_rewrite();
@@ -1505,15 +1504,18 @@ mod tests {
             status: "passed",
             detail: "Rules are current".to_string(),
         });
-        // RED: panics (todo!) until implementer provides the body.
         let md = render_markdown_report(&plan);
         assert!(
             md.to_lowercase().contains("fagenrules") || md.to_lowercase().contains("verification"),
             "fagenrules section must appear when check ran: {md}"
         );
+        // The status line is present...
+        assert!(md.contains("passed"), "status must appear: {md}");
+        // ...AND the detail line is rendered (it is gated on a non-empty detail,
+        // so this pins that the detail branch actually fires).
         assert!(
-            md.contains("passed") || md.contains("current"),
-            "fagenrules result must appear in the report: {md}"
+            md.contains("Rules are current"),
+            "the non-empty check detail must be rendered: {md}"
         );
     }
 
@@ -1629,6 +1631,118 @@ mod tests {
         assert!(
             !d.path().join("fapolicyd.rules").exists(),
             "migration still applied (D7) even when both verification and report fail"
+        );
+    }
+
+    // --- render_human verification section ---------------------------------
+
+    fn plan_with_check(status: &'static str, detail: &str) -> MigratePlan {
+        let mut plan = applied_plan_with_rewrite();
+        plan.fagenrules_check = Some(FagenrulesCheck {
+            status,
+            detail: detail.to_string(),
+        });
+        plan
+    }
+
+    #[test]
+    fn render_human_passed_shows_label_and_detail() {
+        let human = render_human(&plan_with_check("passed", "all good here"));
+        assert!(
+            human.contains("Verification passed"),
+            "passed status must render its label: {human}"
+        );
+        assert!(
+            human.contains("all good here"),
+            "a non-passed... non-empty detail must render for a passed check: {human}"
+        );
+    }
+
+    #[test]
+    fn render_human_failed_shows_label_and_detail() {
+        let human = render_human(&plan_with_check("failed", "rules did not compile"));
+        assert!(
+            human.contains("Verification FAILED"),
+            "failed status must render its label: {human}"
+        );
+        assert!(
+            human.contains("rules did not compile"),
+            "the failure detail must render: {human}"
+        );
+    }
+
+    #[test]
+    fn render_human_unavailable_suppresses_detail() {
+        // For an unavailable check the detail is intentionally NOT printed (the
+        // label already says why). Use a sentinel detail that cannot appear in
+        // the fixed label text, so the absence assertion is unambiguous.
+        let human = render_human(&plan_with_check("unavailable", "SENTINEL_DETAIL_ZZZ"));
+        assert!(
+            human.contains("unavailable"),
+            "unavailable status must render its label: {human}"
+        );
+        assert!(
+            !human.contains("SENTINEL_DETAIL_ZZZ"),
+            "the detail must be suppressed for an unavailable check: {human}"
+        );
+    }
+
+    // --- run_with_probe_to_plan downgrade guard ----------------------------
+
+    #[test]
+    fn downgrade_newer_to_older_errors_and_is_dry_run_aware() {
+        // --from newer than --to is a refused downgrade (exit 3, layout "error").
+        // apply=false, so the error plan must report dry_run = true.
+        let d = tempfile::tempdir().unwrap();
+        let probe = FakeMigrateProbe::absent();
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel9,
+                to: TargetVersionArg::Rhel8,
+                rules_dir: d.path().to_path_buf(),
+                apply: false,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: None,
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_eq!(
+            code, EXIT_TOOL_FAILURE,
+            "downgrade must be refused (exit 3)"
+        );
+        assert_eq!(plan.layout, "error");
+        assert!(plan.dry_run, "apply=false => the error plan is a dry-run");
+        assert_eq!(probe.call_count(), 0, "downgrade errors before any probe");
+    }
+
+    #[test]
+    fn equal_versions_are_not_a_downgrade() {
+        // --from == --to is a valid no-op migration, NOT a downgrade: it must
+        // proceed past the guard (here to nothing-to-migrate on an empty dir).
+        let d = tempfile::tempdir().unwrap();
+        let probe = FakeMigrateProbe::absent();
+        let (code, plan) = run_with_probe_to_plan(
+            MigrateArgs {
+                from: TargetVersionArg::Rhel9,
+                to: TargetVersionArg::Rhel9,
+                rules_dir: d.path().to_path_buf(),
+                apply: false,
+                delete_legacy: false,
+                format: HumanJsonFormat::Json,
+                report: None,
+            },
+            &probe,
+        )
+        .unwrap();
+        assert_ne!(
+            code, EXIT_TOOL_FAILURE,
+            "equal versions are not a downgrade"
+        );
+        assert_ne!(
+            plan.layout, "error",
+            "equal versions must not be the error layout"
         );
     }
 }
