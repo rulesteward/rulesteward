@@ -1131,6 +1131,7 @@ dependencies = [
  "rulesteward-core",
  "rulesteward-fapolicyd",
  "rulesteward-selinux",
+ "rulesteward-sshd",
  "serde",
  "serde-sarif",
  "serde_json",
@@ -1202,6 +1203,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "rulesteward-sshd"
+version = "0.2.1"
+dependencies = [
+ "rulesteward-core",
 ]
 
 [[package]]

@@ -1,0 +1,15 @@
+[package]
+name = "rulesteward-sshd"
+description = "sshd_config parser and STIG-aligned linter for RuleSteward."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rulesteward-core = { workspace = true }
+
+[lints]
+workspace = true

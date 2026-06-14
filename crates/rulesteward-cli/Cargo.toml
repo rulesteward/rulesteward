@@ -42,6 +42,7 @@ rulesteward-fapolicyd = { workspace = true }
 # libsepol/LGPL layer is instead gated behind THIS crate's `default` feature
 # (above), making `--no-default-features` the clean Apache-2.0-only build.
 rulesteward-selinux = { workspace = true }
+rulesteward-sshd = { workspace = true }
 clap = { workspace = true }
 ariadne = { workspace = true }
 serde = { workspace = true }

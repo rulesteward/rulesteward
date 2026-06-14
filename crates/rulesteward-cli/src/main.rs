@@ -33,6 +33,7 @@ fn main() {
         TopCommand::Fapolicyd(cmd) => report(commands::fapolicyd::run(cmd)),
         TopCommand::Selinux(cmd) => report(commands::selinux::run(cmd)),
         TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd)),
+        TopCommand::Sshd(cmd) => report(commands::sshd::run(cmd)),
         TopCommand::Completions(args) => report(commands::completions::run(&args)),
         TopCommand::Mangen(args) => report(commands::mangen::run(&args)),
     };

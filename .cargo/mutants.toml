@@ -90,6 +90,15 @@ examine_globs = [
     # times and its gate false-passes (the 4a vacuity lesson) - the allowlist
     # entry must precede the code, never follow it.
     "crates/rulesteward-auditd/src/lints/**/*.rs",
+    # sshd_config parser (#149 Phase 0): the hand-rolled tokenizer + Match-block
+    # scoping + criteria parser is the real Phase-0 logic and the mutation target.
+    # NOTE: src/lints/ is deliberately NOT scoped yet - in Phase 0 every lint pass
+    # is an empty `Vec::new()` stub and the `lint()` dispatcher returns empty, so
+    # mutating it produces only EQUIVALENT survivors (empty == Vec::new()). Each
+    # fan-out PR that lands a real `sshd-` pass adds `crates/rulesteward-sshd/src/
+    # lints/**/*.rs` here in the SAME PR (allowlist-precedes-code), at which point
+    # the dispatcher is non-trivial and the helpers are exercised.
+    "crates/rulesteward-sshd/src/parser.rs",
     # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",

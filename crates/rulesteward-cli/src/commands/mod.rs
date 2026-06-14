@@ -13,4 +13,5 @@ pub mod migrate;
 pub mod report;
 pub mod selinux;
 pub mod simulate;
+pub mod sshd;
 pub mod trustdb_compute;
