@@ -254,4 +254,47 @@ fn auditd_cost_human_assumed_band_suffix_matches_json_widened() {
         g_high > g_low,
         "assumed-mode band must be non-collapsed (widened): low={g_low} high={g_high}"
     );
+    // The header names the byte BAND in assumed mode (not just the typical), so a
+    // reader is not surprised the GB/day band is wider than ~1200 alone implies.
+    assert!(
+        out.contains("760-2300 B/event band"),
+        "assumed-mode header must name the byte band; got:\n{out}"
+    );
+}
+
+/// #112: in MEASURED mode the total uses a single typical byte, so the header names
+/// only the typical (~1200 B/event) and must NOT advertise the assumed byte band.
+#[test]
+fn auditd_cost_human_measured_header_names_only_typical() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    let mut rf = std::fs::File::create(&rules).expect("create rules file");
+    writeln!(rf, "-a always,exit -F arch=b64 -S execve -k exec").expect("write rule");
+    rf.flush().expect("flush");
+    let log = dir.path().join("audit.log");
+    let mut lf = std::fs::File::create(&log).expect("create log");
+    writeln!(
+        lf,
+        "type=SYSCALL msg=audit(1780453442.924:4213): syscall=59 success=yes key=\"exec\""
+    )
+    .expect("write log line");
+    lf.flush().expect("flush");
+
+    let assert = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&log)
+        .args(["--format", "human"])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+    assert!(
+        out.contains("~1200 B/event"),
+        "measured header must name the typical byte; got:\n{out}"
+    );
+    assert!(
+        !out.contains("B/event band"),
+        "measured header must NOT advertise the assumed byte band; got:\n{out}"
+    );
 }

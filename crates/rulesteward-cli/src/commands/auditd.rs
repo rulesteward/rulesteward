@@ -298,10 +298,28 @@ fn build_rule_entries_from_log(
 // ---------------------------------------------------------------------------
 
 fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: RateSource) -> String {
+    use rulesteward_auditd::cost::{bytes_per_event, bytes_per_event_band};
+
     let mut out = String::new();
+    // ENRICHED is the only reachable log format today (RAW deferred). The header
+    // describes the per-event byte assumption: in ASSUMED mode the total folds the
+    // full byte band (#112) into its low/high edges, so name the band (otherwise a
+    // reader manually checking the arithmetic is surprised the GB/day band is wider
+    // than ~1200 alone implies). In MEASURED mode the total uses the single typical
+    // byte, so name only that.
+    let byte_note = match source {
+        RateSource::Assumed => {
+            let b = bytes_per_event_band(LogFormat::Enriched);
+            format!(
+                "~{:.0} B/event typical, {:.0}-{:.0} B/event band",
+                b.typical, b.low, b.high
+            )
+        }
+        RateSource::Measured => format!("~{} B/event", bytes_per_event(LogFormat::Enriched)),
+    };
     writeln!(
         out,
-        "auditd cost estimate  (price ${price:.2}/GB ingested, ENRICHED format, ~1200 B/event)"
+        "auditd cost estimate  (price ${price:.2}/GB ingested, ENRICHED format, {byte_note})"
     )
     .unwrap();
     writeln!(
