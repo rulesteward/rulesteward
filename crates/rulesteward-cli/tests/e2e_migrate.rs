@@ -22,6 +22,39 @@ fn write(dir: &std::path::Path, rel: &str, content: &str) {
     std::fs::write(p, content).unwrap();
 }
 
+/// True if `s` contains an ISO-8601 date (`YYYY-MM-DD`) -- the discriminating
+/// shape of a generation timestamp (D1 forbids one in the report). Precise on
+/// purpose: matching a 2-char substring like "T0" false-fires on the random
+/// config-dir path the report legitimately echoes (a real CI flake:
+/// `/tmp/.tmpU0JT0k` contains "T0"). The caller-supplied path is allowed to be
+/// random; only the GENERATOR adding a timestamp is forbidden.
+fn contains_iso_date(s: &str) -> bool {
+    s.as_bytes().windows(10).any(|w| {
+        w[..4].iter().all(u8::is_ascii_digit)
+            && w[4] == b'-'
+            && w[5..7].iter().all(u8::is_ascii_digit)
+            && w[7] == b'-'
+            && w[8..10].iter().all(u8::is_ascii_digit)
+    })
+}
+
+#[test]
+fn iso_date_matcher_is_precise() {
+    // Regression for the CI flake: the random tempdir path that tripped the old
+    // substring check must NOT register as a timestamp.
+    assert!(
+        !contains_iso_date("/tmp/.tmpU0JT0k"),
+        "tempdir path is not a date"
+    );
+    assert!(
+        !contains_iso_date("stray T0 and a bare 2026 and 2025"),
+        "stray 2-char/year substrings are not a date"
+    );
+    // A real generation timestamp (date or full ISO datetime) MUST register.
+    assert!(contains_iso_date("Generated: 2026-06-13"));
+    assert!(contains_iso_date("2026-06-13T07:30:00Z"));
+}
+
 fn migrate_args(dir: &std::path::Path) -> Vec<String> {
     vec![
         "fapolicyd".into(),
@@ -299,9 +332,11 @@ fn migrate_apply_report_flag_writes_markdown_file() {
         md.contains("sha256hash") || md.contains("filehash"),
         "report must document the hash rewrite: {md}"
     );
-    // Must NOT contain a timestamp (D1).
+    // Must NOT contain a generation timestamp (D1). Match a real ISO date, not
+    // stray 2-char substrings: the caller's random config-dir path is echoed in
+    // the report and may contain "T0"/"2026" by chance (see contains_iso_date).
     assert!(
-        !(md.contains("2026") || md.contains("2025") || md.contains("T0")),
+        !contains_iso_date(&md),
         "report must not contain a timestamp (D1): {md}"
     );
 }
