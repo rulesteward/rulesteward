@@ -1160,6 +1160,24 @@ fn w03_disjoint_never_does_not_suppress_219() {
 }
 
 #[test]
+fn w03_uid_name_vs_number_still_suppresses_219() {
+    // uid=root and uid=0 denote the same user; the never rule DOES suppress the
+    // always rule. The linter must not assume root != 0 (no passwd db), so the
+    // alias-bearing Eq/Eq pair stays conservatively overlapping -> au-W03 fires.
+    let input = concat!(
+        "-a never,exit -S execve -F uid=root -k sup\n",
+        "-a always,exit -S execve -F uid=0 -k rec\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-uidname.rules")).unwrap();
+    assert_eq!(
+        w03(&rules).len(),
+        1,
+        "uid=root and uid=0 are the same user -> au-W03 fires, got {:?}",
+        w03(&rules)
+    );
+}
+
+#[test]
 fn w03_overlapping_never_still_suppresses_219() {
     // never uid>=1000 vs always uid>=2000: overlapping ranges -> the never
     // suppresses the always -> au-W03 still fires.

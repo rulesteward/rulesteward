@@ -166,16 +166,52 @@ pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter) -> bool {
     }
     let ft = field_type(&pa.field);
     // Eq vs Eq: one event carries one value per field, so two equalities
-    // contradict iff their folded values differ. Handled here (not via interval)
-    // because it must also cover string/opaque fields and the folded sentinel.
+    // contradict iff their values are PROVABLY different kernel values. Handled
+    // here (not via interval) because it must cover string/opaque fields and the
+    // folded sentinel, and must NOT call alias-bearing spellings disjoint.
     if pa.op == CompareOp::Eq && pb.op == CompareOp::Eq {
-        return canonical_value(ft, &pa.value) != canonical_value(ft, &pb.value);
+        return eq_values_provably_differ(ft, &pa.value, &pb.value);
     }
     // Otherwise prove disjointness only via non-overlapping concrete intervals.
     // Ne/bitmask/opaque/sentinel yield None -> not provably disjoint -> overlap.
     match (interval(ft, pa), interval(ft, pb)) {
         (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
         _ => false,
+    }
+}
+
+/// True when two `=` values on the same field are PROVABLY different kernel
+/// values. Difference is provable for:
+/// * concrete-comparable values (a numeric value or the uid/gid sentinel) whose
+///   canonical forms differ - e.g. `uid=0` vs `uid=1000`; or
+/// * a free-form string field ([`FieldType::String`]/[`FieldType::StringEqNe`]/
+///   [`FieldType::Key`]: path, dir, exe, subj_*, obj_*, key) where the kernel does
+///   an exact string match with no symbolic aliases - e.g. `path=/a` vs `path=/b`.
+///
+/// Alias-bearing fields where one spelling can denote the same value as another
+/// (uid/gid NAMES like `uid=root` == `uid=0`; `arch=b64` == `arch=x86_64`;
+/// `msgtype=SYSCALL` == `msgtype=1300`; filetype/fstype symbolic names) are NOT
+/// provably different from a spelling mismatch alone, so this returns false
+/// (the rules are then treated as overlapping). That keeps au-W03 conservative:
+/// it never DROPS a real suppression warning on a value it cannot disprove. The
+/// cost is over-warning on a genuinely-distinct alias-bearing pair (e.g.
+/// `msgtype=1300` vs `msgtype=1301`), the safe direction for a suppression lint.
+fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str) -> bool {
+    let comparable = |v: FieldValue| {
+        matches!(
+            v,
+            FieldValue::Unsigned(_) | FieldValue::Signed(_) | FieldValue::UidGidUnset
+        )
+    };
+    let both_concrete = comparable(classify(ft, a)) && comparable(classify(ft, b));
+    let free_form = matches!(
+        ft,
+        FieldType::String | FieldType::StringEqNe | FieldType::Key
+    );
+    if both_concrete || free_form {
+        canonical_value(ft, a) != canonical_value(ft, b)
+    } else {
+        false
     }
 }
 
@@ -613,5 +649,74 @@ mod tests {
             disjoint(&ge0, &lt_m5),
             "exit>=0 and exit<-5 cannot co-match"
         );
+    }
+
+    #[test]
+    fn disjoint_touching_boundary_is_not_disjoint() {
+        // >=2000 and <=2000 share exactly the value 2000 -> NOT disjoint. Pins
+        // the strict `<` (not `<=`) in the overlap check, both operand orders.
+        let ge2000 = ff(AuditField::Auid, CompareOp::Ge, "2000");
+        let le2000 = ff(AuditField::Auid, CompareOp::Le, "2000");
+        assert!(
+            !disjoint(&ge2000, &le2000),
+            ">=2000 and <=2000 meet at 2000"
+        );
+        assert!(!disjoint(&le2000, &ge2000), "symmetric: meet at 2000");
+    }
+
+    #[test]
+    fn disjoint_tight_lt_boundary() {
+        // >=1000 and <1000 are adjacent with NO shared value -> disjoint. The
+        // tight seam pins the `c - 1` upper bound of `<` (a wrong offset would
+        // include 1000 in `<1000` and make the pair wrongly overlap).
+        let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        assert!(
+            disjoint(&ge1000, &lt1000),
+            ">=1000 and <1000 are disjoint at the 999/1000 seam"
+        );
+        // The overlapping neighbor <=1000 shares 1000, so NOT disjoint.
+        let le1000 = ff(AuditField::Auid, CompareOp::Le, "1000");
+        assert!(!disjoint(&ge1000, &le1000), ">=1000 and <=1000 share 1000");
+    }
+
+    #[test]
+    fn disjoint_alias_bearing_eq_pairs_are_not_disjoint() {
+        // Different spellings of the SAME kernel value on alias-bearing fields
+        // must NOT be called disjoint, or au-W03 drops a real suppression warning.
+        // msgtype=SYSCALL == 1300 (the codebase relies on this at ordering.rs).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+        ));
+        // uid=root resolves to uid 0; a static linter has no passwd db to disprove it.
+        assert!(!disjoint(
+            &ff(AuditField::Uid, CompareOp::Eq, "root"),
+            &ff(AuditField::Uid, CompareOp::Eq, "0"),
+        ));
+        // arch=b64 selects the same syscall table as x86_64 on an x86 host.
+        assert!(!disjoint(
+            &ff(AuditField::Arch, CompareOp::Eq, "b64"),
+            &ff(AuditField::Arch, CompareOp::Eq, "x86_64"),
+        ));
+    }
+
+    #[test]
+    fn disjoint_freeform_string_eq_pairs_are_disjoint() {
+        // Free-form string fields (String / StringEqNe / Key) are exact kernel
+        // matches with no symbolic aliases, so different spellings ARE provably
+        // different. Pins each variant in the free-form set.
+        assert!(disjoint(
+            &ff(AuditField::Path, CompareOp::Eq, "/a"),
+            &ff(AuditField::Path, CompareOp::Eq, "/b"),
+        ));
+        assert!(disjoint(
+            &ff(AuditField::Exe, CompareOp::Eq, "/bin/sh"),
+            &ff(AuditField::Exe, CompareOp::Eq, "/bin/bash"),
+        ));
+        assert!(disjoint(
+            &ff(AuditField::Key, CompareOp::Eq, "a"),
+            &ff(AuditField::Key, CompareOp::Eq, "b"),
+        ));
     }
 }
