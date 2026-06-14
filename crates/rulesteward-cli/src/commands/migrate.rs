@@ -1624,11 +1624,19 @@ mod tests {
             md.contains("99-migrated.rules"),
             "markdown must mention the target file name: {md}"
         );
-        // No timestamp: ensure no ISO-8601 date pattern leaks in (D1 compliance).
-        let has_timestamp = md.chars().filter(|c| *c == '-').count() >= 6
-            && (md.contains("2026") || md.contains("2025") || md.contains("T0"));
+        // No timestamp (D1): match a real ISO date (YYYY-MM-DD), not stray
+        // substrings like "T0"/"2026" that a random echoed path can contain
+        // (the e2e flake). The synthetic plan here has a fixed path, but use the
+        // precise check so this never regresses to the fragile substring form.
+        let has_iso_date = md.as_bytes().windows(10).any(|w| {
+            w[..4].iter().all(u8::is_ascii_digit)
+                && w[4] == b'-'
+                && w[5..7].iter().all(u8::is_ascii_digit)
+                && w[7] == b'-'
+                && w[8..10].iter().all(u8::is_ascii_digit)
+        });
         assert!(
-            !has_timestamp,
+            !has_iso_date,
             "markdown must NOT contain a timestamp (D1): {md}"
         );
         // No fagenrules section when check is None.
