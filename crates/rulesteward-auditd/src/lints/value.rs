@@ -821,9 +821,14 @@ mod tests {
     #[test]
     fn ambiguous_numeric_stays_opaque_conservative() {
         // We do NOT replicate strtoul's parse-prefix-then-stop; anything that is
-        // not a clean base-0 number stays Opaque (#229; never a false fold).
+        // not a clean base-0 number stays Opaque (#229; never a false fold). The
+        // leading-'+' cases pin the digit guard specifically: `from_str_radix`
+        // and `u64::parse` both accept a leading '+', so without the all-digit
+        // guard `0x+1`/`+1`/`0+1` would parse (and falsely fold with `1`).
         let a = ft(AuditField::A0);
-        for s in ["08", "0x", "0xZZ", "12x", "", " "] {
+        for s in [
+            "08", "0x", "0xZZ", "12x", "", " ", "+1", "0x+1", "0+1", "0X+f",
+        ] {
             assert_eq!(classify(a, s), FieldValue::Opaque, "{s:?} must be opaque");
         }
     }
