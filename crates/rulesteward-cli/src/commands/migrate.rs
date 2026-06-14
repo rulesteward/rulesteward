@@ -217,9 +217,10 @@ pub(crate) trait MigrateProbe {
 /// `Ok(Some(failed))`.
 ///
 /// Wired into the CLI dispatch (`commands/fapolicyd/mod.rs`) via
-/// `run_with_probe`; the `run()` entry stays probe-free so its unit tests never
-/// shell out. Excluded from the mutation gate via `mutants.toml` `exclude_re`
-/// (it does real process I/O). Only reached after a successful `--apply`.
+/// `run_with_probe`; the legacy migration unit tests drive `run_with_probe` with
+/// an in-memory `FakeMigrateProbe` so they never shell out. Excluded from the
+/// mutation gate via `mutants.toml` `exclude_re` (it does real process I/O).
+/// Only reached after a successful `--apply`.
 pub(crate) struct LiveMigrateProbe;
 
 /// RAII guard: removes the file at the given path when dropped (best-effort).
@@ -335,7 +336,7 @@ pub(crate) fn run_with_probe(args: MigrateArgs, probe: &dyn MigrateProbe) -> any
 /// Runs the full migration logic, calls the probe after a successful apply
 /// (#211), and returns the final plan for rendering / report writing.
 ///
-/// The function mirrors `run()` logic; `too_many_lines` is expected.
+/// `too_many_lines` is expected for this end-to-end migration orchestration.
 #[allow(
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
@@ -725,144 +726,6 @@ fn render_json(plan: &MigratePlan) -> String {
     render_envelope("migrate", MIGRATE_SCHEMA_VERSION, plan)
 }
 
-// ---------------------------------------------------------------------------
-// Orchestration (I/O on --rules-dir; tempdir-tested)
-// ---------------------------------------------------------------------------
-
-/// Public entry point (used directly in unit tests and by the CLI dispatch).
-///
-/// For the live binary (`rulesteward fapolicyd migrate`), the CLI dispatch in
-/// `commands/fapolicyd/mod.rs` calls `run_with_probe(args, &LiveMigrateProbe)`
-/// which includes the post-apply verification (#211) and report write (#212).
-///
-/// `run()` itself keeps the no-probe path so pre-existing unit tests that call
-/// `run()` directly remain deterministic (they do not shell out to fapolicyd-cli).
-#[allow(clippy::needless_pass_by_value)]
-pub fn run(args: MigrateArgs) -> anyhow::Result<i32> {
-    let from = version_str(args.from);
-    let to = version_str(args.to);
-    if version_rank(args.from) > version_rank(args.to) {
-        eprintln!(
-            "error: --from {from} is newer than --to {to}; migrate does not downgrade rulesets"
-        );
-        return Ok(EXIT_TOOL_FAILURE);
-    }
-
-    let rules_dir = args.rules_dir.display().to_string();
-    let dry_run = !args.apply;
-    let layout = detect_layout(&args.rules_dir);
-
-    // No-work cases: render a plain plan and return clean.
-    let no_work = |layout_str: &'static str| MigratePlan {
-        from,
-        to,
-        rules_dir: rules_dir.clone(),
-        layout: layout_str,
-        coexistence_trap: false,
-        legacy_file: None,
-        target_file: None,
-        rules_migrated: 0,
-        transformations: Vec::new(),
-        dry_run,
-        delete_legacy: args.delete_legacy,
-        applied: false,
-        legacy_deleted: false,
-        fagenrules_check: None,
-    };
-    match layout {
-        Layout::Neither => {
-            emit(&no_work("nothing-to-migrate"), args.format);
-            return Ok(EXIT_CLEAN);
-        }
-        Layout::ModernOnly => {
-            emit(&no_work("already-modern"), args.format);
-            return Ok(EXIT_CLEAN);
-        }
-        Layout::Both if !args.delete_legacy => {
-            eprintln!(
-                "error: coexistence trap: both {LEGACY_FILE} and rules.d/*.rules exist in {rules_dir}.\n\
-                 fapolicyd refuses to start with both present. Re-run with --delete-legacy to migrate\n\
-                 the legacy file into rules.d/{TARGET_FILE} and remove it."
-            );
-            return Ok(EXIT_ERRORS);
-        }
-        Layout::LegacyOnly | Layout::Both => {}
-    }
-
-    // LegacyOnly, or Both with --delete-legacy: read, validate, migrate.
-    let legacy_path = args.rules_dir.join(LEGACY_FILE);
-    let legacy = match std::fs::read_to_string(&legacy_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", legacy_path.display());
-            return Ok(EXIT_TOOL_FAILURE);
-        }
-    };
-    let entries = match parse_rules_file(&legacy, &legacy_path) {
-        Ok(entries) => entries,
-        Err(_diags) => {
-            eprintln!(
-                "error: {} does not parse (fapd-F01); fix it (try `rulesteward fapolicyd lint --file {}`) before migrating",
-                legacy_path.display(),
-                legacy_path.display()
-            );
-            return Ok(EXIT_RULE_PARSE_ERROR);
-        }
-    };
-    let rules_migrated = entries
-        .iter()
-        .filter(|e| matches!(e, rulesteward_fapolicyd::Entry::Rule(_)))
-        .count();
-    let migration = compute_migration(&legacy);
-    let target_path = args.rules_dir.join(MODERN_DIR).join(TARGET_FILE);
-    let coexistence_trap = layout == Layout::Both;
-
-    let mut applied = false;
-    let mut legacy_deleted = false;
-    if args.apply {
-        let rules_d = args.rules_dir.join(MODERN_DIR);
-        if let Err(e) = std::fs::create_dir_all(&rules_d) {
-            eprintln!("error: creating {}: {e}", rules_d.display());
-            return Ok(EXIT_TOOL_FAILURE);
-        }
-        if let Err(e) = std::fs::write(&target_path, &migration.content) {
-            eprintln!("error: writing {}: {e}", target_path.display());
-            return Ok(EXIT_TOOL_FAILURE);
-        }
-        applied = true;
-        // Move semantics (#187 owner decision): the migration ALWAYS removes the
-        // legacy file on --apply so the end state is a clean modern layout.
-        if let Err(e) = std::fs::remove_file(&legacy_path) {
-            eprintln!("error: deleting {}: {e}", legacy_path.display());
-            return Ok(EXIT_TOOL_FAILURE);
-        }
-        legacy_deleted = true;
-    }
-
-    let plan = MigratePlan {
-        from,
-        to,
-        rules_dir,
-        layout: if coexistence_trap {
-            "coexistence-trap"
-        } else {
-            "legacy-only"
-        },
-        coexistence_trap,
-        legacy_file: Some(legacy_path.display().to_string()),
-        target_file: Some(target_path.display().to_string()),
-        rules_migrated,
-        transformations: migration.transformations,
-        dry_run,
-        delete_legacy: args.delete_legacy,
-        applied,
-        legacy_deleted,
-        fagenrules_check: None,
-    };
-    emit(&plan, args.format);
-    Ok(EXIT_CLEAN)
-}
-
 /// Print the plan in the requested format.
 fn emit(plan: &MigratePlan, format: HumanJsonFormat) {
     match format {
@@ -888,6 +751,14 @@ mod tests {
             format: HumanJsonFormat::Human,
             report: None,
         }
+    }
+
+    /// Probe-free entry for the legacy migration unit tests below. The production
+    /// migration is `run_with_probe`; these tests drive it with an in-memory
+    /// `FakeMigrateProbe` that never shells out (the same determinism the old
+    /// standalone `run()` provided before it was removed as duplicate logic).
+    fn run(args: MigrateArgs) -> anyhow::Result<i32> {
+        run_with_probe(args, &FakeMigrateProbe::absent())
     }
 
     fn write(dir: &Path, rel: &str, content: &str) {
