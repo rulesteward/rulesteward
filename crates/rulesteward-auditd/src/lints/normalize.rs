@@ -210,6 +210,31 @@ mod tests {
     }
 
     #[test]
+    fn watch_distinct_perms_produce_distinct_keys() {
+        // `perm_letters` is the only part of a watch key the `-p` bits drive.
+        // Two watches that differ ONLY in their perms must get different keys, and
+        // the key must carry the real rwxa letters. A constant `perm_letters`
+        // (e.g. `""` or `"xyzzy"`) collapses both to one key, which these
+        // assertions reject.
+        let key_wa = canonical_key(&rule("-w /etc/passwd -p wa -k identity"));
+        let key_rx = canonical_key(&rule("-w /etc/passwd -p rx -k identity"));
+        assert_ne!(
+            key_wa, key_rx,
+            "watches differing only in -p bits must not share a canonical key"
+        );
+        // Assert via the derived `Debug` rather than reaching into the opaque
+        // `CanonicalKey(String)` field: the `|<letters>|` segment is `-p`-driven.
+        assert!(
+            format!("{key_wa:?}").contains("|wa|"),
+            "wa -> 'wa' in rwxa order: {key_wa:?}"
+        );
+        assert!(
+            format!("{key_rx:?}").contains("|rx|"),
+            "rx -> 'rx' in rwxa order: {key_rx:?}"
+        );
+    }
+
+    #[test]
     fn watch_path_and_key_distinguish() {
         let a = rule("-w /etc/passwd -p wa -k identity");
         let b = rule("-w /etc/shadow -p wa -k identity");

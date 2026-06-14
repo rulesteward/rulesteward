@@ -848,7 +848,8 @@ mod located_tests {
     use std::path::Path;
 
     use super::{
-        parse_rules_str, parse_rules_str_located, parse_target_located, rules_files_in_load_order,
+        parse_rules_file, parse_rules_str, parse_rules_str_located, parse_target_located,
+        rules_files_in_load_order,
     };
     use crate::ast::{AuditRule, ControlRule};
 
@@ -998,5 +999,21 @@ mod located_tests {
             errs[0].file
         );
         assert_eq!(errs[0].line, 1);
+    }
+
+    /// `parse_rules_file` (the provenance-dropping file wrapper) must return the
+    /// parsed rules of a NON-EMPTY file, not an empty vec. No production path
+    /// calls this 1-arg form today (the CLI parses via `parse_target`); it is
+    /// public API mirroring the `_located`/`_str` forms, so it is pinned directly
+    /// here. A wrong impl returning `Ok(vec![])` would silently drop every rule.
+    #[test]
+    fn parse_rules_file_returns_parsed_rules_of_nonempty_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("audit.rules");
+        std::fs::write(&path, "# header\n-D\n-b 8192\n").expect("write");
+        let rules = parse_rules_file(&path).expect("must parse");
+        assert_eq!(rules.len(), 2, "two control rules parsed, got {rules:?}");
+        assert_eq!(rules[0], AuditRule::Control(ControlRule::DeleteAll));
+        assert_eq!(rules[1], AuditRule::Control(ControlRule::Backlog(8192)));
     }
 }
