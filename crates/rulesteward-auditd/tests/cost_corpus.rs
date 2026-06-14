@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use rulesteward_auditd::{
     Direction, LogFormat, RateBand, VolumeTier,
     bands::{classify_rule, default_rate_band},
-    cost::{compute_cost_band, sum_rate_bands},
+    cost::{CostBand, compute_cost_band, compute_cost_band_banded, sum_rate_bands},
     from_log::count_events_by_key,
     parser::{parse_rules_str, parse_target},
 };
@@ -278,10 +278,44 @@ fn floor_guard_scenario_count() {
 // Test 2: Cost-band $ (the #93 byte-constant core)
 // ---------------------------------------------------------------------------
 
+/// Assert the banded total (#234) widens the single-byte projection in the right
+/// direction: the typical edge is byte-identical, the low edge sits below it (byte
+/// 760 < 1200) and the high edge above it (2300 > 1200) whenever the aggregate rate
+/// edge is non-zero. This kills any impl that ignores `bytes_per_event_band`, even
+/// one a re-grounded static oracle would still pass.
+fn assert_banded_widens_single(
+    scenario: &str,
+    banded: &CostBand,
+    single: &CostBand,
+    agg: &RateBand,
+) {
+    assert!(
+        (banded.gb_per_day.typical - single.gb_per_day.typical).abs() < 1e-12
+            && (banded.cost_per_month_usd.typical - single.cost_per_month_usd.typical).abs()
+                < 1e-12,
+        "{scenario}: banded TYPICAL must equal the single-byte typical (byte-identical invariant)"
+    );
+    if agg.low > 0.0 {
+        assert!(
+            banded.gb_per_day.low < single.gb_per_day.low
+                && banded.cost_per_month_usd.low < single.cost_per_month_usd.low,
+            "{scenario}: banded LOW must sit below the single-byte low (byte 760 < 1200)"
+        );
+    }
+    if agg.high > 0.0 {
+        assert!(
+            banded.gb_per_day.high > single.gb_per_day.high
+                && banded.cost_per_month_usd.high > single.cost_per_month_usd.high,
+            "{scenario}: banded HIGH must exceed the single-byte high (byte 2300 > 1200)"
+        );
+    }
+}
+
 /// For each scenario in `NON_NULL_COST_BAND` (syscall-driven, deterministic),
 /// aggregate additive rules' `default_rate_band` via `sum_rate_bands`, compute
-/// `compute_cost_band(&agg, Enriched, 5.00)`, and assert `gbPerDay` +
-/// `costPerMonth` low/typical/high are within +/-15% of the oracle.
+/// `compute_cost_band_banded(&agg, Enriched, 5.00)` (the production ASSUMED-mode
+/// total path, #112/#234), and assert `gbPerDay` + `costPerMonth`
+/// low/typical/high are within +/-15% of the banded oracle.
 ///
 /// Scenarios whose `cost-band.json` has null `eventsPerDay` (watch-only or mixed)
 /// are skipped; the watch model is deferred to #140.
@@ -328,15 +362,17 @@ fn cost_band_dollar_core() {
             })
             .collect();
         let agg = sum_rate_bands(&additive_bands);
-        // Single-byte path: this validates the per-rule cost function + the
-        // path-independent TYPICAL against the single-byte oracle JSON. NOTE (#112):
-        // the production ASSUMED-mode TOTAL uses the banded path
-        // (compute_cost_band_banded, byte band 760/1200/2300), so the aggregate
-        // low/high asserted here are the single-byte projection, NOT what `auditd
-        // cost` now prints for the total band. The banded total is covered by the
-        // e2e tests; re-grounding these oracle low/high edges to the banded math is
-        // tracked as a follow-up.
-        let cost = compute_cost_band(&agg, LogFormat::Enriched, 5.00);
+        // Banded path (#234): assert the production ASSUMED-mode TOTAL the way
+        // `auditd cost` actually prints it. compute_cost_band_banded folds the
+        // per-event byte BAND (enriched 760/1200/2300, #112) into the low/high
+        // edges; the oracle low/high below are grounded in that banded math, while
+        // the TYPICAL edge stays byte-identical to the single-byte path (the band's
+        // typical equals the 1200 scalar).
+        let cost = compute_cost_band_banded(&agg, LogFormat::Enriched, 5.00);
+        // Anti-vacuity guard (#234): prove the banding actually happened, not just
+        // that the re-grounded static oracle matches (see the helper's doc).
+        let single = compute_cost_band(&agg, LogFormat::Enriched, 5.00);
+        assert_banded_widens_single(scenario, &cost, &single, &agg);
 
         // Oracle from oracle/cost-band.json.
         macro_rules! oracle_f64 {
