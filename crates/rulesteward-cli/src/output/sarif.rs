@@ -5,6 +5,12 @@
 //! builders, then serializes it to pretty JSON. The output validates against
 //! the official OASIS SARIF 2.1.0 JSON schema.
 //!
+//! Dependency note (#194): `serde-sarif` is the de-facto standard SARIF crate but
+//! is in low-maintenance mode. The decision is ACCEPT-with-a-watch -- our usage is
+//! a narrow, schema-validated subset (this file only), so if an advisory or yank
+//! ever lands on it the fallback is a ~200-LOC write-once vendor-light of just the
+//! types we emit (the OASIS-schema test is the safety net). See issue #194.
+//!
 //! Mapping (one SARIF `result` per `Diagnostic`, preserving input order):
 //!   * `code`     -> `result.ruleId`
 //!   * `severity` -> `result.level` (Fatal/Error -> "error";
