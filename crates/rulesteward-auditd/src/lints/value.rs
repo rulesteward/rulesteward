@@ -19,13 +19,22 @@
 //! `exit=4294967295` (`FieldType::NumericSigned`) is a concrete signed value;
 //! neither folds.
 //!
+//! # Numeric spellings (base-0, #229)
+//! Numeric fields parse their value with C `strtoul`/`strtol` base 0, matching
+//! libaudit `audit_rule_fieldpair_data` @ 3bfa048: `0x80` is hex 128, `010` is
+//! octal 8, `80` is decimal 80. So equivalent spellings of the same number fold
+//! (`a0=0x80` == `a0=128`), and the leading-zero octal case is read correctly
+//! (`a0=010` is 8, NOT 10). Parsing is strict: a value that is not a clean
+//! base-0 number in its detected radix stays [`FieldValue::Opaque`] rather than
+//! taking strtoul's parse-a-prefix-then-stop shortcut (so `08` is opaque, not 0).
+//!
 //! # Conservative by construction
 //! Anything not numerically interpretable (a username, an errno symbol, a hex
-//! literal -- decimal parse fails on `0x..` so hex lands here -- or any
-//! string-typed field) is [`FieldValue::Opaque`]: it only ever compares by
-//! exact (trimmed) spelling, never by interval. The numeric relations below
-//! return their answer only when they can PROVE it; on any doubt they decline,
-//! so #219 never manufactures a false subsumption or a false disjointness.
+//! literal on a string-typed field, or a malformed number) is
+//! [`FieldValue::Opaque`]: it only ever compares by exact (trimmed) spelling,
+//! never by interval. The numeric relations below return their answer only when
+//! they can PROVE it; on any doubt they decline, so #219 never manufactures a
+//! false subsumption or a false disjointness.
 
 use std::borrow::Cow;
 
@@ -45,8 +54,9 @@ pub enum FieldValue {
     /// unsigned `Numeric`/`NumericEqNe` fields).
     Unsigned(u64),
     /// Not numerically interpretable for folding or intervals (username, errno
-    /// symbol, hex literal, any string/special-typed field, out-of-range
-    /// number). Compares only by exact spelling.
+    /// symbol, a hex literal on a string-typed field, any string/special-typed
+    /// field, a malformed or out-of-range number). Compares only by exact
+    /// spelling.
     Opaque,
 }
 
@@ -64,6 +74,46 @@ impl FieldValue {
     }
 }
 
+/// Parse `s` as a non-negative integer the way C `strtoul(s, NULL, 0)` reads the
+/// magnitude: a `0x`/`0X` prefix is hex, a leading `0` (with more digits) is
+/// octal, otherwise decimal. CONSERVATIVE by construction: the WHOLE string must
+/// be a clean number in the detected radix, so this returns `None` (the caller
+/// then keeps the value [`FieldValue::Opaque`]) on any ambiguity rather than
+/// replicating strtoul's parse-a-prefix-then-stop (so `08` is `None` here, not
+/// `0`, and never produces a fold libaudit would not). No sign handling;
+/// [`parse_i64_base0`] adds the leading `-`. Grounded in libaudit
+/// `audit_rule_fieldpair_data` (lib/libaudit.c @ 3bfa048), which parses every
+/// numeric `-F` value with `strtoul`/`strtol` base 0 (#229).
+fn parse_u64_base0(s: &str) -> Option<u64> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u64::from_str_radix(hex, 16).ok()
+    } else if s.len() > 1 && s.starts_with('0') {
+        let octal = &s[1..];
+        if !octal.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            return None;
+        }
+        u64::from_str_radix(octal, 8).ok()
+    } else if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        None
+    } else {
+        s.parse::<u64>().ok()
+    }
+}
+
+/// Signed base-0 parse for `exit` (#229): an optional leading `-` on a
+/// [`parse_u64_base0`] magnitude (so `-0x10` is -16). The magnitude must fit
+/// `i64`, else `None` (conservative).
+fn parse_i64_base0(s: &str) -> Option<i64> {
+    if let Some(mag) = s.strip_prefix('-') {
+        Some(-i64::try_from(parse_u64_base0(mag)?).ok()?)
+    } else {
+        i64::try_from(parse_u64_base0(s)?).ok()
+    }
+}
+
 /// Interpret `raw` as a [`FieldValue`] under `ft`. See the module doc for the
 /// uid/gid sentinel rule and the conservative-opaque fallback.
 #[must_use]
@@ -74,26 +124,25 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
             if v.eq_ignore_ascii_case("unset") || v == "-1" {
                 return FieldValue::UidGidUnset;
             }
-            // Parse as u32: this rejects negatives (handled above) and anything
-            // above u32::MAX (not a valid uid/gid). u32::MAX itself is the
-            // sentinel; hex (`0x..`) and usernames fail the decimal parse.
-            match v.parse::<u32>() {
-                Ok(n) if n == u32::MAX => FieldValue::UidGidUnset,
-                Ok(n) => FieldValue::Unsigned(u64::from(n)),
-                Err(_) => FieldValue::Opaque,
+            // libaudit parses uid/gid with strtoul base 0 (#229): hex/octal/
+            // decimal all accepted. Narrow to u32 (anything above is not a valid
+            // uid/gid -> opaque); u32::MAX is the sentinel; usernames and
+            // malformed numbers fail the parse and stay opaque.
+            match parse_u64_base0(v).and_then(|n| u32::try_from(n).ok()) {
+                Some(u32::MAX) => FieldValue::UidGidUnset,
+                Some(n) => FieldValue::Unsigned(u64::from(n)),
+                None => FieldValue::Opaque,
             }
         }
-        // exit takes a negative errno: signed.
-        FieldType::NumericSigned => match v.parse::<i64>() {
-            Ok(n) => FieldValue::Signed(n),
-            Err(_) => FieldValue::Opaque,
-        },
-        // pid/a0..a3/inode/etc: unsigned. A negative or hex spelling fails the
-        // decimal u64 parse and stays opaque.
-        FieldType::Numeric | FieldType::NumericEqNe => match v.parse::<u64>() {
-            Ok(n) => FieldValue::Unsigned(n),
-            Err(_) => FieldValue::Opaque,
-        },
+        // exit takes a negative errno: signed, base-0 magnitude (#229).
+        FieldType::NumericSigned => {
+            parse_i64_base0(v).map_or(FieldValue::Opaque, FieldValue::Signed)
+        }
+        // pid/a0..a3/inode/etc: unsigned, base-0 (#229). A negative or malformed
+        // spelling fails the parse and stays opaque.
+        FieldType::Numeric | FieldType::NumericEqNe => {
+            parse_u64_base0(v).map_or(FieldValue::Opaque, FieldValue::Unsigned)
+        }
         // Every string / special-grammar field: never numerically folded.
         FieldType::String
         | FieldType::StringEqNe
@@ -290,14 +339,32 @@ mod tests {
     #[test]
     fn uid_non_numeric_and_out_of_range_are_opaque() {
         assert_eq!(classify(ft(AuditField::Auid), "root"), FieldValue::Opaque);
-        assert_eq!(classify(ft(AuditField::Auid), "0x10"), FieldValue::Opaque);
         // > u32::MAX is not a valid uid -> opaque, not a wrapped sentinel.
         assert_eq!(
             classify(ft(AuditField::Auid), "4294967296"),
             FieldValue::Opaque
         );
-        // negative other than -1 is not meaningful for uid -> opaque.
+        // A negative other than -1 is not meaningful for uid -> opaque. (#229: we
+        // do NOT replicate libaudit's negative-uid wrap; conservative Opaque.)
         assert_eq!(classify(ft(AuditField::Auid), "-2"), FieldValue::Opaque);
+    }
+
+    #[test]
+    fn uid_parses_hex_octal_base0() {
+        // libaudit parses uid with strtoul base 0 (#229): hex/octal accepted.
+        assert_eq!(
+            classify(ft(AuditField::Auid), "0x10"),
+            FieldValue::Unsigned(16)
+        );
+        assert_eq!(
+            classify(ft(AuditField::Auid), "010"),
+            FieldValue::Unsigned(8)
+        );
+        // 0xFFFFFFFF == u32::MAX == the unset sentinel.
+        assert_eq!(
+            classify(ft(AuditField::Uid), "0xFFFFFFFF"),
+            FieldValue::UidGidUnset
+        );
     }
 
     // --- classify: the 4294967295 distinctness invariant ----------------
@@ -390,12 +457,64 @@ mod tests {
     }
 
     #[test]
-    fn canonical_opaque_values_keep_spelling_and_hex_is_opaque() {
+    fn canonical_opaque_values_keep_spelling_but_hex_octal_fold() {
         let u = ft(AuditField::Auid);
         assert_eq!(canonical_value(u, "root"), "root");
-        // hex is opaque (decimal parse fails) -> NOT folded to decimal.
-        assert_eq!(canonical_value(u, "0x10"), "0x10");
-        assert_ne!(canonical_value(u, "0x10"), canonical_value(u, "16"));
+        // #229: hex/octal now parse base-0 and fold to decimal (match libaudit).
+        assert_eq!(canonical_value(u, "0x10"), "16");
+        assert_eq!(canonical_value(u, "0x10"), canonical_value(u, "16"));
+        // A genuinely unparseable value still keeps its trimmed spelling.
+        assert_eq!(canonical_value(u, "0xZZ"), "0xZZ");
+    }
+
+    // --- classify / canonical: base-0 numeric parsing (#229) ------------
+
+    #[test]
+    fn classify_parses_hex_octal_decimal_base0() {
+        // Numeric -F values parse base-0 like libaudit strtoul/strtol @ 3bfa048.
+        assert_eq!(
+            classify(ft(AuditField::A0), "0x80"),
+            FieldValue::Unsigned(128)
+        );
+        // leading-0 is OCTAL, not decimal (the latent-bug case).
+        assert_eq!(classify(ft(AuditField::A0), "010"), FieldValue::Unsigned(8));
+        assert_eq!(classify(ft(AuditField::A0), "80"), FieldValue::Unsigned(80));
+        // signed exit: base-0 magnitude with an optional leading '-'.
+        assert_eq!(
+            classify(ft(AuditField::Exit), "0x10"),
+            FieldValue::Signed(16)
+        );
+        assert_eq!(
+            classify(ft(AuditField::Exit), "-0x10"),
+            FieldValue::Signed(-16)
+        );
+        assert_eq!(classify(ft(AuditField::Exit), "-1"), FieldValue::Signed(-1));
+    }
+
+    #[test]
+    fn canonical_folds_hex_octal_decimal_same_value() {
+        let a = ft(AuditField::A0);
+        assert_eq!(canonical_value(a, "0x80"), "128");
+        assert_eq!(canonical_value(a, "0x80"), canonical_value(a, "128"));
+        assert_eq!(canonical_value(a, "010"), "8");
+    }
+
+    #[test]
+    fn octal_distinct_from_decimal() {
+        // The latent-bug guard: a0=010 is octal 8, NOT decimal 10.
+        let a = ft(AuditField::A0);
+        assert_ne!(canonical_value(a, "010"), canonical_value(a, "10"));
+        assert_eq!(canonical_value(a, "010"), canonical_value(a, "8"));
+    }
+
+    #[test]
+    fn ambiguous_numeric_stays_opaque_conservative() {
+        // We do NOT replicate strtoul's parse-prefix-then-stop; anything that is
+        // not a clean base-0 number stays Opaque (#229; never a false fold).
+        let a = ft(AuditField::A0);
+        for s in ["08", "0x", "0xZZ", "12x", "", " "] {
+            assert_eq!(classify(a, s), FieldValue::Opaque, "{s:?} must be opaque");
+        }
     }
 
     // --- implies: au-W02 subsumption (#219) -----------------------------
