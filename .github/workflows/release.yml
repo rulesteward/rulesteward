@@ -114,15 +114,19 @@ jobs:
           #     enumerate it -- append its verbatim COPYRIGHT. The copyleft /
           #     vendored-C texts (LGPL-2.1, OLDAP-2.8) stay in their own dedicated
           #     assets below; this file is the permissive bulk.
-          # NOTE: do NOT add --offline here. cargo-about runs `cargo metadata`,
-          # which resolves the FULL cross-platform dependency graph (including
-          # Windows-cfg crates such as anstyle-wincon). This release build only
-          # compiled for the musl/Linux target, so those crates are never fetched;
-          # --offline then fails ("attempting to make an HTTP request, but --offline
-          # was specified"). The networked form fetches the remaining crate metadata
-          # from crates.io. (#185; the --offline form was caught by the v0.2.1-rc1
-          # dry-run. A prefetch-then-offline hardening is tracked as a follow-up.)
-          cargo about generate about.hbs --target "$TARGET" -o dist/THIRD-PARTY-LICENSES
+          # cargo-about runs `cargo metadata`, which resolves the FULL
+          # cross-platform dependency graph (including Windows-cfg crates such as
+          # anstyle-wincon) that this musl/Linux-only release build never compiled.
+          # So a bare `cargo about --offline` cannot resolve them from the runner
+          # cache and fails ("attempting to make an HTTP request, but --offline was
+          # specified" on anstyle-wincon; #185, caught by the v0.2.1-rc1 dry-run).
+          # Fix (#208): prefetch the full graph first -- `cargo fetch` with NO
+          # --target lands all-platform crates in the cache -- then generate
+          # hermetically with --offline (removes the clearlydefined.io network
+          # dependency from license aggregation). Validated in a cold CARGO_HOME:
+          # cold `--offline` fails; `cargo fetch --locked` + `--offline` passes.
+          cargo fetch --locked
+          cargo about generate about.hbs --target "$TARGET" --offline -o dist/THIRD-PARTY-LICENSES
           {
             printf '\n\n'
             printf '========================================================================\n'
