@@ -78,8 +78,9 @@ enum Layout {
 /// Outcome of the post-apply `fagenrules --check` verification (#211).
 ///
 /// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
-/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent on the
-/// host: the check degrades gracefully and the exit code stays clean).
+/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent OR too old
+/// to support `--check-rules` per #222: the check degrades gracefully and the
+/// exit code stays clean).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FagenrulesCheck {
@@ -710,7 +711,7 @@ fn render_human(plan: &MigratePlan) -> String {
         let label = match check.status {
             "passed" => "Verification passed",
             "failed" => "Verification FAILED",
-            _ => "Verification unavailable (fapolicyd-cli not found; skipped)",
+            _ => "Verification unavailable (fapolicyd-cli absent or too old; skipped)",
         };
         let _ = writeln!(s, "  {label}");
         if !check.detail.is_empty() && check.status != "unavailable" {
