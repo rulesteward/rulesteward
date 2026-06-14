@@ -310,6 +310,19 @@ mod tests {
     }
 
     #[test]
+    fn msgtype_name_number_fold_227() {
+        // #227: a msgtype symbolic name and its number denote the same record
+        // type, so au-W01 must treat them as one rule.
+        let a = rule("-a always,exclude -F msgtype=SYSCALL");
+        let b = rule("-a always,exclude -F msgtype=1300");
+        let c = rule("-a always,exclude -F msgtype=syscall");
+        let d = rule("-a always,exclude -F msgtype=1305"); // CONFIG_CHANGE
+        assert_eq!(canonical_key(&a), canonical_key(&b), "SYSCALL == 1300");
+        assert_eq!(canonical_key(&a), canonical_key(&c), "case-insensitive");
+        assert_ne!(canonical_key(&a), canonical_key(&d), "1300 != 1305");
+    }
+
+    #[test]
     fn field_compare_order_swap_is_equal() {
         let a = rule("-a always,exit -S execve -C uid!=euid -C gid!=egid -k x");
         let b = rule("-a always,exit -S execve -C gid!=egid -C uid!=euid -k x");

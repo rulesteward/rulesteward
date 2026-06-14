@@ -19,13 +19,22 @@
 //! `exit=4294967295` (`FieldType::NumericSigned`) is a concrete signed value;
 //! neither folds.
 //!
+//! # Numeric spellings (base-0, #229)
+//! Numeric fields parse their value with C `strtoul`/`strtol` base 0, matching
+//! libaudit `audit_rule_fieldpair_data` @ 3bfa048: `0x80` is hex 128, `010` is
+//! octal 8, `80` is decimal 80. So equivalent spellings of the same number fold
+//! (`a0=0x80` == `a0=128`), and the leading-zero octal case is read correctly
+//! (`a0=010` is 8, NOT 10). Parsing is strict: a value that is not a clean
+//! base-0 number in its detected radix stays [`FieldValue::Opaque`] rather than
+//! taking strtoul's parse-a-prefix-then-stop shortcut (so `08` is opaque, not 0).
+//!
 //! # Conservative by construction
 //! Anything not numerically interpretable (a username, an errno symbol, a hex
-//! literal -- decimal parse fails on `0x..` so hex lands here -- or any
-//! string-typed field) is [`FieldValue::Opaque`]: it only ever compares by
-//! exact (trimmed) spelling, never by interval. The numeric relations below
-//! return their answer only when they can PROVE it; on any doubt they decline,
-//! so #219 never manufactures a false subsumption or a false disjointness.
+//! literal on a string-typed field, or a malformed number) is
+//! [`FieldValue::Opaque`]: it only ever compares by exact (trimmed) spelling,
+//! never by interval. The numeric relations below return their answer only when
+//! they can PROVE it; on any doubt they decline, so #219 never manufactures a
+//! false subsumption or a false disjointness.
 
 use std::borrow::Cow;
 
@@ -45,8 +54,9 @@ pub enum FieldValue {
     /// unsigned `Numeric`/`NumericEqNe` fields).
     Unsigned(u64),
     /// Not numerically interpretable for folding or intervals (username, errno
-    /// symbol, hex literal, any string/special-typed field, out-of-range
-    /// number). Compares only by exact spelling.
+    /// symbol, a hex literal on a string-typed field, any string/special-typed
+    /// field, a malformed or out-of-range number). Compares only by exact
+    /// spelling.
     Opaque,
 }
 
@@ -64,6 +74,46 @@ impl FieldValue {
     }
 }
 
+/// Parse `s` as a non-negative integer the way C `strtoul(s, NULL, 0)` reads the
+/// magnitude: a `0x`/`0X` prefix is hex, a leading `0` (with more digits) is
+/// octal, otherwise decimal. CONSERVATIVE by construction: the WHOLE string must
+/// be a clean number in the detected radix, so this returns `None` (the caller
+/// then keeps the value [`FieldValue::Opaque`]) on any ambiguity rather than
+/// replicating strtoul's parse-a-prefix-then-stop (so `08` is `None` here, not
+/// `0`, and never produces a fold libaudit would not). No sign handling;
+/// [`parse_i64_base0`] adds the leading `-`. Grounded in libaudit
+/// `audit_rule_fieldpair_data` (lib/libaudit.c @ 3bfa048), which parses every
+/// numeric `-F` value with `strtoul`/`strtol` base 0 (#229).
+fn parse_u64_base0(s: &str) -> Option<u64> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u64::from_str_radix(hex, 16).ok()
+    } else if s.len() > 1 && s.starts_with('0') {
+        let octal = &s[1..];
+        if !octal.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            return None;
+        }
+        u64::from_str_radix(octal, 8).ok()
+    } else if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        None
+    } else {
+        s.parse::<u64>().ok()
+    }
+}
+
+/// Signed base-0 parse for `exit` (#229): an optional leading `-` on a
+/// [`parse_u64_base0`] magnitude (so `-0x10` is -16). The magnitude must fit
+/// `i64`, else `None` (conservative).
+fn parse_i64_base0(s: &str) -> Option<i64> {
+    if let Some(mag) = s.strip_prefix('-') {
+        Some(-i64::try_from(parse_u64_base0(mag)?).ok()?)
+    } else {
+        i64::try_from(parse_u64_base0(s)?).ok()
+    }
+}
+
 /// Interpret `raw` as a [`FieldValue`] under `ft`. See the module doc for the
 /// uid/gid sentinel rule and the conservative-opaque fallback.
 #[must_use]
@@ -74,26 +124,25 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
             if v.eq_ignore_ascii_case("unset") || v == "-1" {
                 return FieldValue::UidGidUnset;
             }
-            // Parse as u32: this rejects negatives (handled above) and anything
-            // above u32::MAX (not a valid uid/gid). u32::MAX itself is the
-            // sentinel; hex (`0x..`) and usernames fail the decimal parse.
-            match v.parse::<u32>() {
-                Ok(n) if n == u32::MAX => FieldValue::UidGidUnset,
-                Ok(n) => FieldValue::Unsigned(u64::from(n)),
-                Err(_) => FieldValue::Opaque,
+            // libaudit parses uid/gid with strtoul base 0 (#229): hex/octal/
+            // decimal all accepted. Narrow to u32 (anything above is not a valid
+            // uid/gid -> opaque); u32::MAX is the sentinel; usernames and
+            // malformed numbers fail the parse and stay opaque.
+            match parse_u64_base0(v).and_then(|n| u32::try_from(n).ok()) {
+                Some(u32::MAX) => FieldValue::UidGidUnset,
+                Some(n) => FieldValue::Unsigned(u64::from(n)),
+                None => FieldValue::Opaque,
             }
         }
-        // exit takes a negative errno: signed.
-        FieldType::NumericSigned => match v.parse::<i64>() {
-            Ok(n) => FieldValue::Signed(n),
-            Err(_) => FieldValue::Opaque,
-        },
-        // pid/a0..a3/inode/etc: unsigned. A negative or hex spelling fails the
-        // decimal u64 parse and stays opaque.
-        FieldType::Numeric | FieldType::NumericEqNe => match v.parse::<u64>() {
-            Ok(n) => FieldValue::Unsigned(n),
-            Err(_) => FieldValue::Opaque,
-        },
+        // exit takes a negative errno: signed, base-0 magnitude (#229).
+        FieldType::NumericSigned => {
+            parse_i64_base0(v).map_or(FieldValue::Opaque, FieldValue::Signed)
+        }
+        // pid/a0..a3/inode/etc: unsigned, base-0 (#229). A negative or malformed
+        // spelling fails the parse and stays opaque.
+        FieldType::Numeric | FieldType::NumericEqNe => {
+            parse_u64_base0(v).map_or(FieldValue::Opaque, FieldValue::Unsigned)
+        }
         // Every string / special-grammar field: never numerically folded.
         FieldType::String
         | FieldType::StringEqNe
@@ -107,14 +156,264 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
     }
 }
 
-/// The canonical spelling of `raw` under `ft`, for content identity (#220).
+/// The audit record-type `msgtype` name -> number table (#227), so au-W01 and
+/// au-W02 fold `msgtype=SYSCALL` and `msgtype=1300` to one value.
+///
+/// Names are the UNCOMMENTED `_S(AUDIT_<NAME>, "<NAME>")` entries of
+/// audit-userspace `lib/msg_typetab.h` @ commit 3bfa048 (the crate's pinned
+/// citation commit); numbers are the `AUDIT_*` constants in `lib/audit-records.h`
+/// @ 3bfa048 and the kernel `include/uapi/linux/audit.h`. The `#ifdef
+/// WITH_APPARMOR` block (`APPARMOR_*`, 1500-1599) is intentionally EXCLUDED: it
+/// is compiled into libaudit only on `AppArmor` builds, so folding those names
+/// would claim an equivalence a non-`AppArmor` daemon does not make (tracked in
+/// #230). Commented-out `_S` entries (deprecated/daemon-filtered commands such
+/// as `GET`/`SET`/`LIST`/`ADD`/`DEL`/`DAEMON_RECONFIG`) are also excluded.
+///
+/// Lookup is case-insensitive (libaudit `audit_name_to_msg_type` -> `msg_type_s2i`
+/// is generated `--uppercase`). The pinned length is asserted by
+/// `msgtype_table_has_expected_entry_count`.
+const MSGTYPE_NAMES: &[(&str, u32)] = &[
+    // 1000-1099 commanding the audit system (only the two non-deprecated names).
+    ("USER", 1005),
+    ("LOGIN", 1006),
+    // 1100-1199 user space trusted application messages (audit-records.h).
+    ("USER_AUTH", 1100),
+    ("USER_ACCT", 1101),
+    ("USER_MGMT", 1102),
+    ("CRED_ACQ", 1103),
+    ("CRED_DISP", 1104),
+    ("USER_START", 1105),
+    ("USER_END", 1106),
+    ("USER_AVC", 1107),
+    ("USER_CHAUTHTOK", 1108),
+    ("USER_ERR", 1109),
+    ("CRED_REFR", 1110),
+    ("USYS_CONFIG", 1111),
+    ("USER_LOGIN", 1112),
+    ("USER_LOGOUT", 1113),
+    ("ADD_USER", 1114),
+    ("DEL_USER", 1115),
+    ("ADD_GROUP", 1116),
+    ("DEL_GROUP", 1117),
+    ("DAC_CHECK", 1118),
+    ("CHGRP_ID", 1119),
+    ("TEST", 1120),
+    ("TRUSTED_APP", 1121),
+    ("USER_SELINUX_ERR", 1122),
+    ("USER_CMD", 1123),
+    ("USER_TTY", 1124),
+    ("CHUSER_ID", 1125),
+    ("GRP_AUTH", 1126),
+    ("SYSTEM_BOOT", 1127),
+    ("SYSTEM_SHUTDOWN", 1128),
+    ("SYSTEM_RUNLEVEL", 1129),
+    ("SERVICE_START", 1130),
+    ("SERVICE_STOP", 1131),
+    ("GRP_MGMT", 1132),
+    ("GRP_CHAUTHTOK", 1133),
+    ("MAC_CHECK", 1134),
+    ("ACCT_LOCK", 1135),
+    ("ACCT_UNLOCK", 1136),
+    ("USER_DEVICE", 1137),
+    ("SOFTWARE_UPDATE", 1138),
+    // 1200-1299 daemon-internal (DAEMON_RECONFIG 1204 is commented out in the tab).
+    ("DAEMON_START", 1200),
+    ("DAEMON_END", 1201),
+    ("DAEMON_ABORT", 1202),
+    ("DAEMON_CONFIG", 1203),
+    ("DAEMON_ROTATE", 1205),
+    ("DAEMON_RESUME", 1206),
+    ("DAEMON_ACCEPT", 1207),
+    ("DAEMON_CLOSE", 1208),
+    ("DAEMON_ERR", 1209),
+    // 1300-1399 audit event messages (linux/audit.h; gaps 1301/1308/1310/1329
+    // are deprecated/absent/not-in-tab).
+    ("SYSCALL", 1300),
+    ("PATH", 1302),
+    ("IPC", 1303),
+    ("SOCKETCALL", 1304),
+    ("CONFIG_CHANGE", 1305),
+    ("SOCKADDR", 1306),
+    ("CWD", 1307),
+    ("EXECVE", 1309),
+    ("IPC_SET_PERM", 1311),
+    ("MQ_OPEN", 1312),
+    ("MQ_SENDRECV", 1313),
+    ("MQ_NOTIFY", 1314),
+    ("MQ_GETSETATTR", 1315),
+    ("KERNEL_OTHER", 1316),
+    ("FD_PAIR", 1317),
+    ("OBJ_PID", 1318),
+    ("TTY", 1319),
+    ("EOE", 1320),
+    ("BPRM_FCAPS", 1321),
+    ("CAPSET", 1322),
+    ("MMAP", 1323),
+    ("NETFILTER_PKT", 1324),
+    ("NETFILTER_CFG", 1325),
+    ("SECCOMP", 1326),
+    ("PROCTITLE", 1327),
+    ("FEATURE_CHANGE", 1328),
+    ("KERN_MODULE", 1330),
+    ("FANOTIFY", 1331),
+    ("TIME_INJOFFSET", 1332),
+    ("TIME_ADJNTPVAL", 1333),
+    ("BPF", 1334),
+    ("EVENT_LISTENER", 1335),
+    ("URINGOP", 1336),
+    ("OPENAT2", 1337),
+    ("DM_CTRL", 1338),
+    ("DM_EVENT", 1339),
+    // 1400-1499 kernel SELinux use.
+    ("AVC", 1400),
+    ("SELINUX_ERR", 1401),
+    ("AVC_PATH", 1402),
+    ("MAC_POLICY_LOAD", 1403),
+    ("MAC_STATUS", 1404),
+    ("MAC_CONFIG_CHANGE", 1405),
+    ("MAC_UNLBL_ALLOW", 1406),
+    ("MAC_CIPSOV4_ADD", 1407),
+    ("MAC_CIPSOV4_DEL", 1408),
+    ("MAC_MAP_ADD", 1409),
+    ("MAC_MAP_DEL", 1410),
+    ("MAC_IPSEC_ADDSA", 1411),
+    ("MAC_IPSEC_DELSA", 1412),
+    ("MAC_IPSEC_ADDSPD", 1413),
+    ("MAC_IPSEC_DELSPD", 1414),
+    ("MAC_IPSEC_EVENT", 1415),
+    ("MAC_UNLBL_STCADD", 1416),
+    ("MAC_UNLBL_STCDEL", 1417),
+    ("MAC_CALIPSO_ADD", 1418),
+    ("MAC_CALIPSO_DEL", 1419),
+    // 1700-1799 kernel anomaly records.
+    ("ANOM_PROMISCUOUS", 1700),
+    ("ANOM_ABEND", 1701),
+    ("ANOM_LINK", 1702),
+    ("ANOM_CREAT", 1703),
+    // 1800-1899 kernel integrity labels.
+    ("INTEGRITY_DATA", 1800),
+    ("INTEGRITY_METADATA", 1801),
+    ("INTEGRITY_STATUS", 1802),
+    ("INTEGRITY_HASH", 1803),
+    ("INTEGRITY_PCR", 1804),
+    ("INTEGRITY_RULE", 1805),
+    ("INTEGRITY_EVM_XATTR", 1806),
+    ("INTEGRITY_POLICY_RULE", 1807),
+    // 2000 unclassified kernel audit (the lone post-APPARMOR-block tab entry).
+    ("KERNEL", 2000),
+    // 2100-2199 user space anomaly records.
+    ("ANOM_LOGIN_FAILURES", 2100),
+    ("ANOM_LOGIN_TIME", 2101),
+    ("ANOM_LOGIN_SESSIONS", 2102),
+    ("ANOM_LOGIN_ACCT", 2103),
+    ("ANOM_LOGIN_LOCATION", 2104),
+    ("ANOM_MAX_DAC", 2105),
+    ("ANOM_MAX_MAC", 2106),
+    ("ANOM_AMTU_FAIL", 2107),
+    ("ANOM_RBAC_FAIL", 2108),
+    ("ANOM_RBAC_INTEGRITY_FAIL", 2109),
+    ("ANOM_CRYPTO_FAIL", 2110),
+    ("ANOM_ACCESS_FS", 2111),
+    ("ANOM_EXEC", 2112),
+    ("ANOM_MK_EXEC", 2113),
+    ("ANOM_ADD_ACCT", 2114),
+    ("ANOM_DEL_ACCT", 2115),
+    ("ANOM_MOD_ACCT", 2116),
+    ("ANOM_ROOT_TRANS", 2117),
+    ("ANOM_LOGIN_SERVICE", 2118),
+    ("ANOM_LOGIN_ROOT", 2119),
+    ("ANOM_ORIGIN_FAILURES", 2120),
+    ("ANOM_SESSION", 2121),
+    // 2200-2299 user space responses to anomalies.
+    ("RESP_ANOMALY", 2200),
+    ("RESP_ALERT", 2201),
+    ("RESP_KILL_PROC", 2202),
+    ("RESP_TERM_ACCESS", 2203),
+    ("RESP_ACCT_REMOTE", 2204),
+    ("RESP_ACCT_LOCK_TIMED", 2205),
+    ("RESP_ACCT_UNLOCK_TIMED", 2206),
+    ("RESP_ACCT_LOCK", 2207),
+    ("RESP_TERM_LOCK", 2208),
+    ("RESP_SEBOOL", 2209),
+    ("RESP_EXEC", 2210),
+    ("RESP_SINGLE", 2211),
+    ("RESP_HALT", 2212),
+    ("RESP_ORIGIN_BLOCK", 2213),
+    ("RESP_ORIGIN_BLOCK_TIMED", 2214),
+    ("RESP_ORIGIN_UNBLOCK_TIMED", 2215),
+    // 2300-2399 user space generated LSPP events.
+    ("USER_ROLE_CHANGE", 2300),
+    ("ROLE_ASSIGN", 2301),
+    ("ROLE_REMOVE", 2302),
+    ("LABEL_OVERRIDE", 2303),
+    ("LABEL_LEVEL_CHANGE", 2304),
+    ("USER_LABELED_EXPORT", 2305),
+    ("USER_UNLABELED_EXPORT", 2306),
+    ("DEV_ALLOC", 2307),
+    ("DEV_DEALLOC", 2308),
+    ("FS_RELABEL", 2309),
+    ("USER_MAC_POLICY_LOAD", 2310),
+    ("ROLE_MODIFY", 2311),
+    ("USER_MAC_CONFIG_CHANGE", 2312),
+    ("USER_MAC_STATUS", 2313),
+    // 2400-2499 user space crypto events.
+    ("CRYPTO_TEST_USER", 2400),
+    ("CRYPTO_PARAM_CHANGE_USER", 2401),
+    ("CRYPTO_LOGIN", 2402),
+    ("CRYPTO_LOGOUT", 2403),
+    ("CRYPTO_KEY_USER", 2404),
+    ("CRYPTO_FAILURE_USER", 2405),
+    ("CRYPTO_REPLAY_USER", 2406),
+    ("CRYPTO_SESSION", 2407),
+    ("CRYPTO_IKE_SA", 2408),
+    ("CRYPTO_IPSEC_SA", 2409),
+    // 2500-2599 user space virtualization management events.
+    ("VIRT_CONTROL", 2500),
+    ("VIRT_RESOURCE", 2501),
+    ("VIRT_MACHINE_ID", 2502),
+    ("VIRT_INTEGRITY_CHECK", 2503),
+    ("VIRT_CREATE", 2504),
+    ("VIRT_DESTROY", 2505),
+    ("VIRT_MIGRATE_IN", 2506),
+    ("VIRT_MIGRATE_OUT", 2507),
+];
+
+/// The numeric audit record type for a msgtype NAME (case-insensitive per
+/// libaudit `audit_name_to_msg_type`), or `None` if `name` is not a known
+/// record-type name. See [`MSGTYPE_NAMES`].
+fn msgtype_number(name: &str) -> Option<u32> {
+    MSGTYPE_NAMES
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|&(_, num)| num)
+}
+
+/// The canonical spelling of `raw` under `ft`, for content identity (#220, #227).
 ///
 /// The uid/gid unset triple collapses to `"unset"`; concrete numerics
-/// decimal-normalize (a value-preserving bijection); opaque values keep their
-/// trimmed spelling. Equal canonical values mean the two predicates match the
-/// same kernel value.
+/// decimal-normalize (a value-preserving bijection); a `msgtype` symbolic name
+/// folds to its record-type number (#227, so `SYSCALL` == `1300`); opaque values
+/// keep their trimmed spelling. Equal canonical values mean the two predicates
+/// match the same kernel value.
 #[must_use]
 pub fn canonical_value(ft: FieldType, raw: &str) -> Cow<'_, str> {
+    // msgtype folds symbolic record-type names to their number (#227), so au-W01
+    // (canonical_key) and au-W02 (implies I0) treat `msgtype=SYSCALL` and
+    // `msgtype=1300` as one value. This is the ONLY place msgtype folds:
+    // classify(MsgType) stays Opaque, so msgtype never enters interval reasoning
+    // and au-W03 disjointness stays conservative for it.
+    if ft == FieldType::MsgType {
+        let t = raw.trim();
+        if let Some(n) = msgtype_number(t) {
+            return Cow::Owned(n.to_string());
+        }
+        // A bare numeric spelling normalizes via base-0 (#229); an unknown name
+        // or otherwise unparseable value keeps its trimmed spelling (opaque).
+        return match parse_u64_base0(t) {
+            Some(n) => Cow::Owned(n.to_string()),
+            None => Cow::Borrowed(t),
+        };
+    }
     match classify(ft, raw) {
         FieldValue::UidGidUnset => Cow::Borrowed("unset"),
         // Decimal-normalize concrete numerics (a value-preserving bijection, so
@@ -155,48 +454,96 @@ pub fn implies(pe: &FieldFilter, pl: &FieldFilter) -> bool {
 }
 
 /// True when two same-field predicates are PROVABLY non-co-matching: no single
-/// event value can satisfy both. Used by au-W03 (#219) to prove two rules
+/// event value can satisfy both. Used by au-W03 (#219, #228) to prove two rules
 /// cannot overlap. Conservative: returns true only when provable; on any doubt
 /// returns false (the rules are then treated as overlapping, keeping the
 /// suppression warning).
+///
+/// Provable cases:
+/// * Eq vs Eq: contradict iff [`eq_values_provably_differ`].
+/// * Eq vs Ne (#228): `f=k` and `f!=k'` contradict iff k provably equals k'
+///   ([`eq_values_provably_equal`]); the Eq value is exactly what Ne excludes.
+/// * Eq vs bitmask (#228): the Eq value pins the field, so the mask test is
+///   decidable - `=k` vs `&m` iff `k & m == 0`; `=k` vs `&=m` iff `k & m != m`
+///   (both operands must be concrete unsigned numbers).
+/// * Relational/Eq pairs: non-overlapping concrete intervals.
+///
+/// Cases that are NEVER provably disjoint (theorems, kept conservative -> false):
+/// two bitmask predicates (always co-satisfiable by `m1 | m2`), Ne vs Ne (each
+/// excludes one point, so they always intersect), and Ne/bitmask vs a relational
+/// (the Ne/bitmask set has no interval). These fall through to the interval arm,
+/// where Ne/bitmask yield `None`.
 #[must_use]
 pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter) -> bool {
     if pa.field != pb.field {
         return false;
     }
     let ft = field_type(&pa.field);
-    // Eq vs Eq: one event carries one value per field, so two equalities
-    // contradict iff their values are PROVABLY different kernel values. Handled
-    // here (not via interval) because it must cover string/opaque fields and the
-    // folded sentinel, and must NOT call alias-bearing spellings disjoint.
-    if pa.op == CompareOp::Eq && pb.op == CompareOp::Eq {
-        return eq_values_provably_differ(ft, &pa.value, &pb.value);
+    match (&pa.op, &pb.op) {
+        // Eq vs Eq: one event carries one value per field, so two equalities
+        // contradict iff their values are PROVABLY different kernel values.
+        (CompareOp::Eq, CompareOp::Eq) => eq_values_provably_differ(ft, &pa.value, &pb.value),
+        // Eq vs Ne (either order, #228): contradict iff the Eq value provably
+        // equals the value Ne excludes.
+        (CompareOp::Eq, CompareOp::Ne) | (CompareOp::Ne, CompareOp::Eq) => {
+            eq_values_provably_equal(ft, &pa.value, &pb.value)
+        }
+        // Eq vs bitmask (either order, #228): `&` matches iff (value & mask) != 0,
+        // `&=` matches iff (value & mask) == mask. With the value pinned by Eq the
+        // test is decidable; helpers take (eq, mask) so the order is normalized.
+        (CompareOp::Eq, CompareOp::BitAnd) => eq_bitand_disjoint(ft, &pa.value, &pb.value),
+        (CompareOp::BitAnd, CompareOp::Eq) => eq_bitand_disjoint(ft, &pb.value, &pa.value),
+        (CompareOp::Eq, CompareOp::BitAndEq) => eq_bitandeq_disjoint(ft, &pa.value, &pb.value),
+        (CompareOp::BitAndEq, CompareOp::Eq) => eq_bitandeq_disjoint(ft, &pb.value, &pa.value),
+        // Otherwise prove disjointness only via non-overlapping concrete
+        // intervals. Ne/bitmask/opaque/sentinel yield None -> not provably
+        // disjoint -> overlap (this is where the conservative theorems land).
+        _ => match (interval(ft, pa), interval(ft, pb)) {
+            (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
+            _ => false,
+        },
     }
-    // Otherwise prove disjointness only via non-overlapping concrete intervals.
-    // Ne/bitmask/opaque/sentinel yield None -> not provably disjoint -> overlap.
-    match (interval(ft, pa), interval(ft, pb)) {
-        (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
+}
+
+/// The concrete unsigned value of `raw` under `ft`, or `None` if it is not a
+/// concrete unsigned number (so the bitmask relations decline -> conservative).
+fn as_u64(ft: FieldType, raw: &str) -> Option<u64> {
+    match classify(ft, raw) {
+        FieldValue::Unsigned(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// True when `=k` and `&m` cannot co-match (#228): the single value `k` fails the
+/// bit-mask test `(k & m) != 0`, i.e. `k & m == 0`. Both must be concrete
+/// unsigned; otherwise conservative (false).
+fn eq_bitand_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
+    match (as_u64(ft, eq), as_u64(ft, mask)) {
+        (Some(k), Some(m)) => k & m == 0,
         _ => false,
     }
 }
 
-/// True when two `=` values on the same field are PROVABLY different kernel
-/// values. Difference is provable for:
-/// * concrete-comparable values (a numeric value or the uid/gid sentinel) whose
-///   canonical forms differ - e.g. `uid=0` vs `uid=1000`; or
-/// * a free-form string field ([`FieldType::String`]/[`FieldType::StringEqNe`]/
-///   [`FieldType::Key`]: path, dir, exe, subj_*, obj_*, key) where the kernel does
-///   an exact string match with no symbolic aliases - e.g. `path=/a` vs `path=/b`.
-///
-/// Alias-bearing fields where one spelling can denote the same value as another
-/// (uid/gid NAMES like `uid=root` == `uid=0`; `arch=b64` == `arch=x86_64`;
-/// `msgtype=SYSCALL` == `msgtype=1300`; filetype/fstype symbolic names) are NOT
-/// provably different from a spelling mismatch alone, so this returns false
-/// (the rules are then treated as overlapping). That keeps au-W03 conservative:
-/// it never DROPS a real suppression warning on a value it cannot disprove. The
-/// cost is over-warning on a genuinely-distinct alias-bearing pair (e.g.
-/// `msgtype=1300` vs `msgtype=1301`), the safe direction for a suppression lint.
-fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str) -> bool {
+/// True when `=k` and `&=m` cannot co-match (#228): the single value `k` fails
+/// the bit-test `(k & m) == m`, i.e. `k & m != m`. Both must be concrete
+/// unsigned; otherwise conservative (false).
+fn eq_bitandeq_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
+    match (as_u64(ft, eq), as_u64(ft, mask)) {
+        (Some(k), Some(m)) => k & m != m,
+        _ => false,
+    }
+}
+
+/// Whether two `=`/`!=` values on field `ft` can be decided same-vs-different
+/// from their canonical spelling alone: both concrete-comparable (a numeric value
+/// or the uid/gid sentinel) OR a free-form exact-match string field
+/// ([`FieldType::String`]/[`FieldType::StringEqNe`]/[`FieldType::Key`]: path, dir,
+/// exe, subj_*, obj_*, key). Alias-bearing fields where one spelling can denote
+/// the same value as another (uid/gid NAMES like `uid=root` == `uid=0`;
+/// `arch=b64` == `arch=x86_64`; msgtype; filetype/fstype symbolic names) are NOT
+/// decidable from a spelling, so this returns false and the caller stays
+/// conservative (never DROPS a real au-W03 suppression warning).
+fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str) -> bool {
     let comparable = |v: FieldValue| {
         matches!(
             v,
@@ -208,11 +555,22 @@ fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str) -> bool {
         ft,
         FieldType::String | FieldType::StringEqNe | FieldType::Key
     );
-    if both_concrete || free_form {
-        canonical_value(ft, a) != canonical_value(ft, b)
-    } else {
-        false
-    }
+    both_concrete || free_form
+}
+
+/// True when two values on the same field are PROVABLY DIFFERENT kernel values
+/// (e.g. `uid=0` vs `uid=1000`, `path=/a` vs `path=/b`). Decidable only when
+/// [`canonical_decides_value_identity`] holds; otherwise false (conservative).
+fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str) -> bool {
+    canonical_decides_value_identity(ft, a, b) && canonical_value(ft, a) != canonical_value(ft, b)
+}
+
+/// True when two values on the same field are PROVABLY the SAME kernel value (the
+/// mirror of [`eq_values_provably_differ`]); used by au-W03 Eq-vs-Ne
+/// disjointness (#228). Decidable only when [`canonical_decides_value_identity`]
+/// holds; otherwise false (conservative).
+fn eq_values_provably_equal(ft: FieldType, a: &str, b: &str) -> bool {
+    canonical_decides_value_identity(ft, a, b) && canonical_value(ft, a) == canonical_value(ft, b)
 }
 
 /// The closed `i128` interval `[lo, hi]` of event values a predicate matches,
@@ -239,7 +597,9 @@ mod tests {
     // enum by value for call-site ergonomics (clippy::needless_pass_by_value).
     #![allow(clippy::similar_names, clippy::needless_pass_by_value)]
 
-    use super::{FieldValue, canonical_value, classify, disjoint, implies};
+    use super::{
+        FieldValue, canonical_value, classify, disjoint, eq_values_provably_equal, implies,
+    };
     use crate::ast::{AuditField, CompareOp, FieldFilter};
     use crate::lints::field_type::field_type;
 
@@ -290,14 +650,32 @@ mod tests {
     #[test]
     fn uid_non_numeric_and_out_of_range_are_opaque() {
         assert_eq!(classify(ft(AuditField::Auid), "root"), FieldValue::Opaque);
-        assert_eq!(classify(ft(AuditField::Auid), "0x10"), FieldValue::Opaque);
         // > u32::MAX is not a valid uid -> opaque, not a wrapped sentinel.
         assert_eq!(
             classify(ft(AuditField::Auid), "4294967296"),
             FieldValue::Opaque
         );
-        // negative other than -1 is not meaningful for uid -> opaque.
+        // A negative other than -1 is not meaningful for uid -> opaque. (#229: we
+        // do NOT replicate libaudit's negative-uid wrap; conservative Opaque.)
         assert_eq!(classify(ft(AuditField::Auid), "-2"), FieldValue::Opaque);
+    }
+
+    #[test]
+    fn uid_parses_hex_octal_base0() {
+        // libaudit parses uid with strtoul base 0 (#229): hex/octal accepted.
+        assert_eq!(
+            classify(ft(AuditField::Auid), "0x10"),
+            FieldValue::Unsigned(16)
+        );
+        assert_eq!(
+            classify(ft(AuditField::Auid), "010"),
+            FieldValue::Unsigned(8)
+        );
+        // 0xFFFFFFFF == u32::MAX == the unset sentinel.
+        assert_eq!(
+            classify(ft(AuditField::Uid), "0xFFFFFFFF"),
+            FieldValue::UidGidUnset
+        );
     }
 
     // --- classify: the 4294967295 distinctness invariant ----------------
@@ -390,12 +768,186 @@ mod tests {
     }
 
     #[test]
-    fn canonical_opaque_values_keep_spelling_and_hex_is_opaque() {
+    fn canonical_opaque_values_keep_spelling_but_hex_octal_fold() {
         let u = ft(AuditField::Auid);
         assert_eq!(canonical_value(u, "root"), "root");
-        // hex is opaque (decimal parse fails) -> NOT folded to decimal.
-        assert_eq!(canonical_value(u, "0x10"), "0x10");
-        assert_ne!(canonical_value(u, "0x10"), canonical_value(u, "16"));
+        // #229: hex/octal now parse base-0 and fold to decimal (match libaudit).
+        assert_eq!(canonical_value(u, "0x10"), "16");
+        assert_eq!(canonical_value(u, "0x10"), canonical_value(u, "16"));
+        // A genuinely unparseable value still keeps its trimmed spelling.
+        assert_eq!(canonical_value(u, "0xZZ"), "0xZZ");
+    }
+
+    // --- classify / canonical: base-0 numeric parsing (#229) ------------
+
+    #[test]
+    fn classify_parses_hex_octal_decimal_base0() {
+        // Numeric -F values parse base-0 like libaudit strtoul/strtol @ 3bfa048.
+        assert_eq!(
+            classify(ft(AuditField::A0), "0x80"),
+            FieldValue::Unsigned(128)
+        );
+        // leading-0 is OCTAL, not decimal (the latent-bug case).
+        assert_eq!(classify(ft(AuditField::A0), "010"), FieldValue::Unsigned(8));
+        assert_eq!(classify(ft(AuditField::A0), "80"), FieldValue::Unsigned(80));
+        // signed exit: base-0 magnitude with an optional leading '-'.
+        assert_eq!(
+            classify(ft(AuditField::Exit), "0x10"),
+            FieldValue::Signed(16)
+        );
+        assert_eq!(
+            classify(ft(AuditField::Exit), "-0x10"),
+            FieldValue::Signed(-16)
+        );
+        assert_eq!(classify(ft(AuditField::Exit), "-1"), FieldValue::Signed(-1));
+    }
+
+    #[test]
+    fn canonical_folds_hex_octal_decimal_same_value() {
+        let a = ft(AuditField::A0);
+        assert_eq!(canonical_value(a, "0x80"), "128");
+        assert_eq!(canonical_value(a, "0x80"), canonical_value(a, "128"));
+        assert_eq!(canonical_value(a, "010"), "8");
+    }
+
+    #[test]
+    fn octal_distinct_from_decimal() {
+        // The latent-bug guard: a0=010 is octal 8, NOT decimal 10.
+        let a = ft(AuditField::A0);
+        assert_ne!(canonical_value(a, "010"), canonical_value(a, "10"));
+        assert_eq!(canonical_value(a, "010"), canonical_value(a, "8"));
+    }
+
+    #[test]
+    fn ambiguous_numeric_stays_opaque_conservative() {
+        // We do NOT replicate strtoul's parse-prefix-then-stop; anything that is
+        // not a clean base-0 number stays Opaque (#229; never a false fold). The
+        // leading-'+' cases pin the digit guard specifically: `from_str_radix`
+        // and `u64::parse` both accept a leading '+', so without the all-digit
+        // guard `0x+1`/`+1`/`0+1` would parse (and falsely fold with `1`).
+        let a = ft(AuditField::A0);
+        for s in [
+            "08", "0x", "0xZZ", "12x", "", " ", "+1", "0x+1", "0+1", "0X+f",
+        ] {
+            assert_eq!(classify(a, s), FieldValue::Opaque, "{s:?} must be opaque");
+        }
+    }
+
+    // --- canonical_value: msgtype name<->number folding (#227) ----------
+
+    #[test]
+    fn msgtype_anchor_names_fold_to_numbers() {
+        let m = ft(AuditField::MsgType);
+        // Anchors spanning every msg_typetab.h block @ 3bfa048, with numbers from
+        // audit-records.h @ 3bfa048 / linux/audit.h. A transcription slip on any
+        // anchor fails here.
+        for (name, num) in [
+            ("USER", "1005"),
+            ("LOGIN", "1006"),
+            ("USER_AUTH", "1100"),
+            ("USER_END", "1106"),
+            ("SOFTWARE_UPDATE", "1138"),
+            ("DAEMON_START", "1200"),
+            ("DAEMON_ERR", "1209"),
+            ("SYSCALL", "1300"),
+            ("PATH", "1302"),
+            ("CONFIG_CHANGE", "1305"),
+            ("CWD", "1307"),
+            ("EXECVE", "1309"),
+            ("EOE", "1320"),
+            ("PROCTITLE", "1327"),
+            ("DM_EVENT", "1339"),
+            ("AVC", "1400"),
+            ("MAC_CALIPSO_DEL", "1419"),
+            ("ANOM_PROMISCUOUS", "1700"),
+            ("ANOM_CREAT", "1703"),
+            ("INTEGRITY_DATA", "1800"),
+            ("INTEGRITY_POLICY_RULE", "1807"),
+            ("KERNEL", "2000"),
+            ("ANOM_LOGIN_FAILURES", "2100"),
+            ("ANOM_SESSION", "2121"),
+            ("RESP_ANOMALY", "2200"),
+            ("RESP_ORIGIN_UNBLOCK_TIMED", "2215"),
+            ("USER_ROLE_CHANGE", "2300"),
+            ("USER_MAC_STATUS", "2313"),
+            ("CRYPTO_TEST_USER", "2400"),
+            ("CRYPTO_IPSEC_SA", "2409"),
+            ("VIRT_CONTROL", "2500"),
+            ("VIRT_MIGRATE_OUT", "2507"),
+        ] {
+            assert_eq!(canonical_value(m, name), num, "msgtype {name} -> {num}");
+        }
+    }
+
+    #[test]
+    fn msgtype_name_folding_is_case_insensitive() {
+        let m = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(m, "syscall"), "1300");
+        assert_eq!(canonical_value(m, "SysCall"), "1300");
+        assert_eq!(canonical_value(m, "SYSCALL"), "1300");
+    }
+
+    #[test]
+    fn msgtype_number_and_name_fold_to_same_canonical() {
+        let m = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(m, "1300"), canonical_value(m, "SYSCALL"));
+        // A base-0 number spelling folds too (#229): 0x514 == 1300.
+        assert_eq!(canonical_value(m, "0x514"), "1300");
+    }
+
+    #[test]
+    fn msgtype_unknown_stays_opaque() {
+        let m = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(m, "NOT_A_TYPE"), "NOT_A_TYPE");
+        // A number with no name folds only with itself (decimal-normalized).
+        assert_eq!(canonical_value(m, "99999"), "99999");
+        assert_ne!(canonical_value(m, "99999"), canonical_value(m, "SYSCALL"));
+        // A hex value with no clean parse keeps its spelling.
+        assert_eq!(canonical_value(m, "0xZZ"), "0xZZ");
+    }
+
+    #[test]
+    fn msgtype_table_has_expected_entry_count() {
+        // The count of uncommented, non-APPARMOR _S entries in msg_typetab.h
+        // @ 3bfa048. Guards against an accidental add/drop during transcription.
+        assert_eq!(super::MSGTYPE_NAMES.len(), 189);
+    }
+
+    #[test]
+    fn msgtype_table_names_are_unique_and_well_formed() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for (name, _) in super::MSGTYPE_NAMES {
+            assert!(seen.insert(*name), "duplicate msgtype name {name}");
+            assert!(
+                name.bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'),
+                "unexpected msgtype name spelling {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn msgtype_classify_stays_opaque_no_intervals() {
+        // #227 folds only in canonical_value; classify(MsgType) stays Opaque so
+        // msgtype never enters interval reasoning (au-W03 stays conservative).
+        assert_eq!(
+            classify(ft(AuditField::MsgType), "SYSCALL"),
+            FieldValue::Opaque
+        );
+        assert_eq!(
+            classify(ft(AuditField::MsgType), "1300"),
+            FieldValue::Opaque
+        );
+    }
+
+    #[test]
+    fn implies_msgtype_name_number_fold_227() {
+        // au-W02 I0 path: same op, folded-equal value across name<->number.
+        let name = ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL");
+        let num = ff(AuditField::MsgType, CompareOp::Eq, "1300");
+        assert!(implies(&name, &num));
+        assert!(implies(&num, &name));
     }
 
     // --- implies: au-W02 subsumption (#219) -----------------------------
@@ -613,22 +1165,12 @@ mod tests {
     }
 
     #[test]
-    fn disjoint_conservative_on_ne_bitmask_sentinel_opaque() {
-        // Ne stays conservative (overlap) even when arguably disjoint.
-        let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
-        let eq5 = ff(AuditField::Auid, CompareOp::Eq, "5");
-        assert!(
-            !disjoint(&ne5, &eq5),
-            "Ne is not interval-reasoned (conservative)"
-        );
-        // sentinel Eq vs relational -> can't prove disjoint -> overlap.
+    fn disjoint_conservative_on_sentinel_and_relational() {
+        // A sentinel Eq vs a relational cannot be proven disjoint -> overlap (the
+        // sentinel has no interval position).
         let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         assert!(!disjoint(&eq_unset, &ge1000));
-        // bitmask -> overlap.
-        let band4 = ff(AuditField::A0, CompareOp::BitAnd, "4");
-        let band2 = ff(AuditField::A0, CompareOp::BitAnd, "2");
-        assert!(!disjoint(&band4, &band2));
     }
 
     #[test]
@@ -699,6 +1241,151 @@ mod tests {
             &ff(AuditField::Arch, CompareOp::Eq, "b64"),
             &ff(AuditField::Arch, CompareOp::Eq, "x86_64"),
         ));
+    }
+
+    // --- eq_values_provably_equal: direct (#228) ------------------------
+
+    #[test]
+    fn eq_values_provably_equal_cases() {
+        let auid = ft(AuditField::Auid);
+        assert!(eq_values_provably_equal(auid, "5", "5"));
+        assert!(eq_values_provably_equal(auid, "-1", "4294967295")); // folded sentinel
+        assert!(!eq_values_provably_equal(auid, "5", "6"));
+        // free-form string: exact match.
+        assert!(eq_values_provably_equal(ft(AuditField::Key), "foo", "foo"));
+        assert!(!eq_values_provably_equal(ft(AuditField::Path), "/a", "/b"));
+        // alias-bearing / unresolvable -> conservative false (even if equal).
+        assert!(!eq_values_provably_equal(auid, "root", "root"));
+        assert!(!eq_values_provably_equal(
+            ft(AuditField::Arch),
+            "b64",
+            "b64"
+        ));
+    }
+
+    // --- disjoint: sound bitmask/Ne cases (#228) ------------------------
+
+    #[test]
+    fn disjoint_eq_ne_same_value_is_disjoint() {
+        // `auid=5` and `auid!=5` are a contradiction; both operand orders.
+        let eq5 = ff(AuditField::Auid, CompareOp::Eq, "5");
+        let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
+        assert!(disjoint(&eq5, &ne5), "auid=5 and auid!=5 cannot co-match");
+        assert!(disjoint(&ne5, &eq5), "symmetric");
+        // folded spellings of the same value count as same (#220/#229).
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let ne_m1 = ff(AuditField::Auid, CompareOp::Ne, "-1");
+        assert!(
+            disjoint(&eq_unset, &ne_m1),
+            "auid=unset and auid!=-1 contradict"
+        );
+    }
+
+    #[test]
+    fn disjoint_eq_ne_different_value_not_disjoint() {
+        // `auid=5` and `auid!=6`: the value 5 satisfies both -> overlap.
+        let eq5 = ff(AuditField::Auid, CompareOp::Eq, "5");
+        let ne6 = ff(AuditField::Auid, CompareOp::Ne, "6");
+        assert!(!disjoint(&eq5, &ne6));
+        assert!(!disjoint(&ne6, &eq5));
+    }
+
+    #[test]
+    fn disjoint_eq_ne_freeform_string() {
+        // Free-form string fields prove same/different by exact spelling.
+        let key_eq = ff(AuditField::Key, CompareOp::Eq, "foo");
+        let key_ne = ff(AuditField::Key, CompareOp::Ne, "foo");
+        assert!(
+            disjoint(&key_eq, &key_ne),
+            "key=foo and key!=foo contradict"
+        );
+        let path_eq = ff(AuditField::Path, CompareOp::Eq, "/a");
+        let path_ne = ff(AuditField::Path, CompareOp::Ne, "/b");
+        assert!(!disjoint(&path_eq, &path_ne), "path=/a satisfies path!=/b");
+    }
+
+    #[test]
+    fn disjoint_eq_ne_alias_bearing_stays_conservative() {
+        // Alias-bearing fields where the linter cannot resolve a name to a value
+        // stay conservative (not disjoint), so au-W03 keeps the warning.
+        assert!(!disjoint(
+            &ff(AuditField::Uid, CompareOp::Eq, "root"),
+            &ff(AuditField::Uid, CompareOp::Ne, "0"),
+        ));
+        assert!(!disjoint(
+            &ff(AuditField::Arch, CompareOp::Eq, "b64"),
+            &ff(AuditField::Arch, CompareOp::Ne, "x86_64"),
+        ));
+    }
+
+    #[test]
+    fn disjoint_eq_bitand_no_common_bits() {
+        // `a0=4` and `a0&2`: 4 & 2 == 0, so the value 4 never matches the mask.
+        let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
+        let band2 = ff(AuditField::A0, CompareOp::BitAnd, "2");
+        assert!(disjoint(&eq4, &band2), "4 & 2 == 0 -> disjoint");
+        assert!(disjoint(&band2, &eq4), "symmetric");
+    }
+
+    #[test]
+    fn disjoint_eq_bitand_shared_bit_not_disjoint() {
+        // `a0=6` and `a0&2`: 6 & 2 == 2 != 0, so 6 matches the mask -> overlap.
+        let eq6 = ff(AuditField::A0, CompareOp::Eq, "6");
+        let band2 = ff(AuditField::A0, CompareOp::BitAnd, "2");
+        assert!(!disjoint(&eq6, &band2));
+    }
+
+    #[test]
+    fn disjoint_eq_bitand_hex_mask() {
+        // The mask is usually hex; commit-1 base-0 parsing makes it concrete.
+        let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
+        let band_hex2 = ff(AuditField::A0, CompareOp::BitAnd, "0x2");
+        assert!(disjoint(&eq4, &band_hex2), "4 & 0x2 == 0 -> disjoint");
+    }
+
+    #[test]
+    fn disjoint_eq_bitandeq_missing_bits() {
+        // `a0=4` and `a0&=2`: 4 & 2 == 0 != 2, so 4 lacks the required bits.
+        let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
+        let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
+        assert!(disjoint(&eq4, &bandeq2), "(4 & 2) != 2 -> disjoint");
+        assert!(disjoint(&bandeq2, &eq4), "symmetric");
+    }
+
+    #[test]
+    fn disjoint_eq_bitandeq_all_bits_present_not_disjoint() {
+        // `a0=6` and `a0&=2`: 6 & 2 == 2 == mask, so 6 satisfies the bit test.
+        let eq6 = ff(AuditField::A0, CompareOp::Eq, "6");
+        let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
+        assert!(!disjoint(&eq6, &bandeq2));
+    }
+
+    #[test]
+    fn disjoint_eq_bitandeq_exact_not_disjoint() {
+        // `a0=2` and `a0&=2`: 2 & 2 == 2 -> the exact value passes the bit test.
+        let eq2 = ff(AuditField::A0, CompareOp::Eq, "2");
+        let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
+        assert!(!disjoint(&eq2, &bandeq2));
+    }
+
+    #[test]
+    fn disjoint_bitmask_vs_bitmask_never_disjoint() {
+        // Theorem: two bitmask predicates are always co-satisfiable (by m1|m2),
+        // so they are never provably disjoint (conservative -> overlap).
+        let bandeq1 = ff(AuditField::A0, CompareOp::BitAndEq, "1");
+        let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
+        assert!(!disjoint(&bandeq1, &bandeq2), "co-satisfied by 3");
+        let band1 = ff(AuditField::A0, CompareOp::BitAnd, "1");
+        let bandeq2b = ff(AuditField::A0, CompareOp::BitAndEq, "2");
+        assert!(!disjoint(&band1, &bandeq2b));
+    }
+
+    #[test]
+    fn disjoint_ne_vs_ne_never_disjoint() {
+        // Theorem: two not-equals exclude only one point each -> always intersect.
+        let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
+        let ne6 = ff(AuditField::Auid, CompareOp::Ne, "6");
+        assert!(!disjoint(&ne5, &ne6));
     }
 
     #[test]
