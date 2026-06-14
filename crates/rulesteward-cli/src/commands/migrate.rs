@@ -78,8 +78,9 @@ enum Layout {
 /// Outcome of the post-apply `fagenrules --check` verification (#211).
 ///
 /// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
-/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent on the
-/// host: the check degrades gracefully and the exit code stays clean).
+/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent OR too old
+/// to support `--check-rules` per #222: the check degrades gracefully and the
+/// exit code stays clean).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FagenrulesCheck {
@@ -153,11 +154,52 @@ pub(crate) struct CheckOutcome {
     pub(crate) detail: String,
 }
 
+/// Classification of a `fapolicyd-cli --check-rules` invocation (#222).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckClass {
+    /// Exit 0: the rules file validated.
+    Passed,
+    /// Non-zero exit from a CLI that DOES support `--check-rules`: the rules
+    /// have a real syntax error.
+    Failed,
+    /// The installed `fapolicyd-cli` is too old to support `--check-rules` (it
+    /// rejects the unknown option), so verification could not run -> degrade
+    /// gracefully like an absent binary, NOT a rule failure.
+    Unavailable,
+}
+
+/// Classify the result of `fapolicyd-cli --check-rules <file>` (#222).
+///
+/// `--check-rules` is a real fapolicyd verb (upstream `check_rules_file`,
+/// "Validate rules file syntax without loading") but is absent from currently
+/// shipping releases (fapolicyd 1.3.2 and 1.4.5). An older CLI rejects the
+/// unknown long option: glibc `getopt_long` writes `unrecognized option` to
+/// stderr (exit code varies - 1 on 1.3.2, 2 on 1.4.5, so it is NOT a reliable
+/// signal) and `fapolicyd-cli` then prints its usage banner (`Fapolicyd CLI
+/// Tool`) to stdout. A CLI that DOES support the option instead validates and
+/// prints a syntax error (neither marker) on failure, so keying on these two
+/// markers never masks a genuine rule-syntax failure.
+#[must_use]
+pub(crate) fn classify_check(success: bool, stdout: &str, stderr: &str) -> CheckClass {
+    if success {
+        return CheckClass::Passed;
+    }
+    // Too-old CLI markers: glibc getopt's "unrecognized option" on stderr
+    // (English) OR fapolicyd-cli's own usage banner on stdout (locale-stable,
+    // printed only on an argument-parse error). A CLI that supports the option
+    // prints neither on a genuine syntax failure.
+    if stderr.contains("unrecognized option") || stdout.contains("Fapolicyd CLI Tool") {
+        return CheckClass::Unavailable;
+    }
+    CheckClass::Failed
+}
+
 /// Dependency-injection seam for the post-apply rules-file verification (#211).
 ///
-/// `Ok(None)` means the verification binary is absent on this host: the caller
-/// degrades gracefully (`fagenrulesCheck.status` = `"unavailable"`, exit 0).
-/// `Ok(Some(outcome))` carries the result. `Err(msg)` is an unexpected spawn
+/// `Ok(None)` means verification could not run - the binary is absent, OR it is
+/// too old to support `--check-rules` (#222) - so the caller degrades gracefully
+/// (`fagenrulesCheck.status` = `"unavailable"`, exit 0). `Ok(Some(outcome))`
+/// carries a real result (passed/failed). `Err(msg)` is an unexpected spawn
 /// error (treated as `"unavailable"` with the error in `detail`, exit 0).
 ///
 /// NOTE: `rules_dir` is the fapolicyd config root (the parent of `rules.d/`),
@@ -168,6 +210,11 @@ pub(crate) trait MigrateProbe {
 }
 
 /// Live implementation that shells out to `fapolicyd-cli --check-rules`.
+///
+/// The result is classified by [`classify_check`]: an old CLI that rejects the
+/// unknown `--check-rules` option returns `Ok(None)` ("unavailable", #222), a
+/// clean exit returns `Ok(Some(passed))`, and a genuine syntax failure returns
+/// `Ok(Some(failed))`.
 ///
 /// Wired into the CLI dispatch (`commands/fapolicyd/mod.rs`) via
 /// `run_with_probe`; the `run()` entry stays probe-free so its unit tests never
@@ -243,6 +290,9 @@ impl MigrateProbe for LiveMigrateProbe {
         let success = output.status.success();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        // #222: an old fapolicyd-cli without --check-rules is a capability gap,
+        // not a rule failure -> degrade to "unavailable" (Ok(None)), like absent.
+        let class = classify_check(success, &stdout, &stderr);
         let detail = if stderr.trim().is_empty() {
             stdout
         } else if stdout.trim().is_empty() {
@@ -250,11 +300,19 @@ impl MigrateProbe for LiveMigrateProbe {
         } else {
             format!("{stdout}{stderr}")
         };
+        let detail = detail.trim_end().to_string();
 
-        Ok(Some(CheckOutcome {
-            success,
-            detail: detail.trim_end().to_string(),
-        }))
+        match class {
+            CheckClass::Unavailable => Ok(None),
+            CheckClass::Passed => Ok(Some(CheckOutcome {
+                success: true,
+                detail,
+            })),
+            CheckClass::Failed => Ok(Some(CheckOutcome {
+                success: false,
+                detail,
+            })),
+        }
     }
 }
 
@@ -394,10 +452,13 @@ pub(crate) fn run_with_probe_to_plan(
                     detail: outcome.detail,
                 })
             }
-            // Binary absent: degrade gracefully, exit stays clean.
+            // Verification could not run (binary absent, or too old to support
+            // --check-rules per #222): degrade gracefully, exit stays clean.
             Ok(None) => Some(FagenrulesCheck {
                 status: "unavailable",
-                detail: "fapolicyd-cli not found; post-apply verification skipped".to_string(),
+                detail: "fapolicyd-cli unavailable (absent or too old to support --check-rules); \
+                         post-apply verification skipped"
+                    .to_string(),
             }),
             // A spawn error is indistinguishable from "absent" to the operator.
             Err(msg) => Some(FagenrulesCheck {
@@ -650,7 +711,7 @@ fn render_human(plan: &MigratePlan) -> String {
         let label = match check.status {
             "passed" => "Verification passed",
             "failed" => "Verification FAILED",
-            _ => "Verification unavailable (fapolicyd-cli not found; skipped)",
+            _ => "Verification unavailable (fapolicyd-cli absent or too old; skipped)",
         };
         let _ = writeln!(s, "  {label}");
         if !check.detail.is_empty() && check.status != "unavailable" {
@@ -1400,6 +1461,89 @@ mod tests {
             probe.call_count(),
             1,
             "probe called once even on spawn error"
+        );
+    }
+
+    // --- #222: classify_check (old fapolicyd-cli lacks --check-rules) --------
+
+    #[test]
+    fn classify_check_clean_exit_is_passed() {
+        assert_eq!(
+            super::classify_check(true, "", ""),
+            super::CheckClass::Passed
+        );
+    }
+
+    #[test]
+    fn classify_check_old_cli_1_4_5_is_unavailable() {
+        // fapolicyd 1.4.5: exit 2 (success=false), usage banner on stdout,
+        // getopt error on stderr.
+        let stdout = "Fapolicyd CLI Tool\n\n--check-config        Check the daemon config\n";
+        let stderr = "fapolicyd-cli: unrecognized option '--check-rules'";
+        assert_eq!(
+            super::classify_check(false, stdout, stderr),
+            super::CheckClass::Unavailable
+        );
+    }
+
+    #[test]
+    fn classify_check_old_cli_1_3_2_is_unavailable() {
+        // fapolicyd 1.3.2: same markers, exit 1. The exit code differs from
+        // 1.4.5 (2), which is why classify_check must NOT key on the code.
+        let stdout = "Fapolicyd CLI Tool\n";
+        let stderr = "fapolicyd-cli: unrecognized option '--check-rules'";
+        assert_eq!(
+            super::classify_check(false, stdout, stderr),
+            super::CheckClass::Unavailable
+        );
+    }
+
+    #[test]
+    fn classify_check_unavailable_via_stderr_marker_only() {
+        // stderr getopt marker alone (no usage banner captured) -> unavailable.
+        // Pins the stderr "unrecognized option" check independently.
+        assert_eq!(
+            super::classify_check(
+                false,
+                "",
+                "fapolicyd-cli: unrecognized option '--check-rules'"
+            ),
+            super::CheckClass::Unavailable
+        );
+    }
+
+    #[test]
+    fn classify_check_unavailable_via_usage_banner_when_stderr_localized() {
+        // getopt messages are locale-translated; the program's own usage banner
+        // on stdout is the locale-stable fallback. Pins the stdout banner check
+        // independently (stderr carries no English marker here).
+        let stdout = "Fapolicyd CLI Tool\n--check-config ...";
+        let stderr = "fapolicyd-cli: option non reconnue '--check-rules'";
+        assert_eq!(
+            super::classify_check(false, stdout, stderr),
+            super::CheckClass::Unavailable
+        );
+    }
+
+    #[test]
+    fn classify_check_real_syntax_error_is_failed() {
+        // A new-enough CLI that supports --check-rules and finds a bad rule
+        // prints a syntax error (NEITHER marker) and exits non-zero. Must stay
+        // "failed" so a genuine rule error is never masked as a capability gap.
+        let stderr = "Error: syntax error on line 3: unknown keyword 'allwo'";
+        assert_eq!(
+            super::classify_check(false, "", stderr),
+            super::CheckClass::Failed
+        );
+    }
+
+    #[test]
+    fn classify_check_nonzero_without_markers_is_failed() {
+        // Non-zero exit with neither marker (e.g. an unreadable rules file) is a
+        // real failure, not a capability gap.
+        assert_eq!(
+            super::classify_check(false, "", "could not open rules file"),
+            super::CheckClass::Failed
         );
     }
 
