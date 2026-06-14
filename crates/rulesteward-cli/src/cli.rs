@@ -102,6 +102,10 @@ pub enum TopCommand {
     #[command(subcommand)]
     Auditd(AuditdCommand),
 
+    /// `sshd_config` operations
+    #[command(subcommand)]
+    Sshd(SshdCommand),
+
     /// Print shell-completion script for the given shell
     Completions(CompletionsArgs),
 
@@ -235,6 +239,19 @@ impl From<TargetVersionArg> for rulesteward_fapolicyd::TargetVersion {
             TargetVersionArg::Rhel8 => rulesteward_fapolicyd::TargetVersion::Rhel8,
             TargetVersionArg::Rhel9 => rulesteward_fapolicyd::TargetVersion::Rhel9,
             TargetVersionArg::Rhel10 => rulesteward_fapolicyd::TargetVersion::Rhel10,
+        }
+    }
+}
+
+/// The same `--target` value-enum maps to the sshd domain's `TargetVersion`
+/// (the version-aware sshd-W01..W04 baseline selector). One CLI surface, one
+/// `From` per backend domain, so each domain crate stays clap-free.
+impl From<TargetVersionArg> for rulesteward_sshd::TargetVersion {
+    fn from(arg: TargetVersionArg) -> Self {
+        match arg {
+            TargetVersionArg::Rhel8 => rulesteward_sshd::TargetVersion::Rhel8,
+            TargetVersionArg::Rhel9 => rulesteward_sshd::TargetVersion::Rhel9,
+            TargetVersionArg::Rhel10 => rulesteward_sshd::TargetVersion::Rhel10,
         }
     }
 }
@@ -648,6 +665,41 @@ pub struct AuditdLintArgs {
     /// verb per the locked output contracts CC-3/CC-4).
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SshdCommand {
+    /// Lint an `sshd_config` file (#149)
+    ///
+    /// Parses an `sshd_config` file (whole-line `#` comments, case-insensitive
+    /// keywords, `Match` blocks, `Include` directives) and runs the `sshd_config`
+    /// lint passes over it. The semantic passes (sshd-E01..E04, sshd-W01..W06)
+    /// are landing incrementally per the #149 wave plan; today this surface
+    /// parses the file and reports a syntax error as sshd-F01.
+    ///
+    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
+    /// 2 errors, 3 tool failure, 5 unparseable config (sshd-F01).
+    Lint(SshdLintArgs),
+}
+
+/// Arguments for `rulesteward sshd lint` (#149).
+#[derive(Debug, Parser)]
+pub struct SshdLintArgs {
+    /// The `sshd_config` file to lint (defaults to `/etc/ssh/sshd_config`)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Output format (human | json; SARIF and CSV are not offered for this verb
+    /// per the locked output contracts CC-3/CC-4).
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Target OS baseline (rhel8|rhel9|rhel10) for the version-aware STIG/crypto
+    /// lints. Reserved: the baseline-aware passes (sshd-W01..W04) are in
+    /// development, so today the flag is accepted and recorded but does not yet
+    /// change the output.
+    #[arg(long, value_enum)]
+    pub target: Option<TargetVersionArg>,
 }
 
 #[derive(Debug, Parser)]
