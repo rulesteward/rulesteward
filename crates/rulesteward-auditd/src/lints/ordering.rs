@@ -38,8 +38,9 @@ use crate::ast::{
     Action, AuditField, AuditRule, ControlRule, FieldComparison, FieldFilter, FilterList,
     LocatedRule,
 };
+use crate::lints::field_type::field_type;
 use crate::lints::normalize::canonical_key;
-use crate::lints::value::{disjoint, implies};
+use crate::lints::value::{canonical_value, disjoint, implies};
 
 use super::anchored;
 
@@ -170,8 +171,11 @@ fn is_syscall_suppressing_exclude(rule: &AuditRule) -> bool {
     };
     *p.list == FilterList::Exclude
         && p.fields.iter().any(|f| {
+            // The SYSCALL<->1300 knowledge lives in canonical_value (#227): it
+            // folds the symbolic name, the number, and base-0 spellings (#229,
+            // e.g. 0x514) to "1300". Centralizing it here keeps the one source.
             f.field == AuditField::MsgType
-                && (f.value == "1300" || f.value.eq_ignore_ascii_case("SYSCALL"))
+                && canonical_value(field_type(&f.field), &f.value) == "1300"
         })
 }
 
@@ -529,6 +533,16 @@ mod tests {
         assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
             Action::Always,
             "1300"
+        )));
+    }
+
+    #[test]
+    fn hex_syscall_msgtype_is_a_suppressor() {
+        // #227/#229: msgtype=0x514 is 1300 (SYSCALL); recognized now that the
+        // SYSCALL<->1300 knowledge lives in canonical_value.
+        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
+            Action::Always,
+            "0x514"
         )));
     }
 
