@@ -207,3 +207,51 @@ fn auditd_cost_json_measured_total_stays_collapsed() {
         "measured gbPerDayTypical = 3 * 1200 / 1e9; got {g_typ}"
     );
 }
+
+/// #112 functional-smoke: the ASSUMED-mode HUMAN renderer surfaces the WIDENED band
+/// edges, and they are the SAME values as the JSON total (cross-surface consistency).
+/// The human band suffix is the user-visible face of the #112 change, so pin it
+/// directly rather than only via the JSON total.
+#[test]
+fn auditd_cost_human_assumed_band_suffix_matches_json_widened() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    let mut f = std::fs::File::create(&rules).expect("create rules file");
+    writeln!(f, "-a always,exit -F arch=b64 -S execve -k exec").expect("write rule");
+    f.flush().expect("flush");
+
+    // JSON total (the machine surface) for the same ruleset.
+    let json = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(json.get_output().stdout.clone()).expect("utf8"))
+            .expect("valid JSON");
+    let g_low = v["totals"]["gbPerDayLow"].as_f64().expect("gb low");
+    let g_high = v["totals"]["gbPerDayHigh"].as_f64().expect("gb high");
+
+    // HUMAN surface for the same ruleset.
+    let human = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--format", "human"])
+        .assert()
+        .success();
+    let out = String::from_utf8(human.get_output().stdout.clone()).expect("utf8");
+
+    // The human GB/day band suffix prints the same low/high as the JSON total,
+    // formatted to 4 decimals (render_human's "(band {:.4} - {:.4} GB/day)").
+    let expected = format!("(band {g_low:.4} - {g_high:.4} GB/day)");
+    assert!(
+        out.contains(&expected),
+        "human band suffix must match the JSON total edges: expected {expected:?} in:\n{out}"
+    );
+    // And the band is genuinely widened (high strictly above low) in assumed mode.
+    assert!(
+        g_high > g_low,
+        "assumed-mode band must be non-collapsed (widened): low={g_low} high={g_high}"
+    );
+}
