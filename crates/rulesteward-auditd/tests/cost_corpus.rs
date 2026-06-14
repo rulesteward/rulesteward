@@ -328,6 +328,14 @@ fn cost_band_dollar_core() {
             })
             .collect();
         let agg = sum_rate_bands(&additive_bands);
+        // Single-byte path: this validates the per-rule cost function + the
+        // path-independent TYPICAL against the single-byte oracle JSON. NOTE (#112):
+        // the production ASSUMED-mode TOTAL uses the banded path
+        // (compute_cost_band_banded, byte band 760/1200/2300), so the aggregate
+        // low/high asserted here are the single-byte projection, NOT what `auditd
+        // cost` now prints for the total band. The banded total is covered by the
+        // e2e tests; re-grounding these oracle low/high edges to the banded math is
+        // tracked as a follow-up.
         let cost = compute_cost_band(&agg, LogFormat::Enriched, 5.00);
 
         // Oracle from oracle/cost-band.json.

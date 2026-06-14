@@ -14,7 +14,7 @@ use crate::output::json::render_envelope;
 use rulesteward_auditd::{
     AuditRule, Direction, LocatedRule,
     bands::{RateBand, VolumeTier, classify_rule, default_rate_band},
-    cost::{CostBand, LogFormat, compute_cost_band, sum_rate_bands},
+    cost::{CostBand, LogFormat, compute_cost_band, compute_cost_band_banded, sum_rate_bands},
     from_log::count_events_by_key,
     lints,
     parser::{parse_rules_str_located, parse_target, rules_files_in_load_order},
@@ -176,7 +176,13 @@ fn cost(args: &CostArgs) -> i32 {
         .map(|e| e.rate_band.clone())
         .collect();
     let total_rate = sum_rate_bands(&additive_bands);
-    let total_cost = compute_cost_band(&total_rate, log_format, price_per_gb);
+    // The ASSUMED-rate total folds the per-event byte-size band (#112) into its
+    // low/high edges; the MEASURED --from-log total keeps a single typical byte so
+    // an exact measured count is not re-widened by a byte-size assumption.
+    let total_cost = match rate_source {
+        RateSource::Assumed => compute_cost_band_banded(&total_rate, log_format, price_per_gb),
+        RateSource::Measured => compute_cost_band(&total_rate, log_format, price_per_gb),
+    };
 
     // Render output.
     let output = match args.format {
@@ -292,10 +298,28 @@ fn build_rule_entries_from_log(
 // ---------------------------------------------------------------------------
 
 fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: RateSource) -> String {
+    use rulesteward_auditd::cost::{bytes_per_event, bytes_per_event_band};
+
     let mut out = String::new();
+    // ENRICHED is the only reachable log format today (RAW deferred). The header
+    // describes the per-event byte assumption: in ASSUMED mode the total folds the
+    // full byte band (#112) into its low/high edges, so name the band (otherwise a
+    // reader manually checking the arithmetic is surprised the GB/day band is wider
+    // than ~1200 alone implies). In MEASURED mode the total uses the single typical
+    // byte, so name only that.
+    let byte_note = match source {
+        RateSource::Assumed => {
+            let b = bytes_per_event_band(LogFormat::Enriched);
+            format!(
+                "~{:.0} B/event typical, {:.0}-{:.0} B/event band",
+                b.typical, b.low, b.high
+            )
+        }
+        RateSource::Measured => format!("~{} B/event", bytes_per_event(LogFormat::Enriched)),
+    };
     writeln!(
         out,
-        "auditd cost estimate  (price ${price:.2}/GB ingested, ENRICHED format, ~1200 B/event)"
+        "auditd cost estimate  (price ${price:.2}/GB ingested, ENRICHED format, {byte_note})"
     )
     .unwrap();
     writeln!(
