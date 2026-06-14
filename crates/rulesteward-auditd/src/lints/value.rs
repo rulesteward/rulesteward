@@ -172,6 +172,29 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
 /// Lookup is case-insensitive (libaudit `audit_name_to_msg_type` -> `msg_type_s2i`
 /// is generated `--uppercase`). The pinned length is asserted by
 /// `msgtype_table_has_expected_entry_count`.
+///
+/// ## Additive seam for `AppArmor` folding (#230, deferred)
+///
+/// Adding the `APPARMOR_*` names later is meant to be additive, not a rewrite.
+/// The fold is reached through exactly two functions -- [`msgtype_number`] (the
+/// name -> number lookup) and [`canonical_value`] (its only msgtype caller) -- so
+/// the future change is:
+///   1. add a separate, identically-cited `APPARMOR_MSGTYPE_NAMES: &[(&str, u32)]`
+///      const (the `#ifdef WITH_APPARMOR` block, ~1500-1599, from `msg_typetab.h`
+///      @ 3bfa048), and
+///   2. have `msgtype_number` consult it under a gate (e.g.
+///      `.or_else(|| include_apparmor.then(...))`).
+///
+/// The gate is the only non-local part: [`canonical_value`] is called from
+/// `duplicate.rs` (au-W01), `ordering.rs` (au-W02) and `normalize.rs`
+/// (`canonical_key`), and the auditd lint entry `lints::lint(rules)` carries NO
+/// target/build context today (unlike fapolicyd's `--target`). So whoever wires
+/// #230 should thread an OPTIONS value (not a bare bool) from the CLI down to
+/// [`canonical_value`], so this gate and any later one share a single signature
+/// change. The name<->number map is universal kernel ABI; only WHEN to assert the
+/// `AppArmor` equivalence is a policy choice -- which is why the gate, not the
+/// table, is the real work. No `APPARMOR_*` data is added now (it would be dead
+/// code until that gate exists).
 const MSGTYPE_NAMES: &[(&str, u32)] = &[
     // 1000-1099 commanding the audit system (only the two non-deprecated names).
     ("USER", 1005),
