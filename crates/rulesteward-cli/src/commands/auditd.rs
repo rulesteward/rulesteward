@@ -14,7 +14,7 @@ use crate::output::json::render_envelope;
 use rulesteward_auditd::{
     AuditRule, Direction, LocatedRule,
     bands::{RateBand, VolumeTier, classify_rule, default_rate_band},
-    cost::{CostBand, LogFormat, compute_cost_band, sum_rate_bands},
+    cost::{CostBand, LogFormat, compute_cost_band, compute_cost_band_banded, sum_rate_bands},
     from_log::count_events_by_key,
     lints,
     parser::{parse_rules_str_located, parse_target, rules_files_in_load_order},
@@ -176,7 +176,13 @@ fn cost(args: &CostArgs) -> i32 {
         .map(|e| e.rate_band.clone())
         .collect();
     let total_rate = sum_rate_bands(&additive_bands);
-    let total_cost = compute_cost_band(&total_rate, log_format, price_per_gb);
+    // The ASSUMED-rate total folds the per-event byte-size band (#112) into its
+    // low/high edges; the MEASURED --from-log total keeps a single typical byte so
+    // an exact measured count is not re-widened by a byte-size assumption.
+    let total_cost = match rate_source {
+        RateSource::Assumed => compute_cost_band_banded(&total_rate, log_format, price_per_gb),
+        RateSource::Measured => compute_cost_band(&total_rate, log_format, price_per_gb),
+    };
 
     // Render output.
     let output = match args.format {

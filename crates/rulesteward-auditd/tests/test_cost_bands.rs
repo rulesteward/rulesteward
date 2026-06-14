@@ -16,7 +16,10 @@ use rulesteward_auditd::{
     Action, AuditRule, ControlRule, Direction, FilterList, LogFormat, PermBits, RateBand,
     VolumeTier,
     bands::{classify_rule, default_rate_band},
-    cost::{bytes_per_event, compute_cost_band, sum_rate_bands},
+    cost::{
+        bytes_per_event, bytes_per_event_band, compute_cost_band, compute_cost_band_banded,
+        sum_rate_bands,
+    },
 };
 
 // --------------------------------------------------------------------------
@@ -233,6 +236,188 @@ fn compute_cost_band_high_band_oracle_match() {
         diff < 0.10,
         "cost_per_month_usd.high must be ~${expected_high}; got ${}",
         cost.cost_per_month_usd.high
+    );
+}
+
+// --------------------------------------------------------------------------
+// Issue #112: per-event byte BAND (widen the cost band by byte-size spread)
+//
+// Grounding: 2026-06-07 factual-basis audit, row D6 + issue #112 comments.
+//   ENRICHED band low/typical/high = 760 / 1200 / 2300 B/event
+//     low  = light-syscall floor (rocky10 762 / rocky8 727)
+//     typ  = locked #88 value (keeps every central output number byte-identical)
+//     high = real execve full-event average (rocky9 n=438; the avg, NOT the 2842 max)
+//   RAW band = 0.75x each edge = 570 / 900 / 1725 (keeps RAW typical at the existing 900).
+// --------------------------------------------------------------------------
+
+/// ENRICHED per-event byte band is 760 / 1200 / 2300 (audit D6).
+#[test]
+#[allow(clippy::float_cmp)]
+fn bytes_per_event_band_enriched_is_760_1200_2300() {
+    let b = bytes_per_event_band(LogFormat::Enriched);
+    // Exact integer-valued floats; strict == is correct.
+    assert_eq!(b.low, 760.0, "ENRICHED byte-band low = light-syscall floor");
+    assert_eq!(
+        b.typical, 1200.0,
+        "ENRICHED byte-band typical = locked #88 value"
+    );
+    assert_eq!(b.high, 2300.0, "ENRICHED byte-band high = real execve avg");
+}
+
+/// RAW per-event byte band is 0.75x each ENRICHED edge = 570 / 900 / 1725.
+#[test]
+#[allow(clippy::float_cmp)]
+fn bytes_per_event_band_raw_is_570_900_1725() {
+    let b = bytes_per_event_band(LogFormat::Raw);
+    assert_eq!(b.low, 570.0, "RAW low = 0.75 * 760");
+    assert_eq!(
+        b.typical, 900.0,
+        "RAW typical = 0.75 * 1200 (the existing RAW constant)"
+    );
+    assert_eq!(b.high, 1725.0, "RAW high = 0.75 * 2300");
+}
+
+/// The byte band's TYPICAL edge MUST equal the scalar `bytes_per_event`, for both
+/// formats. This is the load-bearing invariant of the non-breaking #112 design:
+/// the JSON `bytesPerEvent` field + the human header report the scalar, and every
+/// central (typical) output value is `rate.typical * bytes_per_event`, so a drift
+/// between the band typical and the scalar would silently move the central estimate.
+#[test]
+#[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+fn bytes_per_event_band_typical_equals_scalar() {
+    for fmt in [LogFormat::Enriched, LogFormat::Raw] {
+        let band = bytes_per_event_band(fmt);
+        assert_eq!(
+            band.typical,
+            bytes_per_event(fmt) as f64,
+            "byte-band typical must equal the scalar bytes_per_event for {fmt:?}"
+        );
+    }
+}
+
+/// `compute_cost_band_banded` widens the gb/$ band vs the single-byte
+/// `compute_cost_band`, while leaving the TYPICAL (central) estimate byte-identical.
+/// This is the whole point of #112: the low/high edges fold in byte-size spread; the
+/// central number does not move (the non-breaking property).
+#[test]
+fn compute_cost_band_banded_widens_low_high_keeps_typical() {
+    let rate = RateBand {
+        low: 5_000.0,
+        typical: 50_000.0,
+        high: 500_000.0,
+    };
+    let single = compute_cost_band(&rate, LogFormat::Enriched, 5.00);
+    let banded = compute_cost_band_banded(&rate, LogFormat::Enriched, 5.00);
+
+    // Central estimate unchanged (typical byte == 1200 in both paths).
+    assert!(
+        (banded.gb_per_day.typical - single.gb_per_day.typical).abs() < 1e-9,
+        "typical gb/day must be byte-identical; single={} banded={}",
+        single.gb_per_day.typical,
+        banded.gb_per_day.typical
+    );
+    assert!(
+        (banded.cost_per_month_usd.typical - single.cost_per_month_usd.typical).abs() < 1e-9,
+        "typical $/month must be byte-identical"
+    );
+
+    // Low edge NARROWS (byte low 760 < 1200); high edge WIDENS (byte high 2300 > 1200).
+    assert!(
+        banded.gb_per_day.low < single.gb_per_day.low,
+        "banded low must be below single-byte low (byte low 760 < 1200)"
+    );
+    assert!(
+        banded.gb_per_day.high > single.gb_per_day.high,
+        "banded high must exceed single-byte high (byte high 2300 > 1200)"
+    );
+}
+
+/// `compute_cost_band_banded` concrete oracle (ENRICHED, $5/GB),
+/// rate low 5k / typical 50k / high 500k:
+/// ```text
+/// gb_low  = 5_000   * 760  / 1e9 = 0.0038 -> $0.0038 * 30.4 * 5 = $0.5776
+/// gb_typ  = 50_000  * 1200 / 1e9 = 0.06   -> $9.12  (== single-byte typical)
+/// gb_high = 500_000 * 2300 / 1e9 = 1.15   -> $1.15  * 30.4 * 5 = $174.80
+/// ```
+#[test]
+fn compute_cost_band_banded_oracle_enriched() {
+    let rate = RateBand {
+        low: 5_000.0,
+        typical: 50_000.0,
+        high: 500_000.0,
+    };
+    let c = compute_cost_band_banded(&rate, LogFormat::Enriched, 5.00);
+
+    assert!(
+        (c.gb_per_day.low - 0.0038).abs() < 1e-9,
+        "gb low = 5000*760/1e9 = 0.0038; got {}",
+        c.gb_per_day.low
+    );
+    assert!(
+        (c.gb_per_day.typical - 0.06).abs() < 1e-9,
+        "gb typical = 50000*1200/1e9 = 0.06; got {}",
+        c.gb_per_day.typical
+    );
+    assert!(
+        (c.gb_per_day.high - 1.15).abs() < 1e-9,
+        "gb high = 500000*2300/1e9 = 1.15; got {}",
+        c.gb_per_day.high
+    );
+
+    assert!(
+        (c.cost_per_month_usd.low - 0.5776).abs() < 0.01,
+        "$ low; got {}",
+        c.cost_per_month_usd.low
+    );
+    assert!(
+        (c.cost_per_month_usd.typical - 9.12).abs() < 0.01,
+        "$ typical (== single-byte typical); got {}",
+        c.cost_per_month_usd.typical
+    );
+    assert!(
+        (c.cost_per_month_usd.high - 174.80).abs() < 0.05,
+        "$ high; got {}",
+        c.cost_per_month_usd.high
+    );
+}
+
+/// RAW banded oracle: confirms the 0.75x factor flows through the whole band.
+/// rate 50k typical, ENRICHED typical $9.12 -> RAW typical $9.12 * 0.75 = $6.84.
+#[test]
+fn compute_cost_band_banded_oracle_raw_typical() {
+    let rate = RateBand {
+        low: 5_000.0,
+        typical: 50_000.0,
+        high: 500_000.0,
+    };
+    let c = compute_cost_band_banded(&rate, LogFormat::Raw, 5.00);
+    // gb_typ = 50000 * 900 / 1e9 = 0.045 -> $0.045 * 30.4 * 5 = $6.84
+    assert!(
+        (c.cost_per_month_usd.typical - 6.84).abs() < 0.01,
+        "RAW typical $/month = 0.75 * 9.12 = $6.84; got {}",
+        c.cost_per_month_usd.typical
+    );
+}
+
+/// Measured-mode property: the single-byte `compute_cost_band` on a COLLAPSED
+/// (point) rate band yields a collapsed cost band (low == typical == high).
+/// The measured --from-log total uses this single-byte path, so byte-size spread
+/// never widens a measured result (the #112 measured-mode default).
+#[test]
+fn compute_cost_band_single_byte_keeps_point_rate_collapsed() {
+    let point = RateBand {
+        low: 12_345.0,
+        typical: 12_345.0,
+        high: 12_345.0,
+    };
+    let c = compute_cost_band(&point, LogFormat::Enriched, 5.00);
+    assert!(
+        (c.gb_per_day.low - c.gb_per_day.high).abs() < 1e-9
+            && (c.gb_per_day.low - c.gb_per_day.typical).abs() < 1e-9,
+        "single-byte cost on a point rate band must stay collapsed; got low={} typ={} high={}",
+        c.gb_per_day.low,
+        c.gb_per_day.typical,
+        c.gb_per_day.high
     );
 }
 

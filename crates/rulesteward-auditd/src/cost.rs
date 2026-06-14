@@ -37,6 +37,44 @@ pub fn bytes_per_event(fmt: LogFormat) -> u64 {
     }
 }
 
+/// Per-event byte BAND (low / typical / high) for the given log format.
+///
+/// Issue #112: [`bytes_per_event`] is the calibrated TYPICAL only; real per-event
+/// size is content-dependent and spans a wide range. The 2026-06-07 factual-basis
+/// audit (row D6) plus the #112-comment measurements found real execve full-events
+/// average ~2300 B (rocky9, n=438) while light-syscall events run ~727-960 B, versus
+/// the synthetic-`/bin/true` calibration (~1259 B) behind the 1200 constant. This
+/// band expresses that fleet-wide spread so the cost band's low/high edges reflect
+/// byte-size uncertainty, not only event-rate uncertainty.
+///
+/// - ENRICHED: low 760 (light-syscall floor, rocky10 762 / rocky8 727) /
+///   typical 1200 (the locked #88 value) / high 2300 (real execve AVERAGE, not the
+///   2842 B max).
+/// - RAW: 0.75x each edge (570 / 900 / 1725), keeping the existing RAW typical 900.
+///
+/// Invariant: `typical` equals [`bytes_per_event`] for both formats, so the scalar
+/// reported in the JSON `bytesPerEvent` field and the human header stays the band's
+/// central value and every central (typical) output number is byte-identical.
+///
+/// Caveat: the edges are a single-VM (rocky) sample; the audit flags the execve
+/// figure as not-yet-cross-version. A future cross-version re-measurement can refine
+/// the edges without changing the band structure.
+#[must_use]
+pub fn bytes_per_event_band(fmt: LogFormat) -> RateBand {
+    match fmt {
+        LogFormat::Enriched => RateBand {
+            low: 760.0,
+            typical: 1_200.0,
+            high: 2_300.0,
+        },
+        LogFormat::Raw => RateBand {
+            low: 570.0,
+            typical: 900.0,
+            high: 1_725.0,
+        },
+    }
+}
+
 /// Cost estimate for a single rule or for the full ruleset total.
 ///
 /// All monetary values are in USD. GB is decimal (`10^9` bytes per f3 section 4.1).
@@ -68,20 +106,55 @@ const DAYS_PER_MONTH: f64 = 30.4;
 /// - `price_per_gb_usd` - price per decimal GB; default is 5.00 per f3 section 4.2.
 #[must_use]
 pub fn compute_cost_band(rate_band: &RateBand, fmt: LogFormat, price_per_gb_usd: f64) -> CostBand {
+    // Single TYPICAL byte applied to every edge. Used for the per-rule rows (only
+    // their typical is surfaced) and the MEASURED --from-log total, where the event
+    // count is exact and byte-size spread must NOT re-widen the band (issue #112).
     // bytes_per_event returns 1200 or 900 -- both well within f64 precision range.
     #[allow(clippy::cast_precision_loss)]
     let bpe = bytes_per_event(fmt) as f64;
+    let byte_band = RateBand {
+        low: bpe,
+        typical: bpe,
+        high: bpe,
+    };
+    cost_band_from_byte_band(rate_band, &byte_band, price_per_gb_usd)
+}
 
-    let gb_low = rate_band.low * bpe / BYTES_PER_GB;
-    let gb_typical = rate_band.typical * bpe / BYTES_PER_GB;
-    let gb_high = rate_band.high * bpe / BYTES_PER_GB;
+/// Like [`compute_cost_band`], but folds the per-event byte-size BAND
+/// ([`bytes_per_event_band`]) into the gb/$ band edges instead of a single typical
+/// byte (issue #112). The TYPICAL (central) value is byte-identical to
+/// [`compute_cost_band`] because the band's typical edge equals the scalar; only the
+/// low/high edges widen to reflect byte-size uncertainty.
+///
+/// Use for the ASSUMED-rate total, where both the event rate and the event size are
+/// assumptions. The measured --from-log total uses [`compute_cost_band`] so a
+/// measured count is not re-widened by a byte assumption.
+#[must_use]
+pub fn compute_cost_band_banded(
+    rate_band: &RateBand,
+    fmt: LogFormat,
+    price_per_gb_usd: f64,
+) -> CostBand {
+    cost_band_from_byte_band(rate_band, &bytes_per_event_band(fmt), price_per_gb_usd)
+}
+
+/// Core cost arithmetic: each rate edge multiplied by the matching byte edge.
+///
+/// `gb = events_per_day * bytes_per_event / 1e9` and
+/// `cost_per_month = gb * 30.4 * price` (f3 section 4.1), applied edge-wise. A flat
+/// (collapsed) `byte_band` leaves the gb/$ band proportional to the rate band; a
+/// widened `byte_band` widens the gb/$ low/high edges.
+fn cost_band_from_byte_band(rate: &RateBand, byte: &RateBand, price_per_gb_usd: f64) -> CostBand {
+    let gb_low = rate.low * byte.low / BYTES_PER_GB;
+    let gb_typical = rate.typical * byte.typical / BYTES_PER_GB;
+    let gb_high = rate.high * byte.high / BYTES_PER_GB;
 
     let cost_low = gb_low * DAYS_PER_MONTH * price_per_gb_usd;
     let cost_typical = gb_typical * DAYS_PER_MONTH * price_per_gb_usd;
     let cost_high = gb_high * DAYS_PER_MONTH * price_per_gb_usd;
 
     CostBand {
-        events_per_day: rate_band.clone(),
+        events_per_day: rate.clone(),
         gb_per_day: RateBand {
             low: gb_low,
             typical: gb_typical,
