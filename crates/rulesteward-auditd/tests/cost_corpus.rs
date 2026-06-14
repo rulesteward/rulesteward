@@ -295,6 +295,9 @@ fn assert_banded_widens_single(
                 < 1e-12,
         "{scenario}: banded TYPICAL must equal the single-byte typical (byte-identical invariant)"
     );
+    // Strict < / >; skip the all-zeros control band (sum_rate_bands -> ZERO), where
+    // low == high == 0 and a band cannot widen. low > 0 iff high > 0 for every
+    // default_rate_band tier, so neither guard skips a direction asymmetrically.
     if agg.low > 0.0 {
         assert!(
             banded.gb_per_day.low < single.gb_per_day.low
