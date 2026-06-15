@@ -245,10 +245,13 @@ fn parse_criteria(tokens: &[String]) -> Result<Vec<MatchCriterion>, String> {
         return Err("Match block requires at least one criterion".to_string());
     }
     let mut criteria = Vec::new();
-    let mut i = 0;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        i += 1;
+    // Drive the walk by the slice iterator itself (no manual index counter): the
+    // space-form arm consumes its following value token with a second `next()`.
+    // Structural advancement means no loop-counter mutant can stall the cursor and
+    // spin this `push` forever (the manual `while i < len; i += 1` form let
+    // cargo-mutants synthesize an unbounded-allocation OOM via `i *= 1` / `i -= 1`).
+    let mut it = tokens.iter();
+    while let Some(token) = it.next() {
         if let Some((keyword, value)) = token.split_once('=') {
             // `Keyword=value[,value...]` form: the value rides the same token.
             criteria.push(MatchCriterion {
@@ -262,10 +265,9 @@ fn parse_criteria(tokens: &[String]) -> Result<Vec<MatchCriterion>, String> {
             });
         } else {
             // `Keyword value` form: the next token is the value.
-            let Some(value) = tokens.get(i) else {
+            let Some(value) = it.next() else {
                 return Err(format!("Match criterion '{token}' requires a value"));
             };
-            i += 1;
             criteria.push(MatchCriterion {
                 keyword: token.clone(),
                 values: value.split(',').map(str::to_string).collect(),

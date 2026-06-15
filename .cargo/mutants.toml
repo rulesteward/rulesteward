@@ -361,6 +361,33 @@ exclude_re = [
     # (e01/e02/e03/e04 are deliberately NOT listed: they are implemented and their
     # empty-return mutant IS caught by the structural + registry tests.)
     'rulesteward-sshd/src/lints/.*replace (w01|w02|w03|w04|w05|w06) -> Vec<Diagnostic> with vec!\[\]',
+    # sshd_config tokenizer (#149): three OOM mutants that surfaced as the nightly
+    # mutants runner-kills in runs #84/#85 (shards 12/17/18). `tokenize_line` walks a
+    # line with `while chars.peek().is_some() { tokens.push(read_arg(...)?);
+    # skip_whitespace(...); }`, delegating cursor advancement to the two helpers.
+    # cargo-mutants' body/return replacements make a helper STOP advancing the shared
+    # `chars` cursor:
+    #   * `skip_whitespace -> ()` and `read_arg -> Ok(String::new())` /
+    #     `Ok("xyzzy")` each leave the cursor pinned on a non-whitespace char, so the
+    #     outer `while` never reaches `None` and pushes an empty/constant token
+    #     forever -> unbounded Vec growth -> the test allocates until the 16GB CI
+    #     runner is OOM-killed ("memory allocation of N bytes failed" in the per-mutant
+    #     log; under a local memory cap it instead 180s-TIMEOUTs / SIGABRTs).
+    # These are structurally UNCATCHABLE: the only input that exposes the missing
+    # advancement is the same input that exhausts memory, so no assertion can run.
+    # Same uncatchable-by-construction class as the parse_audit_event TIMEOUT and the
+    # selinux Drop (PR #170) exclusions above. The sibling `read_arg` operator mutants
+    # (`== -> !=`) DO terminate (the inner `chars.next()` still runs) and ARE caught,
+    # so they stay gated -- only the non-advancing replacements are excluded.
+    # NB: `parse_criteria` had the same OOM shape via its manual `while i < len; i += 1`
+    # counter (`i *= 1` / `i -= 1`); that one was ELIMINATED by refactoring it to a
+    # slice iterator (no counter to stall), which is why no parse_criteria pattern
+    # appears here -- a real elimination beats an exclusion where the refactor is
+    # behavior-preserving; the tokenizer rewrite was judged too behavior-risky for a
+    # security-relevant parser, so these three are documented exclusions instead.
+    'replace skip_whitespace with \(\)',
+    'replace read_arg -> Result<String, String> with Ok\(String::new\(\)\)',
+    'replace read_arg -> Result<String, String> with Ok\("xyzzy"\.into\(\)\)',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
