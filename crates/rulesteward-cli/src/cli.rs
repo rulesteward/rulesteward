@@ -66,8 +66,8 @@ pub enum TrustSourceFilter {
 #[command(
     name = "rulesteward",
     version,
-    about = "RuleSteward - fapolicyd / SELinux / auditd policy linter",
-    long_about = "RuleSteward - fapolicyd / SELinux / auditd policy linter.\n\
+    about = "RuleSteward - fapolicyd / sshd_config / SELinux / auditd policy linter",
+    long_about = "RuleSteward - fapolicyd / sshd_config / SELinux / auditd policy linter.\n\
 \n\
 OUTPUT FORMATS (locked policy, #65 / CC-4):\n\
   human  default; human-readable text.\n\
@@ -964,6 +964,34 @@ mod tests {
             "long help must not call --sarif-include-pass 'reserved' \
              (functional since #137); got:\n{help}"
         );
+    }
+
+    /// Regression: the top-level `about`/`long_about` tagline must name ALL FOUR
+    /// backends, including `sshd`. The tagline historically read
+    /// `fapolicyd / SELinux / auditd policy linter` and was not updated when the
+    /// `sshd_config` backend shipped, so `rulesteward --help` (and the generated
+    /// man page) understated coverage. Targets the tagline strings directly, not
+    /// `render_long_help` (which would name `sshd` via the auto-listed
+    /// subcommand and mask the gap).
+    #[test]
+    fn top_level_tagline_names_all_four_backends() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let about = cmd.get_about().map(ToString::to_string).unwrap_or_default();
+        let long_about = cmd
+            .get_long_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        for backend in ["fapolicyd", "sshd", "SELinux", "auditd"] {
+            assert!(
+                about.contains(backend),
+                "short `about` tagline must name {backend}; got: {about}"
+            );
+            assert!(
+                long_about.contains(backend),
+                "`long_about` tagline must name {backend}; got: {long_about}"
+            );
+        }
     }
 
     // -- Section 3d: trustdb clap-contract tests (GREEN; the tree is frozen) --
