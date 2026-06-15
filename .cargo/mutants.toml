@@ -93,12 +93,12 @@ examine_globs = [
     # sshd_config parser (#149 Phase 0): the hand-rolled tokenizer + Match-block
     # scoping + criteria parser is the real Phase-0 logic and the mutation target.
     "crates/rulesteward-sshd/src/parser.rs",
-    # sshd_config semantic lints (#149). Wave A (#239) landed the structural passes
-    # sshd-E02/E03/E04 in structural.rs; this glob brings the whole lints/ tree into
-    # scope (allowlist-precedes-code) so each later wave's pass is mutation-gated the
-    # moment it lands, and the now-non-trivial lint() dispatcher + anchored() helper
-    # are exercised. The still-stub passes (structural::e01/w05, stig::w01/w02,
-    # crypto::w03/w06, deprecation::w04) return `Vec::new()`; Diagnostic has no
+    # sshd_config semantic lints (#149). Wave A (#239) landed structural::e02/e03/e04
+    # and Wave B (#240) landed structural::e01 + lints::registry; this glob brings the
+    # whole lints/ tree into scope (allowlist-precedes-code) so each later wave's pass
+    # is mutation-gated the moment it lands, and the now-non-trivial lint() dispatcher
+    # + anchored() helper are exercised. The still-stub passes (structural::w05,
+    # stig::w01/w02, crypto::w03/w06, deprecation::w04) return `Vec::new()`; Diagnostic has no
     # Default impl, so their only generated mutant is unviable and they add no
     # survivors. catalog.rs is const data + #[cfg(test)] only (no mutable fns).
     "crates/rulesteward-sshd/src/lints/**/*.rs",
@@ -351,15 +351,16 @@ exclude_re = [
     # - Drop -> () (line 552): pure in-process leak of the sidtab htable +
     #   policydb; unobservable by a functional test (PR #170 precedent).
     'selinux-sys/src/lib\.rs:.*replace <impl Drop for Policy>::drop with \(\)',
-    # sshd lints (#149): Wave A (#239) implemented only structural::e02/e03/e04.
-    # The other sshd- passes are still Phase-0 `Vec::new()` stubs, so cargo-mutants'
+    # sshd lints (#149): Wave A (#239) implemented structural::e02/e03/e04 and
+    # Wave B (#240) implemented structural::e01 + the lints::registry table. The
+    # remaining sshd- passes are still Phase-0 `Vec::new()` stubs, so cargo-mutants'
     # `replace <fn> -> Vec<Diagnostic> with vec![]` mutant is a genuine EQUIVALENT
     # (vec![] == Vec::new()) with no possible killing test. Excluded by name; each
     # later wave REMOVES its fn from this alternation in the PR that implements the
     # pass, at which point the `with vec![]` mutant becomes real and catchable.
-    # (e02/e03/e04 are deliberately NOT listed: they are implemented and their
-    # empty-return mutant IS caught by the structural tests.)
-    'rulesteward-sshd/src/lints/.*replace (e01|w01|w02|w03|w04|w05|w06) -> Vec<Diagnostic> with vec!\[\]',
+    # (e01/e02/e03/e04 are deliberately NOT listed: they are implemented and their
+    # empty-return mutant IS caught by the structural + registry tests.)
+    'rulesteward-sshd/src/lints/.*replace (w01|w02|w03|w04|w05|w06) -> Vec<Diagnostic> with vec!\[\]',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is

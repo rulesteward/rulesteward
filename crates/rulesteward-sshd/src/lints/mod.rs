@@ -21,6 +21,7 @@
 pub mod catalog;
 pub mod crypto;
 pub mod deprecation;
+pub mod registry;
 pub mod stig;
 pub mod structural;
 

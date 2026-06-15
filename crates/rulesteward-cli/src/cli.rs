@@ -673,9 +673,10 @@ pub enum SshdCommand {
     ///
     /// Parses an `sshd_config` file (whole-line `#` comments, case-insensitive
     /// keywords, `Match` blocks, `Include` directives) and runs the `sshd_config`
-    /// lint passes over it. The semantic passes (sshd-E01..E04, sshd-W01..W06)
-    /// are landing incrementally per the #149 wave plan; today this surface
-    /// parses the file and reports a syntax error as sshd-F01.
+    /// lint passes over it. The structural passes (sshd-E01 unknown directive,
+    /// sshd-E02 duplicate, sshd-E03 unresolved Include, sshd-E04 Match-illegal) plus
+    /// sshd-F01 (parse error) are implemented; the version-aware warning passes
+    /// (sshd-W01..W06) are landing incrementally per the #149 wave plan.
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sshd-F01).
@@ -694,10 +695,11 @@ pub struct SshdLintArgs {
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
 
-    /// Target OS baseline (rhel8|rhel9|rhel10) for the version-aware STIG/crypto
-    /// lints. Reserved: the baseline-aware passes (sshd-W01..W04) are in
-    /// development, so today the flag is accepted and recorded but does not yet
-    /// change the output.
+    /// Target OS baseline (rhel8|rhel9|rhel10) for the version-aware lints. Selects
+    /// which OpenSSH keyword set sshd-E01 validates against (rhel8 = 8.0p1, rhel9 /
+    /// rhel10 = 9.9p1); with no --target, sshd-E01 flags only keywords unknown to
+    /// every supported version. The other version-aware passes (sshd-W01..W06) are
+    /// still in development.
     #[arg(long, value_enum)]
     pub target: Option<TargetVersionArg>,
 }
