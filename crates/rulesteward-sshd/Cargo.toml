@@ -10,6 +10,15 @@ rust-version.workspace = true
 
 [dependencies]
 rulesteward-core = { workspace = true }
+# glob(7) Include resolution for sshd-E03 (#239).
+glob = { workspace = true }
+
+[dev-dependencies]
+# E03 builds present/absent include targets in a throwaway directory so its
+# filesystem-resolution tests are deterministic regardless of the host.
+tempfile = { workspace = true }
+# Layer-2 never-panic property tests over randomized directives / Include patterns.
+proptest = { workspace = true }
 
 [lints]
 workspace = true
