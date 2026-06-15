@@ -275,3 +275,23 @@ fn sarif_render_has_expected_structure() {
         );
     }
 }
+
+/// Regression: the SARIF driver `informationUri` must point at the canonical
+/// project repository (`github.com/rulesteward/rulesteward`), not the historical
+/// `ErstBlack/rulesteward`. SARIF consumers surface this as the tool's home
+/// page, so a stale URL sends users to the wrong repo.
+#[test]
+fn sarif_render_information_uri_is_canonical_repo() {
+    let diags = sample_diags();
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
+        .expect("SARIF render must return Ok(String)");
+    let v: Value = serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
+    let uri = v
+        .pointer("/runs/0/tool/driver/informationUri")
+        .and_then(Value::as_str)
+        .expect("tool.driver.informationUri must be present");
+    assert_eq!(
+        uri, "https://github.com/rulesteward/rulesteward",
+        "informationUri must be the canonical repo URL, not a stale fork"
+    );
+}

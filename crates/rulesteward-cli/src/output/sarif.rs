@@ -53,7 +53,7 @@ pub struct PassInfo {
 const DRIVER_NAME: &str = "rulesteward";
 
 /// The project home page, recorded in `tool.driver.informationUri`.
-const INFORMATION_URI: &str = "https://github.com/ErstBlack/rulesteward";
+const INFORMATION_URI: &str = "https://github.com/rulesteward/rulesteward";
 
 /// Map a [`Severity`] to its SARIF [`ResultLevel`].
 ///
