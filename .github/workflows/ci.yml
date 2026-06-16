@@ -301,6 +301,13 @@ jobs:
           # Pure-bash compare (no diff/cmp): the minimal rocky/alma/oracle base
           # images do not ship diffutils and the bootstrap above does not install it.
           major="$(. /etc/os-release; printf '%s' "${PLATFORM_ID#platform:el}")"
+          # Fail loudly if the expected major could not be derived, so a missing /
+          # malformed PLATFORM_ID surfaces as a smoke failure instead of silently
+          # comparing two errored (|| true) runs.
+          case "${major}" in
+            8|9|10) ;;
+            *) echo "FAIL: could not derive a supported EL major from PLATFORM_ID (got '${major}')"; exit 1 ;;
+          esac
           printf 'PermitRootLogin no\n' > /tmp/sshd_config
           ./bin/rulesteward sshd lint --target auto "/tmp/sshd_config" > /tmp/auto.out 2> /tmp/auto.err || true
           ./bin/rulesteward sshd lint --target "rhel${major}" "/tmp/sshd_config" > /tmp/explicit.out 2> /dev/null || true

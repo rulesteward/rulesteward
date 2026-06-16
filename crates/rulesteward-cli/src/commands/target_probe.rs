@@ -329,6 +329,38 @@ mod tests {
         assert_eq!(map_to_target(&o), Some(TargetVersionArg::Rhel10));
     }
 
+    #[test]
+    fn debian_10_is_none_family_gate_not_major_gate() {
+        // The family gate (not the major gate) is what rejects a non-EL host. Real
+        // Debian 10 has ID=debian, no ID_LIKE, no PLATFORM_ID, and VERSION_ID="10" -
+        // a SUPPORTED major. Without is_rhel_family it would map to Rhel10; it must
+        // be None. Pins is_rhel_family against a `-> true` bypass that a non-EL host
+        // at an UNSUPPORTED major (e.g. ubuntu 22.04) cannot catch.
+        let o = OsRelease {
+            id: Some("debian".into()),
+            id_like: None,
+            version_id: Some("10".into()),
+            platform_id: None,
+        };
+        assert_eq!(map_to_target(&o), None);
+    }
+
+    #[test]
+    fn id_like_rhel_token_alone_is_a_family_signal() {
+        // A derivative whose ONLY family signal is a single-token ID_LIKE="rhel" (no
+        // allowlist ID, no PLATFORM_ID) must still resolve. Pins the exact
+        // `token == "rhel"` match: a `== -> !=` flip drops this host to None, and
+        // every other positive id_like fixture also carries a PLATFORM_ID that would
+        // mask the flip.
+        let o = OsRelease {
+            id: Some("someoldrebuild".into()),
+            id_like: Some("rhel".into()),
+            version_id: Some("9".into()),
+            platform_id: None,
+        };
+        assert_eq!(map_to_target(&o), Some(TargetVersionArg::Rhel9));
+    }
+
     // --- map_to_target: the major-vs-minor and precedence traps -----------
 
     #[test]
