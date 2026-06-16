@@ -122,7 +122,12 @@ jobs:
         # Tier-1 RHEL-family distros (spec sections 5.3 / 14.2). Rocky uses the
         # rockylinux/rockylinux namespace (the legacy `rockylinux:10` tag does
         # not exist on Docker Hub); AlmaLinux uses the official `almalinux`
-        # image. Both are RHEL-ABI-compatible, so the same dnf bootstrap works.
+        # image; Oracle Linux uses the official `oraclelinux` image. All are
+        # RHEL-ABI-compatible, so the same dnf bootstrap works. Oracle earns its
+        # matrix slot for the --target auto feature (#251/#252): its os-release is
+        # ID=ol / ID_LIKE=fedora (no `rhel` token) with PLATFORM_ID=platform:elN,
+        # so it is the one Tier-1 distro that exercises the PLATFORM_ID family
+        # signal the ID allowlist alone would miss.
         include:
           - { label: rocky8, image: "rockylinux/rockylinux:8" }
           - { label: rocky9, image: "rockylinux/rockylinux:9" }
@@ -130,6 +135,9 @@ jobs:
           - { label: alma8, image: "almalinux:8" }
           - { label: alma9, image: "almalinux:9" }
           - { label: alma10, image: "almalinux:10" }
+          - { label: oracle8, image: "oraclelinux:8" }
+          - { label: oracle9, image: "oraclelinux:9" }
+          - { label: oracle10, image: "oraclelinux:10" }
     container:
       image: ${{ matrix.image }}
     defaults:
@@ -278,6 +286,33 @@ jobs:
           ./bin/rulesteward --help > /tmp/help_output
           if grep -qE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output; then
             grep -nE '<source>|<unknown>|<placeholder>|<TODO>|\bTODO\b|\bXXX\b|\bFIXME\b|panic|dbg!' /tmp/help_output
+            exit 1
+          fi
+
+      - name: Functional smoke -- --target auto resolves to this host's EL release
+        # End-to-end check of --target auto (#251/#252): on an EL container it must
+        # read /etc/os-release and resolve to the matching rhelN baseline, so its
+        # output is byte-identical to an explicit --target rhelN and it must NOT
+        # print the version-agnostic fallback warning. The unit tests cover the
+        # pure os-release->target mapping; this exercises the LiveTargetProbe
+        # against a real container, and (via the oracleN entries) the
+        # PLATFORM_ID=platform:elN family signal for ID=ol hosts.
+        run: |
+          # Pure-bash compare (no diff/cmp): the minimal rocky/alma/oracle base
+          # images do not ship diffutils and the bootstrap above does not install it.
+          major="$(. /etc/os-release; printf '%s' "${PLATFORM_ID#platform:el}")"
+          printf 'PermitRootLogin no\n' > /tmp/sshd_config
+          ./bin/rulesteward sshd lint --target auto "/tmp/sshd_config" > /tmp/auto.out 2> /tmp/auto.err || true
+          ./bin/rulesteward sshd lint --target "rhel${major}" "/tmp/sshd_config" > /tmp/explicit.out 2> /dev/null || true
+          if grep -q 'version-agnostic' /tmp/auto.err; then
+            echo "FAIL: --target auto fell back to version-agnostic on an EL host (major=${major})"
+            cat /tmp/auto.err
+            exit 1
+          fi
+          if [ "$(cat /tmp/auto.out)" != "$(cat /tmp/explicit.out)" ]; then
+            echo "FAIL: --target auto did not resolve to rhel${major} (output differs from explicit --target)"
+            echo "--- auto ---"; cat /tmp/auto.out
+            echo "--- explicit rhel${major} ---"; cat /tmp/explicit.out
             exit 1
           fi
 
