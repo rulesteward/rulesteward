@@ -327,10 +327,16 @@ fn glob_is_benign_empty(resolved: &Path) -> bool {
 /// sshd-E04: a directive not permitted inside a `Match` block (silently ignored
 /// by sshd at runtime).
 ///
-/// TODO(#149, Wave A): checks each Match body against the small static set of
-/// Match-permitted keywords from `sshd_config(5)`.
+/// Only keywords that ARE recognized by the TARGET sshd version (or by ANY version
+/// if no target is set) are checked against the Match-permitted set. A
+/// truly-unknown keyword inside a Match block is sshd-E01's sole responsibility:
+/// the daemon REJECTS it outright rather than silently ignoring it, so the
+/// "silently ignored at runtime" message would be incorrect. Skipping unknown
+/// keywords here prevents the double-fire. When a target version is specified,
+/// we use `is_known(keyword, target)` to check version-awareness; when no target
+/// is given, we use `is_known_any` to check against the union of all versions.
 #[must_use]
-pub fn e04(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
+pub fn e04(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for block in blocks {
         let Block::Match(match_block) = block else {
@@ -339,6 +345,17 @@ pub fn e04(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
         };
         for directive in &match_block.body {
             let keyword = directive.keyword_lower();
+            // Skip keywords that are unknown to the target sshd version (or to any
+            // version if no target): those belong exclusively to sshd-E01 (daemon
+            // rejects them, does not silently ignore them). Only known-but-not-
+            // Match-permitted keywords warrant an E04 diagnostic.
+            let is_known = match ctx.target {
+                Some(target) => registry::is_known(&keyword, target),
+                None => registry::is_known_any(&keyword),
+            };
+            if !is_known {
+                continue;
+            }
             if !E04_MATCH_PERMITTED.contains(&keyword.as_str()) {
                 diags.push(anchored(
                     Severity::Error,
@@ -420,7 +437,7 @@ mod e04_tests {
 
     use super::e04;
     use crate::ast::Block;
-    use crate::lints::SshdLintContext;
+    use crate::lints::{SshdLintContext, TargetVersion};
     use rulesteward_core::Diagnostic;
     use std::path::Path;
 
@@ -434,6 +451,17 @@ mod e04_tests {
             &parse(src),
             Path::new("/etc/ssh/sshd_config"),
             &SshdLintContext::default(),
+        )
+    }
+
+    fn run_with_target(src: &str, target: TargetVersion) -> Vec<Diagnostic> {
+        e04(
+            &parse(src),
+            Path::new("/etc/ssh/sshd_config"),
+            &SshdLintContext {
+                target: Some(target),
+                single_file: true,
+            },
         )
     }
 
@@ -490,6 +518,358 @@ mod e04_tests {
     fn include_is_permitted_inside_match() {
         // Include is in the Match-permitted list (conditional inclusion).
         assert!(run("Match User bob\n    Include /etc/ssh/x.conf\n").is_empty());
+    }
+
+    // ----- double-fire tests (the sshd-E04 + sshd-E01 interaction) -----
+    //
+    // A keyword that is truly unknown (not recognized by any supported sshd) inside
+    // a Match block belongs to sshd-E01, not sshd-E04. sshd-E04's message is
+    // "silently ignored at runtime" - but a truly-unknown keyword is NOT silently
+    // ignored; the daemon REJECTS it. The locked fix (option a): e04() must call
+    // registry::is_known_any and skip any keyword that returns false.
+
+    #[test]
+    fn unknown_keyword_in_match_does_not_fire_e04() {
+        // ZZBogus is not recognized by any supported sshd version (is_known_any ->
+        // false). It is NOT in E04_MATCH_PERMITTED either, so without the fix e04()
+        // fires sshd-E04 for it (double-fire with sshd-E01). After the fix, e04()
+        // must return EMPTY for this config because the unknown keyword is E01's
+        // sole responsibility.
+        //
+        // RED before fix: e04() currently emits sshd-E04 -> len() == 1, not 0.
+        let diags = run("Match User bob\n    ZZBogus yes\n");
+        assert!(
+            diags.is_empty(),
+            "a truly-unknown keyword inside Match belongs to sshd-E01, not sshd-E04; \
+             got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_distinct_unknown_keywords_in_match_do_not_fire_e04() {
+        // Parametrized over several distinct truly-unknown keyword tokens (none are in
+        // sshd's keyword table for any supported version, so is_known_any -> false for
+        // each). This list is ILLUSTRATIVE and OPEN-ENDED: the correct impl must route
+        // EVERY registry-unknown keyword to E01 via `!is_known_any(&keyword)`, so a
+        // hardcoded skip-list of these specific literals (a 1- OR N-element
+        // `["zzbogus", "foobarbaz", ...].contains(...)`) is NOT a valid implementation
+        // and would mis-handle any other unknown keyword an operator writes.
+        //
+        // After the fix, e04() must return EMPTY for every one of these configs.
+        // RED before fix: e04() emits sshd-E04 for each unknown -> len() == 1.
+        let unknown_tokens = [
+            "FooBarBaz",
+            "NotAKeyword",
+            "Wibble",
+            "QuuxNotReal",
+            "GribbleFrotz",
+            "XyzzyPlugh",
+        ];
+        for kw in unknown_tokens {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            let diags = run(&src);
+            assert!(
+                diags.is_empty(),
+                "truly-unknown keyword '{kw}' inside Match must NOT produce sshd-E04 \
+                 (belongs to sshd-E01); got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_unknown_keywords_via_full_dispatcher_get_e01_not_e04() {
+        // Full-dispatcher variant: with all lints running, each unknown keyword inside
+        // a Match block must yield EXACTLY sshd-E01 (from e01()) and NO sshd-E04.
+        // Tested against distinct out-of-the-other-fixture tokens to defeat both a
+        // single-literal AND an N-element hardcoded skip-list (the impl must do a real
+        // is_known_any lookup, which generalizes to any unknown keyword).
+        //
+        // RED before fix: the dispatcher emits both sshd-E01 AND sshd-E04 for each.
+        let unknown_tokens = ["ZorbleQuux", "FloopDingle", "Wibble"];
+        for kw in unknown_tokens {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            let blocks =
+                crate::parser::parse_config_str_located(&src, Path::new("/etc/ssh/sshd_config"))
+                    .expect("fixture parses");
+            let ctx = SshdLintContext::default();
+            let diags = crate::lints::lint(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+
+            let has_e01 = diags.iter().any(|d| d.code == "sshd-E01");
+            let has_e04 = diags.iter().any(|d| d.code == "sshd-E04");
+            assert!(
+                has_e01,
+                "sshd-E01 must fire for unknown keyword '{kw}' inside Match; got {diags:?}"
+            );
+            assert!(
+                !has_e04,
+                "sshd-E04 must NOT fire for unknown keyword '{kw}' inside Match; got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn requiredrsasize_in_match_fires_e04_not_e01() {
+        // RequiredRSASize is in ADDED_RHEL9 (known on RHEL9 and RHEL10, unknown on
+        // RHEL8 only). The no-target union uses is_known_any which equals the RHEL10
+        // superset, so is_known_any("requiredrsasize") -> true.
+        //
+        // RequiredRSASize is NOT in E04_MATCH_PERMITTED: the man page does not list
+        // it as a Match-block keyword. So inside a Match body, the correct routing
+        // is: e01() sees is_known_any -> true -> DOES NOT fire; e04() sees the keyword
+        // is known (in the union) but not Match-permitted -> fires sshd-E04.
+        //
+        // This pins that the fix uses is_known_any (union over all versions), NOT
+        // is_known(target) for a specific version. If the fix used is_known(rhel8),
+        // it would wrongly SKIP RequiredRSASize in the RHEL8 case (false-unknown
+        // on that version), letting it escape without an E04 when run with no target.
+        //
+        // With no --target context (SshdLintContext::default()), is_known_any is the
+        // oracle used by e01(). The fix in e04() must also use is_known_any so it
+        // only skips keywords the union says are genuinely unknown.
+        //
+        // GREEN before fix: without the fix e04() fires (incorrectly) for ZZBogus
+        // and (correctly) for RequiredRSASize. After the fix, the ZZBogus tests go
+        // GREEN but this RequiredRSASize test MUST remain GREEN (regression guard).
+        let src = "Match User bob\n    RequiredRSASize 2048\n";
+        let diags = run(src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "RequiredRSASize is known (via is_known_any) but not Match-permitted \
+             -> exactly one sshd-E04; got {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
+        // And via the full dispatcher: e01() must NOT fire (it is known in the union).
+        let blocks =
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses");
+        let ctx = SshdLintContext::default();
+        let all_diags = crate::lints::lint(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let has_e01 = all_diags.iter().any(|d| d.code == "sshd-E01");
+        let has_e04 = all_diags.iter().any(|d| d.code == "sshd-E04");
+        assert!(
+            !has_e01,
+            "RequiredRSASize is known (via is_known_any) so sshd-E01 must NOT fire; \
+             got {all_diags:?}"
+        );
+        assert!(
+            has_e04,
+            "RequiredRSASize is not Match-permitted so sshd-E04 must fire; \
+             got {all_diags:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_keyword_in_match_fires_e01_not_e04_via_full_dispatcher() {
+        // Full dispatcher test: with both e01() and e04() running, the combined
+        // output for an unknown keyword inside a Match block must contain exactly
+        // one diagnostic, code sshd-E01, and must NOT contain sshd-E04.
+        //
+        // RED before fix: currently the dispatcher emits both sshd-E01 (correct)
+        // AND sshd-E04 (wrong double-fire), so the `no E04` assertion below fails.
+        let src = "Match User bob\n    ZZBogus yes\n";
+        let blocks =
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses");
+        let ctx = SshdLintContext::default();
+        let diags = crate::lints::lint(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+
+        let has_e01 = diags.iter().any(|d| d.code == "sshd-E01");
+        let has_e04 = diags.iter().any(|d| d.code == "sshd-E04");
+        assert!(
+            has_e01,
+            "sshd-E01 must fire for an unknown keyword inside Match; got {diags:?}"
+        );
+        assert!(
+            !has_e04,
+            "sshd-E04 must NOT fire when the keyword is unknown to every sshd version; \
+             got {diags:?}"
+        );
+    }
+
+    // ----- regression guard (must stay GREEN before and after the fix) -----
+
+    #[test]
+    fn known_keyword_not_match_permitted_still_fires_e04() {
+        // Ciphers IS recognized by all sshd versions (is_known_any -> true) but is
+        // NOT in E04_MATCH_PERMITTED. After the fix, e04() may only skip UNKNOWN
+        // keywords; a known-but-not-permitted keyword must still fire sshd-E04.
+        //
+        // GREEN before fix (existing behaviour); must remain GREEN after fix.
+        let diags = run("Match User bob\n    Ciphers aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Ciphers is known but not Match-permitted -> sshd-E04"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
+    }
+
+    #[test]
+    fn known_global_only_keywords_still_fire_e04_after_fix() {
+        // Regression: a selection of well-known global-only directives that ARE in
+        // the registry but absent from E04_MATCH_PERMITTED. The fix must not
+        // over-skip these.
+        //
+        // ListenAddress: in RHEL8_BASE (global accumulate); not Match-permitted.
+        // Subsystem: in RHEL8_BASE (name-keyed); not Match-permitted.
+        // Each must fire exactly one sshd-E04.
+        let cases = [
+            (
+                "ListenAddress",
+                "Match User bob\n    ListenAddress 0.0.0.0\n",
+            ),
+            (
+                "Subsystem",
+                "Match User bob\n    Subsystem sftp /usr/libexec/openssh/sftp-server\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let diags = run(src);
+            assert_eq!(
+                diags.len(),
+                1,
+                "{name} is known but not Match-permitted -> exactly one sshd-E04; got {diags:?}"
+            );
+            assert_eq!(
+                diags[0].code, "sshd-E04",
+                "{name}: wrong code {}",
+                diags[0].code
+            );
+        }
+    }
+
+    // ----- target-aware skip oracle tests (the miss-case from the adversarial review) -----
+    //
+    // The no-target fix above uses `registry::is_known_any` (the RHEL10 union) to
+    // decide whether a keyword inside a Match block belongs to E01. That is correct
+    // for the no-target case (where e01() also uses the union), but WRONG when a
+    // `--target` is set: with `--target rhel8`, `RequiredRSASize` is NOT recognized
+    // by OpenSSH 8.0p1 (it is in ADDED_RHEL9), so `is_known_any` returns true (the
+    // RHEL10 union includes it) while `is_known("requiredrsasize", Rhel8)` returns
+    // false. The daemon REJECTS the keyword on RHEL8, so the correct message is
+    // E01's "unknown directive", not E04's "silently ignored at runtime".
+    //
+    // Grounding: `sshd -t -o 'RequiredRSASize=yes'` on Rocky 8.10 (OpenSSH 8.0p1):
+    //   "Bad configuration option: RequiredRSASize" (exit 1)
+    // On Rocky 9.8 (OpenSSH 9.9p1): "Value too small" (accepted, exit 0).
+    // See rulesteward-docs/sshd-stig-version-grounding.md section 8.
+    //
+    // The fix must change e04()'s skip oracle from `is_known_any` to a
+    // context-aware check: `is_known(keyword, target)` when a target is set, and
+    // `is_known_any(keyword)` only when no target. A wrong impl that always uses
+    // `is_known_any` passes the no-target tests above but FAILS these target tests.
+
+    #[test]
+    fn version_rejected_keyword_in_match_with_target_routes_only_to_e01() {
+        // RequiredRSASize is in ADDED_RHEL9: unknown on RHEL 8 (sshd answers "Bad
+        // configuration option"), known on RHEL 9/10. Inside a Match block with
+        // `--target rhel8`:
+        //   - sshd-E01 fires (daemon rejects it on RHEL 8: !is_known(kw, Rhel8)).
+        //   - sshd-E04 must NOT fire (daemon does not silently ignore it; it rejects
+        //     it entirely, so "silently ignored at runtime" is factually wrong).
+        //
+        // RED before fix: e04() uses is_known_any, which returns true for
+        // RequiredRSASize (known via the RHEL10 superset), so e04() emits sshd-E04
+        // even under --target rhel8 -> double-fire.
+        // Correct: e04() should use is_known(kw, target) when a target is set; that
+        // returns false for RequiredRSASize + Rhel8, so e04() skips it.
+        let src = "Match User bob\n    RequiredRSASize 2048\n";
+        let diags = run_with_target(src, TargetVersion::Rhel8);
+        assert!(
+            diags.is_empty(),
+            "RequiredRSASize is unknown on RHEL 8 (sshd rejects it): \
+             e04 must NOT fire because the keyword belongs to sshd-E01, \
+             not the 'silently ignored' category; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn version_rejected_keyword_in_match_with_target_full_dispatcher_has_e01_not_e04() {
+        // Full-dispatcher variant of the above: running both e01() and e04() together
+        // with `--target rhel8` on `RequiredRSASize` inside a Match block must yield
+        // EXACTLY sshd-E01 and ZERO sshd-E04.
+        //
+        // This is the primary killing test: it verifies the double-fire the
+        // adversarial reviewer observed: `target=rhel8, Match User bob,
+        // RequiredRSASize 2048 -> codes = ["sshd-E01", "sshd-E04"]`.
+        // Correct: codes = ["sshd-E01"] only.
+        //
+        // RED before fix: dispatcher emits both sshd-E01 (correct) and sshd-E04
+        // (wrong double-fire, because e04 uses is_known_any not is_known(kw, Rhel8)).
+        let src = "Match User bob\n    RequiredRSASize 2048\n";
+        let blocks =
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses");
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel8),
+            single_file: true,
+        };
+        let diags = crate::lints::lint(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+
+        let has_e01 = diags.iter().any(|d| d.code == "sshd-E01");
+        let has_e04 = diags.iter().any(|d| d.code == "sshd-E04");
+        assert!(
+            has_e01,
+            "sshd-E01 must fire for RequiredRSASize inside Match with --target rhel8 \
+             (daemon answers 'Bad configuration option' on 8.0p1); got {diags:?}"
+        );
+        assert!(
+            !has_e04,
+            "sshd-E04 must NOT fire for RequiredRSASize with --target rhel8: \
+             the daemon REJECTS the keyword, so 'silently ignored at runtime' is factually \
+             wrong; e04 must use is_known(kw, target) not is_known_any; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn all_added_rhel9_keywords_absent_from_match_permitted_route_only_to_e01_on_rhel8_target() {
+        // Parametrized over all ADDED_RHEL9 keywords that are NOT in E04_MATCH_PERMITTED:
+        // each is unknown on RHEL 8, so with --target rhel8 inside a Match block they
+        // belong exclusively to sshd-E01. e04() must not emit sshd-E04 for any of them.
+        //
+        // This pins the general rule, not just the RequiredRSASize boundary case:
+        // the fix must use is_known(kw, target) for EVERY keyword when a target is set.
+        // A hardcoded skip-list of "requiredrsasize" would pass the single keyword test
+        // but fail this parametrized sweep.
+        //
+        // The keywords NOT in E04_MATCH_PERMITTED are the ones that would reach the
+        // sshd-E04 emission path IF e04() incorrectly uses is_known_any:
+        //   - canonicalmatchuser, gssapiindicators, logverbose, modulifile,
+        //     persourcemaxstartups, persourcenetblocksize, persourcepenalties,
+        //     persourcepenaltyexemptlist, requiredrsasize, rsaminsize, securitykeyprovider,
+        //     sshdsessionpath.
+        // (channeltimeout, hostbasedacceptedalgorithms, pamservicename,
+        //  pubkeyacceptedalgorithms, pubkeyauthoptions, refuseconnection,
+        //  unusedconnectiontimeout are in both ADDED_RHEL9 AND E04_MATCH_PERMITTED, so
+        //  they never reach the E04 emission path and are not listed here.)
+        //
+        // RED before fix: e04() uses is_known_any -> true for every ADDED_RHEL9 keyword
+        // -> emits sshd-E04 for each of the non-permitted ones with --target rhel8.
+        let rhel9_only_non_permitted = [
+            "CanonicalMatchUser",
+            "GSSAPIIndicators",
+            "LogVerbose",
+            "ModuliFile",
+            "PerSourceMaxStartups",
+            "PerSourceNetblockSize",
+            "PerSourcePenalties",
+            "PerSourcePenaltyExemptList",
+            "RequiredRSASize",
+            "RSAMinSize",
+            "SecurityKeyProvider",
+            "SshdSessionPath",
+        ];
+        for kw in rhel9_only_non_permitted {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            let diags = run_with_target(&src, TargetVersion::Rhel8);
+            assert!(
+                diags.is_empty(),
+                "'{kw}' is unknown on RHEL 8 (ADDED_RHEL9, not in E04_MATCH_PERMITTED): \
+                 e04 must NOT fire with --target rhel8 because the daemon REJECTS it; \
+                 got {diags:?}"
+            );
+        }
     }
 }
 
