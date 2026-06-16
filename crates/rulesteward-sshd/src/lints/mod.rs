@@ -188,10 +188,14 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_on_parsed_blocks_is_empty_in_phase_0() {
-        // Every pass is a Phase-0 stub, so a parsed file yields no diagnostics
-        // (exit 0). This pins the no-op contract: if a pass starts emitting before
-        // its tests are wired, this fails and forces the wiring.
+    fn dispatcher_emits_no_structural_or_error_codes_for_minimal_config() {
+        // A minimal but syntactically valid config should never trigger structural
+        // (sshd-E0x) or parser (sshd-F01) diagnostics.  W-level diagnostics
+        // (sshd-W01, sshd-W02, ...) are intentionally excluded from this
+        // assertion: once the STIG passes are implemented they WILL fire for a
+        // minimal config that lacks required directives, and that is correct
+        // behaviour.  This test pins the structural/error-code contract only,
+        // which must remain stable across all implementation waves.
         let blocks = crate::parser::parse_config_str_located(
             "PermitRootLogin no\nMaxAuthTries 4\n",
             std::path::Path::new("/etc/ssh/sshd_config"),
@@ -202,9 +206,14 @@ mod tests {
             std::path::Path::new("/etc/ssh/sshd_config"),
             &SshdLintContext::default(),
         );
+        let structural_or_error: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.starts_with("sshd-E") || d.code.starts_with("sshd-F"))
+            .collect();
         assert!(
-            diags.is_empty(),
-            "Phase-0 passes emit nothing; got {diags:?}"
+            structural_or_error.is_empty(),
+            "a syntactically valid config must not produce structural (sshd-E0x) or \
+             fatal (sshd-F01) diagnostics; got {structural_or_error:?}"
         );
     }
 }
