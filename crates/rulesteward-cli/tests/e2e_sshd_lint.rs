@@ -27,6 +27,33 @@ fn run_lint(path: &std::path::Path, extra: &[&str]) -> std::process::Output {
     bin().args(args).output().expect("binary ran")
 }
 
+/// A fully STIG-compliant config: all RHEL9-required directives present with
+/// baseline-correct values, no weak crypto, no deprecated keywords, no structural
+/// issues. Lint-clean under both target=None (the RHEL8 floor) and --target rhel9.
+/// Wave B made the W01/W02 passes real, so a minimal config is no longer "clean".
+const CLEAN_CONFIG: &str = "\
+Banner /etc/issue.net
+LogLevel VERBOSE
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+RekeyLimit 1G 1h
+ClientAliveCountMax 1
+ClientAliveInterval 300
+Compression no
+GSSAPIAuthentication no
+KerberosAuthentication no
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+X11Forwarding no
+StrictModes yes
+PrintLastLog yes
+X11UseLocalhost yes
+";
+
 #[test]
 fn fires_e02_with_exit_two_and_code_in_stdout() {
     let cfg = config_file("PermitRootLogin no\nPermitRootLogin yes\n");
@@ -82,7 +109,7 @@ fn json_envelope_is_valid_and_carries_the_diagnostic() {
 
 #[test]
 fn clean_config_exits_zero() {
-    let cfg = config_file("PermitRootLogin no\nMaxAuthTries 4\nX11Forwarding no\n");
+    let cfg = config_file(CLEAN_CONFIG);
     let out = run_lint(cfg.path(), &[]);
     assert_eq!(out.status.code(), Some(0), "a clean config exits 0");
     let stdout = String::from_utf8(out.stdout).expect("utf8");

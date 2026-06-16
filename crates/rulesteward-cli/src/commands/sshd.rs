@@ -101,6 +101,34 @@ mod lint_shell_tests {
         }
     }
 
+    // A fully STIG-compliant config: all RHEL9-required directives present with
+    // baseline-correct values, no weak crypto, no deprecated keywords, no
+    // structural issues. Verified lint-clean under both target=None (the RHEL8
+    // floor) and --target rhel9. Wave B made the W01/W02 passes real, so a minimal
+    // config is no longer "clean" (it is missing STIG-required directives).
+    const CLEAN_CONFIG: &str = "\
+Banner /etc/issue.net
+LogLevel VERBOSE
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+RekeyLimit 1G 1h
+ClientAliveCountMax 1
+ClientAliveInterval 300
+Compression no
+GSSAPIAuthentication no
+KerberosAuthentication no
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+X11Forwarding no
+StrictModes yes
+PrintLastLog yes
+X11UseLocalhost yes
+";
+
     #[test]
     fn missing_path_exits_tool_failure() {
         let a = args(
@@ -123,7 +151,7 @@ mod lint_shell_tests {
     fn clean_config_exits_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sshd_config");
-        std::fs::write(&f, "PermitRootLogin no\nMaxAuthTries 4\n").expect("write");
+        std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = args(&f, HumanJsonFormat::Json);
         assert_eq!(lint(&a), EXIT_CLEAN);
     }
@@ -140,11 +168,11 @@ mod lint_shell_tests {
 
     #[test]
     fn target_flag_is_accepted() {
-        // --target is plumbed into the lint context (Wave-B seam); it must not
-        // change the Phase-0 (no-op-passes) exit code for a clean file.
+        // --target is plumbed into the lint context; a fully RHEL9-compliant
+        // config lints clean under --target rhel9 (exit 0).
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sshd_config");
-        std::fs::write(&f, "PermitRootLogin no\n").expect("write");
+        std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = SshdLintArgs {
             path: Some(f),
             format: HumanJsonFormat::Human,
