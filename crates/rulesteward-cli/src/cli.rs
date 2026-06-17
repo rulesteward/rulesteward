@@ -256,6 +256,23 @@ impl From<TargetVersionArg> for rulesteward_sshd::TargetVersion {
     }
 }
 
+/// CLI value-enum for `--target` on the version-aware lint verbs: `auto` triggers
+/// host detection from `/etc/os-release`, the explicit values pin a baseline. The
+/// command layer resolves this to a concrete `TargetVersionArg` (or the
+/// version-agnostic `None`) via [`crate::commands::target_probe::resolve_target`]
+/// (epic #251: target resolution lives in the command layer, never in a lint pass).
+/// Kept separate from `TargetVersionArg` so the domain `From` impls stay total
+/// (`Auto` never reaches them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TargetSelector {
+    /// Detect the target from the host's `/etc/os-release`; fall back to the
+    /// version-agnostic dialect (with a warning) when detection fails.
+    Auto,
+    Rhel8,
+    Rhel9,
+    Rhel10,
+}
+
 /// Arguments for `rulesteward fapolicyd explain` (#72/#73/#74).
 ///
 /// Explains a FANOTIFY denial record in the context of a rule set and
@@ -695,13 +712,15 @@ pub struct SshdLintArgs {
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
 
-    /// Target OS baseline (rhel8|rhel9|rhel10) for the version-aware lints. Selects
-    /// which OpenSSH keyword set sshd-E01 validates against (rhel8 = 8.0p1, rhel9 /
-    /// rhel10 = 9.9p1); with no --target, sshd-E01 flags only keywords unknown to
-    /// every supported version. The other version-aware passes (sshd-W01..W06) are
-    /// still in development.
+    /// Target OS baseline (auto|rhel8|rhel9|rhel10) for the version-aware lints.
+    /// Selects which OpenSSH keyword set sshd-E01 validates against (rhel8 = 8.0p1,
+    /// rhel9 / rhel10 = 9.9p1). `auto` detects the baseline from the host's
+    /// /etc/os-release, falling back (with a warning) to the version-agnostic
+    /// dialect when detection fails. With no --target, sshd-E01 flags only keywords
+    /// unknown to every supported version. The other version-aware passes
+    /// (sshd-W01..W06) are still in development.
     #[arg(long, value_enum)]
-    pub target: Option<TargetVersionArg>,
+    pub target: Option<TargetSelector>,
 }
 
 #[derive(Debug, Parser)]

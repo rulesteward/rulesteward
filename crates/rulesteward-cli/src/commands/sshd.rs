@@ -8,6 +8,7 @@
 use serde::Serialize;
 
 use crate::cli::{HumanJsonFormat, SshdCommand, SshdLintArgs};
+use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_TOOL_FAILURE};
 use crate::output::json::render_envelope;
 use rulesteward_sshd::{SshdLintContext, lints, parser::parse_config_str_located};
@@ -32,6 +33,13 @@ struct SshdLintPayload<'a> {
 }
 
 fn lint(args: &SshdLintArgs) -> i32 {
+    lint_with_probe(args, &LiveTargetProbe)
+}
+
+/// `lint` with the host probe injected, so the `--target auto` resolution path is
+/// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
+/// the real [`LiveTargetProbe`]; tests supply a fake.
+fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     let path = args
         .path
         .clone()
@@ -53,6 +61,14 @@ fn lint(args: &SshdLintArgs) -> i32 {
         }
     };
 
+    // Resolve --target in the command layer (epic #251): explicit value as-is,
+    // `auto` from the host probe, omitted -> version-agnostic. A failed `auto`
+    // degrades to version-agnostic with a warning, never an error (read-only tool).
+    let resolved = resolve_target(args.target, probe);
+    if let Some(warning) = &resolved.warning {
+        eprintln!("sshd lint: {warning}");
+    }
+
     // Stage the source (keyed by display path, the diagnostics' source_id
     // convention) so the human renderer can show ariadne snippets.
     let mut sources = std::collections::BTreeMap::new();
@@ -60,7 +76,7 @@ fn lint(args: &SshdLintArgs) -> i32 {
     match parse_config_str_located(&source, &path) {
         Ok(blocks) => {
             let ctx = SshdLintContext {
-                target: args.target.map(Into::into),
+                target: resolved.target.map(Into::into),
                 single_file: true,
             };
             diags.extend(lints::lint(&blocks, &path, &ctx));
@@ -89,9 +105,18 @@ fn lint(args: &SshdLintArgs) -> i32 {
 
 #[cfg(test)]
 mod lint_shell_tests {
-    use super::lint;
-    use crate::cli::{HumanJsonFormat, SshdLintArgs, TargetVersionArg};
+    use super::{HostTargetProbe, lint, lint_with_probe};
+    use crate::cli::{HumanJsonFormat, SshdLintArgs, TargetSelector, TargetVersionArg};
     use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+
+    /// A host probe returning a canned result, so the `--target auto` wiring is
+    /// exercised without depending on the test host's /etc/os-release.
+    struct FakeProbe(Result<Option<TargetVersionArg>, String>);
+    impl HostTargetProbe for FakeProbe {
+        fn detect(&self) -> Result<Option<TargetVersionArg>, String> {
+            self.0.clone()
+        }
+    }
 
     fn args(path: &std::path::Path, format: HumanJsonFormat) -> SshdLintArgs {
         SshdLintArgs {
@@ -176,8 +201,42 @@ X11UseLocalhost yes
         let a = SshdLintArgs {
             path: Some(f),
             format: HumanJsonFormat::Human,
-            target: Some(TargetVersionArg::Rhel9),
+            target: Some(TargetSelector::Rhel9),
         };
         assert_eq!(lint(&a), EXIT_CLEAN);
+    }
+
+    #[test]
+    fn target_auto_threads_the_probed_target() {
+        // `--target auto` resolves via the host probe; a probe that detects rhel9
+        // makes a fully RHEL9-compliant config lint clean (exit 0), proving the
+        // resolved target is threaded into the lint context.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sshd_config");
+        std::fs::write(&f, CLEAN_CONFIG).expect("write");
+        let a = SshdLintArgs {
+            path: Some(f),
+            format: HumanJsonFormat::Human,
+            target: Some(TargetSelector::Auto),
+        };
+        let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
+        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
+    }
+
+    #[test]
+    fn target_auto_degrades_gracefully_when_unmappable() {
+        // A non-RHEL host (probe yields None) must NOT error: `--target auto`
+        // falls back to the version-agnostic dialect, under which the
+        // RHEL8-floor-clean config still exits 0.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sshd_config");
+        std::fs::write(&f, CLEAN_CONFIG).expect("write");
+        let a = SshdLintArgs {
+            path: Some(f),
+            format: HumanJsonFormat::Human,
+            target: Some(TargetSelector::Auto),
+        };
+        let probe = FakeProbe(Ok(None));
+        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
     }
 }
