@@ -289,7 +289,7 @@ jobs:
             exit 1
           fi
 
-      - name: Functional smoke -- --target auto resolves to this host's EL release
+      - name: Functional smoke -- sshd+fapolicyd --target auto resolves to this host's EL release
         # End-to-end check of --target auto (#251/#252): on an EL container it must
         # read /etc/os-release and resolve to the matching rhelN baseline, so its
         # output is byte-identical to an explicit --target rhelN and it must NOT
@@ -317,9 +317,26 @@ jobs:
             exit 1
           fi
           if [ "$(cat /tmp/auto.out)" != "$(cat /tmp/explicit.out)" ]; then
-            echo "FAIL: --target auto did not resolve to rhel${major} (output differs from explicit --target)"
+            echo "FAIL: sshd --target auto did not resolve to rhel${major} (output differs from explicit --target)"
             echo "--- auto ---"; cat /tmp/auto.out
             echo "--- explicit rhel${major} ---"; cat /tmp/explicit.out
+            exit 1
+          fi
+          # fapolicyd lint --target auto (#253): the same resolution check on the
+          # fapolicyd backend. --file needs no installed fapolicyd / rules.d. auto
+          # (resolves rhelN) must match explicit --target rhelN and must not warn.
+          printf 'allow perm=open all : path=/etc/hosts\n' > /tmp/fapd.rules
+          ./bin/rulesteward fapolicyd lint --target auto --file "/tmp/fapd.rules" > /tmp/fauto.out 2> /tmp/fauto.err || true
+          ./bin/rulesteward fapolicyd lint --target "rhel${major}" --file "/tmp/fapd.rules" > /tmp/fexp.out 2> /dev/null || true
+          if grep -q 'version-agnostic' /tmp/fauto.err; then
+            echo "FAIL: fapolicyd --target auto fell back to version-agnostic on an EL host (major=${major})"
+            cat /tmp/fauto.err
+            exit 1
+          fi
+          if [ "$(cat /tmp/fauto.out)" != "$(cat /tmp/fexp.out)" ]; then
+            echo "FAIL: fapolicyd --target auto did not resolve to rhel${major} (output differs from explicit --target)"
+            echo "--- auto ---"; cat /tmp/fauto.out
+            echo "--- explicit rhel${major} ---"; cat /tmp/fexp.out
             exit 1
           fi
 

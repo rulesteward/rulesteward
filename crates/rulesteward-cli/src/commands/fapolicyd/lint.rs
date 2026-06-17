@@ -16,7 +16,8 @@ use rulesteward_fapolicyd::{
 };
 use thiserror::Error;
 
-use crate::cli::{LintArgs, OutputFormat};
+use crate::cli::{LintArgs, OutputFormat, TargetVersionArg};
+use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_LMDB_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::{self, RenderError};
 
@@ -41,6 +42,29 @@ pub enum ResolveError {
 }
 
 pub(super) fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
+    run_lint_with_probe(args, &LiveTargetProbe)
+}
+
+/// `run_lint` with the host probe injected, so the `--target auto` resolution path
+/// is unit-testable without reading the test host's `/etc/os-release`. `run_lint`
+/// supplies the real [`LiveTargetProbe`]; tests supply a fake.
+fn run_lint_with_probe(args: &LintArgs, probe: &dyn HostTargetProbe) -> anyhow::Result<i32> {
+    // Resolve --target in the command layer (epic #251): explicit value as-is,
+    // `auto` from the host probe, omitted -> version-agnostic. A failed `auto`
+    // degrades to version-agnostic with a warning, never an error (read-only tool).
+    let resolved = resolve_target(args.target, probe);
+    if let Some(warning) = &resolved.warning {
+        eprintln!("fapolicyd lint: {warning}");
+    }
+    run_lint_resolved(args, resolved.target)
+}
+
+/// The lint pipeline with `--target` already resolved to a concrete baseline (or
+/// `None` for the version-agnostic dialect). Split from [`run_lint_with_probe`] at
+/// the resolution boundary so the resolved target feeds BOTH the per-file lint
+/// context and the SARIF per-check coverage attestation (they never disagree),
+/// keeping each function within the line budget.
+fn run_lint_resolved(args: &LintArgs, target: Option<TargetVersionArg>) -> anyhow::Result<i32> {
     let trustdb = match &args.against_trustdb {
         Some(p) => {
             if !p.is_dir() {
@@ -107,7 +131,7 @@ pub(super) fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
             trustdb: trustdb.as_ref(),
             earlier_macros: if single_file { None } else { Some(&earlier) },
             single_file,
-            target: args.target.map(Into::into),
+            target: target.map(Into::into),
             check_identities: args.check_identities,
         };
         all_diags.extend(lint_with_context(entries, source, path, &ctx));
@@ -158,6 +182,7 @@ pub(super) fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
 
     let pass_info = sarif_pass_info(
         args,
+        target,
         trustdb.is_some(),
         single_file,
         &parsed,
@@ -188,6 +213,7 @@ pub(super) fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
 /// as `kind:"pass"`.
 fn sarif_pass_info(
     args: &LintArgs,
+    target: Option<TargetVersionArg>,
     trustdb_present: bool,
     single_file: bool,
     parsed: &[(PathBuf, Vec<Entry>)],
@@ -215,7 +241,7 @@ fn sarif_pass_info(
         trustdb: trustdb_present,
         check_identities: args.check_identities,
         report_orphans: args.report_orphans,
-        target: args.target.map(Into::into),
+        target: target.map(Into::into),
         single_file,
     };
     let rules = catalog::evaluated(inputs);
@@ -273,8 +299,85 @@ fn resolve_targets(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::OutputFormat;
+    use crate::cli::{OutputFormat, TargetSelector, TargetVersionArg};
+    use crate::exit_code::EXIT_CLEAN;
     use std::path::PathBuf;
+
+    /// A host probe returning a canned result, so the `--target auto` wiring is
+    /// exercised without depending on the test host's /etc/os-release.
+    struct FakeProbe(Result<Option<TargetVersionArg>, String>);
+    impl HostTargetProbe for FakeProbe {
+        fn detect(&self) -> Result<Option<TargetVersionArg>, String> {
+            self.0.clone()
+        }
+    }
+
+    /// A single rules file whose lint result is VERSION-DIVERGENT: the `device=`
+    /// object field is rejected (fapd-E06) under any `--target rhelN` but accepted
+    /// in the version-agnostic dialect. A clean-under-every-target fixture would
+    /// make the parity assertions below vacuous (0 == 0); this one fails any wrong
+    /// impl that does not thread the resolved target into the lint pass.
+    fn version_divergent_rules_file() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("10-test.rules");
+        std::fs::write(&f, "allow perm=open device=/dev/sda1 : path=/etc/hosts\n").expect("write");
+        (dir, f)
+    }
+
+    #[test]
+    fn target_auto_resolving_to_rhel9_matches_explicit_rhel9() {
+        // `--target auto` whose probe detects rhel9 must behave identically to an
+        // explicit `--target rhel9`. On the version-divergent fixture both fire
+        // fapd-E06 (a non-clean exit); a broken impl that dropped the resolved
+        // target would lint "auto" clean, failing the assert_ne below.
+        let (_dir, f) = version_divergent_rules_file();
+        let mut auto = lint_args(None, Some(f.clone()));
+        auto.target = Some(TargetSelector::Auto);
+        let mut explicit = lint_args(None, Some(f));
+        explicit.target = Some(TargetSelector::Rhel9);
+        let auto_rc = run_lint_with_probe(&auto, &FakeProbe(Ok(Some(TargetVersionArg::Rhel9))))
+            .expect("auto run");
+        let explicit_rc =
+            run_lint_with_probe(&explicit, &FakeProbe(Ok(None))).expect("explicit run");
+        assert_ne!(
+            auto_rc, EXIT_CLEAN,
+            "the version-divergent fixture must not lint clean under rhel9 (else the test is vacuous)"
+        );
+        assert_eq!(
+            auto_rc, explicit_rc,
+            "--target auto (detect rhel9) must match explicit --target rhel9"
+        );
+    }
+
+    #[test]
+    fn target_auto_unmappable_matches_version_agnostic() {
+        // A probe that yields None (non-EL host) degrades to the version-agnostic
+        // dialect: the version-divergent fixture lints clean (exit 0), same as
+        // omitting --target - and distinct from an explicit-rhel9 control (non-clean),
+        // so "resolves to nothing" is proven, not merely "always clean".
+        let (_dir, f) = version_divergent_rules_file();
+        let mut auto = lint_args(None, Some(f.clone()));
+        auto.target = Some(TargetSelector::Auto);
+        let agnostic = lint_args(None, Some(f.clone())); // target: None
+        let mut control = lint_args(None, Some(f));
+        control.target = Some(TargetSelector::Rhel9);
+        let auto_rc = run_lint_with_probe(&auto, &FakeProbe(Ok(None))).expect("auto run");
+        let agnostic_rc =
+            run_lint_with_probe(&agnostic, &FakeProbe(Ok(None))).expect("agnostic run");
+        let control_rc = run_lint_with_probe(&control, &FakeProbe(Ok(None))).expect("control run");
+        assert_eq!(
+            auto_rc, EXIT_CLEAN,
+            "auto resolving to None must lint the fixture version-agnostic (clean)"
+        );
+        assert_eq!(
+            auto_rc, agnostic_rc,
+            "--target auto that resolves to nothing must match omitting --target"
+        );
+        assert_ne!(
+            control_rc, agnostic_rc,
+            "control: explicit rhel9 must differ from agnostic (the fixture is version-divergent)"
+        );
+    }
 
     fn lint_args(path: Option<PathBuf>, file: Option<PathBuf>) -> LintArgs {
         LintArgs {
