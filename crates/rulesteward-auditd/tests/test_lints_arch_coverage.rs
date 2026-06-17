@@ -367,3 +367,77 @@ fn t18_two_independent_gaps_two_diagnostics() {
     assert_eq!(diags[0].line, 1);
     assert_eq!(diags[1].line, 2);
 }
+
+// ===========================================================================
+// T19 -- arch=B64 (uppercase) is a b64 pin: auditctl matches the ABI token
+// case-insensitively (libaudit `strcasecmp("b64", arch)`), and the parser
+// stores the value verbatim, so a case-blind impl would silently skip it.
+// ===========================================================================
+#[test]
+fn t19_uppercase_b64_pin_fires() {
+    let rules = parse("-a always,exit -F arch=B64 -S execve -k exec\n");
+    let diags = w04(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "arch=B64 == arch=b64 (auditctl is case-insensitive) -> lone-b64 gap, got {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("32-bit") && diags[0].message.contains("-F arch=b32"),
+        "got {:?}",
+        diags[0].message
+    );
+}
+
+// ===========================================================================
+// T20 -- arch=B32 (uppercase) symmetric: a b32 pin, 64-bit unaudited.
+// ===========================================================================
+#[test]
+fn t20_uppercase_b32_pin_fires() {
+    let rules = parse("-a always,exit -F arch=B32 -S execve -k exec\n");
+    let diags = w04(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "arch=B32 == arch=b32 -> lone-b32 gap (symmetry), got {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("64-bit") && diags[0].message.contains("-F arch=b64"),
+        "got {:?}",
+        diags[0].message
+    );
+}
+
+// ===========================================================================
+// T21 -- a mixed-case matched pair is clean: the companion match folds case
+// too (a B64-checked rule finds its b32 companion and vice versa).
+// ===========================================================================
+#[test]
+fn t21_mixed_case_matched_pair_is_clean() {
+    let rules = parse(concat!(
+        "-a always,exit -F arch=B64 -S execve -k exec\n",
+        "-a always,exit -F arch=b32 -S execve -k exec\n",
+    ));
+    assert!(
+        w04(&rules).is_empty(),
+        "B64 + b32 cover both ABIs regardless of case"
+    );
+}
+
+// ===========================================================================
+// T22 -- au-W04 is wired into the lint() dispatcher (kills a dispatcher
+// `lint -> vec![]` mutation the per-crate gate would otherwise miss, since
+// the dispatcher's only other coverage is the cli-crate e2e tests).
+// ===========================================================================
+#[test]
+fn t22_dispatcher_includes_au_w04() {
+    use rulesteward_auditd::lints::lint;
+    let rules = parse("-a always,exit -F arch=b64 -S execve -k exec\n");
+    let diags = lint(&rules);
+    assert!(
+        diags.iter().any(|d| d.code == "au-W04"),
+        "lint() must run the arch_coverage pass, got {diags:?}"
+    );
+}

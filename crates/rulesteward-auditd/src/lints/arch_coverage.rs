@@ -64,7 +64,11 @@ fn classify(fields: &[FieldFilter]) -> Coverage {
     let (Some(f), None) = (arch.next(), arch.next()) else {
         return Coverage::Both;
     };
-    match (&f.op, f.value.as_str()) {
+    // auditctl matches the ABI token case-insensitively (libaudit
+    // `audit_determine_machine` -> `strcasecmp("b64"/"b32", arch)`), so `B64`
+    // is the same b64 pin as `b64`. Fold case before matching.
+    let value = f.value.to_ascii_lowercase();
+    match (&f.op, value.as_str()) {
         (CompareOp::Eq, "b64") | (CompareOp::Ne, "b32") => Coverage::One(Abi::B64),
         (CompareOp::Eq, "b32") | (CompareOp::Ne, "b64") => Coverage::One(Abi::B32),
         // machine-name value (x86_64/i386) or a non-equality operator: unclassifiable.
