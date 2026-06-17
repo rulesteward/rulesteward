@@ -59,20 +59,22 @@ pub const AU_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "suppression conflict: an exclude/never rule suppresses events an always rule intends to record",
     },
-    // au-W04 (-D after loaded rules) was the cuttable P2 stretch lint (owner
-    // decision D6); it was CUT at the 6a integration gate (no pass emits it),
-    // so it is intentionally absent from the catalog and the authoritative set.
+    LintCode {
+        code: "au-W04",
+        severity: Severity::Warning,
+        description: "missing-ABI coverage: a syscall rule pins one ABI (arch=b32/b64) with no companion rule on the opposite ABI, so the other ABI's invocations of those syscalls go unaudited",
+    },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::AU_CODES;
 
-    /// The authoritative emitted set (session 6a allocation, owner-ratified).
-    /// au-W04 (the P2 `-D` stretch lint, owner decision D6) was CUT at the 6a
-    /// integration gate, so it is intentionally NOT in this set or the catalog.
+    /// The authoritative emitted set. au-W04, originally the cut `-D` stretch
+    /// lint (decision D6), was revived for issue #261 as the missing-ABI
+    /// coverage warning, so the code number is now live again.
     const ALL_CODES: &[&str] = &[
-        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03",
+        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
     ];
 
     #[test]
