@@ -198,6 +198,46 @@ fn syscall_multiple_s_flags_parse() {
     }
 }
 
+/// Comma-separated `-S` list splits into individual syscalls. auditctl's
+/// `_audit_parse_syscall` (audit-userspace `lib/libaudit.c`) splits the argument
+/// on commas via `strtok_r`, so `-S chmod,fchmod,fchmodat` is equivalent to three
+/// separate `-S` flags. CIS/STIG rulesets use this comma form pervasively.
+#[test]
+fn syscall_comma_separated_list_splits() {
+    let rules = parse_ok("-a always,exit -S chmod,fchmod,fchmodat -k perm_mod");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { syscalls, .. } => {
+            assert_eq!(
+                syscalls,
+                &[
+                    "chmod".to_string(),
+                    "fchmod".to_string(),
+                    "fchmodat".to_string()
+                ],
+                "comma-separated -S must split into individual syscalls (libaudit strtok_r)"
+            );
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
+/// Mixed comma + multiple `-S` flags combine: `-S open,openat -S openat2` => 3.
+#[test]
+fn syscall_comma_and_multiple_s_combine() {
+    let rules = parse_ok("-a always,exit -S open,openat -S openat2 -k access");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Syscall { syscalls, .. } => {
+            assert_eq!(syscalls.len(), 3);
+            assert!(syscalls.contains(&"open".to_string()));
+            assert!(syscalls.contains(&"openat".to_string()));
+            assert!(syscalls.contains(&"openat2".to_string()));
+        }
+        other => panic!("expected Syscall, got {other:?}"),
+    }
+}
+
 /// `-a always,exclude -F msgtype=PROCTITLE` parses as Exclude list with Always action.
 /// Grounded: `flagtab.h` exclude list; f3 section 2.3.
 #[test]

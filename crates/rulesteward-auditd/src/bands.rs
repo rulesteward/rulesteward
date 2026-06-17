@@ -119,7 +119,10 @@ fn demote(tier: VolumeTier) -> VolumeTier {
 /// auditctl but are normalized and do not appear in generated rules.d files; they
 /// are out of scope until grounding shows them in real rules.
 fn is_32bit_arch(value: &str) -> bool {
-    value == "b32"
+    // auditctl matches the ABI token case-insensitively (libaudit
+    // `audit_determine_machine` -> `strcasecmp("b32", arch)`), so `B32` selects
+    // the 32-bit ABI exactly as `b32` does.
+    value.eq_ignore_ascii_case("b32")
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +437,26 @@ mod tests {
             classify_rule(&rule),
             (VolumeTier::Medium, Direction::Additive),
             "arch=b64 narrowed execve -> MEDIUM (the dominant ABI is not extra-demoted)"
+        );
+    }
+
+    /// `arch=B32` (uppercase) gets the same 32-bit demotion as `arch=b32`:
+    /// auditctl matches the ABI token case-insensitively (libaudit
+    /// `audit_determine_machine` -> `strcasecmp("b32", arch)`), so the cost
+    /// model must too. Guards the case-fold twin of the au-W04 lint fix (#261).
+    #[test]
+    fn arch_uppercase_b32_narrowed_demotes_to_low() {
+        let rule = syscall_rule(
+            &["execve"],
+            vec![
+                ff(AuditField::Arch, CompareOp::Eq, "B32"),
+                ff(AuditField::Auid, CompareOp::Ge, "1000"),
+            ],
+        );
+        assert_eq!(
+            classify_rule(&rule).0,
+            VolumeTier::Low,
+            "arch=B32 == arch=b32 (auditctl strcasecmp) -> LOW demotion"
         );
     }
 
