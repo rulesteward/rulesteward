@@ -437,7 +437,13 @@ fn parse_syscall_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Par
                 let sc = rest
                     .next()
                     .ok_or_else(|| err("-S requires a syscall name"))?;
-                syscalls.push(sc.clone());
+                // auditctl `_audit_parse_syscall` (audit-userspace lib/libaudit.c)
+                // splits a comma-separated argument on commas (strtok_r), so
+                // `-S a,b,c` is equivalent to three separate `-S` flags. Empty
+                // tokens (e.g. a trailing comma) are skipped, matching strtok_r.
+                for name in sc.split(',').filter(|s| !s.is_empty()) {
+                    syscalls.push(name.to_string());
+                }
             }
             "-F" => {
                 let fspec = rest.next().ok_or_else(|| err("-F requires a field spec"))?;

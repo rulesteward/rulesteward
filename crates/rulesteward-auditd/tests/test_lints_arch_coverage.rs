@@ -485,3 +485,51 @@ fn t24_two_arch_fields_is_not_checked() {
         "2+ arch fields => unclassifiable => never checked (no single-ABI pin)"
     );
 }
+
+// ===========================================================================
+// T25 -- a comma-form matched pair with a DIFFERENT comma order is clean.
+// auditctl splits `-S a,b,c` on commas (libaudit strtok_r) into a per-syscall
+// SET, so a reordered b32 companion fully covers the b64 rule. This is the
+// canonical CIS/STIG idiom -- a false positive here is the worst failure mode.
+// ===========================================================================
+#[test]
+fn t25_comma_form_reordered_pair_is_clean() {
+    let rules = parse(concat!(
+        "-a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -k perm\n",
+        "-a always,exit -F arch=b32 -S lchown,fchown,chown,fchownat -k perm\n",
+    ));
+    assert!(
+        w04(&rules).is_empty(),
+        "comma -S lists are per-syscall sets; a reordered b32 companion fully covers the b64 rule, got {:?}",
+        w04(&rules)
+    );
+}
+
+// ===========================================================================
+// T26 -- comma-form partial overlap names only the uncovered syscall (and does
+// NOT name the covered one as part of a comma blob).
+// ===========================================================================
+#[test]
+fn t26_comma_form_partial_overlap_names_uncovered() {
+    let rules = parse(concat!(
+        "-a always,exit -F arch=b64 -S open,openat -k access\n",
+        "-a always,exit -F arch=b32 -S open -k access\n",
+    ));
+    let diags = w04(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "only openat is uncovered on b32, got {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("openat"),
+        "must name the uncovered syscall openat, got {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("open,openat"),
+        "open is covered by the b32 companion -- it must not appear in an unsplit comma blob, got {:?}",
+        diags[0].message
+    );
+}
