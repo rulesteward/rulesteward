@@ -190,10 +190,13 @@ pub struct LintArgs {
     #[arg(long)]
     pub report_orphans: bool,
 
-    /// Target RHEL release for version-aware checks (rhel8/rhel9/rhel10). Omit to
-    /// lint the version-agnostic dialect (no version-divergent diagnostics).
+    /// Target RHEL release for version-aware checks (auto|rhel8|rhel9|rhel10).
+    /// `auto` detects the baseline from the host's /etc/os-release, falling back
+    /// (with a warning) to the version-agnostic dialect when detection fails. Omit
+    /// `--target` to lint the version-agnostic dialect (no version-divergent
+    /// diagnostics).
     #[arg(long, value_enum)]
-    pub target: Option<TargetVersionArg>,
+    pub target: Option<TargetSelector>,
 
     /// Validate `uid=`/`gid=` literals against the host identity database via
     /// `getent` (read-only); enables fapd-W05. Off by default (the check spawns a
@@ -1268,14 +1271,14 @@ mod tests {
         args
     }
 
-    /// `--target rhel8|rhel9|rhel10` parses to the matching arg variant.
-    /// RED until the `target` field + `TargetVersionArg` value-enum exist.
+    /// `--target auto|rhel8|rhel9|rhel10` parses to the matching selector variant.
     #[test]
     fn lint_args_target_parses_each_rhel() {
         for (flag, expected) in [
-            ("rhel8", TargetVersionArg::Rhel8),
-            ("rhel9", TargetVersionArg::Rhel9),
-            ("rhel10", TargetVersionArg::Rhel10),
+            ("auto", TargetSelector::Auto),
+            ("rhel8", TargetSelector::Rhel8),
+            ("rhel9", TargetSelector::Rhel9),
+            ("rhel10", TargetSelector::Rhel10),
         ] {
             let args = parse_lint(&["--target", flag]);
             assert_eq!(
