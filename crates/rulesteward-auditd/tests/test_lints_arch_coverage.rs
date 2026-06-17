@@ -441,3 +441,47 @@ fn t22_dispatcher_includes_au_w04() {
         "lint() must run the arch_coverage pass, got {diags:?}"
     );
 }
+
+// ===========================================================================
+// T23 -- partial syscall overlap: a companion covers SOME (not all) syscalls.
+// Pins the per-syscall `uncovered` accumulation: only the uncovered syscall
+// is named, not the covered one.
+// ===========================================================================
+#[test]
+fn t23_partial_overlap_names_only_uncovered_syscalls() {
+    let rules = parse(concat!(
+        "-a always,exit -F arch=b64 -S open -S read -k io\n",
+        "-a always,exit -F arch=b32 -S open -k io\n",
+    ));
+    let diags = w04(&rules);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the b64 rule has an uncovered syscall (read); the b32 rule is fully covered, got {diags:?}"
+    );
+    assert_eq!(diags[0].line, 1, "the gap is on the b64 rule");
+    assert!(
+        diags[0].message.contains("read"),
+        "must name the uncovered syscall (read), got {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("open"),
+        "must NOT name `open` -- it is covered by the b32 companion, got {:?}",
+        diags[0].message
+    );
+}
+
+// ===========================================================================
+// T24 -- a rule with 2+ arch fields is unclassifiable (the AND of two ABIs
+// matches nothing), so it is never checked: no warning.
+// ===========================================================================
+#[test]
+fn t24_two_arch_fields_is_not_checked() {
+    let rules = parse("-a always,exit -F arch=b64 -F arch=b32 -S execve -k exec\n");
+    assert!(
+        w04(&rules).is_empty(),
+        "2+ arch fields => unclassifiable => never checked (no single-ABI pin)"
+    );
+}

@@ -21,7 +21,7 @@
 //! Eq-`b32`-ONLY volume demotion that excludes `Ne` and `b64`), so a shared
 //! helper would conflate two semantics. This classifier recognises both Eq and
 //! Ne on `b32`/`b64`; machine-name values (`x86_64`/`i386`) stay out of scope
-//! exactly as in `bands.rs` (value.rs:566).
+//! exactly as in `bands.rs` (and the arch-alias note in `value.rs`).
 
 use rulesteward_core::{Diagnostic, Severity};
 
