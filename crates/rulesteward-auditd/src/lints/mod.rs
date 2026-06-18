@@ -27,6 +27,7 @@
 pub mod arch_coverage;
 pub mod catalog;
 pub mod duplicate;
+pub mod field_filter;
 pub mod field_type;
 pub mod normalize;
 pub mod operator_validity;
@@ -97,6 +98,7 @@ pub fn lint(rules: &[LocatedRule]) -> Vec<Diagnostic> {
     diags.extend(ordering::w03(rules));
     diags.extend(operator_validity::e02(rules));
     diags.extend(arch_coverage::w04(rules));
+    diags.extend(field_filter::e04(rules));
     diags
 }
 

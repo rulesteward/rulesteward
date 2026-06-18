@@ -1,0 +1,4 @@
+# Illegal: msgtype is only legal on exclude or user filter lists.
+# exit list -> EAU_MSGTYPEEXCLUDEUSER (libaudit.c:1698-1701 v3.1.5).
+# Live-confirmed: auditctl -R rejects "-a always,exit -S open -F msgtype=AVC".
+-a always,exit -S open -F msgtype=AVC -k test-msgtype-exit

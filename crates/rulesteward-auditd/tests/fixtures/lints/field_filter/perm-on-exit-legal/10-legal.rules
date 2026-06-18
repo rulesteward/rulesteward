@@ -1,0 +1,4 @@
+# Legal control: perm is legal on the exit filter list.
+# perm is allowed on exit OR exclude (libaudit.c:1803-1805 v3.1.5).
+# Live-confirmed: "Operation not permitted" (userspace-passed; kernel-level op restriction).
+-a always,exit -S open -F perm=r -k test-perm-exit-legal

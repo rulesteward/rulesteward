@@ -1,0 +1,5 @@
+# Illegal: path (-F path= Syscall form) is only legal on the exit filter list.
+# Grounded in libaudit.c: case AUDIT_WATCH / case AUDIT_DIR share the guard
+# `if (flags != AUDIT_FILTER_EXIT) return -EAU_EXITONLY;` (audit 3bfa048).
+# user list -> EAU_EXITONLY -> auditctl aborts the rule load.
+-a always,user -F path=/etc/passwd -k test-path-user

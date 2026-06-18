@@ -1,0 +1,6 @@
+# Legal control: obj_uid on the user filter list must NOT fire au-E04.
+# obj_uid has no list guard (libaudit.c uid/gid arm, no EAU_EXITONLY).
+# Live-confirmed: "-a always,user -F obj_uid=0" passes userspace.
+# This is the KEY adversarial case: a wrong impl that treats all obj_* as exit-only
+# would fire here, but the correct scope-correction says obj_uid/obj_gid are NOT exit-only.
+-a always,user -F obj_uid=0 -k test-obj-uid-user-legal

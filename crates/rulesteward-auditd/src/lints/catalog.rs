@@ -40,6 +40,11 @@ pub const AU_CODES: &[LintCode] = &[
         description: "load-aborting duplicate: a structurally identical earlier rule makes auditctl -R abort, so every later rule silently fails to load",
     },
     LintCode {
+        code: "au-E04",
+        severity: Severity::Error,
+        description: "field used on an illegal filter list: auditctl aborts the rule load because the kernel rejects this field on the specified list",
+    },
+    LintCode {
         code: "au-F01",
         severity: Severity::Fatal,
         description: "rules file does not parse",
@@ -74,7 +79,7 @@ mod tests {
     /// lint (decision D6), was revived for issue #261 as the missing-ABI
     /// coverage warning, so the code number is now live again.
     const ALL_CODES: &[&str] = &[
-        "au-E01", "au-E02", "au-E03", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
+        "au-E01", "au-E02", "au-E03", "au-E04", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
     ];
 
     #[test]

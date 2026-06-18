@@ -1,0 +1,4 @@
+# Illegal: sessionid is only legal on exclude, user, or exit filter lists.
+# task list -> EAU_FIELDNOFILTER (libaudit.c:1884-1887 v3.1.5).
+# Source-confirmed (live blocked by kernel feature flag, but guard is unconditional in code).
+-a always,task -F sessionid=1 -k test-sessionid-task
