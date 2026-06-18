@@ -12,11 +12,13 @@
 //! * `deprecation` - sshd-W04 deprecated/removed directive (Wave B).
 //! * `catalog` - the machine-readable `sshd-` code catalog (frozen Phase 0).
 //!
-//! Every pass is a `Vec::new()`-returning stub in Phase 0: the dispatcher runs
-//! for real (so `rulesteward sshd lint` works end to end and a clean file exits
-//! 0), but the only code actually emitted today is `sshd-F01` from the parser,
-//! mapped by [`parse_error_to_diagnostic`]. Pass modules are `pub` so each
-//! pipeline's tests can call their own entrypoint directly.
+//! The dispatcher runs every pass for real (so `rulesteward sshd lint` works end
+//! to end and a clean file exits 0). 8 of the 10 single-file passes emit today
+//! (sshd-E01..E04, sshd-W01..W04), alongside `sshd-F01` from the parser (mapped by
+//! [`parse_error_to_diagnostic`]); only sshd-W05 and sshd-W06 remain `Vec::new()`
+//! stubs (Wave C, gated on the W01 required-set and the per-version
+//! default-algorithm lists). Pass modules are `pub` so each pipeline's tests can
+//! call their own entrypoint directly.
 
 pub mod catalog;
 pub mod crypto;
@@ -115,10 +117,10 @@ pub fn parse_error_to_diagnostic(err: &LocatedParseError) -> Diagnostic {
 /// Run every single-file semantic lint pass over the parsed blocks and return the
 /// merged diagnostic list, in catalog order for byte-stable output.
 ///
-/// Phase 0: every pass is a stub returning no diagnostics, so a successfully
-/// parsed file yields an empty list (exit 0). The passes are filled by the
-/// parallel pipelines under epic #149. The cross-file sshd-F02 (drop-in override)
-/// is a future separate entrypoint, not part of this single-file dispatcher.
+/// 8 of the 10 passes emit today (sshd-E01..E04, sshd-W01..W04); sshd-W05 and
+/// sshd-W06 are still `Vec::new()` stubs (Wave C, epic #149). The cross-file
+/// sshd-F02 (drop-in override) is a future separate entrypoint, not part of this
+/// single-file dispatcher.
 #[must_use]
 pub fn lint(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let mut diags = structural::e01(blocks, file, ctx);
