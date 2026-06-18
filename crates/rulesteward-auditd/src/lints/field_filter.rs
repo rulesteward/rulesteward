@@ -169,8 +169,11 @@ pub fn e04(rules: &[LocatedRule]) -> Vec<Diagnostic> {
             if !restriction.allows(list) {
                 let field_name = field_name_str(&field_filter.field);
                 let list_name = filter_list_name(list);
+                // Do NOT self-prefix the code: the renderer already prints the
+                // `[au-E04]` tag, so an `au-E04:` here would double it. (Matches
+                // every sibling pass, which emit a bare message.)
                 let msg = format!(
-                    "au-E04: field '{field_name}' cannot be used on the '{list_name}' filter list \
+                    "field '{field_name}' cannot be used on the '{list_name}' filter list \
                      (legal: {legal}); auditctl aborts the rule load",
                     legal = restriction.legal_lists_str(),
                 );
