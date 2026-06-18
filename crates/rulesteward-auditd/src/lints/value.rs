@@ -108,7 +108,15 @@ fn parse_u64_base0(s: &str) -> Option<u64> {
 /// `i64`, else `None` (conservative).
 fn parse_i64_base0(s: &str) -> Option<i64> {
     if let Some(mag) = s.strip_prefix('-') {
-        Some(-i64::try_from(parse_u64_base0(mag)?).ok()?)
+        let m = parse_u64_base0(mag)?;
+        // i64::MIN has magnitude 2^63 = i64::MAX + 1, which does not fit i64;
+        // handle it explicitly so `exit=-9223372036854775808` classifies as
+        // Signed rather than falling through to Opaque (#270 AUD-2).
+        if m == (i64::MAX as u64) + 1 {
+            Some(i64::MIN)
+        } else {
+            i64::try_from(m).ok().map(|n| -n)
+        }
     } else {
         i64::try_from(parse_u64_base0(s)?).ok()
     }
@@ -717,6 +725,31 @@ mod tests {
             FieldValue::Signed(4_294_967_295)
         );
         assert_eq!(classify(ft(AuditField::Exit), "-1"), FieldValue::Signed(-1));
+    }
+
+    #[test]
+    fn exit_i64_min_classifies_signed_not_opaque() {
+        // i64::MIN has magnitude 2^63 (one past i64::MAX), so a naive
+        // negate-after-try_from drops it to Opaque. It must classify as
+        // Signed(i64::MIN) so au-W02 subsumption is not silently skipped (#270).
+        assert_eq!(
+            classify(ft(AuditField::Exit), "-9223372036854775808"),
+            FieldValue::Signed(i64::MIN)
+        );
+        // The adjacent in-range bounds still classify correctly.
+        assert_eq!(
+            classify(ft(AuditField::Exit), "-9223372036854775807"),
+            FieldValue::Signed(i64::MIN + 1)
+        );
+        assert_eq!(
+            classify(ft(AuditField::Exit), "9223372036854775807"),
+            FieldValue::Signed(i64::MAX)
+        );
+        // One past i64::MIN's magnitude (2^63 + 1) does not fit -> Opaque.
+        assert_eq!(
+            classify(ft(AuditField::Exit), "-9223372036854775809"),
+            FieldValue::Opaque
+        );
     }
 
     #[test]

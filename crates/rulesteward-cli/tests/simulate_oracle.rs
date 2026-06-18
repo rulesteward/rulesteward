@@ -8,11 +8,10 @@
 //! Oracle source: `/mnt/side-projects/fapolicyd-simulate-corpus/canonical/`
 //! Vendored timestamp: 20260603T065853Z
 //!
-//! ## TDD state: RED
+//! ## State: GREEN
 //!
-//! `simulate::run()` is a `todo!()` stub that panics at runtime (exit 101).
-//! Every test below WILL FAIL until the implementer fills the body. That is
-//! correct and expected at the barrier.
+//! `simulate::run()` is fully implemented; all 81 scenarios below pass against
+//! the vendored real-fapolicyd ground truth.
 //!
 //! ## JSON schema frozen by this file
 //!
