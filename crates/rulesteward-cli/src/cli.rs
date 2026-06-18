@@ -694,10 +694,14 @@ pub enum SshdCommand {
     ///
     /// Parses an `sshd_config` file (whole-line `#` comments, case-insensitive
     /// keywords, `Match` blocks, `Include` directives) and runs the `sshd_config`
-    /// lint passes over it. The structural passes (sshd-E01 unknown directive,
-    /// sshd-E02 duplicate, sshd-E03 unresolved Include, sshd-E04 Match-illegal) plus
-    /// sshd-F01 (parse error) are implemented; the version-aware warning passes
-    /// (sshd-W01..W06) are landing incrementally per the #149 wave plan.
+    /// lint passes over it. 9 of the 12 sshd- codes emit today: sshd-E01 (unknown
+    /// directive), sshd-E02 (duplicate global), sshd-E03 (unresolved Include),
+    /// sshd-E04 (Match-illegal directive), sshd-F01 (parse error), and the
+    /// version-aware warnings sshd-W01 (STIG-required missing), sshd-W02 (weaker
+    /// than baseline), sshd-W03 (weak algorithm), sshd-W04 (deprecated directive).
+    /// The remaining three (sshd-F02 drop-in override, sshd-W05 permissive Match
+    /// override, sshd-W06 algorithm-prefix reintroduction) are landing per the #149
+    /// wave plan.
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sshd-F01).
@@ -717,12 +721,13 @@ pub struct SshdLintArgs {
     pub format: HumanJsonFormat,
 
     /// Target OS baseline (auto|rhel8|rhel9|rhel10) for the version-aware lints.
-    /// Selects which OpenSSH keyword set sshd-E01 validates against (rhel8 = 8.0p1,
-    /// rhel9 / rhel10 = 9.9p1). `auto` detects the baseline from the host's
-    /// /etc/os-release, falling back (with a warning) to the version-agnostic
-    /// dialect when detection fails. With no --target, sshd-E01 flags only keywords
-    /// unknown to every supported version. The other version-aware passes
-    /// (sshd-W01..W06) are still in development.
+    /// Selects which OpenSSH keyword set the version-aware passes (sshd-E01,
+    /// sshd-E04, sshd-W01..W04) validate against (rhel8 = 8.0p1, rhel9 / rhel10 =
+    /// 9.9p1). `auto` detects the baseline from the host's /etc/os-release, falling
+    /// back (with a warning) to the version-agnostic dialect when detection fails.
+    /// With no --target, the most-permissive (newest) dialect is used, so sshd-E01
+    /// flags only keywords unknown to every supported version and sshd-E04 leans
+    /// false-negative.
     #[arg(long, value_enum)]
     pub target: Option<TargetSelector>,
 }

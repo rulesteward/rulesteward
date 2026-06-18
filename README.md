@@ -103,10 +103,12 @@ rulesteward sshd lint --format json /etc/ssh/sshd_config
 ```
 
 - **lint** - parse an `sshd_config` (whole-line `#` comments, case-insensitive keywords,
-  `Match` blocks, `Include` directives) and run the structural passes.
-- **Maturity:** structural lints `sshd-E02` / `sshd-E03` / `sshd-E04` (plus the
-  `sshd-F01` parse fatal) emit today; the STIG / crypto baseline lints
-  (`sshd-W01..W06`, `sshd-E01`, `sshd-F02`) are in development per epic #149.
+  `Match` blocks, `Include` directives) and run the lint passes.
+- **Maturity:** 9 of the 12 `sshd-` codes emit today - `sshd-E01`..`sshd-E04`, the
+  `sshd-F01` parse fatal, and the STIG / crypto / deprecation warnings
+  `sshd-W01`..`sshd-W04`. The remaining three (`sshd-F02` drop-in override,
+  `sshd-W05` permissive Match override, `sshd-W06` algorithm-prefix reintroduction)
+  are in development per epic #149 (Wave C).
 
 ### auditd
 
@@ -192,20 +194,20 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-W02` | Warning | shadowed rule: an earlier, broader rule subsumes it |
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
 
-### sshd_config (`sshd-`, 12-code taxonomy; 4 emitted today)
+### sshd_config (`sshd-`, 12-code taxonomy; 9 emitted today)
 
 | Code | Severity | Checks | Status |
 | --- | --- | --- | --- |
 | `sshd-F01` | Fatal | `sshd_config` file does not parse | emitted |
+| `sshd-E01` | Error | unknown directive for the target OpenSSH version | emitted |
 | `sshd-E02` | Error | duplicate global directive (sshd uses the first value; the later line is silently ignored) | emitted |
 | `sshd-E03` | Error | `Include` references a path or glob that resolves to nothing | emitted |
 | `sshd-E04` | Error | directive is not permitted inside a `Match` block (silently ignored at runtime) | emitted |
-| `sshd-E01` | Error | unknown directive for the target OpenSSH version | in development |
+| `sshd-W01` | Warning | STIG-required directive is missing | emitted |
+| `sshd-W02` | Warning | directive value is weaker than the STIG baseline | emitted |
+| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms | emitted |
+| `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version | emitted |
 | `sshd-F02` | Fatal | drop-in fragment overrides a required global directive | in development |
-| `sshd-W01` | Warning | STIG-required directive is missing | in development |
-| `sshd-W02` | Warning | directive value is weaker than the STIG baseline | in development |
-| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms | in development |
-| `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version | in development |
 | `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction | in development |
 | `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default | in development |
 
