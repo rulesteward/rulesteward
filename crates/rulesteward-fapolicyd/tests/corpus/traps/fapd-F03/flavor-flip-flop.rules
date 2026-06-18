@@ -1,4 +1,4 @@
 allow perm=open uid=0 : all
-deny perm=any uid=1000 path=/root/.ssh
+deny uid=1000 path=/root/.ssh
 allow perm=execute uid=0 : trust=1
-deny perm=execute uid=1000 exe=/bin/bash path=/bin/bash
+deny uid=1000 exe=/bin/bash path=/bin/bash

@@ -1,0 +1,4 @@
+# Illegal: dir (watch/dir arm) is only legal on the exit filter list.
+# user list -> EAU_EXITONLY (libaudit.c:1719-1724 v3.1.5, watch/object arm).
+# Live-confirmed: "dir can only be used with exit filter list".
+-a always,user -F dir=/etc -k test-dir-user

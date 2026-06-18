@@ -1,0 +1,4 @@
+# Illegal: perm is only legal on exit or exclude filter lists.
+# task list -> EAU_EXITONLY (libaudit.c:1803-1805 v3.1.5).
+# Live-confirmed: auditctl -R rejects this at load time.
+-a always,task -F perm=r -k test-perm-task

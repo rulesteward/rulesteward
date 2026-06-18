@@ -1,0 +1,7 @@
+---
+source: crates/rulesteward-fapolicyd/tests/snapshot_test.rs
+expression: rendered
+---
+parse=err
+diagnostics=1
+[fapd-F01] sev=Fatal line=1 col=39 span=38..38 :: malformed rule syntax: found end of input expected any, ' ', '	', or colon separator

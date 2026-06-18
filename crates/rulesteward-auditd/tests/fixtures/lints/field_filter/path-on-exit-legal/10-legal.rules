@@ -1,0 +1,4 @@
+# Legal control: path (-F path= Syscall form) is legal on the exit filter list.
+# exit is the ONLY legal list for path (AUDIT_WATCH guard in libaudit.c).
+# No au-E04 should fire.
+-a always,exit -S open -F path=/etc/passwd -k test-path-exit-legal

@@ -1,0 +1,4 @@
+# Legal control: perm is legal on the exclude filter list.
+# perm is allowed on exit OR exclude (libaudit.c:1803-1805 v3.1.5).
+# The scope correction: perm is NOT exit-only; it is also legal on exclude.
+-a never,exclude -F perm=w -k test-perm-exclude-legal

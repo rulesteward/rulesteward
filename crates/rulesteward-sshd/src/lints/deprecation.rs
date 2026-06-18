@@ -8,33 +8,50 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::Block;
-use crate::lints::{SshdLintContext, anchored};
+use crate::lints::{SshdLintContext, TargetVersion, anchored};
 
-/// Deprecated/removed `sshd_config` keywords for sshd-W04.
+/// Deprecated/removed `sshd_config` keywords for sshd-W04 that the daemon answers
+/// with `Deprecated option <X>` on EVERY supported RHEL 8/9/10 target.
 ///
-/// Grounding: `rulesteward-docs/sshd-stig-version-grounding.md` section 3,
-/// backed by `[VM]` `sudo sshd -t -o "<Keyword>=yes"` on Rocky 8/9/10
-/// (OpenSSH 8.0p1 / 9.9p1 / 9.9p1, 2026-06-15T02:23Z). The daemon accepts all
-/// of these with `Deprecated option <X>` (sshd-t exit 0), so they are W04 (warn)
-/// not E01 (error). `ChallengeResponseAuthentication` is additionally an alias
-/// for `KbdInteractiveAuthentication` (renamed in OpenSSH 8.7, `release-8.7`).
+/// Grounding: `rulesteward-docs/sshd-stig-version-grounding.md` section 3 +
+/// depth-sshd-sets.md FINDING 2, backed by `[VM]` `sudo sshd -t -o "<Keyword>=yes"`
+/// on Rocky 8/9/10 (OpenSSH 8.0p1 / 9.9p1 / 9.9p1, 2026-06-15 + 2026-06-17). The
+/// daemon accepts all of these with `Deprecated option <X>` (sshd-t exit 0), so
+/// they are W04 (warn) not E01 (error). `ChallengeResponseAuthentication` is
+/// additionally an alias for `KbdInteractiveAuthentication` (renamed in OpenSSH
+/// 8.7, `release-8.7`).
 ///
-/// The set is UNIFORM across the supported RHEL 8/9/10 targets (all three VMs
-/// gave identical `Deprecated option` responses), so W04 fires under
-/// `target=None` (no `--target` flag). Lowercased and sorted for
-/// `binary_search`.
+/// This set is UNIFORM across RHEL 8/9/10 (all three VMs gave identical
+/// `Deprecated option` responses), so it fires under `target=None`. The
+/// version-SPLIT keyword `skeyauthentication` (deprecated on 8.0p1 but a
+/// recognized non-deprecated legacy keyword on 9.9p1) is NOT here; it is gated on
+/// the target in [`w04`]. Lowercased and sorted for `binary_search`.
 const DEPRECATED_KEYWORDS: &[&str] = &[
     "challengeresponseauthentication",
     "hostbasedacceptedkeytypes",
     "keyregenerationinterval",
     "protocol",
     "pubkeyacceptedkeytypes",
+    "reversemappingcheck",
+    "rhostsauthentication",
     "rhostsrsaauthentication",
     "rsaauthentication",
     "serverkeybits",
     "uselogin",
     "useprivilegeseparation",
+    "verifyreversemapping",
 ];
+
+/// Whether `skeyauthentication` should fire sshd-W04 for `target`. It is
+/// `Deprecated option` on OpenSSH 8.0p1 (RHEL 8) but an ACCEPTED recognized
+/// legacy keyword on 9.9p1 (RHEL 9/10), so the warning is version-split.
+///
+/// OWNER DECISION (LOCKED): fire when the target is `None` (no `--target` =
+/// conservative over-warn) or `Rhel8`; do NOT fire under `--target rhel9/rhel10`.
+/// Source: depth-sshd-sets.md FINDING 2 (DEPRECATED rocky8; ACCEPTED rocky9/10).
+fn skey_is_deprecated(target: Option<TargetVersion>) -> bool {
+    !matches!(target, Some(TargetVersion::Rhel9 | TargetVersion::Rhel10))
+}
 
 /// sshd-W04: a directive deprecated or removed in the target OpenSSH version.
 ///
@@ -45,11 +62,12 @@ const DEPRECATED_KEYWORDS: &[&str] = &[
 /// Scans every directive in the file: the global block AND all `Match` bodies,
 /// because a deprecated keyword is wrong wherever it appears.
 ///
-/// The deprecated set is version-uniform across RHEL 8/9/10 (all three VMs
-/// answered `Deprecated option <X>` for each keyword), so W04 fires with
-/// `target=None` (no `--target` flag required).
+/// Most of the deprecated set is version-uniform across RHEL 8/9/10 (all three
+/// VMs answered `Deprecated option <X>`), so W04 fires with `target=None`. The
+/// one version-split keyword, `skeyauthentication`, is gated on `ctx.target` via
+/// [`skey_is_deprecated`] (deprecated on 8.0p1, accepted on 9.9p1).
 #[must_use]
-pub fn w04(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
+pub fn w04(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for block in blocks {
         let directives = match block {
@@ -58,7 +76,9 @@ pub fn w04(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
         };
         for directive in directives {
             let keyword = directive.keyword_lower();
-            if DEPRECATED_KEYWORDS.binary_search(&keyword.as_str()).is_ok() {
+            let is_deprecated = DEPRECATED_KEYWORDS.binary_search(&keyword.as_str()).is_ok()
+                || (keyword == "skeyauthentication" && skey_is_deprecated(ctx.target));
+            if is_deprecated {
                 let msg = if keyword == "challengeresponseauthentication" {
                     format!(
                         "'{}' is deprecated: it was renamed to KbdInteractiveAuthentication in OpenSSH 8.7; use the canonical spelling instead",
@@ -104,7 +124,7 @@ mod w04_tests {
 
     use super::w04;
     use crate::ast::Block;
-    use crate::lints::{SshdLintContext, structural};
+    use crate::lints::{SshdLintContext, TargetVersion, structural};
     use rulesteward_core::{Diagnostic, Severity};
     use std::path::Path;
 
@@ -118,6 +138,17 @@ mod w04_tests {
             &parse(src),
             Path::new("/etc/ssh/sshd_config"),
             &SshdLintContext::default(),
+        )
+    }
+
+    fn run_with_target(src: &str, target: TargetVersion) -> Vec<Diagnostic> {
+        w04(
+            &parse(src),
+            Path::new("/etc/ssh/sshd_config"),
+            &SshdLintContext {
+                target: Some(target),
+                single_file: true,
+            },
         )
     }
 
@@ -516,5 +547,212 @@ GSSAPIAuthentication no\n\
             !msg.to_ascii_lowercase().contains("renamed"),
             "W04 for non-rename deprecated keywords must not say 'renamed'; got: {msg:?}"
         );
+    }
+
+    // --- #267 / FINDING 2: 4 missed deprecated keywords ---
+    //
+    // depth-sshd-sets.md FINDING 2 (oracle: `sudo sshd -t -o "<kw>=yes"` on Rocky
+    // 8/9/10, 2026-06-17, "Deprecated option <X>" classification): the daemon
+    // answers "Deprecated option" for four keywords the W04 set currently misses.
+    // All four are in RHEL8_BASE (registry-known on every version), so they are NOT
+    // E01; W04 must warn on them.
+    //   - reversemappingcheck   DEPRECATED on rhel8/9/10  (all targets)
+    //   - rhostsauthentication  DEPRECATED on rhel8/9/10  (all targets)
+    //   - verifyreversemapping  DEPRECATED on rhel8/9/10  (all targets)
+    //   - skeyauthentication    DEPRECATED on rhel8 (8.0p1) ONLY; ACCEPTED on 9/10
+    //                           (version-split: fire under --target rhel8, not 9/10)
+
+    #[test]
+    fn reversemappingcheck_fires_w04_on_every_target() {
+        // "Deprecated option ReverseMappingCheck" on rocky8/9/10.
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("ReverseMappingCheck yes\n", t),
+                None => run("ReverseMappingCheck yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "ReverseMappingCheck is deprecated on all versions -> one W04 for \
+                 target {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+            assert_eq!(diags[0].severity, Severity::Warning);
+        }
+    }
+
+    #[test]
+    fn rhostsauthentication_fires_w04_on_every_target() {
+        // "Deprecated option RhostsAuthentication" on rocky8/9/10. Distinct from
+        // RhostsRSAAuthentication (already in the W04 set).
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("RhostsAuthentication yes\n", t),
+                None => run("RhostsAuthentication yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "RhostsAuthentication is deprecated on all versions -> one W04 for \
+                 target {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+        }
+    }
+
+    #[test]
+    fn verifyreversemapping_fires_w04_on_every_target() {
+        // "Deprecated option VerifyReverseMapping" on rocky8/9/10.
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("VerifyReverseMapping yes\n", t),
+                None => run("VerifyReverseMapping yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "VerifyReverseMapping is deprecated on all versions -> one W04 for \
+                 target {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+        }
+    }
+
+    #[test]
+    fn three_all_version_deprecated_additions_are_not_e01() {
+        // Boundary guard: the three all-version additions are RHEL8_BASE keywords
+        // (daemon recognizes them as "Deprecated option", not "Bad configuration
+        // option"), so they fire W04 and must NOT fire E01 on any target.
+        let file = Path::new("/etc/ssh/sshd_config");
+        for kw in [
+            "ReverseMappingCheck",
+            "RhostsAuthentication",
+            "VerifyReverseMapping",
+        ] {
+            let src = format!("{kw} yes\n");
+            let blocks = parse(&src);
+            for ctx in [
+                SshdLintContext::default(),
+                SshdLintContext {
+                    target: Some(TargetVersion::Rhel8),
+                    single_file: true,
+                },
+                SshdLintContext {
+                    target: Some(TargetVersion::Rhel9),
+                    single_file: true,
+                },
+                SshdLintContext {
+                    target: Some(TargetVersion::Rhel10),
+                    single_file: true,
+                },
+            ] {
+                let w04_diags = w04(&blocks, file, &ctx);
+                let e01_diags = structural::e01(&blocks, file, &ctx);
+                assert_eq!(w04_diags.len(), 1, "{kw} must fire W04 ({ctx:?})");
+                assert!(
+                    e01_diags.is_empty(),
+                    "{kw} is recognized-but-deprecated: must NOT fire E01 ({ctx:?}); \
+                     got {e01_diags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skeyauthentication_fires_w04_at_no_target_and_rhel8_but_not_rhel9_rhel10() {
+        // VERSION-SPLIT: skeyauthentication is "Deprecated option" on rocky8 (8.0p1)
+        // but ACCEPTED (a recognized, non-deprecated legacy keyword) on rocky9/10.
+        //   Source: FINDING 2 (DEPRECATED rocky8; ACCEPTED rocky9/rocky10).
+        //
+        // Full W04 matrix (OWNER DECISION, LOCKED): fire when the target is
+        // {no-target/None, Rhel8} (no-target = conservative over-warn = FIRE); do NOT
+        // fire under --target rhel9 / rhel10. Implement/assert as: skeyauthentication
+        // is W04-deprecated UNLESS the target is explicitly Rhel9 or Rhel10.
+        //
+        // The mechanism exists: deprecation.rs `w04` receives `&SshdLintContext`
+        // (the `_ctx` param, dispatched with `ctx` at mod.rs:131); the impl gates
+        // skeyauthentication on `ctx.target`. A naive uniform-add (ignoring target)
+        // would over-fire on rhel9/rhel10; a target-gated add that forgets the
+        // None=>FIRE direction would under-fire at no-target. This pins both.
+
+        // FIRE: no-target (None) - conservative over-warn.
+        let diags_none = run("SKeyAuthentication yes\n");
+        assert_eq!(
+            diags_none.len(),
+            1,
+            "SKeyAuthentication must fire W04 at no-target (conservative over-warn = \
+             FIRE unless target is explicitly Rhel9/Rhel10); got {diags_none:?}"
+        );
+        assert_eq!(diags_none[0].code, "sshd-W04");
+        assert_eq!(diags_none[0].severity, Severity::Warning);
+
+        // FIRE: --target rhel8 (8.0p1, "Deprecated option").
+        let diags8 = run_with_target("SKeyAuthentication yes\n", TargetVersion::Rhel8);
+        assert_eq!(
+            diags8.len(),
+            1,
+            "SKeyAuthentication is deprecated on 8.0p1 -> one W04 under --target rhel8; \
+             got {diags8:?}"
+        );
+        assert_eq!(diags8[0].code, "sshd-W04");
+        assert_eq!(diags8[0].severity, Severity::Warning);
+
+        // DO NOT FIRE: --target rhel9 / rhel10 (ACCEPTED, recognized non-deprecated).
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target("SKeyAuthentication yes\n", target);
+            assert!(
+                diags.is_empty(),
+                "SKeyAuthentication is ACCEPTED (not deprecated) on 9.9p1 -> no W04 \
+                 under --target {target:?}; got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn skeyauthentication_is_not_e01_on_any_target() {
+        // skeyauthentication is in RHEL8_BASE (known on every version), so even where
+        // it is NOT W04 (rhel9/rhel10) it must never fire E01 - it is a recognized
+        // legacy keyword, not an unknown directive.
+        let file = Path::new("/etc/ssh/sshd_config");
+        let blocks = parse("SKeyAuthentication yes\n");
+        for ctx in [
+            SshdLintContext::default(),
+            SshdLintContext {
+                target: Some(TargetVersion::Rhel8),
+                single_file: true,
+            },
+            SshdLintContext {
+                target: Some(TargetVersion::Rhel9),
+                single_file: true,
+            },
+            SshdLintContext {
+                target: Some(TargetVersion::Rhel10),
+                single_file: true,
+            },
+        ] {
+            assert!(
+                structural::e01(&blocks, file, &ctx).is_empty(),
+                "SKeyAuthentication is a recognized legacy keyword -> must NOT fire \
+                 E01 ({ctx:?})"
+            );
+        }
     }
 }

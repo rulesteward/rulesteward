@@ -1,0 +1,1 @@
+allow perm=open uid=0 path=/usr/bin/sh

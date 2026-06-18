@@ -44,7 +44,7 @@
 //! these are NOT fixable with a plain TE allow. We explain why and never emit a
 //! wrong allow rule.
 
-use crate::denial::{DenialGroup, DenialKind};
+use crate::denial::{DenialGroup, DenialKind, is_te_representable};
 use serde::Serialize;
 
 /// The PERMISSIVE-MODE caveat banner emitted for any group with
@@ -358,9 +358,21 @@ fn triage_group(group: &DenialGroup) -> (Option<String>, String) {
 
     match group.kind {
         // ------------------------------------------------------------------
-        // TeAllowable: emit the narrow allow + dontaudit note.
+        // TeAllowable: emit the narrow allow + dontaudit note, but only when
+        // the group is TE-representable (no SID tokens, no hex perms).
+        // Declined groups get an explanation but no suggested rule.
         // ------------------------------------------------------------------
         DenialKind::TeAllowable => {
+            if !is_te_representable(group) {
+                let explanation = format!(
+                    "DECLINED: domain '{src}' was denied access on {cls} '{tgt}'. \
+                     This record cannot be expressed as a valid TE policy rule (the type or \
+                     permission fields contain characters that are not valid in SELinux \
+                     policy syntax - e.g. a numeric SID token or a hex permission bit). \
+                     Investigate the raw AVC record directly."
+                );
+                return (None, explanation);
+            }
             let rule = format_narrow_allow(src, tgt, cls, &group.perms);
             let explanation = format!(
                 "DENIED: domain '{src}' was denied {perm_display} on {cls} '{tgt}'. \

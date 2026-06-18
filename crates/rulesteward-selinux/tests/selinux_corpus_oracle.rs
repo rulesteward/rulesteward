@@ -98,6 +98,29 @@ const SYNTHETIC_SCOPE_OUT: &[&str] = &[
     "rocky9-cross-host-policy",
 ];
 
+/// GRANT-ONLY floor scope-out: scenarios whose `denials.txt` contains ONLY
+/// `avc: granted` records (a pure-grant log). A granted record was already
+/// permitted by policy -- there is nothing to floor-classify. Under OWNER
+/// DECISION C (issue #268) `is_te_representable` drops `Verdict::Granted` records
+/// at/before [`group_denials`], so a pure-grant fixture groups to ZERO groups
+/// once the guard ships. The floor layer therefore TOLERATES zero groups for
+/// these scenarios (parse-without-error is still asserted; the `floor_label`
+/// compare is skipped because there are no groups to label).
+///
+/// Grounding: a pure-grant log has no denials to floor-classify (D-granted in
+/// `depth-selinux-recordspace.md`; audit2allow -N emits nothing for grants).
+///
+/// This is correct in BOTH states. Today (granted not yet dropped) the fixture
+/// groups to one-or-more and the tolerant arm still passes. After the guard drops
+/// granted records the fixture groups to zero and the tolerant arm passes instead
+/// of asserting non-empty. The oracle therefore stays GREEN in both states and
+/// does not pollute the all-RED guard gate.
+///
+/// `rocky9-granted-record` is NOT listed: it ships a granted line PLUS a denied
+/// `write` record, so it always groups to >=1 (the denied write) regardless of
+/// the guard.
+const GRANT_ONLY_FLOOR_OK: &[&str] = &["rocky9-granted-no-permissive"];
+
 /// FLOOR-layer FINDINGS: scenarios whose FLOOR classifier output disagrees with
 /// the manifest `floor_label` for a reason that is NOT a scope-out. Per the
 /// locked findings policy these are xfailed in the FLOOR layer ONLY (NOT a source
@@ -339,6 +362,7 @@ fn denial_variants(dir: &Path, m: &Manifest) -> Vec<(u32, String)> {
 /// but still contributes to the `>= 69` count guard (asserted separately).
 /// Per-variant for `denials.elN.txt` layouts (answer A2).
 #[test]
+#[allow(clippy::too_many_lines)] // data-driven harness; per-scenario arms inline
 fn floor_layer_matches_manifest_label() {
     let scenarios = scenarios();
     let mut parsed_count = 0usize;
@@ -366,6 +390,11 @@ fn floor_layer_matches_manifest_label() {
             continue;
         }
 
+        // Grant-only scenarios tolerate zero groups: a pure-grant log has no
+        // denials to floor-classify, and the #268 guard drops Verdict::Granted
+        // records at/before group_denials(). See GRANT_ONLY_FLOOR_OK.
+        let grant_only_ok = GRANT_ONLY_FLOOR_OK.contains(&m.id.as_str());
+
         for (_vers, file) in denial_variants(dir, m) {
             let raw = read_denials(dir, &file);
             let denials = parse_avc(&raw)
@@ -376,6 +405,14 @@ fn floor_layer_matches_manifest_label() {
                 m.id
             );
             let groups = group_denials(&denials);
+            if grant_only_ok {
+                // Pure-grant fixture: zero groups is acceptable (granted records
+                // are dropped by the guard; nothing to floor-classify). Parse-
+                // without-error above is the only assertion. Skip the label
+                // compare -- there is no group to carry a floor_label.
+                parsed_count += 1;
+                continue;
+            }
             assert!(
                 !groups.is_empty(),
                 "FLOOR {} ({file}): grouped to zero groups",

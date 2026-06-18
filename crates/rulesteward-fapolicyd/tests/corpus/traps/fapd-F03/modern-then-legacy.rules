@@ -1,2 +1,2 @@
 allow perm=open uid=0 : all
-deny perm=execute uid=1000 exe=/bin/bash path=/bin/bash
+deny uid=1000 exe=/bin/bash path=/bin/bash

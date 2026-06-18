@@ -2,8 +2,9 @@
 //!
 //! Two top-level productions:
 //! * [`modern_rule`]  - `decision [perm=X] subj : obj`
-//! * [`legacy_rule`]  - `decision [perm=X] subj... obj...` (no colon;
-//!   subject/object split positionally via the internal `legacy_classify`).
+//! * [`legacy_rule`]  - `decision subj... obj...` (no colon; `perm=` is
+//!   colon-format-only and is rejected here; subject/object split
+//!   positionally via the internal `legacy_classify`).
 //!
 //! Plus [`set_definition`] for `%name=val1,val2`. Every named production
 //! carries a `.labelled(...)` so chumsky's expected-token list surfaces
@@ -167,17 +168,36 @@ pub fn legacy_rule<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'a, 
 
     ws0()
         .ignore_then(decision_kw())
-        .then(ws1().ignore_then(perm_clause()).or_not())
         .then_ignore(ws1())
         .then(attr_list)
         .then_ignore(ws0())
         .then_ignore(end())
-        .try_map(|((decision, perm), attrs_flat), span| {
+        .try_map(|(decision, attrs_flat), span| {
+            // perm= is only valid in colon-format (modern) rules. fapolicyd
+            // rules.c:957-965 gates the perm field on RULE_FMT_COLON; the
+            // no-colon legacy format rejects it with
+            // "ERROR: Field type (perm) is unknown in line N".
+            // Reject here so the caller sees a parse=err (fapd-F01), not a
+            // silent fail-open parse=ok with perm treated as an unknown attr.
+            // (parser/mod.rs tries modern first and, on dual-failure, surfaces
+            // the modern "expected colon" diagnostic, so this custom message is
+            // a defense-in-depth label rather than the user-facing text; the
+            // EFFECT - a Fatal fapd-F01 reject - is what the legacy-perm tests pin.)
+            if attrs_flat
+                .iter()
+                .any(|a| matches!(a, Attr::Kv { key, .. } if key == "perm"))
+            {
+                return Err(Rich::custom(
+                    span,
+                    "perm= is not valid in legacy (no-colon) rules; \
+                     use colon-format: decision [perm=X] subject : object",
+                ));
+            }
             let (subject, object) =
                 positional_split(&attrs_flat).map_err(|msg| Rich::custom(span, msg))?;
             Ok(Entry::Rule(Rule {
                 decision,
-                perm,
+                perm: None,
                 subject,
                 object,
                 syntax: SyntaxFlavor::Legacy,

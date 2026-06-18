@@ -1,0 +1,4 @@
+# Legal control: msgtype on the exclude filter list must NOT fire au-E04.
+# msgtype is legal on exclude and user (libaudit.c:1698-1701 v3.1.5).
+# Live-confirmed: "-a never,exclude -F msgtype=AVC" passes userspace.
+-a never,exclude -F msgtype=AVC -k test-msgtype-exclude-legal

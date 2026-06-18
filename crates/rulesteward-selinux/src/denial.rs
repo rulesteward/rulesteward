@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::AvcDenial;
+use crate::{AvcDenial, Verdict};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -103,6 +103,58 @@ pub struct DenialGroup {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Returns `true` when a [`DenialGroup`] can be represented as a valid TE
+/// `allow` rule.
+///
+/// Declines (`false`) when any of the following hold:
+/// - The perm set is EMPTY (a group with no denied perms cannot be rendered as a
+///   valid `allow`: `emit_te` would produce `allow src tgt:cls ;` and a malformed
+///   `class cls ;` require line, both of which `checkmodule` rejects with "syntax
+///   error at token ';'"; an empty-brace AVC line `avc: denied {  }` is the
+///   real-world source - same uncompilable class as the SID/hex cases).
+/// - `source_type` OR `target_type` contains `'='` (a SID fallback token such
+///   as `ssid=42` or `tsid=99`; `checkmodule` rejects these with "unrecognized
+///   character at token '='"; D1/D2 grounding).
+/// - Any permission's first character is not ASCII-alphabetic (e.g. a `0x4000`
+///   hex residual bit; `checkmodule` rejects with "syntax error at token
+///   '0x4000000'"; D3 grounding).
+/// - `kind` is one of [`DenialKind::MlsSuspected`], [`DenialKind::RoleSuspected`],
+///   [`DenialKind::Constraint`], [`DenialKind::Bounds`], or
+///   [`DenialKind::ContextInvalid`] (these are not TE allow gaps).
+///
+/// Returns `true` ONLY for [`DenialKind::TeAllowable`] (or [`DenialKind::Permissive`],
+/// but note that [`DenialKind::Permissive`] is handled SEPARATELY by `emit_te`
+/// (invariant 6) and `triage` (the 2026-06-05 reversal) - callers MUST check
+/// Permissive independently). Granted-verdict records are dropped before
+/// grouping, so they never reach this predicate.
+#[must_use]
+pub fn is_te_representable(group: &DenialGroup) -> bool {
+    // Gate 0: empty perm set. A group with no denied perms cannot be rendered as
+    // a valid allow - `emit_te` would emit `allow src tgt:cls ;` (and a malformed
+    // `class cls ;` require line), which checkmodule rejects with "syntax error at
+    // token ';'". An empty-brace AVC (`avc: denied {  }`) is the real-world source.
+    if group.perms.is_empty() {
+        return false;
+    }
+
+    // Gate 1: SID token in source or target type (contains '=').
+    if group.source_type.contains('=') || group.target_type.contains('=') {
+        return false;
+    }
+
+    // Gate 2: any perm whose first character is not ASCII-alphabetic.
+    if group
+        .perms
+        .iter()
+        .any(|p| !p.starts_with(|c: char| c.is_ascii_alphabetic()))
+    {
+        return false;
+    }
+
+    // Gate 3: kind is not TE-representable.
+    matches!(group.kind, DenialKind::TeAllowable | DenialKind::Permissive)
+}
+
 /// Group a slice of [`AvcDenial`]s by `(source_type, target_type, tclass)`,
 /// union their permission sets, and classify each group with the record-only
 /// floor classifier.
@@ -122,7 +174,7 @@ pub fn group_denials(denials: &[AvcDenial]) -> Vec<DenialGroup> {
     type TripleKey = (String, String, String);
     let mut map: BTreeMap<TripleKey, GroupAccumulator> = BTreeMap::new();
 
-    for denial in denials {
+    for denial in denials.iter().filter(|d| d.verdict != Verdict::Granted) {
         let key = (
             denial.source_type.clone(),
             denial.target_type.clone(),

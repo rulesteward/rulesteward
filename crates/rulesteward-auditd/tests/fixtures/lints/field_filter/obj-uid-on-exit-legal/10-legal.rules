@@ -1,0 +1,5 @@
+# Legal control: obj_uid is NOT exit-only.
+# obj_uid lives in the uid/gid arm (libaudit.c:1641 v3.1.5) which carries NO list guard.
+# Live-confirmed: "-a always,exit -F obj_uid=0" passes userspace (Operation not permitted = kernel op).
+# Scope correction from AUD-1 over-claim: only STRING obj fields are exit-only.
+-a always,exit -S open -F obj_uid=0 -k test-obj-uid-exit-legal

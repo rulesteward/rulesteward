@@ -40,17 +40,22 @@ const E02_ALLOW_REPEAT: &[&str] = &[
     "port",
 ];
 
-/// Keywords permitted on the lines following a `Match` keyword, per the
-/// "Available keywords are ..." paragraph of `sshd_config(5)` (OpenSSH 10.2p1).
-/// Any directive inside a `Match` body whose keyword is NOT in this set is
-/// silently ignored by sshd at runtime - that is the sshd-E04 finding.
+/// Keywords permitted on the lines following a `Match` keyword that the daemon
+/// honors on EVERY supported OpenSSH version (8.0p1 / 9.9p1). These are the
+/// `SSHCFG_ALL` / `SSHCFG_MATCH` opcodes that have carried that flag across all
+/// builds we ground against, so they are Match-permitted regardless of `--target`.
 ///
-/// Lowercased and sorted (matched via [`slice::contains`]). This is the 10.2p1
-/// superset; the set grows across OpenSSH releases, so using the newest list
-/// flags only keywords illegal in EVERY version (false-negative-leaning, which
-/// avoids telling an operator a valid config is broken). Extracted verbatim from
-/// the man page, not hand-transcribed.
-const E04_MATCH_PERMITTED: &[&str] = &[
+/// Lowercased and sorted (matched via [`slice::contains`]). Started from the
+/// `sshd_config(5)` "Available keywords are ..." paragraph (OpenSSH 10.2p1) and
+/// corrected against the real daemon: the man-page paragraph is an incomplete
+/// rendering of the `servconf.c` opcode table, so the version-split keywords
+/// (`subsystem`, `requiredrsasize`, ...) live in the per-version additions below
+/// rather than here.
+///
+/// `pubkeyacceptedkeytypes` / `hostbasedacceptedkeytypes` (the pre-8.5 rename
+/// aliases) are `SSHCFG_ALL` on every version, so they belong here even though the
+/// man page omits the aliases.
+const E04_PERMITTED_BASE: &[&str] = &[
     "acceptenv",
     "allowagentforwarding",
     "allowgroups",
@@ -78,9 +83,9 @@ const E04_MATCH_PERMITTED: &[&str] = &[
     "gatewayports",
     "gssapiauthentication",
     "hostbasedacceptedalgorithms",
+    "hostbasedacceptedkeytypes",
     "hostbasedauthentication",
     "hostbasedusesnamefrompacketonly",
-    "ignorerhosts",
     "include",
     "ipqos",
     "kbdinteractiveauthentication",
@@ -99,6 +104,7 @@ const E04_MATCH_PERMITTED: &[&str] = &[
     "permittunnel",
     "permituserrc",
     "pubkeyacceptedalgorithms",
+    "pubkeyacceptedkeytypes",
     "pubkeyauthentication",
     "pubkeyauthoptions",
     "rdomain",
@@ -115,6 +121,53 @@ const E04_MATCH_PERMITTED: &[&str] = &[
     "x11maxdisplays",
     "x11uselocalhost",
 ];
+
+/// Match-permitted keywords the OpenSSH 9.9p1 daemon (RHEL 9 / RHEL 10) honors in
+/// a `Match` block but the 8.0p1 daemon (RHEL 8) does NOT. Each changed its
+/// `servconf.c` opcode flag to `SSHCFG_ALL` at or after 9.x, or is a 9.x-only
+/// keyword. Lowercased and sorted.
+///
+/// `subsystem` and `ignorerhosts` are the canonical cases: `SSHCFG_GLOBAL` on
+/// 8.0p1 (so each fires E04 inside a Match under `--target rhel8`) but `SSHCFG_ALL`
+/// from 9.x. The 9.x-only keywords (`requiredrsasize`, `rsaminsize`, `logverbose`)
+/// are simply unknown to the 8.0p1 registry, so they never reach this set under
+/// `--target rhel8` (E01 owns them there); they are Match-permitted on 9/10 and the
+/// no-target union.
+///
+/// Source: depth-sshd-sets.md FINDING 1 (servconf.c `V_9_9_P1` `SSHCFG_ALL` flags +
+/// non-activating-Match `sshd -t` per VM, 2026-06-17). `ignorerhosts` is the
+/// `{ "ignorerhosts", sIgnoreRhosts, SSHCFG_GLOBAL }` entry at `V_8_0_P1` vs
+/// `SSHCFG_ALL` at `V_9_9_P1`, identical in shape to `subsystem`.
+const E04_PERMITTED_ADDED_9_9P1: &[&str] = &[
+    "challengeresponseauthentication",
+    "ignorerhosts",
+    "logverbose",
+    "requiredrsasize",
+    "rsaminsize",
+    "skeyauthentication",
+    "subsystem",
+];
+
+/// Whether `keyword_lower` (already ASCII-lowercased by the caller) is permitted
+/// inside a `Match` block for `target`. Mirrors [`registry::is_known`]: a base set
+/// honored on every version, plus the 9.9p1 additions for rhel9/rhel10. With no
+/// `--target` the most-permissive 9.9p1 union is used (OWNER DECISION #267=A), so
+/// E04 leans false-negative rather than false-positive on the newest dialect.
+fn e04_match_permitted(keyword_lower: &str, target: Option<crate::lints::TargetVersion>) -> bool {
+    use crate::lints::TargetVersion;
+    if E04_PERMITTED_BASE.contains(&keyword_lower) {
+        return true;
+    }
+    match target {
+        // 8.0p1: only the base set is Match-permitted (subsystem etc. are
+        // SSHCFG_GLOBAL there and must still fire E04).
+        Some(TargetVersion::Rhel8) => false,
+        // 9.9p1 (rhel9/rhel10) and the no-target union both honor the additions.
+        Some(TargetVersion::Rhel9 | TargetVersion::Rhel10) | None => {
+            E04_PERMITTED_ADDED_9_9P1.contains(&keyword_lower)
+        }
+    }
+}
 
 /// sshd-E01: unknown directive (keyword not recognized for the target OpenSSH
 /// version). The per-version valid-keyword table and its live-daemon grounding
@@ -356,7 +409,7 @@ pub fn e04(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
             if !is_known {
                 continue;
             }
-            if !E04_MATCH_PERMITTED.contains(&keyword.as_str()) {
+            if !e04_match_permitted(&keyword, ctx.target) {
                 diags.push(anchored(
                     Severity::Error,
                     "sshd-E04",
@@ -497,9 +550,42 @@ mod e04_tests {
 
     #[test]
     fn each_illegal_directive_in_a_match_is_flagged() {
+        // RE-GROUNDED for #267 (per-version E04 Match-permitted sets).
+        //
+        // The OLD assertion expected Ciphers(2), ListenAddress(3), AND Subsystem(4)
+        // to fire at no-target. That is WRONG under the corrected per-version model:
+        // `Subsystem` is SSHCFG_ALL (Match-permitted) on OpenSSH 9.x, and the
+        // no-target oracle is the most-permissive 9.9p1 union (OWNER DECISION #267=A),
+        // so `Subsystem` inside a Match is HONORED at runtime on 9/10 and must NOT
+        // fire E04 at no-target.
+        //   Source: depth-sshd-sets.md FINDING 1 (servconf.c V_9_9_P1 SSHCFG_ALL
+        //   flags; non-activating-Match + `sshd -t` per VM, 2026-06-17): subsystem
+        //   = GLOBALONLY on 8.0p1, MATCH_OK on 9.9p1/el9 + el10.
+        //
+        // Ciphers and ListenAddress are global-only on EVERY version (not in any
+        // per-version Match-permitted set), so they still fire on every line.
         let src = "Match User bob\n    Ciphers aes256-ctr\n    ListenAddress 0.0.0.0\n    Subsystem sftp /x\n";
+        // No --target -> 9.9p1 union: Subsystem is Match-permitted, so only the two
+        // genuinely-global-only directives fire.
         let lines: Vec<usize> = run(src).iter().map(|d| d.line).collect();
-        assert_eq!(lines, vec![2, 3, 4], "all three illegal lines flagged");
+        assert_eq!(
+            lines,
+            vec![2, 3],
+            "at no-target (9.9p1 union), Ciphers + ListenAddress fire but Subsystem \
+             is Match-permitted on 9.x and must NOT fire; got lines {lines:?}"
+        );
+        // --target rhel8 (OpenSSH 8.0p1): Subsystem is SSHCFG_GLOBAL there, so all
+        // three illegal lines fire.
+        let lines8: Vec<usize> = run_with_target(src, TargetVersion::Rhel8)
+            .iter()
+            .map(|d| d.line)
+            .collect();
+        assert_eq!(
+            lines8,
+            vec![2, 3, 4],
+            "with --target rhel8 (8.0p1), Subsystem is global-only and DOES fire E04, \
+             so all three illegal lines are flagged; got lines {lines8:?}"
+        );
     }
 
     #[test]
@@ -608,38 +694,30 @@ mod e04_tests {
     }
 
     #[test]
-    fn requiredrsasize_in_match_fires_e04_not_e01() {
-        // RequiredRSASize is in ADDED_RHEL9 (known on RHEL9 and RHEL10, unknown on
-        // RHEL8 only). The no-target union uses is_known_any which equals the RHEL10
-        // superset, so is_known_any("requiredrsasize") -> true.
+    fn requiredrsasize_in_match_is_match_permitted_at_no_target_so_neither_e04_nor_e01() {
+        // RE-GROUNDED for #267 (per-version E04 Match-permitted sets).
         //
-        // RequiredRSASize is NOT in E04_MATCH_PERMITTED: the man page does not list
-        // it as a Match-block keyword. So inside a Match body, the correct routing
-        // is: e01() sees is_known_any -> true -> DOES NOT fire; e04() sees the keyword
-        // is known (in the union) but not Match-permitted -> fires sshd-E04.
+        // The OLD assertion expected RequiredRSASize inside a Match to fire exactly
+        // one sshd-E04 at no-target. That is WRONG: FINDING 1 shows RequiredRSASize
+        // is SSHCFG_ALL (Match-permitted) on OpenSSH 9.9p1, and the no-target oracle
+        // is the most-permissive 9.9p1 union (OWNER DECISION #267=A). So at no-target
+        // the daemon HONORS RequiredRSASize inside a Match; E04's "silently ignored
+        // at runtime" message would be a false positive.
+        //   Source: depth-sshd-sets.md FINDING 1 (servconf.c V_9_9_P1 SSHCFG_ALL;
+        //   non-activating-Match + `sshd -t` on Rocky 9/10, 2026-06-17). On 8.0p1 the
+        //   keyword is UNKNOWN entirely (it is an ADDED_RHEL9 keyword).
         //
-        // This pins that the fix uses is_known_any (union over all versions), NOT
-        // is_known(target) for a specific version. If the fix used is_known(rhel8),
-        // it would wrongly SKIP RequiredRSASize in the RHEL8 case (false-unknown
-        // on that version), letting it escape without an E04 when run with no target.
-        //
-        // With no --target context (SshdLintContext::default()), is_known_any is the
-        // oracle used by e01(). The fix in e04() must also use is_known_any so it
-        // only skips keywords the union says are genuinely unknown.
-        //
-        // GREEN before fix: without the fix e04() fires (incorrectly) for ZZBogus
-        // and (correctly) for RequiredRSASize. After the fix, the ZZBogus tests go
-        // GREEN but this RequiredRSASize test MUST remain GREEN (regression guard).
+        // Correct no-target routing: RequiredRSASize is known (in the 9.9p1 union)
+        // AND Match-permitted on 9.x, so NEITHER e04() NOR e01() fires.
         let src = "Match User bob\n    RequiredRSASize 2048\n";
         let diags = run(src);
-        assert_eq!(
-            diags.len(),
-            1,
-            "RequiredRSASize is known (via is_known_any) but not Match-permitted \
-             -> exactly one sshd-E04; got {diags:?}"
+        assert!(
+            diags.is_empty(),
+            "RequiredRSASize is Match-permitted on 9.9p1 (the no-target union), so it \
+             must NOT fire sshd-E04; got {diags:?}"
         );
-        assert_eq!(diags[0].code, "sshd-E04");
-        // And via the full dispatcher: e01() must NOT fire (it is known in the union).
+        // Via the full dispatcher at no-target: neither E04 (Match-permitted) nor E01
+        // (known in the union) may fire.
         let blocks =
             crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
                 .expect("fixture parses");
@@ -648,15 +726,32 @@ mod e04_tests {
         let has_e01 = all_diags.iter().any(|d| d.code == "sshd-E01");
         let has_e04 = all_diags.iter().any(|d| d.code == "sshd-E04");
         assert!(
-            !has_e01,
-            "RequiredRSASize is known (via is_known_any) so sshd-E01 must NOT fire; \
-             got {all_diags:?}"
+            !has_e04,
+            "RequiredRSASize is Match-permitted on the 9.9p1 union, so sshd-E04 must \
+             NOT fire at no-target; got {all_diags:?}"
         );
         assert!(
-            has_e04,
-            "RequiredRSASize is not Match-permitted so sshd-E04 must fire; \
-             got {all_diags:?}"
+            !has_e01,
+            "RequiredRSASize is known in the no-target union, so sshd-E01 must NOT \
+             fire; got {all_diags:?}"
         );
+    }
+
+    #[test]
+    fn requiredrsasize_in_match_does_not_fire_e04_on_rhel9_or_rhel10() {
+        // Per-version precision: RequiredRSASize is SSHCFG_ALL (Match-permitted) on
+        // OpenSSH 9.9p1, which both rhel9 and rhel10 ship. Under --target rhel9 /
+        // rhel10 it must NOT fire E04 (the daemon honors it inside a Match).
+        //   Source: depth-sshd-sets.md FINDING 1 (rocky9/rocky10 = MATCH_OK).
+        let src = "Match User bob\n    RequiredRSASize 2048\n";
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target(src, target);
+            assert!(
+                diags.is_empty(),
+                "RequiredRSASize is Match-permitted on 9.9p1, so --target {target:?} \
+                 must NOT fire sshd-E04; got {diags:?}"
+            );
+        }
     }
 
     #[test]
@@ -706,36 +801,285 @@ mod e04_tests {
     }
 
     #[test]
-    fn known_global_only_keywords_still_fire_e04_after_fix() {
-        // Regression: a selection of well-known global-only directives that ARE in
-        // the registry but absent from E04_MATCH_PERMITTED. The fix must not
-        // over-skip these.
-        //
-        // ListenAddress: in RHEL8_BASE (global accumulate); not Match-permitted.
-        // Subsystem: in RHEL8_BASE (name-keyed); not Match-permitted.
-        // Each must fire exactly one sshd-E04.
-        let cases = [
-            (
-                "ListenAddress",
-                "Match User bob\n    ListenAddress 0.0.0.0\n",
-            ),
-            (
-                "Subsystem",
-                "Match User bob\n    Subsystem sftp /usr/libexec/openssh/sftp-server\n",
-            ),
+    fn listenaddress_global_only_keyword_still_fires_e04_on_every_target() {
+        // RE-GROUNDED for #267. ListenAddress is SSHCFG_GLOBAL on EVERY OpenSSH
+        // version (never in any per-version Match-permitted set), so it must fire
+        // exactly one sshd-E04 inside a Match block at no-target AND under every
+        // --target. The per-version fix must NOT over-skip a genuinely global-only
+        // directive.
+        //   Source: ListenAddress is not in any FINDING 1 Match-permitted set; it is
+        //   a listener-socket directive, global-only on all versions.
+        let src = "Match User bob\n    ListenAddress 0.0.0.0\n";
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
         ];
-        for (name, src) in cases {
-            let diags = run(src);
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target(src, t),
+                None => run(src),
+            };
             assert_eq!(
                 diags.len(),
                 1,
-                "{name} is known but not Match-permitted -> exactly one sshd-E04; got {diags:?}"
+                "ListenAddress is global-only on all versions -> exactly one sshd-E04 \
+                 for target {target:?}; got {diags:?}"
             );
             assert_eq!(
                 diags[0].code, "sshd-E04",
-                "{name}: wrong code {}",
-                diags[0].code
+                "wrong code for target {target:?}"
             );
+        }
+    }
+
+    #[test]
+    fn subsystem_in_match_fires_e04_only_on_rhel8() {
+        // RE-GROUNDED for #267. The OLD assertion treated Subsystem as a
+        // global-only directive that always fires E04. That is WRONG: Subsystem
+        // changed flag across versions - SSHCFG_GLOBAL on 8.0p1 (global-only there)
+        // but SSHCFG_ALL (Match-permitted) from 9.x onward.
+        //   Source: depth-sshd-sets.md FINDING 1 (subsystem: GLOBALONLY on rocky8 /
+        //   8.0p1, MATCH_OK on rocky9 + rocky10 / 9.9p1; servconf.c flag change).
+        //
+        // So inside a Match block, Subsystem must fire E04 ONLY under --target rhel8;
+        // it must NOT fire at no-target (9.9p1 union) nor under --target rhel9/rhel10.
+        let src = "Match User bob\n    Subsystem sftp /usr/libexec/openssh/sftp-server\n";
+
+        // rhel8 (8.0p1): SSHCFG_GLOBAL -> fires exactly one E04.
+        let diags8 = run_with_target(src, TargetVersion::Rhel8);
+        assert_eq!(
+            diags8.len(),
+            1,
+            "Subsystem is global-only on 8.0p1 -> exactly one sshd-E04 under \
+             --target rhel8; got {diags8:?}"
+        );
+        assert_eq!(diags8[0].code, "sshd-E04");
+
+        // no-target (9.9p1 union) + rhel9 + rhel10: SSHCFG_ALL -> Match-permitted,
+        // so NO E04.
+        assert!(
+            run(src).is_empty(),
+            "Subsystem is Match-permitted on the 9.9p1 union -> no E04 at no-target; \
+             got {:?}",
+            run(src)
+        );
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target(src, target);
+            assert!(
+                diags.is_empty(),
+                "Subsystem is Match-permitted on 9.9p1 -> no E04 under --target \
+                 {target:?}; got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignorerhosts_in_match_fires_e04_only_on_rhel8() {
+        // RE-GROUNDED for #267. IgnoreRhosts has the EXACT version-split shape as
+        // Subsystem: SSHCFG_GLOBAL on 8.0p1 (global-only there -> fires E04 inside a
+        // Match under --target rhel8) but SSHCFG_ALL (Match-permitted) from 9.x.
+        //   Source: depth-sshd-sets.md FINDING 1, servconf.c keyword table -
+        //   { "ignorerhosts", sIgnoreRhosts, SSHCFG_GLOBAL } at V_8_0_P1 vs
+        //   { ..., SSHCFG_ALL } at V_9_9_P1.
+        // FINDING 1 originally mis-dismissed this ("ignorerhosts unknown to reg8" is
+        // FALSE - it IS in RHEL8_BASE, so the is_known gate does not skip it).
+        let src = "Match User bob\n    IgnoreRhosts yes\n";
+
+        // rhel8 (8.0p1): SSHCFG_GLOBAL -> fires exactly one E04.
+        let diags8 = run_with_target(src, TargetVersion::Rhel8);
+        assert_eq!(
+            diags8.len(),
+            1,
+            "IgnoreRhosts is global-only on 8.0p1 -> exactly one sshd-E04 under \
+             --target rhel8; got {diags8:?}"
+        );
+        assert_eq!(diags8[0].code, "sshd-E04");
+
+        // no-target (9.9p1 union) + rhel9 + rhel10: SSHCFG_ALL -> Match-permitted,
+        // so NO E04.
+        assert!(
+            run(src).is_empty(),
+            "IgnoreRhosts is Match-permitted on the 9.9p1 union -> no E04 at \
+             no-target; got {:?}",
+            run(src)
+        );
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target(src, target);
+            assert!(
+                diags.is_empty(),
+                "IgnoreRhosts is Match-permitted on 9.9p1 -> no E04 under --target \
+                 {target:?}; got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gssapidelegatecredentials_in_match_fires_e04_on_rhel10() {
+        // GROUNDING-LOCK (no impl change - the impl is already correct here).
+        // GSSAPIDelegateCredentials is the lone 9->10 registry addition AND it is
+        // SSHCFG_GLOBAL (global-only) on rocky10 9.9p1: confirmed LIVE that `sshd -t`
+        // rejects it inside a Match block ("Directive 'GSSAPIDelegateCredentials' is
+        // not allowed within a Match block"), while the Subsystem control passes.
+        //   Source: live `sshd -t` on rocky10 9.9p1, 2026-06-17.
+        // It is known on rhel10 (ADDED_RHEL10) but in neither E04 permitted set, so
+        // it must fire exactly one E04 there. On rhel8/rhel9 it is UNKNOWN, so it
+        // would route to E01 (not E04); only the rhel10 known-but-global-only case
+        // is asserted here. This locks the grounded behavior against regression.
+        let diags = run_with_target(
+            "Match User bob\n    GSSAPIDelegateCredentials yes\n",
+            TargetVersion::Rhel10,
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "GSSAPIDelegateCredentials is known-but-global-only on rhel10 (9.9p1) -> \
+             exactly one sshd-E04 inside a Match block; got {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
+    }
+
+    // ----- #267 per-version Match-permitted set tests (FINDING 1) -----
+    //
+    // FINDING 1 (depth-sshd-sets.md, servconf.c SSHCFG_ALL flags + live
+    // non-activating-Match `sshd -t` per VM, 2026-06-17) corrected 8 false-positive
+    // keywords that the flat union E04_MATCH_PERMITTED wrongly flagged inside a
+    // Match block. OWNER DECISION #267=A: rebuild E04_MATCH_PERMITTED as PER-version
+    // sets mirroring registry.rs; no --target = the most-permissive 9.9p1 union.
+
+    #[test]
+    fn rename_alias_keytypes_are_match_permitted_on_every_target() {
+        // pubkeyacceptedkeytypes / hostbasedacceptedkeytypes are the pre-8.5 rename
+        // aliases; SSHCFG_ALL on ALL versions -> Match-permitted everywhere. They
+        // are in RHEL8_BASE (known on every target), so inside a Match block they
+        // must NEVER fire E04 - at no-target or under any --target.
+        //   Source: FINDING 1 (MATCH_OK rocky8/rocky9/rocky10 for both).
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for kw in ["PubkeyAcceptedKeyTypes", "HostbasedAcceptedKeyTypes"] {
+            let src = format!("Match User bob\n    {kw} ssh-ed25519\n");
+            for target in contexts {
+                let diags = match target {
+                    Some(t) => run_with_target(&src, t),
+                    None => run(&src),
+                };
+                assert!(
+                    diags.is_empty(),
+                    "'{kw}' is Match-permitted on every version (SSHCFG_ALL) -> no E04 \
+                     for target {target:?}; got {diags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn logverbose_in_match_is_match_permitted_on_rhel9_rhel10_and_no_target() {
+        // logverbose is an ADDED_RHEL9 keyword (unknown on 8.0p1) and is SSHCFG_ALL
+        // on 9.9p1 -> Match-permitted on rhel9/rhel10 and the no-target 9.9p1 union.
+        // It must NOT fire E04 in those contexts.
+        //   Source: FINDING 1 (logverbose: UNKNOWN(8.0), MATCH_OK 9.9p1).
+        let src = "Match User bob\n    LogVerbose kex.c:*:1000\n";
+        assert!(
+            run(src).is_empty(),
+            "LogVerbose is Match-permitted on the 9.9p1 union -> no E04 at no-target; \
+             got {:?}",
+            run(src)
+        );
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target(src, target);
+            assert!(
+                diags.is_empty(),
+                "LogVerbose is Match-permitted on 9.9p1 -> no E04 under --target \
+                 {target:?}; got {diags:?}"
+            );
+        }
+        // On --target rhel8 LogVerbose is UNKNOWN (ADDED_RHEL9), so it is the daemon-
+        // rejected case: E04 must NOT fire (it belongs to E01, "Bad configuration
+        // option"). The registry `is_known(kw, Rhel8)` gate handles this.
+        assert!(
+            run_with_target(src, TargetVersion::Rhel8).is_empty(),
+            "LogVerbose is unknown on 8.0p1 -> E04 must NOT fire under --target rhel8 \
+             (the daemon rejects it; that is E01's province); got {:?}",
+            run_with_target(src, TargetVersion::Rhel8)
+        );
+    }
+
+    #[test]
+    fn challengeresponse_and_skey_in_match_are_match_permitted_on_9_9p1_union() {
+        // challengeresponseauthentication and skeyauthentication are in RHEL8_BASE
+        // (known on all targets) and SSHCFG_ALL on 9.9p1 -> Match-permitted on the
+        // no-target union and under --target rhel9/rhel10. They must NOT fire E04
+        // there.
+        //   Source: FINDING 1 (both: GLOBALONLY on 8.0p1, MATCH_OK on 9.9p1).
+        for kw in ["ChallengeResponseAuthentication", "SKeyAuthentication"] {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            assert!(
+                run(&src).is_empty(),
+                "'{kw}' is Match-permitted on the 9.9p1 union -> no E04 at no-target; \
+                 got {:?}",
+                run(&src)
+            );
+            for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+                let diags = run_with_target(&src, target);
+                assert!(
+                    diags.is_empty(),
+                    "'{kw}' is Match-permitted on 9.9p1 -> no E04 under --target \
+                     {target:?}; got {diags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn challengeresponse_and_skey_in_match_fire_e04_on_rhel8() {
+        // On 8.0p1 both challengeresponseauthentication and skeyauthentication are
+        // SSHCFG_GLOBAL (global-only) AND known (RHEL8_BASE), so inside a Match block
+        // under --target rhel8 the daemon silently ignores them -> exactly one E04.
+        //   Source: FINDING 1 (GLOBALONLY on rocky8 / 8.0p1).
+        for kw in ["ChallengeResponseAuthentication", "SKeyAuthentication"] {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            let diags = run_with_target(&src, TargetVersion::Rhel8);
+            assert_eq!(
+                diags.len(),
+                1,
+                "'{kw}' is global-only on 8.0p1 -> exactly one sshd-E04 under \
+                 --target rhel8; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-E04");
+        }
+    }
+
+    #[test]
+    fn genuinely_unknown_in_match_directive_still_fires_when_not_a_keyword() {
+        // Guard against an over-broad permitted set: a keyword that is genuinely
+        // global-only on EVERY version (here Ciphers, in RHEL8_BASE on all targets,
+        // never SSHCFG_ALL) must still fire exactly one E04 inside a Match block at
+        // no-target and under every --target. The per-version rebuild must not turn
+        // the permitted set into a catch-all.
+        let src = "Match User bob\n    Ciphers aes256-ctr\n";
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target(src, t),
+                None => run(src),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "Ciphers is global-only on every version -> exactly one sshd-E04 for \
+                 target {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-E04");
         }
     }
 
