@@ -177,10 +177,16 @@ fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String
         }
         // NumericId - Str branch: must be `unset` or name-form.
         (E02Category::NumericId, AttrValue::Str(s)) => {
-            if is_valid_numeric_id_name(s) {
-                None
-            } else {
+            // An all-digit token only reaches `Str` when it overflowed the i64
+            // parse in the grammar (in-range decimals parse as `Int`), so it is
+            // an out-of-u32-range integer - not a name-form id - and must fire
+            // fapd-E02 like the Int branch does (#273).
+            if (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                || !is_valid_numeric_id_name(s)
+            {
                 Some("expected u32 decimal, name, or `unset`".to_string())
+            } else {
+                None
             }
         }
         // HashDigest is handled by classify_hash_value in the main loop.
@@ -291,6 +297,23 @@ mod tests {
             e02_failure_detail(E02Category::NumericId, &AttrValue::Str("bad@name".into()))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn e02_numeric_id_str_rejects_all_digit_overflow_token() {
+        // An all-digit token >= 19 digits overflows the grammar's i64 parse and
+        // lands in `Str`. It is an out-of-u32-range id, not a name, so it must
+        // fire fapd-E02 (#273). The in-range cases still parse as `Int`.
+        for s in [
+            "99999999999999999999", // 20 digits, > i64::MAX
+            "18446744073709551615", // u64::MAX
+            "9223372036854775808",  // i64::MAX + 1 (19 digits)
+        ] {
+            assert!(
+                e02_failure_detail(E02Category::NumericId, &AttrValue::Str(s.into())).is_some(),
+                "all-digit overflow token {s} must fire fapd-E02",
+            );
+        }
     }
 
     #[test]
