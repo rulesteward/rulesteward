@@ -517,3 +517,66 @@ fn dispatcher_includes_e04_findings() {
         all_diags.iter().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// T19: the diagnostic message pins BOTH the offending filter-list name and the
+// legal-lists description verbatim.
+//
+// The list name comes from filter_list_name() and the legal-lists text from
+// legal_lists_str(); both feed ONLY this message. The other illegal-case tests
+// (T1-T5c, T17) assert the message names the FIELD, which comes from a different
+// function (field_name_str), so they leave both string functions unpinned.
+// This test pins the full message for perm-on-task, so replacing either
+// filter_list_name or legal_lists_str with a constant ("" / "xyzzy") changes
+// the message and fails this assertion.
+// ---------------------------------------------------------------------------
+#[test]
+fn message_pins_list_name_and_legal_lists() {
+    let diags = lint_inline("-a always,task -F perm=r -k test-msg");
+    assert_one_e04(&diags, "perm on task (message-shape pin)");
+    assert_eq!(
+        diags[0].message,
+        "field 'perm' cannot be used on the 'task' filter list (legal: exit or exclude); auditctl aborts the rule load",
+        "message must name the offending list ('task', from filter_list_name) AND the \
+         legal lists ('exit or exclude', from legal_lists_str) verbatim"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T20: fstype on a non-filesystem list - ILLEGAL (fstype is filesystem-only).
+//
+// fstype is legal ONLY on the filesystem list (FIELDUNAVAIL guard, libaudit.c
+// 1852-1854 v3.1.5; grounding depth-auditd-fieldtable.md row "fstype | filesystem
+// | != FILTER_FS -> EAU_FIELDUNAVAIL"). On any other list the kernel returns
+// EAU_FIELDUNAVAIL ("fstype field is not valid for the filter") and aborts the load.
+// Live differential: "-a always,user -F fstype=ext4" => EAU_FIELDUNAVAIL.
+// Adversarial: an impl missing the Fstype arm falls through to the unrestricted
+// wildcard (_ => None) and fires NOTHING -- so this case must fire exactly one au-E04.
+// ---------------------------------------------------------------------------
+#[test]
+fn fstype_on_user_fires_one_e04() {
+    let diags = lint_inline("-a always,user -F fstype=ext4 -k test-fstype");
+    assert_one_e04(&diags, "fstype on user filter list");
+
+    let d = &diags[0];
+    assert!(
+        d.message.to_lowercase().contains("fstype"),
+        "message must name the field 'fstype', got: {:?}",
+        d.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T21: fstype on the filesystem list - MUST NOT fire (legal control).
+//
+// filesystem is the one legal list for fstype. This pins Restriction::FilesystemOnly:
+// an impl mapping fstype to e.g. ExitOnly would pass T20 but incorrectly fire here.
+// ---------------------------------------------------------------------------
+#[test]
+fn fstype_on_filesystem_must_not_fire() {
+    let diags = lint_inline("-a always,filesystem -F fstype=ext4 -k test-fstype-legal");
+    assert_clean(
+        &diags,
+        "fstype on filesystem (legal - the one allowed list for fstype)",
+    );
+}

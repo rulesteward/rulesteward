@@ -367,6 +367,29 @@ fn test_permissive_group_no_allow_emitted() {
         !te.contains("allow httpd_t"),
         "a Permissive denial group must not produce an `allow` rule (f4 §2.5 invariant 6)\n\ngot:\n{te}"
     );
+
+    // Invariant 6 has TWO halves: no allow (above), but the permissive group is
+    // still REPORTED -- it contributes its types to the require {} block, so the
+    // real output is a full module, not the comment-only "nothing to emit" form.
+    // Asserting only the absence of an allow line leaves the permissive partition
+    // (`g.kind == DenialKind::Permissive`) unpinned: inverting it (== -> !=) drops
+    // the permissive group from require_groups, which then becomes empty for a
+    // permissive-only input and emits the comment-only form -- which ALSO has no
+    // allow line. These positive assertions distinguish the two and kill that mutant.
+    assert!(
+        te.starts_with("module "),
+        "a permissive-only input must still emit a module + require block (invariant 6: \
+         reported, no allow), not the comment-only 'nothing to emit' form\n\ngot:\n{te}"
+    );
+    assert!(
+        te.contains("require {"),
+        "the permissive group must contribute to the require block\n\ngot:\n{te}"
+    );
+    assert!(
+        te.contains("type httpd_t;") && te.contains("type shadow_t;"),
+        "the require block must forward-declare the permissive group's source and target \
+         types (httpd_t, shadow_t)\n\ngot:\n{te}"
+    );
 }
 
 /// Mixed: one enforcing group + one permissive group. Only the enforcing group
