@@ -433,6 +433,9 @@ pub struct CostArgs {
     pub price_per_gb: f64,
 
     /// (not yet implemented) emit noise-reduction recommendations.
+    ///
+    /// Currently a no-op: prints a `[NOT YET IMPLEMENTED]` notice to stderr and
+    /// exits 0 with unchanged stdout (no recommendations are produced).
     #[arg(long)]
     pub recommend: bool,
 
