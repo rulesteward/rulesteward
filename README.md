@@ -182,17 +182,19 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `fapd-W11` | Warning | weak hash digest (MD5/SHA1); prefer SHA-256 | always |
 | `fapd-X01` | Extra | trust-DB orphan: a trusted path absent from the loaded rules | `--report-orphans` + `--against-trustdb` |
 
-### auditd (`au-`, 7 codes)
+### auditd (`au-`, 9 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
 | `au-E01` | Error | unreachable rule after the `-e 2` lock line |
 | `au-E02` | Error | comparison operator invalid for the field's type (auditctl rejects the rule at load) |
 | `au-E03` | Error | load-aborting duplicate: an identical earlier rule makes `auditctl -R` abort |
+| `au-E04` | Error | field used on a filter list the kernel rejects for that field (`auditctl -R` aborts the load) |
 | `au-F01` | Fatal | rules file does not parse |
 | `au-W01` | Warning | duplicate rule (normalized-equal to an earlier rule in load order) |
 | `au-W02` | Warning | shadowed rule: an earlier, broader rule subsumes it |
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
+| `au-W04` | Warning | missing-ABI coverage: a syscall rule pins one ABI (`arch=b32`/`b64`) with no companion on the other ABI |
 
 ### sshd_config (`sshd-`, 12-code taxonomy; 9 emitted today)
 

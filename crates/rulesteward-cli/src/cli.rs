@@ -666,8 +666,10 @@ pub enum AuditdCommand {
     /// the `-e 2` lock line (au-E01), exclude/never rules suppressing events an
     /// always rule intends to record (au-W03), comparison operators that
     /// are invalid for a field's type and would make auditctl reject the rule
-    /// (au-E02), and syscall rules pinned to one ABI (`arch=b32`/`b64`) with no
-    /// companion on the opposite ABI, leaving the other ABI unaudited (au-W04).
+    /// (au-E02), fields used on a filter list the kernel rejects for that field,
+    /// which aborts the rule load (au-E04), and syscall rules pinned to one ABI
+    /// (`arch=b32`/`b64`) with no companion on the opposite ABI, leaving the
+    /// other ABI unaudited (au-W04).
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable rules (au-F01).
