@@ -1246,3 +1246,116 @@ fn version_target_traps() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// fapd-F01 - legacy-grammar perm= clause (issue #272).
+//
+// The LEGACY (no-colon) grammar must NOT accept a `perm=` clause. fapolicyd
+// rules.c:957-965 gates the perm field on RULE_FMT_COLON (colon format only).
+// Both fapolicyd 1.3.2 and 1.4.5 reject `allow perm=execute uid=0 path=/usr/bin/sh`
+// with "ERROR: Field type (perm) is unknown in line 2".
+//
+// This is an EXPLICIT assertion test (not snapshot-only) so that:
+//   - It is RED against the current clean-parse behavior immediately.
+//   - A mutant that accidentally permits legacy perm= is killed deterministically.
+//   - The failure does not depend on snapshot-file presence / absence.
+//
+// The trap fixture `fapd-F01/legacy-perm-rejected.rules` (single line, no colon)
+// is ALSO auto-driven by f01_traps() above, giving a second kill signal via the
+// snapshot path once the impl lands and the .snap is generated.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f01_legacy_perm_rejected() {
+    // Literal content mirrors the trap fixture exactly (primary-source verified:
+    // fapolicyd 1.3.2 + 1.4.5 both reject this with "Field type (perm) is unknown").
+    let src = "allow perm=execute uid=0 path=/usr/bin/sh\n";
+    let path = std::path::Path::new("tests/corpus/traps/fapd-F01/legacy-perm-rejected.rules");
+
+    let result = parse_rules_file(src, path);
+
+    // The parser MUST return Err (parse failure), not Ok (fail-open).
+    let diags = result.expect_err(
+        "legacy rule with perm= clause must be REJECTED (fapd-F01), \
+         but parse_rules_file returned Ok - this is the fail-open bug from issue #272. \
+         fapolicyd rules.c gates perm on RULE_FMT_COLON; no-colon format must not accept it.",
+    );
+
+    // At least one diagnostic must be Severity::Fatal with code fapd-F01.
+    let has_f01 = diags
+        .iter()
+        .any(|d| d.severity == rulesteward_core::Severity::Fatal && d.code.as_ref() == "fapd-F01");
+    assert!(
+        has_f01,
+        "expected a Fatal fapd-F01 diagnostic for legacy perm= clause, got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.severity, d.code.as_ref()))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fapd-F01 - legacy perm= rejection is VALUE-INDEPENDENT (issue #272).
+//
+// fapolicyd rules.c:957-965 special-cases `perm` ONLY under RULE_FMT_COLON
+// via `strcmp(ptr,"perm")==0` - it is a FIELD-NAME check, not a value check.
+// In legacy (no-colon) format the field name `perm` is never recognized, so
+// the daemon rejects `perm=<anything>` identically with "Field type (perm) is
+// unknown". A narrowed wrong impl that only matches `perm=="execute"` would
+// pass f01_legacy_perm_rejected above while leaving perm=open / perm=foo
+// as fail-open.
+//
+// Primary source: fapolicyd rules.c:957-965 (1.3.2 + 1.4.5 both verified).
+// Note: do NOT assert on the guard's custom message string - the dispatcher
+// (parser/mod.rs:159-163) returns the modern parser's "expected colon
+// separator" error, discarding the guard's message. Assert only on
+// severity==Fatal and code=="fapd-F01".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f01_legacy_perm_value_independent() {
+    let path_open =
+        std::path::Path::new("tests/corpus/traps/fapd-F01/legacy-perm-open-rejected.rules");
+    let path_garbage =
+        std::path::Path::new("tests/corpus/traps/fapd-F01/legacy-perm-rejected.rules");
+
+    // Case 1: perm=open (a valid modern perm value, rejected in legacy format).
+    // Mirrors the trap fixture legacy-perm-open-rejected.rules exactly.
+    let src_open = "allow perm=open uid=0 path=/usr/bin/sh\n";
+    let diags_open = parse_rules_file(src_open, path_open).expect_err(
+        "legacy rule with perm=open must be REJECTED (fapd-F01), \
+         but parse_rules_file returned Ok - value-independence violation: \
+         only perm=execute was guarded, not perm=open.",
+    );
+    let has_f01_open = diags_open
+        .iter()
+        .any(|d| d.severity == rulesteward_core::Severity::Fatal && d.code.as_ref() == "fapd-F01");
+    assert!(
+        has_f01_open,
+        "perm=open in legacy format: expected Fatal fapd-F01, got: {:?}",
+        diags_open
+            .iter()
+            .map(|d| (d.severity, d.code.as_ref()))
+            .collect::<Vec<_>>()
+    );
+
+    // Case 2: perm=foo (garbage value, also rejected in legacy format).
+    let src_garbage = "allow perm=foo uid=0 path=/usr/bin/sh\n";
+    let diags_garbage = parse_rules_file(src_garbage, path_garbage).expect_err(
+        "legacy rule with perm=foo (garbage value) must be REJECTED (fapd-F01), \
+         but parse_rules_file returned Ok - value-independence violation: \
+         the rejection must be based on the field name, not the value.",
+    );
+    let has_f01_garbage = diags_garbage
+        .iter()
+        .any(|d| d.severity == rulesteward_core::Severity::Fatal && d.code.as_ref() == "fapd-F01");
+    assert!(
+        has_f01_garbage,
+        "perm=foo in legacy format: expected Fatal fapd-F01, got: {:?}",
+        diags_garbage
+            .iter()
+            .map(|d| (d.severity, d.code.as_ref()))
+            .collect::<Vec<_>>()
+    );
+}

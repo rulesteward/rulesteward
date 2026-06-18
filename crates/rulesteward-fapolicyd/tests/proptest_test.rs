@@ -71,8 +71,10 @@ mod generators {
         ]
     }
 
-    /// `Some(perm)` for one of 3 perm values, or `None`. Both modern and
-    /// legacy syntax accept an optional `perm=` clause.
+    /// `Some(perm)` for one of 3 perm values, or `None`. MODERN (colon) syntax
+    /// only: the colon-format grammar accepts an optional `perm=` clause.
+    /// Legacy (no-colon) syntax does NOT accept `perm=` - use `arb_perm_legacy`.
+    /// Primary source: fapolicyd rules.c:957-965 gates perm on `RULE_FMT_COLON`.
     pub(super) fn arb_perm_opt() -> impl Strategy<Value = Option<Perm>> {
         prop_oneof![
             Just(None),
@@ -80,6 +82,15 @@ mod generators {
             Just(Some(Perm::Execute)),
             Just(Some(Perm::Any)),
         ]
+    }
+
+    /// Legacy (no-colon) rules NEVER carry a `perm=` clause. fapolicyd
+    /// rules.c:957-965 gates the perm field on `RULE_FMT_COLON`; the no-colon
+    /// format rejects it with "Field type (perm) is unknown". Always returns
+    /// `None` so that the legacy round-trip generator reflects the corrected
+    /// grammar (issue #272 fix).
+    pub(super) fn arb_perm_legacy() -> impl Strategy<Value = Option<Perm>> {
+        Just(None)
     }
 
     /// String payload for `AttrValue::Str`. Char set is alphanumeric or one
@@ -180,8 +191,8 @@ mod generators {
             })
     }
 
-    /// Generate a Legacy-syntax rule. Two hard constraints to keep the
-    /// positional classifier deterministic:
+    /// Generate a Legacy-syntax rule. Three hard constraints to keep the
+    /// positional classifier deterministic and match the corrected grammar:
     ///
     /// 1. Subject keys are drawn ONLY from `attrs::SUBJECT_ONLY`; object
     ///    keys ONLY from `attrs::OBJECT_ONLY`. `BOTH_SIDES` keys (including
@@ -192,10 +203,14 @@ mod generators {
     ///    colon. The classifier reads subject-only tokens until it hits the
     ///    first object-only token, then switches. Strict-only keys make this
     ///    unambiguous.
+    /// 3. `perm` is ALWAYS `None` for legacy rules. fapolicyd rules.c:957-965
+    ///    gates perm on `RULE_FMT_COLON`; the no-colon format rejects `perm=`.
+    ///    Using `arb_perm_opt()` here would generate round-trip inputs that the
+    ///    FIXED parser rejects, breaking the round-trip property (issue #272).
     pub(super) fn arb_legacy_rule() -> impl Strategy<Value = Rule> {
         (
             arb_decision(),
-            arb_perm_opt(),
+            arb_perm_legacy(),
             prop::collection::vec(arb_subject_only_attr(), 1..=4),
             prop::collection::vec(arb_object_only_attr(), 1..=4),
         )
