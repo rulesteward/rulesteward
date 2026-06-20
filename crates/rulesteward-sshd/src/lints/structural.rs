@@ -4,8 +4,9 @@
 //! Phase-0 foundation merges. sshd-E01 (registry-gated) and sshd-W05 (which
 //! reuses the W01 required-set) are grouped here as the structural family.
 //!
-//! Phase 0: every pass is a `Vec::new()` stub with a frozen signature. The
-//! tracking issues are children of epic #149.
+//! sshd-E01, -E02, -E03, and -E04 ship real bodies here; only `sshd-W05`
+//! remains a `Vec::new()` stub (Wave C, #149). The lint codes are children
+//! of epic #149.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

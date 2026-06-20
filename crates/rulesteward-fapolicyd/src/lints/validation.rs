@@ -192,7 +192,7 @@ fn e02_failure_detail(category: E02Category, value: &AttrValue) -> Option<String
 mod tests {
     use super::*;
     use crate::ast::{AttrValue, Decision};
-    use crate::lints::testkit::{kv, modern_rule, p};
+    use crate::lints::testkit::{kv, legacy_rule, modern_rule, p};
 
     // -----------------------------------------------------------------
     // fapd-E02 helper-level unit tests. Snapshot tests cover the integrated
@@ -475,6 +475,48 @@ mod tests {
         assert!(
             diags.is_empty(),
             "SetRef values are fapd-E03/fapd-E04/fapd-E05's concern, not fapd-E02: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e02_diagnostics_identical_for_legacy_and_modern_flavor() {
+        // #295: fapd-E02 validates attribute VALUES and never reads
+        // `Rule.syntax`, so a legacy-parsed rule must produce identical
+        // diagnostics to the modern form. The value-lint output tests
+        // previously exercised only `modern_rule`. `uid=bad@name` (illegal name
+        // char) and `filehash=abc` (off-length) each fire one fapd-E02.
+        let modern = walk(
+            &[modern_rule(
+                7,
+                Decision::Allow,
+                None,
+                vec![kv("uid", "bad@name")],
+                vec![kv("filehash", "abc")],
+            )],
+            &p(),
+        );
+        let legacy = walk(
+            &[legacy_rule(
+                7,
+                Decision::Allow,
+                None,
+                vec![kv("uid", "bad@name")],
+                vec![kv("filehash", "abc")],
+            )],
+            &p(),
+        );
+        // Absolute behavior on the legacy-flavored rule.
+        assert_eq!(
+            legacy.len(),
+            2,
+            "one fapd-E02 per offender on a legacy rule"
+        );
+        assert!(legacy.iter().all(|d| d.code.as_ref() == "fapd-E02"));
+        assert!(legacy.iter().all(|d| d.severity == Severity::Error));
+        // Flavor-invariance: byte-identical to the modern form.
+        assert_eq!(
+            modern, legacy,
+            "fapd-E02 diagnostics must not depend on SyntaxFlavor",
         );
     }
 

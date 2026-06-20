@@ -73,7 +73,7 @@ fn w07(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Dia
 mod tests {
     use super::*;
     use crate::ast::{AttrValue, Decision};
-    use crate::lints::testkit::{modern_rule, p};
+    use crate::lints::testkit::{legacy_rule, modern_rule, p};
 
     // -----------------------------------------------------------------
     // fapd-W07 helper-level unit tests. Pin the per-attribute walker so
@@ -147,6 +147,47 @@ mod tests {
         assert!(
             diags.is_empty(),
             "filehash= is the modern spelling; fapd-W07 must not fire: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w07_diagnostics_identical_for_legacy_and_modern_flavor() {
+        // #295: fapd-W07 keys off the attribute NAME, never `Rule.syntax` (the
+        // rhel8 suppression is by `--target`, not flavor), so a legacy-parsed
+        // `sha256hash=` rule must produce the same fapd-W07 output as the modern
+        // form. The W07 output tests previously exercised only `modern_rule`.
+        let subj = || {
+            vec![Attr::Kv {
+                key: "sha256hash".into(),
+                value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
+            }]
+        };
+        let obj = || {
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::Str("/foo".into()),
+                span: 0..0,
+            }]
+        };
+        let modern = w07(
+            &[modern_rule(1, Decision::Allow, None, subj(), obj())],
+            &p(),
+            None,
+        );
+        let legacy = w07(
+            &[legacy_rule(1, Decision::Allow, None, subj(), obj())],
+            &p(),
+            None,
+        );
+        // Absolute behavior on the legacy-flavored rule.
+        assert_eq!(legacy.len(), 1, "legacy sha256hash= must fire one fapd-W07");
+        assert_eq!(legacy[0].code.as_ref(), "fapd-W07");
+        assert_eq!(legacy[0].severity, Severity::Warning);
+        // Flavor-invariance: identical to the modern form.
+        assert_eq!(
+            modern, legacy,
+            "fapd-W07 diagnostics must not depend on SyntaxFlavor",
         );
     }
 

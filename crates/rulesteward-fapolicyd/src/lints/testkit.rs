@@ -63,6 +63,29 @@ pub(crate) fn modern_rule(
     })
 }
 
+/// A Legacy-flavor rule entry (pre-1.4 / no-colon `perm` grammar). Mirror of
+/// `modern_rule` with `syntax = SyntaxFlavor::Legacy`, so a test can assert a
+/// value lint emits identical diagnostics regardless of flavor (the value lints
+/// key off attributes, not `Rule.syntax`). `walker.rs` keeps a private copy for
+/// its fapd-F03 flavor-mix tests; this is the shared one for sibling modules.
+pub(crate) fn legacy_rule(
+    line: usize,
+    decision: Decision,
+    perm: Option<Perm>,
+    subj: Vec<Attr>,
+    obj: Vec<Attr>,
+) -> Entry {
+    Entry::Rule(Rule {
+        decision,
+        perm,
+        subject: subj,
+        object: obj,
+        syntax: SyntaxFlavor::Legacy,
+        line,
+        span: rulesteward_core::span(0, 0),
+    })
+}
+
 /// A set-definition entry. Canonical superset of the four pre-existing
 /// `setdef`/`set_def` shapes.
 pub(crate) fn set_def(line: usize, name: &str, values: &[&str]) -> Entry {
