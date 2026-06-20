@@ -29,7 +29,7 @@ pub mod structural;
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity, Span};
+use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::Block;
 use crate::parser::LocatedParseError;
@@ -75,22 +75,11 @@ impl Default for SshdLintContext {
 ///
 /// sshd directive spans cover the whole raw line (see
 /// [`crate::parser::parse_config_str_located`]), so the line-start anchor is
-/// exact and no span-derived column backfill is needed. `pub` because the lint
-/// passes emit through it; pinned by `anchored_equals_handwritten_diagnostic` so
-/// a refactor that changes its output shape fails fast.
-#[must_use]
-pub fn anchored(
-    sev: Severity,
-    code: &'static str,
-    span: Span,
-    msg: impl Into<String>,
-    file: impl Into<std::path::PathBuf>,
-    line: usize,
-) -> Diagnostic {
-    let file = file.into();
-    let source_id = file.display().to_string();
-    Diagnostic::new(sev, code, span, msg, file, line, 1).with_source_id(source_id)
-}
+/// exact and no span-derived column backfill is needed. Re-exported from the
+/// shared `rulesteward-core` helper (issue #289); the lint passes emit through it
+/// via `crate::lints::anchored`. Pinned by `anchored_equals_handwritten_diagnostic`
+/// so a refactor that changes its output shape fails fast.
+pub use rulesteward_core::anchored;
 
 /// Map a located parse error to an `sshd-F01` Fatal diagnostic.
 ///

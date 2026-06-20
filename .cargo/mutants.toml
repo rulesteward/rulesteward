@@ -28,6 +28,10 @@ examine_globs = [
     # fanotify + doctor + avc (issue #192, D1). New top-level core file: must be
     # listed explicitly or its mutation gate passes vacuously (allowlist).
     "crates/rulesteward-core/src/audit.rs",
+    # shared lint-catalog primitives (BaseLintCode + assert_catalog_invariants),
+    # consumed by the auditd + sshd catalogs (issue #289). New top-level core
+    # file: list explicitly or its mutation gate passes vacuously (allowlist).
+    "crates/rulesteward-core/src/lint_code.rs",
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",

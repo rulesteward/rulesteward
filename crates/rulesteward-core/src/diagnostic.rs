@@ -104,6 +104,46 @@ impl Diagnostic {
     }
 }
 
+/// Build a byte-anchored [`Diagnostic`] at an explicit 1-based `column`, with the
+/// source-id set to the file path's display string.
+///
+/// The shared emission helper for the per-backend lint passes: every anchored
+/// lint site builds `Diagnostic::new(..).with_source_id(file.display())`. The
+/// auditd / sshd backends only ever anchor at column 1 (see [`anchored`]); the
+/// fapolicyd backend uses this explicit-column form for sub-rule-token carets
+/// (fapd-E01, fapd-W03, fapd-F01).
+#[must_use]
+pub fn anchored_at(
+    severity: Severity,
+    code: impl Into<Cow<'static, str>>,
+    span: Span,
+    message: impl Into<String>,
+    file: impl Into<PathBuf>,
+    line: usize,
+    column: usize,
+) -> Diagnostic {
+    let file = file.into();
+    let source_id = file.display().to_string();
+    Diagnostic::new(severity, code, span, message, file, line, column).with_source_id(source_id)
+}
+
+/// Build a byte-anchored [`Diagnostic`] at column 1, with the source-id set to
+/// the file path's display string.
+///
+/// Thin wrapper over [`anchored_at`] with `column = 1`. Used by the bulk of the
+/// anchored lint sites whose caret sits at the start of the line.
+#[must_use]
+pub fn anchored(
+    severity: Severity,
+    code: impl Into<Cow<'static, str>>,
+    span: Span,
+    message: impl Into<String>,
+    file: impl Into<PathBuf>,
+    line: usize,
+) -> Diagnostic {
+    anchored_at(severity, code, span, message, file, line, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,47 +41,21 @@ pub use layout::{check_layout, directory_has_rules_files};
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity, Span, fill_columns};
+use rulesteward_core::{Diagnostic, Severity, fill_columns};
 
 use crate::ast::Entry;
 use crate::parser;
 use crate::trustdb::TrustDb;
 use crate::version::TargetVersion;
 
-/// Build a byte-anchored `Diagnostic` with the fapolicyd emission convention:
-/// column defaults to 1 and the source-id is the file path's display string.
-///
-/// Thin wrapper over [`anchored_at`] with `column = 1`. Used by the bulk of the
-/// anchored lint sites whose caret sits at the start of the line.
-pub(crate) fn anchored(
-    sev: Severity,
-    code: &'static str,
-    span: Span,
-    msg: impl Into<String>,
-    file: impl Into<std::path::PathBuf>,
-    line: usize,
-) -> Diagnostic {
-    anchored_at(sev, code, span, msg, file, line, 1)
-}
-
-/// Build a byte-anchored `Diagnostic` at an explicit 1-based `column`, with the
-/// source-id set to the file path's display string. Used by the sites that point
-/// the caret at a sub-rule token rather than the rule's first column: fapd-E01
-/// (the offending attribute), fapd-W03 (the inline `#`), and fapd-F01 (the parse
-/// offset within the line body).
-pub(crate) fn anchored_at(
-    sev: Severity,
-    code: &'static str,
-    span: Span,
-    msg: impl Into<String>,
-    file: impl Into<std::path::PathBuf>,
-    line: usize,
-    column: usize,
-) -> Diagnostic {
-    let file = file.into();
-    let source_id = file.display().to_string();
-    Diagnostic::new(sev, code, span, msg, file, line, column).with_source_id(source_id)
-}
+/// Byte-anchored `Diagnostic` builders with the fapolicyd emission convention
+/// (source-id = the file path's display string). Re-exported from the shared
+/// `rulesteward-core` helpers (issue #289): [`anchored`] anchors at column 1 (the
+/// bulk of the lint sites), [`anchored_at`] takes an explicit 1-based `column`
+/// for the sub-rule-token carets (fapd-E01 the offending attribute, fapd-W03 the
+/// inline `#`, fapd-F01 the parse offset within the line body). Callers reach
+/// them via `super::anchored` / `crate::lints::anchored_at`.
+pub(crate) use rulesteward_core::{anchored, anchored_at};
 
 /// Build a file-level `Diagnostic` NOT anchored to a source byte range: empty
 /// span `0..0`, line and column `0`, and NO source-id. Used by findings about a

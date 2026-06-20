@@ -34,7 +34,7 @@ pub mod operator_validity;
 pub mod ordering;
 pub mod value;
 
-use rulesteward_core::{Diagnostic, Severity, Span};
+use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::LocatedRule;
 
@@ -44,21 +44,10 @@ use crate::ast::LocatedRule;
 /// auditd rule spans cover the whole raw line (see
 /// [`crate::parser::parse_rules_str_located`]), so the line-start anchor is
 /// exact and no span-derived column backfill is needed (the fapolicyd
-/// `fill_columns` pass has no auditd analogue by design). `pub` because the
-/// pass modules emit through it and the CLI render layer may anchor too.
-#[must_use]
-pub fn anchored(
-    sev: Severity,
-    code: &'static str,
-    span: Span,
-    msg: impl Into<String>,
-    file: impl Into<std::path::PathBuf>,
-    line: usize,
-) -> Diagnostic {
-    let file = file.into();
-    let source_id = file.display().to_string();
-    Diagnostic::new(sev, code, span, msg, file, line, 1).with_source_id(source_id)
-}
+/// `fill_columns` pass has no auditd analogue by design). Re-exported from the
+/// shared `rulesteward-core` helper (issue #289); the pass modules emit through
+/// it via `super::anchored` / `crate::lints::anchored`.
+pub use rulesteward_core::anchored;
 
 /// Map a located parse error to an `au-F01` Fatal diagnostic.
 ///

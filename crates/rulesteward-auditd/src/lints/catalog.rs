@@ -9,16 +9,10 @@
 use rulesteward_core::Severity;
 
 /// One catalogued `au-` lint code: its stable id, severity tier, and a short
-/// operator-facing description.
-#[derive(Debug, Clone, Copy)]
-pub struct LintCode {
-    /// The stable lint id, e.g. `"au-W01"`.
-    pub code: &'static str,
-    /// Severity tier; its letter (F/E/W) matches the code's letter.
-    pub severity: Severity,
-    /// One-line operator-facing description of what the check looks for.
-    pub description: &'static str,
-}
+/// operator-facing description. Aliased from the shared `rulesteward-core`
+/// [`BaseLintCode`](rulesteward_core::BaseLintCode); the catalog-integrity
+/// invariants live there too (issue #289).
+pub use rulesteward_core::BaseLintCode as LintCode;
 
 /// The catalog of every `au-` lint code, authored in sorted-by-code order for
 /// deterministic, byte-stable output. Pinned against the authoritative emitted
@@ -91,39 +85,11 @@ mod tests {
         );
     }
 
+    /// The sorted-by-code / no-duplicate / letter-matches-severity /
+    /// descriptions-non-empty invariants are shared across every backend
+    /// catalog and live in `rulesteward-core` (issue #289).
     #[test]
-    fn catalog_is_sorted_by_code() {
-        let codes: Vec<&str> = AU_CODES.iter().map(|c| c.code).collect();
-        let mut sorted = codes.clone();
-        sorted.sort_unstable();
-        assert_eq!(codes, sorted, "AU_CODES must be authored in sorted order");
-    }
-
-    #[test]
-    fn catalog_letters_match_severities() {
-        for entry in AU_CODES {
-            let letter = entry
-                .code
-                .strip_prefix("au-")
-                .and_then(|s| s.chars().next())
-                .unwrap_or_else(|| panic!("malformed code {:?}", entry.code));
-            assert_eq!(
-                letter,
-                entry.severity.letter(),
-                "{}: code letter must match severity tier",
-                entry.code
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_descriptions_are_nonempty() {
-        for entry in AU_CODES {
-            assert!(
-                !entry.description.trim().is_empty(),
-                "{}: description must not be empty",
-                entry.code
-            );
-        }
+    fn catalog_satisfies_shared_invariants() {
+        rulesteward_core::lint_code::assert_catalog_invariants(AU_CODES);
     }
 }
