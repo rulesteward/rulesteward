@@ -68,6 +68,7 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
                 | FieldType::NumericSigned
                 | FieldType::Uid
                 | FieldType::Gid
+                | FieldType::SessionId
                 | FieldType::String
                 | FieldType::MsgType
                 | FieldType::Filetype
