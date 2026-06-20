@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Block;
+use crate::ast::{Block, Directive};
 use crate::lints::{SshdLintContext, anchored, registry};
 
 /// Keywords sshd accumulates (unions) across multiple lines rather than
@@ -236,7 +236,7 @@ pub fn e02(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
 /// Flag first-value-wins duplicates within a SINGLE directive scope (the global
 /// block or one Match body). A fresh `seen` set per call keeps each scope
 /// independent, so a duplicate never crosses a scope boundary.
-fn e02_scan_scope(directives: &[crate::ast::Directive], file: &Path, diags: &mut Vec<Diagnostic>) {
+fn e02_scan_scope(directives: &[Directive], file: &Path, diags: &mut Vec<Diagnostic>) {
     let mut seen: HashSet<String> = HashSet::new();
     for directive in directives {
         let keyword = directive.keyword_lower();
@@ -272,7 +272,7 @@ fn e02_scan_scope(directives: &[crate::ast::Directive], file: &Path, diags: &mut
 /// first-value-wins for the SAME name (verified via `sshd -T`), so it keys on
 /// `subsystem` plus the name (its first, case-sensitive argument). Returns `None`
 /// for a `Subsystem` line with no name (nothing to shadow).
-fn e02_dedup_key(keyword: &str, directive: &crate::ast::Directive) -> Option<String> {
+fn e02_dedup_key(keyword: &str, directive: &Directive) -> Option<String> {
     if keyword == "subsystem" {
         let name = directive.args.first()?;
         // NUL separates the keyword from the name: it cannot appear in a parsed
@@ -1438,6 +1438,28 @@ mod e02_tests {
         let diags = run(src);
         let lines: Vec<usize> = diags.iter().map(|d| d.line).collect();
         assert_eq!(lines, vec![3, 6], "each Match body dedups independently");
+    }
+
+    #[test]
+    fn nameless_subsystem_inside_match_does_not_poison_named_dup() {
+        // A nameless `Subsystem` inside a Match body has no name to key on
+        // (`e02_dedup_key` -> None) so it is skipped, and it must not swallow a
+        // genuine same-name Subsystem duplicate in the same scope.
+        let src = "Match User bob\n    Subsystem\n    Subsystem sftp /a\n    Subsystem sftp /b\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1, "only the genuine same-name dup fires");
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(diags[0].line, 4);
+    }
+
+    #[test]
+    fn keyword_dedup_inside_match_is_case_insensitive() {
+        // Keyword matching is case-insensitive inside a Match body too.
+        let src = "Match User bob\n    permitrootlogin no\n    PermitRootLogin yes\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(diags[0].line, 3);
     }
 }
 
