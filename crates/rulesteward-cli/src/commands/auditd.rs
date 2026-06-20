@@ -399,7 +399,9 @@ fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: Rat
         RateSource::Assumed => {
             "rates are ASSUMPTIONS (no --from-log). Supply --from-log /var/log/audit/audit.log\n            to replace assumed rates with this host's measured per-key event rates."
         }
-        RateSource::Measured => "rates are MEASURED from --from-log",
+        RateSource::Measured => {
+            "rates are MEASURED from --from-log (per-event SIZE still assumed\n            ~1200 B/event, so execve-heavy logs are under-counted)"
+        }
     };
     writeln!(out, "CONFIDENCE: {confidence_msg}").unwrap();
 

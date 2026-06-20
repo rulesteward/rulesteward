@@ -122,6 +122,19 @@ fn auditd_cost_help_lists_flags() {
 }
 
 #[test]
+fn auditd_cost_help_documents_measured_byte_bias() {
+    // #271-B: --from-log measures the per-key event RATE, but the per-event SIZE
+    // stays the flat ~1200 B assumption, so --help must make that bias explicit
+    // (the dollar figure under-counts execve-heavy logs).
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["auditd", "cost", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("under-counts"));
+}
+
+#[test]
 fn selinux_triage_help_lists_flags() {
     Command::cargo_bin("rulesteward")
         .expect("binary built")

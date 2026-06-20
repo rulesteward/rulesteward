@@ -424,7 +424,13 @@ pub struct CostArgs {
     #[arg(long, value_name = "DIR")]
     pub rules: PathBuf,
 
-    /// Measure real event rate from a captured audit log (optional).
+    /// Measure real per-key event rate from a captured audit log (optional).
+    ///
+    /// Only the per-key event RATE is measured from the log; the per-event SIZE
+    /// stays the flat ~1200 B ENRICHED assumption (issue #112), so the dollar
+    /// figure inherits that byte bias and under-counts execve-heavy logs (real
+    /// execve records average ~1300-2300 B). Supply this to replace assumed
+    /// rates with measured ones; the byte-size assumption is unchanged.
     #[arg(long, value_name = "FILE")]
     pub from_log: Option<PathBuf>,
 

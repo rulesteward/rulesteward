@@ -297,4 +297,10 @@ fn auditd_cost_human_measured_header_names_only_typical() {
         !out.contains("B/event band"),
         "measured header must NOT advertise the assumed byte band; got:\n{out}"
     );
+    // #271-B: the CONFIDENCE line must say the per-event SIZE is still assumed,
+    // so an operator knows the measured RATE does not make the byte size measured.
+    assert!(
+        out.contains("SIZE still assumed"),
+        "measured CONFIDENCE must note the per-event size is still assumed; got:\n{out}"
+    );
 }
