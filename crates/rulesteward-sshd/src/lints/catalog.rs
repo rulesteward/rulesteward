@@ -49,7 +49,7 @@ pub const SSHD_CODES: &[LintCode] = &[
     LintCode {
         code: "sshd-E02",
         severity: Severity::Error,
-        description: "duplicate global directive: a later line silently overrides an earlier one (sshd takes the first value for most keywords)",
+        description: "duplicate directive: a later line silently overrides an earlier one in the same scope (sshd takes the first value for most keywords)",
     },
     LintCode {
         code: "sshd-E03",

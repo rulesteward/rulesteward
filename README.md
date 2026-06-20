@@ -202,7 +202,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | --- | --- | --- | --- |
 | `sshd-F01` | Fatal | `sshd_config` file does not parse | emitted |
 | `sshd-E01` | Error | unknown directive for the target OpenSSH version | emitted |
-| `sshd-E02` | Error | duplicate global directive (sshd uses the first value; the later line is silently ignored) | emitted |
+| `sshd-E02` | Error | duplicate directive in the global block or within a `Match` block (sshd uses the first value; the later line is silently ignored) | emitted |
 | `sshd-E03` | Error | `Include` references a path or glob that resolves to nothing | emitted |
 | `sshd-E04` | Error | directive is not permitted inside a `Match` block (silently ignored at runtime) | emitted |
 | `sshd-W01` | Warning | STIG-required directive is missing | emitted |

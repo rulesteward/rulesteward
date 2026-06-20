@@ -261,11 +261,14 @@ fn field_type_covers_all_46_fields() {
             "fieldtab.h:48 AUDIT_OBJ_LEV_HIGH; libaudit.c:1803",
         ),
         // -- SessionID: fieldtab.h:49 AUDIT_SESSIONID
-        //    libaudit.c:1966-1984, strtoul/strtol/unset; no op restriction
+        //    libaudit.c:1966-1984, strtoul/strtol/unset; no op restriction. Its
+        //    own FieldType (#270 AUD-3): a u32 with the unset/-1/4294967295
+        //    sentinel like uid/gid (but no name resolution), so the sentinel
+        //    folds for sessionid without folding plain Numeric fields like pid.
         (
             AuditField::SessionId,
-            FieldType::Numeric,
-            "fieldtab.h:49 AUDIT_SESSIONID=25; libaudit.c:1966, numeric strtoul",
+            FieldType::SessionId,
+            "fieldtab.h:49 AUDIT_SESSIONID=25; libaudit.c:1966-1984 u32 strtoul + unset/4294967295 sentinel (#270 AUD-3)",
         ),
         // -- DevMajor/DevMinor/Inode: fieldtab.h:51-53
         //    libaudit.c:1991 AUDIT_DEVMAJOR..AUDIT_INODE range + SUCCESS

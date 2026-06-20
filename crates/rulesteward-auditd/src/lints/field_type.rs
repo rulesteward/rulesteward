@@ -33,6 +33,12 @@ pub enum FieldType {
     Uid,
     /// Group id: numeric or resolved from a group name (e.g. `gid`, `egid`).
     Gid,
+    /// Session id (`sessionid`): a `u32` carrying the same `unset` / `-1` /
+    /// `4294967295` sentinel as uid/gid (libaudit.c:1966-1984 @ 3bfa048), but
+    /// with NO name resolution. Distinct from [`FieldType::Numeric`] so the
+    /// sentinel folds for `sessionid` without folding plain numerics like `pid`
+    /// (#270 AUD-3).
+    SessionId,
     /// String value compared byte-wise, with NO operator restriction: the
     /// daemon accepts all eight operators for these fields because libaudit's
     /// `audit_rule_fieldpair_data` does not validate the operator for them
@@ -71,7 +77,7 @@ pub enum FieldType {
 /// - `Pid`: fieldtab.h:24 `AUDIT_PID=0`; libaudit.c:2006 strtol default
 /// - `Ppid`: fieldtab.h:43 `AUDIT_PPID`; libaudit.c:2003 ppid+default strtol
 /// - `Pers`: fieldtab.h:35 `AUDIT_PERS=10`; libaudit.c default, numeric strtol
-/// - `SessionId`: fieldtab.h:49 `AUDIT_SESSIONID=25`; libaudit.c:1966, numeric strtoul
+/// - `SessionId`: fieldtab.h:49 `AUDIT_SESSIONID=25`; libaudit.c:1966-1984 u32 strtoul + `unset`/`4294967295` sentinel (#270 AUD-3)
 /// - `DevMajor`: fieldtab.h:51 `AUDIT_DEVMAJOR=100`; libaudit.c:1991 range, numeric
 /// - `DevMinor`: fieldtab.h:52 `AUDIT_DEVMINOR=101`; libaudit.c:1991 range, numeric
 /// - `Success`: fieldtab.h:55 `AUDIT_SUCCESS=104`; libaudit.c:1992 range fallthrough
@@ -114,12 +120,11 @@ pub enum FieldType {
 pub fn field_type(field: &AuditField) -> FieldType {
     match field {
         // Numeric (full relational + bitmask): no op restriction in libaudit.c
-        // fieldtab.h lines: Pid:24, Ppid:43, Pers:35, SessionId:49, DevMajor:51,
+        // fieldtab.h lines: Pid:24, Ppid:43, Pers:35, DevMajor:51,
         //   DevMinor:52, Success:55, A0-A3:65-68, FieldCompare:63 (unreachable in -F)
         AuditField::Pid
         | AuditField::Ppid
         | AuditField::Pers
-        | AuditField::SessionId
         | AuditField::DevMajor
         | AuditField::DevMinor
         | AuditField::Success
@@ -128,6 +133,11 @@ pub fn field_type(field: &AuditField) -> FieldType {
         | AuditField::A2
         | AuditField::A3
         | AuditField::FieldCompare => FieldType::Numeric,
+
+        // SessionId: fieldtab.h:49 AUDIT_SESSIONID=25; libaudit.c:1966-1984 -- a
+        // u32 with the unset/-1/4294967295 sentinel (like uid/gid) but no name
+        // resolution (#270 AUD-3).
+        AuditField::SessionId => FieldType::SessionId,
 
         // Uid (user-id resolution): fieldtab.h:25-34,61; libaudit.c:1721-1747
         AuditField::Uid

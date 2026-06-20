@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Block;
+use crate::ast::{Block, Directive};
 use crate::lints::{SshdLintContext, anchored, registry};
 
 /// Keywords sshd accumulates (unions) across multiple lines rather than
@@ -211,19 +211,32 @@ pub fn e01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
     diags
 }
 
-/// sshd-E02: duplicate global directive (sshd's first-value-wins silently shadows
-/// the later line for most keywords).
+/// sshd-E02: duplicate directive (sshd's first-value-wins silently shadows the
+/// later line for most keywords).
 ///
-/// TODO(#149, Wave A): pure structural; no baseline data needed.
+/// Checked in the global block AND, independently, within each Match block: each
+/// scope is its own first-value-wins namespace. So a global directive overridden
+/// inside a Match block is NOT a duplicate (that override is the intended
+/// mechanism), and the same keyword repeated across two DIFFERENT Match blocks is
+/// left to #302 (it needs Match-criteria overlap analysis to avoid false
+/// positives on the normal non-overlapping pattern).
 #[must_use]
 pub fn e02(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
-    // Wave A scopes E02 to the global (pre-Match) block, matching the catalog's
-    // "duplicate global directive". `blocks[0]` is always the global block.
-    let Some(Block::Global(directives)) = blocks.first() else {
-        return Vec::new();
-    };
-
     let mut diags = Vec::new();
+    for block in blocks {
+        let directives = match block {
+            Block::Global(directives) => directives,
+            Block::Match(match_block) => &match_block.body,
+        };
+        e02_scan_scope(directives, file, &mut diags);
+    }
+    diags
+}
+
+/// Flag first-value-wins duplicates within a SINGLE directive scope (the global
+/// block or one Match body). A fresh `seen` set per call keeps each scope
+/// independent, so a duplicate never crosses a scope boundary.
+fn e02_scan_scope(directives: &[Directive], file: &Path, diags: &mut Vec<Diagnostic>) {
     let mut seen: HashSet<String> = HashSet::new();
     for directive in directives {
         let keyword = directive.keyword_lower();
@@ -251,7 +264,6 @@ pub fn e02(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             ));
         }
     }
-    diags
 }
 
 /// The key that decides whether a global directive is a first-value-wins
@@ -260,7 +272,7 @@ pub fn e02(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
 /// first-value-wins for the SAME name (verified via `sshd -T`), so it keys on
 /// `subsystem` plus the name (its first, case-sensitive argument). Returns `None`
 /// for a `Subsystem` line with no name (nothing to shadow).
-fn e02_dedup_key(keyword: &str, directive: &crate::ast::Directive) -> Option<String> {
+fn e02_dedup_key(keyword: &str, directive: &Directive) -> Option<String> {
     if keyword == "subsystem" {
         let name = directive.args.first()?;
         // NUL separates the keyword from the name: it cannot appear in a parsed
@@ -1220,7 +1232,8 @@ mod e04_tests {
 
 #[cfg(test)]
 mod e02_tests {
-    //! sshd-E02: duplicate global directive (first-value-wins shadow).
+    //! sshd-E02: duplicate directive (first-value-wins shadow), in the global
+    //! block and within each Match block (#247).
     //!
     //! # Grounding (`sshd_config(5)`, OpenSSH 10.2p1)
     //! DESCRIPTION: "Unless noted otherwise, for each keyword, the first obtained
@@ -1310,18 +1323,29 @@ mod e02_tests {
 
     #[test]
     fn global_and_match_same_keyword_is_not_a_duplicate() {
-        // E02 is global-scope only: a Match override of a global keyword is the
-        // intended mechanism, not a duplicate (follow-up issue tracks intra-Match
-        // duplicate detection).
+        // A Match override of a global keyword is the intended mechanism, not a
+        // duplicate: each scope (global vs a Match body) dedups independently, so
+        // a global directive plus a differing Match value stays clean.
         let src = "PasswordAuthentication yes\nMatch User bob\n    PasswordAuthentication no\n";
         assert!(run(src).is_empty());
     }
 
     #[test]
-    fn duplicate_inside_match_body_is_not_e02_in_wave_a() {
-        // Intra-Match duplicates are out of Wave-A scope (tracked as a follow-up).
+    fn duplicate_inside_match_body_is_flagged() {
+        // #247: within ONE Match block, first-value-wins shadows the later line,
+        // exactly like the global block (live-confirmed on rocky9, OpenSSH 9.9p1).
         let src = "Match User bob\n    PasswordAuthentication yes\n    PasswordAuthentication no\n";
-        assert!(run(src).is_empty(), "Wave A scopes E02 to the global block");
+        let diags = run(src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "the shadowed intra-Match line fires one sshd-E02"
+        );
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(
+            diags[0].line, 3,
+            "the LATER (shadowed) line inside the Match body"
+        );
     }
 
     #[test]
@@ -1346,6 +1370,96 @@ mod e02_tests {
         // Subsystem names are case-sensitive arguments: `sftp` and `SFTP` are two
         // different subsystems, not a shadow.
         assert!(run("Subsystem sftp /a\nSubsystem SFTP /b\n").is_empty());
+    }
+
+    // ---- #247: intra-Match-block duplicate detection ----
+
+    #[test]
+    fn allow_repeat_keyword_inside_match_is_not_flagged() {
+        // AcceptEnv accumulates inside a Match body too (live rocky9: both LANG
+        // and LC_ALL are retained), so a repeat is legitimate, not a shadow.
+        let src = "Match User bob\n    AcceptEnv LANG\n    AcceptEnv LC_ALL\n";
+        assert!(
+            run(src).is_empty(),
+            "allow-repeat keywords accumulate inside a Match body"
+        );
+    }
+
+    #[test]
+    fn subsystem_repeated_same_name_inside_match_is_flagged() {
+        // Same name-keyed first-value-wins rule as the global block, applied
+        // within a Match body.
+        let src = "Match User bob\n    Subsystem sftp /a\n    Subsystem sftp /b\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(diags[0].line, 3);
+    }
+
+    #[test]
+    fn subsystem_different_names_inside_match_is_clean() {
+        assert!(run("Match User bob\n    Subsystem sftp /a\n    Subsystem backup /b\n").is_empty());
+    }
+
+    #[test]
+    fn cross_match_block_duplicate_is_not_flagged() {
+        // Deferred to #302: two NON-overlapping Match blocks setting the same
+        // keyword are the normal pattern and are not both-applied to one
+        // connection, so flagging them would be a false positive. Each Match body
+        // is its own first-value-wins scope.
+        let src = "Match User alice\n    X11Forwarding yes\nMatch User bob\n    X11Forwarding no\n";
+        assert!(
+            run(src).is_empty(),
+            "cross-Match-block duplicates are out of scope (#302)"
+        );
+    }
+
+    #[test]
+    fn match_scope_is_independent_of_global() {
+        // The global directive plus the FIRST Match value is the intended override
+        // (clean); only the repeat WITHIN the Match body shadows.
+        let src = "PasswordAuthentication yes\n\
+                   Match User bob\n    PasswordAuthentication no\n    PasswordAuthentication yes\n";
+        let diags = run(src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the intra-Match duplicate fires, not the global-vs-Match override"
+        );
+        assert_eq!(diags[0].line, 4, "the shadowed line inside the Match body");
+    }
+
+    #[test]
+    fn each_match_block_has_its_own_dedup_scope() {
+        // A fresh `seen` set per block: a dup in block A and a dup in block B each
+        // fire once.
+        let src = "Match User alice\n    X11Forwarding yes\n    X11Forwarding no\n\
+                   Match User bob\n    AllowTcpForwarding yes\n    AllowTcpForwarding no\n";
+        let diags = run(src);
+        let lines: Vec<usize> = diags.iter().map(|d| d.line).collect();
+        assert_eq!(lines, vec![3, 6], "each Match body dedups independently");
+    }
+
+    #[test]
+    fn nameless_subsystem_inside_match_does_not_poison_named_dup() {
+        // A nameless `Subsystem` inside a Match body has no name to key on
+        // (`e02_dedup_key` -> None) so it is skipped, and it must not swallow a
+        // genuine same-name Subsystem duplicate in the same scope.
+        let src = "Match User bob\n    Subsystem\n    Subsystem sftp /a\n    Subsystem sftp /b\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1, "only the genuine same-name dup fires");
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(diags[0].line, 4);
+    }
+
+    #[test]
+    fn keyword_dedup_inside_match_is_case_insensitive() {
+        // Keyword matching is case-insensitive inside a Match body too.
+        let src = "Match User bob\n    permitrootlogin no\n    PermitRootLogin yes\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-E02");
+        assert_eq!(diags[0].line, 3);
     }
 }
 

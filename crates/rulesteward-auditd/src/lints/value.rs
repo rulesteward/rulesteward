@@ -8,16 +8,17 @@
 //! disjointness. This module is the single place that decides what a value
 //! "means", so the two lints can never disagree on value identity.
 //!
-//! # The uid/gid "unset" sentinel
-//! libaudit treats uid/gid as `uid_t`/`gid_t`, which are `u32`. The value `-1`
-//! is the conventional "unset" sentinel; cast to `u32` it is `4294967295`
-//! (`u32::MAX`), and libaudit's symbolic name for it is `unset`. So for
-//! [`FieldType::Uid`]/[`FieldType::Gid`] the three spellings `-1`,
-//! `4294967295`, and `unset` denote the IDENTICAL kernel value and fold to one
-//! ([`FieldValue::UidGidUnset`]). This equivalence is uid/gid-ONLY: a
-//! `pid=4294967295` (`FieldType::Numeric`) is a concrete pid and an
-//! `exit=4294967295` (`FieldType::NumericSigned`) is a concrete signed value;
-//! neither folds.
+//! # The uid/gid/sessionid "unset" sentinel
+//! libaudit treats uid/gid as `uid_t`/`gid_t`, and sessionid as a session id,
+//! all `u32`. The value `-1` is the conventional "unset" sentinel; cast to
+//! `u32` it is `4294967295` (`u32::MAX`), and libaudit's symbolic name for it is
+//! `unset`. So for [`FieldType::Uid`]/[`FieldType::Gid`]/[`FieldType::SessionId`]
+//! the three spellings `-1`, `4294967295`, and `unset` denote the IDENTICAL
+//! kernel value and fold to one ([`FieldValue::UidGidUnset`]). This equivalence
+//! is those id fields ONLY: a `pid=4294967295` (`FieldType::Numeric`) is a
+//! concrete pid and an `exit=4294967295` (`FieldType::NumericSigned`) is a
+//! concrete signed value; neither folds. (sessionid takes the sentinel but,
+//! unlike uid/gid, has no name resolution; libaudit.c:1966-1984 @ 3bfa048, #270.)
 //!
 //! # Numeric spellings (base-0, #229)
 //! Numeric fields parse their value with C `strtoul`/`strtol` base 0, matching
@@ -44,8 +45,8 @@ use crate::lints::field_type::{FieldType, field_type};
 /// The typed interpretation of a `-F` value string, under its field's type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldValue {
-    /// The uid/gid "unset" sentinel: `-1`, `4294967295`, or `unset` on a
-    /// [`FieldType::Uid`]/[`FieldType::Gid`] field.
+    /// The uid/gid/sessionid "unset" sentinel: `-1`, `4294967295`, or `unset` on
+    /// a [`FieldType::Uid`]/[`FieldType::Gid`]/[`FieldType::SessionId`] field.
     UidGidUnset,
     /// A concrete value on the SIGNED integer line (`exit`, which takes a
     /// negative errno).
@@ -128,14 +129,15 @@ fn parse_i64_base0(s: &str) -> Option<i64> {
 pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
     let v = raw.trim();
     match ft {
-        FieldType::Uid | FieldType::Gid => {
+        FieldType::Uid | FieldType::Gid | FieldType::SessionId => {
             if v.eq_ignore_ascii_case("unset") || v == "-1" {
                 return FieldValue::UidGidUnset;
             }
-            // libaudit parses uid/gid with strtoul base 0 (#229): hex/octal/
-            // decimal all accepted. Narrow to u32 (anything above is not a valid
-            // uid/gid -> opaque); u32::MAX is the sentinel; usernames and
-            // malformed numbers fail the parse and stay opaque.
+            // libaudit parses uid/gid/sessionid with strtoul base 0 (#229):
+            // hex/octal/decimal all accepted. Narrow to u32 (anything above is
+            // not a valid id -> opaque); u32::MAX is the sentinel; usernames and
+            // malformed numbers fail the parse and stay opaque. sessionid shares
+            // this u32 unset sentinel but has no name resolution (#270 AUD-3).
             match parse_u64_base0(v).and_then(|n| u32::try_from(n).ok()) {
                 Some(u32::MAX) => FieldValue::UidGidUnset,
                 Some(n) => FieldValue::Unsigned(u64::from(n)),
@@ -706,6 +708,72 @@ mod tests {
         assert_eq!(
             classify(ft(AuditField::Uid), "0xFFFFFFFF"),
             FieldValue::UidGidUnset
+        );
+    }
+
+    // --- classify: sessionid sentinel (#270 AUD-3) ----------------------
+
+    #[test]
+    fn sessionid_sentinel_spellings_all_classify_unset() {
+        // libaudit maps sessionid=unset -> 4294967295 (libaudit.c:1983-84 @
+        // 3bfa048); -1 and 0xFFFFFFFF denote the same u32 sentinel, exactly like
+        // uid/gid (#270 AUD-3, Q2: -1 folds too).
+        for s in ["-1", "4294967295", "0xFFFFFFFF", "unset", "UNSET", "Unset"] {
+            assert_eq!(
+                classify(ft(AuditField::SessionId), s),
+                FieldValue::UidGidUnset,
+                "sessionid value {s:?} must be the unset sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn sessionid_concrete_values_classify_unsigned() {
+        assert_eq!(
+            classify(ft(AuditField::SessionId), "0"),
+            FieldValue::Unsigned(0)
+        );
+        assert_eq!(
+            classify(ft(AuditField::SessionId), "5"),
+            FieldValue::Unsigned(5)
+        );
+        // u32::MAX-1 is concrete (only u32::MAX itself is the sentinel).
+        assert_eq!(
+            classify(ft(AuditField::SessionId), "4294967294"),
+            FieldValue::Unsigned(4_294_967_294)
+        );
+    }
+
+    #[test]
+    fn sessionid_out_of_range_and_nonnumeric_are_opaque() {
+        // sessionid is a u32: above u32::MAX is not valid -> opaque (no wrap), and
+        // sessionid has no name resolution, so a name token is opaque too.
+        assert_eq!(
+            classify(ft(AuditField::SessionId), "4294967296"),
+            FieldValue::Opaque
+        );
+        assert_eq!(
+            classify(ft(AuditField::SessionId), "abc"),
+            FieldValue::Opaque
+        );
+    }
+
+    #[test]
+    fn sessionid_canonical_folds_sentinel_but_pid_does_not() {
+        // All three sessionid sentinel spellings canonicalize to "unset" so
+        // au-W01/au-W02 treat them as one value...
+        for s in ["-1", "4294967295", "unset"] {
+            assert_eq!(
+                canonical_value(ft(AuditField::SessionId), s),
+                "unset",
+                "sessionid {s:?} must canonicalize to the sentinel"
+            );
+        }
+        // ...while pid (plain Numeric) keeps 4294967295 as a concrete value: the
+        // fold is sessionid-specific, not generic Numeric.
+        assert_eq!(
+            canonical_value(ft(AuditField::Pid), "4294967295"),
+            "4294967295"
         );
     }
 
