@@ -125,6 +125,21 @@ pub struct MangenArgs {
 #[derive(Debug, Subcommand)]
 pub enum FapolicydCommand {
     /// Lint fapolicyd rule files (unprivileged, no daemon)
+    #[command(after_long_help = r"Examples:
+  # Lint the default rules.d/ (/etc/fapolicyd/rules.d/), human output
+  rulesteward fapolicyd lint
+
+  # Lint a specific rules.d/ directory
+  rulesteward fapolicyd lint /etc/fapolicyd/rules.d
+
+  # Lint a single rules file
+  rulesteward fapolicyd lint --file 50-myrules.rules
+
+  # SARIF 2.1.0 with per-check pass coverage, version-aware for RHEL 9
+  rulesteward fapolicyd lint --format sarif --sarif-include-pass --target rhel9
+
+  # Cross-check path=/exe= against a trust DB and report unreferenced entries
+  rulesteward fapolicyd lint --against-trustdb /var/lib/fapolicyd/trust.db --report-orphans")]
     Lint(LintArgs),
     /// Simulate a workload against a rule set (which rule decides each access)
     ///
@@ -136,6 +151,15 @@ pub enum FapolicydCommand {
     /// by presence, but the daemon's runtime `integrity` re-check (sha256 / size)
     /// can still mark an on-disk-modified file untrusted at exec time. `--trustdb`
     /// resolves trust the workload omits (workload-supplied trust always wins).
+    #[command(after_long_help = r"Examples:
+  # Replay a workload against a rules.d/ directory
+  rulesteward fapolicyd simulate --rules /etc/fapolicyd/rules.d --workload accesses.txt
+
+  # Read the workload from stdin
+  cat accesses.txt | rulesteward fapolicyd simulate --rules /etc/fapolicyd/rules.d --workload -
+
+  # Resolve trust the workload omits from a read-only trust DB, JSON output
+  rulesteward fapolicyd simulate --rules /etc/fapolicyd/rules.d --workload accesses.txt --trustdb /var/lib/fapolicyd/trust.db --format json")]
     Simulate(SimulateArgs),
     /// Explain a FANOTIFY denial from the audit log
     Explain(ExplainArgs),
@@ -158,6 +182,18 @@ pub enum FapolicydCommand {
     /// present stops the daemon starting). Read-only by default (dry-run);
     /// `--apply` writes the drop-in and MOVES (removes) the legacy file;
     /// `--delete-legacy` is required only to migrate a dir that already has both.
+    #[command(after_long_help = r"Examples:
+  # Dry-run: show the plan migrating a RHEL 8 ruleset to RHEL 9 (changes nothing)
+  rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd
+
+  # Apply: write rules.d/99-migrated.rules and MOVE (remove) the legacy file
+  rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd --apply
+
+  # Apply when the dir already has BOTH fapolicyd.rules and rules.d/ (coexistence trap)
+  rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd --apply --delete-legacy
+
+  # Dry-run plus a standalone markdown migration report
+  rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd --report migration.md")]
     Migrate(MigrateArgs),
     /// Run a composite health check on a live fapolicyd deployment.
     ///
