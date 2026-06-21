@@ -4,5 +4,5 @@ expression: rendered
 ---
 parse=ok
 diagnostics=2
-[fapd-W03] sev=Warning line=1 col=29 span=28..42 :: inline `# comment` after a rule line - fapolicyd silently drops this rule
-[fapd-W03] sev=Warning line=2 col=29 span=71..86 :: inline `# comment` after a rule line - fapolicyd silently drops this rule
+[fapd-W03] sev=Warning line=1 col=29 span=28..42 :: inline `# comment` after a rule - fapolicyd treats trailing `#` as a rule field (not a comment) and logs a parse error, though the rule still loads
+[fapd-W03] sev=Warning line=2 col=29 span=71..86 :: inline `# comment` after a rule - fapolicyd treats trailing `#` as a rule field (not a comment) and logs a parse error, though the rule still loads

@@ -30,12 +30,15 @@ pub(crate) fn walk(
 
 /// fapd-W07 - deprecated `sha256hash=` attribute name. fapolicyd 1.4.2
 /// introduced `filehash=` as the canonical name for the same SHA-256 hex
-/// digest; the older `sha256hash=` still parses but is no longer the preferred
-/// spelling. Per-attribute scan: emit one fapd-W07 (`Severity::Warning`, not
-/// Error) for each `Attr::Kv` whose key is literally `sha256hash`. A rule with
-/// two such attrs emits two fapd-W07s. The value is NOT inspected here -
-/// value-shape validation (64 hex chars) is fapd-E02's concern and runs
-/// independently.
+/// digest; `sha256hash=` is accepted as a `FILE_HASH` alias and still loads
+/// (it is NOT rejected). The daemon emits the deprecation notice only ONCE PER
+/// START (`object-attr.c:47-59`, guarded by a `static bool warned`), so it
+/// cannot point at each offending rule. We deliberately diverge and fire
+/// per-attribute instead, so every occurrence is surfaced: emit one fapd-W07
+/// (`Severity::Warning`, not Error) for each `Attr::Kv` whose key is literally
+/// `sha256hash`. A rule with two such attrs emits two fapd-W07s. The value is
+/// NOT inspected here - value-shape validation (64 hex chars) is fapd-E02's
+/// concern and runs independently.
 fn w07(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
     // sha256hash= is canonical (not deprecated) on fapolicyd 1.3.2, and filehash=
     // does not exist there, so W07 must not fire under --target rhel8.
