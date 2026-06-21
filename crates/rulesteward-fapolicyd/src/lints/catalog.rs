@@ -278,6 +278,7 @@ pub const FAPD_CODES: &[LintCode] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rulesteward_core::lint_code::{BaseLintCode, assert_catalog_invariants};
     use std::collections::BTreeSet;
 
     fn codes(inputs: EvalInputs) -> BTreeSet<&'static str> {
@@ -310,37 +311,24 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_no_duplicate_codes() {
-        let mut seen = BTreeSet::new();
-        for c in FAPD_CODES {
-            assert!(
-                seen.insert(c.code),
-                "duplicate catalog entry for {}",
-                c.code
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_severity_letter_matches_code() {
-        // The project's SELint code scheme encodes the severity tier as the
-        // letter after `fapd-` (F/E/W/S/C/X). A miscatalogued severity is a real
-        // bug for SARIF defaultConfiguration.level, so pin it.
-        for c in FAPD_CODES {
-            let letter = c
-                .code
-                .strip_prefix("fapd-")
-                .and_then(|s| s.chars().next())
-                .unwrap_or_else(|| panic!("malformed catalog code {}", c.code));
-            assert_eq!(
-                letter,
-                c.severity.letter(),
-                "{}: code letter {letter} != severity {:?} (letter {})",
-                c.code,
-                c.severity,
-                c.severity.letter(),
-            );
-        }
+    fn catalog_satisfies_shared_invariants() {
+        // Delegate the cross-backend catalog-integrity rules to the shared core
+        // helper: strictly-sorted-by-code, no duplicates, severity-letter-
+        // matches-code, AND descriptions-non-empty (the latter two of which this
+        // catalog previously did not pin). fapolicyd's `LintCode` is a superset
+        // of `BaseLintCode` - it adds the SARIF-only `condition` field - so map
+        // each entry, dropping `condition` (#306, finishing the #289
+        // de-triplication). The fapolicyd-specific membership and SARIF-condition
+        // tests stay below.
+        let base: Vec<BaseLintCode> = FAPD_CODES
+            .iter()
+            .map(|c| BaseLintCode {
+                code: c.code,
+                severity: c.severity,
+                description: c.description,
+            })
+            .collect();
+        assert_catalog_invariants(&base);
     }
 
     #[test]
