@@ -10,7 +10,10 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::parser::inline;
 
 /// fapd-W03 - inline trailing `# comment` past the first non-whitespace token.
-/// fapolicyd silently fails to parse such lines, so we warn before they hit
+/// fapolicyd does NOT treat a trailing `#` as a comment: it parses `#` as a
+/// rule field, logs a loud parse error (`rules.c:934`: "'=' is missing for
+/// field #"), and still loads the rule with the pre-`#` portion intact (the
+/// comment text is dropped, not the rule). We warn before such a line hits
 /// production.
 pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -45,7 +48,7 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
                 Severity::Warning,
                 "fapd-W03",
                 span_start..span_end,
-                "inline `# comment` after a rule line - fapolicyd silently drops this rule",
+                "inline `# comment` after a rule - fapolicyd treats trailing `#` as a rule field (not a comment) and logs a parse error, though the rule still loads",
                 file,
                 lineno,
                 hash_col_in_line + 1,

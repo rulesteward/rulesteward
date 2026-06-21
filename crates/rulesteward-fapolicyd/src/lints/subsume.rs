@@ -101,7 +101,8 @@ fn subsumes_attr(a_attr: &Attr, b_attrs: &[Attr], macro_map: &MacroMap) -> bool 
 ///
 /// Whether a `dir=` value `prefix_av` covers a `path=`/`exe=` value
 /// `target_av`. fapolicyd's `dir=` matching uses
-/// `strncmp(prefix, candidate, prefix_len)` per `attr-sets.c:124-129` (fapolicyd 1.4.5); it is
+/// `strncmp(prefix, candidate, prefix_len)` per `strncmp_cb` / `check_pstr_attr_set` in
+/// `attr-sets.c` (fapolicyd 1.4.5); it is
 /// NOT slash-bounded. The man page `fapolicyd.rules(5):128-129` warns users to
 /// end `dir=` values with `/`. fapd-W01 mimics fapolicyd's actual behavior; a
 /// future fapd-W08 will lint the missing-trailing-slash footgun.
