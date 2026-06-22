@@ -14,7 +14,10 @@ use crate::output::json::render_envelope;
 use rulesteward_auditd::{
     AuditRule, Direction, LocatedRule,
     bands::{RateBand, VolumeTier, classify_rule, default_rate_band},
-    cost::{CostBand, LogFormat, compute_cost_band, compute_cost_band_banded, sum_rate_bands},
+    cost::{
+        CostBand, LogFormat, bytes_per_event, compute_cost_band, compute_cost_band_banded,
+        compute_cost_band_measured, sum_rate_bands,
+    },
     from_log::count_events_by_key,
     lints,
     parser::{parse_rules_str_located, parse_target, rules_files_in_load_order},
@@ -148,7 +151,9 @@ fn cost(args: &CostArgs) -> i32 {
     let log_format = LogFormat::Enriched; // default; --log-format flag deferred
 
     // Determine rate bands: measured (--from-log) or assumed (default bands).
-    let (rate_source, rule_bands) = if let Some(log_path) = &args.from_log {
+    // In measured mode we also carry the per-key on-disk byte totals (#307) so the
+    // total can be sized by the log's real average bytes/event, not the flat 1200.
+    let (rate_source, rule_bands, measured_bytes) = if let Some(log_path) = &args.from_log {
         // --from-log: measure real per-key rates from an audit log.
         let measured = match count_events_by_key(log_path) {
             Ok(m) => m,
@@ -161,12 +166,18 @@ fn cost(args: &CostArgs) -> i32 {
                 return EXIT_TOOL_FAILURE;
             }
         };
-        let bands = build_rule_entries_from_log(&rules, &measured.counts, log_format, price_per_gb);
-        (RateSource::Measured, bands)
+        let bands = build_rule_entries_from_log(
+            &rules,
+            &measured.counts,
+            &measured.bytes,
+            log_format,
+            price_per_gb,
+        );
+        (RateSource::Measured, bands, Some(measured.bytes))
     } else {
         // No --from-log: use the default assumed rate bands (f3 section 6).
         let bands = build_rule_entries_assumed(&rules, log_format, price_per_gb);
-        (RateSource::Assumed, bands)
+        (RateSource::Assumed, bands, None)
     };
 
     // Sum all additive bands.
@@ -176,25 +187,69 @@ fn cost(args: &CostArgs) -> i32 {
         .map(|e| e.rate_band.clone())
         .collect();
     let total_rate = sum_rate_bands(&additive_bands);
-    // The ASSUMED-rate total folds the per-event byte-size band (#112) into its
-    // low/high edges; the MEASURED --from-log total keeps a single typical byte so
-    // an exact measured count is not re-widened by a byte-size assumption.
-    let total_cost = match rate_source {
-        RateSource::Assumed => compute_cost_band_banded(&total_rate, log_format, price_per_gb),
-        RateSource::Measured => compute_cost_band(&total_rate, log_format, price_per_gb),
+
+    // Total cost + the bytes/event figure surfaced in the output:
+    // - ASSUMED: the total folds the per-event byte-size band (#112) into its
+    //   low/high edges; the reported scalar stays the locked bytes_per_event.
+    // - MEASURED (#307): the total is sized by the log's real average bytes/event
+    //   (summed additive on-disk bytes / summed additive events), keeping the
+    //   collapsed band (an exact count is not re-widened) while the VALUE moves off
+    //   the flat 1200. The reported scalar is that average, rounded.
+    let (displayed_bytes_per_event, total_cost) = match rate_source {
+        RateSource::Assumed => (
+            bytes_per_event(log_format),
+            compute_cost_band_banded(&total_rate, log_format, price_per_gb),
+        ),
+        RateSource::Measured => {
+            let bytes_map = measured_bytes
+                .as_ref()
+                .expect("measured mode always carries per-key bytes");
+            // Sum the on-disk bytes of the ADDITIVE rules only (suppressive rules
+            // contribute zero volume, mirroring total_rate which excludes them).
+            #[allow(clippy::cast_precision_loss)]
+            let total_additive_bytes: f64 = rule_bands
+                .iter()
+                .filter(|e| e.direction == Direction::Additive)
+                .map(|e| bytes_map.get(&e.key).copied().unwrap_or(0) as f64)
+                .sum();
+            // total_rate.typical is the summed additive event count (each additive
+            // band is a collapsed point estimate with typical == counts[key]).
+            let total_additive_events = total_rate.typical;
+            // The else cast (u64 -> f64) is the only cast here; the if branch is
+            // f64/f64. Scope the allow to the whole `let`.
+            #[allow(clippy::cast_precision_loss)]
+            let overall_bpe = if total_additive_events > 0.0 {
+                total_additive_bytes / total_additive_events
+            } else {
+                // No measured additive events => cost is 0 regardless of size; fall
+                // back to the locked scalar so the reported field stays sensible.
+                bytes_per_event(log_format) as f64
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let displayed = overall_bpe.round() as u64;
+            (
+                displayed,
+                compute_cost_band_measured(&total_rate, overall_bpe, price_per_gb),
+            )
+        }
     };
 
     // Render output.
     let output = match args.format {
-        HumanJsonCsvFormat::Human => {
-            render_human(&rule_bands, &total_cost, price_per_gb, rate_source)
-        }
+        HumanJsonCsvFormat::Human => render_human(
+            &rule_bands,
+            &total_cost,
+            price_per_gb,
+            rate_source,
+            displayed_bytes_per_event,
+        ),
         HumanJsonCsvFormat::Json => render_json(
             &rule_bands,
             &total_cost,
             price_per_gb,
             log_format,
             rate_source,
+            displayed_bytes_per_event,
         ),
         // CSV is the flat per-rule table ONLY; totals stay in JSON/human (#64).
         HumanJsonCsvFormat::Csv => render_csv_cost(&rule_bands),
@@ -252,10 +307,16 @@ fn build_rule_entries_assumed(rules: &[AuditRule], fmt: LogFormat, price: f64) -
         .collect()
 }
 
-/// Build rule entries using measured per-key event counts from --from-log.
+/// Build rule entries using measured per-key event counts + on-disk bytes from
+/// --from-log (#307). Each additive rule is sized by ITS OWN key's measured
+/// average bytes/event (`key_bytes / key_events`), not the flat 1200 scalar, so
+/// execve-heavy keys are no longer under-counted. `bytes[key]` already includes
+/// the companion PATH/CWD/EOE record bytes of each event (aggregated by serial in
+/// `count_events_by_key`).
 fn build_rule_entries_from_log(
     rules: &[AuditRule],
     counts: &std::collections::HashMap<Option<String>, u64>,
+    bytes: &std::collections::HashMap<Option<String>, u64>,
     fmt: LogFormat,
     price: f64,
 ) -> Vec<RuleEntry> {
@@ -280,7 +341,20 @@ fn build_rule_entries_from_log(
                     high: measured_events,
                 }
             };
-            let cost = compute_cost_band(&band, fmt, price);
+            // Measured average bytes/event for this key: key_bytes / key_events.
+            // When the key has no measured events the band is ZERO (cost 0 either
+            // way), so fall back to the locked scalar to avoid a 0/0.
+            #[allow(clippy::cast_precision_loss)]
+            let measured_bpe = {
+                let key_events = counts.get(&key).copied().unwrap_or(0) as f64;
+                let key_bytes = bytes.get(&key).copied().unwrap_or(0) as f64;
+                if key_events > 0.0 {
+                    key_bytes / key_events
+                } else {
+                    bytes_per_event(fmt) as f64
+                }
+            };
+            let cost = compute_cost_band_measured(&band, measured_bpe, price);
             RuleEntry {
                 rule_text: fmt_rule(rule),
                 key: key.clone(),
@@ -297,16 +371,22 @@ fn build_rule_entries_from_log(
 // Human renderer
 // ---------------------------------------------------------------------------
 
-fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: RateSource) -> String {
-    use rulesteward_auditd::cost::{bytes_per_event, bytes_per_event_band};
+fn render_human(
+    entries: &[RuleEntry],
+    total: &CostBand,
+    price: f64,
+    source: RateSource,
+    bytes_per_event: u64,
+) -> String {
+    use rulesteward_auditd::cost::bytes_per_event_band;
 
     let mut out = String::new();
     // ENRICHED is the only reachable log format today (RAW deferred). The header
-    // describes the per-event byte assumption: in ASSUMED mode the total folds the
-    // full byte band (#112) into its low/high edges, so name the band (otherwise a
-    // reader manually checking the arithmetic is surprised the GB/day band is wider
-    // than ~1200 alone implies). In MEASURED mode the total uses the single typical
-    // byte, so name only that.
+    // describes the per-event byte basis: in ASSUMED mode the total folds the full
+    // byte band (#112) into its low/high edges, so name the band (otherwise a reader
+    // manually checking the arithmetic is surprised the GB/day band is wider than
+    // ~1200 alone implies). In MEASURED mode the size is the log's real average
+    // (#307), so name that measured figure.
     let byte_note = match source {
         RateSource::Assumed => {
             let b = bytes_per_event_band(LogFormat::Enriched);
@@ -315,7 +395,7 @@ fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: Rat
                 b.typical, b.low, b.high
             )
         }
-        RateSource::Measured => format!("~{} B/event", bytes_per_event(LogFormat::Enriched)),
+        RateSource::Measured => format!("~{bytes_per_event} B/event measured"),
     };
     writeln!(
         out,
@@ -398,10 +478,11 @@ fn render_human(entries: &[RuleEntry], total: &CostBand, price: f64, source: Rat
     let confidence_msg = match source {
         RateSource::Assumed => {
             "rates are ASSUMPTIONS (no --from-log). Supply --from-log /var/log/audit/audit.log\n            to replace assumed rates with this host's measured per-key event rates."
+                .to_string()
         }
-        RateSource::Measured => {
-            "rates are MEASURED from --from-log (per-event SIZE still assumed\n            ~1200 B/event, so execve-heavy logs are under-counted)"
-        }
+        RateSource::Measured => format!(
+            "rates are MEASURED from --from-log (per-event SIZE measured from the\n            log, ~{bytes_per_event} B/event average across counted events)"
+        ),
     };
     writeln!(out, "CONFIDENCE: {confidence_msg}").unwrap();
 
@@ -474,12 +555,11 @@ fn render_json(
     price: f64,
     fmt: LogFormat,
     source: RateSource,
+    bytes_per_event: u64,
 ) -> String {
-    use rulesteward_auditd::cost::bytes_per_event;
-
     let confidence = match source {
         RateSource::Assumed => "rates assumed; supply --from-log to measure",
-        RateSource::Measured => "rates measured from --from-log",
+        RateSource::Measured => "rates and per-event size measured from --from-log",
     };
     let rate_source_str = match source {
         RateSource::Assumed => "assumed",
@@ -494,7 +574,7 @@ fn render_json(
         assumptions: Assumptions {
             price_per_gb: price,
             currency: "USD",
-            bytes_per_event: bytes_per_event(fmt),
+            bytes_per_event,
             log_format: log_format_str,
             rate_source: rate_source_str,
         },

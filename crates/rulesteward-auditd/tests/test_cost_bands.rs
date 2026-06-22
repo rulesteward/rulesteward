@@ -18,7 +18,7 @@ use rulesteward_auditd::{
     bands::{classify_rule, default_rate_band},
     cost::{
         bytes_per_event, bytes_per_event_band, compute_cost_band, compute_cost_band_banded,
-        sum_rate_bands,
+        compute_cost_band_measured, sum_rate_bands,
     },
 };
 
@@ -329,6 +329,64 @@ fn compute_cost_band_banded_widens_low_high_keeps_typical() {
     assert!(
         banded.gb_per_day.high > single.gb_per_day.high,
         "banded high must exceed single-byte high (byte high 2300 > 1200)"
+    );
+}
+
+/// `compute_cost_band_measured` (issue #307) sizes every edge by the PASSED-IN
+/// measured bytes/event, not the locked 1200 scalar. With a collapsed rate band
+/// (an exact --from-log event count) the cost band stays collapsed
+/// (low==typical==high), so a measured count is never re-widened by a byte
+/// assumption. A measured 2300 B/event (real execve average) yields a strictly
+/// higher cost than the flat-1200 `compute_cost_band` path on the same rate, and
+/// measuring at exactly 1200 reproduces that flat path (the delegation invariant).
+#[test]
+fn compute_cost_band_measured_uses_passed_bytes_and_stays_collapsed() {
+    // Exact event count from a measured log => collapsed rate band.
+    let rate = RateBand {
+        low: 10_000.0,
+        typical: 10_000.0,
+        high: 10_000.0,
+    };
+    let measured = compute_cost_band_measured(&rate, 2_300.0, 5.00);
+
+    // gb/day = events * measured_bpe / 1e9 on the typical edge.
+    let expected_gb_typical = 10_000.0 * 2_300.0 / 1_000_000_000.0;
+    assert!(
+        (measured.gb_per_day.typical - expected_gb_typical).abs() < 1e-12,
+        "typical gb/day must be events*measured_bpe/1e9; got {} want {}",
+        measured.gb_per_day.typical,
+        expected_gb_typical
+    );
+
+    // Collapsed: a measured exact count must NOT re-widen the band.
+    assert!(
+        (measured.gb_per_day.low - measured.gb_per_day.typical).abs() < 1e-12
+            && (measured.gb_per_day.high - measured.gb_per_day.typical).abs() < 1e-12,
+        "measured gb band must stay collapsed (low==typical==high)"
+    );
+    assert!(
+        (measured.cost_per_month_usd.low - measured.cost_per_month_usd.typical).abs() < 1e-12
+            && (measured.cost_per_month_usd.high - measured.cost_per_month_usd.typical).abs()
+                < 1e-12,
+        "measured cost band must stay collapsed (low==typical==high)"
+    );
+
+    // The byte arg is actually used: 2300 B/event costs strictly more than the
+    // flat 1200 B/event `compute_cost_band` path on the same rate.
+    let flat = compute_cost_band(&rate, LogFormat::Enriched, 5.00);
+    assert!(
+        measured.cost_per_month_usd.typical > flat.cost_per_month_usd.typical,
+        "measured 2300 B/event must exceed flat 1200 B/event; measured={} flat={}",
+        measured.cost_per_month_usd.typical,
+        flat.cost_per_month_usd.typical
+    );
+
+    // Delegation invariant: measuring at exactly the locked 1200 reproduces the
+    // flat ENRICHED path (compute_cost_band must delegate to this fn).
+    let measured_1200 = compute_cost_band_measured(&rate, 1_200.0, 5.00);
+    assert!(
+        (measured_1200.cost_per_month_usd.typical - flat.cost_per_month_usd.typical).abs() < 1e-9,
+        "measured(1200) must equal the flat ENRICHED compute_cost_band path"
     );
 }
 

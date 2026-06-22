@@ -270,3 +270,100 @@ fn empty_log_returns_empty_counts() {
         "no SYSCALL records should yield empty or all-zero counts"
     );
 }
+
+// --------------------------------------------------------------------------
+// Per-key on-disk BYTE aggregation (#307): measured-mode actual-byte sizing
+// --------------------------------------------------------------------------
+
+/// An audit "event" is a SYSCALL plus its companion PATH/CWD/EOE records sharing
+/// one serial. Only the SYSCALL record carries `key=`; the companions do NOT.
+/// The per-key BYTE total (#307) must sum the on-disk bytes of EVERY record
+/// sharing the serial -- including the key-less companions -- and attribute them
+/// to the event's key.
+///
+/// ADVERSARIAL TRAP: a naive "sum bytes of lines where key=X" drops the
+/// companion (PATH/CWD/EOE) bytes and re-introduces the ~6-20% undercount #307
+/// fixes. The correct impl groups ALL lines by serial first, then attributes the
+/// whole serial-group's bytes to the key read off the key-bearing record.
+#[test]
+fn measured_bytes_aggregate_companion_records_under_event_key() {
+    use std::io::Write as _;
+
+    // One event, serial 700: SYSCALL carries key="exec"; PATH/CWD/EOE do NOT.
+    let syscall = "type=SYSCALL msg=audit(1780453442.924:700): arch=c000003e \
+         syscall=59 success=yes exit=0 comm=\"true\" exe=\"/usr/bin/true\" key=\"exec\"";
+    let path_rec = "type=PATH msg=audit(1780453442.924:700): item=0 \
+         name=\"/usr/bin/true\" inode=42 mode=0100755";
+    let cwd_rec = "type=CWD msg=audit(1780453442.924:700): cwd=\"/home/user\"";
+    let eoe_rec = "type=EOE msg=audit(1780453442.924:700):";
+
+    let mut tmp = tempfile::NamedTempFile::new().expect("tmp file");
+    for line in [syscall, path_rec, cwd_rec, eoe_rec] {
+        writeln!(tmp, "{line}").unwrap();
+    }
+    tmp.flush().unwrap();
+
+    let rates = count_events_by_key(tmp.path()).expect("log must be readable");
+
+    // Serial-dedup: 4 records, 1 serial -> 1 event.
+    assert_eq!(
+        rates
+            .counts
+            .get(&Some("exec".to_string()))
+            .copied()
+            .unwrap_or(0),
+        1,
+        "4 records sharing serial 700 must collapse to 1 event"
+    );
+
+    // On-disk bytes: EVERY record of the serial, including the key-less
+    // PATH/CWD/EOE companions, each terminated by '\n' (len + 1).
+    let expected_bytes: u64 = [syscall, path_rec, cwd_rec, eoe_rec]
+        .iter()
+        .map(|l| l.len() as u64 + 1)
+        .sum();
+    assert_eq!(
+        rates
+            .bytes
+            .get(&Some("exec".to_string()))
+            .copied()
+            .unwrap_or(0),
+        expected_bytes,
+        "per-key bytes must sum ALL records of the serial (incl. key-less companions); \
+         a key-only sum would undercount by the PATH/CWD/EOE bytes"
+    );
+}
+
+/// Records whose serial carries NO `key=` anywhere belong to no counted event,
+/// so their bytes are excluded from every per-key total (and do not leak into the
+/// `None`/`key=(null)` bucket either).
+#[test]
+fn measured_bytes_exclude_keyless_serials() {
+    use std::io::Write as _;
+
+    let keyed = "type=SYSCALL msg=audit(1780453442.924:800): syscall=59 key=\"exec\"";
+    let noise = "type=SYSCALL msg=audit(1780453442.924:801): syscall=2"; // no key=
+
+    let mut tmp = tempfile::NamedTempFile::new().expect("tmp file");
+    writeln!(tmp, "{keyed}").unwrap();
+    writeln!(tmp, "{noise}").unwrap();
+    tmp.flush().unwrap();
+
+    let rates = count_events_by_key(tmp.path()).expect("log must be readable");
+
+    let expected = keyed.len() as u64 + 1;
+    assert_eq!(
+        rates
+            .bytes
+            .get(&Some("exec".to_string()))
+            .copied()
+            .unwrap_or(0),
+        expected,
+        "only the keyed serial 800's bytes count; the key-less serial 801 is excluded"
+    );
+    assert_eq!(
+        rates.bytes.get(&None).copied().unwrap_or(0),
+        0,
+        "a key-less serial must not land in the None bucket"
+    );
+}
