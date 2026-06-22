@@ -147,12 +147,17 @@ fn auditd_cost_json_assumed_total_folds_byte_band_schema_stable() {
     );
 }
 
-/// #112 measured-mode default: the MEASURED --from-log JSON total keeps a single
-/// typical byte (no byte-band widening), so an exact measured count yields a
-/// COLLAPSED band (gbPerDayLow == gbPerDayTypical == gbPerDayHigh). Guards the
-/// `match rate_source` wiring so a future refactor cannot silently route the
-/// measured total through the banded path.
+/// #307 measured-mode sizing: the MEASURED --from-log JSON total is sized by the
+/// log's REAL average bytes/event (not the flat 1200), and because the event count
+/// is exact the band stays COLLAPSED (gbPerDayLow == gbPerDayTypical == gbPerDayHigh).
+/// Guards both the #307 byte sizing AND the #112 collapse property (a future refactor
+/// must not route the measured total through the banded/widening path).
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn auditd_cost_json_measured_total_stays_collapsed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rules = dir.path().join("audit.rules");
@@ -189,7 +194,23 @@ fn auditd_cost_json_measured_total_stays_collapsed() {
         "rateSource must be measured under --from-log"
     );
     assert_eq!(v["schemaVersion"], 1, "schemaVersion must stay 1");
-    assert_eq!(v["assumptions"]["bytesPerEvent"], 1200);
+
+    // #307: the per-event SIZE is now MEASURED from the log, not the flat 1200.
+    // The fixture's 3 events are short single-record SYSCALLs (no companions), so
+    // bytes["exec"] == the whole file (every line is a key-bearing distinct serial,
+    // and on-disk bytes = sum of line.len()+1 = file size for a clean log). The
+    // reported bytesPerEvent is round(total_bytes / events), well below the old 1200.
+    let total_bytes = std::fs::metadata(&log).expect("stat log").len() as f64;
+    let expected_bpe = (total_bytes / 3.0).round() as u64;
+    assert_eq!(
+        v["assumptions"]["bytesPerEvent"], expected_bpe,
+        "bytesPerEvent must be the measured average (total_bytes/events), not 1200"
+    );
+    assert!(
+        expected_bpe < 1200,
+        "sanity: these short synthetic events average well under the old flat 1200 \
+         (proves the size is measured, not hardcoded); got {expected_bpe}"
+    );
 
     let totals = &v["totals"];
     let g_low = totals["gbPerDayLow"].as_f64().expect("gb low");
@@ -201,10 +222,15 @@ fn auditd_cost_json_measured_total_stays_collapsed() {
         (g_low - g_high).abs() < 1e-12 && (g_low - g_typ).abs() < 1e-12,
         "measured total band must be collapsed; low={g_low} typ={g_typ} high={g_high}"
     );
-    // Concrete value: 3 events * 1200 B / 1e9 = 3.6e-6 GB/day.
+    // Concrete value: measured total gb/day = total on-disk bytes / 1e9.
     assert!(
-        (g_typ - 3.0 * 1200.0 / 1e9).abs() < 1e-12,
-        "measured gbPerDayTypical = 3 * 1200 / 1e9; got {g_typ}"
+        (g_typ - total_bytes / 1e9).abs() < 1e-12,
+        "measured gbPerDayTypical = total_bytes / 1e9; got {g_typ}, total_bytes={total_bytes}"
+    );
+    // And it genuinely moved off the old flat-1200 total.
+    assert!(
+        (g_typ - 3.0 * 1200.0 / 1e9).abs() > 1e-12,
+        "measured total must no longer equal the flat 3*1200/1e9 figure; got {g_typ}"
     );
 }
 
@@ -262,10 +288,11 @@ fn auditd_cost_human_assumed_band_suffix_matches_json_widened() {
     );
 }
 
-/// #112: in MEASURED mode the total uses a single typical byte, so the header names
-/// only the typical (~1200 B/event) and must NOT advertise the assumed byte band.
+/// #307: in MEASURED mode the header names the log's REAL average bytes/event
+/// (measured, not the flat ~1200) and must NOT advertise the assumed byte band; the
+/// CONFIDENCE line states the per-event size is MEASURED, not still assumed.
 #[test]
-fn auditd_cost_human_measured_header_names_only_typical() {
+fn auditd_cost_human_measured_header_names_measured_size() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rules = dir.path().join("audit.rules");
     let mut rf = std::fs::File::create(&rules).expect("create rules file");
@@ -289,18 +316,216 @@ fn auditd_cost_human_measured_header_names_only_typical() {
         .assert()
         .success();
     let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
+
+    // #307: the header now names the MEASURED average byte size (the real event
+    // size), not the flat ~1200 assumption. The single short synthetic event is one
+    // key-bearing serial, so bytes["exec"] == the file size and the average == that.
+    let file_size = std::fs::metadata(&log).expect("stat log").len();
+    let expected_note = format!("~{file_size} B/event measured");
     assert!(
-        out.contains("~1200 B/event"),
-        "measured header must name the typical byte; got:\n{out}"
+        out.contains(&expected_note),
+        "measured header must name the measured average byte size ({expected_note}); got:\n{out}"
+    );
+    assert!(
+        file_size < 1200,
+        "sanity: the synthetic event is smaller than the old flat 1200, proving the \
+         size is measured; file_size={file_size}"
     );
     assert!(
         !out.contains("B/event band"),
         "measured header must NOT advertise the assumed byte band; got:\n{out}"
     );
-    // #271-B: the CONFIDENCE line must say the per-event SIZE is still assumed,
-    // so an operator knows the measured RATE does not make the byte size measured.
+    // #307: the CONFIDENCE line must now state the per-event SIZE is MEASURED from
+    // the log, and must NOT keep the old "still assumed" caveat (#271-B).
     assert!(
-        out.contains("SIZE still assumed"),
-        "measured CONFIDENCE must note the per-event size is still assumed; got:\n{out}"
+        out.contains("SIZE measured"),
+        "measured CONFIDENCE must note the per-event size is measured; got:\n{out}"
+    );
+    assert!(
+        !out.contains("SIZE still assumed"),
+        "measured CONFIDENCE must no longer claim the per-event size is assumed; got:\n{out}"
+    );
+}
+
+/// #307 strengthening (post-GREEN adversarial loop): when the ruleset's key matches
+/// NO measured events, the additive event total is 0, so the measured average
+/// bytes/event is undefined and falls back to the locked 1200 scalar; the cost is 0
+/// regardless. Guards the `total_additive_events > 0.0` fallback branch.
+#[test]
+fn auditd_cost_json_measured_zero_event_key_falls_back_to_scalar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    let mut rf = std::fs::File::create(&rules).expect("create rules file");
+    writeln!(rf, "-a always,exit -F arch=b64 -S execve -k exec").expect("write rule");
+    rf.flush().expect("flush");
+
+    // The log has an event, but under a DIFFERENT key -> the "exec" rule sees 0.
+    let log = dir.path().join("audit.log");
+    let mut lf = std::fs::File::create(&log).expect("create log");
+    writeln!(
+        lf,
+        "type=SYSCALL msg=audit(1780453442.924:9001): syscall=59 success=yes key=\"other\""
+    )
+    .expect("write log line");
+    lf.flush().expect("flush");
+
+    let assert = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&log)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(assert.get_output().stdout.clone()).expect("utf8"))
+            .expect("valid JSON");
+
+    assert_eq!(v["assumptions"]["rateSource"], "measured");
+    // No additive events matched -> fall back to the locked 1200 scalar.
+    assert_eq!(
+        v["assumptions"]["bytesPerEvent"], 1200,
+        "zero matched events must fall back to the locked scalar, not 0/NaN"
+    );
+    // And the volume is genuinely zero (the rule matched nothing).
+    assert!(
+        v["totals"]["gbPerDayTypical"]
+            .as_f64()
+            .expect("gb typ")
+            .abs()
+            < 1e-15,
+        "no matched events => zero volume"
+    );
+}
+
+/// #307 strengthening (post-GREEN adversarial loop): a SUPPRESSIVE rule (never /
+/// exclude) must contribute ZERO bytes to the measured total, even when its key
+/// matches events in the log. Guards the `Direction::Additive` filter on the summed
+/// measured bytes -- without it, a never rule's key bytes would inflate the dollar
+/// figure. Differential: adding a never rule whose key HAS log events must leave the
+/// total (and the per-event average) unchanged.
+#[test]
+fn auditd_cost_json_measured_suppressive_rule_adds_zero_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let additive_only = dir.path().join("a.rules");
+    let mut fa = std::fs::File::create(&additive_only).expect("create rules file");
+    writeln!(fa, "-a always,exit -F arch=b64 -S execve -k exec").expect("rule");
+    fa.flush().expect("flush");
+
+    let with_never = dir.path().join("b.rules");
+    let mut fb = std::fs::File::create(&with_never).expect("create rules file");
+    writeln!(fb, "-a always,exit -F arch=b64 -S execve -k exec").expect("rule 1");
+    writeln!(fb, "-a never,exit -F arch=b64 -S execve -k noise").expect("rule 2 (suppressive)");
+    fb.flush().expect("flush");
+
+    // Log carries BOTH "exec" events and (more) "noise" events.
+    let log = dir.path().join("audit.log");
+    let mut lf = std::fs::File::create(&log).expect("create log");
+    writeln!(
+        lf,
+        "type=SYSCALL msg=audit(1780453442.000:8001): syscall=59 success=yes key=\"exec\""
+    )
+    .expect("w");
+    writeln!(
+        lf,
+        "type=SYSCALL msg=audit(1780453442.001:8002): syscall=59 success=yes key=\"noise\""
+    )
+    .expect("w");
+    writeln!(
+        lf,
+        "type=SYSCALL msg=audit(1780453442.002:8003): syscall=59 success=yes key=\"noise\""
+    )
+    .expect("w");
+    lf.flush().expect("flush");
+
+    let run = |rules: &std::path::Path| -> serde_json::Value {
+        let assert = bin()
+            .args(["auditd", "cost", "--rules"])
+            .arg(rules)
+            .args(["--from-log"])
+            .arg(&log)
+            .args(["--format", "json"])
+            .assert()
+            .success();
+        serde_json::from_str(&String::from_utf8(assert.get_output().stdout.clone()).expect("utf8"))
+            .expect("valid JSON")
+    };
+
+    let a = run(&additive_only);
+    let b = run(&with_never);
+
+    let ga = a["totals"]["gbPerDayTypical"].as_f64().expect("ga");
+    let gb = b["totals"]["gbPerDayTypical"].as_f64().expect("gb");
+    assert!(
+        (ga - gb).abs() < 1e-15,
+        "a suppressive rule whose key has log events must not inflate the total; ga={ga} gb={gb}"
+    );
+    // The reported average is unchanged too (noise excluded from numerator + denom).
+    assert_eq!(
+        a["assumptions"]["bytesPerEvent"], b["assumptions"]["bytesPerEvent"],
+        "suppressive noise events must not move the measured per-event average"
+    );
+}
+
+/// #307 strengthening (post-GREEN adversarial loop): two ADDITIVE rules sharing one
+/// key both look up that key's measured bytes, so the byte total SUMS the bucket
+/// once per rule -- the locked per-key-sums model, identical to how the event count
+/// already double-counts a shared key. The per-event average is unchanged; the
+/// totals scale by the number of sharing rules. Guards that the byte total tracks
+/// the count total under shared keys (total == sum of per-rule).
+#[test]
+fn auditd_cost_json_measured_shared_key_sums_per_rule() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let one = dir.path().join("one.rules");
+    let mut f1 = std::fs::File::create(&one).expect("create rules file");
+    writeln!(f1, "-a always,exit -F arch=b64 -S execve -k exec").expect("rule 1");
+    f1.flush().expect("flush");
+
+    let two = dir.path().join("two.rules");
+    let mut f2 = std::fs::File::create(&two).expect("create rules file");
+    writeln!(f2, "-a always,exit -F arch=b64 -S execve -k exec").expect("rule 1");
+    writeln!(f2, "-a always,exit -F arch=b64 -S execveat -k exec").expect("rule 2 (shares key)");
+    f2.flush().expect("flush");
+
+    let log = dir.path().join("audit.log");
+    let mut lf = std::fs::File::create(&log).expect("create log");
+    for i in 0..3 {
+        writeln!(
+            lf,
+            "type=SYSCALL msg=audit(178045344{i}.000:70{i}): syscall=59 success=yes key=\"exec\""
+        )
+        .expect("write log line");
+    }
+    lf.flush().expect("flush");
+
+    let run = |rules: &std::path::Path| -> serde_json::Value {
+        let assert = bin()
+            .args(["auditd", "cost", "--rules"])
+            .arg(rules)
+            .args(["--from-log"])
+            .arg(&log)
+            .args(["--format", "json"])
+            .assert()
+            .success();
+        serde_json::from_str(&String::from_utf8(assert.get_output().stdout.clone()).expect("utf8"))
+            .expect("valid JSON")
+    };
+
+    let v1 = run(&one);
+    let v2 = run(&two);
+
+    // Same key, same events -> the per-event average must NOT change.
+    assert_eq!(
+        v1["assumptions"]["bytesPerEvent"], v2["assumptions"]["bytesPerEvent"],
+        "a second rule sharing the key must not change the measured per-event average"
+    );
+    // But the TOTAL volume doubles: each additive rule contributes the bucket once.
+    let g1 = v1["totals"]["gbPerDayTypical"].as_f64().expect("gb1");
+    let g2 = v2["totals"]["gbPerDayTypical"].as_f64().expect("gb2");
+    assert!(
+        (g2 - 2.0 * g1).abs() < 1e-15,
+        "two rules sharing a key must sum the bucket 2x (per-key-sums); g1={g1} g2={g2}"
     );
 }

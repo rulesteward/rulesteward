@@ -27,6 +27,15 @@ pub struct LogReadError {
 pub struct MeasuredRates {
     /// Events counted per key. No-key events are under `None`.
     pub counts: HashMap<Option<String>, u64>,
+    /// Total on-disk bytes per key (#307).
+    ///
+    /// For each counted serial, the sum of every sharing record's on-disk byte
+    /// length (record text + `\n` terminator) is attributed to that event's key.
+    /// Companion records (PATH/CWD/EOE) that share an event's serial but carry no
+    /// `key=` field contribute their bytes to that event's key. Same key set as
+    /// `counts`. Used by `--from-log` MEASURED mode to size events by their actual
+    /// bytes instead of the flat ~1200 B assumption.
+    pub bytes: HashMap<Option<String>, u64>,
     /// Total lines scanned (for diagnostics).
     pub lines_scanned: u64,
 }
@@ -47,22 +56,23 @@ pub fn count_events_by_key(path: &Path) -> Result<MeasuredRates, LogReadError> {
         message: format!("cannot read {}: {e}", path.display()),
     })?;
 
-    // serial -> key for events we have already seen for that serial.
-    // We record the key at first encounter; subsequent records on the same serial
-    // don't add a new event count but do contribute their key (if the first record
-    // had no key but a companion does - we record the key when we first see a
-    // key-bearing record for this serial).
+    // First pass: group records by audit serial. For each serial we accumulate
+    // (a) its total on-disk bytes -- every record sharing the serial, companions
+    // included -- and (b) the set of `key=` values seen on its key-bearing records.
+    // A serial with NO key-bearing record is not an event (no rule matched it), so
+    // its bytes are dropped when we fold per key below.
     //
-    // Implementation: track seen (serial, key) pairs.
-    // A serial gets one count per unique key. Because the fixture confirms
-    // "any record type that carries key=X contributes", but the serial-dedup
-    // collapses them: we track Set<serial> per key.
-    let mut key_serials: HashMap<Option<String>, HashSet<String>> = HashMap::new();
+    // Counts remain the prior model (distinct serials per key); the per-serial byte
+    // sum is the #307 addition. Because the byte total is keyed off the serial (not
+    // the key-bearing line), the key-less PATH/CWD/EOE companions of a SYSCALL are
+    // sized into the event -- a naive per-`key=`-line byte sum would undercount.
+    let mut serial_bytes: HashMap<String, u64> = HashMap::new();
+    let mut serial_keys: HashMap<String, HashSet<Option<String>>> = HashMap::new();
     let mut lines_scanned: u64 = 0;
 
-    for line in content.lines() {
+    for raw_line in content.lines() {
         lines_scanned += 1;
-        let line = line.trim();
+        let line = raw_line.trim();
         if line.is_empty() {
             continue;
         }
@@ -72,26 +82,32 @@ pub fn count_events_by_key(path: &Path) -> Result<MeasuredRates, LogReadError> {
             continue;
         };
 
-        // Extract key= value.
-        let key = extract_key(line);
+        // On-disk byte length: the record text plus its '\n' terminator (#307).
+        // Audit logs are '\n'-terminated on Linux; a final line without a trailing
+        // newline over-counts by one byte, negligible for a cost estimate.
+        *serial_bytes.entry(serial.clone()).or_default() += raw_line.len() as u64 + 1;
 
-        // Only count lines that carry a key (either named or null).
-        // Lines with no key= field at all are skipped (they contribute nothing
-        // to the per-key event rate; if they carry no key we can't attribute them).
-        // key=(null) -> key=None -> counted under None bucket.
-        if let Some(key_value) = key {
-            key_serials.entry(key_value).or_default().insert(serial);
+        // key="value" -> Some(Some(..)); key=(null) -> Some(None); no key= -> None.
+        if let Some(key_value) = extract_key(line) {
+            serial_keys.entry(serial).or_default().insert(key_value);
         }
     }
 
-    // Convert serial-sets to counts.
-    let counts = key_serials
-        .into_iter()
-        .map(|(k, serials)| (k, serials.len() as u64))
-        .collect();
+    // Fold per key: each distinct serial bearing a key contributes 1 event and its
+    // full record-group byte sum to that key.
+    let mut counts: HashMap<Option<String>, u64> = HashMap::new();
+    let mut bytes: HashMap<Option<String>, u64> = HashMap::new();
+    for (serial, keys) in &serial_keys {
+        let serial_total = serial_bytes.get(serial).copied().unwrap_or(0);
+        for key in keys {
+            *counts.entry(key.clone()).or_default() += 1;
+            *bytes.entry(key.clone()).or_default() += serial_total;
+        }
+    }
 
     Ok(MeasuredRates {
         counts,
+        bytes,
         lines_scanned,
     })
 }

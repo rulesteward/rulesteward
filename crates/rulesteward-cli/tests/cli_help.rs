@@ -122,16 +122,17 @@ fn auditd_cost_help_lists_flags() {
 }
 
 #[test]
-fn auditd_cost_help_documents_measured_byte_bias() {
-    // #271-B: --from-log measures the per-key event RATE, but the per-event SIZE
-    // stays the flat ~1200 B assumption, so --help must make that bias explicit
-    // (the dollar figure under-counts execve-heavy logs).
+fn auditd_cost_help_documents_measured_byte_size() {
+    // #307: --from-log now measures the per-event SIZE (real on-disk bytes) in
+    // addition to the per-key event RATE, so --help must say the size is measured
+    // and must NO LONGER carry the old #271-B "under-counts" bias caveat.
     Command::cargo_bin("rulesteward")
         .expect("binary built")
         .args(["auditd", "cost", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("under-counts"));
+        .stdout(predicate::str::contains("per-event on-disk bytes"))
+        .stdout(predicate::str::contains("under-counts").not());
 }
 
 #[test]

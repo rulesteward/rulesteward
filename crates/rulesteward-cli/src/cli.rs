@@ -460,13 +460,15 @@ pub struct CostArgs {
     #[arg(long, value_name = "DIR")]
     pub rules: PathBuf,
 
-    /// Measure real per-key event rate from a captured audit log (optional).
+    /// Measure real per-key event rate AND per-event size from a captured audit
+    /// log (optional).
     ///
-    /// Only the per-key event RATE is measured from the log; the per-event SIZE
-    /// stays the flat ~1200 B ENRICHED assumption (issue #112), so the dollar
-    /// figure inherits that byte bias and under-counts execve-heavy logs (real
-    /// execve records average ~1300-2300 B). Supply this to replace assumed
-    /// rates with measured ones; the byte-size assumption is unchanged.
+    /// Both the per-key event RATE and the per-event SIZE are measured from the
+    /// log (issue #307): each event's on-disk bytes -- the SYSCALL record plus its
+    /// companion PATH/CWD/EOE records sharing one serial -- are summed and
+    /// attributed to that event's key, so execve-heavy logs are sized by their
+    /// real bytes instead of the flat ~1200 B ENRICHED assumption. Supply this to
+    /// replace the assumed rates and byte size with this host's measured values.
     #[arg(long, value_name = "FILE")]
     pub from_log: Option<PathBuf>,
 
@@ -691,13 +693,14 @@ pub enum AuditdCommand {
     ///
     /// What IS predictable from the rules (f3 5.1): which rules fire, their
     /// additive-vs-suppressive direction, and a per-rule volume tier. Suppressive
-    /// rules (`never`, `exclude`) contribute zero volume. Each event is sized at a
-    /// fixed 1200 bytes ENRICHED (900 RAW).
+    /// rules (`never`, `exclude`) contribute zero volume. Without `--from-log`,
+    /// each event is sized at a fixed 1200 bytes ENRICHED (900 RAW).
     ///
     /// What is NOT predictable from the rules alone (f3 5.2): the real event rate,
     /// the PATH-record multiplier, and rule interaction on a live host. Pass
-    /// `--from-log <FILE>` to ground the estimate in measured counts from a
-    /// captured audit log.
+    /// `--from-log <FILE>` to ground the estimate in measured per-key counts AND
+    /// measured per-event on-disk bytes from a captured audit log (issue #307), so
+    /// both the rate and the event size come from the host instead of the defaults.
     ///
     /// Cost assumes ingest-based SIEM pricing (USD per decimal GB via
     /// `--price-per-gb`, default $5.00), not Splunk-style workload/compute pricing.

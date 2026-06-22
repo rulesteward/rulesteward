@@ -106,16 +106,36 @@ const DAYS_PER_MONTH: f64 = 30.4;
 /// - `price_per_gb_usd` - price per decimal GB; default is 5.00 per f3 section 4.2.
 #[must_use]
 pub fn compute_cost_band(rate_band: &RateBand, fmt: LogFormat, price_per_gb_usd: f64) -> CostBand {
-    // Single TYPICAL byte applied to every edge. Used for the per-rule rows (only
-    // their typical is surfaced) and the MEASURED --from-log total, where the event
-    // count is exact and byte-size spread must NOT re-widen the band (issue #112).
+    // The ASSUMED per-rule path: size every edge by the locked scalar
+    // bytes_per_event (1200 or 900). Delegates to the measured path with that
+    // scalar so both share the collapsed-byte-band arithmetic.
     // bytes_per_event returns 1200 or 900 -- both well within f64 precision range.
     #[allow(clippy::cast_precision_loss)]
     let bpe = bytes_per_event(fmt) as f64;
+    compute_cost_band_measured(rate_band, bpe, price_per_gb_usd)
+}
+
+/// Compute a `CostBand` sizing every edge by an explicit MEASURED bytes/event
+/// (issue #307), instead of the locked scalar from [`bytes_per_event`].
+///
+/// The byte band is collapsed (low == typical == high == `measured_bytes_per_event`),
+/// so the resulting gb/$ band stays proportional to the rate band: a MEASURED
+/// `--from-log` total passes an EXACT event count (a collapsed rate band) and must
+/// not be re-widened by any byte-size assumption (#112's collapse property,
+/// preserved while the VALUE moves off the flat 1200). Pass the exact f64 average
+/// (`total_bytes / total_events`); round only for the displayed `bytesPerEvent`.
+///
+/// [`compute_cost_band`] is exactly this function called with `bytes_per_event(fmt)`.
+#[must_use]
+pub fn compute_cost_band_measured(
+    rate_band: &RateBand,
+    measured_bytes_per_event: f64,
+    price_per_gb_usd: f64,
+) -> CostBand {
     let byte_band = RateBand {
-        low: bpe,
-        typical: bpe,
-        high: bpe,
+        low: measured_bytes_per_event,
+        typical: measured_bytes_per_event,
+        high: measured_bytes_per_event,
     };
     cost_band_from_byte_band(rate_band, &byte_band, price_per_gb_usd)
 }
