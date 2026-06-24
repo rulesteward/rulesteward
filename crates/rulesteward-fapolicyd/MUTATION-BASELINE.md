@@ -58,11 +58,21 @@ The first run produced 4 survivors:
 | File | Line | Mutation | Killed by |
 |---|---|---|---|
 | `parser/mod.rs` | 69 | `b == b' ' \|\| b == b'\t'` → `&&` | `whitespace_only_line_is_blank_entry` (new) |
-| `lints/layout.rs` | 42 | `is_file() && extension == "rules"` → `\|\|` | `check_layout_silent_when_rules_d_only_holds_subdirectory` (new) |
+| `lints/layout.rs` | 42 | `is_file() && extension == "rules"` → `\|\|` | superseded -- see note below |
 | `lints/source_scan.rs` | 27 | `idx == last_idx && raw_line.is_empty()` → `\|\|` | `w03_continues_scanning_past_leading_blank_lines` (new) |
 | `lints/source_scan.rs` | 27 | `idx == last_idx && raw_line.is_empty()` → `idx != last_idx ...` | `w03_continues_scanning_past_leading_blank_lines` (new) |
 
 Three targeted unit tests were added; second run came back at 0 survivors.
+
+> **`lints/layout.rs:42` row superseded (issue #274, fapd-F02 widen).** The
+> original survivor was killed by `check_layout_silent_when_rules_d_only_holds_subdirectory`.
+> The fapd-F02 widen to full `fagenrules` `ls | wc -w` parity removes the
+> `&& extension == "rules"` clause entirely (a non-dotfile entry of ANY extension,
+> file OR subdirectory, now counts), so that exact mutant no longer exists in the
+> code. The test was inverted/renamed to
+> `check_layout_fires_when_rules_d_has_only_subdir_named_dot_rules` (a `nested.rules/`
+> subdir now FIRES). The widened `directory_has_rules_files` predicate is covered by
+> the fresh widen tests in `lints/layout.rs` and re-baselined by the next mutation run.
 
 Session 3c-B added `lints/reachability.rs` (fapd-W01 rule shadowing); its
 mutants are all caught (three `subsumes_value` survivors were killed with

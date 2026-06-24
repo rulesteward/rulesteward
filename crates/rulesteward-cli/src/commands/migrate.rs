@@ -879,6 +879,88 @@ mod tests {
         assert_eq!(detect_layout(d.path()), Layout::Both);
     }
 
+    // --- detect_layout: fagenrules `ls | wc -w` parity (issue #274 lockstep) ---
+    //
+    // `detect_layout` reuses the SHARED `directory_has_rules_files` helper, so
+    // when that helper widens to fagenrules's `ls | wc -w` semantics (any
+    // non-dotfile entry -- file OR subdirectory, any extension), migrate's
+    // classification must move in lockstep with the fapd-F02 layout lint.
+    // A wrong impl that widens only the F02 predicate and leaves migrate's
+    // classification on the old `*.rules`-file-only gate cannot pass these.
+    // RED until the shared helper is widened (detect_layout returns LegacyOnly).
+
+    /// legacy + rules.d/ holding ONLY a `README` (a non-`.rules` file) ->
+    /// `Layout::Both`. `ls | wc -w` counts `README`, so the daemon would abort;
+    /// migrate must classify this as the coexistence trap, not `LegacyOnly`.
+    #[test]
+    fn detect_layout_both_when_rules_d_has_only_readme() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+        write(d.path(), "rules.d/README", "documentation\n");
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::Both,
+            "fagenrules `ls | wc -w` counts README; migrate must detect the trap"
+        );
+    }
+
+    /// legacy + rules.d/ holding ONLY a plain subdirectory (`sub/`) ->
+    /// `Layout::Both`. `ls` lists the subdir name and `wc -w` counts it, so the
+    /// daemon aborts; migrate must classify it as the coexistence trap.
+    #[test]
+    fn detect_layout_both_when_rules_d_has_only_plain_subdir() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+        std::fs::create_dir_all(d.path().join("rules.d/sub")).unwrap();
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::Both,
+            "fagenrules `ls | wc -w` counts subdirectory `sub/`; migrate must detect the trap"
+        );
+    }
+
+    /// Regression: legacy + rules.d/ holding ONLY a dotfile (`.40-x.rules`) stays
+    /// `Layout::LegacyOnly`. `ls` without `-a` omits dotfiles, so `wc -w` is 0 and
+    /// the daemon does NOT abort -- the widen must not change this case.
+    /// (Distinct from the existing `detect_layout_dotfile_in_rules_d_is_legacy_only_not_trap`;
+    /// kept here alongside the widen tests to pin the dotfile boundary against them.)
+    #[test]
+    fn detect_layout_legacy_only_when_rules_d_has_only_dotfile_after_widen() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+        write(d.path(), "rules.d/.40-x.rules", "deny perm=any all : all\n");
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::LegacyOnly,
+            "a dotfile-only rules.d/ is invisible to `ls | wc -w`; must stay LegacyOnly"
+        );
+    }
+
+    /// e2e: legacy + rules.d/ holding ONLY a `README` now hits the coexistence
+    /// trap. Without `--delete-legacy`, migrate must refuse (`EXIT_ERRORS`) instead
+    /// of treating it as a plain legacy-only migration. RED until the widen lands
+    /// (today this case is `LegacyOnly` and migrates cleanly to `EXIT_CLEAN`).
+    #[test]
+    fn run_readme_only_rules_d_with_legacy_hits_coexistence_trap() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "fapolicyd.rules", LEGACY_WITH_HASH);
+        write(d.path(), "rules.d/README", "documentation\n");
+        let code = run(args(d.path(), true, false)).unwrap();
+        assert_eq!(
+            code, EXIT_ERRORS,
+            "a README in rules.d/ is a non-dotfile entry; legacy + it is the \
+             coexistence trap and must refuse without --delete-legacy"
+        );
+        assert!(
+            !d.path().join(MODERN_DIR).join(TARGET_FILE).exists(),
+            "must not write on a refused migration"
+        );
+        assert!(
+            d.path().join("fapolicyd.rules").exists(),
+            "legacy untouched on refusal"
+        );
+    }
+
     // --- render ---
 
     #[test]
