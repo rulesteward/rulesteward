@@ -37,7 +37,7 @@ mod validation;
 mod version_target;
 mod walker;
 
-pub use layout::{check_layout, directory_has_rules_files};
+pub use layout::{check_layout, directory_has_nondotfile_entry, directory_has_rules_files};
 
 use std::path::Path;
 

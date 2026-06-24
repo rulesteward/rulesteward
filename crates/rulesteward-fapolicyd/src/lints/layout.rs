@@ -6,7 +6,12 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 /// Return an fapd-F02 diagnostic if `rules_root` contains BOTH `fapolicyd.rules`
-/// AND a `rules.d/` directory with at least one top-level `.rules` file.
+/// AND a `rules.d/` directory with at least one non-dotfile entry.
+///
+/// fapd-F02 models the fagenrules daemon-level *coexistence* abort, so it uses
+/// the BROAD predicate ([`directory_has_nondotfile_entry`]): legacy + ANY
+/// non-dotfile entry in `rules.d/` (a `README`, a `notes.txt`, a subdirectory)
+/// trips the daemon's `ls | wc -w` guard, not just loadable `.rules` files.
 #[must_use]
 pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
     let legacy = rules_root.join("fapolicyd.rules");
@@ -18,7 +23,7 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
     if !rulesd.is_dir() {
         return None;
     }
-    if !directory_has_rules_files(&rulesd) {
+    if !directory_has_nondotfile_entry(&rulesd) {
         return None;
     }
 
@@ -30,10 +35,49 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
     ))
 }
 
-/// True when `dir` (a `rules.d/`) contains at least one non-dotfile entry
-/// (regular file OR subdirectory, any extension).
+/// NARROW predicate: true when `dir` (a `rules.d/`) contains at least one
+/// top-level `*.rules` file that fapolicyd's `fagenrules` would actually LOAD.
 ///
-/// Models the fagenrules daemon-level coexistence guard:
+/// This answers "does `rules.d/` already hold loadable rules?" -- the question
+/// `migrate`'s no-legacy `ModernOnly`-vs-`Neither` distinction needs (a working
+/// modern layout means real `.rules` files, not just any file). fagenrules
+/// enumerates loadable rules via:
+///
+/// ```text
+/// for rules in $(/bin/ls -1v ${SourceRulesDir} | grep "\.rules$")
+/// ```
+///
+/// `ls` without `-a` omits leading-dot filenames, and `grep '\.rules$'` keeps
+/// only the `.rules` suffix; subdirectories named `foo.rules/` are not loaded as
+/// rule files. So this predicate excludes dotfiles AND directory entries AND any
+/// non-`.rules` file.
+///
+/// Contrast [`directory_has_nondotfile_entry`] (the BROAD coexistence trigger).
+#[must_use]
+pub fn directory_has_rules_files(dir: &Path) -> bool {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    read.filter_map(Result::ok).any(|e| {
+        let p = e.path();
+        // fagenrules enumerates rules via `ls -1v <dir> | grep '\.rules$'`.
+        // `ls` without `-a` omits entries whose name starts with `.`, so
+        // dotfiles are never loaded by fapolicyd regardless of their suffix.
+        let name = e.file_name();
+        // OsStr's encoding is ASCII-transparent: a leading 0x2E byte always
+        // means `.` (no multi-byte char starts with an ASCII byte), so this
+        // equals the lossy-string check without the per-entry allocation.
+        let starts_with_dot = name.as_encoded_bytes().first() == Some(&b'.');
+        !starts_with_dot && p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rules")
+    })
+}
+
+/// BROAD predicate: true when `dir` (a `rules.d/`) contains at least one
+/// non-dotfile entry (regular file OR subdirectory, ANY extension).
+///
+/// This answers "would the fagenrules daemon-level COEXISTENCE guard trip?" --
+/// the question fapd-F02 and `migrate`'s legacy-present `Both`-vs-`LegacyOnly`
+/// distinction need. The guard is:
 ///
 /// ```text
 /// if [ -e ${OldDestinationFile} ]; then
@@ -43,16 +87,14 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
 /// fi
 /// ```
 ///
-/// `ls` without `-a` omits entries whose name starts with `.`, so dotfiles
-/// never appear in the word count and never trigger the abort.  Every other
-/// entry -- files of any extension, subdirectories, symlinks -- is counted
-/// by `wc -w` and causes the daemon to refuse startup.
+/// `ls` without `-a` omits entries whose name starts with `.`, so dotfiles never
+/// appear in the word count and never trigger the abort. Every other entry --
+/// files of any extension, subdirectories, symlinks -- is counted by `wc -w` and
+/// causes the daemon to refuse startup.
 ///
-/// Shared by the fapd-F02 layout lint and `fapolicyd migrate` so both agree
-/// on what "rules.d/ has content" means (the coexistence trigger), not just
-/// what fapolicyd would load as rules.
+/// Contrast [`directory_has_rules_files`] (the NARROW loadable-`.rules` check).
 #[must_use]
-pub fn directory_has_rules_files(dir: &Path) -> bool {
+pub fn directory_has_nondotfile_entry(dir: &Path) -> bool {
     let Ok(read) = std::fs::read_dir(dir) else {
         return false;
     };

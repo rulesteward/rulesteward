@@ -18,7 +18,9 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use rulesteward_fapolicyd::{directory_has_rules_files, parse_rules_file};
+use rulesteward_fapolicyd::{
+    directory_has_nondotfile_entry, directory_has_rules_files, parse_rules_file,
+};
 use serde::Serialize;
 
 use crate::cli::{HumanJsonFormat, MigrateArgs, TargetVersionArg};
@@ -613,18 +615,34 @@ fn compute_migration(legacy: &str) -> MigrationContent {
 }
 
 /// Detect the on-disk layout of a fapolicyd config directory.
+///
+/// Two questions, two grounded predicates (both shared with the fapd-F02 lint
+/// so migrate and the lint never diverge, issue #187 / #274):
+///
+/// * NARROW (`directory_has_rules_files`): does `rules.d/` hold a LOADABLE
+///   top-level `.rules` file? This drives the no-legacy `ModernOnly` (already a
+///   working modern layout) vs `Neither` (nothing to migrate) split. A bare
+///   `README` or subdirectory is not a loadable rule, so a no-legacy dir holding
+///   only those is `Neither`, not a (false) `ModernOnly`.
+/// * BROAD (`directory_has_nondotfile_entry`): would the fagenrules daemon-level
+///   coexistence guard (`ls | wc -w`) trip? This drives the legacy-present `Both`
+///   (the coexistence trap -- legacy + ANY non-dotfile entry) vs `LegacyOnly`
+///   (empty / dotfile-only rules.d/, a clean migration) split. This is the
+///   owner-locked widen (#274): legacy + README / subdir IS the trap.
 fn detect_layout(rules_dir: &Path) -> Layout {
     let legacy = rules_dir.join(LEGACY_FILE).is_file();
-    // Reuse the grounded fagenrules-loadability check (dotfile + subdirectory
-    // guards) that the fapd-F02 layout lint uses, so migrate and the lint agree
-    // on what counts as a modern rules.d/ -- a divergent copy here mis-detected a
-    // dotfile-only rules.d/ as the coexistence trap (issue #187 adversarial review).
-    let modern = directory_has_rules_files(&rules_dir.join(MODERN_DIR));
-    match (legacy, modern) {
-        (false, false) => Layout::Neither,
-        (false, true) => Layout::ModernOnly,
-        (true, false) => Layout::LegacyOnly,
-        (true, true) => Layout::Both,
+    let rules_d = rules_dir.join(MODERN_DIR);
+    let modern = directory_has_rules_files(&rules_d);
+    let coexists = directory_has_nondotfile_entry(&rules_d);
+    match (legacy, modern, coexists) {
+        // No legacy file: there is no coexistence trap. The modern-vs-nothing
+        // distinction is "are there real loadable rules?" -> NARROW.
+        (false, false, _) => Layout::Neither,
+        (false, true, _) => Layout::ModernOnly,
+        // Legacy present: the daemon-level coexistence guard is BROAD; any
+        // non-dotfile entry alongside the legacy file is the trap.
+        (true, _, true) => Layout::Both,
+        (true, _, false) => Layout::LegacyOnly,
     }
 }
 
@@ -958,6 +976,92 @@ mod tests {
         assert!(
             d.path().join("fapolicyd.rules").exists(),
             "legacy untouched on refusal"
+        );
+    }
+
+    // --- no-legacy case must keep NARROW (.rules-files-present) semantics ---
+    //
+    // The owner's lockstep widen applies ONLY to the legacy-PRESENT coexistence
+    // trap (legacy + any content -> Both). With NO legacy file, the
+    // ModernOnly-vs-Neither distinction asks "is rules.d/ already a working
+    // modern layout?" -- which means LOADABLE `.rules` files, not just any
+    // non-dotfile entry.  A no-legacy rules.d/ holding only a `README` or a bare
+    // subdir has ZERO loadable rules, so the answer is Neither ("Nothing to
+    // migrate"), NOT ModernOnly ("Already migrated" -- which would be a false
+    // claim).  These tests are RED against the broad shared predicate and go
+    // GREEN once the implementer splits it (broad for the trap, narrow here).
+
+    /// NO legacy + rules.d/ holding ONLY a `README` (a non-`.rules` file) ->
+    /// `Layout::Neither`.  Without a legacy file there is no coexistence trap;
+    /// a `README` is not a loadable rule, so rules.d/ is NOT a modern layout.
+    #[test]
+    fn detect_layout_neither_when_no_legacy_and_rules_d_has_only_readme() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "rules.d/README", "documentation\n");
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::Neither,
+            "no legacy + a non-rule README is Neither (nothing to migrate), not ModernOnly"
+        );
+    }
+
+    /// NO legacy + rules.d/ holding ONLY a plain subdirectory (`sub/`) ->
+    /// `Layout::Neither`.  A bare subdir contains zero loadable top-level rules,
+    /// so without a legacy file there is nothing modern and nothing to migrate.
+    #[test]
+    fn detect_layout_neither_when_no_legacy_and_rules_d_has_only_plain_subdir() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("rules.d/sub")).unwrap();
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::Neither,
+            "no legacy + a bare subdir is Neither (nothing to migrate), not ModernOnly"
+        );
+    }
+
+    /// Regression guard (must stay GREEN): NO legacy + rules.d/ holding a REAL
+    /// `.rules` file (`10-x.rules`) -> `Layout::ModernOnly`.  The narrow
+    /// predicate still fires on genuine loadable rules, so a real modern layout
+    /// is still correctly reported as already migrated.
+    #[test]
+    fn detect_layout_modern_only_when_no_legacy_and_rules_d_has_real_rules_file() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "rules.d/10-x.rules", "allow perm=any all : all\n");
+        assert_eq!(
+            detect_layout(d.path()),
+            Layout::ModernOnly,
+            "a real .rules file with no legacy is still ModernOnly (already migrated)"
+        );
+    }
+
+    /// e2e: NO legacy + rules.d/ holding ONLY a `README` -> the human render
+    /// must say "Nothing to migrate" (layout `nothing-to-migrate`), NOT
+    /// "Already migrated" (layout `already-modern`).  Both classifications exit
+    /// `EXIT_CLEAN`, so the exit code alone cannot tell them apart -- the
+    /// `plan.layout` string is the discriminator.  RED while the broad predicate
+    /// mislabels this as `already-modern`.
+    #[test]
+    fn run_no_legacy_readme_only_reports_nothing_to_migrate() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "rules.d/README", "documentation\n");
+        let (code, plan) =
+            run_with_probe_to_plan(args(d.path(), true, false), &FakeMigrateProbe::absent())
+                .unwrap();
+        assert_eq!(code, EXIT_CLEAN);
+        assert_eq!(
+            plan.layout, "nothing-to-migrate",
+            "no legacy + a non-rule README has nothing to migrate; \
+             reporting `already-modern` would be a false claim that rules.d/ \
+             holds loadable rule files"
+        );
+        let human = render_human(&plan);
+        assert!(
+            human.contains("Nothing to migrate"),
+            "human render must say Nothing to migrate, got: {human}"
+        );
+        assert!(
+            !human.contains("Already migrated"),
+            "human render must NOT claim Already migrated, got: {human}"
         );
     }
 
