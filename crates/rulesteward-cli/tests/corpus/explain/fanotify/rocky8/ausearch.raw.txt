@@ -1,0 +1,6 @@
+# ausearch -m FANOTIFY --format raw output
+# Command: sudo ausearch -m FANOTIFY --format raw
+# Result: (empty)
+#
+# Rocky 8.10 (kernel 4.18.0, fapolicyd 1.3.2) does not emit FANOTIFY audit
+# records. No records exist in /var/log/audit/audit.log to capture.

@@ -1,0 +1,14 @@
+# ausearch -m FANOTIFY output (human format)
+# Command: sudo ausearch -m FANOTIFY -ts recent
+# Result: <no matches>
+#
+# NOTE: ausearch -m FANOTIFY returns <no matches> on Rocky 10.2 (audit 4.0.3)
+# even when FANOTIFY records exist in /var/log/audit/audit.log.
+# This is an ausearch limitation: the FANOTIFY message type (type 1331) is
+# a standalone single-record event not indexed by ausearch's message-type
+# filter on this audit version. The actual records were captured via:
+#   sudo grep -a 'type=FANOTIFY' /var/log/audit/audit.log
+#
+# Actual FANOTIFY records from /var/log/audit/audit.log:
+type=FANOTIFY msg=audit(1782265665.529:5369): resp=2 fan_type=1 fan_info=D subj_trust=2 obj_trust=0
+type=FANOTIFY msg=audit(1782265794.546:5517): resp=2 fan_type=1 fan_info=D subj_trust=2 obj_trust=0

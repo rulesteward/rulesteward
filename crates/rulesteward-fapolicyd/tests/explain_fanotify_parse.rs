@@ -363,3 +363,182 @@ fn non_execve_syscall_gives_open_perm() {
         "syscall=257 (openat) must map to Perm::Open"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Differential corpus: real captured FANOTIFY records from Rocky 9 and 10
+// ---------------------------------------------------------------------------
+//
+// Corpus lives in crates/rulesteward-cli/tests/corpus/explain/fanotify/.
+//
+// Rocky 8 GAP: kernel 4.18 (RHEL 8 base) does NOT emit FANOTIFY audit
+// events (type 1331). fapolicyd 1.3.2 on Rocky 8.10 enforces denials via
+// fanotify but no audit record is written. Verified on a live Rocky 8.10 VM:
+// `grep -a 'type=FANOTIFY' /var/log/audit/audit.log` returned 0 matches
+// after confirmed execution denials (exit=126). The corpus directory for
+// rocky8 intentionally contains no FANOTIFY records. These tests cover only
+// Rocky 9 and Rocky 10, where FANOTIFY audit records are emitted.
+//
+// Capture note: `ausearch -m FANOTIFY` returns `<no matches>` on Rocky 9.8
+// (audit 3.1.5) and Rocky 10.2 (audit 4.0.3) even when records exist in
+// /var/log/audit/audit.log. The working capture command is:
+//   sudo grep -a 'type=FANOTIFY' /var/log/audit/audit.log
+// See corpus/*/README.md for full capture details.
+
+/// Load a FANOTIFY record line from a real-captured corpus fixture file.
+///
+/// The corpus fixture files contain comment lines (starting with `#`) and
+/// blank lines interspersed with real audit log lines. This helper extracts
+/// the non-comment, non-empty lines -- each one is a real `type=FANOTIFY`
+/// record line as captured from the live system.
+fn corpus_fanotify_lines(rel_path: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rulesteward-cli/tests/corpus/explain/fanotify")
+        .join(rel_path);
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("corpus fixture {rel_path}: {e}"));
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+        .map(String::from)
+        .collect()
+}
+
+/// Assert the exact field decoding for a single real captured FANOTIFY record.
+///
+/// All records captured in this session had the same values:
+///   resp=2 fan_type=1 fan_info=D subj_trust=2 obj_trust=0
+///
+/// Assertions:
+/// - `resp=2` -> `is_deny()` is true (FAN_DENY = 2)
+/// - `fan_type=1` -> Era2 (rule number present)
+/// - `fan_info=D` (hex) = 0xD = 13 decimal -> `rule_number() == Some(13)`.
+///   A decimal-reading mutant would decode 'D' as a parse error or 13 (same
+///   here); the hex-specific kill comes from `era2_fan_info_is_hex_not_decimal`
+///   using `fan_info=3137`. This assertion locks the specific value on real
+///   corpus records so any regression in the hex path surfaces here too.
+/// - `subj_trust=2` -> `TrustVal::Unknown`
+/// - `obj_trust=0` -> `TrustVal::No`
+fn assert_real_record_decodes_correctly(line: &str, context: &str) {
+    let rec = parse_fanotify_record(line)
+        .unwrap_or_else(|e| panic!("{context}: parse_fanotify_record failed: {e}"));
+
+    assert!(
+        rec.is_deny(),
+        "{context}: resp=2 must decode as is_deny()=true"
+    );
+    assert_eq!(rec.resp, 2, "{context}: resp field must be 2 (FAN_DENY)");
+    assert_eq!(rec.fan_type, 1, "{context}: fan_type=1 must be Era2");
+    // fan_info=D is HEX. 0xD = 13 decimal. A decimal parse mutant would fail
+    // to parse the non-numeric 'D' character -- the parser would return an
+    // error rather than a wrong value, but this assertion locks that the
+    // HEX parse succeeds and produces 13.
+    assert_eq!(
+        rec.fan_info, 13,
+        "{context}: fan_info=D (hex) must decode to 13 decimal, not fail or produce another value"
+    );
+    assert_eq!(
+        rec.rule_number(),
+        Some(13),
+        "{context}: Era2 rule_number() must be Some(13) for fan_info=D (0xD)"
+    );
+    assert_eq!(
+        rec.subj_trust,
+        TrustVal::Unknown,
+        "{context}: subj_trust=2 must decode as TrustVal::Unknown"
+    );
+    assert_eq!(
+        rec.obj_trust,
+        TrustVal::No,
+        "{context}: obj_trust=0 must decode as TrustVal::No"
+    );
+}
+
+/// Rocky 9 corpus: both real captured records decode with the expected fields.
+///
+/// Corpus: crates/rulesteward-cli/tests/corpus/explain/fanotify/rocky9/ausearch.txt
+/// System: Rocky Linux 9.8, audit 3.1.5, fapolicyd 1.4.5
+/// Capture method: grep -a 'type=FANOTIFY' /var/log/audit/audit.log
+#[test]
+fn corpus_rocky9_records_decode_correctly() {
+    let lines = corpus_fanotify_lines("rocky9/ausearch.txt");
+    assert_eq!(
+        lines.len(),
+        2,
+        "rocky9 corpus must contain exactly 2 real FANOTIFY records"
+    );
+    for (i, line) in lines.iter().enumerate() {
+        assert_real_record_decodes_correctly(line, &format!("rocky9 record[{i}]"));
+    }
+}
+
+/// Rocky 10 corpus: both real captured records decode with the expected fields.
+///
+/// Corpus: crates/rulesteward-cli/tests/corpus/explain/fanotify/rocky10/ausearch.txt
+/// System: Rocky Linux 10.2, audit 4.0.3, fapolicyd 1.4.5
+/// Capture method: grep -a 'type=FANOTIFY' /var/log/audit/audit.log
+#[test]
+fn corpus_rocky10_records_decode_correctly() {
+    let lines = corpus_fanotify_lines("rocky10/ausearch.txt");
+    assert_eq!(
+        lines.len(),
+        2,
+        "rocky10 corpus must contain exactly 2 real FANOTIFY records"
+    );
+    for (i, line) in lines.iter().enumerate() {
+        assert_real_record_decodes_correctly(line, &format!("rocky10 record[{i}]"));
+    }
+}
+
+/// Differential: Rocky 9 (audit 3.1.5) and Rocky 10 (audit 4.0.3) produce
+/// structurally identical FANOTIFY records.
+///
+/// This test locks that the FANOTIFY record format is stable across audit
+/// versions: a parse change that decodes records differently on different
+/// audit versions would break this test even if the per-version tests pass
+/// individually.
+///
+/// (The captured timestamps and serials differ -- those are per-event -- but
+/// the decoded field VALUES for resp/fan_type/fan_info/subj_trust/obj_trust
+/// are identical because the same fapolicyd rule fired on both systems.)
+#[test]
+fn corpus_rocky9_and_rocky10_decode_identically() {
+    let lines9 = corpus_fanotify_lines("rocky9/ausearch.txt");
+    let lines10 = corpus_fanotify_lines("rocky10/ausearch.txt");
+
+    assert!(
+        !lines9.is_empty(),
+        "rocky9 corpus must have at least one record"
+    );
+    assert!(
+        !lines10.is_empty(),
+        "rocky10 corpus must have at least one record"
+    );
+
+    // Parse one record from each system and compare the decoded fields.
+    let rec9 = parse_fanotify_record(&lines9[0]).expect("rocky9 first record must parse");
+    let rec10 = parse_fanotify_record(&lines10[0]).expect("rocky10 first record must parse");
+
+    // The records must decode to the same struct (excluding timestamp which
+    // is per-event). FanotifyRecord derives PartialEq.
+    assert_eq!(
+        rec9, rec10,
+        "FANOTIFY record format must be identical across audit 3.1.5 (rocky9) and 4.0.3 (rocky10)"
+    );
+}
+
+/// Rocky 8 gap: kernel 4.18 does not emit FANOTIFY audit events.
+///
+/// This test documents the gap rather than exercising records: if the corpus
+/// file is ever updated with real rocky8 FANOTIFY records (i.e., a future
+/// RHEL 8 backport adds kernel support), this test will fail loudly and the
+/// developer must update the differential tests above to cover rocky8.
+#[test]
+fn corpus_rocky8_has_no_fanotify_records_kernel_4_18_gap() {
+    let lines = corpus_fanotify_lines("rocky8/ausearch.txt");
+    assert!(
+        lines.is_empty(),
+        "rocky8 corpus must contain NO FANOTIFY records (kernel 4.18 gap). \
+        If this fails, the rocky8 VM now emits FANOTIFY events -- update the \
+        differential tests to cover rocky8 too."
+    );
+}

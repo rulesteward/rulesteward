@@ -1,0 +1,8 @@
+# ausearch -m FANOTIFY --format raw output
+# Command: sudo ausearch -m FANOTIFY --format raw
+# Result: (empty -- same ausearch limitation as human format)
+#
+# The FANOTIFY event type is not returned by ausearch --format raw either.
+# Raw records captured directly from audit log via grep:
+type=FANOTIFY msg=audit(1782265656.665:9304): resp=2 fan_type=1 fan_info=D subj_trust=2 obj_trust=0
+type=FANOTIFY msg=audit(1782265786.214:9605): resp=2 fan_type=1 fan_info=D subj_trust=2 obj_trust=0
