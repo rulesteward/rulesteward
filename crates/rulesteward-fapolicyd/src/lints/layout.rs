@@ -1,5 +1,7 @@
-//! fapd-F02 - file-layout coexistence. fapolicyd refuses to start when both
-//! the deprecated `fapolicyd.rules` file AND any `rules.d/*.rules` exist.
+//! fapd-F02 - file-layout coexistence. fapolicyd refuses to start when the
+//! deprecated `fapolicyd.rules` file coexists with a non-empty `rules.d/`
+//! (the fagenrules `ls | wc -w` trigger fires on ANY non-dotfile entry, not
+//! just loadable `.rules` files).
 
 use std::path::Path;
 
@@ -30,7 +32,7 @@ pub fn check_layout(rules_root: &Path) -> Option<Diagnostic> {
     Some(super::file_level(
         Severity::Fatal,
         "fapd-F02",
-        "fapolicyd refuses to start when both `fapolicyd.rules` and `rules.d/` contain rules - remove one",
+        "fapolicyd refuses to start when a legacy `fapolicyd.rules` coexists with a non-empty `rules.d/` - remove one",
         legacy,
     ))
 }
