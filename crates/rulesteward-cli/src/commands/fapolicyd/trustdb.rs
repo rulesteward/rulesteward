@@ -88,38 +88,39 @@ fn resolve_integrity_mode(
     // the {none,size,ima,sha256} set, so the typed value maps directly.
     if let Some(level) = integrity_flag {
         let mode = IntegrityMode::from(level);
-        return (mode, format!("--integrity flag ({})", mode_name(mode)));
+        return (mode, format!("--integrity flag ({})", mode.as_keyword()));
     }
 
     // Determine which conf path to read.
     let conf_path = config_path.map_or_else(|| PathBuf::from(DEFAULT_CONF_PATH), Path::to_path_buf);
 
-    if let Ok(text) = std::fs::read_to_string(&conf_path) {
-        // Conf found: read the integrity key (absent key -> daemon default None).
-        let raw = conf_value(&text, "integrity");
-        let mode = IntegrityMode::from_conf_value(raw);
-        let src = format!(
-            "{} (integrity={})",
-            conf_path.display(),
-            raw.unwrap_or("absent")
-        );
-        (mode, src)
-    } else {
-        // Conf NOT found: STRICT (treat as sha256).
-        let src = format!("no conf found at {} - strict (sha256)", conf_path.display());
-        (IntegrityMode::Sha256, src)
-    }
-}
-
-/// Canonical lowercase name for an `IntegrityMode` (matches the
-/// `fapolicyd.conf` `integrity=` keyword), used only in the `--integrity` flag
-/// header line.
-fn mode_name(mode: IntegrityMode) -> &'static str {
-    match mode {
-        IntegrityMode::None => "none",
-        IntegrityMode::Size => "size",
-        IntegrityMode::Ima => "ima",
-        IntegrityMode::Sha256 => "sha256",
+    match std::fs::read_to_string(&conf_path) {
+        Ok(text) => {
+            // Conf found: read the integrity key (absent key -> daemon default None).
+            let raw = conf_value(&text, "integrity");
+            let mode = IntegrityMode::from_conf_value(raw);
+            let src = format!(
+                "{} (integrity={})",
+                conf_path.display(),
+                raw.unwrap_or("absent")
+            );
+            (mode, src)
+        }
+        // No conf file at the path: STRICT (treat as sha256).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let src = format!("no conf found at {} - strict (sha256)", conf_path.display());
+            (IntegrityMode::Sha256, src)
+        }
+        // Conf EXISTS but is unreadable (e.g. EACCES): still fall to STRICT (the
+        // safe direction - never weaken enforcement because we could not read the
+        // conf), but say so truthfully so the operator can fix the permissions.
+        Err(e) => {
+            let src = format!(
+                "unreadable conf {}: {e} - assuming strict (sha256)",
+                conf_path.display()
+            );
+            (IntegrityMode::Sha256, src)
+        }
     }
 }
 

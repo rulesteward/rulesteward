@@ -224,8 +224,8 @@ pub fn render_checks(
         }
         for r in rows {
             if !r.enforced && r.verdict.is_divergence() {
-                // Annotate non-enforced drift with the mode name.
-                let mode_name = integrity_info.map_or("unknown", |(m, _)| integrity_mode_name(m));
+                // Annotate non-enforced drift with the mode keyword.
+                let mode_name = integrity_info.map_or("unknown", |(m, _)| m.as_keyword());
                 let _ = writeln!(
                     out,
                     "{:<14} {} (not enforced under integrity={})",
@@ -239,17 +239,6 @@ pub fn render_checks(
             }
         }
         out
-    }
-}
-
-/// Return the canonical lowercase name for an `IntegrityMode` (matching the
-/// `fapolicyd.conf` `integrity=` value).
-fn integrity_mode_name(mode: IntegrityMode) -> &'static str {
-    match mode {
-        IntegrityMode::None => "none",
-        IntegrityMode::Size => "size",
-        IntegrityMode::Ima => "ima",
-        IntegrityMode::Sha256 => "sha256",
     }
 }
 

@@ -127,6 +127,24 @@ impl IntegrityMode {
         }
     }
 
+    /// The canonical lowercase `fapolicyd.conf` `integrity=` keyword for this
+    /// mode (`none` / `size` / `ima` / `sha256`).
+    ///
+    /// Inverse of [`from_conf_value`](Self::from_conf_value) for the four
+    /// recognised keywords, so a round-trip
+    /// `from_conf_value(Some(m.as_keyword())) == m` holds. The single source of
+    /// truth for the keyword spelling shared by the CLI's `--integrity` header
+    /// and its "not enforced under integrity=<X>" annotations.
+    #[must_use]
+    pub fn as_keyword(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Size => "size",
+            Self::Ima => "ima",
+            Self::Sha256 => "sha256",
+        }
+    }
+
     /// True iff `verdict` is enforced under this integrity mode.
     ///
     /// Enforcement table (grounded in `fapolicyd.conf(5)` and the fapolicyd
@@ -1492,6 +1510,40 @@ mod tests {
             IntegrityMode::from_conf_value(Some("SHA256")),
             IntegrityMode::None
         );
+    }
+
+    // ---- IntegrityMode::as_keyword (inverse of from_conf_value) --------------
+
+    /// `as_keyword` must emit the exact lowercase `fapolicyd.conf` keyword for
+    /// each variant. One assert per arm so a swapped/collapsed-match mutant dies
+    /// on a specific variant. `sha256` (not `sha-256`) is load-bearing: the CLI
+    /// `--integrity` value-enum and the conf parser both spell it `sha256`.
+    #[test]
+    fn integrity_mode_as_keyword_spells_each_variant() {
+        assert_eq!(IntegrityMode::None.as_keyword(), "none");
+        assert_eq!(IntegrityMode::Size.as_keyword(), "size");
+        assert_eq!(IntegrityMode::Ima.as_keyword(), "ima");
+        assert_eq!(IntegrityMode::Sha256.as_keyword(), "sha256");
+    }
+
+    /// Round-trip: every mode's keyword parses back to the same mode via
+    /// `from_conf_value`. This pins `as_keyword` as the true inverse of
+    /// `from_conf_value` for the four recognised keywords, so the two can never
+    /// silently drift apart.
+    #[test]
+    fn integrity_mode_keyword_roundtrips_through_from_conf_value() {
+        for mode in [
+            IntegrityMode::None,
+            IntegrityMode::Size,
+            IntegrityMode::Ima,
+            IntegrityMode::Sha256,
+        ] {
+            assert_eq!(
+                IntegrityMode::from_conf_value(Some(mode.as_keyword())),
+                mode,
+                "as_keyword({mode:?}) must parse back to {mode:?}"
+            );
+        }
     }
 
     // ---- IntegrityMode::enforces -- full 5x4 enforcement table (RED) ---------
