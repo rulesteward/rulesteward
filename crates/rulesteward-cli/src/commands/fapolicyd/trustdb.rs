@@ -12,8 +12,8 @@ use rulesteward_fapolicyd::{
 };
 
 use crate::cli::{
-    TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand, TrustdbDiffArgs, TrustdbFormat,
-    TrustdbListArgs, TrustdbListFormat, TrustdbStaleArgs,
+    IntegrityLevelArg, TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand, TrustdbDiffArgs,
+    TrustdbFormat, TrustdbListArgs, TrustdbListFormat, TrustdbStaleArgs,
 };
 use crate::commands::conf::conf_value;
 use crate::commands::trustdb_compute;
@@ -68,21 +68,27 @@ fn source_matches(filter: TrustSourceFilter, source: TrustSource) -> bool {
 
 /// Resolve the effective `IntegrityMode` with precedence:
 ///
-/// 1. `--integrity <level>` flag (highest priority)
+/// 1. `--integrity <level>` flag (highest priority). The flag is a clap
+///    value-enum (`IntegrityLevelArg`) accepting ONLY `{none, size, ima,
+///    sha256}`; an unknown value is rejected by clap before this runs, so the
+///    flag is never silently weakened to `none` (#292). This is intentionally
+///    stricter than the conf-file path below, which stays daemon-faithful.
 /// 2. `integrity` key from `--config <path>` (or default `/etc/fapolicyd/fapolicyd.conf`)
-///    - Key present in a found conf: use its value (may parse to `None` for "none")
+///    - Key present in a found conf: use its value (`from_conf_value`, which
+///      maps an unknown/`none` value to `IntegrityMode::None` for daemon parity)
 ///    - Key absent in a found conf: daemon default `IntegrityMode::None`
 /// 3. No conf file found at the path: STRICT (`IntegrityMode::Sha256`)
 ///
 /// Returns `(mode, source_description)` so callers can emit an informational header.
 fn resolve_integrity_mode(
-    integrity_flag: Option<&str>,
+    integrity_flag: Option<IntegrityLevelArg>,
     config_path: Option<&Path>,
 ) -> (IntegrityMode, String) {
-    // --integrity flag wins unconditionally.
+    // --integrity flag wins unconditionally. clap already validated it against
+    // the {none,size,ima,sha256} set, so the typed value maps directly.
     if let Some(level) = integrity_flag {
-        let mode = IntegrityMode::from_conf_value(Some(level));
-        return (mode, format!("--integrity flag ({level})"));
+        let mode = IntegrityMode::from(level);
+        return (mode, format!("--integrity flag ({})", mode_name(mode)));
     }
 
     // Determine which conf path to read.
@@ -102,6 +108,18 @@ fn resolve_integrity_mode(
         // Conf NOT found: STRICT (treat as sha256).
         let src = format!("no conf found at {} - strict (sha256)", conf_path.display());
         (IntegrityMode::Sha256, src)
+    }
+}
+
+/// Canonical lowercase name for an `IntegrityMode` (matches the
+/// `fapolicyd.conf` `integrity=` keyword), used only in the `--integrity` flag
+/// header line.
+fn mode_name(mode: IntegrityMode) -> &'static str {
+    match mode {
+        IntegrityMode::None => "none",
+        IntegrityMode::Size => "size",
+        IntegrityMode::Ima => "ima",
+        IntegrityMode::Sha256 => "sha256",
     }
 }
 
@@ -131,8 +149,7 @@ fn run_check(args: &TrustdbCheckArgs) -> anyhow::Result<i32> {
         Err(code) => return Ok(code),
     };
 
-    let (mode, mode_src) =
-        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+    let (mode, mode_src) = resolve_integrity_mode(args.integrity, args.config.as_deref());
 
     let mut rows: Vec<CheckRow> = Vec::new();
     for path in &args.paths {
@@ -183,8 +200,7 @@ fn run_diff(args: &TrustdbDiffArgs) -> anyhow::Result<i32> {
         return run_diff_db(&db, &other, json(args.format));
     }
 
-    let (mode, mode_src) =
-        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+    let (mode, mode_src) = resolve_integrity_mode(args.integrity, args.config.as_deref());
 
     // DB-vs-on-disk: verify every entry.
     let entries = db.iter_entries()?;
@@ -233,8 +249,7 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
         Err(code) => return Ok(code),
     };
 
-    let (mode, mode_src) =
-        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+    let (mode, mode_src) = resolve_integrity_mode(args.integrity, args.config.as_deref());
 
     let entries = db.iter_entries()?;
     let all_rows: Vec<CheckRow> = entries

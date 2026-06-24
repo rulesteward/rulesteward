@@ -62,6 +62,40 @@ pub enum TrustSourceFilter {
     Unknown,
 }
 
+/// CLI value-enum for the `--integrity` override flag on the vs-disk trust-DB
+/// verbs (`check` / `diff` / `stale`). Mirrors the fapolicyd domain
+/// `IntegrityMode` so the domain crate stays clap-free (the same layering as
+/// `TrustSourceFilter` -> `TrustSource`).
+///
+/// The accepted values are EXACTLY `{none, size, ima, sha256}`; clap rejects any
+/// other token with a parse error (non-zero exit). This is intentionally
+/// STRICTER than the conf-file path: a `--config` file with an unknown
+/// `integrity` value keeps the daemon-faithful unknown->none behaviour
+/// (`fapolicyd.conf(5)` parity), but an explicit unknown `--integrity` flag is a
+/// user typo that must be surfaced, not silently weakened (#292).
+///
+/// `Sha256` pins its value name to `sha256` (clap's default kebab-case would
+/// render `sha-256`, which the spec rejects as an invalid keyword).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IntegrityLevelArg {
+    None,
+    Size,
+    Ima,
+    #[value(name = "sha256")]
+    Sha256,
+}
+
+impl From<IntegrityLevelArg> for rulesteward_fapolicyd::IntegrityMode {
+    fn from(arg: IntegrityLevelArg) -> Self {
+        match arg {
+            IntegrityLevelArg::None => rulesteward_fapolicyd::IntegrityMode::None,
+            IntegrityLevelArg::Size => rulesteward_fapolicyd::IntegrityMode::Size,
+            IntegrityLevelArg::Ima => rulesteward_fapolicyd::IntegrityMode::Ima,
+            IntegrityLevelArg::Sha256 => rulesteward_fapolicyd::IntegrityMode::Sha256,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rulesteward",
@@ -646,8 +680,8 @@ pub struct TrustdbCheckArgs {
 
     /// Override the integrity enforcement level (none|size|ima|sha256). Takes
     /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL")]
-    pub integrity: Option<String>,
+    #[arg(long, value_name = "LEVEL", value_enum)]
+    pub integrity: Option<IntegrityLevelArg>,
 }
 
 /// Arguments for `rulesteward fapolicyd trustdb diff`.
@@ -674,8 +708,8 @@ pub struct TrustdbDiffArgs {
 
     /// Override the integrity enforcement level (none|size|ima|sha256). Takes
     /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL")]
-    pub integrity: Option<String>,
+    #[arg(long, value_name = "LEVEL", value_enum)]
+    pub integrity: Option<IntegrityLevelArg>,
 }
 
 /// Arguments for `rulesteward fapolicyd trustdb stale`.
@@ -697,8 +731,8 @@ pub struct TrustdbStaleArgs {
 
     /// Override the integrity enforcement level (none|size|ima|sha256). Takes
     /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL")]
-    pub integrity: Option<String>,
+    #[arg(long, value_name = "LEVEL", value_enum)]
+    pub integrity: Option<IntegrityLevelArg>,
 }
 
 #[derive(Debug, Subcommand)]

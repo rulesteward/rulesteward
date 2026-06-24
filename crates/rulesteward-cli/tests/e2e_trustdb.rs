@@ -1191,3 +1191,305 @@ fn integrity_none_human_output_contains_not_enforced_annotation() {
         "the annotation must name the integrity mode 'none'; got:\n{stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Integrity gating for the OTHER two vs-disk verbs: `diff` (vs-disk) + `stale`.
+//
+// The check-verb tests above already exercise the demotion boundary, but a wrong
+// impl that drops the `&& enforced` exit-gate in run_diff / run_stale specifically
+// would survive on those alone (the pre-existing diff/stale tests run with NO
+// --config -> STRICT mode, where the gate is a no-op). These tests pin the
+// demotion boundary for `diff` and `stale` too.
+//
+// They are GREEN against the CORRECT impl (they lock behavior, killing the
+// wrong-impl shortcut), and RED against the current always-true stub (the stub
+// over-enforces, so the integrity=none exit-0 expectation fails).
+// ---------------------------------------------------------------------------
+
+/// Build a fixture DB with exactly two on-disk drift entries (one HashMismatch,
+/// one SizeMismatch) and NO Missing entry, so the only divergences are the two
+/// integrity-DEMOTABLE verdicts. Both files are created on disk by this helper,
+/// so `diff`/`stale` see a real size/hash drift (not a Missing).
+///
+/// Returns `(path_hash, path_size)`. The `files` tempdir must outlive the DB use.
+fn build_two_drift_fixture(
+    db_dir: &Path,
+    files_dir: &Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let path_hash = files_dir.join("diffstale_hash_drift");
+    let path_size = files_dir.join("diffstale_size_drift");
+    write_known_file(&path_hash);
+    write_known_file(&path_size);
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir,
+        &[
+            // Hash mismatch only (recorded size = KNOWN_SIZE, correct).
+            (
+                path_hash.to_str().unwrap(),
+                value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+            ),
+            // Size mismatch (recorded size wrong).
+            (
+                path_size.to_str().unwrap(),
+                value_bytes(1, KNOWN_SIZE + 9999, KNOWN_SHA256).as_slice(),
+            ),
+        ],
+    );
+    (path_hash, path_size)
+}
+
+/// A1: `trustdb diff` (vs-disk, NO --against) under `integrity=none` exits 0 even
+/// with a HashMismatch AND a SizeMismatch entry: both are demoted (visible, not
+/// enforced). The JSON rows carry `enforced:false`; the human output still SHOWS
+/// both drift rows with the "not enforced" annotation; the row count equals the
+/// drift count (demoted rows are NOT dropped).
+///
+/// RED against the always-true stub (it exits 1). GREEN against the correct impl.
+/// Pins the demotion exit-gate for `run_diff` specifically.
+#[test]
+fn integrity_none_diff_vs_disk_demotes_hash_and_size_exit_zero() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let (path_hash, path_size) = build_two_drift_fixture(db_dir.path(), files.path());
+
+    let conf = write_conf("none");
+
+    // Human surface: exit 0, both drift rows visible, "not enforced" annotation.
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "diff", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .output()
+        .expect("run diff");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "integrity=none must not enforce hash/size drift in `diff` (exit 0); got: {:?} stdout={:?}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
+    assert!(
+        stdout.contains(path_hash.to_str().unwrap()),
+        "hash-mismatch drift must stay VISIBLE in `diff` output even when not enforced; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(path_size.to_str().unwrap()),
+        "size-mismatch drift must stay VISIBLE in `diff` output even when not enforced; got:\n{stdout}"
+    );
+    assert!(
+        stdout.to_lowercase().contains("not enforced"),
+        "`diff` human output under integrity=none must annotate drift as 'not enforced'; got:\n{stdout}"
+    );
+
+    // JSON surface: exit 0, two rows, each enforced=false, count == drift count.
+    let out_json = bin()
+        .args(["fapolicyd", "trustdb", "diff", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run diff json");
+    assert_eq!(
+        out_json.status.code(),
+        Some(0),
+        "integrity=none `diff --format json` must exit 0; got: {:?}",
+        out_json.status
+    );
+    let stdout = String::from_utf8(out_json.stdout.clone()).expect("utf8");
+    assert!(
+        stdout.ends_with('\n'),
+        "json must end with a trailing newline"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let arr = json["data"].as_array().expect("`data` array");
+    assert_eq!(
+        arr.len(),
+        2,
+        "demoted rows must NOT be dropped: the two drift entries must both appear; got: {arr:?}"
+    );
+    for row in arr {
+        assert_eq!(
+            row["enforced"],
+            serde_json::json!(false),
+            "under integrity=none, each `diff` drift row must carry enforced=false; got: {row:?}"
+        );
+    }
+}
+
+/// A2: `trustdb stale --db <same fixture> --config <integrity=none>` exits 0; the
+/// stale rows are visible with `enforced:false` in JSON.
+///
+/// RED against the always-true stub. GREEN against the correct impl. Pins the
+/// demotion exit-gate for `run_stale` specifically.
+#[test]
+fn integrity_none_stale_demotes_hash_and_size_exit_zero() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let (path_hash, path_size) = build_two_drift_fixture(db_dir.path(), files.path());
+
+    let conf = write_conf("none");
+
+    // Human surface: exit 0, both stale rows visible.
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "stale", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .output()
+        .expect("run stale");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "integrity=none must not enforce hash/size drift in `stale` (exit 0); got: {:?} stdout={:?}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
+    assert!(
+        stdout.contains(path_hash.to_str().unwrap()),
+        "hash-mismatch stale row must stay VISIBLE even when not enforced; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(path_size.to_str().unwrap()),
+        "size-mismatch stale row must stay VISIBLE even when not enforced; got:\n{stdout}"
+    );
+
+    // JSON surface: exit 0, two rows, each enforced=false.
+    let out_json = bin()
+        .args(["fapolicyd", "trustdb", "stale", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("run stale json");
+    assert_eq!(
+        out_json.status.code(),
+        Some(0),
+        "integrity=none `stale --format json` must exit 0; got: {:?}",
+        out_json.status
+    );
+    let stdout = String::from_utf8(out_json.stdout.clone()).expect("utf8");
+    assert!(
+        stdout.ends_with('\n'),
+        "json must end with a trailing newline"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let arr = json["data"].as_array().expect("`data` array");
+    assert_eq!(
+        arr.len(),
+        2,
+        "both demoted stale rows must appear (not dropped); got: {arr:?}"
+    );
+    for row in arr {
+        assert_eq!(
+            row["enforced"],
+            serde_json::json!(false),
+            "under integrity=none, each `stale` row must carry enforced=false; got: {row:?}"
+        );
+    }
+}
+
+/// A3: `trustdb stale --db <fixture with a SizeMismatch> --config <integrity=size>`
+/// exits 1: SizeMismatch IS enforced under `integrity=size`.
+///
+/// GREEN against BOTH the stub (over-enforces -> exit 1) and the correct impl
+/// (size enforces SizeMismatch -> exit 1). Locks that `stale` honors the
+/// ENFORCED side of the boundary under `size`, not just the demoted side.
+#[test]
+fn integrity_size_stale_size_mismatch_exits_one() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_size = files.path().join("stale_size_enforced");
+    write_known_file(&path_size);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_size.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE + 9999, KNOWN_SHA256).as_slice(),
+        )],
+    );
+
+    let conf = write_conf("size");
+
+    bin()
+        .args(["fapolicyd", "trustdb", "stale", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .assert()
+        .code(1);
+}
+
+/// B: An UNRECOGNIZED `--integrity` value on the explicit CLI flag must be
+/// REJECTED with a non-zero (clap parse-error) exit, NOT silently mapped to
+/// `none` and exited 0. The accepted set is exactly {none, size, ima, sha256}.
+///
+/// RED against the current impl: `--integrity` is a free-form `Option<String>`
+/// that `from_conf_value` maps (unknown -> none), so the command parses and exits
+/// 0. The implementer converts `--integrity` to a value-enum that accepts ONLY
+/// the four keywords, after which an invalid value is a clap parse error.
+///
+/// SCOPE NOTE: this rejection applies ONLY to the explicit `--integrity` FLAG.
+/// An unknown value inside a `--config` FILE keeps the daemon-faithful
+/// unknown->none behavior (fapolicyd.conf(5) parity) and is deliberately NOT
+/// tested as a rejection here.
+#[test]
+fn unknown_integrity_flag_value_is_rejected_not_silently_none() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path = files.path().join("anything");
+    write_known_file(&path);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, KNOWN_SHA256).as_slice(),
+        )],
+    );
+
+    // `strict` is NOT one of {none,size,ima,sha256}; must be a parse error.
+    let out_strict = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--integrity")
+        .arg("strict")
+        .arg(&path)
+        .output()
+        .expect("run check bogus integrity");
+    assert_ne!(
+        out_strict.status.code(),
+        Some(0),
+        "`--integrity strict` (not a valid keyword) must be REJECTED with a non-zero \
+         exit, not silently mapped to none; got exit {:?} stdout={:?} stderr={:?}",
+        out_strict.status.code(),
+        String::from_utf8_lossy(&out_strict.stdout),
+        String::from_utf8_lossy(&out_strict.stderr),
+    );
+
+    // `sha-256` (hyphenated) is also not a valid keyword -> rejected.
+    let out_hyphen = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--integrity")
+        .arg("sha-256")
+        .arg(&path)
+        .output()
+        .expect("run check bogus integrity 2");
+    assert_ne!(
+        out_hyphen.status.code(),
+        Some(0),
+        "`--integrity sha-256` (not a valid keyword) must be REJECTED with a non-zero \
+         exit; got exit {:?} stderr={:?}",
+        out_hyphen.status.code(),
+        String::from_utf8_lossy(&out_hyphen.stderr),
+    );
+}
