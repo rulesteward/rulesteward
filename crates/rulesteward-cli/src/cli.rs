@@ -637,6 +637,17 @@ pub struct TrustdbCheckArgs {
     /// Output format
     #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
     pub format: TrustdbFormat,
+
+    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
+    /// `integrity` key controls which verdicts raise the exit code. When the
+    /// file is not found, STRICT mode (sha256) is assumed.
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
+    /// precedence over --config (and the daemon default).
+    #[arg(long, value_name = "LEVEL")]
+    pub integrity: Option<String>,
 }
 
 /// Arguments for `rulesteward fapolicyd trustdb diff`.
@@ -653,6 +664,18 @@ pub struct TrustdbDiffArgs {
     /// Output format
     #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
     pub format: TrustdbFormat,
+
+    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
+    /// `integrity` key controls which verdicts raise the exit code (vs-disk mode
+    /// only; DB-vs-DB mode ignores integrity gating). When the file is not found,
+    /// STRICT mode (sha256) is assumed.
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
+    /// precedence over --config (and the daemon default).
+    #[arg(long, value_name = "LEVEL")]
+    pub integrity: Option<String>,
 }
 
 /// Arguments for `rulesteward fapolicyd trustdb stale`.
@@ -665,6 +688,17 @@ pub struct TrustdbStaleArgs {
     /// Output format
     #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
     pub format: TrustdbFormat,
+
+    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
+    /// `integrity` key controls which verdicts raise the exit code. When the
+    /// file is not found, STRICT mode (sha256) is assumed.
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
+    /// precedence over --config (and the daemon default).
+    #[arg(long, value_name = "LEVEL")]
+    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

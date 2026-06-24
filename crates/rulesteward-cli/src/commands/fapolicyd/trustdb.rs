@@ -7,18 +7,22 @@
 
 use std::path::{Path, PathBuf};
 
-use rulesteward_fapolicyd::{TrustDb, TrustSource, open_trustdb_readonly, verify_entry};
+use rulesteward_fapolicyd::{
+    IntegrityMode, TrustDb, TrustSource, open_trustdb_readonly, verify_entry,
+};
 
 use crate::cli::{
     TrustSourceFilter, TrustdbCheckArgs, TrustdbCommand, TrustdbDiffArgs, TrustdbFormat,
     TrustdbListArgs, TrustdbListFormat, TrustdbStaleArgs,
 };
+use crate::commands::conf::conf_value;
 use crate::commands::trustdb_compute;
 use crate::exit_code::{EXIT_CLEAN, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
 use crate::output::trustdb as trustdb_out;
 use crate::output::trustdb::{CheckRow, CheckVerdict, ListRow};
 
 const DEFAULT_TRUSTDB_DIR: &str = "/var/lib/fapolicyd/";
+const DEFAULT_CONF_PATH: &str = "/etc/fapolicyd/fapolicyd.conf";
 
 pub(super) fn run_trustdb(cmd: TrustdbCommand) -> anyhow::Result<i32> {
     match cmd {
@@ -62,6 +66,45 @@ fn source_matches(filter: TrustSourceFilter, source: TrustSource) -> bool {
     )
 }
 
+/// Resolve the effective `IntegrityMode` with precedence:
+///
+/// 1. `--integrity <level>` flag (highest priority)
+/// 2. `integrity` key from `--config <path>` (or default `/etc/fapolicyd/fapolicyd.conf`)
+///    - Key present in a found conf: use its value (may parse to `None` for "none")
+///    - Key absent in a found conf: daemon default `IntegrityMode::None`
+/// 3. No conf file found at the path: STRICT (`IntegrityMode::Sha256`)
+///
+/// Returns `(mode, source_description)` so callers can emit an informational header.
+fn resolve_integrity_mode(
+    integrity_flag: Option<&str>,
+    config_path: Option<&Path>,
+) -> (IntegrityMode, String) {
+    // --integrity flag wins unconditionally.
+    if let Some(level) = integrity_flag {
+        let mode = IntegrityMode::from_conf_value(Some(level));
+        return (mode, format!("--integrity flag ({level})"));
+    }
+
+    // Determine which conf path to read.
+    let conf_path = config_path.map_or_else(|| PathBuf::from(DEFAULT_CONF_PATH), Path::to_path_buf);
+
+    if let Ok(text) = std::fs::read_to_string(&conf_path) {
+        // Conf found: read the integrity key (absent key -> daemon default None).
+        let raw = conf_value(&text, "integrity");
+        let mode = IntegrityMode::from_conf_value(raw);
+        let src = format!(
+            "{} (integrity={})",
+            conf_path.display(),
+            raw.unwrap_or("absent")
+        );
+        (mode, src)
+    } else {
+        // Conf NOT found: STRICT (treat as sha256).
+        let src = format!("no conf found at {} - strict (sha256)", conf_path.display());
+        (IntegrityMode::Sha256, src)
+    }
+}
+
 fn run_list(args: &TrustdbListArgs) -> anyhow::Result<i32> {
     let db = match open_db(args.db.as_deref()) {
         Ok(db) => db,
@@ -87,6 +130,10 @@ fn run_check(args: &TrustdbCheckArgs) -> anyhow::Result<i32> {
         Ok(db) => db,
         Err(code) => return Ok(code),
     };
+
+    let (mode, mode_src) =
+        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+
     let mut rows: Vec<CheckRow> = Vec::new();
     for path in &args.paths {
         let key = path.to_string_lossy();
@@ -94,20 +141,32 @@ fn run_check(args: &TrustdbCheckArgs) -> anyhow::Result<i32> {
             None => rows.push(CheckRow {
                 path: key.into_owned(),
                 verdict: CheckVerdict::NotInDb,
+                enforced: true,
             }),
             Some(entries) => {
                 for entry in &entries {
+                    let disk_verdict = verify_entry(entry);
+                    let enforced = mode.enforces(&disk_verdict);
                     rows.push(CheckRow {
                         path: entry.path.clone(),
-                        verdict: CheckVerdict::from(&verify_entry(entry)),
+                        verdict: CheckVerdict::from(&disk_verdict),
+                        enforced,
                     });
                 }
             }
         }
     }
-    let diverged = rows.iter().any(|r| r.verdict.is_divergence());
-    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
-    Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
+    let any_enforced_divergence = rows.iter().any(|r| r.verdict.is_divergence() && r.enforced);
+    let is_json = json(args.format);
+    print!(
+        "{}",
+        trustdb_out::render_checks(&rows, is_json, Some((mode, &mode_src)))
+    );
+    Ok(if any_enforced_divergence {
+        EXIT_WARNINGS
+    } else {
+        EXIT_CLEAN
+    })
 }
 
 fn run_diff(args: &TrustdbDiffArgs) -> anyhow::Result<i32> {
@@ -120,20 +179,38 @@ fn run_diff(args: &TrustdbDiffArgs) -> anyhow::Result<i32> {
             Ok(db) => db,
             Err(code) => return Ok(code),
         };
+        // DB-vs-DB mode: integrity gating does not apply.
         return run_diff_db(&db, &other, json(args.format));
     }
+
+    let (mode, mode_src) =
+        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+
     // DB-vs-on-disk: verify every entry.
     let entries = db.iter_entries()?;
     let rows: Vec<CheckRow> = entries
         .iter()
-        .map(|e| CheckRow {
-            path: e.path.clone(),
-            verdict: CheckVerdict::from(&verify_entry(e)),
+        .map(|e| {
+            let disk_verdict = verify_entry(e);
+            let enforced = mode.enforces(&disk_verdict);
+            CheckRow {
+                path: e.path.clone(),
+                verdict: CheckVerdict::from(&disk_verdict),
+                enforced,
+            }
         })
         .collect();
-    let diverged = rows.iter().any(|r| r.verdict.is_divergence());
-    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
-    Ok(if diverged { EXIT_WARNINGS } else { EXIT_CLEAN })
+    let any_enforced_divergence = rows.iter().any(|r| r.verdict.is_divergence() && r.enforced);
+    let is_json = json(args.format);
+    print!(
+        "{}",
+        trustdb_out::render_checks(&rows, is_json, Some((mode, &mode_src)))
+    );
+    Ok(if any_enforced_divergence {
+        EXIT_WARNINGS
+    } else {
+        EXIT_CLEAN
+    })
 }
 
 /// DB-vs-DB diff: read both DBs, classify the diff via the pure
@@ -155,18 +232,35 @@ fn run_stale(args: &TrustdbStaleArgs) -> anyhow::Result<i32> {
         Ok(db) => db,
         Err(code) => return Ok(code),
     };
+
+    let (mode, mode_src) =
+        resolve_integrity_mode(args.integrity.as_deref(), args.config.as_deref());
+
     let entries = db.iter_entries()?;
     let all_rows: Vec<CheckRow> = entries
         .iter()
-        .map(|e| CheckRow {
-            path: e.path.clone(),
-            verdict: CheckVerdict::from(&verify_entry(e)),
+        .map(|e| {
+            let disk_verdict = verify_entry(e);
+            let enforced = mode.enforces(&disk_verdict);
+            CheckRow {
+                path: e.path.clone(),
+                verdict: CheckVerdict::from(&disk_verdict),
+                enforced,
+            }
         })
         .collect();
     // stale = the divergent (non-Match) rows; the filter is the pure
     // `trustdb_compute::stale_rows` so it is unit-tested + mutation-covered.
     let rows = trustdb_compute::stale_rows(all_rows);
-    let any_stale = !rows.is_empty();
-    print!("{}", trustdb_out::render_checks(&rows, json(args.format)));
-    Ok(if any_stale { EXIT_WARNINGS } else { EXIT_CLEAN })
+    let any_enforced_divergence = rows.iter().any(|r| r.verdict.is_divergence() && r.enforced);
+    let is_json = json(args.format);
+    print!(
+        "{}",
+        trustdb_out::render_checks(&rows, is_json, Some((mode, &mode_src)))
+    );
+    Ok(if any_enforced_divergence {
+        EXIT_WARNINGS
+    } else {
+        EXIT_CLEAN
+    })
 }

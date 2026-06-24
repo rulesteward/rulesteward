@@ -75,6 +75,91 @@ pub enum DiskVerdict {
     ReadError(String),
 }
 
+/// Which `fapolicyd.conf` integrity check governs trust-DB drift enforcement.
+///
+/// The gating key is `integrity` in `fapolicyd.conf` (values: `none` | `size` |
+/// `ima` | `sha256`; absent key or unrecognised value maps to `None`). Controls
+/// which `DiskVerdict` variants are *enforced* (flip the exit code and the
+/// `enforced` flag on the row) vs merely *visible* (shown with an annotation but
+/// exit-code clean).
+///
+/// Enforcement table (the contract the implementer will fill in `enforces`):
+///
+/// | Verdict           | none  | size  | ima   | sha256 |
+/// |-------------------|-------|-------|-------|--------|
+/// | `SizeMismatch`    | no    | yes   | yes   | yes    |
+/// | `HashMismatch`    | no    | no    | no    | yes    |
+/// | `Missing`         | yes   | yes   | yes   | yes    |
+/// | `ReadError`       | yes   | yes   | yes   | yes    |
+/// | `NotInDb`         | yes   | yes   | yes   | yes    |
+///
+/// When NO conf file is found at all, the mode is treated as `sha256` (STRICT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum IntegrityMode {
+    /// `integrity = none` (or key absent in a found conf): no hash/size checking.
+    None,
+    /// `integrity = size`: only size mismatches are enforced.
+    Size,
+    /// `integrity = ima`: IMA xattr-hash checking; size mismatches enforced too.
+    Ima,
+    /// `integrity = sha256`: full hash enforcement (trust-DB digest).
+    Sha256,
+}
+
+impl IntegrityMode {
+    /// Parse the trimmed value string from `fapolicyd.conf` (already extracted by
+    /// `conf_value`). Exact matches only: `"none"` -> `None`, `"size"` -> `Size`,
+    /// `"ima"` -> `Ima`, `"sha256"` -> `Sha256`. Any other string (including
+    /// whitespace-only, garbage, or unknown variant) maps to `IntegrityMode::None`
+    /// (daemon default when the key is absent). A trailing inline `#` is part of
+    /// the literal value (per `conf_value` semantics); a raw value of
+    /// e.g. `"sha256 # important"` does NOT match `"sha256"` and returns `None`.
+    ///
+    /// Pass `None` when the key is absent from the conf (daemon default: `None`).
+    #[must_use]
+    pub fn from_conf_value(v: Option<&str>) -> Self {
+        match v {
+            Some("size") => Self::Size,
+            Some("ima") => Self::Ima,
+            Some("sha256") => Self::Sha256,
+            // "none", absent key, unknown value, whitespace -> daemon default None.
+            _ => Self::None,
+        }
+    }
+
+    /// True iff `verdict` is enforced under this integrity mode.
+    ///
+    /// Enforcement table (grounded in `fapolicyd.conf(5)` and the fapolicyd
+    /// daemon's trust-verification logic):
+    ///
+    /// | Verdict           | None  | Size  | Ima   | Sha256 |
+    /// |-------------------|-------|-------|-------|--------|
+    /// | `SizeMismatch`    | no    | yes   | yes   | yes    |
+    /// | `HashMismatch`    | no    | no    | no    | yes    |
+    /// | `Missing`         | yes   | yes   | yes   | yes    |
+    /// | `ReadError`       | yes   | yes   | yes   | yes    |
+    /// | `Match`           | no    | no    | no    | no     |
+    ///
+    /// `NotInDb` is a `CheckVerdict`-only state handled at the CLI layer and is
+    /// always enforced there; this function is never called for it.
+    #[must_use]
+    pub fn enforces(&self, verdict: &DiskVerdict) -> bool {
+        match verdict {
+            // A clean match is never a divergence; enforcement is irrelevant.
+            DiskVerdict::Match => false,
+            // Missing and ReadError are always enforced regardless of mode.
+            DiskVerdict::Missing | DiskVerdict::ReadError(_) => true,
+            // SizeMismatch: enforced under Size, Ima, and Sha256 but NOT under None.
+            DiskVerdict::SizeMismatch { .. } => {
+                matches!(self, Self::Size | Self::Ima | Self::Sha256)
+            }
+            // HashMismatch: enforced ONLY under Sha256 (IMA checks the xattr hash,
+            // not the trust-DB digest, so a DB hash mismatch is not enforced under Ima).
+            DiskVerdict::HashMismatch { .. } => matches!(self, Self::Sha256),
+        }
+    }
+}
+
 /// Parse the raw bytes of a trust-DB value (`"<src_int> <size> <digest_hex>"`).
 ///
 /// Returns `(source, size, digest_hex)` on success. The value must be EXACTLY
@@ -456,7 +541,7 @@ mod tests {
     use super::write_fixture;
     use super::write_trustdb_fixture_kv;
     use super::{
-        DiskVerdict, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
+        DiskVerdict, IntegrityMode, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
         parse_trust_value, verify_entry,
     };
     use proptest::prelude::*;
@@ -1320,6 +1405,288 @@ mod tests {
             "SHA-1 digest (40-hex) must verify as Match; current impl only does SHA-256 so this is RED"
         );
     }
+
+    // ---- IntegrityMode::from_conf_value (grounded in fapolicyd.conf(5)) -----
+    // The four exact values (none/size/ima/sha256) must map 1:1. Anything else
+    // maps to IntegrityMode::None (the daemon default when the key is absent).
+
+    #[test]
+    fn integrity_mode_from_conf_none_str_maps_to_none() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("none")),
+            IntegrityMode::None
+        );
+    }
+
+    #[test]
+    fn integrity_mode_from_conf_size_str_maps_to_size() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("size")),
+            IntegrityMode::Size
+        );
+    }
+
+    #[test]
+    fn integrity_mode_from_conf_ima_str_maps_to_ima() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("ima")),
+            IntegrityMode::Ima
+        );
+    }
+
+    #[test]
+    fn integrity_mode_from_conf_sha256_str_maps_to_sha256() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("sha256")),
+            IntegrityMode::Sha256
+        );
+    }
+
+    /// Absent key (`Option::None`) must map to `IntegrityMode::None` (daemon default).
+    #[test]
+    fn integrity_mode_from_conf_absent_key_maps_to_none() {
+        assert_eq!(IntegrityMode::from_conf_value(None), IntegrityMode::None);
+    }
+
+    /// Garbage / unrecognised value must map to `IntegrityMode::None`.
+    #[test]
+    fn integrity_mode_from_conf_garbage_maps_to_none() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("unknown_value")),
+            IntegrityMode::None
+        );
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("")),
+            IntegrityMode::None
+        );
+    }
+
+    /// Whitespace-only value must map to `IntegrityMode::None` (not a valid keyword).
+    #[test]
+    fn integrity_mode_from_conf_whitespace_maps_to_none() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("  ")),
+            IntegrityMode::None
+        );
+    }
+
+    /// A value with trailing inline `#` (literal per `conf_value` semantics) must
+    /// NOT match "sha256" -- `conf_value` already strips leading/trailing whitespace
+    /// around `=` but does NOT strip inline comments. So "sha256 # important"
+    /// is the raw value, which is unrecognised and maps to `IntegrityMode::None`.
+    #[test]
+    fn integrity_mode_from_conf_trailing_hash_comment_maps_to_none() {
+        // conf_value returns the literal trimmed value including inline `#` text.
+        // "sha256 # inline" is NOT the keyword "sha256", so it maps to None.
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("sha256 # important")),
+            IntegrityMode::None,
+            "a value with trailing inline # is literal (not a comment) and must not match sha256"
+        );
+    }
+
+    /// "SHA256" (uppercase) is not a valid fapolicyd.conf keyword; maps to `IntegrityMode::None`.
+    #[test]
+    fn integrity_mode_from_conf_uppercase_sha256_maps_to_none() {
+        assert_eq!(
+            IntegrityMode::from_conf_value(Some("SHA256")),
+            IntegrityMode::None
+        );
+    }
+
+    // ---- IntegrityMode::enforces -- full 5x4 enforcement table (RED) ---------
+    // These tests assert the INTENDED post-impl behavior. The stub always returns
+    // `true`, so:
+    //   - Tests asserting enforces()==true will PASS (stub agrees).
+    //   - Tests asserting enforces()==false will FAIL (stub returns true instead).
+    // This makes them RED in the right way: they fail because the gating logic
+    // isn't implemented yet, NOT because of a compile or panic.
+    //
+    // Per the grounded contract (fapolicyd.conf(5)):
+    //   SizeMismatch: enforced under size|ima|sha256; NOT under none.
+    //   HashMismatch: enforced ONLY under sha256.
+    //   Missing:      ALWAYS enforced (not integrity-gated).
+    //   ReadError:    ALWAYS enforced.
+    //   NotInDb:      (handled by CheckVerdict; not a DiskVerdict; covered in e2e)
+    //
+    // One test per (mode, verdict) cell so a wrong-cell mutant dies on exactly
+    // that assertion.
+
+    // -- SizeMismatch --
+    // Enforced under size, ima, sha256. NOT under none.
+
+    #[test]
+    fn integrity_none_does_not_enforce_size_mismatch() {
+        // RED: stub returns true; real impl must return false.
+        assert!(
+            !IntegrityMode::None.enforces(&DiskVerdict::SizeMismatch {
+                recorded: 100,
+                actual: 200
+            }),
+            "integrity=none must NOT enforce SizeMismatch (it is visible but not exit-code-raising)"
+        );
+    }
+
+    #[test]
+    fn integrity_size_enforces_size_mismatch() {
+        assert!(
+            IntegrityMode::Size.enforces(&DiskVerdict::SizeMismatch {
+                recorded: 100,
+                actual: 200
+            }),
+            "integrity=size must enforce SizeMismatch"
+        );
+    }
+
+    #[test]
+    fn integrity_ima_enforces_size_mismatch() {
+        assert!(
+            IntegrityMode::Ima.enforces(&DiskVerdict::SizeMismatch {
+                recorded: 100,
+                actual: 200
+            }),
+            "integrity=ima must enforce SizeMismatch (size check is a prerequisite to IMA)"
+        );
+    }
+
+    #[test]
+    fn integrity_sha256_enforces_size_mismatch() {
+        assert!(
+            IntegrityMode::Sha256.enforces(&DiskVerdict::SizeMismatch {
+                recorded: 100,
+                actual: 200
+            }),
+            "integrity=sha256 must enforce SizeMismatch"
+        );
+    }
+
+    // -- HashMismatch --
+    // Enforced ONLY under sha256. NOT under none, size, or ima.
+
+    #[test]
+    fn integrity_none_does_not_enforce_hash_mismatch() {
+        // RED: stub returns true; real impl must return false.
+        assert!(
+            !IntegrityMode::None.enforces(&DiskVerdict::HashMismatch {
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64)
+            }),
+            "integrity=none must NOT enforce HashMismatch"
+        );
+    }
+
+    #[test]
+    fn integrity_size_does_not_enforce_hash_mismatch() {
+        // RED: stub returns true; real impl must return false.
+        assert!(
+            !IntegrityMode::Size.enforces(&DiskVerdict::HashMismatch {
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64)
+            }),
+            "integrity=size must NOT enforce HashMismatch (only size, not digest)"
+        );
+    }
+
+    #[test]
+    fn integrity_ima_does_not_enforce_hash_mismatch() {
+        // RED: stub returns true; real impl must return false.
+        // ima checks the IMA xattr hash (not the trust-DB digest), so HashMismatch
+        // in the trust DB is NOT enforced under ima.
+        assert!(
+            !IntegrityMode::Ima.enforces(&DiskVerdict::HashMismatch {
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64)
+            }),
+            "integrity=ima must NOT enforce trust-DB HashMismatch (ima uses the IMA xattr, not the DB digest)"
+        );
+    }
+
+    #[test]
+    fn integrity_sha256_enforces_hash_mismatch() {
+        assert!(
+            IntegrityMode::Sha256.enforces(&DiskVerdict::HashMismatch {
+                recorded: "a".repeat(64),
+                actual: "b".repeat(64)
+            }),
+            "integrity=sha256 must enforce HashMismatch"
+        );
+    }
+
+    // -- Missing -- ALWAYS enforced under all modes.
+
+    #[test]
+    fn integrity_none_enforces_missing() {
+        assert!(
+            IntegrityMode::None.enforces(&DiskVerdict::Missing),
+            "integrity=none must enforce Missing (file absence is always an integrity violation)"
+        );
+    }
+
+    #[test]
+    fn integrity_size_enforces_missing() {
+        assert!(
+            IntegrityMode::Size.enforces(&DiskVerdict::Missing),
+            "integrity=size must enforce Missing"
+        );
+    }
+
+    #[test]
+    fn integrity_ima_enforces_missing() {
+        assert!(
+            IntegrityMode::Ima.enforces(&DiskVerdict::Missing),
+            "integrity=ima must enforce Missing"
+        );
+    }
+
+    #[test]
+    fn integrity_sha256_enforces_missing() {
+        assert!(
+            IntegrityMode::Sha256.enforces(&DiskVerdict::Missing),
+            "integrity=sha256 must enforce Missing"
+        );
+    }
+
+    // -- ReadError -- ALWAYS enforced under all modes.
+
+    #[test]
+    fn integrity_none_enforces_read_error() {
+        assert!(
+            IntegrityMode::None.enforces(&DiskVerdict::ReadError("permission denied".to_owned())),
+            "integrity=none must enforce ReadError (I/O failure is always an integrity violation)"
+        );
+    }
+
+    #[test]
+    fn integrity_size_enforces_read_error() {
+        assert!(
+            IntegrityMode::Size.enforces(&DiskVerdict::ReadError("err".to_owned())),
+            "integrity=size must enforce ReadError"
+        );
+    }
+
+    #[test]
+    fn integrity_ima_enforces_read_error() {
+        assert!(
+            IntegrityMode::Ima.enforces(&DiskVerdict::ReadError("err".to_owned())),
+            "integrity=ima must enforce ReadError"
+        );
+    }
+
+    #[test]
+    fn integrity_sha256_enforces_read_error() {
+        assert!(
+            IntegrityMode::Sha256.enforces(&DiskVerdict::ReadError("err".to_owned())),
+            "integrity=sha256 must enforce ReadError"
+        );
+    }
+
+    // -- Match -- never enforced (it is clean; enforces does not apply to Match
+    // in the gating sense, but we test it returns true for all modes to confirm
+    // the stub doesn't accidentally skip clean verdicts through the exit-code path).
+    // This is a GREEN stability test (stub returns true, real impl should also be
+    // true for Match -- a match is never a gating event but should not be suppressed).
+    // Actually: enforces(Match) is never called in the gating path (only called
+    // for divergence verdicts). We skip Match tests to avoid specification ambiguity.
 }
 
 // ---------------------------------------------------------------------------
