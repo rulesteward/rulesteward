@@ -155,6 +155,124 @@ fn migrate_coexistence_trap_without_delete_legacy_exits_two() {
 }
 
 #[test]
+fn migrate_coexistence_trap_human_stdout_has_no_applied_header() {
+    // #315: a blocked refusal (no --delete-legacy) reports the error on stderr;
+    // human stdout must NOT contain the misleading "Migration applied" header,
+    // because nothing was applied. Pins the stdout cleanliness the sibling
+    // exit-code test above does not assert.
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+    write(d.path(), "rules.d/10-x.rules", "deny perm=any all : all\n");
+    let mut argv = migrate_args(d.path());
+    argv.push("--apply".into());
+    Command::cargo_bin("rulesteward")
+        .unwrap()
+        .args(argv)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("coexistence trap"))
+        .stdout(predicate::str::contains("Migration applied").not());
+}
+
+// --- #315 full fix: every error layout reports on stderr and prints no header ---
+//
+// The render fall-through that #315 reported (the misleading "Migration applied"
+// header on stdout) affected ALL of migrate's error layouts, not just the
+// coexistence-trap refusal. These pin, via the real binary, that each
+// deterministically-triggerable error layout (a) exits non-zero, (b) reports the
+// reason on stderr, and (c) prints no "Migration applied" header on stdout.
+//
+// read-error and remove-error are NOT deterministically triggerable without
+// filesystem fault injection (TOCTOU / permission tricks that root bypasses), so
+// they have no e2e here; their stdout suppression is covered by the
+// render_human_all_error_layouts_emit_empty_stdout unit test.
+
+#[test]
+fn migrate_parse_error_reports_on_stderr_no_header() {
+    let d = tempfile::tempdir().unwrap();
+    // A legacy file that does not parse -> parse-error (EXIT_RULE_PARSE_ERROR = 5).
+    write(
+        d.path(),
+        "fapolicyd.rules",
+        "this is }}} not a valid rule line\n",
+    );
+    let mut argv = migrate_args(d.path());
+    argv.push("--apply".into());
+    Command::cargo_bin("rulesteward")
+        .unwrap()
+        .args(argv)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("do not parse"))
+        .stdout(predicate::str::contains("Migration applied").not());
+}
+
+#[test]
+fn migrate_mkdir_error_reports_on_stderr_no_header() {
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+    // rules.d as a regular FILE makes create_dir_all fail -> mkdir-error
+    // (EXIT_TOOL_FAILURE = 3). is_file()-based detect_layout sees a legacy file
+    // and an empty (unreadable-as-dir) rules.d -> LegacyOnly, so apply proceeds.
+    write(d.path(), "rules.d", "i am a file, not a directory\n");
+    let mut argv = migrate_args(d.path());
+    argv.push("--apply".into());
+    Command::cargo_bin("rulesteward")
+        .unwrap()
+        .args(argv)
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("failed to create"))
+        .stdout(predicate::str::contains("Migration applied").not());
+}
+
+#[test]
+fn migrate_write_error_reports_on_stderr_no_header() {
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+    // The target path as a DIRECTORY makes std::fs::write fail -> write-error
+    // (EXIT_TOOL_FAILURE = 3). A non-dotfile entry in rules.d makes detect_layout
+    // see Both, so --delete-legacy is needed for apply to proceed past the trap.
+    std::fs::create_dir_all(d.path().join("rules.d/99-migrated.rules")).unwrap();
+    let mut argv = migrate_args(d.path());
+    argv.push("--apply".into());
+    argv.push("--delete-legacy".into());
+    Command::cargo_bin("rulesteward")
+        .unwrap()
+        .args(argv)
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("failed to write"))
+        .stdout(predicate::str::contains("Migration applied").not());
+}
+
+#[test]
+fn migrate_version_downgrade_reports_on_stderr_no_header() {
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
+    // --from newer than --to: migrate refuses (no downgrade) with layout "error"
+    // (EXIT_TOOL_FAILURE = 3). This layout always had a stderr message; the fix is
+    // that it no longer also prints the "Migration applied" header on stdout.
+    Command::cargo_bin("rulesteward")
+        .unwrap()
+        .args([
+            "fapolicyd",
+            "migrate",
+            "--from",
+            "rhel9",
+            "--to",
+            "rhel8",
+            "--rules-dir",
+        ])
+        .arg(d.path())
+        .arg("--apply")
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("downgrade"))
+        .stdout(predicate::str::contains("Migration applied").not());
+}
+
+#[test]
 fn migrate_both_apply_json_reports_coexistence_trap() {
     let d = tempfile::tempdir().unwrap();
     write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
