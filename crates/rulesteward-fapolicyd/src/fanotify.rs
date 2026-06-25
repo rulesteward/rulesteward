@@ -128,8 +128,15 @@ impl FanotifyRecord {
 /// A grouped audit event: the FANOTIFY record plus companion SYSCALL/PATH
 /// facts extracted from the same `audit(TS:SERIAL)` group (f1 §3.4).
 ///
-/// `ausearch -m FANOTIFY` groups these automatically; the parser handles both
-/// raw bare lines (FANOTIFY only) and ausearch-grouped blocks.
+/// FANOTIFY records (audit message type 1331) are standalone single-record
+/// events. On the audit versions observed (3.1.5 on Rocky 9.8, 4.0.3 on
+/// Rocky 10.2), `ausearch -m FANOTIFY` does NOT return them even when they
+/// are present in the log, so they are captured directly from the raw audit
+/// log, e.g. `grep -a 'type=FANOTIFY' /var/log/audit/audit.log`. Companion
+/// SYSCALL/PATH records, when present, appear adjacent in the log by sharing
+/// the same `audit(TS:SERIAL)` stamp. The parser handles both a raw bare
+/// FANOTIFY line and an ausearch-grouped block (multiple records sharing one
+/// stamp).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditEvent {
     /// The FANOTIFY record (the primary record `explain` needs).
