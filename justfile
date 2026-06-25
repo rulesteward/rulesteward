@@ -46,6 +46,12 @@ diff-fapolicyd:
     @echo "diff-fapolicyd: stub (pending #287 implementation)"
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
-# `just ci`). A dedicated CI job runs only this recipe. Lane B fills this in.
+# `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
+# a NO_LOCK reader (open_trustdb_readonly + iter_entries/get_entry) hammered
+# against a separate live writer PROCESS that churns the same DB. Gated by both
+# `#[ignore]` and `required-features = ["test-fixtures"]` so the default
+# `just test` / coverage run never executes it. A dedicated CI job runs only
+# this recipe, isolated from the main test matrix.
 trustdb-contention:
-    @echo "trustdb-contention: stub (pending #291 implementation)"
+    cargo test -p rulesteward-fapolicyd --features test-fixtures \
+        --test trustdb_contention --locked -- --ignored --test-threads=1

@@ -36,5 +36,17 @@ proptest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
+# The NO_LOCK reader-vs-writer contention harness (#291). `required-features`
+# gates COMPILATION on `test-fixtures` (it calls `write_trustdb_fixture_kv` to
+# seed the DB), so the default `cargo test` / coverage run -- which does NOT
+# enable the feature -- never builds or runs it. The test inside is ALSO
+# `#[ignore]`d (belt and suspenders), so even `cargo test --features
+# test-fixtures` skips it unless invoked with `-- --ignored`. It runs only via
+# `just trustdb-contention` and its dedicated isolated CI job, so it never races
+# the rest of the suite.
+[[test]]
+name = "trustdb_contention"
+required-features = ["test-fixtures"]
+
 [lints]
 workspace = true

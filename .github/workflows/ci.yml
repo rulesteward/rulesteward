@@ -712,3 +712,48 @@ jobs:
         run: cargo clippy -p rulesteward-cli --no-default-features --all-targets --locked -- -D warnings
       - name: cargo test (no libsepol)
         run: cargo test -p rulesteward-cli --no-default-features --locked
+
+  # trustdb NO_LOCK contention harness (#291/#317). ISOLATED standalone job: it
+  # is NOT in the `check` matrix and nothing `needs` it, so it runs in parallel
+  # with but fully isolated from the main test matrix - the harness spawns a live
+  # subprocess writer and hammers the production read-only trust-DB reader, and
+  # must never race the rest of the suite. The `#[ignore]`d + test-fixtures-gated
+  # harness is excluded from every other job's `cargo test`; only this job (via
+  # the `just trustdb-contention` recipe) runs it. It gates the Layer-1 PREVENTION
+  # property: the locked read-only reader does not torn-read under a live writer.
+  # Modeled on the lightweight single-host fmt-clippy job above (the harness needs
+  # the vendored-libsepol build deps the default-on categorizer pulls in).
+  trustdb-contention:
+    name: trustdb NO_LOCK contention harness (#291)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Ensure rustup is available
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y rustup
+          fi
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # The default-on authoritative-categorizer (#124) compiles the vendored
+      # libsepol C source via build.rs, so the workspace build needs make + a C
+      # compiler (same as fmt-clippy / coverage).
+      - name: Install build deps (make, gcc)
+        run: sudo apt-get update && sudo apt-get install -y make gcc
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ubuntu-trustdb-contention
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      # `just` is not on the GitHub-hosted runner; install it from the prebuilt
+      # release via taiki-e/install-action (same SHA-pinned action the audit /
+      # deny / llvm-cov jobs use) so the recipe stays the single source of truth.
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+        with:
+          tool: just
+
+      - name: Run the trustdb contention harness
+        run: just trustdb-contention
