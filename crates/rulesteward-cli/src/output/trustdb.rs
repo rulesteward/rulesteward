@@ -6,7 +6,7 @@
 //! and renders it as either a pretty JSON array (machine-readable, trailing
 //! newline) or aligned human columns.
 
-use rulesteward_fapolicyd::{DiskVerdict, TrustEntry, TrustSource};
+use rulesteward_fapolicyd::{DiskVerdict, IntegrityMode, TrustEntry, TrustSource};
 use serde::Serialize;
 
 use crate::output::csv::to_csv;
@@ -117,6 +117,13 @@ pub struct CheckRow {
     pub path: String,
     #[serde(flatten)]
     pub verdict: CheckVerdict,
+    /// Whether this verdict is enforced under the active `integrity` mode.
+    ///
+    /// `true` means the verdict raises the exit code. `false` means the drift is
+    /// visible in output with an annotation (e.g. "not enforced under integrity=X")
+    /// but does NOT flip the exit code. Populated from `IntegrityMode::enforces`
+    /// for `DiskVerdict`-backed rows, and `true` for `NotInDb` (always enforced).
+    pub enforced: bool,
 }
 
 /// Which side of a DB-vs-DB diff a row appears on.
@@ -193,16 +200,43 @@ pub fn render_csv_list(rows: &[ListRow]) -> String {
 }
 
 /// Render a `check` / `diff` (vs-disk) / `stale` report.
+///
+/// `integrity_info` is `Some((mode, source_description))` when the effective
+/// integrity mode is known (always for vs-disk verbs). When provided:
+/// - Non-enforced divergence rows are annotated with
+///   `"(not enforced under integrity=<mode>)"` in human output.
+/// - A summary line stating the effective integrity value and its source is
+///   prepended to human output.
 #[must_use]
-pub fn render_checks(rows: &[CheckRow], json: bool) -> String {
+pub fn render_checks(
+    rows: &[CheckRow],
+    json: bool,
+    integrity_info: Option<(IntegrityMode, &str)>,
+) -> String {
     if json {
         to_envelope(rows)
     } else {
         use std::fmt::Write as _;
         let mut out = String::new();
+        // Emit the effective-integrity header when the mode is known.
+        if let Some((_mode, source)) = integrity_info {
+            let _ = writeln!(out, "integrity: {source}");
+        }
         for r in rows {
-            // Writing to a String is infallible.
-            let _ = writeln!(out, "{:<14} {}", verdict_label(&r.verdict), r.path);
+            if !r.enforced && r.verdict.is_divergence() {
+                // Annotate non-enforced drift with the mode keyword.
+                let mode_name = integrity_info.map_or("unknown", |(m, _)| m.as_keyword());
+                let _ = writeln!(
+                    out,
+                    "{:<14} {} (not enforced under integrity={})",
+                    verdict_label(&r.verdict),
+                    r.path,
+                    mode_name
+                );
+            } else {
+                // Writing to a String is infallible.
+                let _ = writeln!(out, "{:<14} {}", verdict_label(&r.verdict), r.path);
+            }
         }
         out
     }

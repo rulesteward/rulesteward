@@ -270,14 +270,17 @@ mod tests {
             CheckRow {
                 path: "/clean".into(),
                 verdict: CheckVerdict::Match,
+                enforced: true,
             },
             CheckRow {
                 path: "/gone".into(),
                 verdict: CheckVerdict::Missing,
+                enforced: true,
             },
             CheckRow {
                 path: "/also-clean".into(),
                 verdict: CheckVerdict::Match,
+                enforced: true,
             },
             CheckRow {
                 path: "/size".into(),
@@ -285,6 +288,7 @@ mod tests {
                     recorded: 1,
                     actual: 2,
                 },
+                enforced: true,
             },
         ];
         let stale = stale_rows(rows);
@@ -293,14 +297,16 @@ mod tests {
             vec![
                 CheckRow {
                     path: "/gone".into(),
-                    verdict: CheckVerdict::Missing
+                    verdict: CheckVerdict::Missing,
+                    enforced: true,
                 },
                 CheckRow {
                     path: "/size".into(),
                     verdict: CheckVerdict::SizeMismatch {
                         recorded: 1,
                         actual: 2
-                    }
+                    },
+                    enforced: true,
                 },
             ],
             "only non-Match rows survive, in their original order"
@@ -312,6 +318,7 @@ mod tests {
         let rows = vec![CheckRow {
             path: "/a".into(),
             verdict: CheckVerdict::Match,
+            enforced: true,
         }];
         assert!(stale_rows(rows).is_empty());
     }

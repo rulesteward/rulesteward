@@ -45,8 +45,8 @@ pub use register::{
     hash_algorithm_from_len,
 };
 pub use trustdb::{
-    DiskVerdict, TrustDb, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
-    verify_entry, weak_digest_algorithm,
+    DiskVerdict, IntegrityMode, TrustDb, TrustDbError, TrustEntry, TrustSource,
+    open_trustdb_readonly, verify_entry, weak_digest_algorithm,
 };
 pub use version::TargetVersion;
 
