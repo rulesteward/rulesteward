@@ -580,6 +580,76 @@ fn eval_object_field(
 }
 
 // ---------------------------------------------------------------------------
+// Internal: cross-side PATH / object-trust coupling (#276)
+// ---------------------------------------------------------------------------
+
+/// `true` when this attr is an `EXE`/`EXE_DIR` subject attr whose value carries
+/// the literal `untrusted` token, as the daemon's `check_str_attr_set(r->s[cnt].set,
+/// "untrusted")` test sees it (rules.c:1497-1499 (fapolicyd 1.4.5)). The `exe`
+/// keyword maps to `EXE` and `dir` to `EXE_DIR` on the subject side
+/// (subject-attr.c:43,64). `check_str_attr_set` is a SET-MEMBERSHIP test, so a
+/// bare `untrusted` literal AND a `%set` whose resolved members contain
+/// `untrusted` both qualify.
+fn subject_attr_is_exe_untrusted(attr: &Attr, sets: &SetTable) -> bool {
+    let Attr::Kv { key, value, .. } = attr else {
+        return false;
+    };
+    if key != "exe" && key != "dir" {
+        return false;
+    }
+    matches!(as_str_literal(value), Some("untrusted")) || set_contains_untrusted(value, sets)
+}
+
+/// Models the daemon's SOLE cross-side / order-dependent matcher construct: the
+/// `case PATH:` block in `check_object` (rules.c:1494-1502 (fapolicyd 1.4.5)).
+///
+/// During the OBJECT loop, when the object attr at index `cnt` is `PATH`, the
+/// daemon cross-reads the SUBJECT attr at the *same* index `cnt` (`r->s[cnt]`)
+/// and `return 0`s (rule does NOT match) when ALL hold:
+///   1. `r->o[cnt].type == PATH`             (object attr is `path=`), AND
+///   2. `r->s[cnt].type == EXE || EXE_DIR` (aligned subject attr is `exe=`/`dir=`)
+///      AND `check_str_attr_set(r->s[cnt].set, "untrusted")`, AND
+///   3. `is_obj_trusted(e)`                  (object is trusted; rules.c:229-237).
+///
+/// The cross-read is POSITIONAL: it inspects the subject attr at the OBJECT
+/// loop's index, not "any" subject attr. So `uid=0 exe=untrusted : path=X`
+/// (the untrusted attr at subject index 1, the path at object index 0) does NOT
+/// fire - the daemon reads `r->s[0]` = the `uid` attr. Evaluating subject and
+/// object independently, the evaluator formerly missed this and over-predicted
+/// a DECISIVE deny; this guard restores fidelity. The expected fallthrough is
+/// grounded in the v1.4.5 SOURCE TRACE, not a live capture (the triggering shape
+/// needs a privileged fanotify listener). Grounding: depth-fapolicyd-simulate.md
+/// Finding 1; this is the only cross-side block in the daemon matcher.
+fn path_obj_trust_coupling_fires(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> bool {
+    // Reachability gate: the coupling block is INSIDE the object loop, AFTER the
+    // `obj == NULL -> cnt++; continue;` skip (rules.c:1471-1474 (fapolicyd 1.4.5)).
+    // When the event carries no PATH fact, `get_obj_attr(e, PATH)` is NULL, the
+    // loop skips that slot, and the `case PATH:` block at rules.c:1494 is NEVER
+    // reached. So an absent path fact widens (the rule's `path=` is skipped) and
+    // the coupling cannot fire - omitting this check would flip the verdict in
+    // the UNSAFE direction (predicting allow where the daemon denies). Pinned by
+    // `cross_side_path_fact_absent_does_not_fire`.
+    if facts.path.is_none() {
+        return false;
+    }
+    // Leg 3: the coupling only fires when the object is TRUSTED. `Unknown`/`No`
+    // do not qualify (`is_obj_trusted` returns false for both).
+    if facts.obj_trust != Trust::Yes {
+        return false;
+    }
+    // Legs 1+2, index-aligned: find an object `path=` attr whose same-index
+    // subject attr is an `exe=`/`dir=` carrying the `untrusted` token.
+    rule.object.iter().enumerate().any(|(i, obj_attr)| {
+        let is_path = matches!(obj_attr, Attr::Kv { key, .. } if key == "path");
+        is_path
+            && rule
+                .subject
+                .get(i)
+                .is_some_and(|subj_attr| subject_attr_is_exe_untrusted(subj_attr, sets))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Internal: evaluate one rule
 // ---------------------------------------------------------------------------
 
@@ -647,6 +717,18 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
                 }
             }
         }
+    }
+
+    // #276: cross-side `case PATH:` coupling (rules.c:1494-1502 (fapolicyd 1.4.5)).
+    // The daemon `return 0`s (NO match) inside check_object when an object
+    // `path=` attr is index-aligned with a subject `exe=`/`dir=untrusted` attr
+    // AND the object is trusted. This is a HARD non-match that short-circuits
+    // check_object, so it takes precedence over any PossibleMatch downgrade
+    // accumulated above. Subject is known to have matched here (a subject
+    // NoMatch would have early-returned), mirroring the daemon's
+    // check_subject-then-check_object ordering.
+    if path_obj_trust_coupling_fires(rule, sets, facts) {
+        return (RuleOutcome::NoMatch, None);
     }
 
     if possible_reason.is_some() {
@@ -3839,5 +3921,332 @@ mod tests {
             v.uncertain.is_some(),
             "absent path + Unknown obj trust must downgrade to uncertain"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: cross-side `exe=untrusted : path=X` + trusted-object coupling
+    //
+    // Models the SOLE cross-side construct in the daemon matcher: the `case
+    // PATH:` block in check_object (rules.c:1494-1502, fapolicyd 1.4.5). When a
+    // rule's object PATH attr sits at the SAME index as a subject EXE/EXE_DIR
+    // attr whose set contains the literal `untrusted` token AND the object is
+    // trusted (`is_obj_trusted`, rules.c:229-237), the daemon `return 0`s -> the
+    // rule does NOT match -> it falls through. RuleSteward formerly evaluated
+    // subject and object independently and predicted a DECISIVE deny (over-
+    // predicting DENY). Grounding: depth-fapolicyd-simulate.md Finding 1.
+    //
+    // EXPECTED-VERDICT PROVENANCE: the firing case's ALLOW outcome is grounded in
+    // the rules.c v1.4.5 SOURCE TRACE, NOT a live `dec=` capture. The triggering
+    // shape requires a `--privileged` fanotify listener that the audit safety rail
+    // forbids, so this cannot be captured from a running daemon.
+    // -----------------------------------------------------------------------
+
+    /// FIRING CASE: `deny exe=untrusted : path=/usr/bin/cat`, untrusted subject,
+    /// TRUSTED object. The cross-side coupling fires -> rule 1 does NOT match ->
+    /// fallthrough to the allow-all rule 2. (rules.c:1494-1502.)
+    /// EXPECTED VERDICT IS SOURCE-TRACED, not live-captured (see module comment).
+    #[test]
+    fn cross_side_exe_untrusted_path_trusted_obj_falls_through() {
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("exe", "untrusted")],
+                vec![kv("path", "/usr/bin/cat")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No; // subject untrusted -> untrusted macro would match
+        facts.obj_trust = Trust::Yes; // object trusted -> coupling fires
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "cross-side coupling: trusted object suppresses the deny -> fallthrough allow"
+        );
+        assert_eq!(
+            v.matched_rule,
+            Some(2),
+            "rule 1 must NOT match; the allow-all rule 2 decides"
+        );
+        assert!(
+            v.uncertain.is_none(),
+            "the coupling is a decisive non-match, not an uncertain downgrade: {:?}",
+            v.uncertain
+        );
+    }
+
+    /// COUNTER (a): same rule + shape, but the object is UNTRUSTED
+    /// (`obj_trust=No`). The coupling does NOT fire (`is_obj_trusted` is false),
+    /// so rule 1 matches normally -> DECISIVE deny. Pins the `obj_trust ==
+    /// Trust::Yes` leg of the guard (rules.c:1500).
+    #[test]
+    fn cross_side_exe_untrusted_path_untrusted_obj_still_denies() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "untrusted")],
+            vec![kv("path", "/usr/bin/cat")],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::No; // UNtrusted object -> coupling must NOT fire
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "untrusted object: coupling does not fire -> rule 1 decides (deny)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// COUNTER (a'): same firing shape but `obj_trust=Unknown` (no trust DB).
+    /// `is_obj_trusted` is false for Unknown too, so the coupling must NOT fire;
+    /// rule 1 matches normally -> DECISIVE deny. Pins that the guard requires
+    /// EXACTLY `Trust::Yes`, not "not No".
+    #[test]
+    fn cross_side_exe_untrusted_path_unknown_obj_trust_still_denies() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "untrusted")],
+            vec![kv("path", "/usr/bin/cat")],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Unknown; // not Yes -> coupling must NOT fire
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "unknown object trust: coupling does not fire -> rule 1 decides (deny)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// COUNTER (a''): the object PATH FACT is ABSENT (`facts.path = None`) while
+    /// the rule still has a `path=` attr, the subject is `exe=untrusted`, and the
+    /// object is trusted. The daemon's `case PATH:` coupling block is structurally
+    /// gated behind `get_obj_attr(e, PATH) != NULL` (rules.c:1471-1474: when the
+    /// event carries no path fact the object loop does `cnt++; continue;` and never
+    /// reaches the block at rules.c:1494). With the path attr skipped (absent fact
+    /// widens, rules.c:1374-1377) the subject `exe=untrusted` still matches an
+    /// untrusted subject -> rule 1 is a DECISIVE deny. The guard must therefore NOT
+    /// fire when `facts.path` is absent; firing here would flip the verdict in the
+    /// UNSAFE direction (predicting allow where the daemon denies).
+    #[test]
+    fn cross_side_path_fact_absent_does_not_fire() {
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("exe", "untrusted")],
+                vec![kv("path", "/usr/bin/cat")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = None; // object PATH fact ABSENT -> daemon never reaches the block
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes;
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent path fact: coupling is gated behind a present PATH fact \
+             (rules.c:1471-1474) -> rule 1 still denies"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// COUNTER (b): a NON-path object attr (`ftype=`) + `exe=untrusted`, trusted
+    /// object. The daemon block is guarded by `if (type == PATH)` (rules.c:1496),
+    /// so a non-`path` object MUST NOT trigger the coupling. With `ftype` known
+    /// and matching, rule 1 matches normally -> DECISIVE deny.
+    #[test]
+    fn cross_side_exe_untrusted_nonpath_object_does_not_fire() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("exe", "untrusted")],
+            vec![kv("ftype", "application/x-executable")],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.ftype = Some("application/x-executable".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes; // trusted, but object side is NOT path=
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "non-path object: coupling is path-only (rules.c:1496) -> rule 1 decides (deny)"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// COUNTER (c): subject WITHOUT the `untrusted` token (`uid=0`) + `path=`,
+    /// trusted object. The block requires the index-aligned subject attr to be
+    /// `EXE`/`EXE_DIR` carrying `untrusted` (rules.c:1497-1499); a `uid=` subject does
+    /// not. Rule 1 matches normally -> DECISIVE deny.
+    #[test]
+    fn cross_side_non_untrusted_subject_path_trusted_obj_unaffected() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_int("uid", 0)],
+            vec![kv("path", "/usr/bin/cat")],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.uids = vec![0];
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes; // trusted object, but subject is uid=, not untrusted
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "subject without an untrusted exe/dir token: coupling does not fire -> deny"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// POSITIONAL-ALIGNMENT COUNTER: `uid=0 exe=untrusted : path=/usr/bin/cat`,
+    /// untrusted subject, TRUSTED object. The daemon reads `r->s[cnt]` where
+    /// `cnt` is the OBJECT-loop index (rules.c:1497). The object `path=` attr is
+    /// at index 0, so the daemon inspects subject attr index 0 = `uid` (NOT
+    /// `exe`/`dir`) -> the block does NOT fire. The deny therefore STILL applies.
+    /// A naive "any subject attr is exe=untrusted" guard would wrongly suppress
+    /// this; the index-0 alignment is the load-bearing detail.
+    #[test]
+    fn cross_side_misaligned_subject_index_does_not_fire() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_int("uid", 0), kv("exe", "untrusted")],
+            vec![kv("path", "/usr/bin/cat")],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.uids = vec![0];
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes;
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "exe=untrusted at subject index 1 is NOT aligned with the path object \
+             at index 0 -> coupling does not fire (rules.c:1497 reads r->s[cnt])"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// FIRING via `EXE_DIR`: `deny dir=untrusted : path=/usr/bin/cat`, untrusted
+    /// subject, trusted object. The block accepts `r->s[cnt].type == EXE_DIR`
+    /// too (rules.c:1497, the `dir` keyword maps to `EXE_DIR` per
+    /// subject-attr.c:64), so the coupling fires for `dir=untrusted` -> fallthrough.
+    /// EXPECTED VERDICT IS SOURCE-TRACED (see module comment).
+    #[test]
+    fn cross_side_dir_untrusted_path_trusted_obj_falls_through() {
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("dir", "untrusted")],
+                vec![kv("path", "/usr/bin/cat")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes;
+
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "dir=untrusted (EXE_DIR) + trusted object: coupling fires -> fallthrough allow"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// FIRING via a SET that CONTAINS the `untrusted` token on the subject EXE
+    /// side: `deny exe=%subj : path=/usr/bin/cat` where `%subj` = {untrusted}.
+    /// The daemon uses `check_str_attr_set(r->s[cnt].set, "untrusted")`
+    /// (rules.c:1498), i.e. SET MEMBERSHIP, not a bare literal - so a set
+    /// containing `untrusted` also triggers the coupling. Trusted object ->
+    /// fallthrough. EXPECTED VERDICT IS SOURCE-TRACED (see module comment).
+    #[test]
+    fn cross_side_exe_untrusted_setmember_path_trusted_obj_falls_through() {
+        let entries = vec![set_def("subj", &["untrusted"])];
+        let sets = SetTable::from_entries(&entries);
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_ref("exe", "subj")],
+                vec![kv("path", "/usr/bin/cat")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/cat".to_string());
+        facts.path = Some("/usr/bin/cat".to_string());
+        facts.subj_trust = Trust::No;
+        facts.obj_trust = Trust::Yes;
+
+        let v = evaluate(&rules, &sets, &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "exe=%set-with-untrusted + trusted object: coupling fires (set membership) -> allow"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(v.uncertain.is_none());
     }
 }
