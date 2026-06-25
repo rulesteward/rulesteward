@@ -121,8 +121,8 @@ pub struct CheckRow {
     ///
     /// `true` means the verdict raises the exit code. `false` means the drift is
     /// visible in output with an annotation (e.g. "not enforced under integrity=X")
-    /// but does NOT flip the exit code. Defaults to `true` in the stub; the
-    /// implementer populates this from `IntegrityMode::enforces`.
+    /// but does NOT flip the exit code. Populated from `IntegrityMode::enforces`
+    /// for `DiskVerdict`-backed rows, and `true` for `NotInDb` (always enforced).
     pub enforced: bool,
 }
 

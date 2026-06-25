@@ -83,7 +83,9 @@ pub enum DiskVerdict {
 /// `enforced` flag on the row) vs merely *visible* (shown with an annotation but
 /// exit-code clean).
 ///
-/// Enforcement table (the contract the implementer will fill in `enforces`):
+/// Enforcement table (the overall contract; `enforces` implements the four
+/// `DiskVerdict` rows; `NotInDb` is a `CheckVerdict`-only state the CLI layer
+/// always enforces, shown here for completeness but not an `enforces` input):
 ///
 /// | Verdict           | none  | size  | ima   | sha256 |
 /// |-------------------|-------|-------|-------|--------|
