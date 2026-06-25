@@ -156,14 +156,17 @@ exclude_globs = [
 # overwritten by fill_columns. Replacing +1 with *1 produces an identical
 # externally-visible column value. Genuine equivalent mutant.
 #
-# `open_trustdb_readonly` opens with `EnvFlags::READ_ONLY | EnvFlags::NO_LOCK`.
-# READ_ONLY = MDB_RDONLY = 0x20000 and NO_LOCK = MDB_NOLOCK = 0x400000 are
-# DISJOINT bits (verified in lmdb-master-sys lmdb.h), so `READ_ONLY ^ NO_LOCK`
-# == `READ_ONLY | NO_LOCK` == 0x420000. The `| -> ^` mutant is therefore a
-# genuine equivalent mutant: behaviourally identical, unkillable by any test.
-# (The sibling `| -> &` mutant yields 0x0, dropping NO_LOCK, and IS killed by
-# the `open_does_not_create_lock_mdb` test.) Excluded by name, not
-# `#[mutants::skip]`, so the rationale stays here in reviewable config.
+# `open_env_readonly` (the #291/#317 refactor split the NO_LOCK fallback open out
+# of `open_trustdb_readonly` into this helper) builds the lockless flags with
+# `EnvFlags::READ_ONLY | EnvFlags::NO_LOCK`. READ_ONLY = MDB_RDONLY = 0x20000 and
+# NO_LOCK = MDB_NOLOCK = 0x400000 are DISJOINT bits (verified in lmdb-master-sys
+# lmdb.h), so `READ_ONLY ^ NO_LOCK` == `READ_ONLY | NO_LOCK` == 0x420000. The
+# `| -> ^` mutant is therefore a genuine equivalent mutant: behaviourally
+# identical, unkillable by any test. (The sibling `| -> &` mutant yields 0x0,
+# dropping NO_LOCK, and IS killed by the
+# `open_prevention_creates_lock_fallback_does_not` test's fallback-path
+# assertion.) Excluded by name, not `#[mutants::skip]`, so the rationale stays
+# here in reviewable config.
 #
 # `verify_entry` line 144: the `guard -> false` mutant replaces the
 # `e.kind() == ErrorKind::NotFound` guard on the `File::open` error arm with
@@ -257,7 +260,7 @@ exclude_globs = [
 exclude_re = [
     "NdjsonStdoutSink>::(emit|flush)",
     "rich_to_diagnostic",
-    'replace \| with \^ in open_trustdb_readonly',
+    'replace \| with \^ in open_env_readonly',
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
     'replace \| with \^ in categorize',
     'replace < with <= in compute_scope',
