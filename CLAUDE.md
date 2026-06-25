@@ -44,6 +44,20 @@ not part of the standard `just ci` gate; reach for them for the specific job:
 Run noisy invocations through `rtk` (generic passthrough); use `rtk proxy <cmd>`
 when the output feeds another tool.
 
+## Differential verification (fapolicyd, dev-only)
+
+The three prebuilt docker images `fapolicyd8`, `fapolicyd9`, `fapolicyd10` run
+Rocky Linux 8/9/10 with fapolicyd pre-installed. Their Dockerfiles live in the
+docs tree (`/home/runner/rulesteward-docs/`). The cross-version validation harness
+lives at `/mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined/tools/validate.sh`
+alongside the wave3 corpus (135 valid + 20 rejected scenarios). Run it via:
+`just diff-fapolicyd /mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined 'adversarial/*'`
+(override the harness path: `just validate_sh=/other/path diff-fapolicyd /corpus 'glob/*'`).
+The recipe skips gracefully with a clear message if docker, the images, or validate.sh
+are absent. Note: `fapolicyd-cli --check-rules` does NOT exist on any shipping RHEL
+image (it is a v1.5+ upstream feature absent from RHEL 1.3.2 and 1.4.5); the harness
+uses `fapolicyd --debug --permissive` as the ground-truth parse gate instead.
+
 
 # MCP Servers - tool-augmented lookups
 

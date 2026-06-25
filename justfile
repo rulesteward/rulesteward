@@ -10,6 +10,11 @@
 _default:
     @just --list
 
+# Path to the cross-version differential harness script (#287, dev-only).
+# Override syntax (variable must precede the recipe name):
+#   just validate_sh=/other/validate.sh diff-fapolicyd /corpus 'glob/*'
+validate_sh := "/mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined/tools/validate.sh"
+
 # Check formatting (cargo fmt --all --check).
 fmt:
     cargo fmt --all --check
@@ -39,11 +44,35 @@ musl:
 # Run the full local CI gate in CI order (fmt + clippy + test + cov).
 ci: fmt clippy test cov
 
-# (#287) Cross-version fapolicyd differential harness wrapper (opt-in, dev-only;
-# NOT part of `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10}
-# images; skips gracefully when they are absent. Lane C fills this in.
-diff-fapolicyd:
-    @echo "diff-fapolicyd: stub (pending #287 implementation)"
+# (#287) Cross-version fapolicyd differential harness (opt-in, dev-only; NOT part of
+# `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10} images and validate.sh.
+# Skips gracefully when any prerequisite is absent (exits 0 with a clear message).
+# Usage: just diff-fapolicyd <corpus_abs_dir> '<glob>'
+# Example: just diff-fapolicyd /mnt/.../wave3-combined 'adversarial/*'
+diff-fapolicyd corpus glob:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    VALIDATE_SH="{{validate_sh}}"
+    CORPUS="{{corpus}}"
+    GLOB="{{glob}}"
+    # --- prerequisite checks (graceful skip) ---
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "diff-fapolicyd: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images and validate.sh; build/pull them first (see CLAUDE.md 'Differential verification')" >&2
+        exit 0
+    fi
+    if [ ! -f "$VALIDATE_SH" ]; then
+        echo "diff-fapolicyd: prerequisites missing - validate.sh not found at $VALIDATE_SH (override with validate_sh=... or see CLAUDE.md 'Differential verification')" >&2
+        exit 0
+    fi
+    if ! docker image inspect fapolicyd8 fapolicyd9 fapolicyd10 >/dev/null 2>&1; then
+        echo "diff-fapolicyd: prerequisites missing - fapolicyd8/9/10 docker images not found; pull or build them first (see CLAUDE.md 'Differential verification')" >&2
+        exit 0
+    fi
+    # --- run the harness ---
+    bash "$VALIDATE_SH" start
+    bash "$VALIDATE_SH" run "$CORPUS" "$GLOB"; rc=$?
+    bash "$VALIDATE_SH" stop
+    exit $rc
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). A dedicated CI job runs only this recipe. Lane B fills this in.
