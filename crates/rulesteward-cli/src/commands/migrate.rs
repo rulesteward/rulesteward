@@ -406,9 +406,17 @@ pub(crate) fn run_with_probe_to_plan(
     }
     let legacy_path = args.rules_dir.join(LEGACY_FILE);
     let Ok(legacy) = std::fs::read_to_string(&legacy_path) else {
+        eprintln!(
+            "error: failed to read the legacy rules file {} (no files were changed)",
+            legacy_path.display()
+        );
         return Ok((EXIT_TOOL_FAILURE, no_work_plan("read-error")));
     };
     if parse_rules_file(&legacy, &legacy_path).is_err() {
+        eprintln!(
+            "error: the legacy rules in {} do not parse; aborting migration (no files were changed)",
+            legacy_path.display()
+        );
         return Ok((EXIT_RULE_PARSE_ERROR, no_work_plan("parse-error")));
     }
     let entries = parse_rules_file(&legacy, &legacy_path).unwrap_or_default();
@@ -424,13 +432,28 @@ pub(crate) fn run_with_probe_to_plan(
     if args.apply {
         let rules_d = args.rules_dir.join(MODERN_DIR);
         if std::fs::create_dir_all(&rules_d).is_err() {
+            eprintln!(
+                "error: failed to create the rules.d directory {} (no files were changed)",
+                rules_d.display()
+            );
             return Ok((EXIT_TOOL_FAILURE, no_work_plan("mkdir-error")));
         }
         if std::fs::write(&target_path, &migration.content).is_err() {
+            eprintln!(
+                "error: failed to write the migrated rules to {} (the legacy file was not removed)",
+                target_path.display()
+            );
             return Ok((EXIT_TOOL_FAILURE, no_work_plan("write-error")));
         }
         applied = true;
         if std::fs::remove_file(&legacy_path).is_err() {
+            eprintln!(
+                "error: wrote the migrated rules to {} but failed to remove the legacy file {}; \
+                 both now exist (the coexistence trap) -- remove {} manually so fapolicyd can start",
+                target_path.display(),
+                legacy_path.display(),
+                legacy_path.display()
+            );
             return Ok((EXIT_TOOL_FAILURE, no_work_plan("remove-error")));
         }
         legacy_deleted = true;
@@ -666,7 +689,15 @@ fn render_human(plan: &MigratePlan) -> String {
             );
             return s;
         }
-        _ => {}
+        // Only the two real-migration layouts reach the header block below. Every
+        // error / refusal layout (coexistence-trap-blocked, read/parse/mkdir/write/
+        // remove-error, and the version-downgrade "error") reports its reason on
+        // stderr in run_with_probe_to_plan() and emits NO stdout header, so a
+        // command that migrated nothing never prints "Migration applied" (#315).
+        // The header is OPT-IN (only the success layouts) rather than opt-out, so
+        // any future error layout defaults to clean stdout.
+        "legacy-only" | "coexistence-trap" => {}
+        _ => return s, // s is empty: error / refusal layouts produce no stdout
     }
     let header = if plan.dry_run {
         "Migration plan (dry-run)"
@@ -1282,6 +1313,81 @@ mod tests {
         p.layout = "already-modern";
         let out = render_human(&p);
         assert!(out.to_lowercase().contains("already migrated"), "{out}");
+    }
+
+    #[test]
+    fn render_human_coexistence_trap_blocked_emits_no_applied_header() {
+        // #315: the blocked refusal is an ERROR fully reported on stderr (see the
+        // eprintln! in run()). The human renderer must NOT print the misleading
+        // "Migration applied" header on stdout for a refusal that applied nothing.
+        // Human stdout for this error case is empty (the inverse of the two exit-0
+        // no-work cases above, which DO print an informational stdout line).
+        let mut p = sample_plan();
+        p.layout = "coexistence-trap-blocked";
+        p.applied = false;
+        p.dry_run = false;
+        p.legacy_file = None;
+        p.target_file = None;
+        let out = render_human(&p);
+        assert!(
+            !out.contains("Migration applied"),
+            "blocked refusal must not print the applied header: {out:?}"
+        );
+        assert!(
+            out.is_empty(),
+            "blocked refusal stdout should be empty (error is on stderr): {out:?}"
+        );
+    }
+
+    #[test]
+    fn render_human_all_error_layouts_emit_empty_stdout() {
+        // #315 (full fix): NONE of migrate's error / refusal layouts may print the
+        // "Migration applied"/"Migration plan" header on stdout -- a command that
+        // migrated nothing must never claim it did. The header is OPT-IN for the two
+        // success layouts (see the regression test below), so every error layout
+        // (and any future one) defaults to empty stdout. The operator-facing reason
+        // is reported on stderr by run_with_probe_to_plan().
+        for layout in [
+            "error",                    // --from newer than --to (version downgrade)
+            "coexistence-trap-blocked", // both layouts present, no --delete-legacy
+            "read-error",
+            "parse-error",
+            "mkdir-error",
+            "write-error",
+            "remove-error",
+        ] {
+            let mut p = sample_plan();
+            p.layout = layout;
+            p.applied = false;
+            p.dry_run = false;
+            let out = render_human(&p);
+            assert!(
+                out.is_empty(),
+                "error layout {layout:?} must emit empty stdout, got: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_human_success_layouts_still_print_header() {
+        // Regression guard for the opt-in header: the two real-migration layouts
+        // must keep printing the applied header, and the dry-run variant its plan
+        // header.
+        for (layout, dry_run, needle) in [
+            ("legacy-only", false, "Migration applied"),
+            ("coexistence-trap", false, "Migration applied"),
+            ("legacy-only", true, "Migration plan (dry-run)"),
+        ] {
+            let mut p = sample_plan();
+            p.layout = layout;
+            p.dry_run = dry_run;
+            p.applied = !dry_run;
+            let out = render_human(&p);
+            assert!(
+                out.contains(needle),
+                "success layout {layout:?} (dry_run={dry_run}) must print {needle:?}, got: {out:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
