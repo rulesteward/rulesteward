@@ -218,3 +218,38 @@ fn lint_exact_duplicate_pair_yields_exactly_one_finding() {
     );
     assert_eq!(diags[0]["code"], serde_json::json!("au-W01"));
 }
+
+// ---------------------------------------------------------------------------
+// T11 (#230): --apparmor flag enables AppArmor msgtype folding end-to-end.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t11_apparmor_flag_folds_msgtype_names() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "10-a.rules",
+        "-a always,exclude -F msgtype=APPARMOR_DENIED\n",
+    );
+    write(
+        dir.path(),
+        "50-b.rules",
+        "-a always,exclude -F msgtype=1503\n",
+    );
+
+    // Without --apparmor: the two rules are distinct, no au-W01.
+    lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .assert()
+        .code(0)
+        .stdout(predicates::prelude::predicate::str::is_empty());
+
+    // With --apparmor: APPARMOR_DENIED folds to 1503, so au-W01 fires.
+    lint_cmd()
+        .args(["auditd", "lint", "--apparmor"])
+        .arg(dir.path())
+        .assert()
+        .code(1)
+        .stdout(predicates::prelude::predicate::str::contains("au-W01"));
+}

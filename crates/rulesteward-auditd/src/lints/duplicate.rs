@@ -34,6 +34,7 @@ use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{AuditRule, LocatedRule};
 use crate::lints::normalize::canonical_key;
+use crate::lints::value::LintOptions;
 
 /// Check if two `AuditRule`s are a load-aborting (`EEXIST`) duplicate pair.
 /// The comparison assumes the first rule's prepend bit is cleared by the kernel
@@ -100,13 +101,13 @@ fn rules_eexist_equal(first: &AuditRule, later: &AuditRule) -> bool {
 ///
 /// Body is pipeline P1's; the signature is Phase-0 frozen.
 #[must_use]
-pub fn w01(rules: &[LocatedRule]) -> Vec<Diagnostic> {
+pub fn w01(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
     // Map from canonical key to the first occurrence of that rule.
     let mut first_seen: HashMap<_, &LocatedRule> = HashMap::new();
     let mut diags = Vec::new();
 
     for located in rules {
-        let key = canonical_key(&located.rule);
+        let key = canonical_key(&located.rule, opts);
 
         match first_seen.get(&key) {
             None => {

@@ -33,7 +33,10 @@
 
 use std::path::Path;
 
-use rulesteward_auditd::{lints::duplicate::w01, parse_rules_str_located, parse_target_located};
+use rulesteward_auditd::{
+    lints::{LintOptions, duplicate::w01},
+    parse_rules_str_located, parse_target_located,
+};
 use rulesteward_core::Severity;
 
 // ---------------------------------------------------------------------------
@@ -77,7 +80,7 @@ fn cross_file_field_order_swap_fires_one_w01_at_later_file() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -134,7 +137,7 @@ fn syscall_order_swap_fires_e03() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -179,7 +182,7 @@ fn repeated_syscall_duplicate_fires_e03() {
     let rules = parse_rules_str_located(input, Path::new("10-rep.rules")).expect("must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(diags.len(), 1, "repeated-syscall duplicate must fire once");
     assert_eq!(
@@ -210,7 +213,7 @@ fn append_vs_prepend_pair_fires_w01() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -256,7 +259,7 @@ fn same_file_duplicate_fires_e03_at_second_occurrence() {
     // 3 rules: mount-syscall, fstab-watch, mount-syscall (dup)
     assert_eq!(rules.len(), 3, "expected 3 rules, got {rules:?}");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     // Exactly 1 finding: the second mount rule is the duplicate.
     assert_eq!(
@@ -311,7 +314,7 @@ fn key_differs_pair_does_not_fire_au_w01_or_au_e03() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert!(
         diags.is_empty(),
@@ -346,7 +349,7 @@ fn watch_perm_letter_order_swap_fires_e03() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -403,7 +406,7 @@ fn triple_occurrence_yields_two_e03_both_citing_first() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 3, "exactly 3 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -474,7 +477,7 @@ fn triple_occurrence_yields_two_e03_both_citing_first() {
 fn clean_corpus_rocky9_stig_hardened_zero_findings() {
     let path = corpus_dir("rocky9-stig-hardened").join("audit.rules");
     let rules = parse_target_located(&path).expect("rocky9-stig-hardened must parse");
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
     assert!(
         diags.is_empty(),
         "rocky9-stig-hardened must have zero au-W01/au-E03 findings, got {diags:?}"
@@ -485,7 +488,7 @@ fn clean_corpus_rocky9_stig_hardened_zero_findings() {
 fn clean_corpus_rocky10_cis_benchmark_zero_findings() {
     let path = corpus_dir("rocky10-cis-benchmark").join("audit.rules");
     let rules = parse_target_located(&path).expect("rocky10-cis-benchmark must parse");
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
     assert!(
         diags.is_empty(),
         "rocky10-cis-benchmark must have zero au-W01/au-E03 findings, got {diags:?}"
@@ -496,7 +499,7 @@ fn clean_corpus_rocky10_cis_benchmark_zero_findings() {
 fn clean_corpus_rocky9_huge_ruleset_zero_findings() {
     let path = corpus_dir("rocky9-huge-ruleset").join("audit.rules");
     let rules = parse_target_located(&path).expect("rocky9-huge-ruleset must parse");
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
     assert!(
         diags.is_empty(),
         "rocky9-huge-ruleset must have zero au-W01/au-E03 findings, got {diags:?}"
@@ -539,7 +542,7 @@ fn duplicate_diagnostic_span_covers_raw_rule_line() {
         "rule[1] span.end must be at the end of line 3 (no newline)"
     );
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
     assert_eq!(diags.len(), 1, "one finding expected");
 
     let d = &diags[0];
@@ -593,7 +596,7 @@ fn prepend_then_append_fires_e03_not_w01() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -648,7 +651,7 @@ fn double_prepend_fires_w01_not_e03() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -689,7 +692,7 @@ fn double_prepend_fires_w01_not_e03() {
 
 #[test]
 fn empty_rules_produce_no_findings() {
-    let diags = w01(&[]);
+    let diags = w01(&[], LintOptions::default());
     assert!(diags.is_empty(), "empty input must produce no findings");
 }
 
@@ -703,7 +706,7 @@ fn single_rule_no_duplicate_produces_no_findings() {
     let rules =
         parse_rules_str_located("-a always,exit -S execve -k exec\n", file).expect("must parse");
     assert_eq!(rules.len(), 1);
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
     assert!(
         diags.is_empty(),
         "single unique rule must produce no findings"
@@ -729,7 +732,7 @@ fn cross_file_byte_identical_fires_e03() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "exactly 2 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -788,7 +791,7 @@ fn triple_identical_yields_two_e03_both_citing_first() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 3, "exactly 3 rules expected");
 
-    let diags = w01(&rules);
+    let diags = w01(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -824,5 +827,44 @@ fn triple_identical_yields_two_e03_both_citing_first() {
     assert!(
         files.iter().any(|f| f.contains("90-third")),
         "one finding must be anchored at 90-third.rules, got {files:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T8 (#230): AppArmor msgtype opt-in duplicate detection
+//
+// With --apparmor ON: msgtype=APPARMOR_DENIED and msgtype=1503 are the same
+// canonical rule (au-W01). With --apparmor OFF: they are NOT folded (different
+// keys), so no au-W01.
+// ---------------------------------------------------------------------------
+#[test]
+fn t8_apparmor_msgtype_duplicate_requires_on() {
+    let input = concat!(
+        "-a always,exclude -F msgtype=APPARMOR_DENIED\n",
+        "-a always,exclude -F msgtype=1503\n",
+    );
+    let file = std::path::Path::new("10-apparmor-dup.rules");
+    let rules = rulesteward_auditd::parse_rules_str_located(input, file).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    // With ON: APPARMOR_DENIED == 1503 -> au-W01 (duplicate).
+    let diags_on = w01(
+        &rules,
+        LintOptions {
+            include_apparmor: true,
+        },
+    );
+    assert_eq!(
+        diags_on.len(),
+        1,
+        "with --apparmor: APPARMOR_DENIED and 1503 are the same rule, expected 1 au-W01, got {diags_on:?}"
+    );
+    assert_eq!(diags_on[0].code, "au-W01");
+
+    // With OFF: not folded -> no au-W01.
+    let diags_off = w01(&rules, LintOptions::default());
+    assert!(
+        diags_off.is_empty(),
+        "without --apparmor: APPARMOR_DENIED and 1503 are distinct, expected no au-W01, got {diags_off:?}"
     );
 }

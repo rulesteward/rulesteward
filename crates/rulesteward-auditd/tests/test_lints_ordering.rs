@@ -54,7 +54,10 @@
 use std::path::Path;
 
 use rulesteward_auditd::{
-    lints::ordering::{e01, w02, w03},
+    lints::{
+        LintOptions,
+        ordering::{e01, w02, w03},
+    },
     parse_rules_str_located, parse_target_located,
 };
 use rulesteward_core::Severity;
@@ -102,7 +105,7 @@ fn w02_broad_early_narrow_late_fires() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -159,7 +162,7 @@ fn w02_canonical_equal_pair_does_not_fire() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert!(
         diags.is_empty(),
@@ -191,7 +194,7 @@ fn w02_predicate_equal_different_key_fires() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -234,7 +237,7 @@ fn w02_cross_file_fires_at_later_file() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -299,7 +302,7 @@ fn w02_prepend_rule_file_late_effective_early_shadows_append_rule() {
     let rules = parse_target_located(&dir).expect("fixtures must parse");
     assert_eq!(rules.len(), 2, "expected 2 rules, got {rules:?}");
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -354,7 +357,7 @@ fn w02_interval_subsumption_fires_219() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -378,7 +381,7 @@ fn w02_interval_subsumption_fires_219() {
     );
     let rules_rev = parse_rules_str_located(rev, Path::new("10-rev.rules")).unwrap();
     assert!(
-        w02(&rules_rev).is_empty(),
+        w02(&rules_rev, LintOptions::default()).is_empty(),
         "auid>=2000 must NOT subsume auid>=1000 (narrow before broad)"
     );
 }
@@ -395,7 +398,11 @@ fn w02_gt_ge_boundary_fires_219() {
         "-a always,exit -S execve -F 'auid>=2000' -k b\n",
     );
     let rules = parse_rules_str_located(input, Path::new("10-b.rules")).unwrap();
-    assert_eq!(w02(&rules).len(), 1, "auid>1000 subsumes auid>=2000");
+    assert_eq!(
+        w02(&rules, LintOptions::default()).len(),
+        1,
+        "auid>1000 subsumes auid>=2000"
+    );
 }
 
 #[test]
@@ -406,7 +413,11 @@ fn w02_eq_point_in_range_fires_219_i2() {
         "-a always,exit -S execve -F 'auid=1500' -k b\n",
     );
     let rules = parse_rules_str_located(input, Path::new("10-i2.rules")).unwrap();
-    assert_eq!(w02(&rules).len(), 1, "auid>=1000 subsumes auid=1500 (I2)");
+    assert_eq!(
+        w02(&rules, LintOptions::default()).len(),
+        1,
+        "auid>=1000 subsumes auid=1500 (I2)"
+    );
 
     // But auid=1500 (earlier) does NOT subsume auid>=1000 (later).
     let rev = concat!(
@@ -414,7 +425,10 @@ fn w02_eq_point_in_range_fires_219_i2() {
         "-a always,exit -S execve -F 'auid>=1000' -k b\n",
     );
     let rr = parse_rules_str_located(rev, Path::new("10-i2r.rules")).unwrap();
-    assert!(w02(&rr).is_empty(), "an = point does not subsume a range");
+    assert!(
+        w02(&rr, LintOptions::default()).is_empty(),
+        "an = point does not subsume a range"
+    );
 }
 
 #[test]
@@ -427,7 +441,7 @@ fn w02_value_spelling_fold_fires_with_different_keys_219() {
         "-a always,exit -S execve -F 'auid!=4294967295' -k b\n",
     );
     let rules = parse_rules_str_located(input, Path::new("10-fold.rules")).unwrap();
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
     assert_eq!(
         diags.len(),
         1,
@@ -445,7 +459,11 @@ fn w02_multi_field_subsumption_219() {
         "-a always,exit -S execve -F 'auid>=2000' -F uid=0 -k b\n",
     );
     let r = parse_rules_str_located(both, Path::new("10-mf.rules")).unwrap();
-    assert_eq!(w02(&r).len(), 1, "both predicates witnessed -> shadow");
+    assert_eq!(
+        w02(&r, LintOptions::default()).len(),
+        1,
+        "both predicates witnessed -> shadow"
+    );
 
     // If the later rule LACKS uid=0, the earlier uid=0 predicate is unwitnessed
     // (the later rule also matches uid!=0 traffic the earlier excludes) -> n/f.
@@ -455,7 +473,7 @@ fn w02_multi_field_subsumption_219() {
     );
     let r2 = parse_rules_str_located(missing, Path::new("10-mf2.rules")).unwrap();
     assert!(
-        w02(&r2).is_empty(),
+        w02(&r2, LintOptions::default()).is_empty(),
         "earlier uid=0 has no witness in the later rule -> not subsumed"
     );
 }
@@ -470,7 +488,7 @@ fn w02_extra_later_predicate_does_not_block_219() {
     );
     let r = parse_rules_str_located(input, Path::new("10-extra.rules")).unwrap();
     assert_eq!(
-        w02(&r).len(),
+        w02(&r, LintOptions::default()).len(),
         1,
         "extra later predicate does not block subsumption"
     );
@@ -484,7 +502,11 @@ fn w02_signed_exit_interval_219() {
         "-a always,exit -S execve -F 'exit>=-5' -k b\n",
     );
     let r = parse_rules_str_located(input, Path::new("10-sx.rules")).unwrap();
-    assert_eq!(w02(&r).len(), 1, "exit>=-13 subsumes exit>=-5 (signed)");
+    assert_eq!(
+        w02(&r, LintOptions::default()).len(),
+        1,
+        "exit>=-13 subsumes exit>=-5 (signed)"
+    );
 
     // exit>=-13 does NOT subsume exit>=-20 (-20 < -13: later matches more).
     let wider = concat!(
@@ -492,7 +514,10 @@ fn w02_signed_exit_interval_219() {
         "-a always,exit -S execve -F 'exit>=-20' -k b\n",
     );
     let r2 = parse_rules_str_located(wider, Path::new("10-sx2.rules")).unwrap();
-    assert!(w02(&r2).is_empty(), "exit>=-13 does not subsume exit>=-20");
+    assert!(
+        w02(&r2, LintOptions::default()).is_empty(),
+        "exit>=-13 does not subsume exit>=-20"
+    );
 }
 
 #[test]
@@ -505,7 +530,7 @@ fn w02_sentinel_in_relational_is_conservative_219() {
     );
     let r = parse_rules_str_located(input, Path::new("10-sent.rules")).unwrap();
     assert!(
-        w02(&r).is_empty(),
+        w02(&r, LintOptions::default()).is_empty(),
         "concrete 0 vs sentinel must not fire (conservative)"
     );
 }
@@ -530,7 +555,7 @@ fn w02_different_filter_lists_do_not_interact() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert!(
         diags.is_empty(),
@@ -564,7 +589,7 @@ fn w02_earlier_syscall_superset_fires() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w02(&rules);
+    let diags = w02(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -845,7 +870,7 @@ fn w03_exclude_msgtype_before_always_fires() {
     let rules = parse_rules_str_located(input, file).expect("fixture must parse");
     assert_eq!(rules.len(), 2);
 
-    let diags = w03(&rules);
+    let diags = w03(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -904,7 +929,7 @@ fn w03_never_before_always_same_list_fires() {
     let dir = fixture_dir("never-suppress-before");
     let rules = parse_target_located(&dir).expect("fixtures must parse");
 
-    let diags = w03(&rules);
+    let diags = w03(&rules, LintOptions::default());
 
     assert_eq!(
         diags.len(),
@@ -958,7 +983,7 @@ fn w03_never_after_always_does_not_fire() {
     let corpus = corpus_dir("rocky9-never-below-always");
     let rules = parse_target_located(&corpus).expect("corpus must parse");
 
-    let diags = w03(&rules);
+    let diags = w03(&rules, LintOptions::default());
 
     // The never rule is BELOW (after) the always rule -- it is inert, not suppressive.
     // au-W03 must NOT fire in this case.
@@ -1008,7 +1033,7 @@ fn corpus_rocky9_stig_finalize_no_e01_no_w04() {
 
     // au-W02: the watch (-w) and syscall rule are on different filter lists.
     // No subsumption expected.
-    let w02_diags = w02(&rules);
+    let w02_diags = w02(&rules, LintOptions::default());
     assert!(
         w02_diags.is_empty(),
         "rocky9-stig-finalize: watch vs syscall are on different filter lists; \
@@ -1016,7 +1041,7 @@ fn corpus_rocky9_stig_finalize_no_e01_no_w04() {
     );
 
     // au-W03: no never/exclude rules in this corpus.
-    let w03_diags = w03(&rules);
+    let w03_diags = w03(&rules, LintOptions::default());
     assert!(
         w03_diags.is_empty(),
         "rocky9-stig-finalize: no never/exclude rules; no au-W03 expected, got {w03_diags:?}"
@@ -1074,7 +1099,7 @@ fn corpus_rocky9_prepend_vs_append_w03_fires_at_always_rule() {
     // au-W03: the -A never rule is FIRST in effective order (prepended to HEAD),
     // suppressing the -a always rule which is SECOND. au-W03 fires at the always rule.
     // TRUE expectation: 1 au-W03 diagnostic.
-    let w03_diags = w03(&rules);
+    let w03_diags = w03(&rules, LintOptions::default());
     assert_eq!(
         w03_diags.len(),
         1,
@@ -1121,14 +1146,14 @@ fn corpus_rocky10_rulesd_multifile_no_e01_no_w04() {
         "rocky10-rulesd-multifile: -e 2 is last rule; no au-E01 expected, got {e01_diags:?}"
     );
 
-    let w02_diags = w02(&rules);
+    let w02_diags = w02(&rules, LintOptions::default());
     assert!(
         w02_diags.is_empty(),
         "rocky10-rulesd-multifile: watch vs exit-list rule, no subsumption expected, \
          got {w02_diags:?}"
     );
 
-    let w03_diags = w03(&rules);
+    let w03_diags = w03(&rules, LintOptions::default());
     assert!(
         w03_diags.is_empty(),
         "rocky10-rulesd-multifile: no never/exclude rules; no au-W03 expected, \
@@ -1153,9 +1178,9 @@ fn w03_disjoint_never_does_not_suppress_219() {
     );
     let rules = parse_rules_str_located(input, Path::new("10-w03d.rules")).unwrap();
     assert!(
-        w03(&rules).is_empty(),
+        w03(&rules, LintOptions::default()).is_empty(),
         "disjoint never/always must not fire au-W03, got {:?}",
-        w03(&rules)
+        w03(&rules, LintOptions::default())
     );
 }
 
@@ -1170,10 +1195,10 @@ fn w03_uid_name_vs_number_still_suppresses_219() {
     );
     let rules = parse_rules_str_located(input, Path::new("10-uidname.rules")).unwrap();
     assert_eq!(
-        w03(&rules).len(),
+        w03(&rules, LintOptions::default()).len(),
         1,
         "uid=root and uid=0 are the same user -> au-W03 fires, got {:?}",
-        w03(&rules)
+        w03(&rules, LintOptions::default())
     );
 }
 
@@ -1187,10 +1212,10 @@ fn w03_overlapping_never_still_suppresses_219() {
     );
     let rules = parse_rules_str_located(input, Path::new("10-w03o.rules")).unwrap();
     assert_eq!(
-        w03(&rules).len(),
+        w03(&rules, LintOptions::default()).len(),
         1,
         "overlapping never/always must still fire au-W03, got {:?}",
-        w03(&rules)
+        w03(&rules, LintOptions::default())
     );
 }
 
@@ -1280,4 +1305,48 @@ mod w04_stretch {
              got {diags:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// T9 (#230): AppArmor msgtype opt-in au-W02 subsumption (apparmor-DECIDING).
+//
+// Predicate-equal-but-key-differs (the established au-W02 shape, see
+// w02_predicate_equal_different_key_fires) where the ONLY thing making the two
+// msgtype predicates equal is the apparmor fold (1503 == APPARMOR_DENIED).
+// Different -k keys keep canonical_key distinct, so it is au-W02 not au-W01.
+// ON: the predicates fold equal -> earlier subsumes later -> exactly one au-W02.
+// OFF: 1503 and APPARMOR_DENIED are distinct -> no subsumption -> ZERO au-W02.
+// This makes the diagnostic count itself depend on --apparmor (the old version
+// fired 1/1 either way, proving only signature plumbing, not folding).
+// ---------------------------------------------------------------------------
+#[test]
+fn t9_apparmor_msgtype_w02_requires_on() {
+    let input = concat!(
+        "-a always,exclude -F msgtype=1503 -k apparmor_a\n",
+        "-a always,exclude -F msgtype=APPARMOR_DENIED -k apparmor_b\n",
+    );
+    let file = Path::new("10-apparmor-w02.rules");
+    let rules = parse_rules_str_located(input, file).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags_on = w02(
+        &rules,
+        LintOptions {
+            include_apparmor: true,
+        },
+    );
+    assert_eq!(
+        diags_on.len(),
+        1,
+        "with --apparmor: msgtype 1503 folds APPARMOR_DENIED -> au-W02 subsumption, \
+         got {diags_on:?}"
+    );
+    assert_eq!(diags_on[0].code, "au-W02");
+
+    let diags_off = w02(&rules, LintOptions::default());
+    assert!(
+        diags_off.is_empty(),
+        "without --apparmor: 1503 and APPARMOR_DENIED are distinct msgtypes, so NO \
+         subsumption and NO au-W02, got {diags_off:?}"
+    );
 }

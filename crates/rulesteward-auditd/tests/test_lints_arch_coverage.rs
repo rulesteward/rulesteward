@@ -433,9 +433,9 @@ fn t21_mixed_case_matched_pair_is_clean() {
 // ===========================================================================
 #[test]
 fn t22_dispatcher_includes_au_w04() {
-    use rulesteward_auditd::lints::lint;
+    use rulesteward_auditd::lints::{LintOptions, lint};
     let rules = parse("-a always,exit -F arch=b64 -S execve -k exec\n");
-    let diags = lint(&rules);
+    let diags = lint(&rules, LintOptions::default());
     assert!(
         diags.iter().any(|d| d.code == "au-W04"),
         "lint() must run the arch_coverage pass, got {diags:?}"

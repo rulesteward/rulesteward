@@ -40,7 +40,7 @@ use crate::ast::{
 };
 use crate::lints::field_type::field_type;
 use crate::lints::normalize::canonical_key;
-use crate::lints::value::{canonical_value, disjoint, implies};
+use crate::lints::value::{LintOptions, canonical_value, disjoint, implies};
 
 use super::anchored;
 
@@ -112,10 +112,10 @@ fn syscall_superset(earlier: &[String], later: &[String]) -> bool {
 /// relational range containing a later `=` point (see
 /// [`crate::lints::value::implies`]); Ne/bitmask/opaque operands match only
 /// exactly. Multiplicity is ignored; real rules carry distinct predicates.
-fn fields_subset(earlier: &[FieldFilter], later: &[FieldFilter]) -> bool {
+fn fields_subset(earlier: &[FieldFilter], later: &[FieldFilter], opts: LintOptions) -> bool {
     earlier
         .iter()
-        .all(|pe| later.iter().any(|pl| implies(pe, pl)))
+        .all(|pe| later.iter().any(|pl| implies(pe, pl, opts)))
 }
 
 /// As [`fields_subset`] for `-C` inter-field comparisons.
@@ -127,9 +127,9 @@ fn compares_subset(earlier: &[FieldComparison], later: &[FieldComparison]) -> bo
 /// broader syscall set AND every earlier field predicate implied by a later one
 /// (interval-aware, so `auid>=1000` subsumes `auid>=2000`). `-C` inter-field
 /// comparisons still match exactly.
-fn subsumes(earlier: &SyscallParts, later: &SyscallParts) -> bool {
+fn subsumes(earlier: &SyscallParts, later: &SyscallParts, opts: LintOptions) -> bool {
     syscall_superset(earlier.syscalls, later.syscalls)
-        && fields_subset(earlier.fields, later.fields)
+        && fields_subset(earlier.fields, later.fields, opts)
         && compares_subset(earlier.field_compares, later.field_compares)
 }
 
@@ -141,7 +141,7 @@ fn subsumes(earlier: &SyscallParts, later: &SyscallParts) -> bool {
 /// predicates must match together, a single disjoint field means the rules
 /// cannot co-match. Anything not provably disjoint is conservatively treated as
 /// overlapping, so au-W03 never drops a real suppression warning.
-fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
+fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts, opts: LintOptions) -> bool {
     let syscalls_intersect = a.syscalls.is_empty()
         || b.syscalls.is_empty()
         || a.syscalls.iter().any(|s| b.syscalls.contains(s));
@@ -151,7 +151,7 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
     let field_disjoint = a
         .fields
         .iter()
-        .any(|fa| b.fields.iter().any(|fb| disjoint(fa, fb)));
+        .any(|fa| b.fields.iter().any(|fb| disjoint(fa, fb, opts)));
     !field_disjoint
 }
 
@@ -165,7 +165,7 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts) -> bool {
 /// default of 'never'"; `man 7 audit.rules` likewise). So `never,exclude`,
 /// `always,exclude`, and `exclude,always` all suppress the named msgtype
 /// identically -- the auditctl EXAMPLES use them interchangeably.
-fn is_syscall_suppressing_exclude(rule: &AuditRule) -> bool {
+fn is_syscall_suppressing_exclude(rule: &AuditRule, opts: LintOptions) -> bool {
     let Some(p) = syscall_parts(rule) else {
         return false;
     };
@@ -175,7 +175,7 @@ fn is_syscall_suppressing_exclude(rule: &AuditRule) -> bool {
             // folds the symbolic name, the number, and base-0 spellings (#229,
             // e.g. 0x514) to "1300". Centralizing it here keeps the one source.
             f.field == AuditField::MsgType
-                && canonical_value(field_type(&f.field), &f.value) == "1300"
+                && canonical_value(field_type(&f.field), &f.value, opts) == "1300"
         })
 }
 
@@ -187,7 +187,7 @@ fn is_syscall_suppressing_exclude(rule: &AuditRule) -> bool {
 /// the shadowed (later) rule and cites the shadowing (earlier) rule's
 /// `file:line`.
 #[must_use]
-pub fn w02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
+pub fn w02(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
     let eff = effective_syscall_rules(rules);
     let mut diags = Vec::new();
     for j in 0..eff.len() {
@@ -203,10 +203,10 @@ pub fn w02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
                 continue;
             }
             // D2: a canonical-equal pair is an au-W01 duplicate, not a shadow.
-            if canonical_key(&earlier.rule) == canonical_key(&later.rule) {
+            if canonical_key(&earlier.rule, opts) == canonical_key(&later.rule, opts) {
                 continue;
             }
-            if subsumes(&ep, &lp) {
+            if subsumes(&ep, &lp, opts) {
                 let msg = format!(
                     "shadowed rule: the broader rule at {}:{} on the same filter list \
                      matches this rule's traffic first (kernel first-match), so it never fires",
@@ -272,11 +272,11 @@ pub fn e01(rules: &[LocatedRule]) -> Vec<Diagnostic> {
 /// * a `never`-action rule earlier in EFFECTIVE order on the SAME list
 ///   suppresses overlapping traffic before the `always` rule is consulted.
 #[must_use]
-pub fn w03(rules: &[LocatedRule]) -> Vec<Diagnostic> {
+pub fn w03(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
     let eff = effective_syscall_rules(rules);
     let syscall_exclude = rules
         .iter()
-        .find(|lr| is_syscall_suppressing_exclude(&lr.rule));
+        .find(|lr| is_syscall_suppressing_exclude(&lr.rule, opts));
     let mut diags = Vec::new();
     for j in 0..eff.len() {
         let later = eff[j];
@@ -291,7 +291,8 @@ pub fn w03(rules: &[LocatedRule]) -> Vec<Diagnostic> {
             let Some(ep) = syscall_parts(&earlier.rule) else {
                 continue;
             };
-            if *ep.action == Action::Never && ep.list == lp.list && traffic_overlaps(&ep, &lp) {
+            if *ep.action == Action::Never && ep.list == lp.list && traffic_overlaps(&ep, &lp, opts)
+            {
                 let msg = format!(
                     "suppression conflict: the earlier never rule at {}:{} on the same \
                      filter list drops matching traffic first (kernel first-match)",
@@ -335,13 +336,18 @@ pub fn w03(rules: &[LocatedRule]) -> Vec<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SyscallParts, is_syscall_suppressing_exclude, syscall_superset, traffic_overlaps, w02, w03,
+        LintOptions, SyscallParts, is_syscall_suppressing_exclude, syscall_superset,
+        traffic_overlaps, w02, w03,
     };
     use crate::ast::{
         Action, AuditField, AuditRule, CompareOp, FieldComparison, FieldFilter, FilterList,
     };
     use crate::parse_rules_str_located;
     use std::path::Path;
+
+    const OFF: LintOptions = LintOptions {
+        include_apparmor: false,
+    };
 
     fn field(name: AuditField, op: CompareOp, value: &str) -> FieldFilter {
         FieldFilter {
@@ -405,7 +411,7 @@ mod tests {
         let uid1000 = vec![field(AuditField::Uid, CompareOp::Eq, "1000")];
         let a = parts(&exit, &never, &sc, &uid0, &[]);
         let b = parts(&exit, &always, &sc, &uid1000, &[]);
-        assert!(!traffic_overlaps(&a, &b));
+        assert!(!traffic_overlaps(&a, &b, OFF));
     }
 
     #[test]
@@ -415,7 +421,7 @@ mod tests {
         let b_sc = vec!["write".to_string()];
         let a = parts(&exit, &never, &a_sc, &[], &[]);
         let b = parts(&exit, &always, &b_sc, &[], &[]);
-        assert!(!traffic_overlaps(&a, &b));
+        assert!(!traffic_overlaps(&a, &b, OFF));
     }
 
     #[test]
@@ -428,7 +434,7 @@ mod tests {
         let b_fields = vec![field(AuditField::Auid, CompareOp::Ge, "2000")];
         let a = parts(&exit, &never, &[], &a_fields, &[]);
         let b = parts(&exit, &always, &[], &b_fields, &[]);
-        assert!(traffic_overlaps(&a, &b));
+        assert!(traffic_overlaps(&a, &b, OFF));
     }
 
     #[test]
@@ -441,7 +447,7 @@ mod tests {
         let a = parts(&exit, &never, &[], &[], &[]);
         let b = parts(&exit, &always, &b_sc, &[], &[]);
         assert!(
-            traffic_overlaps(&a, &b),
+            traffic_overlaps(&a, &b, OFF),
             "wildcard never overlaps concrete always"
         );
     }
@@ -458,7 +464,7 @@ mod tests {
         let a = parts(&exit, &never, &sc, &a_fields, &[]);
         let b = parts(&exit, &always, &sc, &b_fields, &[]);
         assert!(
-            !traffic_overlaps(&a, &b),
+            !traffic_overlaps(&a, &b, OFF),
             "uid=0 is outside uid>=1000 -> provably disjoint -> no overlap"
         );
     }
@@ -473,7 +479,7 @@ mod tests {
         let a = parts(&exit, &never, &sc, &a_fields, &[]);
         let b = parts(&exit, &always, &sc, &b_fields, &[]);
         assert!(
-            traffic_overlaps(&a, &b),
+            traffic_overlaps(&a, &b, OFF),
             "uid=1500 is inside uid>=1000 -> overlap"
         );
     }
@@ -488,7 +494,7 @@ mod tests {
         let a = parts(&exit, &never, &sc, &a_fields, &[]);
         let b = parts(&exit, &always, &sc, &b_fields, &[]);
         assert!(
-            !traffic_overlaps(&a, &b),
+            !traffic_overlaps(&a, &b, OFF),
             "auid>=2000 and auid<1000 are disjoint"
         );
     }
@@ -505,7 +511,7 @@ mod tests {
         let a = parts(&exit, &never, &sc, &a_fields, &[]);
         let b = parts(&exit, &always, &sc, &b_fields, &[]);
         assert!(
-            traffic_overlaps(&a, &b),
+            traffic_overlaps(&a, &b, OFF),
             "auid=-1 and auid=4294967295 are the same value -> overlap"
         );
     }
@@ -526,24 +532,24 @@ mod tests {
 
     #[test]
     fn symbolic_syscall_msgtype_is_a_suppressor() {
-        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Always,
-            "SYSCALL"
-        )));
-        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Always,
-            "1300"
-        )));
+        assert!(is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Always, "SYSCALL"),
+            OFF
+        ));
+        assert!(is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Always, "1300"),
+            OFF
+        ));
     }
 
     #[test]
     fn hex_syscall_msgtype_is_a_suppressor() {
         // #227/#229: msgtype=0x514 is 1300 (SYSCALL); recognized now that the
         // SYSCALL<->1300 knowledge lives in canonical_value.
-        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Always,
-            "0x514"
-        )));
+        assert!(is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Always, "0x514"),
+            OFF
+        ));
     }
 
     #[test]
@@ -551,14 +557,14 @@ mod tests {
         // On the exclude filter the action is ignored (defaults to `never`):
         // `never,exclude`, `always,exclude`, and `possible,exclude` all drop the
         // named msgtype identically (`man auditctl` / `man 7 audit.rules`).
-        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Never,
-            "1300"
-        )));
-        assert!(is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Possible,
-            "SYSCALL"
-        )));
+        assert!(is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Never, "1300"),
+            OFF
+        ));
+        assert!(is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Possible, "SYSCALL"),
+            OFF
+        ));
     }
 
     #[test]
@@ -571,7 +577,7 @@ mod tests {
             "-a always,exit -S execve -k exec_audit\n",
         );
         let rules = parse_rules_str_located(input, Path::new("10-nx.rules")).unwrap();
-        let diags = w03(&rules);
+        let diags = w03(&rules, OFF);
         assert_eq!(
             diags.len(),
             1,
@@ -585,10 +591,10 @@ mod tests {
     #[test]
     fn non_syscall_msgtype_exclude_is_not_a_suppressor() {
         // 1305 = AUDIT_CONFIG_CHANGE, not SYSCALL: does not suppress exit rules.
-        assert!(!is_syscall_suppressing_exclude(&exclude_msgtype(
-            Action::Always,
-            "1305"
-        )));
+        assert!(!is_syscall_suppressing_exclude(
+            &exclude_msgtype(Action::Always, "1305"),
+            OFF
+        ));
     }
 
     // --- w02 boundaries beyond the frozen integration fixtures ------------
@@ -603,7 +609,7 @@ mod tests {
         );
         let rules = parse_rules_str_located(input, Path::new("10-act.rules")).unwrap();
         assert!(
-            w02(&rules).is_empty(),
+            w02(&rules, OFF).is_empty(),
             "w02 must not compare across actions (never vs always)"
         );
     }
@@ -618,7 +624,7 @@ mod tests {
         );
         let rules = parse_rules_str_located(input, Path::new("10-cmp.rules")).unwrap();
         assert!(
-            w02(&rules).is_empty(),
+            w02(&rules, OFF).is_empty(),
             "earlier rule with an extra -C is narrower; no shadow"
         );
     }
@@ -633,7 +639,7 @@ mod tests {
             "-A always,exit -S execve -k broad\n",
         );
         let rules = parse_rules_str_located(input, Path::new("10-prep.rules")).unwrap();
-        let diags = w02(&rules);
+        let diags = w02(&rules, OFF);
         assert_eq!(
             diags.len(),
             1,
@@ -655,7 +661,7 @@ mod tests {
         );
         let rules = parse_rules_str_located(input, Path::new("10-x.rules")).unwrap();
         assert!(
-            w03(&rules).is_empty(),
+            w03(&rules, OFF).is_empty(),
             "exclude-SYSCALL must not flag a non-exit (user-list) always rule"
         );
     }
