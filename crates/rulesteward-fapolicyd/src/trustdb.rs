@@ -20,14 +20,18 @@ pub enum TrustDbError {
     MalformedValue { key: String, raw: String },
     /// A trust-DB record failed a structural sanity check that a faithfully
     /// written fapolicyd record can never fail: the value carried a NUL or a
-    /// non-`{digit, space, lowercase-hex}` byte, or the key was not an absolute
-    /// NUL-free path. Under the `NO_LOCK` fallback reader (#291/#317) this is
-    /// the most likely surface of a torn read (the daemon freed and reused the
-    /// page under our borrow), so it is reported as its own variant rather than
-    /// folded into `MalformedValue`: in a log it names the actual hazard. NOTE
-    /// (Layer-2 caveat): detection is PROBABILISTIC - a torn window can still be
-    /// shape-valid - so this is the floor, not the guarantee; the locked
-    /// prevention path (Layer 1) is what guarantees integrity on a writable dir.
+    /// non-`{digit, space, lowercase-hex}` byte, or the key was neither a
+    /// legitimate fapolicyd key shape (an absolute NUL-free path, OR a
+    /// `path_to_hash` 128-hex digest for an over-long path). Under the `NO_LOCK`
+    /// fallback reader (#291/#317) this is the most likely surface of a torn read
+    /// (the daemon freed and reused the page under our borrow), so it is reported
+    /// as its own variant rather than folded into `MalformedValue`: in a log it
+    /// names the actual hazard. `raw` carries a FAITHFUL escaped rendering of the
+    /// original bytes (`\xHH` for non-printable / high-bit), not the lossy string,
+    /// so the actual torn byte stays visible. NOTE (Layer-2 caveat): detection is
+    /// PROBABILISTIC - a torn window can still be shape-valid - so this is the
+    /// floor, not the guarantee; the locked prevention path (Layer 1) is what
+    /// guarantees integrity on a writable dir.
     #[error("torn/corrupt trust-DB record for key {key:?}: {raw:?}")]
     TornRead { key: String, raw: String },
 }
@@ -212,19 +216,90 @@ fn is_torn_value_byte(b: u8) -> bool {
     b == 0 || !b.is_ascii()
 }
 
-/// Validate a raw trust-DB KEY (an fapolicyd-trusted file path). A faithfully-
-/// written key is an absolute (`/`-rooted) path with no interior NUL byte. A
-/// torn read can splice an unrelated page into the key buffer, so a key that is
-/// not `/`-rooted or that carries a NUL is reported as `TrustDbError::TornRead`
-/// (#291/#317 Layer-2 floor). `key` is the already-lossy-decoded string; the NUL
-/// check runs on the original bytes since lossy decode preserves NUL as `\0`.
-fn validate_trust_key(raw: &[u8], key: &str) -> Result<(), TrustDbError> {
-    if key.starts_with('/') && !raw.contains(&0) {
-        return Ok(());
+/// Render raw bytes for a diagnostic, escaping every non-printable / non-ASCII
+/// byte as `\xHH` (and `\\` for a literal backslash) so the ACTUAL torn bytes
+/// are visible. The lossy-decoded `String` would collapse a high-bit offending
+/// byte to U+FFFD and erase the very evidence the `TornRead.raw` field exists to
+/// show; this keeps it faithful. Stderr/diagnostic only - no machine contract.
+fn render_raw_bytes(raw: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(raw.len());
+    for &b in raw {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            // Printable ASCII (space..tilde) passes through verbatim.
+            0x20..=0x7e => out.push(b as char),
+            // Everything else (NUL, control, high-bit) is escaped so the real
+            // hazard byte is visible rather than masked as U+FFFD. Writing to a
+            // String is infallible (mirrors the `to_hex` helper above).
+            _ => {
+                let _ = write!(out, "\\x{b:02x}");
+            }
+        }
     }
+    out
+}
+
+/// Length in bytes of a `path_to_hash` hashed key: a lowercase-hex SHA-512
+/// digest is `SHA512_LEN(64) * 2 = 128` chars. fapolicyd stores the key with a
+/// trailing C-string NUL (`mv_size = (SHA512_LEN * 2) + 1`), so the raw key
+/// bytes from LMDB are 128 hex + one NUL.
+const PATH_TO_HASH_HEX_LEN: usize = 128;
+
+/// Validate a raw trust-DB KEY and return the canonical surfaced key string.
+///
+/// fapolicyd stores TWO legitimate key shapes (vendored `database.c`):
+///   (a) the absolute file PATH itself, when its length is <= the LMDB max key
+///       size (`MDB_maxkeysize`, 511 default) - a `/`-rooted, NUL-free string.
+///   (b) for a path LONGER than the key limit (paths are legal up to `PATH_MAX` =
+///       4096), `path_to_hash` (database.c:667-683) stores a bare lowercase-hex
+///       SHA-512 of the path: exactly 128 hex chars, NO leading `/`, plus a
+///       trailing NUL (`write_db` :717-728 sets `mv_size = (SHA512_LEN*2)+1`).
+///       The daemon reads it back by that same hashed key (`lt_read_db`
+///       :853-865), so it is a fully legitimate, queryable record.
+///
+/// Rejecting shape (b) (as a naive "must be `/`-rooted, NUL-free" check does)
+/// makes `iter_entries`/`iter_paths` return `TornRead` for the WHOLE iteration
+/// on any real DB containing a single long-path entry (#291/#317 rework). So we
+/// ACCEPT either shape and reject everything else as `TornRead` (a torn read can
+/// still splice a short/relative/garbage/arbitrary-NUL key, which neither shape
+/// matches).
+///
+/// Returns the key to SURFACE: the path verbatim for (a); the 128-hex string
+/// with its single trailing NUL trimmed for (b) (preserving the pre-fix reader's
+/// "surface the decoded key bytes" behavior, minus the C-string terminator). A
+/// nicer hashed-key annotation is intentionally left as a future enhancement.
+fn validate_trust_key(raw: &[u8], key: &str) -> Result<String, TrustDbError> {
+    // Shape (a): absolute path, no interior NUL. The NUL check runs on the raw
+    // bytes (lossy decode preserves NUL as `\0`).
+    if key.starts_with('/') && !raw.contains(&0) {
+        return Ok(key.to_owned());
+    }
+
+    // Shape (b): path_to_hash key = 128 lowercase-hex bytes, optionally followed
+    // by a single trailing NUL (the stored C-string terminator). Checked on the
+    // RAW bytes so a torn high-bit byte cannot masquerade as hex via lossy decode.
+    let hex = match raw.len() {
+        PATH_TO_HASH_HEX_LEN => Some(raw),
+        // 129 bytes: 128 hex + exactly one trailing NUL.
+        n if n == PATH_TO_HASH_HEX_LEN + 1 && raw[PATH_TO_HASH_HEX_LEN] == 0 => {
+            Some(&raw[..PATH_TO_HASH_HEX_LEN])
+        }
+        _ => None,
+    };
+    if let Some(hex) = hex
+        && hex
+            .iter()
+            .all(|&b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        // Surface the 128-hex digest with the trailing NUL (if any) trimmed.
+        // Safe to unwrap: every byte is ASCII hex.
+        return Ok(String::from_utf8(hex.to_vec()).expect("ascii-hex is valid utf8"));
+    }
+
     Err(TrustDbError::TornRead {
         key: key.to_owned(),
-        raw: key.to_owned(),
+        raw: render_raw_bytes(raw),
     })
 }
 
@@ -254,10 +329,12 @@ pub(crate) fn parse_trust_value(raw: &[u8]) -> Result<(TrustSource, u64, String)
     // Layer-2 floor: a value carrying a NUL or non-ASCII byte cannot be a
     // faithful fapolicyd record, so it is a TORN read. Screened on the RAW bytes
     // BEFORE lossy decode (decode would mask a torn high-bit byte as U+FFFD).
+    // `key` carries the lossy string (no key is known here); `raw` carries a
+    // FAITHFUL escaped rendering so the actual offending byte stays visible.
     if raw.iter().any(|&b| is_torn_value_byte(b)) {
         return Err(TrustDbError::TornRead {
-            key: raw_str.clone().into_owned(),
-            raw: raw_str.into_owned(),
+            key: raw_str.into_owned(),
+            raw: render_raw_bytes(raw),
         });
     }
 
@@ -556,10 +633,12 @@ impl TrustDb {
         let mut out: Vec<TrustEntry> = Vec::new();
         for item in self.db.iter(&rtxn)? {
             let (k, v) = item?;
-            let path = String::from_utf8_lossy(k).into_owned();
-            // Layer-2 torn-read floor (#291/#317): the key must be an absolute
-            // NUL-free path before we trust the row.
-            validate_trust_key(k, &path)?;
+            let decoded = String::from_utf8_lossy(k).into_owned();
+            // Layer-2 torn-read floor (#291/#317): the key must be a legitimate
+            // fapolicyd key shape (an absolute path, OR a path_to_hash 128-hex
+            // key for an over-long path). Returns the canonical surfaced key
+            // (hashed-key trailing NUL trimmed); a torn/garbage key is rejected.
+            let path = validate_trust_key(k, &decoded)?;
             let (source, size, digest) = parse_trust_value(v)?;
             out.push(TrustEntry {
                 path,
@@ -617,9 +696,11 @@ impl TrustDb {
         let mut out: Vec<String> = Vec::new();
         for item in self.db.iter(&rtxn)? {
             let (k, _v) = item?;
-            let key = String::from_utf8_lossy(k).into_owned();
-            // Layer-2 torn-read floor (#291/#317): reject a non-path key.
-            validate_trust_key(k, &key)?;
+            let decoded = String::from_utf8_lossy(k).into_owned();
+            // Layer-2 torn-read floor (#291/#317): accept an absolute path OR a
+            // path_to_hash 128-hex key; reject a torn/garbage key. Returns the
+            // canonical surfaced key (hashed-key trailing NUL trimmed).
+            let key = validate_trust_key(k, &decoded)?;
             if out.last().map(String::as_str) != Some(key.as_str()) {
                 out.push(key);
             }
@@ -740,7 +821,8 @@ mod tests {
     use super::write_trustdb_fixture_kv;
     use super::{
         DiskVerdict, IntegrityMode, TrustDbError, TrustEntry, TrustSource, open_trustdb_readonly,
-        open_trustdb_readonly_nolock, parse_trust_value, validate_trust_key, verify_entry,
+        open_trustdb_readonly_nolock, parse_trust_value, render_raw_bytes, validate_trust_key,
+        verify_entry,
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
@@ -960,13 +1042,114 @@ mod tests {
         );
     }
 
+    // ---- #291/#317 TornRead.raw fidelity (render_raw_bytes) -----------------
+
+    /// `render_raw_bytes` must (a) pass printable ASCII through verbatim,
+    /// (b) escape NUL and high-bit bytes as `\xHH` so the ACTUAL torn byte is
+    /// visible (not the U+FFFD a lossy decode would show), and (c) escape a
+    /// literal backslash. Pins the faithful-rendering contract the spec/idiomatic
+    /// reviewers asked for; kills a mutant that drops any escape branch.
+    #[test]
+    fn render_raw_bytes_escapes_non_printable_faithfully() {
+        // "ab" + NUL + 0xFF + backslash + "9"
+        let raw = b"ab\x00\xff\\9";
+        assert_eq!(
+            render_raw_bytes(raw),
+            "ab\\x00\\xff\\\\9",
+            "printable passes through; NUL/high-bit -> \\xHH; backslash -> \\\\"
+        );
+        // A high-bit byte must NOT collapse to U+FFFD (the whole point).
+        assert!(
+            !render_raw_bytes(b"\xff").contains('\u{fffd}'),
+            "high-bit byte must be escaped, not rendered as the replacement char"
+        );
+    }
+
     // ---- #291/#317 Layer-2 key validation (validate_trust_key) --------------
 
-    /// An absolute, NUL-free path key validates OK.
+    /// An absolute, NUL-free path key validates OK and surfaces verbatim.
     #[test]
     fn validate_key_absolute_nul_free_ok() {
         let raw = b"/usr/bin/ls";
-        assert!(validate_trust_key(raw, "/usr/bin/ls").is_ok());
+        assert_eq!(
+            validate_trust_key(raw, "/usr/bin/ls").expect("absolute path must validate"),
+            "/usr/bin/ls",
+            "an absolute path key must surface verbatim"
+        );
+    }
+
+    /// A `path_to_hash` key (128 lowercase-hex chars, the shape fapolicyd stores
+    /// for a path longer than the LMDB key limit) validates OK and surfaces the
+    /// 128-hex string. NO leading `/`. Kills a mutant that drops the hashed-key
+    /// acceptance branch (which would reject this real key as `TornRead`).
+    #[test]
+    fn validate_key_path_to_hash_128hex_ok() {
+        // 128 lowercase-hex chars (a real SHA-512 hex shape; value irrelevant).
+        let hex = "ab".repeat(64);
+        assert_eq!(hex.len(), 128, "fixture must be 128 hex chars");
+        let surfaced = validate_trust_key(hex.as_bytes(), &hex)
+            .expect("128-hex path_to_hash key must validate");
+        assert_eq!(
+            surfaced, hex,
+            "hashed key must surface as the 128-hex string"
+        );
+    }
+
+    /// A `path_to_hash` key WITH the trailing C-string NUL fapolicyd stores
+    /// (`mv_size = (SHA512_LEN*2)+1`, so the raw key is 128 hex + one NUL)
+    /// validates OK and surfaces the 128-hex with the trailing NUL TRIMMED.
+    /// Kills a mutant that drops the trailing-NUL handling.
+    #[test]
+    fn validate_key_path_to_hash_128hex_trailing_nul_ok() {
+        let hex = "0f".repeat(64);
+        let mut raw = hex.clone().into_bytes();
+        raw.push(0); // the stored C-string terminator
+        assert_eq!(raw.len(), 129);
+        let lossy = String::from_utf8_lossy(&raw).into_owned();
+        let surfaced =
+            validate_trust_key(&raw, &lossy).expect("128-hex + trailing NUL key must validate");
+        assert_eq!(
+            surfaced, hex,
+            "hashed key must surface as the 128-hex string with the trailing NUL trimmed"
+        );
+    }
+
+    /// A 128-char string that is NOT all lowercase-hex (an uppercase letter, or a
+    /// non-hex byte) must NOT be accepted as a hashed key - it is a torn splice
+    /// that merely happens to be 128 bytes. Kills a mutant that relaxes the
+    /// hex-alphabet check on the hashed-key branch.
+    #[test]
+    fn validate_key_128_non_hex_is_torn_read() {
+        // 128 chars but with an uppercase 'A' - not lowercase hex.
+        let mut s = "ab".repeat(64);
+        s.replace_range(0..1, "A");
+        assert_eq!(s.len(), 128);
+        assert!(
+            matches!(
+                validate_trust_key(s.as_bytes(), &s),
+                Err(TrustDbError::TornRead { .. })
+            ),
+            "128-char non-hex key must be TornRead, got {:?}",
+            validate_trust_key(s.as_bytes(), &s)
+        );
+    }
+
+    /// A 128-byte key whose trailing region is a NON-NUL interior byte (i.e. it
+    /// is NOT the 128-hex shape and not an absolute path) is rejected. Guards the
+    /// boundary: only EXACTLY 128 hex (optionally + one trailing NUL) is the
+    /// hashed shape; a 129-byte key whose 129th byte is not NUL is torn.
+    #[test]
+    fn validate_key_129_non_nul_tail_is_torn_read() {
+        let mut raw = "ab".repeat(64).into_bytes(); // 128 hex
+        raw.push(b'x'); // 129th byte is NOT a NUL -> not the hashed shape
+        let lossy = String::from_utf8_lossy(&raw).into_owned();
+        assert!(
+            matches!(
+                validate_trust_key(&raw, &lossy),
+                Err(TrustDbError::TornRead { .. })
+            ),
+            "129-byte key with a non-NUL tail must be TornRead"
+        );
     }
 
     /// A relative (non-`/`-rooted) key is `TornRead`. Kills a mutant that drops
@@ -1115,6 +1298,89 @@ mod tests {
         assert!(
             matches!(db.iter_entries(), Err(TrustDbError::TornRead { .. })),
             "NUL-bearing key must read back as a clean TornRead, got {:?}",
+            db.iter_entries()
+        );
+    }
+
+    // ---- #291/#317 REGRESSION: path_to_hash (long-path) keys read back OK ----
+    //
+    // For a trusted path longer than the LMDB key limit (511; paths are legal up
+    // to PATH_MAX=4096), fapolicyd stores a bare 128-char lowercase-hex SHA-512
+    // of the path as the key (database.c path_to_hash + write_db), NOT the path.
+    // The naive "key must be `/`-rooted, NUL-free" check rejected this, so a real
+    // DB containing even ONE long-path entry made iter_entries/iter_paths return
+    // TornRead for the WHOLE iteration (trustdb list/report/cross_db lint failed
+    // entirely). These tests pin that a hashed-key entry reads back as an Ok
+    // entry surfacing the hashed key, end-to-end through the real DB read path.
+
+    /// A fixture whose KEY is a 128-hex `path_to_hash` digest (with a normal
+    /// value) reads back as an `Ok` entry whose surfaced path is the 128-hex
+    /// string - NOT `Err(TornRead)`. Exercises the whole
+    /// `iter_entries`/`iter_paths` path.
+    #[test]
+    fn iter_reads_path_to_hash_128hex_key_as_ok_entry() {
+        let tmp = tempdir().expect("tempdir");
+        let hex = "ab".repeat(64); // 128 lowercase-hex chars
+        let v = value_bytes(1, 4096, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(hex.as_str(), v.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+
+        let entries = db
+            .iter_entries()
+            .expect("hashed-key entry must read OK, not TornRead");
+        assert_eq!(entries.len(), 1, "exactly one row");
+        assert_eq!(
+            entries[0].path, hex,
+            "hashed key must surface as the 128-hex string"
+        );
+        assert_eq!(entries[0].size, 4096);
+
+        let paths = db.iter_paths().expect("iter_paths must read OK");
+        assert_eq!(paths, vec![hex], "iter_paths must surface the 128-hex key");
+    }
+
+    /// Same, but the stored key carries the trailing C-string NUL fapolicyd
+    /// writes (`mv_size = (SHA512_LEN*2)+1`). The entry reads back OK and the
+    /// surfaced path has the trailing NUL trimmed.
+    #[test]
+    fn iter_reads_path_to_hash_128hex_trailing_nul_key_as_ok_entry() {
+        let tmp = tempdir().expect("tempdir");
+        let hex = "0f".repeat(64);
+        // Key bytes = 128 hex + one trailing NUL (a &str may contain '\0').
+        let mut key_bytes = hex.clone();
+        key_bytes.push('\0');
+        let v = value_bytes(2, 5000, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(key_bytes.as_str(), v.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+        let entries = db
+            .iter_entries()
+            .expect("trailing-NUL hashed-key entry must read OK, not TornRead");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].path, hex,
+            "surfaced path must be the 128-hex with the trailing NUL trimmed"
+        );
+    }
+
+    /// A genuinely TORN key (a 64-char string that is neither `/`-rooted nor the
+    /// 128-hex hashed shape) STILL fails the whole iteration as `TornRead` - the
+    /// regression fix widened acceptance to the two LEGITIMATE shapes only, it did
+    /// not stop detecting garbage.
+    #[test]
+    fn iter_still_rejects_garbage_key_as_torn_read() {
+        let tmp = tempdir().expect("tempdir");
+        // 64 hex chars: a valid-looking but ILLEGITIMATE key shape (not a path,
+        // not the 128-hex hashed shape).
+        let garbage = "ab".repeat(32);
+        let v = value_bytes(1, 111, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(garbage.as_str(), v.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+        assert!(
+            matches!(db.iter_entries(), Err(TrustDbError::TornRead { .. })),
+            "a 64-hex (non-path, non-hashed) key must still be TornRead, got {:?}",
             db.iter_entries()
         );
     }
