@@ -38,3 +38,14 @@ musl:
 
 # Run the full local CI gate in CI order (fmt + clippy + test + cov).
 ci: fmt clippy test cov
+
+# (#287) Cross-version fapolicyd differential harness wrapper (opt-in, dev-only;
+# NOT part of `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10}
+# images; skips gracefully when they are absent. Lane C fills this in.
+diff-fapolicyd:
+    @echo "diff-fapolicyd: stub (pending #287 implementation)"
+
+# (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
+# `just ci`). A dedicated CI job runs only this recipe. Lane B fills this in.
+trustdb-contention:
+    @echo "trustdb-contention: stub (pending #291 implementation)"
