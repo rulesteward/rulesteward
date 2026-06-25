@@ -44,13 +44,28 @@ not part of the standard `just ci` gate; reach for them for the specific job:
 Run noisy invocations through `rtk` (generic passthrough); use `rtk proxy <cmd>`
 when the output feeds another tool.
 
+## Differential verification (fapolicyd, dev-only)
+
+The three prebuilt docker images `fapolicyd8`, `fapolicyd9`, `fapolicyd10` run
+Rocky Linux 8/9/10 with fapolicyd pre-installed. Their Dockerfiles live in the
+docs tree (`/home/runner/rulesteward-docs/`). The cross-version validation harness
+lives at `/mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined/tools/validate.sh`
+alongside the wave3 corpus (135 valid + 20 rejected scenarios). Run it via:
+`just diff-fapolicyd /mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined 'adversarial/*'`
+(override the harness path: `just validate_sh=/other/path diff-fapolicyd /corpus 'glob/*'`).
+The recipe skips gracefully with a clear message if docker, the images, or validate.sh
+are absent. Note: `fapolicyd-cli --check-rules` does NOT exist on any shipping RHEL
+image (it is a v1.5+ upstream feature absent from RHEL 1.3.2 and 1.4.5); the harness
+uses `fapolicyd --debug --permissive` as the ground-truth parse gate instead.
+
 
 # MCP Servers - tool-augmented lookups
 
 Prefer these over training-recall or hand-rolled `gh`/`curl` sequences (see also
-`~/.claude/rules/skills-plugins-mcp.md`). All are plugin-installed today; there is
-no committed `.mcp.json` yet (deferred, see the Parallel Development Protocol
-section). Schemas load on demand via `ToolSearch`.
+`~/.claude/rules/skills-plugins-mcp.md`). These are developer-machine plugins
+(`enabledPlugins`), not a committed repo `.mcp.json` - this is by design (#288;
+see the Parallel Development Protocol section for the rationale). Schemas load on
+demand via `ToolSearch`.
 
 - `cratesio` - crates.io registry. Reach for it BEFORE adding or bumping a
   dependency: `search_crates`, `get_crate_info` / `get_crate_features`,
@@ -166,8 +181,14 @@ remains the project-wide net. They are complementary, not redundant.
 **MCP servers (context7, serena, cratesio, docsrs, github, claude-mem):** see the
 `# MCP Servers` section above for when to reach for each. They back the "prefer
 Context7/docsrs over training recall" guidance, Rust symbol navigation, crate
-registry lookups, and GitHub ops. They are currently installed as Claude plugins
-(`enabledPlugins`), NOT as a committed repo `.mcp.json`. A repo `.mcp.json` (the
-deferred Task 3) is tracked as a follow-up pending a fresh-clone test of whether
-the plugin form survives a clone/CI without the plugins; do not assume a committed
-`.mcp.json` exists yet.
+registry lookups, and GitHub ops. They are developer-machine plugins
+(`enabledPlugins`), NOT a committed repo `.mcp.json` - this is by design (#288,
+investigated and closed by-design). The fresh-clone plugin-sufficiency question was
+investigated: `cratesio` and `docsrs` are platform built-ins (they survive a fresh
+clone); `context7` / `serena` / `github` live in the machine-global plugin cache, not
+the repo; `claude-mem` is path-dependent on the plugin cache and cannot be made
+clone-sufficient via a repo file. A committed `.mcp.json` is intentionally NOT
+provided: it could only cover `context7` (npx), `serena` (needs `uv` + network at
+startup), and `github` (needs a `GITHUB_PERSONAL_ACCESS_TOKEN` env var) - none safe to
+assume in CI or on a fresh contributor machine - so it would give false reassurance
+rather than real clone-sufficiency.

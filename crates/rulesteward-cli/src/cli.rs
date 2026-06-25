@@ -435,8 +435,10 @@ pub struct SimulateArgs {
     /// Read-only fapolicyd trust DB consulted to resolve trust the workload
     /// omits (#127).
     ///
-    /// Opened with `READ_ONLY | NO_LOCK`. For any side whose trust the workload
-    /// left unset, a path PRESENT in the DB resolves to trusted and an ABSENT
+    /// Opened read-only: locked when the trust-DB directory is writable (to
+    /// prevent torn reads under a live daemon), with a `NO_LOCK` fallback
+    /// otherwise (#317). For any side whose trust the workload left unset, a
+    /// path PRESENT in the DB resolves to trusted and an ABSENT
     /// path to untrusted; workload-supplied `trust`/`subjTrust`/`objTrust` always
     /// takes priority. When a `filehash=`/`sha256hash=` rule needs the object's
     /// hash and the workload omits it, the object file is hashed on demand.
