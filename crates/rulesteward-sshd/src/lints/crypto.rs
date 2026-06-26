@@ -805,6 +805,41 @@ mod w06_tests {
             "W06 is a Warning-level diagnostic"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Inline comment: a VALID sshd-loading `+weak` line must still fire W06
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inline_comment_line_still_fires_w06() {
+        // `Ciphers +aes128-cbc # legacy` -- the ` # legacy` is a whitespace-delimited
+        // inline comment; sshd strips it and processes `+aes128-cbc`, reintroducing a
+        // weak CBC cipher (rc=0, OpenSSH 9.9p1 / 10.2p1). RuleSteward's tokenizer does
+        // NOT strip inline comments, so this tokenizes to args=["+aes128-cbc","#",
+        // "legacy"] (3 args) and the W06 `args.len() != 1` guard currently suppresses
+        // it -- a FALSE NEGATIVE on a valid reintroduction line. W06 must fire and
+        // name the `+` operator + aes128-cbc. RED until the shared comment-strip
+        // helper lands. (Contrast `spaced_operator_does_not_fire_w06` /
+        // `operator_with_extra_arg_does_not_fire_w06`: those have NO `#` and are real
+        // sshd rc-255 rejects that must STAY suppressed.)
+        let diags = run("Ciphers +aes128-cbc # legacy\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "valid (comment-stripped) `+weak` line => one W06"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the reintroduced weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('+'),
+            "message names the operator, got: {}",
+            diags[0].message
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1489,6 +1524,98 @@ mod w03_tests {
         assert!(
             run("KexAlgorithms diffie-hellman-group1-sha1 foo\n").is_empty(),
             "a multi-arg KexAlgorithms line (malformed, non-loading) must not fire W03"
+        );
+    }
+
+    // --- Inline comments: VALID sshd-loading lines that must still fire W03 ---
+    //
+    // sshd treats a WHITESPACE-delimited `#` as an end-of-line comment and loads
+    // the directive normally (verified rc=0 with the weak value taking effect on
+    // OpenSSH 9.9p1 and 10.2p1). RuleSteward's tokenizer does NOT strip inline
+    // comments (parser.rs: "There are no inline comments"; `tokenize_line("Banner
+    // x#y")` keeps `x#y` as one token), so a commented line tokenizes to >1 arg
+    // and the `args.len() != 1` multi-arg guard wrongly suppresses W03 on a VALID,
+    // sshd-loading weak-cipher line. These must-fire tests are RED until the impl
+    // adds a comment-strip helper (shared by W03 and W06). Contrast the genuinely
+    // malformed multi-arg guard tests above (no `#`): those are real sshd rc-255
+    // rejects and must STAY suppressed.
+
+    #[test]
+    fn inline_comment_line_still_fires_w03() {
+        // `Ciphers aes128-cbc # legacy` -- the ` # legacy` is a whitespace-delimited
+        // inline comment; sshd strips it and loads `aes128-cbc` (rc=0, OpenSSH
+        // 9.9p1 / 10.2p1). The tolerant tokenizer yields args=["aes128-cbc","#",
+        // "legacy"] (3 args), so the multi-arg guard currently suppresses W03 -- a
+        // FALSE NEGATIVE on a valid weak-cipher line. W03 must fire and name aes128-cbc.
+        let diags = run("Ciphers aes128-cbc # legacy\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "valid (comment-stripped) weak line => one W03"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn inline_comment_no_space_still_fires_w03() {
+        // `Ciphers aes128-cbc #legacy` -- no space between `#` and the comment word,
+        // but there IS a space BEFORE the `#`, so `#legacy` is a separate token and
+        // sshd treats it as a comment, loading aes128-cbc (rc=0, OpenSSH 9.9p1 /
+        // 10.2p1). The tokenizer yields args=["aes128-cbc","#legacy"] (2 args), so
+        // the multi-arg guard currently suppresses W03 (false negative). Must fire.
+        let diags = run("Ciphers aes128-cbc #legacy\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "comment token after value still leaves a valid weak line"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn comma_list_with_inline_comment_fires_w03() {
+        // `Ciphers aes256-ctr,aes128-cbc # note` -- a valid single comma-list value
+        // (one token `aes256-ctr,aes128-cbc`) followed by a whitespace-delimited
+        // inline comment. sshd strips ` # note` and loads the list (rc=0, OpenSSH
+        // 9.9p1 / 10.2p1). The tokenizer yields args=["aes256-ctr,aes128-cbc","#",
+        // "note"] (3 args); the multi-arg guard currently suppresses W03. The line
+        // is valid and contains weak aes128-cbc -- W03 must fire.
+        let diags = run("Ciphers aes256-ctr,aes128-cbc # note\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "comma-list + comment is a valid weak line => one W03"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn glued_hash_does_not_fire_w03() {
+        // `Ciphers aes128-cbc#legacy` -- NO whitespace before `#`, so the tokenizer
+        // keeps it as ONE token `aes128-cbc#legacy` (parser.rs
+        // `tokenize_line_keeps_hash_inside_a_bare_token`). sshd does NOT treat a
+        // glued `#` as a comment: it parses the whole token as a cipher spec and
+        // REJECTS it ("Bad SSH2 cipher spec", rc 255 on OpenSSH 9.9p1 / 10.2p1), so
+        // the daemon never loads the line. The token does not exactly match the weak
+        // denylist entry `aes128-cbc` either. W03 must NOT fire -- this stays a guard.
+        assert!(
+            run("Ciphers aes128-cbc#legacy\n").is_empty(),
+            "a glued value#comment token is a non-loading sshd reject and must not fire W03"
         );
     }
 }
