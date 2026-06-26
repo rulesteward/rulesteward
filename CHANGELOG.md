@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `auditd lint --apparmor`: opt-in folding of the `WITH_APPARMOR` msgtype record
+  names (`APPARMOR_DENIED` == `1503`, etc.) in the `au-W01`/`au-W02` lints. Off by
+  default, since a RHEL/fapolicyd-target audit daemon does not recognize these
+  names; enable it when linting rules for an AppArmor build (Debian/Ubuntu). (#230)
+
+### Fixed
+
+- fapolicyd trustdb: `trustdb check` and the simulate trust lookup now correctly
+  find a trusted file whose path exceeds LMDB's 511-byte max key size (the daemon
+  stores it under a hashed key); previously such long paths were falsely reported
+  as untrusted/absent. (#318)
+
 ## [0.2.1] - 2026-06-11
 
 Maintenance and supply-chain release. Its reason to exist: v0.2.0 was tagged a few
