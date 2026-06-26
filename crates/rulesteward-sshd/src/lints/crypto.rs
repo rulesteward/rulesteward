@@ -148,6 +148,14 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
         return;
     };
 
+    // A well-formed algorithm-list value is a SINGLE comma-separated arg with no
+    // internal whitespace. Multiple args mean whitespace inside the value
+    // (e.g. `Ciphers + aes128-cbc` / `Ciphers aes128-cbc foo`), which sshd rejects
+    // as a fatal parse error -- do not flag a line the daemon will not load.
+    if directive.args.len() != 1 {
+        return;
+    }
+
     // Reconstruct the comma-separated algorithm list from the parsed args.
     // The parser splits on whitespace, so a value like "aes256-ctr,aes128-cbc"
     // arrives as one arg element; a value with internal spaces around commas
