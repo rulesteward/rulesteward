@@ -45,11 +45,46 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SSHD_CONFIG));
 
-    // Phase 0 lints a single sshd_config file. Linting a whole sshd_config.d/
-    // drop-in directory together (and the cross-file sshd-F02 override check) is
-    // a future mode, so a directory or missing path is a tool failure here.
+    // Resolve --target in the command layer (epic #251): explicit value as-is,
+    // `auto` from the host probe, omitted -> version-agnostic. A failed `auto`
+    // degrades to version-agnostic with a warning, never an error (read-only tool).
+    let resolved = resolve_target(args.target, probe);
+    if let Some(warning) = &resolved.warning {
+        eprintln!("sshd lint: {warning}");
+    }
+    let ctx = SshdLintContext {
+        target: resolved.target.map(Into::into),
+        single_file: !path.is_dir(),
+    };
+
+    // A directory target is the standard /etc/ssh layout: a main `sshd_config`
+    // plus a `sshd_config.d/` drop-in directory. It routes to the cross-file
+    // sshd-F02 override check (#149 Wave C). Sources are not staged for the
+    // directory mode (F02 diagnostics are anchored to the offending drop-in
+    // file). A file target keeps the single-file pass path.
+    if path.is_dir() {
+        let diags = lints::drop_in::lint_drop_in(&path, &ctx);
+        let sources = std::collections::BTreeMap::new();
+        let output = match args.format {
+            HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
+            HumanJsonFormat::Json => render_envelope(
+                "sshd-lint",
+                SSHD_LINT_SCHEMA_VERSION,
+                &SshdLintPayload {
+                    diagnostics: &diags,
+                },
+            ),
+        };
+        if !output.is_empty() {
+            print!("{output}");
+        }
+        return exit_code::compute(&diags, false);
+    }
+
+    // A path that is neither a file nor a directory (e.g. missing) is a tool
+    // failure.
     if !path.is_file() {
-        eprintln!("sshd lint: not a file: {}", path.display());
+        eprintln!("sshd lint: not a file or directory: {}", path.display());
         return EXIT_TOOL_FAILURE;
     }
 
@@ -61,24 +96,12 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         }
     };
 
-    // Resolve --target in the command layer (epic #251): explicit value as-is,
-    // `auto` from the host probe, omitted -> version-agnostic. A failed `auto`
-    // degrades to version-agnostic with a warning, never an error (read-only tool).
-    let resolved = resolve_target(args.target, probe);
-    if let Some(warning) = &resolved.warning {
-        eprintln!("sshd lint: {warning}");
-    }
-
     // Stage the source (keyed by display path, the diagnostics' source_id
     // convention) so the human renderer can show ariadne snippets.
     let mut sources = std::collections::BTreeMap::new();
     let mut diags: Vec<rulesteward_core::Diagnostic> = Vec::new();
     match parse_config_str_located(&source, &path) {
         Ok(blocks) => {
-            let ctx = SshdLintContext {
-                target: resolved.target.map(Into::into),
-                single_file: true,
-            };
             diags.extend(lints::lint(&blocks, &path, &ctx));
         }
         // A syntax error short-circuits the semantic passes: sshd-F01 -> exit 5.
@@ -164,12 +187,25 @@ X11UseLocalhost yes
     }
 
     #[test]
-    fn directory_target_exits_tool_failure() {
-        // Phase 0 lints a single file; a directory is a tool failure (the
-        // drop-in-directory mode is future work).
+    fn directory_target_with_clean_dropins_exits_zero() {
+        // F02 (#149 Wave C) accepts a directory target: the standard /etc/ssh
+        // layout (a main `sshd_config` plus a `sshd_config.d/` drop-in
+        // directory) routes to the cross-file drop-in override check. A directory
+        // whose drop-ins do not override the hardened main file produces no F02
+        // finding and exits 0 (this is GREEN against the empty stub today; the
+        // F02-FIRES cases live in the rulesteward-sshd unit + e2e tests).
         let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("sshd_config"), CLEAN_CONFIG).expect("write main");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        std::fs::write(dropin_dir.join("50-clean.conf"), "PermitRootLogin no\n")
+            .expect("write drop-in");
         let a = args(dir.path(), HumanJsonFormat::Human);
-        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+        assert_eq!(
+            lint(&a),
+            EXIT_CLEAN,
+            "a directory with clean drop-ins is accepted and exits 0"
+        );
     }
 
     #[test]
