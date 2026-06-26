@@ -402,6 +402,36 @@ mod tests {
     }
 
     #[test]
+    fn directive_set_in_three_locations_fires_exactly_once() {
+        // A W02-controlled directive set in 3+ locations (two drop-ins + the main
+        // file) must yield EXACTLY ONE sshd-F02, not one per occurrence. The
+        // effective value is the lexically-first drop-in (`10-a.conf` yes); the
+        // dedup guard processes each directive once at its first appearance.
+        // (Kills the `delete !` mutant on the seen-set dedup guard, which would
+        // re-process every occurrence after the first and emit duplicate F02s.)
+        let main = "Include {DIR}\nPermitRootLogin no\n";
+        let diags = f02_diags(
+            main,
+            &[
+                ("10-a.conf", "PermitRootLogin yes\n"),
+                ("20-b.conf", "PermitRootLogin yes\n"),
+            ],
+        );
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+        assert_eq!(
+            f02.len(),
+            1,
+            "a directive set in 3 locations fires exactly one sshd-F02 (no \
+             per-occurrence duplicates); got {diags:?}"
+        );
+        assert!(
+            f02[0].message.contains("10-a.conf"),
+            "anchored to the lexically-first (winning) drop-in: {}",
+            f02[0].message
+        );
+    }
+
+    #[test]
     fn scenario_c_lexically_first_dropin_wins_fires() {
         // Scenario C (VERIFIED rocky9): two drop-ins, 10-first.conf=yes,
         // 90-last.conf=no; main only Includes them. Effective = yes (lexically
