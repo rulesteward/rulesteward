@@ -1405,16 +1405,82 @@ mod w03_tests {
     }
 
     #[test]
-    fn whitespace_around_comma_is_trimmed() {
-        // sshd_config algorithm lists sometimes appear with spaces around commas.
-        // The lint must trim whitespace before matching.
-        let src = "Ciphers aes256-ctr, aes128-cbc, chacha20-poly1305@openssh.com\n";
-        let diags = run(src);
-        assert_eq!(
-            diags.len(),
-            1,
-            "aes128-cbc is weak even with surrounding spaces"
+    fn spaces_around_commas_do_not_fire_w03() {
+        // Spaces AFTER the commas (`aes256-ctr, aes128-cbc, ...`) make this a
+        // multi-arg value: the whitespace tokenizer yields three args. sshd
+        // REJECTS it as a fatal parse error ("keyword Ciphers extra arguments at
+        // end of line", rc 255 on rocky9.8 / OpenSSH 9.9p1), so the daemon never
+        // loads the line. W03 must NOT flag a non-loading line -- this is the
+        // exact #325 bug class. A well-formed algorithm list is a SINGLE
+        // comma-separated token with no internal whitespace (see
+        // `comma_separated_list_splits_correctly` and
+        // `ciphers_mixed_flags_only_weak_tokens` for the valid single-arg form).
+        // RED today (the unguarded lint wrongly fires on `aes128-cbc`); GREEN
+        // once `w03_directive` adds the `args.len() != 1` guard.
+        assert!(
+            run("Ciphers aes256-ctr, aes128-cbc, chacha20-poly1305@openssh.com\n").is_empty(),
+            "spaces around commas => multiple args => sshd rejects rc 255 => W03 must not fire"
         );
-        assert!(diags[0].message.contains("aes128-cbc"));
+    }
+
+    // --- Multi-arg guard: malformed (non-loading) lines must NOT fire W03 ---
+    //
+    // A well-formed algorithm-list value is a SINGLE comma-separated token with
+    // no internal whitespace. Internal whitespace (e.g. `Ciphers + aes128-cbc`
+    // or `Ciphers aes128-cbc foo`) is a FATAL sshd parse error (rc 255 on
+    // rocky9 / OpenSSH 9.9p1) -- "Bad SSH2 cipher spec" / "extra arguments at
+    // end of line". The daemon never loads such a line, so W03 must not flag it.
+    // W06 already enforces this via `args.len() != 1`; W03 is missing that guard
+    // (issue #325). These tests are RED until `w03_directive` adds the same check.
+    //
+    // Regression guard (GREEN, already passes): `ciphers_mixed_flags_only_weak_tokens`
+    // covers `Ciphers aes256-ctr,aes128-cbc\n` -- a valid single-arg comma-list
+    // that MUST still fire W03. The guard below confirms the future fix does not
+    // over-suppress that case; no duplicate is needed here.
+
+    #[test]
+    fn spaced_operator_does_not_fire_w03() {
+        // `Ciphers + aes128-cbc` has a space after `+`, which sshd rejects as
+        // "Bad SSH2 cipher spec '+'", rc 255 on rocky9 / OpenSSH 9.9p1. The
+        // tolerant parser splits this into args=["+", "aes128-cbc"]; W03 must
+        // NOT flag the non-loading line. (Mirrors W06 guard `spaced_operator_does_not_fire_w06`.)
+        assert!(
+            run("Ciphers + aes128-cbc\n").is_empty(),
+            "a space-separated (malformed, non-loading) algo line must not fire W03"
+        );
+    }
+
+    #[test]
+    fn extra_arg_does_not_fire_w03() {
+        // `Ciphers aes128-cbc foo` has an extra whitespace-separated arg, which
+        // sshd rejects as "extra arguments at end of line", rc 255 on rocky9.
+        // W03 must NOT flag it. (Mirrors W06 guard `operator_with_extra_arg_does_not_fire_w06`.)
+        assert!(
+            run("Ciphers aes128-cbc foo\n").is_empty(),
+            "a multi-arg (malformed, non-loading) algo line must not fire W03"
+        );
+    }
+
+    #[test]
+    fn macs_extra_arg_does_not_fire_w03() {
+        // `MACs hmac-md5 extra` -- extra whitespace-separated arg, fatal sshd
+        // parse error ("extra arguments at end of line", rc 255 on rocky9).
+        // W03 must NOT emit a diagnostic for the non-loading line.
+        assert!(
+            run("MACs hmac-md5 extra\n").is_empty(),
+            "a multi-arg MACs line (malformed, non-loading) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn kex_extra_arg_does_not_fire_w03() {
+        // `KexAlgorithms diffie-hellman-group1-sha1 foo` -- extra arg, fatal sshd
+        // parse error ("extra arguments at end of line", rc 255 on rocky9).
+        // W03 covers KexAlgorithms via `is_weak_kex` (see `kex_group1_sha1_fires_w03`
+        // confirming the single-arg form fires); the multi-arg form must NOT fire.
+        assert!(
+            run("KexAlgorithms diffie-hellman-group1-sha1 foo\n").is_empty(),
+            "a multi-arg KexAlgorithms line (malformed, non-loading) must not fire W03"
+        );
     }
 }
