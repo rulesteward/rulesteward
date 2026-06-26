@@ -77,7 +77,7 @@ enum Layout {
     Both,
 }
 
-/// Outcome of the post-apply `fagenrules --check` verification (#211).
+/// Outcome of the post-apply `fapolicyd-cli --check-rules` verification (#211).
 ///
 /// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
 /// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent OR too old
@@ -118,7 +118,7 @@ pub(crate) struct MigratePlan {
     applied: bool,
     /// True when the legacy file was removed from disk.
     legacy_deleted: bool,
-    /// Post-apply `fagenrules --check` outcome (#211). `None` when the check
+    /// Post-apply `fapolicyd-cli --check-rules` outcome (#211). `None` when the check
     /// did not run (dry-run, no-work layouts, or pre-#211 behavior). Additive
     /// optional field: `schemaVersion` stays 1 per CC-2 (breaking-only).
     fagenrules_check: Option<FagenrulesCheck>,
@@ -590,7 +590,7 @@ pub(crate) fn render_markdown_report(plan: &MigratePlan) -> String {
     // #211 verification section: present only when the post-apply check ran.
     if let Some(check) = &plan.fagenrules_check {
         let _ = writeln!(s);
-        let _ = writeln!(s, "## Verification (fagenrules --check)");
+        let _ = writeln!(s, "## Verification (fapolicyd-cli --check-rules)");
         let _ = writeln!(s, "- Status: {}", check.status);
         if !check.detail.is_empty() {
             let _ = writeln!(s, "- Detail: {}", check.detail);
@@ -1831,6 +1831,30 @@ mod tests {
         assert!(
             md.contains("Rules are current"),
             "the non-empty check detail must be rendered: {md}"
+        );
+    }
+
+    /// #221: the post-apply verification shells out to `fapolicyd-cli
+    /// --check-rules` (the `LiveProbe` runs the real syntax validator), NOT
+    /// `fagenrules --check` (a staleness check, not a syntax validator). The
+    /// operator-visible report header must name the command actually run.
+    #[test]
+    fn render_markdown_report_verification_header_names_the_command_actually_run() {
+        let mut plan = applied_plan_with_rewrite();
+        plan.fagenrules_check = Some(FagenrulesCheck {
+            status: "passed",
+            detail: "Rules are current".to_string(),
+        });
+        let md = render_markdown_report(&plan);
+        assert!(
+            md.contains("fapolicyd-cli --check-rules"),
+            "verification header must name the command actually run \
+             (`fapolicyd-cli --check-rules`): {md}"
+        );
+        assert!(
+            !md.contains("fagenrules --check"),
+            "verification header must NOT name the misleading verb \
+             `fagenrules --check`: {md}"
         );
     }
 
