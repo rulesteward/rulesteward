@@ -812,4 +812,285 @@ mod tests {
              override -> F02 must not fire; got {diags:?}"
         );
     }
+
+    // ----------------------------------------------------------------------
+    // NESTED INCLUDE TESTS (issue #323)
+    // ----------------------------------------------------------------------
+    //
+    // Background: the current build_stream() expands Include one level deep only
+    // (main -> sshd_config.d/*.conf).  A drop-in that itself contains an Include
+    // of a SECOND file is NOT followed, so a baseline-failing value set in that
+    // second-level file is a silent false negative.
+    //
+    // The fix (a separate implementer) makes build_stream() resolve Include
+    // recursively with a cycle guard, propagating the enclosing is_match_all tag
+    // and stamping each spliced directive with the file it actually came from.
+    //
+    // Tests #1 and #2 below are RED under the current one-level impl and must
+    // turn GREEN after the fix.  Test #3 is a safety guard (must stay GREEN both
+    // before and after the fix).  Test #4 references an existing test that
+    // already covers the non-nested baseline.
+
+    /// Build a layout where drop-in A itself contains a verbatim `Include` of a
+    /// second file (by absolute path) that is NOT inside the `*.conf` glob pattern.
+    /// Returns (tempdir-kept-alive, diagnostics).
+    ///
+    /// Layout written to disk:
+    ///   `<tmpdir>/sshd_config`              -- the main file
+    ///   `<tmpdir>/sshd_config.d/10-a.conf`  -- drop-in A (contains Include of second)
+    ///   `<tmpdir>/second.conf`              -- the second-level file
+    ///
+    /// `main_tmpl`     -- main `sshd_config` body; `{DIR}` -> `sshd_config.d/*.conf`
+    /// `dropin_a_tmpl` -- drop-in A body; `{SECOND}` -> absolute path of `second.conf`
+    /// `second_body` -- body of the second-level file
+    fn f02_diags_nested(
+        main_tmpl: &str,
+        dropin_a_tmpl: &str,
+        second_body: &str,
+    ) -> (tempfile::TempDir, Vec<rulesteward_core::Diagnostic>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        let second_path = dir.path().join("second.conf");
+
+        // Resolve {DIR} in the main template and {SECOND} in the drop-in template.
+        let include_glob = dropin_dir.join("*.conf").display().to_string();
+        let main_resolved = main_tmpl.replace("{DIR}", &include_glob);
+        let dropin_a_resolved =
+            dropin_a_tmpl.replace("{SECOND}", &second_path.display().to_string());
+
+        std::fs::write(dir.path().join("sshd_config"), &main_resolved).expect("write main");
+        std::fs::write(dropin_dir.join("10-a.conf"), &dropin_a_resolved).expect("write dropin A");
+        std::fs::write(&second_path, second_body).expect("write second.conf");
+
+        let diags = lint_drop_in(dir.path(), &ctx());
+        (dir, diags)
+    }
+
+    // -- Test #1 (RED under current impl) -------------------------------------
+
+    #[test]
+    fn nested_include_baseline_override_fires_f02() {
+        // RED under current one-level impl; must turn GREEN after the fix.
+        //
+        // Layout:
+        //   sshd_config:       Include sshd_config.d/*.conf
+        //                      PermitRootLogin no          <- baseline-passing (operator hardening)
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>        <- second-level include
+        //   second.conf:       PermitRootLogin yes          <- baseline-FAILING override
+        //
+        // Grounded on rocky9 / OpenSSH 9.9p1: sshd resolves Include recursively,
+        // so second.conf's `PermitRootLogin yes` is effectively spliced at the
+        // position of 10-a.conf's Include, BEFORE the main file's `no` -> effective
+        // value is `yes` (drop-in chain wins), which FAILS baseline_check.
+        //
+        // Exact F02 firing condition encoded here:
+        //   * directive: PermitRootLogin
+        //   * baseline requirement: value must be "no" (prohibitprohibited)
+        //   * effective value: "yes" (from second.conf, via 10-a.conf's Include)
+        //   * set in 2+ locations: second.conf (via nested include) + main file
+        //   * effective source: second.conf (a drop-in-chain file, NOT the main file)
+        //
+        // Under the current one-level impl, 10-a.conf's Include directive is
+        // treated as an unknown directive (or skipped) and second.conf is never
+        // read, so the only location for PermitRootLogin is the main file (`no`),
+        // the 2+ location requirement is not met, and F02 does NOT fire -> RED.
+        let main = "Include {DIR}\nPermitRootLogin no\n";
+        let dropin_a = "Include {SECOND}\n";
+        let second = "PermitRootLogin yes\n";
+
+        let (_dir, diags) = f02_diags_nested(main, dropin_a, second);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "nested include: second-level file sets baseline-failing PermitRootLogin yes \
+             -> exactly one sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        // The diagnostic must name the SECOND-LEVEL file (the actual source of the
+        // override), not drop-in A (which only contains an Include directive) and
+        // not the main sshd_config.
+        assert!(
+            d.file.to_string_lossy().contains("second.conf"),
+            "diagnostic file must point at the second-level file (second.conf), \
+             not drop-in A or the main file: {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains("second.conf"),
+            "diagnostic message must name the second-level file: {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "diagnostic message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "diagnostic message must name the winning (baseline-failing) value: {}",
+            d.message
+        );
+    }
+
+    // -- Test #2 (RED under current impl) -------------------------------------
+
+    #[test]
+    fn nested_include_inside_match_all_propagates_tag() {
+        // RED under current one-level impl; must turn GREEN after the fix.
+        //
+        // Layout:
+        //   sshd_config:       PermitRootLogin no          <- baseline-passing global
+        //                      Match all
+        //                        Include sshd_config.d/*.conf
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>        <- second-level include
+        //   second.conf:       PermitRootLogin yes          <- baseline-FAILING override
+        //
+        // The Include inside the main file's `Match all` block propagates
+        // is_match_all=true to the spliced drop-in A directives (verified by the
+        // existing `include_inside_main_match_all_block_folds_dropin_fires` test).
+        // When the fix makes build_stream() follow drop-in A's own Include
+        // recursively, the second-level Include is encountered while is_match_all
+        // is already true (inherited from the enclosing Match all), so second.conf's
+        // directives must also carry is_match_all=true.
+        //
+        // With is_match_all=true on second.conf's `PermitRootLogin yes`, the
+        // effective_entry() function picks it over the global `no` (Match-all
+        // overrides global regardless of textual position, per the locked doc
+        // comment at ~:173).  The effective value is `yes` from second.conf, which
+        // is NOT the main file, and FAILS baseline -> F02 MUST fire.
+        //
+        // Exact F02 firing condition encoded here:
+        //   * directive: PermitRootLogin
+        //   * baseline requirement: value must be "no"
+        //   * effective value: "yes" (from second.conf, is_match_all=true inherited
+        //     from the outer `Match all` via drop-in A's Include)
+        //   * set in 2+ locations: main global (no) + second.conf (yes)
+        //   * effective source: second.conf (a drop-in-chain file, not main)
+        //
+        // Under the current one-level impl, 10-a.conf's Include is not followed,
+        // second.conf is never read, only the main file's global `no` exists, the
+        // 2+ location requirement is unmet, and F02 does NOT fire -> RED.
+        let main = "PermitRootLogin no\nMatch all\nInclude {DIR}\n";
+        let dropin_a = "Include {SECOND}\n";
+        let second = "PermitRootLogin yes\n";
+
+        let (_dir, diags) = f02_diags_nested(main, dropin_a, second);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "nested include inside Match all: second-level file sets baseline-failing \
+             PermitRootLogin yes with inherited is_match_all=true -> exactly one \
+             sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        assert!(
+            d.file.to_string_lossy().contains("second.conf"),
+            "diagnostic file must point at the second-level file (second.conf): {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains("second.conf"),
+            "diagnostic message must name the second-level file: {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "diagnostic message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "diagnostic message must name the winning value: {}",
+            d.message
+        );
+    }
+
+    // -- Test #3 (safety guard -- must stay GREEN before AND after the fix) ---
+
+    #[test]
+    fn include_cycle_terminates() {
+        // SAFETY GUARD: tests that the recursive Include resolver does NOT loop
+        // infinitely when there is a 2-cycle in the Include graph.
+        //
+        // Layout:
+        //   sshd_config:       Include sshd_config.d/*.conf
+        //                      PermitRootLogin no
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>    <- points at second.conf
+        //   second.conf:       Include <10-a.conf>     <- points back at 10-a.conf
+        //                      PermitRootLogin yes
+        //
+        // Under the CURRENT one-level impl this trivially terminates (10-a.conf's
+        // Include is not followed at all).  After the recursive fix, a cycle guard
+        // is required.  The test asserts:
+        //   (a) lint_drop_in returns (does not hang / panic / stack-overflow), and
+        //   (b) the directive is not double-counted (at most one F02).
+        //
+        // Termination relies on the implementation's cycle guard / depth cap (the
+        // planned recursive fix adds one); a guarded impl returns immediately.
+        // NOTE: the CI gate runs `cargo test` (libtest), which has NO per-test
+        // timeout -- so an unguarded recursive impl would not "time out" but would
+        // spin and WEDGE this test until the runner is killed.  That wedge IS the
+        // intended regression signal; the load-bearing requirement is that the
+        // implementer ships a cycle guard / depth cap.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        let dropin_a_path = dropin_dir.join("10-a.conf");
+        let second_path = dir.path().join("second.conf");
+
+        // Write main: Include the *.conf glob then set baseline-passing value.
+        let include_glob = dropin_dir.join("*.conf").display().to_string();
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("Include {include_glob}\nPermitRootLogin no\n"),
+        )
+        .expect("write main");
+
+        // Drop-in A Includes second.conf (absolute path).
+        std::fs::write(
+            &dropin_a_path,
+            format!("Include {}\n", second_path.display()),
+        )
+        .expect("write 10-a.conf");
+
+        // second.conf Includes drop-in A back (the cycle), then sets a value.
+        std::fs::write(
+            &second_path,
+            format!("Include {}\nPermitRootLogin yes\n", dropin_a_path.display()),
+        )
+        .expect("write second.conf");
+
+        // This call must RETURN (no infinite loop, no panic).
+        let diags = lint_drop_in(dir.path(), &ctx());
+
+        // After the fix, at most one F02 is expected (the cycle must not cause
+        // double-counting).  Before the fix, zero F02s are expected (second.conf
+        // is never read).  Either way, assert no panics and no more than one F02.
+        let f02_count = diags.iter().filter(|d| d.code == "sshd-F02").count();
+        assert!(
+            f02_count <= 1,
+            "include cycle must not produce duplicate F02 diagnostics (dedup / cycle \
+             guard); got {f02_count} sshd-F02 in {diags:?}"
+        );
+        // (No assertion that f02_count == 1 here: before the fix it is 0, after
+        // the fix it may be 0 or 1 depending on cycle-guard semantics.  The
+        // load-bearing invariant is termination + no duplication.)
+    }
+
+    // -- Test #4 (regression guard -- already covered by existing test) -------
+    //
+    // The non-nested one-level layout regression is already covered by
+    // `scenario_a_dropin_wins_over_later_main_setting_fires` (above).  No new
+    // test needed here; the existing test acts as the regression guard that a
+    // correct recursive implementation must not break.
 }
