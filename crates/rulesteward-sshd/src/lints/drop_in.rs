@@ -1153,6 +1153,138 @@ mod tests {
         // load-bearing invariant is termination + no duplication.)
     }
 
+    // -- Depth-cap boundary (post-GREEN strengthening; kills off-by-one mutants) --
+    //
+    // The recursive Include resolver caps depth at `SERVCONF_MAX_DEPTH` via
+    // `if chain.len() > SERVCONF_MAX_DEPTH { continue; }` (drop_in.rs ~:298),
+    // mirroring OpenSSH `servconf.c`.  `chain` holds the canonicalized ancestry
+    // including the root main file, so `chain.len()` is (include-hop depth + 1).
+    //
+    // The boundary: the Include in a file reached at `chain.len() == L` is
+    // FOLLOWED iff `L > SERVCONF_MAX_DEPTH` is false (L <= cap).  The deepest
+    // Include actually followed is the one at `chain.len() == SERVCONF_MAX_DEPTH`;
+    // it splices a file entered at `chain.len() == SERVCONF_MAX_DEPTH + 1`.  So a
+    // chain of exactly `SERVCONF_MAX_DEPTH` Include hops from the main file
+    // reaches its deepest file (and any override there); one more hop does not.
+    //
+    // Mutants on `>`:
+    //   * `>= SERVCONF_MAX_DEPTH` caps at `chain.len() == cap` (one level early);
+    //   * `== SERVCONF_MAX_DEPTH` likewise stops following the include at
+    //     `chain.len() == cap`.
+    // Either mutant never reaches the deepest-allowed file, so the override there
+    // is never spliced and NO F02 fires -> the deepest-allowed-fires test below
+    // fails for the mutant but passes for the correct impl.  That is the kill.
+
+    /// Build a straight nested-`Include` chain of `hops` files under a fresh
+    /// tempdir and run the F02 lint over it.  Layout:
+    ///
+    ///   `sshd_config`         -- main: `Include <inc-1.conf>` then `PermitRootLogin no`
+    ///   `inc-1.conf`          -- `Include <inc-2.conf>`
+    ///   ...
+    ///   `inc-{hops-1}.conf`   -- `Include <inc-{hops}.conf>`
+    ///   `inc-{hops}.conf`     -- `PermitRootLogin yes`   (the baseline-FAILING override)
+    ///
+    /// so the override sits exactly `hops` Include hops below the main file.  Each
+    /// `Include` uses an ABSOLUTE path (not a glob), so there is exactly one edge
+    /// per level and the chain depth is deterministic.  Returns
+    /// (tempdir-kept-alive, diagnostics).
+    fn f02_diags_chain(hops: usize) -> (tempfile::TempDir, Vec<rulesteward_core::Diagnostic>) {
+        assert!(hops >= 1, "a chain needs at least one hop");
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Pre-compute every file path so each file can reference the next.
+        let inc_path = |i: usize| dir.path().join(format!("inc-{i}.conf"));
+
+        // Main: Include the first chain file, then set the hardened baseline value.
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("Include {}\nPermitRootLogin no\n", inc_path(1).display()),
+        )
+        .expect("write main");
+
+        // Intermediate files 1..hops-1 each Include the next; the last sets the
+        // baseline-failing override.
+        for i in 1..hops {
+            std::fs::write(
+                inc_path(i),
+                format!("Include {}\n", inc_path(i + 1).display()),
+            )
+            .unwrap_or_else(|e| panic!("write inc-{i}.conf: {e}"));
+        }
+        std::fs::write(inc_path(hops), "PermitRootLogin yes\n")
+            .unwrap_or_else(|e| panic!("write inc-{hops}.conf: {e}"));
+
+        let diags = lint_drop_in(dir.path(), &ctx());
+        (dir, diags)
+    }
+
+    #[test]
+    fn nested_include_at_max_depth_fires_f02() {
+        // GREEN against the correct impl; KILLS the `> -> >=` and `> -> ==`
+        // depth-cap mutants at drop_in.rs:298.
+        //
+        // A chain of EXACTLY `SERVCONF_MAX_DEPTH` Include hops places the
+        // baseline-failing `PermitRootLogin yes` at the deepest level the resolver
+        // is still allowed to follow (the include at `chain.len() == cap` is
+        // followed because `cap > cap` is false).  The correct impl reaches that
+        // override -> effective value `yes` from the deepest file (a non-main
+        // source), fails baseline -> exactly one F02 anchored to the deepest file.
+        //
+        // A `>=`/`==` mutant stops one hop short, never reads the deepest file,
+        // finds only the main file's `no` (single location) and emits NO F02 ->
+        // this assertion fails for the mutant.  Computed from the depth CONSTANT,
+        // not a hardcoded 16, so it tracks the cap if it changes.
+        let hops = super::SERVCONF_MAX_DEPTH;
+        let (_dir, diags) = f02_diags_chain(hops);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "an override at exactly SERVCONF_MAX_DEPTH ({hops}) Include hops is \
+             reached -> exactly one sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        let deepest = format!("inc-{hops}.conf");
+        assert!(
+            d.file.to_string_lossy().contains(&deepest),
+            "diagnostic must anchor to the deepest file ({deepest}): {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains(&deepest),
+            "message must name the deepest file ({deepest}): {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "message must name the winning value: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn nested_include_one_past_max_depth_does_not_fire() {
+        // Pins the UPPER edge of the cap: an override placed one Include hop BEYOND
+        // `SERVCONF_MAX_DEPTH` is NOT reached (the include at `chain.len() == cap+1`
+        // is skipped because `cap + 1 > cap`), so its deepest file is never spliced,
+        // the override never enters the stream, and F02 does NOT fire.  Guards
+        // against a future `> -> >=`-in-the-other-direction drift that would over-
+        // expand by one level.
+        let hops = super::SERVCONF_MAX_DEPTH + 1;
+        let (_dir, diags) = f02_diags_chain(hops);
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-F02"),
+            "an override one hop past SERVCONF_MAX_DEPTH ({hops}) is beyond the cap \
+             and must NOT be reached -> F02 must not fire; got {diags:?}"
+        );
+    }
+
     // -- Test #4 (regression guard -- already covered by existing test) -------
     //
     // The non-nested one-level layout regression is already covered by
