@@ -372,17 +372,14 @@ exclude_re = [
     # - Drop -> () (line 552): pure in-process leak of the sidtab htable +
     #   policydb; unobservable by a functional test (PR #170 precedent).
     'selinux-sys/src/lib\.rs:.*replace <impl Drop for Policy>::drop with \(\)',
-    # sshd lints (#149): Wave A (#239) implemented structural::e02/e03/e04, Wave B
-    # (#240) implemented structural::e01 + the lints::registry table, and Wave B
-    # (#241/#242/#243) implemented stig::w01/w02, crypto::w03, deprecation::w04. The
-    # remaining sshd- passes (w05/w06, Wave C) are still Phase-0 `Vec::new()` stubs,
-    # so cargo-mutants' `replace <fn> -> Vec<Diagnostic> with vec![]` mutant is a
-    # genuine EQUIVALENT (vec![] == Vec::new()) with no possible killing test.
-    # Excluded by name; each later wave REMOVES its fn from this alternation in the
-    # PR that implements the pass, at which point the `with vec![]` mutant becomes
-    # real and catchable. (e01-e04 and w01-w04 are deliberately NOT listed: they are
-    # implemented and their empty-return mutant IS caught by the corpus + unit tests.)
-    'rulesteward-sshd/src/lints/.*replace (w05|w06) -> Vec<Diagnostic> with vec!\[\]',
+    # sshd lints (#149): Wave C completed w05/w06 (and F02's lint_drop_in landed),
+    # so ALL sshd- passes (e01-e04, w01-w06) are implemented; none is a Phase-0
+    # `Vec::new()` stub anymore. The prior `replace (w05|w06) -> Vec<Diagnostic>
+    # with vec![]` exclusion was removed here: that mutant is now REAL and is caught
+    # by the w05/w06 fire tests (an empty return fails every "fires" assertion). Per
+    # the wave protocol, each wave removes its fn from this alternation when it
+    # implements the pass; Wave C is the last, so no sshd empty-return exclusion
+    # remains.
     # sshd_config tokenizer (#149): three OOM mutants that surfaced as the nightly
     # mutants runner-kills in runs #84/#85 (shards 12/17/18). `tokenize_line` walks a
     # line with `while chars.peek().is_some() { tokens.push(read_arg(...)?);
