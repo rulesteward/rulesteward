@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names (`APPARMOR_DENIED` == `1503`, etc.) in the `au-W01`/`au-W02` lints. Off by
   default, since a RHEL/fapolicyd-target audit daemon does not recognize these
   names; enable it when linting rules for an AppArmor build (Debian/Ubuntu). (#230)
+- `sshd lint` sshd-W05: flags a `Match` block that sets a STIG-controlled directive
+  to a baseline-failing value (a STIG escape hatch). Reuses the sshd-W01/W02
+  required-set + baseline; does not fire for a directive sshd ignores inside a Match
+  block (that is sshd-E04's finding). (#244)
+- `sshd lint` sshd-W06: flags an algorithm-list directive whose value begins with
+  `+` or `^` and names a weak (sshd-W03 denylisted) algorithm, reintroducing it into
+  the OpenSSH built-in default set. Conservative and target-independent; `-`
+  (removal) is hardening and is never flagged. (#244)
+- `sshd lint <dir>`: a directory target lints the standard `/etc/ssh` layout (main
+  `sshd_config` plus a `sshd_config.d/*.conf` drop-in directory) and runs the new
+  cross-file sshd-F02 (Fatal) check: a drop-in whose baseline-failing value wins by
+  sshd precedence (Include position, lexical drop-in order, and unconditional
+  `Match all` override, including an Include nested in a `Match all`) over the
+  hardened main config. Conditional `Match` blocks are out of scope. (#245)
 
 ### Fixed
 

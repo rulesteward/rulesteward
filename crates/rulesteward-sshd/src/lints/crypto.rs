@@ -215,13 +215,588 @@ pub fn w03(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
     diags
 }
 
-/// sshd-W06: an algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a
-/// weak algorithm from the OpenSSH defaults (e.g. `Ciphers +aes128-cbc`).
+/// sshd-W06: an algorithm-list operator (`+` or `^`) names a W03-denylisted weak
+/// algorithm, regardless of `--target`.
 ///
-/// TODO(#149, Wave C): needs the per-OpenSSH-version default-algorithm lists.
+/// Per `sshd_config(5)`, the `+`/`-`/`^` operators act on OpenSSH's BUILT-IN
+/// compile-time default set, which is DISTINCT from the crypto-policies effective
+/// default visible via `sshd -T`. Some denylisted algorithms (e.g. CBC ciphers,
+/// `hmac-md5`, `diffie-hellman-group1-sha1`) are absent from that built-in
+/// default, so `+`/`^` genuinely reintroduces them; others
+/// (`diffie-hellman-group14-sha1`, `ssh-rsa`, `hmac-sha1`) are present in the
+/// built-in default on current OpenSSH, so `+`/`^` is redundant rather than
+/// reintroducing.
+///
+/// `RuleSteward` does NOT distinguish these two cases: doing so would need per-
+/// OpenSSH-version built-in default tables, and it cannot resolve crypto-policies
+/// `Include` shadowing in a static single-file lint. Explicitly naming a known-
+/// weak algorithm in a `+`/`^` operator is a hardening regression worth surfacing
+/// either way, matching the catalog's "may reintroduce a weak default algorithm".
+/// `-` (removal) is hardening and is never flagged. A bare value with no operator
+/// is W03's domain and is not checked here. The denylist is scoped per-directive
+/// via [`weak_exact_list`] so a cross-family algorithm (e.g. `ssh-rsa` on a
+/// `Ciphers` line) does not fire.
+///
+/// Scans the global block AND all Match block bodies, mirroring W03.
+///
+/// Grounding: `sshd_config(5)` Rocky Linux 9 / OpenSSH 9.9p1 (primary source,
+/// verified 2026-06-26); sshd-stig-version-grounding.md section 6.2; NIST SP
+/// 800-131A R2; W03 denylist tables above.
 #[must_use]
-pub fn w06(_blocks: &[Block], _file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
-    Vec::new()
+pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for block in blocks {
+        let directives = match block {
+            Block::Global(directives) => directives,
+            Block::Match(match_block) => &match_block.body,
+        };
+        for directive in directives {
+            let Some((denylist, kind)) = weak_exact_list(&directive.keyword_lower()) else {
+                continue;
+            };
+            // A well-formed algorithm-list value is a SINGLE comma-separated arg
+            // with no internal whitespace. Multiple args mean whitespace inside the
+            // value (e.g. `Ciphers + aes128-cbc` or `Ciphers +a b`), which sshd
+            // rejects as a fatal parse error -- do not flag a line the daemon will
+            // not load.
+            if directive.args.len() != 1 {
+                continue;
+            }
+            let joined = directive.args.join(",");
+            // Determine the operator from the first non-empty comma-split token.
+            // The parser tokenises on whitespace so `+algo1,algo2` arrives as a
+            // single args element; after join+split the first token carries the
+            // operator character and all remaining tokens do not.
+            let mut tokens = joined.split(',');
+            let Some(first_raw) = tokens.next() else {
+                continue;
+            };
+            let first_trimmed = first_raw.trim();
+            let Some(operator) = first_trimmed.chars().next() else {
+                continue;
+            };
+            if operator != '+' && operator != '^' {
+                // `-` is hardening; bare value (no operator) is W03's job.
+                continue;
+            }
+            // Strip the leading operator char from the first token and check it,
+            // then check all remaining tokens (they carry no operator).
+            let first_algo = first_trimmed[operator.len_utf8()..].trim();
+            let all_tokens = std::iter::once(first_algo).chain(tokens.map(str::trim));
+            for raw_tok in all_tokens {
+                let tok = raw_tok.to_ascii_lowercase();
+                if tok.is_empty() {
+                    continue;
+                }
+                let is_weak = match kind {
+                    Weak03Kind::Exact => denylist.contains(&tok.as_str()),
+                    Weak03Kind::Kex => is_weak_kex(&tok),
+                };
+                if is_weak {
+                    diags.push(anchored(
+                        Severity::Warning,
+                        "sshd-W06",
+                        directive.span.clone(),
+                        format!(
+                            "operator '{operator}' names weak algorithm '{raw_tok}' in \
+                             '{}': may reintroduce a weak default algorithm \
+                             (NIST SP 800-131A R2)",
+                            directive.keyword,
+                        ),
+                        file,
+                        directive.line,
+                    ));
+                }
+            }
+        }
+    }
+    diags
+}
+
+#[cfg(test)]
+mod w06_tests {
+    //! sshd-W06: an algorithm-list operator (`+`/`^`) names a W03-denylisted weak
+    //! algorithm, regardless of `--target`.
+    //!
+    //! # Grounding
+    //!
+    //! `sshd_config(5)` on Rocky Linux 9 / OpenSSH 9.9p1 (primary source,
+    //! verified 2026-06-26): the `+`/`-`/`^` operators act on OpenSSH's BUILT-IN
+    //! compile-time default set, which is DISTINCT from the crypto-policies
+    //! effective default visible via `sshd -T`. `+X` appends X, `^X` prepends X,
+    //! `-X` removes X. Some W03-denylisted algorithms (CBC ciphers, `hmac-md5`,
+    //! `diffie-hellman-group1-sha1`) are absent from that built-in default, so
+    //! `+`/`^` genuinely reintroduces them; others
+    //! (`diffie-hellman-group14-sha1`, `ssh-rsa`, `hmac-sha1`) are present in the
+    //! built-in default on current OpenSSH, so `+`/`^` is redundant rather than
+    //! reintroducing (sshd-stig-version-grounding.md section 6.2). W06 does NOT
+    //! distinguish these cases: explicitly naming a known-weak algorithm in a
+    //! `+`/`^` operator is a hardening regression worth surfacing either way, so
+    //! W06 fires on any `+`/`^` token in the W03 denylist (conservative, target-
+    //! independent). `-` (removal) is hardening and NEVER fires W06. A value with
+    //! no operator is W03's job (the bare token IS in the denylist); W06 must not
+    //! fire on it. A non-algo directive (e.g. `PermitRootLogin yes`) never fires.
+    //!
+    //! # Parser shape (VERIFIED by reading parser.rs)
+    //!
+    //! The tokenizer splits on whitespace. A value like `+aes128-cbc,aes256-cbc`
+    //! contains no whitespace, so it arrives as a single element in `args`:
+    //! `args = ["+aes128-cbc,aes256-cbc"]`. After `args.join(",").split(',')` the
+    //! first token is `"+aes128-cbc"` (operator attached) and the second is
+    //! `"aes256-cbc"` (no operator). The operator signal is therefore carried on
+    //! the first comma-split token only.
+    //!
+    //! # W03/W06 interaction
+    //!
+    //! W06 is additive -- the impl does not suppress W03. For `Ciphers +aes128-cbc`
+    //! W03 does NOT fire (the bare token `+aes128-cbc` is not in the denylist); W06
+    //! must fire. For `Ciphers +aes128-cbc,aes256-cbc` W03 fires on the bare
+    //! `aes256-cbc` (second token, no operator) and W06 must fire on the
+    //! `+aes128-cbc` token. Tests call `w06` DIRECTLY to isolate W06.
+    //!
+    //! # Match-block coverage
+    //!
+    //! W06 scans ALL blocks (global + Match bodies), mirroring W03. An algo list
+    //! with `+<weak>` inside a Match block fires W06. Pinned by a dedicated test.
+    //!
+    //! # Discriminating tests
+    //!
+    //! A trivial impl (always-empty, fire-on-any-operator, fire-on-`-`, fire-on-
+    //! no-operator) must fail at least one test below. The negative assertions for
+    //! `-`, no-operator, non-algo-directive, and all-strong-algo cover these axes.
+
+    use super::w06;
+    use crate::ast::Block;
+    use crate::lints::SshdLintContext;
+    use rulesteward_core::Severity;
+    use std::path::Path;
+
+    const FILE: &str = "/etc/ssh/sshd_config";
+
+    fn parse(src: &str) -> Vec<Block> {
+        crate::parser::parse_config_str_located(src, Path::new(FILE)).expect("fixture parses")
+    }
+
+    fn run(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        w06(&parse(src), Path::new(FILE), &SshdLintContext::default())
+    }
+
+    // -----------------------------------------------------------------------
+    // FIRES: `+` operator with weak algorithm(s) in the list
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ciphers_plus_aes128_cbc_fires_w06() {
+        // `+aes128-cbc` appends a CBC cipher to the default set.
+        // W03 does NOT fire here (bare token "+aes128-cbc" != "aes128-cbc").
+        // W06 MUST fire (after stripping `+`, token is in WEAK_CIPHERS).
+        let diags = run("Ciphers +aes128-cbc\n");
+        assert_eq!(diags.len(), 1, "one weak `+` cipher => one W06 diagnostic");
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert_eq!(diags[0].line, 1, "diagnostic anchored to the Ciphers line");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the reintroduced weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('+'),
+            "message names the operator, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ciphers_caret_aes256_cbc_fires_w06() {
+        // `^aes256-cbc` prepends a CBC cipher to the default set.
+        // Both `+` and `^` reintroduce to the default; `^` must also fire.
+        let diags = run("Ciphers ^aes256-cbc\n");
+        assert_eq!(diags.len(), 1, "`^` with weak cipher => one W06 diagnostic");
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("aes256-cbc"),
+            "message names the reintroduced weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('^'),
+            "message names the `^` operator, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn spaced_operator_does_not_fire_w06() {
+        // `Ciphers + aes128-cbc` (a space after the operator) is a fatal parse
+        // error in sshd ("Bad SSH2 cipher spec '+'", rc 255 on rocky9), so the
+        // daemon never loads it. RuleSteward's tolerant parser splits it into
+        // multiple args; W06 must NOT flag a "reintroduction" on a line the daemon
+        // rejects. A well-formed algorithm list is a single comma-separated arg.
+        assert!(
+            run("Ciphers + aes128-cbc\n").is_empty(),
+            "a space-separated (malformed, non-loading) algo line must not fire W06"
+        );
+    }
+
+    #[test]
+    fn operator_with_extra_arg_does_not_fire_w06() {
+        // `Ciphers +aes256-ctr aes128-cbc` has an extra whitespace-separated arg,
+        // which sshd rejects ("extra arguments at end of line", rc 255 on rocky9).
+        // W06 only evaluates the single-arg (well-formed) algorithm-list form.
+        assert!(
+            run("Ciphers +aes256-ctr aes128-cbc\n").is_empty(),
+            "a multi-arg (malformed, non-loading) algo line must not fire W06"
+        );
+    }
+
+    #[test]
+    fn macs_plus_hmac_md5_fires_w06() {
+        // `+hmac-md5` appends an MD5 MAC to the default set.
+        let diags = run("MACs +hmac-md5\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("hmac-md5"),
+            "message names the reintroduced weak MAC, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn kex_plus_group1_sha1_fires_w06() {
+        // `+diffie-hellman-group1-sha1` appends a 1024-bit MODP/SHA-1 KEX.
+        let diags = run("KexAlgorithms +diffie-hellman-group1-sha1\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("diffie-hellman-group1-sha1"),
+            "message names the reintroduced weak KEX, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn hostbasedacceptedalgorithms_plus_ssh_rsa_fires_w06() {
+        // `+ssh-rsa` on HostbasedAcceptedAlgorithms (signature family). Only
+        // HostKeyAlgorithms was previously pinned for W06; this pins the other
+        // signature families so a mutant narrowing weak_exact_list's match arm
+        // to drop hostbasedacceptedalgorithms dies.
+        let diags = run("HostbasedAcceptedAlgorithms +ssh-rsa\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("ssh-rsa"),
+            "message names the reintroduced weak signature algo, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn casignaturealgorithms_plus_ssh_rsa_fires_w06() {
+        // `+ssh-rsa` on CASignatureAlgorithms (signature family). Kills a mutant
+        // narrowing weak_exact_list to drop casignaturealgorithms.
+        let diags = run("CASignatureAlgorithms +ssh-rsa\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("ssh-rsa"),
+            "message names the reintroduced weak signature algo, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn pubkeyacceptedalgorithms_plus_ssh_rsa_fires_w06() {
+        // `+ssh-rsa` on PubkeyAcceptedAlgorithms (signature family). Kills a
+        // mutant narrowing weak_exact_list to drop pubkeyacceptedalgorithms.
+        let diags = run("PubkeyAcceptedAlgorithms +ssh-rsa\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("ssh-rsa"),
+            "message names the reintroduced weak signature algo, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn hostkeyalgorithms_plus_ssh_rsa_fires_w06() {
+        // `+ssh-rsa` appends SHA-1 RSA signature algorithm.
+        let diags = run("HostKeyAlgorithms +ssh-rsa\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("ssh-rsa"),
+            "message names the reintroduced weak hostkey algo, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn kex_caret_gss_group1_sha1_fires_w06() {
+        // `^gss-group1-sha1-<oid>` prepends a weak GSS KEX (SHA-1 variant).
+        // The gss-prefix matching from W03 must also apply after stripping `^`.
+        let diags = run("KexAlgorithms ^gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`^` with gss-sha1 KEX => one W06 diagnostic"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("gss-group1-sha1-"),
+            "message names the reintroduced gss-sha1 KEX, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ciphers_plus_mixed_weak_and_strong_fires_w06_for_weak() {
+        // `Ciphers +aes128-cbc,aes256-ctr`: the first comma-split token is
+        // `+aes128-cbc` (weak), the second is `aes256-ctr` (strong, no operator).
+        // Parser shape: `args = ["+aes128-cbc,aes256-ctr"]`; after join+split on
+        // comma the first token carries the operator, second does not.
+        // W06 must fire for the weak token. The presence of a strong algo in the
+        // same list must NOT suppress the finding.
+        let diags = run("Ciphers +aes128-cbc,aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "weak `+` token in mixed list => one W06 diagnostic"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the reintroduced weak cipher, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ciphers_plus_strong_then_weak_fires_w06_for_tail_weak() {
+        // `Ciphers +aes256-ctr,aes128-cbc`: the operator-bearing FIRST token is
+        // STRONG (aes256-ctr) and the weak token (aes128-cbc) is later in the
+        // chain. W06 must scan the whole list under the operator, not just the
+        // first comma-split token. Pins the chained-tail scan: a mutant that
+        // checks only the operator-bearing first token (and never the rest of the
+        // list) would miss the weak tail and die on this test.
+        let diags = run("Ciphers +aes256-ctr,aes128-cbc\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "weak tail token under `+` operator => one W06 diagnostic"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak tail cipher, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ciphers_plus_two_later_weak_tokens_fires_twice() {
+        // `Ciphers +aes256-ctr,aes128-cbc,aes192-cbc`: strong first token, then
+        // TWO weak tokens later in the chain. W06 must fire once per weak token
+        // (two diagnostics). Pins per-token emission over the chained tail; a
+        // mutant that emits at most one diagnostic, or stops after the first weak
+        // hit, dies here.
+        let diags = run("Ciphers +aes256-ctr,aes128-cbc,aes192-cbc\n");
+        assert_eq!(
+            diags.len(),
+            2,
+            "two weak tail tokens under `+` => two W06 diagnostics"
+        );
+        assert!(
+            diags.iter().all(|d| d.code == "sshd-W06"),
+            "both diagnostics are sshd-W06"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("aes128-cbc")),
+            "one diagnostic names aes128-cbc"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("aes192-cbc")),
+            "one diagnostic names aes192-cbc"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES NOT FIRE: `-` operator (removal = hardening)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ciphers_minus_aes128_cbc_does_not_fire_w06() {
+        // `-aes128-cbc` REMOVES a cipher from the default. Removal is hardening.
+        // W06 must NEVER fire on `-`. This is the critical discriminator against
+        // a trivial "fire on any prefix operator" impl.
+        assert!(
+            run("Ciphers -aes128-cbc\n").is_empty(),
+            "removal operator `-` is hardening; W06 must not fire"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES NOT FIRE: no operator (bare algo, W03's job)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ciphers_bare_aes128_cbc_does_not_fire_w06() {
+        // `Ciphers aes128-cbc` has no operator - this is W03's domain, not W06.
+        // W06 must NOT fire on a bare (no-prefix-operator) weak algorithm.
+        // This is the critical discriminator against a "fire when weak algo present"
+        // impl that ignores the operator.
+        assert!(
+            run("Ciphers aes128-cbc\n").is_empty(),
+            "no operator: bare weak cipher is W03's domain, W06 must not fire"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES NOT FIRE: operator present but only strong algorithms
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ciphers_plus_only_strong_does_not_fire_w06() {
+        // `+aes256-gcm@openssh.com`: operator present but the algo is strong.
+        // An impl that fires on any `+`/`^` regardless of the denylist check
+        // would incorrectly fire here.
+        assert!(
+            run("Ciphers +aes256-gcm@openssh.com\n").is_empty(),
+            "`+` with a strong cipher only; W06 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_caret_only_strong_does_not_fire_w06() {
+        // `^aes256-gcm@openssh.com,chacha20-poly1305@openssh.com`: operator
+        // present, all algos strong. W06 must not fire.
+        assert!(
+            run("Ciphers ^aes256-gcm@openssh.com,chacha20-poly1305@openssh.com\n").is_empty(),
+            "`^` with all-strong ciphers; W06 must not fire"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES NOT FIRE: cross-family algorithm (denylist is scoped PER-DIRECTIVE)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ciphers_plus_cross_family_algo_does_not_fire_w06() {
+        // `Ciphers +ssh-rsa`: ssh-rsa is in WEAK_HOSTKEY but NOT in WEAK_CIPHERS.
+        // W06 must scope the denylist PER-DIRECTIVE via weak_exact_list(keyword):
+        // for `Ciphers` the relevant denylist is WEAK_CIPHERS, and ssh-rsa is not
+        // in it, so W06 must NOT fire. This kills a wrong impl that strips the
+        // operator and checks the stripped token against the UNION of all
+        // denylists (which would incorrectly fire here because ssh-rsa is weak in
+        // some OTHER directive family).
+        assert!(
+            run("Ciphers +ssh-rsa\n").is_empty(),
+            "ssh-rsa is weak for hostkey algos, not for Ciphers; W06 must scope \
+             the denylist per-directive and not fire here"
+        );
+    }
+
+    #[test]
+    fn macs_plus_cipher_algo_does_not_fire_w06() {
+        // Symmetric cross-family check: `MACs +aes128-cbc`. aes128-cbc is in
+        // WEAK_CIPHERS but NOT in WEAK_MACS. For the `MACs` directive the relevant
+        // denylist is WEAK_MACS, so W06 must NOT fire. A union-checking impl would
+        // wrongly fire here.
+        assert!(
+            run("MACs +aes128-cbc\n").is_empty(),
+            "aes128-cbc is weak for Ciphers, not for MACs; W06 must scope the \
+             denylist per-directive and not fire here"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES NOT FIRE: non-algorithm directive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn permit_root_login_does_not_fire_w06() {
+        // `PermitRootLogin yes` is not an algorithm-list directive; W06 must
+        // not fire on it regardless of value content.
+        assert!(
+            run("PermitRootLogin yes\n").is_empty(),
+            "non-algorithm directive must not trigger W06"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Match block: W06 scans Match bodies (mirrors W03 behavior)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn match_block_plus_weak_cipher_fires_w06() {
+        // An algo list with `+<weak>` inside a Match block must fire W06.
+        // W03 scans all blocks (global + Match); W06 must mirror this behavior.
+        // Pinning this prevents an impl that only scans the global block.
+        let src = "Match Address 192.168.1.0/24\n    Ciphers +aes128-cbc\n";
+        let diags = run(src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "`+<weak>` inside a Match block must fire W06"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(
+            diags[0].line, 2,
+            "diagnostic anchored to the Ciphers line inside Match"
+        );
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the reintroduced weak cipher, got: {}",
+            diags[0].message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Line number anchoring
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn w06_diagnostic_is_anchored_to_correct_line() {
+        // Multiple directives; the W06 diagnostic must report the line of the
+        // offending algo-list directive, not line 1 or some other line.
+        let src = "PermitRootLogin no\nMaxAuthTries 4\nCiphers +aes128-cbc\n";
+        let diags = run(src);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert_eq!(
+            diags[0].line, 3,
+            "W06 anchored to the Ciphers line (line 3)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Code is exactly "sshd-W06" and severity is Warning
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn w06_code_is_sshd_w06_and_severity_is_warning() {
+        let diags = run("MACs +hmac-sha1\n");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            diags[0].code, "sshd-W06",
+            "diagnostic code must be exactly sshd-W06"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "W06 is a Warning-level diagnostic"
+        );
+    }
 }
 
 #[cfg(test)]

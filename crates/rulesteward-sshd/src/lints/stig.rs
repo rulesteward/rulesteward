@@ -137,12 +137,104 @@ const RHEL10_REQUIRED: &[&str] = &[
 const FLOOR_REQUIRED: &[&str] = RHEL8_REQUIRED;
 
 /// Return the required directive set for a given target (or the floor when None).
-fn required_set(target: Option<TargetVersion>) -> &'static [&'static str] {
+///
+/// `pub(crate)` so the cross-file (sshd-F02) and Match-override (sshd-W05) lints
+/// share the exact same STIG-required set as W01 (Phase-0 shared surface, #149
+/// Wave C). The keywords are lowercase.
+pub(crate) fn required_set(target: Option<TargetVersion>) -> &'static [&'static str] {
     match target {
         Some(TargetVersion::Rhel8) => RHEL8_REQUIRED,
         Some(TargetVersion::Rhel9) => RHEL9_REQUIRED,
         Some(TargetVersion::Rhel10) => RHEL10_REQUIRED,
         None => FLOOR_REQUIRED,
+    }
+}
+
+/// Outcome of checking one directive's value against its STIG W02 baseline.
+///
+/// Shared by W02 (global block), sshd-W05 (Match-block override), and sshd-F02
+/// (drop-in override) so all three apply the IDENTICAL per-directive comparison
+/// (Phase-0 shared surface, #149 Wave C). Each call site phrases its own
+/// diagnostic from `requirement` + `displayed_value`.
+pub(crate) enum BaselineCheck {
+    /// The directive is not a W02-controlled value check for this target.
+    NotControlled,
+    /// The value satisfies the baseline.
+    Ok,
+    /// The value fails the baseline. `requirement` is the human clause naming
+    /// what STIG requires (e.g. `'no'`, `'1g 1h'`, `one of: delayed, no`,
+    /// `a value > 0 and <= 600`, `exactly 1`); `displayed_value` is the value as
+    /// the operator wrote it (single token, or the full two-token form).
+    Violation {
+        requirement: String,
+        displayed_value: String,
+    },
+}
+
+/// Check a directive's value against the W02 STIG baseline for `target`.
+///
+/// Returns `NotControlled` when the directive has no W02 value rule for this
+/// target (so W01 presence-only directives like Banner, and out-of-target
+/// directives, are never value-checked here).
+pub(crate) fn baseline_check(
+    keyword_lower: &str,
+    args: &[String],
+    target: Option<TargetVersion>,
+) -> BaselineCheck {
+    let Some(rule) = w02_rule(keyword_lower, target) else {
+        return BaselineCheck::NotControlled;
+    };
+
+    // The displayed value: the full two-token form for RekeyLimit, else the
+    // first token (or empty). Matches the prior inline W02 message formatting
+    // byte-for-byte.
+    let displayed_value = match rule {
+        W02Rule::TwoTokenExact(..) => args.join(" "),
+        _ => args.first().map_or_else(String::new, String::clone),
+    };
+
+    let requirement: Option<String> = match rule {
+        W02Rule::ExactLower(expected) => {
+            let actual = args.first().map_or("", String::as_str);
+            (actual.to_ascii_lowercase() != expected).then(|| format!("'{expected}'"))
+        }
+        W02Rule::TwoTokenExact(tok0, tok1) => {
+            let actual0 = args
+                .first()
+                .map_or_else(String::new, |s| s.to_ascii_lowercase());
+            let actual1 = args
+                .get(1)
+                .map_or_else(String::new, |s| s.to_ascii_lowercase());
+            (actual0 != tok0 || actual1 != tok1).then(|| format!("'{tok0} {tok1}'"))
+        }
+        W02Rule::AnyOf(accepted) => {
+            let actual = args.first().map_or("", String::as_str);
+            let actual_lower = actual.to_ascii_lowercase();
+            (!accepted.contains(&actual_lower.as_str()))
+                .then(|| format!("one of: {}", accepted.join(", ")))
+        }
+        W02Rule::NumericCeiling(ceiling) => {
+            let actual = args.first().map_or("", String::as_str);
+            match actual.parse::<u64>() {
+                Ok(n) if n > 0 && n <= ceiling => None,
+                _ => Some(format!("a value > 0 and <= {ceiling}")),
+            }
+        }
+        W02Rule::NumericExact(required) => {
+            let actual = args.first().map_or("", String::as_str);
+            match actual.parse::<u64>() {
+                Ok(n) if n == required => None,
+                _ => Some(format!("exactly {required}")),
+            }
+        }
+    };
+
+    match requirement {
+        Some(requirement) => BaselineCheck::Violation {
+            requirement,
+            displayed_value,
+        },
+        None => BaselineCheck::Ok,
     }
 }
 
@@ -325,76 +417,19 @@ pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
 
     for directive in directives {
         let keyword = directive.keyword_lower();
-        let Some(rule) = w02_rule(&keyword, ctx.target) else {
-            continue;
-        };
-
-        let violation_msg: Option<String> = match rule {
-            W02Rule::ExactLower(expected) => {
-                let actual = directive.args.first().map_or("", String::as_str);
-                (actual.to_ascii_lowercase() != expected).then(|| {
-                    format!(
-                        "directive '{}' has value '{actual}'; STIG baseline requires '{expected}'",
-                        directive.keyword,
-                    )
-                })
-            }
-            W02Rule::TwoTokenExact(tok0, tok1) => {
-                let actual0 = directive
-                    .args
-                    .first()
-                    .map_or_else(String::new, |s| s.to_ascii_lowercase());
-                let actual1 = directive
-                    .args
-                    .get(1)
-                    .map_or_else(String::new, |s| s.to_ascii_lowercase());
-                (actual0 != tok0 || actual1 != tok1).then(|| {
-                    let displayed = directive.args.join(" ");
-                    format!(
-                        "directive '{}' has value '{displayed}'; STIG baseline requires '{tok0} {tok1}'",
-                        directive.keyword,
-                    )
-                })
-            }
-            W02Rule::AnyOf(accepted) => {
-                let actual = directive.args.first().map_or("", String::as_str);
-                let actual_lower = actual.to_ascii_lowercase();
-                (!accepted.contains(&actual_lower.as_str())).then(|| {
-                    format!(
-                        "directive '{}' has value '{actual}'; STIG baseline requires one of: {}",
-                        directive.keyword,
-                        accepted.join(", "),
-                    )
-                })
-            }
-            W02Rule::NumericCeiling(ceiling) => {
-                let actual = directive.args.first().map_or("", String::as_str);
-                match actual.parse::<u64>() {
-                    Ok(n) if n > 0 && n <= ceiling => None,
-                    _ => Some(format!(
-                        "directive '{}' has value '{actual}'; STIG baseline requires a value > 0 and <= {ceiling}",
-                        directive.keyword,
-                    )),
-                }
-            }
-            W02Rule::NumericExact(required) => {
-                let actual = directive.args.first().map_or("", String::as_str);
-                match actual.parse::<u64>() {
-                    Ok(n) if n == required => None,
-                    _ => Some(format!(
-                        "directive '{}' has value '{actual}'; STIG baseline requires exactly {required}",
-                        directive.keyword,
-                    )),
-                }
-            }
-        };
-
-        if let Some(msg) = violation_msg {
+        if let BaselineCheck::Violation {
+            requirement,
+            displayed_value,
+        } = baseline_check(&keyword, &directive.args, ctx.target)
+        {
             diags.push(anchored(
                 Severity::Warning,
                 "sshd-W02",
                 directive.span.clone(),
-                msg,
+                format!(
+                    "directive '{}' has value '{displayed_value}'; STIG baseline requires {requirement}",
+                    directive.keyword,
+                ),
                 file,
                 directive.line,
             ));
@@ -433,6 +468,51 @@ mod tests {
             "RHEL10 must have 19 required directives"
         );
         assert_eq!(FLOOR_REQUIRED.len(), 14, "floor must have 14 directives");
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn baseline_check_contract_for_shared_callers() {
+        // NotControlled: a directive with no W02 value rule for the target.
+        assert!(matches!(
+            baseline_check("banner", &args(&["/etc/issue"]), None),
+            BaselineCheck::NotControlled
+        ));
+        // Ok: a compliant value passes.
+        assert!(matches!(
+            baseline_check("permitrootlogin", &args(&["no"]), None),
+            BaselineCheck::Ok
+        ));
+        // Violation: a non-compliant value carries the requirement + the value
+        // as written (this is the shared surface W05/F02 phrase their own
+        // diagnostics from).
+        match baseline_check("permitrootlogin", &args(&["yes"]), None) {
+            BaselineCheck::Violation {
+                requirement,
+                displayed_value,
+            } => {
+                assert_eq!(requirement, "'no'");
+                assert_eq!(displayed_value, "yes");
+            }
+            other => panic!(
+                "expected Violation, got NotControlled/Ok: {}",
+                matches!(other, BaselineCheck::Ok)
+            ),
+        }
+        // Two-token RekeyLimit displays the full form.
+        match baseline_check("rekeylimit", &args(&["2G", "2h"]), None) {
+            BaselineCheck::Violation {
+                requirement,
+                displayed_value,
+            } => {
+                assert_eq!(requirement, "'1g 1h'");
+                assert_eq!(displayed_value, "2G 2h");
+            }
+            _ => panic!("expected RekeyLimit Violation"),
+        }
     }
 
     #[test]
