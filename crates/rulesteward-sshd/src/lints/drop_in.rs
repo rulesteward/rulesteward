@@ -146,13 +146,21 @@ pub fn lint_drop_in(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
             || effective.source.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
+        // Name what the winning drop-in beats: the operator's main sshd_config (the
+        // canonical F02), or a lower-precedence drop-in. Never claim "the main
+        // sshd_config" when the main file does not set this directive.
+        let beaten = if occurrences.iter().any(|e| e.source == main_path) {
+            "the main sshd_config"
+        } else {
+            "a lower-precedence drop-in"
+        };
         diags.push(anchored(
             Severity::Fatal,
             "sshd-F02",
             effective.span.clone(),
             format!(
                 "drop-in '{file_name}' overrides '{}' with the baseline-failing value '{displayed_value}', \
-                 which is the effective value (wins over the main sshd_config)",
+                 which is the effective value (wins over {beaten})",
                 effective.keyword,
             ),
             &effective.source,
@@ -357,6 +365,47 @@ mod tests {
     // ----------------------------------------------------------------------
     // F02 FIRES
     // ----------------------------------------------------------------------
+
+    #[test]
+    fn dropin_vs_dropin_override_message_does_not_claim_main() {
+        // When the winning drop-in overrides ANOTHER drop-in (the main file does
+        // not set the directive), the message must NOT claim it "wins over the main
+        // sshd_config" -- the main sets nothing here. (scenario_c-style layout.)
+        let main = "Include {DIR}\n";
+        let diags = f02_diags(
+            main,
+            &[
+                ("10-a.conf", "PermitRootLogin yes\n"),
+                ("90-b.conf", "PermitRootLogin no\n"),
+            ],
+        );
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+        assert_eq!(
+            f02.len(),
+            1,
+            "drop-in vs drop-in override fires exactly once; got {diags:?}"
+        );
+        assert!(
+            !f02[0].message.contains("main sshd_config"),
+            "must not claim it overrides the main file when main sets nothing: {}",
+            f02[0].message
+        );
+    }
+
+    #[test]
+    fn dropin_vs_main_override_message_names_main() {
+        // The canonical F02: the winning drop-in overrides a directive the MAIN
+        // file sets, so the message names "the main sshd_config".
+        let main = "Include {DIR}\nPermitRootLogin no\n";
+        let diags = f02_diags(main, &[("50-x.conf", "PermitRootLogin yes\n")]);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+        assert_eq!(f02.len(), 1);
+        assert!(
+            f02[0].message.contains("the main sshd_config"),
+            "a drop-in overriding the main file names the main: {}",
+            f02[0].message
+        );
+    }
 
     #[test]
     fn scenario_a_dropin_wins_over_later_main_setting_fires() {

@@ -254,6 +254,14 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some((denylist, kind)) = weak_exact_list(&directive.keyword_lower()) else {
                 continue;
             };
+            // A well-formed algorithm-list value is a SINGLE comma-separated arg
+            // with no internal whitespace. Multiple args mean whitespace inside the
+            // value (e.g. `Ciphers + aes128-cbc` or `Ciphers +a b`), which sshd
+            // rejects as a fatal parse error -- do not flag a line the daemon will
+            // not load.
+            if directive.args.len() != 1 {
+                continue;
+            }
             let joined = directive.args.join(",");
             // Determine the operator from the first non-empty comma-split token.
             // The parser tokenises on whitespace so `+algo1,algo2` arrives as a
@@ -416,6 +424,30 @@ mod w06_tests {
             diags[0].message.contains('^'),
             "message names the `^` operator, got: {}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn spaced_operator_does_not_fire_w06() {
+        // `Ciphers + aes128-cbc` (a space after the operator) is a fatal parse
+        // error in sshd ("Bad SSH2 cipher spec '+'", rc 255 on rocky9), so the
+        // daemon never loads it. RuleSteward's tolerant parser splits it into
+        // multiple args; W06 must NOT flag a "reintroduction" on a line the daemon
+        // rejects. A well-formed algorithm list is a single comma-separated arg.
+        assert!(
+            run("Ciphers + aes128-cbc\n").is_empty(),
+            "a space-separated (malformed, non-loading) algo line must not fire W06"
+        );
+    }
+
+    #[test]
+    fn operator_with_extra_arg_does_not_fire_w06() {
+        // `Ciphers +aes256-ctr aes128-cbc` has an extra whitespace-separated arg,
+        // which sshd rejects ("extra arguments at end of line", rc 255 on rocky9).
+        // W06 only evaluates the single-arg (well-formed) algorithm-list form.
+        assert!(
+            run("Ciphers +aes256-ctr aes128-cbc\n").is_empty(),
+            "a multi-arg (malformed, non-loading) algo line must not fire W06"
         );
     }
 
