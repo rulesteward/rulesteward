@@ -509,7 +509,8 @@ fn path_on_exit_must_not_fire() {
 fn dispatcher_includes_e04_findings() {
     let rules = located_inline("-a always,task -F perm=r -k test-dispatcher");
     // Use the full dispatcher, not just e04 directly.
-    let all_diags = rulesteward_auditd::lints::lint(&rules);
+    let all_diags =
+        rulesteward_auditd::lints::lint(&rules, rulesteward_auditd::lints::LintOptions::default());
     let e04_diags: Vec<_> = all_diags.iter().filter(|d| d.code == "au-E04").collect();
     assert!(
         !e04_diags.is_empty(),

@@ -42,6 +42,19 @@ use std::borrow::Cow;
 use crate::ast::{CompareOp, FieldFilter};
 use crate::lints::field_type::{FieldType, field_type};
 
+/// Options that gate opt-in folding behaviours in [`canonical_value`] and the
+/// functions that call it. `Copy + Default` so callers that don't care can pass
+/// `LintOptions::default()` (== `AppArmor` OFF, == pre-#230 byte-identical behaviour).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LintOptions {
+    /// Also fold `AppArmor` msgtype record names (`APPARMOR_DENIED`, etc.) when
+    /// looking up `msgtype` values. Off by default: a non-AppArmor audit daemon
+    /// (RHEL/fapolicyd targets) does not compile the `WITH_APPARMOR` block, so
+    /// asserting that equivalence by default would be incorrect. Enable when
+    /// linting rules for an AppArmor-enabled audit build (Debian/Ubuntu).
+    pub include_apparmor: bool,
+}
+
 /// The typed interpretation of a `-F` value string, under its field's type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldValue {
@@ -173,38 +186,35 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
 /// audit-userspace `lib/msg_typetab.h` @ commit 3bfa048 (the crate's pinned
 /// citation commit); numbers are the `AUDIT_*` constants in `lib/audit-records.h`
 /// @ 3bfa048 and the kernel `include/uapi/linux/audit.h`. The `#ifdef
-/// WITH_APPARMOR` block (`APPARMOR_*`, 1500-1599) is intentionally EXCLUDED: it
-/// is compiled into libaudit only on `AppArmor` builds, so folding those names
-/// would claim an equivalence a non-`AppArmor` daemon does not make (tracked in
-/// #230). Commented-out `_S` entries (deprecated/daemon-filtered commands such
-/// as `GET`/`SET`/`LIST`/`ADD`/`DEL`/`DAEMON_RECONFIG`) are also excluded.
+/// WITH_APPARMOR` block (`APPARMOR_*`, 1500-1599) is EXCLUDED from this base
+/// table and folded only OPT-IN: it is compiled into libaudit only on `AppArmor`
+/// builds, so folding those names by DEFAULT would claim an equivalence a
+/// non-`AppArmor` daemon does not make. #230 added them as the separate
+/// [`APPARMOR_MSGTYPE_NAMES`] table, consulted only when the caller passes
+/// `--apparmor` (see [`LintOptions`]). Commented-out `_S` entries
+/// (deprecated/daemon-filtered commands such as
+/// `GET`/`SET`/`LIST`/`ADD`/`DEL`/`DAEMON_RECONFIG`) are also excluded.
 ///
 /// Lookup is case-insensitive (libaudit `audit_name_to_msg_type` -> `msg_type_s2i`
 /// is generated `--uppercase`). The pinned length is asserted by
 /// `msgtype_table_has_expected_entry_count`.
 ///
-/// ## Additive seam for `AppArmor` folding (#230, deferred)
+/// ## `AppArmor` folding (#230, implemented)
 ///
-/// Adding the `APPARMOR_*` names later is meant to be additive, not a rewrite.
+/// The `APPARMOR_*` names are folded additively (not a rewrite of this table).
 /// The fold is reached through exactly two functions -- [`msgtype_number`] (the
-/// name -> number lookup) and [`canonical_value`] (its only msgtype caller) -- so
-/// the future change is:
-///   1. add a separate, identically-cited `APPARMOR_MSGTYPE_NAMES: &[(&str, u32)]`
-///      const (the `#ifdef WITH_APPARMOR` block, ~1500-1599, from `msg_typetab.h`
-///      @ 3bfa048), and
-///   2. have `msgtype_number` consult it under a gate (e.g.
-///      `.or_else(|| include_apparmor.then(...))`).
+/// name -> number lookup) and [`canonical_value`] (its only msgtype caller). #230
+/// added the separate, identically-cited [`APPARMOR_MSGTYPE_NAMES`] const (the
+/// `#ifdef WITH_APPARMOR` block, 1500-1507, from `msg_typetab.h` @ 3bfa048), and
+/// [`msgtype_number`] consults it only when `opts.include_apparmor` is set.
 ///
-/// The gate is the only non-local part: [`canonical_value`] is called from
-/// `duplicate.rs` (au-W01), `ordering.rs` (au-W02) and `normalize.rs`
-/// (`canonical_key`), and the auditd lint entry `lints::lint(rules)` carries NO
-/// target/build context today (unlike fapolicyd's `--target`). So whoever wires
-/// #230 should thread an OPTIONS value (not a bare bool) from the CLI down to
-/// [`canonical_value`], so this gate and any later one share a single signature
-/// change. The name<->number map is universal kernel ABI; only WHEN to assert the
-/// `AppArmor` equivalence is a policy choice -- which is why the gate, not the
-/// table, is the real work. No `APPARMOR_*` data is added now (it would be dead
-/// code until that gate exists).
+/// [`canonical_value`] is called from `duplicate.rs` (au-W01), `ordering.rs`
+/// (au-W02) and `normalize.rs` (`canonical_key`); the auditd lint entry
+/// `lints::lint(rules, opts)` now threads a [`LintOptions`] value (not a bare
+/// bool) from the `--apparmor` CLI flag down to [`canonical_value`], so this gate
+/// and any later one share a single signature. The name<->number map is universal
+/// kernel ABI; only WHEN to assert the `AppArmor` equivalence is a policy choice,
+/// which is why the gate, not the table, was the real work.
 const MSGTYPE_NAMES: &[(&str, u32)] = &[
     // 1000-1099 commanding the audit system (only the two non-deprecated names).
     ("USER", 1005),
@@ -411,14 +421,51 @@ const MSGTYPE_NAMES: &[(&str, u32)] = &[
     ("VIRT_MIGRATE_OUT", 2507),
 ];
 
+/// The `#ifdef WITH_APPARMOR` record-type name<->number block, excluded from
+/// [`MSGTYPE_NAMES`] by default (#230). Names and numbers from
+/// `audit-userspace lib/msg_typetab.h` (the `_S(AUDIT_<NAME>, "<NAME>")` lines
+/// inside the `#ifdef WITH_APPARMOR` block) and `lib/audit-records.h`
+/// (the `AUDIT_*` constants), both @ commit 3bfa048 -- the same pinned citation
+/// commit as [`MSGTYPE_NAMES`].
+///
+/// Special note on the first entry: the C macro is `AUDIT_AA` but the name
+/// string in `msg_typetab.h` is `"APPARMOR"` (not `"AA"`). The comment in
+/// `audit-records.h` reads "Not upstream yet". All 8 entries are here (#230).
+///
+/// This table is SEPARATE and OPT-IN: consult it only when
+/// [`LintOptions::include_apparmor`] is true, so default behaviour is
+/// byte-identical to pre-#230.
+const APPARMOR_MSGTYPE_NAMES: &[(&str, u32)] = &[
+    // audit-records.h: AUDIT_AA 1500 // "Not upstream yet"; msg_typetab.h: "APPARMOR"
+    ("APPARMOR", 1500),
+    ("APPARMOR_AUDIT", 1501),
+    ("APPARMOR_ALLOWED", 1502),
+    ("APPARMOR_DENIED", 1503),
+    ("APPARMOR_HINT", 1504),
+    ("APPARMOR_STATUS", 1505),
+    ("APPARMOR_ERROR", 1506),
+    ("APPARMOR_KILL", 1507),
+];
+
 /// The numeric audit record type for a msgtype NAME (case-insensitive per
 /// libaudit `audit_name_to_msg_type`), or `None` if `name` is not a known
-/// record-type name. See [`MSGTYPE_NAMES`].
-fn msgtype_number(name: &str) -> Option<u32> {
+/// record-type name. Consults [`MSGTYPE_NAMES`] always; when
+/// `opts.include_apparmor` is true also consults [`APPARMOR_MSGTYPE_NAMES`].
+fn msgtype_number(name: &str, opts: LintOptions) -> Option<u32> {
     MSGTYPE_NAMES
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(name))
         .map(|&(_, num)| num)
+        .or_else(|| {
+            if opts.include_apparmor {
+                APPARMOR_MSGTYPE_NAMES
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                    .map(|&(_, num)| num)
+            } else {
+                None
+            }
+        })
 }
 
 /// The canonical spelling of `raw` under `ft`, for content identity (#220, #227).
@@ -428,8 +475,13 @@ fn msgtype_number(name: &str) -> Option<u32> {
 /// folds to its record-type number (#227, so `SYSCALL` == `1300`); opaque values
 /// keep their trimmed spelling. Equal canonical values mean the two predicates
 /// match the same kernel value.
+///
+/// When `opts.include_apparmor` is true, `AppArmor` msgtype names
+/// (`APPARMOR_DENIED`, etc.) are also folded to their numbers (1500-1507);
+/// by default they are kept as-is (opaque) to preserve pre-#230 behaviour on
+/// non-AppArmor audit daemons (#230).
 #[must_use]
-pub fn canonical_value(ft: FieldType, raw: &str) -> Cow<'_, str> {
+pub fn canonical_value(ft: FieldType, raw: &str, opts: LintOptions) -> Cow<'_, str> {
     // msgtype folds symbolic record-type names to their number (#227), so au-W01
     // (canonical_key) and au-W02 (implies I0) treat `msgtype=SYSCALL` and
     // `msgtype=1300` as one value. This is the ONLY place msgtype folds:
@@ -437,7 +489,7 @@ pub fn canonical_value(ft: FieldType, raw: &str) -> Cow<'_, str> {
     // and au-W03 disjointness stays conservative for it.
     if ft == FieldType::MsgType {
         let t = raw.trim();
-        if let Some(n) = msgtype_number(t) {
+        if let Some(n) = msgtype_number(t, opts) {
             return Cow::Owned(n.to_string());
         }
         // A bare numeric spelling normalizes via base-0 (#229); an unknown name
@@ -466,7 +518,7 @@ pub fn canonical_value(ft: FieldType, raw: &str) -> Cow<'_, str> {
 /// Conservative: returns true only for provable implication; any unsupported
 /// operator pairing returns false (a false negative, never a false positive).
 #[must_use]
-pub fn implies(pe: &FieldFilter, pl: &FieldFilter) -> bool {
+pub fn implies(pe: &FieldFilter, pl: &FieldFilter, opts: LintOptions) -> bool {
     if pe.field != pl.field {
         return false;
     }
@@ -474,7 +526,9 @@ pub fn implies(pe: &FieldFilter, pl: &FieldFilter) -> bool {
     // I0: identical operator and folded-equal value. Covers Eq, Ne, the bitmask
     // ops, and exact relational, and folds the uid/gid sentinel spellings, so
     // au-W02 agrees with au-W01 on value identity.
-    if pe.op == pl.op && canonical_value(ft, &pe.value) == canonical_value(ft, &pl.value) {
+    if pe.op == pl.op
+        && canonical_value(ft, &pe.value, opts) == canonical_value(ft, &pl.value, opts)
+    {
         return true;
     }
     // Otherwise pl implies pe iff pl's matched interval is contained in pe's.
@@ -506,8 +560,12 @@ pub fn implies(pe: &FieldFilter, pl: &FieldFilter) -> bool {
 /// excludes one point, so they always intersect), and Ne/bitmask vs a relational
 /// (the Ne/bitmask set has no interval). These fall through to the interval arm,
 /// where Ne/bitmask yield `None`.
+///
+/// NOTE: for `msgtype`, [`canonical_decides_value_identity`] returns `false`
+/// (alias-bearing field), so this function is conservative for `msgtype` regardless
+/// of `opts` -- threading `opts` through is for signature uniformity only (#230).
 #[must_use]
-pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter) -> bool {
+pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter, opts: LintOptions) -> bool {
     if pa.field != pb.field {
         return false;
     }
@@ -515,11 +573,11 @@ pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter) -> bool {
     match (&pa.op, &pb.op) {
         // Eq vs Eq: one event carries one value per field, so two equalities
         // contradict iff their values are PROVABLY different kernel values.
-        (CompareOp::Eq, CompareOp::Eq) => eq_values_provably_differ(ft, &pa.value, &pb.value),
+        (CompareOp::Eq, CompareOp::Eq) => eq_values_provably_differ(ft, &pa.value, &pb.value, opts),
         // Eq vs Ne (either order, #228): contradict iff the Eq value provably
         // equals the value Ne excludes.
         (CompareOp::Eq, CompareOp::Ne) | (CompareOp::Ne, CompareOp::Eq) => {
-            eq_values_provably_equal(ft, &pa.value, &pb.value)
+            eq_values_provably_equal(ft, &pa.value, &pb.value, opts)
         }
         // Eq vs bitmask (either order, #228): `&` matches iff (value & mask) != 0,
         // `&=` matches iff (value & mask) == mask. With the value pinned by Eq the
@@ -594,16 +652,18 @@ fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str) -> bool {
 /// True when two values on the same field are PROVABLY DIFFERENT kernel values
 /// (e.g. `uid=0` vs `uid=1000`, `path=/a` vs `path=/b`). Decidable only when
 /// [`canonical_decides_value_identity`] holds; otherwise false (conservative).
-fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str) -> bool {
-    canonical_decides_value_identity(ft, a, b) && canonical_value(ft, a) != canonical_value(ft, b)
+fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
+    canonical_decides_value_identity(ft, a, b)
+        && canonical_value(ft, a, opts) != canonical_value(ft, b, opts)
 }
 
 /// True when two values on the same field are PROVABLY the SAME kernel value (the
 /// mirror of [`eq_values_provably_differ`]); used by au-W03 Eq-vs-Ne
 /// disjointness (#228). Decidable only when [`canonical_decides_value_identity`]
 /// holds; otherwise false (conservative).
-fn eq_values_provably_equal(ft: FieldType, a: &str, b: &str) -> bool {
-    canonical_decides_value_identity(ft, a, b) && canonical_value(ft, a) == canonical_value(ft, b)
+fn eq_values_provably_equal(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
+    canonical_decides_value_identity(ft, a, b)
+        && canonical_value(ft, a, opts) == canonical_value(ft, b, opts)
 }
 
 /// The closed `i128` interval `[lo, hi]` of event values a predicate matches,
@@ -631,10 +691,19 @@ mod tests {
     #![allow(clippy::similar_names, clippy::needless_pass_by_value)]
 
     use super::{
-        FieldValue, canonical_value, classify, disjoint, eq_values_provably_equal, implies,
+        FieldValue, LintOptions, canonical_value, classify, disjoint, eq_values_provably_equal,
+        implies, msgtype_number,
     };
     use crate::ast::{AuditField, CompareOp, FieldFilter};
     use crate::lints::field_type::field_type;
+
+    // Convenience shorthands for opts values used in AppArmor tests (#230).
+    const OFF: LintOptions = LintOptions {
+        include_apparmor: false,
+    };
+    const ON: LintOptions = LintOptions {
+        include_apparmor: true,
+    };
 
     fn ft(field: AuditField) -> crate::lints::field_type::FieldType {
         field_type(&field)
@@ -764,7 +833,7 @@ mod tests {
         // au-W01/au-W02 treat them as one value...
         for s in ["-1", "4294967295", "unset"] {
             assert_eq!(
-                canonical_value(ft(AuditField::SessionId), s),
+                canonical_value(ft(AuditField::SessionId), s, OFF),
                 "unset",
                 "sessionid {s:?} must canonicalize to the sentinel"
             );
@@ -772,7 +841,7 @@ mod tests {
         // ...while pid (plain Numeric) keeps 4294967295 as a concrete value: the
         // fold is sessionid-specific, not generic Numeric.
         assert_eq!(
-            canonical_value(ft(AuditField::Pid), "4294967295"),
+            canonical_value(ft(AuditField::Pid), "4294967295", OFF),
             "4294967295"
         );
     }
@@ -858,48 +927,54 @@ mod tests {
     #[test]
     fn canonical_folds_uid_sentinel_triple() {
         let u = ft(AuditField::Auid);
-        assert_eq!(canonical_value(u, "-1"), "unset");
-        assert_eq!(canonical_value(u, "4294967295"), "unset");
-        assert_eq!(canonical_value(u, "unset"), "unset");
-        assert_eq!(canonical_value(u, "UNSET"), "unset");
-        assert_eq!(canonical_value(ft(AuditField::Gid), "-1"), "unset");
+        assert_eq!(canonical_value(u, "-1", OFF), "unset");
+        assert_eq!(canonical_value(u, "4294967295", OFF), "unset");
+        assert_eq!(canonical_value(u, "unset", OFF), "unset");
+        assert_eq!(canonical_value(u, "UNSET", OFF), "unset");
+        assert_eq!(canonical_value(ft(AuditField::Gid), "-1", OFF), "unset");
     }
 
     #[test]
     fn canonical_keeps_concrete_uid_distinct_from_sentinel() {
         let u = ft(AuditField::Auid);
-        assert_eq!(canonical_value(u, "0"), "0"); // root is not unset
-        assert_eq!(canonical_value(u, "1000"), "1000");
-        assert_ne!(canonical_value(u, "0"), canonical_value(u, "unset"));
+        assert_eq!(canonical_value(u, "0", OFF), "0"); // root is not unset
+        assert_eq!(canonical_value(u, "1000", OFF), "1000");
+        assert_ne!(
+            canonical_value(u, "0", OFF),
+            canonical_value(u, "unset", OFF)
+        );
     }
 
     #[test]
     fn canonical_does_not_fold_big_value_on_other_types() {
         // pid 4294967295 stays itself; exit -1 / 4294967295 stay themselves.
         assert_eq!(
-            canonical_value(ft(AuditField::Pid), "4294967295"),
+            canonical_value(ft(AuditField::Pid), "4294967295", OFF),
             "4294967295"
         );
-        assert_eq!(canonical_value(ft(AuditField::Exit), "-1"), "-1");
+        assert_eq!(canonical_value(ft(AuditField::Exit), "-1", OFF), "-1");
         assert_eq!(
-            canonical_value(ft(AuditField::Exit), "4294967295"),
+            canonical_value(ft(AuditField::Exit), "4294967295", OFF),
             "4294967295"
         );
         assert_ne!(
-            canonical_value(ft(AuditField::Exit), "-1"),
-            canonical_value(ft(AuditField::Exit), "4294967295")
+            canonical_value(ft(AuditField::Exit), "-1", OFF),
+            canonical_value(ft(AuditField::Exit), "4294967295", OFF)
         );
     }
 
     #[test]
     fn canonical_opaque_values_keep_spelling_but_hex_octal_fold() {
         let u = ft(AuditField::Auid);
-        assert_eq!(canonical_value(u, "root"), "root");
+        assert_eq!(canonical_value(u, "root", OFF), "root");
         // #229: hex/octal now parse base-0 and fold to decimal (match libaudit).
-        assert_eq!(canonical_value(u, "0x10"), "16");
-        assert_eq!(canonical_value(u, "0x10"), canonical_value(u, "16"));
+        assert_eq!(canonical_value(u, "0x10", OFF), "16");
+        assert_eq!(
+            canonical_value(u, "0x10", OFF),
+            canonical_value(u, "16", OFF)
+        );
         // A genuinely unparseable value still keeps its trimmed spelling.
-        assert_eq!(canonical_value(u, "0xZZ"), "0xZZ");
+        assert_eq!(canonical_value(u, "0xZZ", OFF), "0xZZ");
     }
 
     // --- classify / canonical: base-0 numeric parsing (#229) ------------
@@ -929,17 +1004,23 @@ mod tests {
     #[test]
     fn canonical_folds_hex_octal_decimal_same_value() {
         let a = ft(AuditField::A0);
-        assert_eq!(canonical_value(a, "0x80"), "128");
-        assert_eq!(canonical_value(a, "0x80"), canonical_value(a, "128"));
-        assert_eq!(canonical_value(a, "010"), "8");
+        assert_eq!(canonical_value(a, "0x80", OFF), "128");
+        assert_eq!(
+            canonical_value(a, "0x80", OFF),
+            canonical_value(a, "128", OFF)
+        );
+        assert_eq!(canonical_value(a, "010", OFF), "8");
     }
 
     #[test]
     fn octal_distinct_from_decimal() {
         // The latent-bug guard: a0=010 is octal 8, NOT decimal 10.
         let a = ft(AuditField::A0);
-        assert_ne!(canonical_value(a, "010"), canonical_value(a, "10"));
-        assert_eq!(canonical_value(a, "010"), canonical_value(a, "8"));
+        assert_ne!(
+            canonical_value(a, "010", OFF),
+            canonical_value(a, "10", OFF)
+        );
+        assert_eq!(canonical_value(a, "010", OFF), canonical_value(a, "8", OFF));
     }
 
     #[test]
@@ -999,35 +1080,45 @@ mod tests {
             ("VIRT_CONTROL", "2500"),
             ("VIRT_MIGRATE_OUT", "2507"),
         ] {
-            assert_eq!(canonical_value(m, name), num, "msgtype {name} -> {num}");
+            assert_eq!(
+                canonical_value(m, name, OFF),
+                num,
+                "msgtype {name} -> {num}"
+            );
         }
     }
 
     #[test]
     fn msgtype_name_folding_is_case_insensitive() {
         let m = ft(AuditField::MsgType);
-        assert_eq!(canonical_value(m, "syscall"), "1300");
-        assert_eq!(canonical_value(m, "SysCall"), "1300");
-        assert_eq!(canonical_value(m, "SYSCALL"), "1300");
+        assert_eq!(canonical_value(m, "syscall", OFF), "1300");
+        assert_eq!(canonical_value(m, "SysCall", OFF), "1300");
+        assert_eq!(canonical_value(m, "SYSCALL", OFF), "1300");
     }
 
     #[test]
     fn msgtype_number_and_name_fold_to_same_canonical() {
         let m = ft(AuditField::MsgType);
-        assert_eq!(canonical_value(m, "1300"), canonical_value(m, "SYSCALL"));
+        assert_eq!(
+            canonical_value(m, "1300", OFF),
+            canonical_value(m, "SYSCALL", OFF)
+        );
         // A base-0 number spelling folds too (#229): 0x514 == 1300.
-        assert_eq!(canonical_value(m, "0x514"), "1300");
+        assert_eq!(canonical_value(m, "0x514", OFF), "1300");
     }
 
     #[test]
     fn msgtype_unknown_stays_opaque() {
         let m = ft(AuditField::MsgType);
-        assert_eq!(canonical_value(m, "NOT_A_TYPE"), "NOT_A_TYPE");
+        assert_eq!(canonical_value(m, "NOT_A_TYPE", OFF), "NOT_A_TYPE");
         // A number with no name folds only with itself (decimal-normalized).
-        assert_eq!(canonical_value(m, "99999"), "99999");
-        assert_ne!(canonical_value(m, "99999"), canonical_value(m, "SYSCALL"));
+        assert_eq!(canonical_value(m, "99999", OFF), "99999");
+        assert_ne!(
+            canonical_value(m, "99999", OFF),
+            canonical_value(m, "SYSCALL", OFF)
+        );
         // A hex value with no clean parse keeps its spelling.
-        assert_eq!(canonical_value(m, "0xZZ"), "0xZZ");
+        assert_eq!(canonical_value(m, "0xZZ", OFF), "0xZZ");
     }
 
     #[test]
@@ -1070,18 +1161,18 @@ mod tests {
         // au-W02 I0 path: same op, folded-equal value across name<->number.
         let name = ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL");
         let num = ff(AuditField::MsgType, CompareOp::Eq, "1300");
-        assert!(implies(&name, &num));
-        assert!(implies(&num, &name));
+        assert!(implies(&name, &num, OFF));
+        assert!(implies(&num, &name, OFF));
     }
 
     // --- implies: au-W02 subsumption (#219) -----------------------------
-    // implies(pe, pl): does later pl imply earlier pe (pl's set subset of pe's)?
+    // implies(pe, pl, OFF): does later pl imply earlier pe (pl's set subset of pe's)?
 
     #[test]
     fn implies_exact_same_predicate() {
         let pe = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let pl = ff(AuditField::Auid, CompareOp::Ge, "1000");
-        assert!(implies(&pe, &pl));
+        assert!(implies(&pe, &pl, OFF));
     }
 
     #[test]
@@ -1089,8 +1180,8 @@ mod tests {
         // auid!=-1 and auid!=4294967295: same op, folded-equal value.
         let pe = ff(AuditField::Auid, CompareOp::Ne, "-1");
         let pl = ff(AuditField::Auid, CompareOp::Ne, "4294967295");
-        assert!(implies(&pe, &pl));
-        assert!(implies(&pl, &pe));
+        assert!(implies(&pe, &pl, OFF));
+        assert!(implies(&pl, &pe, OFF));
     }
 
     #[test]
@@ -1098,9 +1189,12 @@ mod tests {
         // auid>=1000 (earlier, broad) is implied by auid>=2000 (later, narrow).
         let pe = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let pl = ff(AuditField::Auid, CompareOp::Ge, "2000");
-        assert!(implies(&pe, &pl), "auid>=1000 must subsume auid>=2000");
+        assert!(implies(&pe, &pl, OFF), "auid>=1000 must subsume auid>=2000");
         // and not the reverse.
-        assert!(!implies(&pl, &pe), "auid>=2000 must NOT subsume auid>=1000");
+        assert!(
+            !implies(&pl, &pe, OFF),
+            "auid>=2000 must NOT subsume auid>=1000"
+        );
     }
 
     #[test]
@@ -1110,11 +1204,11 @@ mod tests {
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let gt1000b = ff(AuditField::Auid, CompareOp::Gt, "1000");
         // >1000 implied by >=2000 (2000 > 1000)
-        assert!(implies(&gt1000, &ge2000));
+        assert!(implies(&gt1000, &ge2000, OFF));
         // >=1000 implied by >1000  (>1000 == >=1001, subset of >=1000)
-        assert!(implies(&ge1000, &gt1000b));
+        assert!(implies(&ge1000, &gt1000b, OFF));
         // >1000 NOT implied by >=1000 (1000 satisfies pl but not pe)
-        assert!(!implies(&gt1000, &ge1000));
+        assert!(!implies(&gt1000, &ge1000, OFF));
     }
 
     #[test]
@@ -1122,9 +1216,12 @@ mod tests {
         let le2000 = ff(AuditField::Uid, CompareOp::Le, "2000");
         let le1000 = ff(AuditField::Uid, CompareOp::Le, "1000");
         let lt2000 = ff(AuditField::Uid, CompareOp::Lt, "2000");
-        assert!(implies(&le2000, &le1000), "uid<=2000 subsumes uid<=1000");
         assert!(
-            !implies(&le1000, &lt2000),
+            implies(&le2000, &le1000, OFF),
+            "uid<=2000 subsumes uid<=1000"
+        );
+        assert!(
+            !implies(&le1000, &lt2000, OFF),
             "uid<=1000 does NOT subsume uid<2000"
         );
     }
@@ -1133,8 +1230,8 @@ mod tests {
     fn implies_opposite_direction_never() {
         let ge = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let le = ff(AuditField::Auid, CompareOp::Le, "2000");
-        assert!(!implies(&ge, &le));
-        assert!(!implies(&le, &ge));
+        assert!(!implies(&ge, &le, OFF));
+        assert!(!implies(&le, &ge, OFF));
     }
 
     #[test]
@@ -1142,9 +1239,9 @@ mod tests {
         let ge_m13 = ff(AuditField::Exit, CompareOp::Ge, "-13");
         let ge_m5 = ff(AuditField::Exit, CompareOp::Ge, "-5");
         let ge_m20 = ff(AuditField::Exit, CompareOp::Ge, "-20");
-        assert!(implies(&ge_m13, &ge_m5), "exit>=-13 subsumes exit>=-5");
+        assert!(implies(&ge_m13, &ge_m5, OFF), "exit>=-13 subsumes exit>=-5");
         assert!(
-            !implies(&ge_m13, &ge_m20),
+            !implies(&ge_m13, &ge_m20, OFF),
             "exit>=-13 does NOT subsume exit>=-20"
         );
     }
@@ -1155,14 +1252,20 @@ mod tests {
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let eq1500 = ff(AuditField::Auid, CompareOp::Eq, "1500");
         let eq500 = ff(AuditField::Auid, CompareOp::Eq, "500");
-        assert!(implies(&ge1000, &eq1500), "auid>=1000 subsumes auid=1500");
         assert!(
-            !implies(&ge1000, &eq500),
+            implies(&ge1000, &eq1500, OFF),
+            "auid>=1000 subsumes auid=1500"
+        );
+        assert!(
+            !implies(&ge1000, &eq500, OFF),
             "auid>=1000 does NOT subsume auid=500"
         );
         let le1000 = ff(AuditField::Auid, CompareOp::Le, "1000");
         let eq500b = ff(AuditField::Auid, CompareOp::Eq, "500");
-        assert!(implies(&le1000, &eq500b), "auid<=1000 subsumes auid=500");
+        assert!(
+            implies(&le1000, &eq500b, OFF),
+            "auid<=1000 subsumes auid=500"
+        );
     }
 
     #[test]
@@ -1170,7 +1273,7 @@ mod tests {
         // The reverse of I2: a relational later does NOT imply an Eq earlier.
         let eq1500 = ff(AuditField::Auid, CompareOp::Eq, "1500");
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
-        assert!(!implies(&eq1500, &ge1000));
+        assert!(!implies(&eq1500, &ge1000, OFF));
     }
 
     #[test]
@@ -1178,16 +1281,16 @@ mod tests {
         // Ne never participates in interval implication.
         let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
-        assert!(!implies(&ne5, &ge1000));
-        assert!(!implies(&ge1000, &ne5));
+        assert!(!implies(&ne5, &ge1000, OFF));
+        assert!(!implies(&ge1000, &ne5, OFF));
         let ne5b = ff(AuditField::Auid, CompareOp::Ne, "5");
-        assert!(implies(&ne5, &ne5b), "exact Ne==Ne implies");
+        assert!(implies(&ne5, &ne5b, OFF), "exact Ne==Ne implies");
         // bitmask: exact only.
         let band4 = ff(AuditField::A0, CompareOp::BitAnd, "4");
         let band4b = ff(AuditField::A0, CompareOp::BitAnd, "4");
         let band6 = ff(AuditField::A0, CompareOp::BitAnd, "6");
-        assert!(implies(&band4, &band4b));
-        assert!(!implies(&band4, &band6));
+        assert!(implies(&band4, &band4b, OFF));
+        assert!(!implies(&band4, &band6, OFF));
     }
 
     #[test]
@@ -1196,11 +1299,11 @@ mod tests {
         // on the sentinel -> conservative false.
         let ge0 = ff(AuditField::Auid, CompareOp::Ge, "0");
         let ge_sentinel = ff(AuditField::Auid, CompareOp::Ge, "4294967295");
-        assert!(!implies(&ge0, &ge_sentinel));
-        assert!(!implies(&ge_sentinel, &ge0));
+        assert!(!implies(&ge0, &ge_sentinel, OFF));
+        assert!(!implies(&ge_sentinel, &ge0, OFF));
         // but >=-1 and >=4294967295 are the SAME predicate (folded) -> implies.
         let ge_m1 = ff(AuditField::Auid, CompareOp::Ge, "-1");
-        assert!(implies(&ge_m1, &ge_sentinel));
+        assert!(implies(&ge_m1, &ge_sentinel, OFF));
     }
 
     #[test]
@@ -1208,15 +1311,15 @@ mod tests {
         // Different fields never imply.
         let a = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let b = ff(AuditField::Uid, CompareOp::Ge, "2000");
-        assert!(!implies(&a, &b));
+        assert!(!implies(&a, &b, OFF));
         // String field with relational op: opaque, never interval.
         let pa = ff(AuditField::Path, CompareOp::Ge, "/a");
         let pb = ff(AuditField::Path, CompareOp::Ge, "/b");
-        assert!(!implies(&pa, &pb));
+        assert!(!implies(&pa, &pb, OFF));
         // generic Numeric (pid) intervals work too.
         let p1 = ff(AuditField::Pid, CompareOp::Ge, "1000");
         let p2 = ff(AuditField::Pid, CompareOp::Ge, "2000");
-        assert!(implies(&p1, &p2));
+        assert!(implies(&p1, &p2, OFF));
     }
 
     // --- disjoint: au-W03 suppression (#219) ----------------------------
@@ -1225,7 +1328,7 @@ mod tests {
     fn disjoint_eq_eq_different_values() {
         let a = ff(AuditField::Auid, CompareOp::Eq, "0");
         let b = ff(AuditField::Auid, CompareOp::Eq, "1000");
-        assert!(disjoint(&a, &b));
+        assert!(disjoint(&a, &b, OFF));
     }
 
     #[test]
@@ -1233,7 +1336,7 @@ mod tests {
         let a = ff(AuditField::Auid, CompareOp::Eq, "-1");
         let b = ff(AuditField::Auid, CompareOp::Eq, "4294967295");
         assert!(
-            !disjoint(&a, &b),
+            !disjoint(&a, &b, OFF),
             "auid=-1 and auid=4294967295 are the same value"
         );
     }
@@ -1243,9 +1346,9 @@ mod tests {
         // A single event has one path; path=/a and path=/b cannot co-match.
         let a = ff(AuditField::Path, CompareOp::Eq, "/a");
         let b = ff(AuditField::Path, CompareOp::Eq, "/b");
-        assert!(disjoint(&a, &b));
+        assert!(disjoint(&a, &b, OFF));
         let c = ff(AuditField::Path, CompareOp::Eq, "/a");
-        assert!(!disjoint(&a, &c));
+        assert!(!disjoint(&a, &c, OFF));
     }
 
     #[test]
@@ -1253,30 +1356,30 @@ mod tests {
         let ge2000 = ff(AuditField::Auid, CompareOp::Ge, "2000");
         let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
         assert!(
-            disjoint(&ge2000, &lt1000),
+            disjoint(&ge2000, &lt1000, OFF),
             ">=2000 and <1000 cannot co-match"
         );
         // touching at the boundary is NOT disjoint.
         let ge2000b = ff(AuditField::Auid, CompareOp::Ge, "2000");
         let le2000 = ff(AuditField::Auid, CompareOp::Le, "2000");
         assert!(
-            !disjoint(&ge2000b, &le2000),
+            !disjoint(&ge2000b, &le2000, OFF),
             ">=2000 and <=2000 meet at 2000"
         );
         // overlapping ranges are not disjoint.
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let lt2000 = ff(AuditField::Auid, CompareOp::Lt, "2000");
-        assert!(!disjoint(&ge1000, &lt2000));
+        assert!(!disjoint(&ge1000, &lt2000, OFF));
     }
 
     #[test]
     fn disjoint_eq_outside_relational() {
         let eq0 = ff(AuditField::Auid, CompareOp::Eq, "0");
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
-        assert!(disjoint(&eq0, &ge1000), "auid=0 is outside auid>=1000");
+        assert!(disjoint(&eq0, &ge1000, OFF), "auid=0 is outside auid>=1000");
         let eq1500 = ff(AuditField::Auid, CompareOp::Eq, "1500");
         assert!(
-            !disjoint(&eq1500, &ge1000),
+            !disjoint(&eq1500, &ge1000, OFF),
             "auid=1500 is inside auid>=1000"
         );
     }
@@ -1285,7 +1388,7 @@ mod tests {
     fn disjoint_same_direction_is_not_disjoint() {
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let ge2000 = ff(AuditField::Auid, CompareOp::Ge, "2000");
-        assert!(!disjoint(&ge1000, &ge2000));
+        assert!(!disjoint(&ge1000, &ge2000, OFF));
     }
 
     #[test]
@@ -1294,7 +1397,7 @@ mod tests {
         // sentinel has no interval position).
         let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
-        assert!(!disjoint(&eq_unset, &ge1000));
+        assert!(!disjoint(&eq_unset, &ge1000, OFF));
     }
 
     #[test]
@@ -1302,7 +1405,7 @@ mod tests {
         let a = ff(AuditField::Auid, CompareOp::Eq, "0");
         let b = ff(AuditField::Uid, CompareOp::Eq, "1000");
         assert!(
-            !disjoint(&a, &b),
+            !disjoint(&a, &b, OFF),
             "different fields are independent, not disjoint"
         );
     }
@@ -1312,7 +1415,7 @@ mod tests {
         let ge0 = ff(AuditField::Exit, CompareOp::Ge, "0");
         let lt_m5 = ff(AuditField::Exit, CompareOp::Lt, "-5");
         assert!(
-            disjoint(&ge0, &lt_m5),
+            disjoint(&ge0, &lt_m5, OFF),
             "exit>=0 and exit<-5 cannot co-match"
         );
     }
@@ -1324,10 +1427,10 @@ mod tests {
         let ge2000 = ff(AuditField::Auid, CompareOp::Ge, "2000");
         let le2000 = ff(AuditField::Auid, CompareOp::Le, "2000");
         assert!(
-            !disjoint(&ge2000, &le2000),
+            !disjoint(&ge2000, &le2000, OFF),
             ">=2000 and <=2000 meet at 2000"
         );
-        assert!(!disjoint(&le2000, &ge2000), "symmetric: meet at 2000");
+        assert!(!disjoint(&le2000, &ge2000, OFF), "symmetric: meet at 2000");
     }
 
     #[test]
@@ -1338,12 +1441,15 @@ mod tests {
         let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
         let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
         assert!(
-            disjoint(&ge1000, &lt1000),
+            disjoint(&ge1000, &lt1000, OFF),
             ">=1000 and <1000 are disjoint at the 999/1000 seam"
         );
         // The overlapping neighbor <=1000 shares 1000, so NOT disjoint.
         let le1000 = ff(AuditField::Auid, CompareOp::Le, "1000");
-        assert!(!disjoint(&ge1000, &le1000), ">=1000 and <=1000 share 1000");
+        assert!(
+            !disjoint(&ge1000, &le1000, OFF),
+            ">=1000 and <=1000 share 1000"
+        );
     }
 
     #[test]
@@ -1354,16 +1460,19 @@ mod tests {
         assert!(!disjoint(
             &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
             &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            OFF,
         ));
         // uid=root resolves to uid 0; a static linter has no passwd db to disprove it.
         assert!(!disjoint(
             &ff(AuditField::Uid, CompareOp::Eq, "root"),
             &ff(AuditField::Uid, CompareOp::Eq, "0"),
+            OFF,
         ));
         // arch=b64 selects the same syscall table as x86_64 on an x86 host.
         assert!(!disjoint(
             &ff(AuditField::Arch, CompareOp::Eq, "b64"),
             &ff(AuditField::Arch, CompareOp::Eq, "x86_64"),
+            OFF,
         ));
     }
 
@@ -1372,18 +1481,29 @@ mod tests {
     #[test]
     fn eq_values_provably_equal_cases() {
         let auid = ft(AuditField::Auid);
-        assert!(eq_values_provably_equal(auid, "5", "5"));
-        assert!(eq_values_provably_equal(auid, "-1", "4294967295")); // folded sentinel
-        assert!(!eq_values_provably_equal(auid, "5", "6"));
+        assert!(eq_values_provably_equal(auid, "5", "5", OFF));
+        assert!(eq_values_provably_equal(auid, "-1", "4294967295", OFF)); // folded sentinel
+        assert!(!eq_values_provably_equal(auid, "5", "6", OFF));
         // free-form string: exact match.
-        assert!(eq_values_provably_equal(ft(AuditField::Key), "foo", "foo"));
-        assert!(!eq_values_provably_equal(ft(AuditField::Path), "/a", "/b"));
+        assert!(eq_values_provably_equal(
+            ft(AuditField::Key),
+            "foo",
+            "foo",
+            OFF
+        ));
+        assert!(!eq_values_provably_equal(
+            ft(AuditField::Path),
+            "/a",
+            "/b",
+            OFF
+        ));
         // alias-bearing / unresolvable -> conservative false (even if equal).
-        assert!(!eq_values_provably_equal(auid, "root", "root"));
+        assert!(!eq_values_provably_equal(auid, "root", "root", OFF));
         assert!(!eq_values_provably_equal(
             ft(AuditField::Arch),
             "b64",
-            "b64"
+            "b64",
+            OFF,
         ));
     }
 
@@ -1394,13 +1514,16 @@ mod tests {
         // `auid=5` and `auid!=5` are a contradiction; both operand orders.
         let eq5 = ff(AuditField::Auid, CompareOp::Eq, "5");
         let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
-        assert!(disjoint(&eq5, &ne5), "auid=5 and auid!=5 cannot co-match");
-        assert!(disjoint(&ne5, &eq5), "symmetric");
+        assert!(
+            disjoint(&eq5, &ne5, OFF),
+            "auid=5 and auid!=5 cannot co-match"
+        );
+        assert!(disjoint(&ne5, &eq5, OFF), "symmetric");
         // folded spellings of the same value count as same (#220/#229).
         let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
         let ne_m1 = ff(AuditField::Auid, CompareOp::Ne, "-1");
         assert!(
-            disjoint(&eq_unset, &ne_m1),
+            disjoint(&eq_unset, &ne_m1, OFF),
             "auid=unset and auid!=-1 contradict"
         );
     }
@@ -1410,8 +1533,8 @@ mod tests {
         // `auid=5` and `auid!=6`: the value 5 satisfies both -> overlap.
         let eq5 = ff(AuditField::Auid, CompareOp::Eq, "5");
         let ne6 = ff(AuditField::Auid, CompareOp::Ne, "6");
-        assert!(!disjoint(&eq5, &ne6));
-        assert!(!disjoint(&ne6, &eq5));
+        assert!(!disjoint(&eq5, &ne6, OFF));
+        assert!(!disjoint(&ne6, &eq5, OFF));
     }
 
     #[test]
@@ -1420,12 +1543,15 @@ mod tests {
         let key_eq = ff(AuditField::Key, CompareOp::Eq, "foo");
         let key_ne = ff(AuditField::Key, CompareOp::Ne, "foo");
         assert!(
-            disjoint(&key_eq, &key_ne),
+            disjoint(&key_eq, &key_ne, OFF),
             "key=foo and key!=foo contradict"
         );
         let path_eq = ff(AuditField::Path, CompareOp::Eq, "/a");
         let path_ne = ff(AuditField::Path, CompareOp::Ne, "/b");
-        assert!(!disjoint(&path_eq, &path_ne), "path=/a satisfies path!=/b");
+        assert!(
+            !disjoint(&path_eq, &path_ne, OFF),
+            "path=/a satisfies path!=/b"
+        );
     }
 
     #[test]
@@ -1435,10 +1561,12 @@ mod tests {
         assert!(!disjoint(
             &ff(AuditField::Uid, CompareOp::Eq, "root"),
             &ff(AuditField::Uid, CompareOp::Ne, "0"),
+            OFF,
         ));
         assert!(!disjoint(
             &ff(AuditField::Arch, CompareOp::Eq, "b64"),
             &ff(AuditField::Arch, CompareOp::Ne, "x86_64"),
+            OFF,
         ));
     }
 
@@ -1447,8 +1575,8 @@ mod tests {
         // `a0=4` and `a0&2`: 4 & 2 == 0, so the value 4 never matches the mask.
         let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
         let band2 = ff(AuditField::A0, CompareOp::BitAnd, "2");
-        assert!(disjoint(&eq4, &band2), "4 & 2 == 0 -> disjoint");
-        assert!(disjoint(&band2, &eq4), "symmetric");
+        assert!(disjoint(&eq4, &band2, OFF), "4 & 2 == 0 -> disjoint");
+        assert!(disjoint(&band2, &eq4, OFF), "symmetric");
     }
 
     #[test]
@@ -1456,7 +1584,7 @@ mod tests {
         // `a0=6` and `a0&2`: 6 & 2 == 2 != 0, so 6 matches the mask -> overlap.
         let eq6 = ff(AuditField::A0, CompareOp::Eq, "6");
         let band2 = ff(AuditField::A0, CompareOp::BitAnd, "2");
-        assert!(!disjoint(&eq6, &band2));
+        assert!(!disjoint(&eq6, &band2, OFF));
     }
 
     #[test]
@@ -1464,7 +1592,7 @@ mod tests {
         // The mask is usually hex; commit-1 base-0 parsing makes it concrete.
         let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
         let band_hex2 = ff(AuditField::A0, CompareOp::BitAnd, "0x2");
-        assert!(disjoint(&eq4, &band_hex2), "4 & 0x2 == 0 -> disjoint");
+        assert!(disjoint(&eq4, &band_hex2, OFF), "4 & 0x2 == 0 -> disjoint");
     }
 
     #[test]
@@ -1472,8 +1600,8 @@ mod tests {
         // `a0=4` and `a0&=2`: 4 & 2 == 0 != 2, so 4 lacks the required bits.
         let eq4 = ff(AuditField::A0, CompareOp::Eq, "4");
         let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
-        assert!(disjoint(&eq4, &bandeq2), "(4 & 2) != 2 -> disjoint");
-        assert!(disjoint(&bandeq2, &eq4), "symmetric");
+        assert!(disjoint(&eq4, &bandeq2, OFF), "(4 & 2) != 2 -> disjoint");
+        assert!(disjoint(&bandeq2, &eq4, OFF), "symmetric");
     }
 
     #[test]
@@ -1481,7 +1609,7 @@ mod tests {
         // `a0=6` and `a0&=2`: 6 & 2 == 2 == mask, so 6 satisfies the bit test.
         let eq6 = ff(AuditField::A0, CompareOp::Eq, "6");
         let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
-        assert!(!disjoint(&eq6, &bandeq2));
+        assert!(!disjoint(&eq6, &bandeq2, OFF));
     }
 
     #[test]
@@ -1489,7 +1617,7 @@ mod tests {
         // `a0=2` and `a0&=2`: 2 & 2 == 2 -> the exact value passes the bit test.
         let eq2 = ff(AuditField::A0, CompareOp::Eq, "2");
         let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
-        assert!(!disjoint(&eq2, &bandeq2));
+        assert!(!disjoint(&eq2, &bandeq2, OFF));
     }
 
     #[test]
@@ -1498,10 +1626,10 @@ mod tests {
         // so they are never provably disjoint (conservative -> overlap).
         let bandeq1 = ff(AuditField::A0, CompareOp::BitAndEq, "1");
         let bandeq2 = ff(AuditField::A0, CompareOp::BitAndEq, "2");
-        assert!(!disjoint(&bandeq1, &bandeq2), "co-satisfied by 3");
+        assert!(!disjoint(&bandeq1, &bandeq2, OFF), "co-satisfied by 3");
         let band1 = ff(AuditField::A0, CompareOp::BitAnd, "1");
         let bandeq2b = ff(AuditField::A0, CompareOp::BitAndEq, "2");
-        assert!(!disjoint(&band1, &bandeq2b));
+        assert!(!disjoint(&band1, &bandeq2b, OFF));
     }
 
     #[test]
@@ -1509,7 +1637,7 @@ mod tests {
         // Theorem: two not-equals exclude only one point each -> always intersect.
         let ne5 = ff(AuditField::Auid, CompareOp::Ne, "5");
         let ne6 = ff(AuditField::Auid, CompareOp::Ne, "6");
-        assert!(!disjoint(&ne5, &ne6));
+        assert!(!disjoint(&ne5, &ne6, OFF));
     }
 
     #[test]
@@ -1520,14 +1648,189 @@ mod tests {
         assert!(disjoint(
             &ff(AuditField::Path, CompareOp::Eq, "/a"),
             &ff(AuditField::Path, CompareOp::Eq, "/b"),
+            OFF,
         ));
         assert!(disjoint(
             &ff(AuditField::Exe, CompareOp::Eq, "/bin/sh"),
             &ff(AuditField::Exe, CompareOp::Eq, "/bin/bash"),
+            OFF,
         ));
         assert!(disjoint(
             &ff(AuditField::Key, CompareOp::Eq, "a"),
             &ff(AuditField::Key, CompareOp::Eq, "b"),
+            OFF,
         ));
+    }
+
+    // --- AppArmor msgtype opt-in folding (#230) ----------------------------
+    //
+    // Ground truth: audit-userspace lib/msg_typetab.h @ 3bfa048.
+    // AUDIT_AA is the C macro; the string is "APPARMOR" (not "AA").
+    // Numbers 1500-1507 are the AppArmor range.
+
+    #[test]
+    fn t1_apparmor_name_folds_to_number_with_on() {
+        // Each AppArmor symbolic name canonicalizes to its number when ON.
+        let mt = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(mt, "APPARMOR", ON), "1500");
+        assert_eq!(canonical_value(mt, "APPARMOR_AUDIT", ON), "1501");
+        assert_eq!(canonical_value(mt, "APPARMOR_ALLOWED", ON), "1502");
+        assert_eq!(canonical_value(mt, "APPARMOR_DENIED", ON), "1503");
+        assert_eq!(canonical_value(mt, "APPARMOR_HINT", ON), "1504");
+        assert_eq!(canonical_value(mt, "APPARMOR_STATUS", ON), "1505");
+        assert_eq!(canonical_value(mt, "APPARMOR_ERROR", ON), "1506");
+        assert_eq!(canonical_value(mt, "APPARMOR_KILL", ON), "1507");
+    }
+
+    #[test]
+    fn t2_apparmor_name_unchanged_with_off() {
+        // Without --apparmor the symbolic names are NOT in the fold table; they
+        // pass through unchanged (the daemon on RHEL does not know these names).
+        let mt = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(mt, "APPARMOR", OFF), "APPARMOR");
+        assert_eq!(
+            canonical_value(mt, "APPARMOR_DENIED", OFF),
+            "APPARMOR_DENIED"
+        );
+    }
+
+    #[test]
+    fn t3_msgtype_number_none_for_apparmor_with_off() {
+        assert_eq!(msgtype_number("APPARMOR", OFF), None);
+        assert_eq!(msgtype_number("APPARMOR_DENIED", OFF), None);
+        assert_eq!(msgtype_number("APPARMOR_KILL", OFF), None);
+    }
+
+    #[test]
+    fn t4_msgtype_number_some_for_apparmor_with_on() {
+        assert_eq!(msgtype_number("APPARMOR", ON), Some(1500));
+        assert_eq!(msgtype_number("APPARMOR_AUDIT", ON), Some(1501));
+        assert_eq!(msgtype_number("APPARMOR_ALLOWED", ON), Some(1502));
+        assert_eq!(msgtype_number("APPARMOR_DENIED", ON), Some(1503));
+        assert_eq!(msgtype_number("APPARMOR_HINT", ON), Some(1504));
+        assert_eq!(msgtype_number("APPARMOR_STATUS", ON), Some(1505));
+        assert_eq!(msgtype_number("APPARMOR_ERROR", ON), Some(1506));
+        assert_eq!(msgtype_number("APPARMOR_KILL", ON), Some(1507));
+    }
+
+    #[test]
+    fn t5_apparmor_number_and_name_fold_together_with_on() {
+        // With ON: msgtype=APPARMOR and msgtype=1500 are the same canonical value.
+        let mt = ft(AuditField::MsgType);
+        assert_eq!(
+            canonical_value(mt, "APPARMOR", ON),
+            canonical_value(mt, "1500", ON),
+            "APPARMOR == 1500 when ON"
+        );
+        assert_eq!(
+            canonical_value(mt, "APPARMOR_DENIED", ON),
+            canonical_value(mt, "1503", ON),
+            "APPARMOR_DENIED == 1503 when ON"
+        );
+    }
+
+    #[test]
+    fn t6_default_opts_is_apparmor_off() {
+        // LintOptions::default() must restore pre-#230 behaviour exactly:
+        // AppArmor names are NOT folded.
+        let mt = ft(AuditField::MsgType);
+        let default_opts = LintOptions::default();
+        assert!(!default_opts.include_apparmor);
+        assert_eq!(
+            canonical_value(mt, "APPARMOR_DENIED", default_opts),
+            "APPARMOR_DENIED",
+            "default opts must not fold AppArmor names"
+        );
+        // The 189-entry baseline table is unaffected.
+        assert_eq!(canonical_value(mt, "SYSCALL", default_opts), "1300");
+    }
+
+    #[test]
+    fn t7_implies_apparmor_name_vs_number_with_on() {
+        // implies(pe, pl, ON): msgtype=1503 (earlier, number) implies
+        // msgtype=APPARMOR_DENIED (later, name) -- same canonical value.
+        // Used by au-W02 subsumption when --apparmor is active.
+        let pe = ff(AuditField::MsgType, CompareOp::Eq, "1503");
+        let pl = ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED");
+        assert!(
+            implies(&pe, &pl, ON),
+            "1503 == APPARMOR_DENIED with ON -> implies"
+        );
+        assert!(
+            implies(&pl, &pe, ON),
+            "symmetric: APPARMOR_DENIED == 1503 with ON"
+        );
+        // With OFF: not the same canonical value.
+        assert!(!implies(&pe, &pl, OFF), "1503 != APPARMOR_DENIED with OFF");
+    }
+
+    #[test]
+    fn t10_lint_options_default_and_off_eq() {
+        assert_eq!(
+            LintOptions::default(),
+            OFF,
+            "LintOptions::default() must equal the OFF constant"
+        );
+    }
+
+    #[test]
+    fn t11_apparmor_name_folding_is_case_insensitive() {
+        // libaudit folds msgtype names case-insensitively; the apparmor branch
+        // must use the SAME eq_ignore_ascii_case as the base table. A mutant that
+        // changes the apparmor branch to `==` survives without this test.
+        let mt = ft(AuditField::MsgType);
+        assert_eq!(canonical_value(mt, "apparmor_denied", ON), "1503");
+        assert_eq!(canonical_value(mt, "ApParMor_Denied", ON), "1503");
+        assert_eq!(msgtype_number("apparmor_kill", ON), Some(1507));
+    }
+
+    #[test]
+    fn t12_apparmor_table_has_expected_entry_count() {
+        // The `#ifdef WITH_APPARMOR` block of msg_typetab.h @ 3bfa048 has exactly
+        // 8 `_S` entries (APPARMOR + APPARMOR_{AUDIT,ALLOWED,DENIED,HINT,STATUS,
+        // ERROR,KILL}, 1500-1507). Guards against an accidental add/drop.
+        assert_eq!(super::APPARMOR_MSGTYPE_NAMES.len(), 8);
+    }
+
+    #[test]
+    fn t13_apparmor_names_disjoint_from_base_and_well_formed() {
+        use std::collections::HashSet;
+        let base_names: HashSet<&str> = super::MSGTYPE_NAMES.iter().map(|&(n, _)| n).collect();
+        let base_nums: HashSet<u32> = super::MSGTYPE_NAMES.iter().map(|&(_, n)| n).collect();
+        let mut seen = HashSet::new();
+        for (name, num) in super::APPARMOR_MSGTYPE_NAMES {
+            assert!(seen.insert(*name), "duplicate apparmor name {name}");
+            assert!(
+                !base_names.contains(name),
+                "apparmor name {name} must not also be in MSGTYPE_NAMES"
+            );
+            assert!(
+                !base_nums.contains(num),
+                "apparmor number {num} collides with a base MSGTYPE_NAMES number"
+            );
+            assert!(
+                name.bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'),
+                "unexpected apparmor name spelling {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn t14_apparmor_does_not_change_w03_disjoint() {
+        // msgtype is excluded from canonical_decides_value_identity, so apparmor
+        // folding must NEVER perturb au-W03 disjointness. An apparmor-name vs
+        // number msgtype Eq/Eq pair is conservatively NOT disjoint either way.
+        let name = ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED");
+        let num = ff(AuditField::MsgType, CompareOp::Eq, "1503");
+        assert_eq!(
+            disjoint(&name, &num, ON),
+            disjoint(&name, &num, OFF),
+            "apparmor opts must not perturb au-W03 disjoint() for msgtype"
+        );
+        assert!(
+            !disjoint(&name, &num, ON),
+            "msgtype Eq/Eq stays conservative (not decidable from spelling)"
+        );
     }
 }

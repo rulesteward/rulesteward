@@ -246,6 +246,42 @@ fn render_raw_bytes(raw: &[u8]) -> String {
 /// bytes from LMDB are 128 hex + one NUL.
 const PATH_TO_HASH_HEX_LEN: usize = 128;
 
+/// LMDB default maximum key size (`MDB_maxkeysize`). Paths longer than this
+/// (in bytes) are stored under a `path_to_hash` hashed key rather than the
+/// literal path (database.c:667-683). Corresponds to the `MDB_maxkeysize`
+/// compile-time default in the vendored LMDB library fapolicyd bundles.
+const MDB_MAX_KEY_SIZE: usize = 511;
+
+/// Compute the `path_to_hash` lookup key for `path`: the lowercase-hex SHA-512
+/// of the path bytes (no trailing NUL in the hash input), exactly as
+/// `database.c:path_to_hash` (667-683) does. Returns the key as an owned
+/// `String` of 128 lowercase-hex chars.
+///
+/// This ONLY hashes the bytes of the path string itself - the stored LMDB key
+/// has a trailing C-string NUL (`mv_size = (SHA512_LEN*2)+1`; see
+/// trustdb.rs:243-271), but the NUL is NOT part of the hash input per the
+/// vendored source (the digest is over the raw path chars, not the C-string).
+fn path_to_hash(path: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = Sha512::new();
+    h.update(path.as_bytes());
+    to_hex(&h.finalize())
+}
+
+/// The LMDB key byte-forms a `path_to_hash` long-path entry may be stored under,
+/// in lookup-priority order. fapolicyd writes the hashed key as a C string -
+/// 128 lowercase-hex + a trailing NUL (`mv_size = (SHA512_LEN*2)+1` = 129;
+/// database.c `trust_db_key_init_with_max`, used for BOTH write and read) - so a
+/// keyed lookup MUST try that 129-byte form to match a real daemon-written DB.
+/// The bare 128-hex form is the other shape [`validate_trust_key`] accepts on the
+/// iter side, tried second so keyed lookup finds whatever iteration surfaces.
+fn hashed_key_forms(hash: &str) -> [Vec<u8>; 2] {
+    let mut with_nul = Vec::with_capacity(hash.len() + 1);
+    with_nul.extend_from_slice(hash.as_bytes());
+    with_nul.push(0);
+    [with_nul, hash.as_bytes().to_vec()]
+}
+
 /// Validate a raw trust-DB KEY and return the canonical surfaced key string.
 ///
 /// fapolicyd stores TWO legitimate key shapes (vendored `database.c`):
@@ -652,33 +688,58 @@ impl TrustDb {
 
     /// Return all `TrustEntry` rows for the given absolute path, or `None` if
     /// the path is not present in the DB. DUPSORT keys surface every value-row.
+    ///
+    /// For paths whose byte-length exceeds `MDB_MAX_KEY_SIZE` (511), fapolicyd
+    /// stores the entry under the `path_to_hash` hashed key (lowercase-hex
+    /// SHA-512 of the path bytes; see trustdb.rs:243-271 and `path_to_hash`
+    /// above). This method transparently hashes long-path lookups so callers
+    /// always supply the real path rather than a pre-hashed key.
     pub fn get_entry(&self, p: &str) -> Result<Option<Vec<TrustEntry>>, TrustDbError> {
         let rtxn = self.env.read_txn()?;
-        let mut rows: Vec<TrustEntry> = Vec::new();
         // `get_duplicates` yields every value-row stored under the key (or None
         // if the key is absent). For a non-DUPSORT db it still yields the single
         // row, so this is correct for both fixture shapes.
-        let Some(iter) = self.db.get_duplicates(&rtxn, p.as_bytes())? else {
-            return Ok(None);
+        let collect = |lookup_bytes: &[u8]| -> Result<Option<Vec<TrustEntry>>, TrustDbError> {
+            let Some(iter) = self.db.get_duplicates(&rtxn, lookup_bytes)? else {
+                return Ok(None);
+            };
+            let mut rows: Vec<TrustEntry> = Vec::new();
+            for item in iter {
+                let (_k, v) = item?;
+                let (source, size, digest) = parse_trust_value(v)?;
+                rows.push(TrustEntry {
+                    path: p.to_owned(),
+                    source,
+                    size,
+                    digest,
+                });
+            }
+            Ok(if rows.is_empty() { None } else { Some(rows) })
         };
-        for item in iter {
-            let (_k, v) = item?;
-            let (source, size, digest) = parse_trust_value(v)?;
-            rows.push(TrustEntry {
-                path: p.to_owned(),
-                source,
-                size,
-                digest,
-            });
-        }
-        if rows.is_empty() {
+
+        if p.len() > MDB_MAX_KEY_SIZE {
+            // Long path: stored under a path_to_hash key. Try the daemon's real
+            // 129-byte (128 hex + NUL) form first, then the bare 128-hex form
+            // (see hashed_key_forms). Short paths key by their literal bytes.
+            let hash = path_to_hash(p);
+            for lookup in hashed_key_forms(&hash) {
+                if let Some(rows) = collect(&lookup)? {
+                    return Ok(Some(rows));
+                }
+            }
             Ok(None)
         } else {
-            Ok(Some(rows))
+            collect(p.as_bytes())
         }
     }
 
     /// True iff `p` is an exact key in the trust DB.
+    ///
+    /// For paths whose byte-length exceeds `MDB_MAX_KEY_SIZE` (511), fapolicyd
+    /// stores the entry under the `path_to_hash` hashed key (lowercase-hex
+    /// SHA-512 of the path bytes; see trustdb.rs:243-271 and `path_to_hash`
+    /// above). This method transparently hashes long-path lookups so callers
+    /// always supply the real path.
     #[must_use]
     pub fn contains_path(&self, p: &str) -> bool {
         // A txn-open failure is intentionally treated as "not in DB" (fail-safe:
@@ -686,7 +747,17 @@ impl TrustDb {
         let Ok(rtxn) = self.env.read_txn() else {
             return false;
         };
-        matches!(self.db.get(&rtxn, p.as_bytes()), Ok(Some(_)))
+        // Literal key for short paths; for long paths try the daemon's real
+        // 129-byte (128 hex + NUL) hashed key, then the bare 128-hex form (see
+        // hashed_key_forms), so this matches a real daemon-written DB.
+        if p.len() > MDB_MAX_KEY_SIZE {
+            let hash = path_to_hash(p);
+            hashed_key_forms(&hash)
+                .iter()
+                .any(|k| matches!(self.db.get(&rtxn, k), Ok(Some(_))))
+        } else {
+            matches!(self.db.get(&rtxn, p.as_bytes()), Ok(Some(_)))
+        }
     }
 
     /// All distinct keys (paths). DUPSORT yields one row per value; consecutive
@@ -1851,6 +1922,256 @@ mod tests {
             "get_entry must return None for an absent key, got {absent:?}"
         );
     }
+
+    // ---- #318: get_entry / contains_path for >511-byte paths -----------------
+    //
+    // fapolicyd stores a trusted file whose path byte-length exceeds the LMDB
+    // max key size (MDB_maxkeysize = 511; database.c path_to_hash) under the
+    // lowercase-hex SHA-512 of the path bytes as the DB key (see trustdb.rs:243-271
+    // for the source-grounded doc). A literal lookup by the path bytes misses the
+    // hashed key and falsely reports the path as absent.
+    //
+    // Fixture construction: the hashed key is computed INDEPENDENTLY in each test
+    // using sha2::Sha512 + the existing to_hex helper DIRECTLY - NOT via the new
+    // path_to_hash helper (so a buggy helper cannot false-pass by being consistently
+    // wrong in both the fixture write and the lookup).
+
+    /// `get_entry` must find a path whose byte-length exceeds 511 when the DB
+    /// holds the entry under the `path_to_hash` hashed key.
+    ///
+    /// RED: current `get_entry` looks up `p.as_bytes()` literally, so the hashed
+    /// key is missed and the call returns `None` instead of `Some(rows)`.
+    #[test]
+    fn get_entry_long_path_stored_under_hashed_key_returns_some() {
+        use sha2::Sha512;
+
+        let tmp = tempdir().expect("tempdir");
+
+        // Build a >511-byte absolute path (512 bytes: "/" + 511 'a's).
+        let long_path = format!("/{}", "a".repeat(511));
+        assert_eq!(
+            long_path.len(),
+            512,
+            "fixture path must exceed MDB_maxkeysize=511"
+        );
+
+        // Compute the hashed key INDEPENDENTLY of the impl: lowercase-hex SHA-512
+        // of the path BYTES (no trailing NUL in the hash input; see trustdb.rs:254-258).
+        let hashed_key: String = {
+            let mut h = Sha512::new();
+            h.update(long_path.as_bytes());
+            to_hex(&h.finalize())
+        };
+        assert_eq!(hashed_key.len(), 128, "hashed key must be 128 hex chars");
+        assert!(
+            hashed_key
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "hashed key must be lowercase hex"
+        );
+
+        // Write the fixture under the HASHED key (as fapolicyd does for long paths).
+        let row = value_bytes(1, 999, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(hashed_key.as_str(), row.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+
+        // Primary: get_entry(long_path) must find the hashed-key entry and return Some.
+        let result = db
+            .get_entry(&long_path)
+            .expect("get_entry must not error on a hashed-key long-path entry");
+        assert!(
+            result.is_some(),
+            "get_entry must return Some for a >511-byte path stored under its hashed key; \
+             got None (literal-lookup bug: the key in the DB is the SHA-512 hex of the path, \
+             not the path bytes themselves)"
+        );
+        let rows = result.unwrap();
+        assert_eq!(rows.len(), 1, "exactly one row expected");
+        assert_eq!(
+            rows[0].path, long_path,
+            "get_entry must set path to the queried path, not the hashed key"
+        );
+        assert_eq!(
+            rows[0].size, 999,
+            "size must round-trip from the fixture value"
+        );
+
+        // Counter-case: an ABSENT long path must return None, not a false positive.
+        let other_long = format!("/{}", "b".repeat(511));
+        assert!(
+            db.get_entry(&other_long)
+                .expect("get_entry absent long path must not error")
+                .is_none(),
+            "get_entry must return None for an absent >511-byte path"
+        );
+    }
+
+    /// `get_entry` must find a >511-byte path stored under the DAEMON'S real
+    /// hashed-key form: 128 lowercase-hex + a trailing C-string NUL
+    /// (`mv_size = (SHA512_LEN*2)+1` = 129 bytes; database.c
+    /// `trust_db_key_init_with_max`, used for BOTH write and read). The daemon
+    /// ALWAYS writes this 129-byte form, so a lookup that only tries the bare
+    /// 128-byte hex MISSES every real daemon-written long-path entry (the #318
+    /// follow-up defect found by impl-aware review). The 128-byte fixture in
+    /// `get_entry_long_path_stored_under_hashed_key_returns_some` is the other
+    /// shape `validate_trust_key` accepts; keyed lookup must find BOTH.
+    #[test]
+    fn get_entry_long_path_stored_under_daemon_129byte_key_returns_some() {
+        use sha2::Sha512;
+
+        let tmp = tempdir().expect("tempdir");
+        let long_path = format!("/{}", "a".repeat(511)); // 512 bytes, > 511.
+
+        // Independent hash (NOT via path_to_hash), then the daemon's trailing NUL.
+        let hashed_key: String = {
+            let mut h = Sha512::new();
+            h.update(long_path.as_bytes());
+            to_hex(&h.finalize())
+        };
+        let mut daemon_key = hashed_key.clone();
+        daemon_key.push('\0'); // 128 hex + 1 NUL = the 129-byte stored key.
+        assert_eq!(
+            daemon_key.len(),
+            129,
+            "daemon stores 128 hex + 1 trailing NUL (mv_size = SHA512_LEN*2+1)"
+        );
+
+        let row = value_bytes(1, 999, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(daemon_key.as_str(), row.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+        let rows = db
+            .get_entry(&long_path)
+            .expect("get_entry must not error on a daemon 129-byte hashed key")
+            .expect(
+                "get_entry must find the daemon's 129-byte (128 hex + NUL) hashed key; \
+                 a 128-byte-only lookup misses every real daemon-written long path (#318)",
+            );
+        assert_eq!(rows.len(), 1, "exactly one row");
+        assert_eq!(rows[0].path, long_path, "path is the queried path");
+        assert_eq!(rows[0].size, 999, "size round-trips from the fixture value");
+    }
+
+    /// `contains_path` must return `true` for a >511-byte path stored under the
+    /// daemon's 129-byte hashed key (128 hex + trailing NUL), mirroring
+    /// `get_entry_long_path_stored_under_daemon_129byte_key_returns_some`.
+    #[test]
+    fn contains_path_long_path_stored_under_daemon_129byte_key_returns_true() {
+        use sha2::Sha512;
+
+        let tmp = tempdir().expect("tempdir");
+        let long_path = format!("/{}", "z".repeat(512)); // 513 bytes.
+
+        let hashed_key: String = {
+            let mut h = Sha512::new();
+            h.update(long_path.as_bytes());
+            to_hex(&h.finalize())
+        };
+        let mut daemon_key = hashed_key.clone();
+        daemon_key.push('\0');
+
+        let row = value_bytes(2, 42, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(daemon_key.as_str(), row.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+        assert!(
+            db.contains_path(&long_path),
+            "contains_path must find the daemon's 129-byte (128 hex + NUL) hashed key (#318)"
+        );
+    }
+
+    /// A path of EXACTLY `MDB_MAX_KEY_SIZE` (511) bytes is stored under its
+    /// LITERAL key: the daemon hashes only when the path length EXCEEDS the max
+    /// key size (`strlen(idx) > maxkeysize`, database.c `trust_db_key_init_with_max`),
+    /// so 511 bytes still fits as a literal LMDB key. `get_entry`/`contains_path`
+    /// must look a 511-byte path up LITERALLY, not hashed -- this pins the
+    /// `> MDB_MAX_KEY_SIZE` boundary (a `>=` would wrongly hash it and miss).
+    #[test]
+    fn get_entry_and_contains_path_at_511_byte_boundary_use_literal_key() {
+        let tmp = tempdir().expect("tempdir");
+        // Exactly 511 bytes: "/" + 510 'a's. 511 == MDB_MAX_KEY_SIZE, NOT > it.
+        let boundary_path = format!("/{}", "a".repeat(510));
+        assert_eq!(
+            boundary_path.len(),
+            511,
+            "boundary path must be exactly MDB_maxkeysize"
+        );
+
+        // Stored under the LITERAL path key (as the daemon does for len <= 511).
+        let row = value_bytes(1, 511, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(boundary_path.as_str(), row.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+        // A `> -> >=` mutation would HASH this 511-byte path and miss the literal key.
+        assert!(
+            db.get_entry(&boundary_path)
+                .expect("get_entry must not error on a 511-byte literal-key entry")
+                .is_some(),
+            "a 511-byte path is stored LITERALLY (not hashed); get_entry must use the literal key"
+        );
+        assert!(
+            db.contains_path(&boundary_path),
+            "a 511-byte path is stored LITERALLY; contains_path must use the literal key"
+        );
+    }
+
+    /// `contains_path` must return `true` for a path whose byte-length exceeds
+    /// 511 when the DB holds the entry under the `path_to_hash` hashed key.
+    ///
+    /// RED: current `contains_path` looks up `p.as_bytes()` literally, so the
+    /// hashed key is missed and the call returns `false` instead of `true`.
+    #[test]
+    fn contains_path_long_path_stored_under_hashed_key_returns_true() {
+        use sha2::Sha512;
+
+        let tmp = tempdir().expect("tempdir");
+
+        // 513-byte path (different length from the get_entry test, exercises the
+        // predicate boundary independently).
+        let long_path = format!("/{}", "z".repeat(512));
+        assert_eq!(
+            long_path.len(),
+            513,
+            "fixture path must exceed MDB_maxkeysize=511"
+        );
+
+        // Compute hashed key independently.
+        let hashed_key: String = {
+            let mut h = Sha512::new();
+            h.update(long_path.as_bytes());
+            to_hex(&h.finalize())
+        };
+
+        let row = value_bytes(2, 42, KNOWN_SHA256);
+        write_trustdb_fixture_kv(tmp.path(), &[(hashed_key.as_str(), row.as_slice())]);
+
+        let db = open_trustdb_readonly(tmp.path()).expect("open ro");
+
+        assert!(
+            db.contains_path(&long_path),
+            "contains_path must return true for a >511-byte path stored under its hashed key; \
+             got false (literal-lookup bug: the key in the DB is the SHA-512 hex of the path)"
+        );
+
+        // Counter-case: a <=511 path stored under its literal key is still found.
+        let short_path = "/usr/bin/ls";
+        let short_row = value_bytes(1, 111, KNOWN_SHA256);
+        // Need a second DB for this counter-case (same tempdir reuse pattern).
+        let tmp2 = tempdir().expect("tempdir2");
+        write_trustdb_fixture_kv(tmp2.path(), &[(short_path, short_row.as_slice())]);
+        let db2 = open_trustdb_readonly(tmp2.path()).expect("open ro short");
+        assert!(
+            db2.contains_path(short_path),
+            "contains_path must still work for <=511-byte paths stored under literal keys"
+        );
+        assert!(
+            !db2.contains_path("/nonexistent"),
+            "contains_path must return false for an absent <=511 path"
+        );
+    }
+
+    // ---- end #318 tests -------------------------------------------------------
 
     // ---- verify_entry (order: Missing -> SizeMismatch -> Hash compare) -------
 

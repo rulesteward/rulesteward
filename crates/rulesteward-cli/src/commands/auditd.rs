@@ -92,7 +92,10 @@ fn lint(args: &AuditdLintArgs) -> i32 {
     // missing from the stream, cross-file duplicate/ordering/shadowing claims
     // would be unsound. Parse failures exit 5 on their own (au-F01 -> D3).
     if diags.is_empty() {
-        diags.extend(lints::lint(&rules));
+        let opts = lints::LintOptions {
+            include_apparmor: args.apparmor,
+        };
+        diags.extend(lints::lint(&rules, opts));
     }
 
     let output = match args.format {
@@ -1044,6 +1047,7 @@ mod lint_shell_tests {
         AuditdLintArgs {
             path: Some(path.to_path_buf()),
             format,
+            apparmor: false,
         }
     }
 

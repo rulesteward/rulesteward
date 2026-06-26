@@ -37,6 +37,7 @@ pub mod value;
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::LocatedRule;
+pub use value::LintOptions;
 
 /// Build a byte-anchored `Diagnostic` with the auditd emission convention:
 /// column 1 and the source-id set to the file path's display string.
@@ -79,12 +80,15 @@ pub fn parse_error_to_diagnostic(err: &crate::parser::LocatedParseError) -> Diag
 /// load-bearing for byte-stable output and MUST be preserved: duplicates
 /// (P1), then ordering/shadowing (P2), then operator validity (P3), then
 /// ABI coverage (au-W04), appended last so existing output is unchanged.
+///
+/// `opts` controls opt-in folding behaviour (e.g. `include_apparmor`).
+/// `LintOptions::default()` restores the pre-#230 behaviour exactly.
 #[must_use]
-pub fn lint(rules: &[LocatedRule]) -> Vec<Diagnostic> {
-    let mut diags = duplicate::w01(rules);
-    diags.extend(ordering::w02(rules));
+pub fn lint(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
+    let mut diags = duplicate::w01(rules, opts);
+    diags.extend(ordering::w02(rules, opts));
     diags.extend(ordering::e01(rules));
-    diags.extend(ordering::w03(rules));
+    diags.extend(ordering::w03(rules, opts));
     diags.extend(operator_validity::e02(rules));
     diags.extend(arch_coverage::w04(rules));
     diags.extend(field_filter::e04(rules));

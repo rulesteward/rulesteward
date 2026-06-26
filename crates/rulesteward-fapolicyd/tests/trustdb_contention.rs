@@ -60,6 +60,15 @@ use rulesteward_fapolicyd::trustdb::{
 /// Env var that routes a re-exec'd process into writer mode (value = DB dir).
 const WRITER_DIR_ENV: &str = "RS_TRUSTDB_CONTENTION_WRITER_DIR";
 
+/// Env var overriding the writer's maximum wall-time (in whole seconds). The
+/// writer exits when this duration elapses, regardless of the sentinel file.
+/// Default (30 s) is generous: the healthy contention window is a few seconds,
+/// so the cap only fires for an orphaned writer whose parent died abnormally.
+const WRITER_MAX_SECS_ENV: &str = "RS_TRUSTDB_CONTENTION_WRITER_MAX_SECS";
+
+/// Default maximum wall-time for the writer subprocess (30 seconds).
+const WRITER_MAX_SECS_DEFAULT: u64 = 30;
+
 /// Number of read iterations the parent performs per run. Bounded so the test is
 /// deterministic and never flaky-by-timeout.
 const READ_ITERATIONS: usize = 4000;
@@ -124,11 +133,19 @@ impl WrittenSet {
 /// commit, delete the batch, commit. Each commit frees the prior batch's pages
 /// and the next put reuses them -- the free/reuse a live fapolicyd writer
 /// produces and the torn-read surface #291 targets. Loops until the parent
-/// removes the sentinel file.
+/// removes the sentinel file OR the wall-time cap elapses (whichever comes
+/// first). The wall-time cap prevents an orphaned writer from looping forever
+/// when the parent dies abnormally and the sentinel is never removed (#320).
 ///
 /// Runs in the RE-EXEC'd child (its own `Env`). Opens RW WITHOUT `NO_LOCK`
 /// (taking the writer lock + creating `lock.mdb`), matching the real daemon.
 fn run_writer_mode(dir: &Path, sentinel: &Path) {
+    let max_secs = std::env::var(WRITER_MAX_SECS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(WRITER_MAX_SECS_DEFAULT);
+    let deadline = Instant::now() + Duration::from_secs(max_secs);
+
     // SAFETY: opens a tempdir LMDB env RW to churn a test fixture. The only
     // other accessor is the parent process. The mmap aliasing contract heed
     // flags `unsafe` is exactly the scenario under test. unsafe_code is `deny`
@@ -153,7 +170,7 @@ fn run_writer_mode(dir: &Path, sentinel: &Path) {
     wtxn.commit().expect("writer: initial commit");
 
     let mut round: u64 = 0;
-    while sentinel.exists() {
+    while sentinel.exists() && Instant::now() < deadline {
         round = round.wrapping_add(1);
         // Alternate every key between value A and value B by round parity. Both
         // values are legitimate (their digests are in the written set); the
@@ -275,21 +292,27 @@ fn seed_db(db_dir: &Path) {
 /// Spawn the writer subprocess (this binary re-exec'd in writer mode) against
 /// `db_dir`, arming the sentinel first. Returns the child handle; the caller
 /// must remove the sentinel and `wait()` to reap it.
-fn spawn_writer(db_dir: &Path, test_name: &str) -> std::process::Child {
+///
+/// If `max_wall_secs` is `Some(n)`, sets `WRITER_MAX_SECS_ENV` on the child to
+/// `n`; otherwise inherits the current environment (which may or may not have
+/// the var set, falling back to the 30s default).
+fn spawn_writer(db_dir: &Path, test_name: &str, max_wall_secs: Option<u64>) -> std::process::Child {
     let sentinel = db_dir.join("writer.run");
     std::fs::write(&sentinel, b"run").expect("arm sentinel");
 
     let exe = std::env::current_exe().expect("current_exe");
-    let child = std::process::Command::new(exe)
-        .arg("--ignored")
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--ignored")
         .arg("--exact")
         .arg(test_name)
         .arg("--test-threads=1")
         .env(WRITER_DIR_ENV, db_dir)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn writer subprocess");
+        .stderr(std::process::Stdio::null());
+    if let Some(secs) = max_wall_secs {
+        cmd.env(WRITER_MAX_SECS_ENV, secs.to_string());
+    }
+    let child = cmd.spawn().expect("spawn writer subprocess");
 
     // Bounded warmup so the reader window overlaps live writes (the writer
     // creates lock.mdb when it takes the write lock). Not a correctness
@@ -344,7 +367,7 @@ fn trustdb_prevention_path_has_no_torn_reads() {
     let db_dir = tmp.path();
     seed_db(db_dir);
     let written = WrittenSet::build();
-    let writer = spawn_writer(db_dir, "trustdb_prevention_path_has_no_torn_reads");
+    let writer = spawn_writer(db_dir, "trustdb_prevention_path_has_no_torn_reads", None);
 
     let mut reads_ok = 0usize;
     let mut reads_err = 0usize;
@@ -379,6 +402,133 @@ fn trustdb_prevention_path_has_no_torn_reads() {
         "trustdb PREVENTION harness: {READ_ITERATIONS} iterations \
          ({reads_ok} ok, {reads_err} clean-error) against a live writer; \
          no torn read, no panic, no silently-corrupt Ok."
+    );
+}
+
+/// WALL-TIME BOUND (#320). If the parent dies without removing the sentinel, the
+/// writer must exit on its own within the `WRITER_MAX_SECS_ENV` cap. This test
+/// arms the sentinel, spawns the writer with a 2-second cap, does NOT remove the
+/// sentinel, and asserts the child exits on its own within 10 seconds.
+///
+/// On unpatched code (no wall-time bound) the writer loops forever, and this
+/// test would hang until the 10-second poll budget is exhausted, then fail.
+#[test]
+#[ignore = "wall-time-bound orphan test (#320): isolated CI job only; run via `just trustdb-contention`"]
+fn trustdb_writer_exits_on_wall_time_bound_without_sentinel_removal() {
+    if maybe_run_as_writer() {
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_dir = tmp.path();
+    seed_db(db_dir);
+
+    // Spawn the writer with a short 2-second cap. Do NOT remove the sentinel:
+    // the writer must exit via the wall-time bound, not via sentinel removal.
+    let mut writer = spawn_writer(
+        db_dir,
+        "trustdb_writer_exits_on_wall_time_bound_without_sentinel_removal",
+        Some(2),
+    );
+
+    // Poll for up to 10 seconds. The writer should exit within ~2 seconds (cap)
+    // plus build/startup overhead. 10 seconds is a 5x safety margin.
+    let poll_deadline = Instant::now() + Duration::from_secs(10);
+    let exited = loop {
+        if writer.try_wait().expect("try_wait").is_some() {
+            break true;
+        }
+        if Instant::now() >= poll_deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    // Sentinel is still present; remove it and reap the child either way to
+    // avoid leaving a zombie or a leaked subprocess behind.
+    let _ = std::fs::remove_file(db_dir.join("writer.run"));
+    if !exited {
+        let _ = writer.kill();
+    }
+    let _ = writer.wait();
+
+    assert!(
+        exited,
+        "writer did not exit within 10 s despite a 2-second wall-time cap (#320 regression)"
+    );
+}
+
+/// WALL-TIME BOUND via the PRODUCTION (`None`) spawn path (#320). The prevention
+/// harness spawns the writer with `None` (no explicit cap), so the child must be
+/// bounded by the DEFAULT path -- `run_writer_mode`'s
+/// `unwrap_or(WRITER_MAX_SECS_DEFAULT)`. The existing wall-time test uses the
+/// explicit `Some(2)` branch (spawn_writer sets the env directly), so it never
+/// exercises the `None`/default path that actually defends the real harness.
+///
+/// This test drives the EXACT production spawn (`None`) but injects a small cap
+/// through the INHERITED environment (which the `None` path falls back to), so a
+/// regression that left the `None` path unbounded reintroduces the #320 leak and
+/// fails here -- proven in seconds, not the 30 s default.
+#[test]
+#[ignore = "wall-time-bound orphan test (#320): isolated CI job only; run via `just trustdb-contention`"]
+fn trustdb_writer_none_spawn_path_is_bounded_by_inherited_cap() {
+    if maybe_run_as_writer() {
+        return;
+    }
+
+    // The default cap must itself be a SMALL bound (the production None path
+    // falls back to it via unwrap_or); guard against an accidental huge value.
+    assert!(
+        (1..=60).contains(&WRITER_MAX_SECS_DEFAULT),
+        "WRITER_MAX_SECS_DEFAULT must be a small bound, got {WRITER_MAX_SECS_DEFAULT}"
+    );
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_dir = tmp.path();
+    seed_db(db_dir);
+
+    // spawn_writer(.., None) does NOT set the cap env on the child, so the child
+    // relies on the inherited env / default. Inject a small cap via the inherited
+    // environment so the None path self-terminates in seconds. SAFETY: the
+    // contention tests run with --test-threads=1, so this single-threaded env
+    // mutation has no concurrent reader; the child inherits the value at spawn and
+    // we clear it immediately afterward.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var(WRITER_MAX_SECS_ENV, "2");
+    }
+    let mut writer = spawn_writer(
+        db_dir,
+        "trustdb_writer_none_spawn_path_is_bounded_by_inherited_cap",
+        None,
+    );
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var(WRITER_MAX_SECS_ENV);
+    }
+
+    // Poll up to 10 s; do NOT remove the sentinel -- exit must come from the cap.
+    let poll_deadline = Instant::now() + Duration::from_secs(10);
+    let exited = loop {
+        if writer.try_wait().expect("try_wait").is_some() {
+            break true;
+        }
+        if Instant::now() >= poll_deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    let _ = std::fs::remove_file(db_dir.join("writer.run"));
+    if !exited {
+        let _ = writer.kill();
+    }
+    let _ = writer.wait();
+
+    assert!(
+        exited,
+        "writer spawned via the production None path did not self-terminate within 10s \
+         despite an inherited 2-second cap; the None/default path must be bounded (#320)"
     );
 }
 

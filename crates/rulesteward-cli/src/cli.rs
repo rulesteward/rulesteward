@@ -806,6 +806,13 @@ pub struct AuditdLintArgs {
     /// verb per the locked output contracts CC-3/CC-4).
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+
+    /// Also fold `AppArmor` msgtype record names (`APPARMOR_DENIED`, etc.).
+    /// Enable when linting rules for an AppArmor-enabled audit build
+    /// (Debian/Ubuntu); off by default (RHEL/fapolicyd targets do not
+    /// recognize these names).
+    #[arg(long)]
+    pub apparmor: bool,
 }
 
 #[derive(Debug, Subcommand)]
