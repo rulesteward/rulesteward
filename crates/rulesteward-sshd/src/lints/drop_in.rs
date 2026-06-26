@@ -71,12 +71,24 @@
 //! `Match all` re-hardens its earlier permissive global (a flat model's false
 //! positive).
 //!
+//! # Nested `Include` resolution (issue #323)
+//!
+//! `Include` is resolved RECURSIVELY to arbitrary depth, mirroring OpenSSH
+//! `servconf.c` (which expands includes recursively up to `SERVCONF_MAX_DEPTH`).
+//! A drop-in that itself `Include`s a second file has that second file's
+//! directives spliced in at the nested `Include`'s position; each spliced entry
+//! is stamped with the file it ACTUALLY came from (the deepest file containing the
+//! directive), so F02 anchors to the true source rather than the intermediate
+//! file. The enclosing-block `is_match_all` tag is OR-ed DOWN through every include
+//! level, and the "global + unconditional `Match all` only" effective-directive
+//! filter applies at every level (a directive inside a CONDITIONAL `Match` is
+//! excluded before its enclosing `Include` is ever reached). A cycle guard
+//! (canonicalized-path ancestry chain plus a depth cap mirroring OpenSSH's
+//! `SERVCONF_MAX_DEPTH`) keeps a recursive/cyclic include set terminating; see
+//! [`build_stream`].
+//!
 //! # Known limitations (deferred follow-ups)
 //!
-//! * ONE level of `Include` only: a drop-in that itself `Include`s another file
-//!   is not recursively resolved. The standard `/etc/ssh` layout does not nest
-//!   drop-ins, so this covers the real distro layout; deep nesting is a deferred
-//!   follow-up.
 //! * Directory mode currently runs the F02 cross-file check ONLY. Running the
 //!   single-file lint suite (sshd-E0x / W0x) over the merged effective config is a
 //!   deferred follow-up; this PR keeps directory mode F02-only.
@@ -212,54 +224,108 @@ struct StreamEntry {
     is_match_all: bool,
 }
 
+/// Maximum `Include` recursion depth, mirroring OpenSSH `servconf.c`'s
+/// `SERVCONF_MAX_DEPTH` (16). OpenSSH `fatal()`s past this; `RuleSteward` is a
+/// tolerant linter, so it instead stops recursing (a pathological non-cyclic
+/// nest terminates without panicking). The cycle guard normally breaks cycles
+/// first; this cap is a backstop for a deeply-nested-but-acyclic include set.
+const SERVCONF_MAX_DEPTH: usize = 16;
+
 /// Build the effective directive stream: the main file's global directives in
 /// order, with each `Include` replaced inline by the directives of its matching
-/// drop-ins (glob resolved relative to the main file, drop-ins read in LEXICAL
-/// order, matching sshd's first-value-wins read of `sshd_config.d/*.conf`).
+/// drop-ins (glob resolved relative to the including file, drop-ins read in
+/// LEXICAL order, matching sshd's first-value-wins read of `sshd_config.d/*.conf`),
+/// RECURSIVELY to arbitrary depth (a drop-in that itself `Include`s another file
+/// has that file expanded too; issue #323).
 ///
 /// Each file contributes its GLOBAL block plus any UNCONDITIONAL `Match all`
 /// block (in source order). Drop-in precedence is a daemon-level concern: the
 /// global block and an always-active `Match all` both apply unconditionally,
 /// whereas conditional Match blocks are per-connection and excluded. A file that
 /// fails to parse contributes nothing (a parse error is sshd-F01's province, not
-/// F02's). One level of Include is expanded (the standard layout does not nest).
+/// F02's).
 ///
 /// An `Include` is expanded whether it appears at top level OR inside an
 /// unconditional `Match all` block (both are unconditionally active, verified
 /// rocky9 `sudo sshd -T -f`): in the `Match all` case the spliced drop-in
 /// directives are effective WITHIN that always-active block, so the parent's
-/// `is_match_all` is OR-ed onto each spliced directive's own flag. An `Include`
-/// inside a CONDITIONAL `Match` is per-connection and never reaches this loop
-/// (`effective_directives_of` excludes conditional Match blocks), so it is not
-/// folded.
+/// `is_match_all` is OR-ed onto each spliced directive's own flag. This OR is
+/// chained through EVERY include level, so a directive reached via an `Include`
+/// chain that began inside a `Match all` inherits `is_match_all = true`. An
+/// `Include` inside a CONDITIONAL `Match` is per-connection and never reaches the
+/// expansion (`effective_directives_of` excludes conditional Match blocks), so it
+/// is not folded.
+///
+/// Cycle guard (mirrors OpenSSH `servconf.c`, which caps recursion at
+/// `SERVCONF_MAX_DEPTH` and `fatal()`s on overflow): the current include CHAIN of
+/// canonicalized file paths is tracked; a file already on the chain is NOT
+/// re-expanded (a cycle terminates gracefully). A legitimate DIAMOND (the same
+/// file reached via two non-cyclic branches) still expands, matching sshd. A
+/// depth cap of [`SERVCONF_MAX_DEPTH`] backstops a pathological acyclic nest. As a
+/// tolerant linter `RuleSteward` never `fatal()`s; it just stops recursing.
 fn build_stream(main_path: &Path, main_src: &str) -> Vec<StreamEntry> {
     let mut stream = Vec::new();
-    let base_dir = main_path.parent().unwrap_or_else(|| Path::new("."));
+    // Ancestry chain of canonicalized include paths (the main file is the root).
+    let mut chain = vec![canonical_or_as_is(main_path)];
+    splice_effective(main_path, main_src, false, &mut chain, &mut stream);
+    stream
+}
 
-    for (directive, is_match_all) in effective_directives_of(main_src, main_path) {
+/// Splice one file's effective directives into `stream`, expanding every
+/// `Include` recursively. `enclosing_is_match_all` is OR-ed onto each directive's
+/// own `is_match_all` flag (so a `Match all` enclosing an `Include` chain
+/// propagates DOWN through every level). `chain` is the canonicalized ancestry of
+/// include paths from the root to (and including) this file; a candidate already
+/// on it is skipped (cycle guard), and recursion stops past
+/// [`SERVCONF_MAX_DEPTH`].
+fn splice_effective(
+    file: &Path,
+    src: &str,
+    enclosing_is_match_all: bool,
+    chain: &mut Vec<PathBuf>,
+    stream: &mut Vec<StreamEntry>,
+) {
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+
+    for (directive, dir_is_match_all) in effective_directives_of(src, file) {
+        // The directive is unconditionally active iff its own origin is
+        // unconditional AND the enclosing context is (top-level OR `Match all`).
+        let is_match_all = enclosing_is_match_all || dir_is_match_all;
         if directive.keyword.eq_ignore_ascii_case("include") {
+            // Depth cap backstop: OpenSSH fatal()s past SERVCONF_MAX_DEPTH; we
+            // just stop recursing (`chain` already holds the root, so its length
+            // is depth + 1).
+            if chain.len() > SERVCONF_MAX_DEPTH {
+                continue;
+            }
             for pattern in &directive.args {
                 for dropin_path in resolve_dropins(base_dir, pattern) {
-                    let Ok(src) = std::fs::read_to_string(&dropin_path) else {
+                    let canon = canonical_or_as_is(&dropin_path);
+                    // Cycle guard: a file already on the current include chain is
+                    // not re-expanded (breaks cycles; a non-cyclic diamond, reached
+                    // via a sibling branch not on this chain, still expands).
+                    if chain.contains(&canon) {
+                        continue;
+                    }
+                    let Ok(nested_src) = std::fs::read_to_string(&dropin_path) else {
                         continue;
                     };
-                    for (d, dropin_is_match_all) in effective_directives_of(&src, &dropin_path) {
-                        // The spliced directive is unconditionally active iff the
-                        // Include itself is unconditionally active (top-level OR in
-                        // a `Match all`) AND its own origin is unconditional.
-                        stream.push(entry_from(
-                            d,
-                            &dropin_path,
-                            is_match_all || dropin_is_match_all,
-                        ));
-                    }
+                    chain.push(canon);
+                    splice_effective(&dropin_path, &nested_src, is_match_all, chain, stream);
+                    chain.pop();
                 }
             }
         } else {
-            stream.push(entry_from(directive, main_path, is_match_all));
+            stream.push(entry_from(directive, file, is_match_all));
         }
     }
-    stream
+}
+
+/// Canonicalize a path for cycle-guard comparison; fall back to the path as-is
+/// when canonicalization fails (e.g. the path does not exist) so a missing or
+/// odd path is compared structurally rather than panicking.
+fn canonical_or_as_is(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Parse `src` and return its UNCONDITIONALLY-active directives tagged with their
