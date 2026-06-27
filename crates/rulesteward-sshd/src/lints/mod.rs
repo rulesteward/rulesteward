@@ -107,10 +107,10 @@ pub fn parse_error_to_diagnostic(err: &LocatedParseError) -> Diagnostic {
 /// Run every single-file semantic lint pass over the parsed blocks and return the
 /// merged diagnostic list, in catalog order for byte-stable output.
 ///
-/// 8 of the 10 passes emit today (sshd-E01..E04, sshd-W01..W04); sshd-W05 and
-/// sshd-W06 are still `Vec::new()` stubs (Wave C, epic #149). The cross-file
-/// sshd-F02 (drop-in override) is a future separate entrypoint, not part of this
-/// single-file dispatcher.
+/// All 10 single-file passes emit today (sshd-E01..E04, sshd-W01..W06). The
+/// cross-file sshd-F02 (drop-in override) is a separate entrypoint
+/// (`drop_in::lint_drop_in`) used for directory targets, not part of this
+/// single-file dispatcher. (epic #149)
 #[must_use]
 pub fn lint(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let mut diags = structural::e01(blocks, file, ctx);

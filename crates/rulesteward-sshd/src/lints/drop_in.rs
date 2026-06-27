@@ -71,12 +71,24 @@
 //! `Match all` re-hardens its earlier permissive global (a flat model's false
 //! positive).
 //!
+//! # Nested `Include` resolution (issue #323)
+//!
+//! `Include` is resolved RECURSIVELY to arbitrary depth, mirroring OpenSSH
+//! `servconf.c` (which expands includes recursively up to `SERVCONF_MAX_DEPTH`).
+//! A drop-in that itself `Include`s a second file has that second file's
+//! directives spliced in at the nested `Include`'s position; each spliced entry
+//! is stamped with the file it ACTUALLY came from (the deepest file containing the
+//! directive), so F02 anchors to the true source rather than the intermediate
+//! file. The enclosing-block `is_match_all` tag is OR-ed DOWN through every include
+//! level, and the "global + unconditional `Match all` only" effective-directive
+//! filter applies at every level (a directive inside a CONDITIONAL `Match` is
+//! excluded before its enclosing `Include` is ever reached). A cycle guard
+//! (canonicalized-path ancestry chain plus a depth cap mirroring OpenSSH's
+//! `SERVCONF_MAX_DEPTH`) keeps a recursive/cyclic include set terminating; see
+//! [`build_stream`].
+//!
 //! # Known limitations (deferred follow-ups)
 //!
-//! * ONE level of `Include` only: a drop-in that itself `Include`s another file
-//!   is not recursively resolved. The standard `/etc/ssh` layout does not nest
-//!   drop-ins, so this covers the real distro layout; deep nesting is a deferred
-//!   follow-up.
 //! * Directory mode currently runs the F02 cross-file check ONLY. Running the
 //!   single-file lint suite (sshd-E0x / W0x) over the merged effective config is a
 //!   deferred follow-up; this PR keeps directory mode F02-only.
@@ -212,54 +224,108 @@ struct StreamEntry {
     is_match_all: bool,
 }
 
+/// Maximum `Include` recursion depth, mirroring OpenSSH `servconf.c`'s
+/// `SERVCONF_MAX_DEPTH` (16). OpenSSH `fatal()`s past this; `RuleSteward` is a
+/// tolerant linter, so it instead stops recursing (a pathological non-cyclic
+/// nest terminates without panicking). The cycle guard normally breaks cycles
+/// first; this cap is a backstop for a deeply-nested-but-acyclic include set.
+const SERVCONF_MAX_DEPTH: usize = 16;
+
 /// Build the effective directive stream: the main file's global directives in
 /// order, with each `Include` replaced inline by the directives of its matching
-/// drop-ins (glob resolved relative to the main file, drop-ins read in LEXICAL
-/// order, matching sshd's first-value-wins read of `sshd_config.d/*.conf`).
+/// drop-ins (glob resolved relative to the including file, drop-ins read in
+/// LEXICAL order, matching sshd's first-value-wins read of `sshd_config.d/*.conf`),
+/// RECURSIVELY to arbitrary depth (a drop-in that itself `Include`s another file
+/// has that file expanded too; issue #323).
 ///
 /// Each file contributes its GLOBAL block plus any UNCONDITIONAL `Match all`
 /// block (in source order). Drop-in precedence is a daemon-level concern: the
 /// global block and an always-active `Match all` both apply unconditionally,
 /// whereas conditional Match blocks are per-connection and excluded. A file that
 /// fails to parse contributes nothing (a parse error is sshd-F01's province, not
-/// F02's). One level of Include is expanded (the standard layout does not nest).
+/// F02's).
 ///
 /// An `Include` is expanded whether it appears at top level OR inside an
 /// unconditional `Match all` block (both are unconditionally active, verified
 /// rocky9 `sudo sshd -T -f`): in the `Match all` case the spliced drop-in
 /// directives are effective WITHIN that always-active block, so the parent's
-/// `is_match_all` is OR-ed onto each spliced directive's own flag. An `Include`
-/// inside a CONDITIONAL `Match` is per-connection and never reaches this loop
-/// (`effective_directives_of` excludes conditional Match blocks), so it is not
-/// folded.
+/// `is_match_all` is OR-ed onto each spliced directive's own flag. This OR is
+/// chained through EVERY include level, so a directive reached via an `Include`
+/// chain that began inside a `Match all` inherits `is_match_all = true`. An
+/// `Include` inside a CONDITIONAL `Match` is per-connection and never reaches the
+/// expansion (`effective_directives_of` excludes conditional Match blocks), so it
+/// is not folded.
+///
+/// Cycle guard (mirrors OpenSSH `servconf.c`, which caps recursion at
+/// `SERVCONF_MAX_DEPTH` and `fatal()`s on overflow): the current include CHAIN of
+/// canonicalized file paths is tracked; a file already on the chain is NOT
+/// re-expanded (a cycle terminates gracefully). A legitimate DIAMOND (the same
+/// file reached via two non-cyclic branches) still expands, matching sshd. A
+/// depth cap of [`SERVCONF_MAX_DEPTH`] backstops a pathological acyclic nest. As a
+/// tolerant linter `RuleSteward` never `fatal()`s; it just stops recursing.
 fn build_stream(main_path: &Path, main_src: &str) -> Vec<StreamEntry> {
     let mut stream = Vec::new();
-    let base_dir = main_path.parent().unwrap_or_else(|| Path::new("."));
+    // Ancestry chain of canonicalized include paths (the main file is the root).
+    let mut chain = vec![canonical_or_as_is(main_path)];
+    splice_effective(main_path, main_src, false, &mut chain, &mut stream);
+    stream
+}
 
-    for (directive, is_match_all) in effective_directives_of(main_src, main_path) {
+/// Splice one file's effective directives into `stream`, expanding every
+/// `Include` recursively. `enclosing_is_match_all` is OR-ed onto each directive's
+/// own `is_match_all` flag (so a `Match all` enclosing an `Include` chain
+/// propagates DOWN through every level). `chain` is the canonicalized ancestry of
+/// include paths from the root to (and including) this file; a candidate already
+/// on it is skipped (cycle guard), and recursion stops past
+/// [`SERVCONF_MAX_DEPTH`].
+fn splice_effective(
+    file: &Path,
+    src: &str,
+    enclosing_is_match_all: bool,
+    chain: &mut Vec<PathBuf>,
+    stream: &mut Vec<StreamEntry>,
+) {
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+
+    for (directive, dir_is_match_all) in effective_directives_of(src, file) {
+        // The directive is unconditionally active iff its own origin is
+        // unconditional AND the enclosing context is (top-level OR `Match all`).
+        let is_match_all = enclosing_is_match_all || dir_is_match_all;
         if directive.keyword.eq_ignore_ascii_case("include") {
+            // Depth cap backstop: OpenSSH fatal()s past SERVCONF_MAX_DEPTH; we
+            // just stop recursing (`chain` already holds the root, so its length
+            // is depth + 1).
+            if chain.len() > SERVCONF_MAX_DEPTH {
+                continue;
+            }
             for pattern in &directive.args {
                 for dropin_path in resolve_dropins(base_dir, pattern) {
-                    let Ok(src) = std::fs::read_to_string(&dropin_path) else {
+                    let canon = canonical_or_as_is(&dropin_path);
+                    // Cycle guard: a file already on the current include chain is
+                    // not re-expanded (breaks cycles; a non-cyclic diamond, reached
+                    // via a sibling branch not on this chain, still expands).
+                    if chain.contains(&canon) {
+                        continue;
+                    }
+                    let Ok(nested_src) = std::fs::read_to_string(&dropin_path) else {
                         continue;
                     };
-                    for (d, dropin_is_match_all) in effective_directives_of(&src, &dropin_path) {
-                        // The spliced directive is unconditionally active iff the
-                        // Include itself is unconditionally active (top-level OR in
-                        // a `Match all`) AND its own origin is unconditional.
-                        stream.push(entry_from(
-                            d,
-                            &dropin_path,
-                            is_match_all || dropin_is_match_all,
-                        ));
-                    }
+                    chain.push(canon);
+                    splice_effective(&dropin_path, &nested_src, is_match_all, chain, stream);
+                    chain.pop();
                 }
             }
         } else {
-            stream.push(entry_from(directive, main_path, is_match_all));
+            stream.push(entry_from(directive, file, is_match_all));
         }
     }
-    stream
+}
+
+/// Canonicalize a path for cycle-guard comparison; fall back to the path as-is
+/// when canonicalization fails (e.g. the path does not exist) so a missing or
+/// odd path is compared structurally rather than panicking.
+fn canonical_or_as_is(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Parse `src` and return its UNCONDITIONALLY-active directives tagged with their
@@ -812,4 +878,417 @@ mod tests {
              override -> F02 must not fire; got {diags:?}"
         );
     }
+
+    // ----------------------------------------------------------------------
+    // NESTED INCLUDE TESTS (issue #323)
+    // ----------------------------------------------------------------------
+    //
+    // Background: build_stream() PREVIOUSLY expanded Include one level deep only
+    // (main -> sshd_config.d/*.conf).  A drop-in that itself contained an Include
+    // of a SECOND file was NOT followed, so a baseline-failing value set in that
+    // second-level file was a silent false negative.
+    //
+    // This fix makes build_stream() resolve Include recursively with a cycle
+    // guard, propagating the enclosing is_match_all tag and stamping each spliced
+    // directive with the file it actually came from.
+    //
+    // Tests #1 and #2 below WERE RED under the old one-level impl and are now
+    // GREEN under the recursive impl.  Test #3 is a safety guard (green both
+    // before and after the fix).  Test #4 references an existing test that already
+    // covers the non-nested baseline.
+
+    /// Build a layout where drop-in A itself contains a verbatim `Include` of a
+    /// second file (by absolute path) that is NOT inside the `*.conf` glob pattern.
+    /// Returns (tempdir-kept-alive, diagnostics).
+    ///
+    /// Layout written to disk:
+    ///   `<tmpdir>/sshd_config`              -- the main file
+    ///   `<tmpdir>/sshd_config.d/10-a.conf`  -- drop-in A (contains Include of second)
+    ///   `<tmpdir>/second.conf`              -- the second-level file
+    ///
+    /// `main_tmpl`     -- main `sshd_config` body; `{DIR}` -> `sshd_config.d/*.conf`
+    /// `dropin_a_tmpl` -- drop-in A body; `{SECOND}` -> absolute path of `second.conf`
+    /// `second_body` -- body of the second-level file
+    fn f02_diags_nested(
+        main_tmpl: &str,
+        dropin_a_tmpl: &str,
+        second_body: &str,
+    ) -> (tempfile::TempDir, Vec<rulesteward_core::Diagnostic>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        let second_path = dir.path().join("second.conf");
+
+        // Resolve {DIR} in the main template and {SECOND} in the drop-in template.
+        let include_glob = dropin_dir.join("*.conf").display().to_string();
+        let main_resolved = main_tmpl.replace("{DIR}", &include_glob);
+        let dropin_a_resolved =
+            dropin_a_tmpl.replace("{SECOND}", &second_path.display().to_string());
+
+        std::fs::write(dir.path().join("sshd_config"), &main_resolved).expect("write main");
+        std::fs::write(dropin_dir.join("10-a.conf"), &dropin_a_resolved).expect("write dropin A");
+        std::fs::write(&second_path, second_body).expect("write second.conf");
+
+        let diags = lint_drop_in(dir.path(), &ctx());
+        (dir, diags)
+    }
+
+    // -- Test #1 (was RED under the old one-level impl; now GREEN) ------------
+
+    #[test]
+    fn nested_include_baseline_override_fires_f02() {
+        // Was RED under the old one-level impl; now GREEN under the recursive impl.
+        //
+        // Layout:
+        //   sshd_config:       Include sshd_config.d/*.conf
+        //                      PermitRootLogin no          <- baseline-passing (operator hardening)
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>        <- second-level include
+        //   second.conf:       PermitRootLogin yes          <- baseline-FAILING override
+        //
+        // Grounded on rocky9 / OpenSSH 9.9p1: sshd resolves Include recursively,
+        // so second.conf's `PermitRootLogin yes` is effectively spliced at the
+        // position of 10-a.conf's Include, BEFORE the main file's `no` -> effective
+        // value is `yes` (drop-in chain wins), which FAILS baseline_check.
+        //
+        // Exact F02 firing condition encoded here:
+        //   * directive: PermitRootLogin
+        //   * baseline requirement: value must be "no" (prohibitprohibited)
+        //   * effective value: "yes" (from second.conf, via 10-a.conf's Include)
+        //   * set in 2+ locations: second.conf (via nested include) + main file
+        //   * effective source: second.conf (a drop-in-chain file, NOT the main file)
+        //
+        // Under the OLD one-level impl, 10-a.conf's Include directive was
+        // treated as an unknown directive (or skipped) and second.conf was never
+        // read, so the only location for PermitRootLogin was the main file (`no`),
+        // the 2+ location requirement was not met, and F02 did NOT fire (RED).
+        let main = "Include {DIR}\nPermitRootLogin no\n";
+        let dropin_a = "Include {SECOND}\n";
+        let second = "PermitRootLogin yes\n";
+
+        let (_dir, diags) = f02_diags_nested(main, dropin_a, second);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "nested include: second-level file sets baseline-failing PermitRootLogin yes \
+             -> exactly one sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        // The diagnostic must name the SECOND-LEVEL file (the actual source of the
+        // override), not drop-in A (which only contains an Include directive) and
+        // not the main sshd_config.
+        assert!(
+            d.file.to_string_lossy().contains("second.conf"),
+            "diagnostic file must point at the second-level file (second.conf), \
+             not drop-in A or the main file: {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains("second.conf"),
+            "diagnostic message must name the second-level file: {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "diagnostic message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "diagnostic message must name the winning (baseline-failing) value: {}",
+            d.message
+        );
+    }
+
+    // -- Test #2 (was RED under the old one-level impl; now GREEN) ------------
+
+    #[test]
+    fn nested_include_inside_match_all_propagates_tag() {
+        // Was RED under the old one-level impl; now GREEN under the recursive impl.
+        //
+        // Layout:
+        //   sshd_config:       PermitRootLogin no          <- baseline-passing global
+        //                      Match all
+        //                        Include sshd_config.d/*.conf
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>        <- second-level include
+        //   second.conf:       PermitRootLogin yes          <- baseline-FAILING override
+        //
+        // The Include inside the main file's `Match all` block propagates
+        // is_match_all=true to the spliced drop-in A directives (verified by the
+        // existing `include_inside_main_match_all_block_folds_dropin_fires` test).
+        // Because the recursive build_stream() follows drop-in A's own Include,
+        // the second-level Include is encountered while is_match_all is already
+        // true (inherited from the enclosing Match all), so second.conf's
+        // directives also carry is_match_all=true.
+        //
+        // With is_match_all=true on second.conf's `PermitRootLogin yes`, the
+        // effective_entry() function picks it over the global `no` (Match-all
+        // overrides global regardless of textual position, per the locked doc
+        // comment at ~:173).  The effective value is `yes` from second.conf, which
+        // is NOT the main file, and FAILS baseline -> F02 MUST fire.
+        //
+        // Exact F02 firing condition encoded here:
+        //   * directive: PermitRootLogin
+        //   * baseline requirement: value must be "no"
+        //   * effective value: "yes" (from second.conf, is_match_all=true inherited
+        //     from the outer `Match all` via drop-in A's Include)
+        //   * set in 2+ locations: main global (no) + second.conf (yes)
+        //   * effective source: second.conf (a drop-in-chain file, not main)
+        //
+        // Under the OLD one-level impl, 10-a.conf's Include was not followed,
+        // second.conf was never read, only the main file's global `no` existed, the
+        // 2+ location requirement was unmet, and F02 did NOT fire (RED).
+        let main = "PermitRootLogin no\nMatch all\nInclude {DIR}\n";
+        let dropin_a = "Include {SECOND}\n";
+        let second = "PermitRootLogin yes\n";
+
+        let (_dir, diags) = f02_diags_nested(main, dropin_a, second);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "nested include inside Match all: second-level file sets baseline-failing \
+             PermitRootLogin yes with inherited is_match_all=true -> exactly one \
+             sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        assert!(
+            d.file.to_string_lossy().contains("second.conf"),
+            "diagnostic file must point at the second-level file (second.conf): {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains("second.conf"),
+            "diagnostic message must name the second-level file: {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "diagnostic message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "diagnostic message must name the winning value: {}",
+            d.message
+        );
+    }
+
+    // -- Test #3 (safety guard -- GREEN before AND after the fix) ------------
+
+    #[test]
+    fn include_cycle_terminates() {
+        // SAFETY GUARD: tests that the recursive Include resolver does NOT loop
+        // infinitely when there is a 2-cycle in the Include graph.
+        //
+        // Layout:
+        //   sshd_config:       Include sshd_config.d/*.conf
+        //                      PermitRootLogin no
+        //   sshd_config.d/10-a.conf:
+        //                      Include <second.conf>    <- points at second.conf
+        //   second.conf:       Include <10-a.conf>     <- points back at 10-a.conf
+        //                      PermitRootLogin yes
+        //
+        // Under the OLD one-level impl this trivially terminated (10-a.conf's
+        // Include was not followed at all).  The recursive impl requires a cycle
+        // guard to terminate.  The test asserts:
+        //   (a) lint_drop_in returns (does not hang / panic / stack-overflow), and
+        //   (b) the directive is not double-counted (at most one F02).
+        //
+        // Termination relies on the implementation's cycle guard / depth cap (the
+        // recursive impl ships one); a guarded impl returns immediately.
+        // NOTE: the CI gate runs `cargo test` (libtest), which has NO per-test
+        // timeout -- so an unguarded recursive impl would not "time out" but would
+        // spin and WEDGE this test until the runner is killed.  That wedge IS the
+        // intended regression signal if the cycle guard / depth cap ever regresses.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        let dropin_a_path = dropin_dir.join("10-a.conf");
+        let second_path = dir.path().join("second.conf");
+
+        // Write main: Include the *.conf glob then set baseline-passing value.
+        let include_glob = dropin_dir.join("*.conf").display().to_string();
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("Include {include_glob}\nPermitRootLogin no\n"),
+        )
+        .expect("write main");
+
+        // Drop-in A Includes second.conf (absolute path).
+        std::fs::write(
+            &dropin_a_path,
+            format!("Include {}\n", second_path.display()),
+        )
+        .expect("write 10-a.conf");
+
+        // second.conf Includes drop-in A back (the cycle), then sets a value.
+        std::fs::write(
+            &second_path,
+            format!("Include {}\nPermitRootLogin yes\n", dropin_a_path.display()),
+        )
+        .expect("write second.conf");
+
+        // This call must RETURN (no infinite loop, no panic).
+        let diags = lint_drop_in(dir.path(), &ctx());
+
+        // Under the recursive impl, at most one F02 is expected (the cycle must
+        // not cause double-counting); under the old one-level impl it was zero
+        // (second.conf was never read).  Either way, assert no panics and no more
+        // than one F02.
+        let f02_count = diags.iter().filter(|d| d.code == "sshd-F02").count();
+        assert!(
+            f02_count <= 1,
+            "include cycle must not produce duplicate F02 diagnostics (dedup / cycle \
+             guard); got {f02_count} sshd-F02 in {diags:?}"
+        );
+        // (No assertion that f02_count == 1 here: it may be 0 or 1 depending on
+        // cycle-guard semantics.  The load-bearing invariant is termination + no
+        // duplication.  A separate post-GREEN test pins the exact-1 case.)
+    }
+
+    // -- Depth-cap boundary (post-GREEN strengthening; kills off-by-one mutants) --
+    //
+    // The recursive Include resolver caps depth at `SERVCONF_MAX_DEPTH` via
+    // `if chain.len() > SERVCONF_MAX_DEPTH { continue; }` (drop_in.rs ~:298),
+    // mirroring OpenSSH `servconf.c`.  `chain` holds the canonicalized ancestry
+    // including the root main file, so `chain.len()` is (include-hop depth + 1).
+    //
+    // The boundary: the Include in a file reached at `chain.len() == L` is
+    // FOLLOWED iff `L > SERVCONF_MAX_DEPTH` is false (L <= cap).  The deepest
+    // Include actually followed is the one at `chain.len() == SERVCONF_MAX_DEPTH`;
+    // it splices a file entered at `chain.len() == SERVCONF_MAX_DEPTH + 1`.  So a
+    // chain of exactly `SERVCONF_MAX_DEPTH` Include hops from the main file
+    // reaches its deepest file (and any override there); one more hop does not.
+    //
+    // Mutants on `>`:
+    //   * `>= SERVCONF_MAX_DEPTH` caps at `chain.len() == cap` (one level early);
+    //   * `== SERVCONF_MAX_DEPTH` likewise stops following the include at
+    //     `chain.len() == cap`.
+    // Either mutant never reaches the deepest-allowed file, so the override there
+    // is never spliced and NO F02 fires -> the deepest-allowed-fires test below
+    // fails for the mutant but passes for the correct impl.  That is the kill.
+
+    /// Build a straight nested-`Include` chain of `hops` files under a fresh
+    /// tempdir and run the F02 lint over it.  Layout:
+    ///
+    ///   `sshd_config`         -- main: `Include <inc-1.conf>` then `PermitRootLogin no`
+    ///   `inc-1.conf`          -- `Include <inc-2.conf>`
+    ///   ...
+    ///   `inc-{hops-1}.conf`   -- `Include <inc-{hops}.conf>`
+    ///   `inc-{hops}.conf`     -- `PermitRootLogin yes`   (the baseline-FAILING override)
+    ///
+    /// so the override sits exactly `hops` Include hops below the main file.  Each
+    /// `Include` uses an ABSOLUTE path (not a glob), so there is exactly one edge
+    /// per level and the chain depth is deterministic.  Returns
+    /// (tempdir-kept-alive, diagnostics).
+    fn f02_diags_chain(hops: usize) -> (tempfile::TempDir, Vec<rulesteward_core::Diagnostic>) {
+        assert!(hops >= 1, "a chain needs at least one hop");
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Pre-compute every file path so each file can reference the next.
+        let inc_path = |i: usize| dir.path().join(format!("inc-{i}.conf"));
+
+        // Main: Include the first chain file, then set the hardened baseline value.
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("Include {}\nPermitRootLogin no\n", inc_path(1).display()),
+        )
+        .expect("write main");
+
+        // Intermediate files 1..hops-1 each Include the next; the last sets the
+        // baseline-failing override.
+        for i in 1..hops {
+            std::fs::write(
+                inc_path(i),
+                format!("Include {}\n", inc_path(i + 1).display()),
+            )
+            .unwrap_or_else(|e| panic!("write inc-{i}.conf: {e}"));
+        }
+        std::fs::write(inc_path(hops), "PermitRootLogin yes\n")
+            .unwrap_or_else(|e| panic!("write inc-{hops}.conf: {e}"));
+
+        let diags = lint_drop_in(dir.path(), &ctx());
+        (dir, diags)
+    }
+
+    #[test]
+    fn nested_include_at_max_depth_fires_f02() {
+        // GREEN against the correct impl; KILLS the `> -> >=` and `> -> ==`
+        // depth-cap mutants at drop_in.rs:298.
+        //
+        // A chain of EXACTLY `SERVCONF_MAX_DEPTH` Include hops places the
+        // baseline-failing `PermitRootLogin yes` at the deepest level the resolver
+        // is still allowed to follow (the include at `chain.len() == cap` is
+        // followed because `cap > cap` is false).  The correct impl reaches that
+        // override -> effective value `yes` from the deepest file (a non-main
+        // source), fails baseline -> exactly one F02 anchored to the deepest file.
+        //
+        // A `>=`/`==` mutant stops one hop short, never reads the deepest file,
+        // finds only the main file's `no` (single location) and emits NO F02 ->
+        // this assertion fails for the mutant.  Computed from the depth CONSTANT,
+        // not a hardcoded 16, so it tracks the cap if it changes.
+        let hops = super::SERVCONF_MAX_DEPTH;
+        let (_dir, diags) = f02_diags_chain(hops);
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sshd-F02").collect();
+
+        assert_eq!(
+            f02.len(),
+            1,
+            "an override at exactly SERVCONF_MAX_DEPTH ({hops}) Include hops is \
+             reached -> exactly one sshd-F02; got {diags:?}"
+        );
+        let d = f02[0];
+        assert_eq!(d.severity, Severity::Fatal, "sshd-F02 is a Fatal");
+        let deepest = format!("inc-{hops}.conf");
+        assert!(
+            d.file.to_string_lossy().contains(&deepest),
+            "diagnostic must anchor to the deepest file ({deepest}): {}",
+            d.file.display()
+        );
+        assert!(
+            d.message.contains(&deepest),
+            "message must name the deepest file ({deepest}): {}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_lowercase().contains("permitrootlogin"),
+            "message must name the directive: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("yes"),
+            "message must name the winning value: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn nested_include_one_past_max_depth_does_not_fire() {
+        // Pins the UPPER edge of the cap: an override placed one Include hop BEYOND
+        // `SERVCONF_MAX_DEPTH` is NOT reached (the include at `chain.len() == cap+1`
+        // is skipped because `cap + 1 > cap`), so its deepest file is never spliced,
+        // the override never enters the stream, and F02 does NOT fire.  Guards
+        // against a future `> -> >=`-in-the-other-direction drift that would over-
+        // expand by one level.
+        let hops = super::SERVCONF_MAX_DEPTH + 1;
+        let (_dir, diags) = f02_diags_chain(hops);
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-F02"),
+            "an override one hop past SERVCONF_MAX_DEPTH ({hops}) is beyond the cap \
+             and must NOT be reached -> F02 must not fire; got {diags:?}"
+        );
+    }
+
+    // -- Test #4 (regression guard -- already covered by existing test) -------
+    //
+    // The non-nested one-level layout regression is already covered by
+    // `scenario_a_dropin_wins_over_later_main_setting_fires` (above).  No new
+    // test needed here; the existing test acts as the regression guard that a
+    // correct recursive implementation must not break.
 }

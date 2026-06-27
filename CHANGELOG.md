@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   find a trusted file whose path exceeds LMDB's 511-byte max key size (the daemon
   stores it under a hashed key); previously such long paths were falsely reported
   as untrusted/absent. (#318)
+- `sshd lint` sshd-W03/W06: an algorithm-list directive whose value is not a single
+  well-formed token is now handled the way sshd does. Internal whitespace (e.g.
+  `Ciphers + aes128-cbc` or `Ciphers aes128-cbc foo`) is a fatal sshd parse error
+  (rc 255) the daemon never loads, so W03/W06 no longer over-flag those non-loading
+  lines (false positive). A whitespace-delimited inline `#` comment (e.g.
+  `Ciphers aes128-cbc # legacy`) is a valid line sshd loads, so the weak algorithm
+  is now correctly flagged (previously a false negative); a `#` glued inside the
+  value token is a non-loading reject and stays unflagged. (#325)
+- `sshd lint` sshd-F02: `Include` directives are now resolved recursively (with an
+  ancestry cycle guard and a depth cap matching OpenSSH's `SERVCONF_MAX_DEPTH`), so
+  a drop-in baseline override reached through a second-level include is no longer
+  silently missed. Previously only one level of `Include` was followed. (#323)
 
 ## [0.2.1] - 2026-06-11
 

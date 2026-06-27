@@ -127,6 +127,34 @@ enum Weak03Kind {
     Kex,
 }
 
+/// The single algorithm-list token for a directive's `args`, with any inline
+/// `#` comment stripped, or `None` if the value is not a well-formed single arg.
+///
+/// sshd treats a whitespace-delimited `#` as an end-of-line comment (verified
+/// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers aes128-cbc # legacy` is a VALID
+/// line that loads `aes128-cbc` and must be linted. A genuinely malformed
+/// multi-arg value (`+ aes128-cbc`, `aes128-cbc foo`) -- which sshd rejects
+/// rc 255 -- still yields `None`. Only a whitespace-delimited `#`-started token
+/// is a strippable comment; a `#` glued anywhere inside the value token (with or
+/// without a comma, e.g. `aes128-cbc#legacy` or `aes128-cbc,#legacy`) makes it a
+/// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
+/// the helper yields `None`.
+///
+/// Known limitation: embedded double-quotes inside an algo value are NOT handled.
+/// The parser keeps `"` literal mid-token while sshd strips quotes anywhere, so a
+/// quoted individual-algorithm value (e.g. `Ciphers "aes128-cbc",aes256-ctr`,
+/// very low realism) can false-negative. Tracked in issue #327.
+fn algo_list_value(args: &[String]) -> Option<&str> {
+    let effective = match args.iter().position(|a| a.starts_with('#')) {
+        Some(i) => &args[..i],
+        None => args,
+    };
+    match effective {
+        [one] if !one.contains('#') => Some(one.as_str()),
+        _ => None,
+    }
+}
+
 /// Return `true` when the lowercased token is a weak KEX algorithm.
 fn is_weak_kex(token: &str) -> bool {
     if WEAK_KEX_EXACT.contains(&token) {
@@ -139,22 +167,27 @@ fn is_weak_kex(token: &str) -> bool {
 
 /// Emit one W03 diagnostic per weak algorithm token found in a directive's args.
 ///
-/// The directive's args are joined with commas to reconstruct the algorithm list
-/// (the parser may present multi-word args as multiple elements), then split on
-/// commas, and each token is trimmed and checked against the denylist. One
-/// diagnostic is emitted per weak token.
+/// [`algo_list_value`] strips a whitespace-delimited inline `#` comment and
+/// enforces a single value token (rejecting any token that contains a `#`, which
+/// is a non-loading sshd reject). That single value is then split on commas, and
+/// each token is trimmed and checked against the denylist. One diagnostic is
+/// emitted per weak token.
 fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>) {
     let Some((exact_list, kind)) = weak_exact_list(&directive.keyword_lower()) else {
         return;
     };
 
-    // Reconstruct the comma-separated algorithm list from the parsed args.
-    // The parser splits on whitespace, so a value like "aes256-ctr,aes128-cbc"
-    // arrives as one arg element; a value with internal spaces around commas
-    // may arrive similarly. Join with comma in case the parser split further,
-    // then re-split on comma and trim each token.
-    let joined = directive.args.join(",");
-    for raw_token in joined.split(',') {
+    // Strip a trailing inline `#` comment then enforce the single-arg invariant.
+    // A whitespace-delimited `#` is a valid end-of-line comment in sshd (verified
+    // OpenSSH 9.9p1/10.2p1); the tokenizer keeps it literal, so
+    // `Ciphers aes128-cbc # legacy` yields args=["aes128-cbc","#","legacy"]. After
+    // stripping the comment, a genuinely malformed multi-arg value (which sshd
+    // rejects rc 255) still yields `None` and is not flagged.
+    let Some(value) = algo_list_value(&directive.args) else {
+        return;
+    };
+
+    for raw_token in value.split(',') {
         let token = raw_token.trim().to_ascii_lowercase();
         if token.is_empty() {
             continue;
@@ -254,20 +287,20 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some((denylist, kind)) = weak_exact_list(&directive.keyword_lower()) else {
                 continue;
             };
-            // A well-formed algorithm-list value is a SINGLE comma-separated arg
-            // with no internal whitespace. Multiple args mean whitespace inside the
-            // value (e.g. `Ciphers + aes128-cbc` or `Ciphers +a b`), which sshd
-            // rejects as a fatal parse error -- do not flag a line the daemon will
-            // not load.
-            if directive.args.len() != 1 {
+            // Strip a trailing inline `#` comment then enforce the single-arg
+            // invariant. A whitespace-delimited `#` is a valid end-of-line comment
+            // in sshd (verified OpenSSH 9.9p1/10.2p1); the tokenizer keeps it
+            // literal. After stripping, a genuinely malformed value (e.g.
+            // `Ciphers + aes128-cbc` or `Ciphers +a b`) -- which sshd rejects
+            // rc 255 -- still yields `None` and is not flagged.
+            let Some(value) = algo_list_value(&directive.args) else {
                 continue;
-            }
-            let joined = directive.args.join(",");
+            };
             // Determine the operator from the first non-empty comma-split token.
             // The parser tokenises on whitespace so `+algo1,algo2` arrives as a
-            // single args element; after join+split the first token carries the
-            // operator character and all remaining tokens do not.
-            let mut tokens = joined.split(',');
+            // single args element; after split the first token carries the operator
+            // character and all remaining tokens do not.
+            let mut tokens = value.split(',');
             let Some(first_raw) = tokens.next() else {
                 continue;
             };
@@ -341,10 +374,11 @@ mod w06_tests {
     //!
     //! The tokenizer splits on whitespace. A value like `+aes128-cbc,aes256-cbc`
     //! contains no whitespace, so it arrives as a single element in `args`:
-    //! `args = ["+aes128-cbc,aes256-cbc"]`. After `args.join(",").split(',')` the
-    //! first token is `"+aes128-cbc"` (operator attached) and the second is
-    //! `"aes256-cbc"` (no operator). The operator signal is therefore carried on
-    //! the first comma-split token only.
+    //! `args = ["+aes128-cbc,aes256-cbc"]`. After `algo_list_value(&args)` returns
+    //! the single value token, `value.split(',')` makes the first token
+    //! `"+aes128-cbc"` (operator attached) and the second `"aes256-cbc"` (no
+    //! operator). The operator signal is therefore carried on the first comma-split
+    //! token only.
     //!
     //! # W03/W06 interaction
     //!
@@ -795,6 +829,62 @@ mod w06_tests {
             diags[0].severity,
             Severity::Warning,
             "W06 is a Warning-level diagnostic"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Inline comment: a VALID sshd-loading `+weak` line must still fire W06
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inline_comment_line_still_fires_w06() {
+        // `Ciphers +aes128-cbc # legacy` -- the ` # legacy` is a whitespace-delimited
+        // inline comment; sshd strips it and processes `+aes128-cbc`, reintroducing a
+        // weak CBC cipher (rc=0, OpenSSH 9.9p1 / 10.2p1). RuleSteward's tokenizer does
+        // NOT strip inline comments, so this tokenizes to args=["+aes128-cbc","#",
+        // "legacy"] (3 args) and the W06 `args.len() != 1` guard currently suppresses
+        // it -- a FALSE NEGATIVE on a valid reintroduction line. W06 must fire and
+        // name the `+` operator + aes128-cbc. RED until the shared comment-strip
+        // helper lands. (Contrast `spaced_operator_does_not_fire_w06` /
+        // `operator_with_extra_arg_does_not_fire_w06`: those have NO `#` and are real
+        // sshd rc-255 rejects that must STAY suppressed.)
+        let diags = run("Ciphers +aes128-cbc # legacy\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "valid (comment-stripped) `+weak` line => one W06"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the reintroduced weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('+'),
+            "message names the operator, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn comma_glued_hash_does_not_fire_w06() {
+        // A `#` glued AFTER a comma (no whitespace before it) is NOT an inline
+        // comment: the operator value stays ONE token (`+aes128-cbc,#legacy`), and
+        // sshd parses it as a single malformed cipher spec, REJECTING the line
+        // ("Bad SSH2 cipher spec", rc 255 on OpenSSH 10.2p1) -- the daemon never
+        // loads it. Only a WHITESPACE-delimited `#` starts a comment (see
+        // `inline_comment_line_still_fires_w06`). The comment-strip helper only
+        // strips a `#` that STARTS its own arg, so it leaves the bare weak token
+        // exposed and W06 currently FIRES -- a false positive in the #325 class.
+        // W06 must NOT fire on these non-loading lines.
+        assert!(
+            run("Ciphers +aes256-ctr,aes128-cbc,#x\n").is_empty(),
+            "comma-glued # after a `+` list (one malformed token, sshd rc 255) must not fire W06"
+        );
+        assert!(
+            run("Ciphers +aes128-cbc,#legacy\n").is_empty(),
+            "comma-glued # in a `+` value (one malformed token, sshd rc 255) must not fire W06"
         );
     }
 }
@@ -1405,16 +1495,196 @@ mod w03_tests {
     }
 
     #[test]
-    fn whitespace_around_comma_is_trimmed() {
-        // sshd_config algorithm lists sometimes appear with spaces around commas.
-        // The lint must trim whitespace before matching.
-        let src = "Ciphers aes256-ctr, aes128-cbc, chacha20-poly1305@openssh.com\n";
-        let diags = run(src);
+    fn spaces_around_commas_do_not_fire_w03() {
+        // Spaces AFTER the commas (`aes256-ctr, aes128-cbc, ...`) make this a
+        // multi-arg value: the whitespace tokenizer yields three args. sshd
+        // REJECTS it as a fatal parse error ("keyword Ciphers extra arguments at
+        // end of line", rc 255 on rocky9.8 / OpenSSH 9.9p1), so the daemon never
+        // loads the line. W03 must NOT flag a non-loading line -- this is the
+        // exact #325 bug class. A well-formed algorithm list is a SINGLE
+        // comma-separated token with no internal whitespace (see
+        // `comma_separated_list_splits_correctly` and
+        // `ciphers_mixed_flags_only_weak_tokens` for the valid single-arg form).
+        // RED today (the unguarded lint wrongly fires on `aes128-cbc`); GREEN
+        // once `w03_directive` adds the `args.len() != 1` guard.
+        assert!(
+            run("Ciphers aes256-ctr, aes128-cbc, chacha20-poly1305@openssh.com\n").is_empty(),
+            "spaces around commas => multiple args => sshd rejects rc 255 => W03 must not fire"
+        );
+    }
+
+    // --- Multi-arg guard: malformed (non-loading) lines must NOT fire W03 ---
+    //
+    // A well-formed algorithm-list value is a SINGLE comma-separated token with
+    // no internal whitespace. Internal whitespace (e.g. `Ciphers + aes128-cbc`
+    // or `Ciphers aes128-cbc foo`) is a FATAL sshd parse error (rc 255 on
+    // rocky9 / OpenSSH 9.9p1) -- "Bad SSH2 cipher spec" / "extra arguments at
+    // end of line". The daemon never loads such a line, so W03 must not flag it.
+    // W06 already enforces this via `args.len() != 1`; W03 is missing that guard
+    // (issue #325). These tests are RED until `w03_directive` adds the same check.
+    //
+    // Regression guard (GREEN, already passes): `ciphers_mixed_flags_only_weak_tokens`
+    // covers `Ciphers aes256-ctr,aes128-cbc\n` -- a valid single-arg comma-list
+    // that MUST still fire W03. The guard below confirms the future fix does not
+    // over-suppress that case; no duplicate is needed here.
+
+    #[test]
+    fn spaced_operator_does_not_fire_w03() {
+        // `Ciphers + aes128-cbc` has a space after `+`, which sshd rejects as
+        // "Bad SSH2 cipher spec '+'", rc 255 on rocky9 / OpenSSH 9.9p1. The
+        // tolerant parser splits this into args=["+", "aes128-cbc"]; W03 must
+        // NOT flag the non-loading line. (Mirrors W06 guard `spaced_operator_does_not_fire_w06`.)
+        assert!(
+            run("Ciphers + aes128-cbc\n").is_empty(),
+            "a space-separated (malformed, non-loading) algo line must not fire W03"
+        );
+    }
+
+    #[test]
+    fn extra_arg_does_not_fire_w03() {
+        // `Ciphers aes128-cbc foo` has an extra whitespace-separated arg, which
+        // sshd rejects as "extra arguments at end of line", rc 255 on rocky9.
+        // W03 must NOT flag it. (Mirrors W06 guard `operator_with_extra_arg_does_not_fire_w06`.)
+        assert!(
+            run("Ciphers aes128-cbc foo\n").is_empty(),
+            "a multi-arg (malformed, non-loading) algo line must not fire W03"
+        );
+    }
+
+    #[test]
+    fn macs_extra_arg_does_not_fire_w03() {
+        // `MACs hmac-md5 extra` -- extra whitespace-separated arg, fatal sshd
+        // parse error ("extra arguments at end of line", rc 255 on rocky9).
+        // W03 must NOT emit a diagnostic for the non-loading line.
+        assert!(
+            run("MACs hmac-md5 extra\n").is_empty(),
+            "a multi-arg MACs line (malformed, non-loading) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn kex_extra_arg_does_not_fire_w03() {
+        // `KexAlgorithms diffie-hellman-group1-sha1 foo` -- extra arg, fatal sshd
+        // parse error ("extra arguments at end of line", rc 255 on rocky9).
+        // W03 covers KexAlgorithms via `is_weak_kex` (see `kex_group1_sha1_fires_w03`
+        // confirming the single-arg form fires); the multi-arg form must NOT fire.
+        assert!(
+            run("KexAlgorithms diffie-hellman-group1-sha1 foo\n").is_empty(),
+            "a multi-arg KexAlgorithms line (malformed, non-loading) must not fire W03"
+        );
+    }
+
+    // --- Inline comments: VALID sshd-loading lines that must still fire W03 ---
+    //
+    // sshd treats a WHITESPACE-delimited `#` as an end-of-line comment and loads
+    // the directive normally (verified rc=0 with the weak value taking effect on
+    // OpenSSH 9.9p1 and 10.2p1). RuleSteward's tokenizer does NOT strip inline
+    // comments (parser.rs: "There are no inline comments"; `tokenize_line("Banner
+    // x#y")` keeps `x#y` as one token), so a commented line tokenizes to >1 arg
+    // and the `args.len() != 1` multi-arg guard wrongly suppresses W03 on a VALID,
+    // sshd-loading weak-cipher line. These must-fire tests are RED until the impl
+    // adds a comment-strip helper (shared by W03 and W06). Contrast the genuinely
+    // malformed multi-arg guard tests above (no `#`): those are real sshd rc-255
+    // rejects and must STAY suppressed.
+
+    #[test]
+    fn inline_comment_line_still_fires_w03() {
+        // `Ciphers aes128-cbc # legacy` -- the ` # legacy` is a whitespace-delimited
+        // inline comment; sshd strips it and loads `aes128-cbc` (rc=0, OpenSSH
+        // 9.9p1 / 10.2p1). The tolerant tokenizer yields args=["aes128-cbc","#",
+        // "legacy"] (3 args), so the multi-arg guard currently suppresses W03 -- a
+        // FALSE NEGATIVE on a valid weak-cipher line. W03 must fire and name aes128-cbc.
+        let diags = run("Ciphers aes128-cbc # legacy\n");
         assert_eq!(
             diags.len(),
             1,
-            "aes128-cbc is weak even with surrounding spaces"
+            "valid (comment-stripped) weak line => one W03"
         );
-        assert!(diags[0].message.contains("aes128-cbc"));
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn inline_comment_no_space_still_fires_w03() {
+        // `Ciphers aes128-cbc #legacy` -- no space between `#` and the comment word,
+        // but there IS a space BEFORE the `#`, so `#legacy` is a separate token and
+        // sshd treats it as a comment, loading aes128-cbc (rc=0, OpenSSH 9.9p1 /
+        // 10.2p1). The tokenizer yields args=["aes128-cbc","#legacy"] (2 args), so
+        // the multi-arg guard currently suppresses W03 (false negative). Must fire.
+        let diags = run("Ciphers aes128-cbc #legacy\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "comment token after value still leaves a valid weak line"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn comma_list_with_inline_comment_fires_w03() {
+        // `Ciphers aes256-ctr,aes128-cbc # note` -- a valid single comma-list value
+        // (one token `aes256-ctr,aes128-cbc`) followed by a whitespace-delimited
+        // inline comment. sshd strips ` # note` and loads the list (rc=0, OpenSSH
+        // 9.9p1 / 10.2p1). The tokenizer yields args=["aes256-ctr,aes128-cbc","#",
+        // "note"] (3 args); the multi-arg guard currently suppresses W03. The line
+        // is valid and contains weak aes128-cbc -- W03 must fire.
+        let diags = run("Ciphers aes256-ctr,aes128-cbc # note\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "comma-list + comment is a valid weak line => one W03"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn glued_hash_does_not_fire_w03() {
+        // `Ciphers aes128-cbc#legacy` -- NO whitespace before `#`, so the tokenizer
+        // keeps it as ONE token `aes128-cbc#legacy` (parser.rs
+        // `tokenize_line_keeps_hash_inside_a_bare_token`). sshd does NOT treat a
+        // glued `#` as a comment: it parses the whole token as a cipher spec and
+        // REJECTS it ("Bad SSH2 cipher spec", rc 255 on OpenSSH 9.9p1 / 10.2p1), so
+        // the daemon never loads the line. The token does not exactly match the weak
+        // denylist entry `aes128-cbc` either. W03 must NOT fire -- this stays a guard.
+        assert!(
+            run("Ciphers aes128-cbc#legacy\n").is_empty(),
+            "a glued value#comment token is a non-loading sshd reject and must not fire W03"
+        );
+    }
+
+    #[test]
+    fn comma_glued_hash_does_not_fire_w03() {
+        // A `#` glued AFTER a comma (no whitespace before it) is NOT an inline
+        // comment: the tokenizer keeps the whole value as ONE arg
+        // (`aes128-cbc,#legacy`), and sshd parses it as a single malformed cipher
+        // spec, REJECTING the line ("Bad SSH2 cipher spec", rc 255 on OpenSSH
+        // 10.2p1), so the daemon never loads it. Only a WHITESPACE-delimited `#`
+        // starts a comment (see `inline_comment_line_still_fires_w03`); a
+        // comma-glued `#` is part of the malformed token. The comment-strip helper
+        // only strips a `#` that STARTS its own arg, so it leaves the bare weak
+        // token before the `#` exposed and W03 currently FIRES -- a false positive
+        // in the #325 class. W03 must NOT fire on these non-loading lines.
+        assert!(
+            run("Ciphers aes128-cbc,#legacy\n").is_empty(),
+            "comma-glued # (one malformed token, sshd rc 255) must not fire W03"
+        );
+        assert!(
+            run("Ciphers aes256-ctr,aes128-cbc,#x\n").is_empty(),
+            "comma-glued # after a list (one malformed token, sshd rc 255) must not fire W03"
+        );
     }
 }
