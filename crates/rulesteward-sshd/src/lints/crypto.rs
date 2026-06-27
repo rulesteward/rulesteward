@@ -139,6 +139,11 @@ enum Weak03Kind {
 /// without a comma, e.g. `aes128-cbc#legacy` or `aes128-cbc,#legacy`) makes it a
 /// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
 /// the helper yields `None`.
+///
+/// Known limitation: embedded double-quotes inside an algo value are NOT handled.
+/// The parser keeps `"` literal mid-token while sshd strips quotes anywhere, so a
+/// quoted individual-algorithm value (e.g. `Ciphers "aes128-cbc",aes256-ctr`,
+/// very low realism) can false-negative. Tracked in issue #327.
 fn algo_list_value(args: &[String]) -> Option<&str> {
     let effective = match args.iter().position(|a| a.starts_with('#')) {
         Some(i) => &args[..i],
@@ -162,10 +167,11 @@ fn is_weak_kex(token: &str) -> bool {
 
 /// Emit one W03 diagnostic per weak algorithm token found in a directive's args.
 ///
-/// The directive's args are joined with commas to reconstruct the algorithm list
-/// (the parser may present multi-word args as multiple elements), then split on
-/// commas, and each token is trimmed and checked against the denylist. One
-/// diagnostic is emitted per weak token.
+/// [`algo_list_value`] strips a whitespace-delimited inline `#` comment and
+/// enforces a single value token (rejecting any token that contains a `#`, which
+/// is a non-loading sshd reject). That single value is then split on commas, and
+/// each token is trimmed and checked against the denylist. One diagnostic is
+/// emitted per weak token.
 fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>) {
     let Some((exact_list, kind)) = weak_exact_list(&directive.keyword_lower()) else {
         return;
@@ -368,10 +374,11 @@ mod w06_tests {
     //!
     //! The tokenizer splits on whitespace. A value like `+aes128-cbc,aes256-cbc`
     //! contains no whitespace, so it arrives as a single element in `args`:
-    //! `args = ["+aes128-cbc,aes256-cbc"]`. After `args.join(",").split(',')` the
-    //! first token is `"+aes128-cbc"` (operator attached) and the second is
-    //! `"aes256-cbc"` (no operator). The operator signal is therefore carried on
-    //! the first comma-split token only.
+    //! `args = ["+aes128-cbc,aes256-cbc"]`. After `algo_list_value(&args)` returns
+    //! the single value token, `value.split(',')` makes the first token
+    //! `"+aes128-cbc"` (operator attached) and the second `"aes256-cbc"` (no
+    //! operator). The operator signal is therefore carried on the first comma-split
+    //! token only.
     //!
     //! # W03/W06 interaction
     //!
