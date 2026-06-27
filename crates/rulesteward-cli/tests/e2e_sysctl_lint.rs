@@ -162,3 +162,60 @@ fn malformed_file_exits_with_the_parse_error_code() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn human_file_mode_reports_the_real_line_not_line_one() {
+    // Integration-gate regression (senior fresh-context review): in FILE mode the
+    // human renderer must report the diagnostic's REAL line, not line 1.
+    //
+    // The sysctld diagnostics anchor with a DEGENERATE byte span (`0..0`) plus a
+    // `source_id`. When the CLI stages the source, the human renderer takes the
+    // ariadne path and derives the snippet header `file:line:col` from the BYTE
+    // SPAN (0 -> offset 0 -> line 1), IGNORING the diagnostic's real `line`. So a
+    // W01 about line 4 used to render `:1:1` with the caret on the comment.
+    //
+    // Layout: the DEAD (overridden) assignment is on line 4. The later assignment
+    // (line 5) wins; W01 anchors at line 4. The human output must reference `:4:`
+    // and must NOT place this finding at `:1:`.
+    let body = "\
+# kernel hardening
+kernel.sysrq = 0
+net.ipv4.ip_forward = 0
+kernel.kptr_restrict = 2
+kernel.kptr_restrict = 1
+";
+    let cfg = config_file(body);
+    let out = bin()
+        // NO_COLOR keeps the snippet header free of ANSI escapes so the `:4:`
+        // substring match is robust.
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W01"),
+        "the last-wins conflict emits sysctld-W01; stdout was: {stdout} (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The dead assignment is on line 4: the human output must reference :4:.
+    assert!(
+        stdout.contains(":4:"),
+        "human file-mode output must reference the real line 4 of the dead \
+         assignment; stdout was: {stdout}"
+    );
+    // ...and must NOT report this finding at line 1 (the comment), which is what
+    // the degenerate-byte-span ariadne path did.
+    assert!(
+        !stdout.contains(":1:"),
+        "human file-mode output must NOT mis-anchor the finding at line 1; \
+         stdout was: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only run exits 1 (EXIT_WARNINGS); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

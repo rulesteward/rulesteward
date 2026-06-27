@@ -68,11 +68,15 @@ fn lint(args: &SysctlLintArgs) -> i32 {
 
     let diags = rulesteward_sysctld::parser::lint_str(&source, &path);
 
-    // Stage the source (keyed by display path, the diagnostics' source_id
-    // convention) so the human renderer can show ariadne snippets when the
-    // F01/W01 passes anchor findings.
-    let mut sources = std::collections::BTreeMap::new();
-    sources.insert(path.display().to_string(), source);
+    // sysctld v1 renders findings as plain `file:line:col [CODE] sev: msg` in BOTH
+    // file and dir mode: the F01/W01 diagnostics anchor with a line-start span
+    // (`0..0`) plus a real `line`, and the plain renderer uses that real `line`.
+    // We deliberately do NOT stage the source here: an ariadne snippet derives its
+    // header from the BYTE SPAN, so a `0..0` span would mis-anchor every finding to
+    // line 1. Real-byte-span snippet rendering (which would let us stage sources
+    // and show carets) is a deferred follow-up. Pass an empty sources map so file
+    // mode matches dir mode exactly.
+    let sources = std::collections::BTreeMap::new();
     emit(args, &diags, &sources);
 
     exit_code::compute(&diags, false)

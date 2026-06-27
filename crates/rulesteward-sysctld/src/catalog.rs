@@ -5,13 +5,13 @@
 //! catalog, inside the mutation `examine_globs`): no `Condition` machinery, since
 //! there is no SARIF for sysctld (locked CC-4: SARIF is `fapolicyd lint` only).
 //!
-//! # Frozen in Phase 0
-//! The catalog lists the FULL planned v1 `sysctld-` taxonomy now, even though the
-//! pass bodies are still empty stubs. Freezing the whole list here in Phase 0
-//! means the later lint pipelines start emitting a code that is ALREADY
-//! catalogued: they never edit this shared file, which keeps the milestone fan-out
-//! conflict-free. The version-aware `sysctld-W02` (STIG hardening baseline) and
-//! cross-directory system precedence are deferred follow-ups (issue #150).
+//! # Frozen taxonomy
+//! The catalog lists the FULL planned v1 `sysctld-` taxonomy in sorted order. The
+//! v1 passes (`sysctld-F01` parse failure, `sysctld-W01` last-wins conflict) are
+//! implemented; the catalog was frozen up front so the passes emit only
+//! already-catalogued codes and never edit this shared file. The version-aware
+//! `sysctld-W02` (STIG hardening baseline) and cross-directory system precedence
+//! are deferred follow-ups (issues #150 / #335).
 
 use rulesteward_core::Severity;
 
