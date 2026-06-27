@@ -127,6 +127,27 @@ enum Weak03Kind {
     Kex,
 }
 
+/// The single algorithm-list token for a directive's `args`, with any inline
+/// `#` comment stripped, or `None` if the value is not a well-formed single arg.
+///
+/// sshd treats a whitespace-delimited `#` as an end-of-line comment (verified
+/// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers aes128-cbc # legacy` is a VALID
+/// line that loads `aes128-cbc` and must be linted. A genuinely malformed
+/// multi-arg value (`+ aes128-cbc`, `aes128-cbc foo`) -- which sshd rejects
+/// rc 255 -- still yields `None`. A `#` glued inside a token
+/// (`aes128-cbc#legacy`, one arg, also an sshd rc-255 reject) is NOT a comment
+/// and is left as the single token (it simply will not match a weak entry).
+fn algo_list_value(args: &[String]) -> Option<&str> {
+    let effective = match args.iter().position(|a| a.starts_with('#')) {
+        Some(i) => &args[..i],
+        None => args,
+    };
+    match effective {
+        [one] => Some(one.as_str()),
+        _ => None,
+    }
+}
+
 /// Return `true` when the lowercased token is a weak KEX algorithm.
 fn is_weak_kex(token: &str) -> bool {
     if WEAK_KEX_EXACT.contains(&token) {
@@ -148,21 +169,17 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
         return;
     };
 
-    // A well-formed algorithm-list value is a SINGLE comma-separated arg with no
-    // internal whitespace. Multiple args mean whitespace inside the value
-    // (e.g. `Ciphers + aes128-cbc` / `Ciphers aes128-cbc foo`), which sshd rejects
-    // as a fatal parse error -- do not flag a line the daemon will not load.
-    if directive.args.len() != 1 {
+    // Strip a trailing inline `#` comment then enforce the single-arg invariant.
+    // A whitespace-delimited `#` is a valid end-of-line comment in sshd (verified
+    // OpenSSH 9.9p1/10.2p1); the tokenizer keeps it literal, so
+    // `Ciphers aes128-cbc # legacy` yields args=["aes128-cbc","#","legacy"]. After
+    // stripping the comment, a genuinely malformed multi-arg value (which sshd
+    // rejects rc 255) still yields `None` and is not flagged.
+    let Some(value) = algo_list_value(&directive.args) else {
         return;
-    }
+    };
 
-    // Reconstruct the comma-separated algorithm list from the parsed args.
-    // The parser splits on whitespace, so a value like "aes256-ctr,aes128-cbc"
-    // arrives as one arg element; a value with internal spaces around commas
-    // may arrive similarly. Join with comma in case the parser split further,
-    // then re-split on comma and trim each token.
-    let joined = directive.args.join(",");
-    for raw_token in joined.split(',') {
+    for raw_token in value.split(',') {
         let token = raw_token.trim().to_ascii_lowercase();
         if token.is_empty() {
             continue;
@@ -262,20 +279,20 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some((denylist, kind)) = weak_exact_list(&directive.keyword_lower()) else {
                 continue;
             };
-            // A well-formed algorithm-list value is a SINGLE comma-separated arg
-            // with no internal whitespace. Multiple args mean whitespace inside the
-            // value (e.g. `Ciphers + aes128-cbc` or `Ciphers +a b`), which sshd
-            // rejects as a fatal parse error -- do not flag a line the daemon will
-            // not load.
-            if directive.args.len() != 1 {
+            // Strip a trailing inline `#` comment then enforce the single-arg
+            // invariant. A whitespace-delimited `#` is a valid end-of-line comment
+            // in sshd (verified OpenSSH 9.9p1/10.2p1); the tokenizer keeps it
+            // literal. After stripping, a genuinely malformed value (e.g.
+            // `Ciphers + aes128-cbc` or `Ciphers +a b`) -- which sshd rejects
+            // rc 255 -- still yields `None` and is not flagged.
+            let Some(value) = algo_list_value(&directive.args) else {
                 continue;
-            }
-            let joined = directive.args.join(",");
+            };
             // Determine the operator from the first non-empty comma-split token.
             // The parser tokenises on whitespace so `+algo1,algo2` arrives as a
-            // single args element; after join+split the first token carries the
-            // operator character and all remaining tokens do not.
-            let mut tokens = joined.split(',');
+            // single args element; after split the first token carries the operator
+            // character and all remaining tokens do not.
+            let mut tokens = value.split(',');
             let Some(first_raw) = tokens.next() else {
                 continue;
             };
