@@ -1697,6 +1697,30 @@ X11UseLocalhost yes
     }
 
     #[test]
+    fn merged_follows_match_all_include_to_collect_nested_conditional_match() {
+        // An `Include` INSIDE an unconditional `Match all` is unconditionally active,
+        // so `collect_conditional_matches` must FOLLOW it and gather the genuine
+        // CONDITIONAL `Match` block in the included drop-in. That conditional Match
+        // sets a global-only directive (`Ciphers`), which the merged single-file
+        // suite flags as sshd-E04. If `Match all` were instead collected AS a
+        // conditional block (so its Includes were never followed), this nested E04
+        // would be silently dropped.
+        //
+        // In-crate (not only the CLI e2e) so the per-package mutation run -- which
+        // does not execute the rulesteward-cli e2e tests -- still kills the
+        // `collect_matches_in` `Match all`-guard mutant. (issue #336)
+        let diags = merged_diags(
+            "PermitRootLogin no\nMatch all\nInclude {DIR}\n",
+            &[("50-x.conf", "Match User bob\n    Ciphers aes256-ctr\n")],
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "sshd-E04"),
+            "a conditional Match reached via a `Match all` Include must be linted \
+             (E04 on the global-only Ciphers); got {diags:?}"
+        );
+    }
+
+    #[test]
     fn merged_w01_absent_directive_anchors_to_base_at_line_zero() {
         // A STIG-required directive absent from the merged view fires W01 at
         // line 0 (file-level), anchored to the BASE sshd_config (no remap). The

@@ -217,6 +217,62 @@ fn directory_with_clean_dropins_exits_zero() {
 }
 
 #[test]
+fn dir_mode_match_all_with_global_only_directive_does_not_fire_e04() {
+    // issue #336 dir-mode parity: an unconditional `Match all` in the base file is
+    // GLOBAL context, so a global-only directive (a strong `Ciphers`) in its body
+    // must NOT be collected as a conditional Match and must NOT fire sshd-E04 in
+    // directory mode -- mirroring the single-file fix. With an otherwise STIG-clean
+    // base the layout exits 0. (Pins the `collect_matches_in` `Match all` guard so a
+    // mutant that collects `Match all` as a conditional Match is caught.)
+    let dir = etc_ssh_layout(
+        &format!("{CLEAN_CONFIG}Include {{DIR}}\nMatch all\n    Ciphers aes256-ctr\n"),
+        &[("50-noop.conf", "X11Forwarding no\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        !stdout.contains("sshd-E04"),
+        "a global-only directive under unconditional `Match all` must not fire dir-mode E04: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an otherwise STIG-clean layout with `Ciphers` under `Match all` exits 0 \
+         (stdout: {stdout}; stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn dir_mode_conditional_match_reached_via_match_all_include_is_linted() {
+    // An `Include` INSIDE an unconditional `Match all` is unconditionally active, so
+    // a genuine CONDITIONAL `Match` block in the included drop-in must still be
+    // collected and linted in directory mode: a global-only directive (`Ciphers`) in
+    // that conditional Match body fires sshd-E04. This pins `collect_matches_in`
+    // FOLLOWING the Includes inside a `Match all` -- the global-context treatment of
+    // `Match all` must not stop the walk from reaching conditional Matches behind it.
+    // (A regression that collected `Match all` as a conditional block instead would
+    // stop following its Includes and silently drop the nested finding.)
+    let dir = etc_ssh_layout(
+        "PermitRootLogin no\nMatch all\nInclude {DIR}\n",
+        &[("50-x.conf", "Match User bob\n    Ciphers aes256-ctr\n")],
+    );
+    let out = run_lint(dir.path(), &[]);
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sshd-E04"),
+        "a conditional Match reachable via a `Match all` Include must be linted \
+         (E04 on the global-only Ciphers): {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "sshd-E04 is an error -> exit 2 (stdout: {stdout}; stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn fires_f02_when_dropin_match_all_overrides_global_set_before_include() {
     // PRECEDENCE (verified rocky9 `sudo sshd -T -f`): an active `Match all` block
     // overrides the global section regardless of textual position. The main file
