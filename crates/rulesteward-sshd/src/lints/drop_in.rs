@@ -87,17 +87,20 @@
 //! `SERVCONF_MAX_DEPTH`) keeps a recursive/cyclic include set terminating; see
 //! [`build_stream`].
 //!
-//! # Known limitations (deferred follow-ups)
+//! # Merged-effective single-file suite over a directory (issue #324)
 //!
-//! * Directory mode currently runs the F02 cross-file check ONLY. Running the
-//!   single-file lint suite (sshd-E0x / W0x) over the merged effective config is a
-//!   deferred follow-up; this PR keeps directory mode F02-only.
+//! Directory mode also runs the single-file lint suite (sshd-E01 / W01..W04 / W06)
+//! over the MERGED EFFECTIVE config (base `sshd_config` + drop-ins resolved by
+//! sshd's real precedence), in ADDITION to the cross-file F02 pass. See
+//! [`lint_merged`] for the entrypoint and [`build_merged`] for the synthetic-block
+//! + provenance-map construction. F02 (`lint_drop_in`) stays a SEPARATE call.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, Span};
 
-use crate::ast::{Block, MatchBlock};
+use crate::ast::{Block, Directive, MatchBlock};
 use crate::lints::stig::{BaselineCheck, baseline_check};
 use crate::lints::{SshdLintContext, anchored};
 
@@ -180,6 +183,303 @@ pub fn lint_drop_in(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
         ));
     }
     diags
+}
+
+/// Provenance of one synthetic merged directive: the REAL file, line, and span
+/// the effective value came from (a drop-in, the base, or a nested include),
+/// keyed by the synthetic directive's 1-based line in the merged global block.
+struct Provenance {
+    source: PathBuf,
+    line: usize,
+    span: Span,
+}
+
+/// Run the single-file lint suite over the MERGED config of a `/etc/ssh`-layout
+/// directory, with each directive-anchored finding REMAPPED to the real drop-in
+/// file + line it came from (issue #324, including the conditional-`Match` follow-up).
+///
+/// `dir` is the standard layout: a main `sshd_config` plus a `sshd_config.d/`
+/// directory of `*.conf` drop-ins. The synthetic view is built by [`build_merged`]:
+/// a leading `Block::Global` of one EFFECTIVE `Directive` per keyword (deduped via
+/// sshd's first-occurrence / first-`Match all` precedence, reusing
+/// [`effective_entry`]), FOLLOWED BY the conditional `Match` blocks gathered from
+/// base + drop-ins (bodies as-written). This split is what makes the two pass
+/// families correct at once:
+///
+/// * EFFECTIVE-value passes -- sshd-W01 (required-missing) and sshd-W02
+///   (weaker-than-baseline) -- read `blocks[0]` (the global) ONLY, so a value set
+///   only inside a conditional `Match` block never satisfies W01 nor triggers W02
+///   (it is per-connection, not the daemon baseline).
+/// * AS-WRITTEN passes -- sshd-E01 / W03 / W04 / W06 and the Match-oriented
+///   sshd-E04 / W05 -- scan every `Block::Match` body, so conditional-`Match`
+///   content that single-file mode reports is reached in dir mode too (the #324
+///   parity fix), anchored to the real file + line via the remap.
+///
+/// Suppressed by construction: sshd-E02 stays quiet on the deduped global (it may
+/// still fire on a within-Match duplicate -- correct parity); sshd-E03 finds no
+/// `Include` (they are resolved away). The whole [`crate::lints::lint`] dispatcher
+/// is reused UNCHANGED.
+///
+/// Anchoring: the base `sshd_config` path is the sentinel source, so file-level
+/// findings (sshd-W01 absent-directive, `line == 0`) already anchor to the base and
+/// need no remap. Each directive-anchored finding (`line > 0`) is remapped to its
+/// real source file + line + span via the provenance map; a `line > 0` not in the
+/// map (should not happen) falls back to the base path rather than panicking.
+#[must_use]
+pub fn lint_merged(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
+    let base_path = dir.join("sshd_config");
+    let Ok(base_src) = std::fs::read_to_string(&base_path) else {
+        // No readable main `sshd_config` -> nothing to evaluate (matches
+        // `lint_drop_in`'s tolerance of a directory with no main file).
+        return Vec::new();
+    };
+
+    let (blocks, provenance) = build_merged(&base_path, &base_src);
+
+    // The merged suite runs the single-file dispatcher over the synthetic global,
+    // anchored (by sentinel) to the base file so W01's `line == 0` findings land on
+    // the base path; directive-anchored findings are remapped below.
+    let raw = crate::lints::lint(&blocks, &base_path, ctx);
+
+    raw.into_iter()
+        .map(|mut diag| {
+            if diag.line == 0 {
+                // File-level finding (sshd-W01 absent directive): already anchored
+                // to the base `sshd_config` via the sentinel. Leave as-is.
+                return diag;
+            }
+            // Directive-anchored finding: remap to the real winning source.
+            if let Some(prov) = provenance.get(&diag.line) {
+                let source_id = prov.source.display().to_string();
+                diag.file = prov.source.clone();
+                diag.line = prov.line;
+                diag.span = prov.span.clone();
+                diag.source_id = Some(source_id);
+            } else {
+                // A `line > 0` with no provenance entry should not occur (every
+                // synthetic directive is registered), but never panic: fall back to
+                // anchoring at the base file.
+                diag.file.clone_from(&base_path);
+                diag.source_id = Some(base_path.display().to_string());
+            }
+            diag
+        })
+        .collect()
+}
+
+/// One conditional `Match` block gathered from the Include-expanded config, with
+/// its real source file recorded so its synthetic copy can be remapped back. The
+/// header and every body directive keep their REAL `line` / `span`; the synthetic
+/// renumbering and provenance happen in [`build_merged`].
+struct MergedMatch {
+    /// The original parsed Match block (criteria + body + header line/span), kept
+    /// verbatim so the as-written passes see exactly what the operator wrote.
+    block: MatchBlock,
+    /// The real file the block was written in (base or a drop-in), for remap.
+    source: PathBuf,
+}
+
+/// Build the synthetic MERGED view of a `/etc/ssh` layout. Two parts:
+///
+/// 1. A leading `Block::Global` holding ONE effective `Directive` per keyword (in
+///    first-seen emission order), chosen by [`effective_entry`] over the
+///    Include-expanded stream (F02 precedence: first `Match all` wins, else global
+///    first-value-wins). This is the EFFECTIVE-value view the W01/W02 passes read
+///    (they read `blocks[0]` only), so per-connection `Match` values never reach
+///    them.
+/// 2. The CONDITIONAL `Match` blocks (`User`/`Group`/`Address`/...; NOT the
+///    unconditional `Match all`, which is already folded into the effective global)
+///    gathered from the base file and every Include-reachable drop-in, in source
+///    order, with their bodies preserved AS WRITTEN. These feed the "as-written"
+///    passes (E01/E04/W03/W04/W05/W06), which scan `Block::Match` bodies -- so
+///    dir mode reaches conditional-Match content that single-file mode reports
+///    (issue #324 parity), instead of silently dropping it.
+///
+/// Returns the synthetic blocks plus a provenance map from each synthetic 1-based
+/// `line` (the global directives are numbered 1..G, then the Match headers + bodies
+/// continue G+1..N -- no collisions) to the REAL source file / line / span. Every
+/// directive's synthetic `span` is `0..0`; the real span is restored by the remap
+/// in [`lint_merged`]. The Match HEADER also gets a synthetic line + provenance,
+/// so a future pass anchoring to the header line still remaps correctly (no current
+/// pass does; E04/W05 anchor to the body directive line).
+fn build_merged(base_path: &Path, base_src: &str) -> (Vec<Block>, HashMap<usize, Provenance>) {
+    let stream = build_stream(base_path, base_src);
+
+    let mut provenance: HashMap<usize, Provenance> = HashMap::new();
+    // A monotonically increasing synthetic 1-based line, shared across the global
+    // directives and the Match headers + bodies so every number is unique.
+    let mut next_line: usize = 0;
+    let mut alloc = |source: &Path, line: usize, span: &Span| -> usize {
+        next_line += 1;
+        provenance.insert(
+            next_line,
+            Provenance {
+                source: source.to_path_buf(),
+                line,
+                span: span.clone(),
+            },
+        );
+        next_line
+    };
+
+    // Part 1: the effective global (one directive per keyword, F02 precedence).
+    let mut directives: Vec<Directive> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for entry in &stream {
+        // One effective directive per keyword, at its first appearance (the same
+        // dedup discipline F02 uses).
+        if !seen.insert(entry.keyword_lower.as_str()) {
+            continue;
+        }
+        let occurrences: Vec<&StreamEntry> = stream
+            .iter()
+            .filter(|e| e.keyword_lower == entry.keyword_lower)
+            .collect();
+        let effective = effective_entry(&occurrences);
+        let synthetic_line = alloc(&effective.source, effective.line, &effective.span);
+        directives.push(Directive {
+            keyword: effective.keyword.clone(),
+            args: effective.args.clone(),
+            line: synthetic_line,
+            span: 0..0,
+        });
+    }
+
+    let mut blocks: Vec<Block> = vec![Block::Global(directives)];
+
+    // Part 2: the conditional Match blocks, gathered from base + Include-reachable
+    // drop-ins, bodies preserved as-written, each header + directive renumbered to
+    // a fresh synthetic line with provenance to its real source.
+    for merged in collect_conditional_matches(base_path, base_src) {
+        let MergedMatch { block, source } = merged;
+        let header_line = alloc(&source, block.line, &block.span);
+        let body: Vec<Directive> = block
+            .body
+            .into_iter()
+            .map(|d| {
+                let line = alloc(&source, d.line, &d.span);
+                Directive {
+                    keyword: d.keyword,
+                    args: d.args,
+                    line,
+                    span: 0..0,
+                }
+            })
+            .collect();
+        blocks.push(Block::Match(MatchBlock {
+            criteria: block.criteria,
+            body,
+            line: header_line,
+            span: 0..0,
+        }));
+    }
+
+    (blocks, provenance)
+}
+
+/// Gather the CONDITIONAL `Match` blocks (NOT the unconditional `Match all`) of the
+/// base file and every Include-reachable drop-in, in source order, each tagged with
+/// its real source file. Mirrors [`build_stream`]'s Include reachability (top-level
+/// Includes and Includes inside a `Match all`, recursively, with the same cycle
+/// guard and depth cap), but COLLECTS the conditional `Match` blocks the
+/// effective-stream build deliberately drops. Bodies are kept verbatim (Includes
+/// inside a conditional `Match` are NOT expanded -- they are per-connection, and the
+/// as-written single-file passes never expand Includes either).
+fn collect_conditional_matches(base_path: &Path, base_src: &str) -> Vec<MergedMatch> {
+    let mut matches = Vec::new();
+    let mut chain = vec![canonical_or_as_is(base_path)];
+    // Across-walk physical-identity dedup: a drop-in reachable via two Include edges
+    // (overlapping globs, glob + explicit, or a diamond) must lint each PHYSICAL
+    // conditional `Match` block ONCE, not once per edge (single-file parity; F02's
+    // own stream walk dedups the same way). Keyed by (canonical source path, Match
+    // header line): canonicalize so symlinks / relative paths to the same file
+    // collapse, and use the header line so two DISTINCT blocks in the same file (or
+    // identical text in different files / lines) are both kept -- dedup is by
+    // physical identity, never by content. The per-ancestry `chain` cycle guard and
+    // the depth cap are unchanged; this only suppresses re-collection across edges.
+    let mut seen: std::collections::HashSet<(PathBuf, usize)> = std::collections::HashSet::new();
+    collect_matches_in(base_path, base_src, &mut chain, &mut seen, &mut matches);
+    matches
+}
+
+/// Recursive worker for [`collect_conditional_matches`]: append this file's
+/// conditional `Match` blocks (in source order, deduped by physical identity via
+/// `seen`) and follow its top-level / `Match all` Includes, sharing the same cycle
+/// guard and depth cap as [`splice_effective`].
+fn collect_matches_in(
+    file: &Path,
+    src: &str,
+    chain: &mut Vec<PathBuf>,
+    seen: &mut std::collections::HashSet<(PathBuf, usize)>,
+    matches: &mut Vec<MergedMatch>,
+) {
+    let Ok(blocks) = crate::parser::parse_config_str_located(src, file) else {
+        return;
+    };
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+    for block in blocks {
+        match block {
+            Block::Global(global) => {
+                follow_includes(base_dir, &global, chain, seen, matches);
+            }
+            Block::Match(match_block) if is_unconditional_match_all(&match_block) => {
+                // `Match all` is folded into the effective global, not a conditional
+                // block; but an Include inside it is still reachable (matches
+                // build_stream), so follow those.
+                follow_includes(base_dir, &match_block.body, chain, seen, matches);
+            }
+            Block::Match(match_block) => {
+                // A genuine conditional Match block: keep it verbatim, tagged with
+                // this file. Skip it if this PHYSICAL block (canonical source +
+                // header line) was already collected via another Include edge. Its
+                // body Includes (if any) are per-connection and not expanded (parity
+                // with single-file, which never resolves Includes).
+                let key = (canonical_or_as_is(file), match_block.line);
+                if !seen.insert(key) {
+                    continue;
+                }
+                matches.push(MergedMatch {
+                    block: match_block,
+                    source: file.to_path_buf(),
+                });
+            }
+        }
+    }
+}
+
+/// Follow every `Include` directive in `directives` (top-level or `Match all`
+/// scoped), recursing into each resolved drop-in to gather its conditional `Match`
+/// blocks. Shares [`splice_effective`]'s cycle guard and depth cap, and threads the
+/// across-walk `seen` dedup set through every level.
+fn follow_includes(
+    base_dir: &Path,
+    directives: &[Directive],
+    chain: &mut Vec<PathBuf>,
+    seen: &mut std::collections::HashSet<(PathBuf, usize)>,
+    matches: &mut Vec<MergedMatch>,
+) {
+    for directive in directives {
+        if !directive.keyword.eq_ignore_ascii_case("include") {
+            continue;
+        }
+        if chain.len() > SERVCONF_MAX_DEPTH {
+            continue;
+        }
+        for pattern in &directive.args {
+            for dropin_path in resolve_dropins(base_dir, pattern) {
+                let canon = canonical_or_as_is(&dropin_path);
+                if chain.contains(&canon) {
+                    continue;
+                }
+                let Ok(nested_src) = std::fs::read_to_string(&dropin_path) else {
+                    continue;
+                };
+                chain.push(canon);
+                collect_matches_in(&dropin_path, &nested_src, chain, seen, matches);
+                chain.pop();
+            }
+        }
+    }
 }
 
 /// The EFFECTIVE entry among all occurrences of one directive, mirroring sshd's
@@ -407,6 +707,33 @@ mod tests {
             single_file: false,
         }
     }
+
+    /// A fully STIG-complete RHEL9 base (every required directive present +
+    /// compliant, no weak crypto / deprecated keywords) so the merged W01/W02
+    /// passes stay quiet and a diamond / depth test's only finding is the deep
+    /// weak-cipher W03. Mirrors the CLI e2e `CLEAN_CONFIG`.
+    const CLEAN_CONFIG: &str = "\
+Banner /etc/issue.net
+LogLevel VERBOSE
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM yes
+HostbasedAuthentication no
+PermitUserEnvironment no
+RekeyLimit 1G 1h
+ClientAliveCountMax 1
+ClientAliveInterval 300
+Compression no
+GSSAPIAuthentication no
+KerberosAuthentication no
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+X11Forwarding no
+StrictModes yes
+PrintLastLog yes
+X11UseLocalhost yes
+";
 
     /// Build an `/etc/ssh`-layout directory and run the F02 lint over it.
     ///
@@ -1291,4 +1618,370 @@ mod tests {
     // `scenario_a_dropin_wins_over_later_main_setting_fires` (above).  No new
     // test needed here; the existing test acts as the regression guard that a
     // correct recursive implementation must not break.
+
+    // ----------------------------------------------------------------------
+    // MERGED-EFFECTIVE SINGLE-FILE SUITE (issue #324)
+    // ----------------------------------------------------------------------
+    //
+    // `lint_merged` runs the single-file dispatcher over the synthetic merged
+    // view and remaps each directive-anchored finding to its real source file +
+    // line. These tests pin the build_merged / remap invariants directly (the CLI
+    // e2e tests in rulesteward-cli/tests/e2e_sshd_lint.rs pin the end-to-end
+    // behavior; these pin the crate-internal contract).
+
+    use super::lint_merged;
+
+    /// Build an `/etc/ssh`-layout directory and run the MERGED single-file suite.
+    /// Mirrors `f02_diags` but calls `lint_merged` instead of `lint_drop_in`.
+    fn merged_diags(main: &str, dropins: &[(&str, &str)]) -> Vec<Diagnostic> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        let include_glob = dropin_dir.join("*.conf").display().to_string();
+        let main_resolved = main.replace("{DIR}", &include_glob);
+        std::fs::write(dir.path().join("sshd_config"), &main_resolved).expect("write main");
+        for (name, body) in dropins {
+            std::fs::write(dropin_dir.join(name), body).expect("write drop-in");
+        }
+        lint_merged(dir.path(), &ctx())
+    }
+
+    #[test]
+    fn merged_w03_weak_dropin_cipher_anchors_to_dropin() {
+        // The base is fine; a drop-in sets a weak CBC cipher. The merged W03 pass
+        // must fire and the finding must anchor to the DROP-IN file + its own line
+        // 1, NOT the base sshd_config -- the remap provenance must survive.
+        let diags = merged_diags(
+            "Include {DIR}\n",
+            &[("50-weak.conf", "Ciphers aes256-cbc\n")],
+        );
+        let w03: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W03").collect();
+        assert_eq!(
+            w03.len(),
+            1,
+            "merged W03 fires once for the weak cipher; got {diags:?}"
+        );
+        let d = w03[0];
+        assert!(
+            d.file.to_string_lossy().ends_with("50-weak.conf"),
+            "W03 anchors to the drop-in holding the weak cipher: {}",
+            d.file.display()
+        );
+        assert!(
+            !d.file.to_string_lossy().ends_with("/sshd_config"),
+            "W03 does not anchor to the base sshd_config: {}",
+            d.file.display()
+        );
+        assert_eq!(
+            d.line, 1,
+            "W03 line is the directive's line within the drop-in (1)"
+        );
+        assert_eq!(
+            d.source_id.as_deref(),
+            Some(d.file.display().to_string().as_str()),
+            "source_id is remapped to the same winning drop-in as file"
+        );
+    }
+
+    #[test]
+    fn merged_suite_does_not_fire_e02_e03_on_synthetic_view() {
+        // The synthetic merged view is deduped to one directive per keyword and
+        // has every Include resolved away, so the duplicate (E02) and Include (E03)
+        // structural passes must NEVER fire over it -- even when the on-disk layout
+        // has a duplicate keyword across files AND an Include directive. A drop-in
+        // duplicates PermitRootLogin (present in the base too) to exercise the dedup.
+        let diags = merged_diags(
+            "PermitRootLogin no\nInclude {DIR}\n",
+            &[("50-x.conf", "PermitRootLogin no\n")],
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-E02"),
+            "merged synthetic view is deduped -> sshd-E02 must not fire; got {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-E03"),
+            "Include is resolved away in the merged view -> sshd-E03 must not fire; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn merged_w01_absent_directive_anchors_to_base_at_line_zero() {
+        // A STIG-required directive absent from the merged view fires W01 at
+        // line 0 (file-level), anchored to the BASE sshd_config (no remap). The
+        // base here sets only PermitRootLogin (so Banner et al. are missing).
+        let diags = merged_diags("PermitRootLogin no\nInclude {DIR}\n", &[]);
+        let w01: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W01").collect();
+        assert!(
+            !w01.is_empty(),
+            "absent required directives fire W01; got {diags:?}"
+        );
+        for d in &w01 {
+            assert_eq!(
+                d.line, 0,
+                "W01 absent-directive findings are file-level (line 0)"
+            );
+            assert!(
+                d.file.to_string_lossy().ends_with("/sshd_config"),
+                "W01 anchors to the base sshd_config, not a drop-in: {}",
+                d.file.display()
+            );
+        }
+    }
+
+    #[test]
+    fn merged_w02_remaps_to_effective_dropin_not_base() {
+        // The base sets the strong value; a FIRST-included drop-in weakens it. The
+        // effective value is the drop-in's, so merged W02 must fire anchored to the
+        // drop-in (line 1), proving the remap targets the EFFECTIVE source, not the
+        // base where the directive also appears.
+        let diags = merged_diags(
+            "Include {DIR}\nPermitRootLogin no\n",
+            &[("10-weaken.conf", "PermitRootLogin yes\n")],
+        );
+        let w02: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == "sshd-W02" && d.message.to_ascii_lowercase().contains("permitrootlogin")
+            })
+            .collect();
+        assert_eq!(
+            w02.len(),
+            1,
+            "merged W02 fires once for the weakened value; got {diags:?}"
+        );
+        let d = w02[0];
+        assert!(
+            d.file.to_string_lossy().ends_with("10-weaken.conf"),
+            "W02 anchors to the effective (winning) drop-in, not the base: {}",
+            d.file.display()
+        );
+        assert_eq!(
+            d.line, 1,
+            "W02 line is the directive's line within the drop-in (1)"
+        );
+    }
+
+    #[test]
+    fn merged_w03_fires_inside_conditional_match_block_anchored_to_real_line() {
+        // The as-written W03 pass must reach a weak cipher inside a CONDITIONAL
+        // Match block in the base, anchored to the real Match-body line. The base
+        // is `PermitRootLogin no` (line 1), `Match Address ...` (line 2), then
+        // `    Ciphers aes256-cbc` (line 3) -- so W03 anchors to line 3 of the base.
+        let diags = merged_diags(
+            "PermitRootLogin no\nMatch Address 192.168.1.0/24\n    Ciphers aes256-cbc\n",
+            &[],
+        );
+        let w03: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W03").collect();
+        assert_eq!(
+            w03.len(),
+            1,
+            "merged W03 reaches the conditional-Match weak cipher; got {diags:?}"
+        );
+        let d = w03[0];
+        assert!(
+            d.file.to_string_lossy().ends_with("/sshd_config"),
+            "the weak cipher lives in the base sshd_config: {}",
+            d.file.display()
+        );
+        assert_eq!(d.line, 3, "W03 anchors to the real Match-body line (3)");
+    }
+
+    #[test]
+    fn merged_conditional_match_value_does_not_fold_into_global_w02() {
+        // The conditional-Match content feeds the as-written passes but must NOT
+        // reach the effective-value W02 pass (it reads blocks[0] only). A
+        // `PermitRootLogin yes` set ONLY inside a conditional Match block is
+        // per-connection, so W02 must stay silent for it at the global baseline.
+        let diags = merged_diags(
+            "PermitRootLogin no\nMatch User someuser\n    PermitRootLogin yes\n",
+            &[],
+        );
+        let w02_prl: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == "sshd-W02" && d.message.to_ascii_lowercase().contains("permitrootlogin")
+            })
+            .collect();
+        assert!(
+            w02_prl.is_empty(),
+            "a conditional-Match PermitRootLogin value must not fold into the global \
+             W02 view; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn merged_conditional_match_in_dropin_anchors_to_dropin() {
+        // Provenance through the Match path: a conditional Match block with a weak
+        // cipher lives in a DROP-IN, Included from the base. The W03 finding must
+        // anchor to the drop-in (line 2: Match header is line 1, Ciphers is line 2),
+        // not the base.
+        let diags = merged_diags(
+            "PermitRootLogin no\nInclude {DIR}\n",
+            &[(
+                "50-match.conf",
+                "Match Address 192.168.1.0/24\n    Ciphers aes256-cbc\n",
+            )],
+        );
+        let w03: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W03").collect();
+        assert_eq!(
+            w03.len(),
+            1,
+            "merged W03 reaches a drop-in Match body; got {diags:?}"
+        );
+        let d = w03[0];
+        assert!(
+            d.file.to_string_lossy().ends_with("50-match.conf"),
+            "W03 anchors to the drop-in holding the Match block, not the base: {}",
+            d.file.display()
+        );
+        assert_eq!(
+            d.line, 2,
+            "W03 anchors to the real Ciphers line in the drop-in (2)"
+        );
+        assert_eq!(
+            d.source_id.as_deref(),
+            Some(d.file.display().to_string().as_str()),
+            "source_id is remapped to the same winning drop-in as file"
+        );
+    }
+
+    #[test]
+    fn merged_match_all_not_re_emitted_as_conditional_block() {
+        // An unconditional `Match all` is folded into the effective global, NOT
+        // re-emitted as a conditional Match block. So a `Match all` setting a strong
+        // effective value must not produce an E04/W05 Match finding, and there is no
+        // synthetic Block::Match for it. We assert no E04/W05 here (Ciphers in a
+        // `Match all` is the effective global value, evaluated by the global passes).
+        let diags = merged_diags("Match all\n    Ciphers aes256-ctr\n", &[]);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == "sshd-E04" || d.code == "sshd-W05"),
+            "Match all is folded into the global, not a conditional Match block, so \
+             no E04/W05 Match finding; got {diags:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // #324 round-2: diamond / double-Include dedup + depth-cap boundary
+    // on the conditional-Match collection path (`collect_conditional_matches`
+    // / `follow_includes`). Crate-level mirrors of the CLI e2e tests.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn merged_diamond_include_conditional_match_reported_once() {
+        // FINDING 1 (RED today, count == 2): one drop-in `50-m.conf` reachable via
+        // TWO overlapping Include globs (`*.conf` and `5*.conf`, both matching it)
+        // holds a conditional `Match User alice` block with a weak cipher. The
+        // merged single-file W03 pass must report that one physical Match-body
+        // finding EXACTLY ONCE. `collect_conditional_matches` has a per-ANCESTRY
+        // cycle guard but no across-walk file dedup, so it visits `50-m.conf` once
+        // per Include edge and collects the conditional Match block TWICE -> two
+        // identical W03s. This asserts count == 1, so it is RED until the dedup lands.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
+        // Two overlapping globs in ONE Include line, both matching `50-m.conf`.
+        // The base is STIG-complete so the only findings are the deep Match-body
+        // W03 (and the co-firing E04); each must appear exactly once, not per edge.
+        let glob_all = dropin_dir.join("*.conf").display().to_string();
+        let glob_five = dropin_dir.join("5*.conf").display().to_string();
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("{CLEAN_CONFIG}Include {glob_all} {glob_five}\n"),
+        )
+        .expect("write main");
+        std::fs::write(
+            dropin_dir.join("50-m.conf"),
+            "Match User alice\n    Ciphers aes256-cbc\n",
+        )
+        .expect("write drop-in");
+
+        let diags = lint_merged(dir.path(), &ctx());
+        let w03: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W03").collect();
+        assert_eq!(
+            w03.len(),
+            1,
+            "a drop-in reached via two overlapping Include globs holds ONE \
+             conditional Match weak-cipher finding; merged W03 must report it \
+             EXACTLY ONCE (no per-edge duplication); got {diags:?}"
+        );
+        let d = w03[0];
+        assert!(
+            d.file.to_string_lossy().ends_with("50-m.conf"),
+            "W03 anchors to the drop-in holding the conditional Match block: {}",
+            d.file.display()
+        );
+        assert_eq!(
+            d.line, 2,
+            "W03 anchors to the real `Ciphers` line in the Match body (2)"
+        );
+    }
+
+    /// Build a straight nested-`Include` chain of `hops` files whose DEEPEST file
+    /// holds a conditional `Match User alice` block with a weak cipher, so the
+    /// chain is followed on the conditional-Match collection path (exercising
+    /// `follow_includes`). The base is STIG-complete so the only finding is the
+    /// deep W03. Returns (tempdir-kept-alive, merged diagnostics).
+    fn merged_conditional_match_chain(hops: usize) -> (tempfile::TempDir, Vec<Diagnostic>) {
+        assert!(hops >= 1, "a chain needs at least one hop");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inc_path = |i: usize| dir.path().join(format!("inc-{i}.conf"));
+        std::fs::write(
+            dir.path().join("sshd_config"),
+            format!("{CLEAN_CONFIG}Include {}\n", inc_path(1).display()),
+        )
+        .expect("write main");
+        for i in 1..hops {
+            std::fs::write(
+                inc_path(i),
+                format!("Include {}\n", inc_path(i + 1).display()),
+            )
+            .unwrap_or_else(|e| panic!("write inc-{i}.conf: {e}"));
+        }
+        std::fs::write(inc_path(hops), "Match User alice\n    Ciphers aes256-cbc\n")
+            .unwrap_or_else(|e| panic!("write inc-{hops}.conf: {e}"));
+        let diags = lint_merged(dir.path(), &ctx());
+        (dir, diags)
+    }
+
+    #[test]
+    fn merged_conditional_match_at_max_depth_fires_w03() {
+        // FINDING 2, lower edge (kills `> -> >=` and `> -> ==` at follow_includes).
+        // A chain of EXACTLY SERVCONF_MAX_DEPTH hops places the conditional Match
+        // weak cipher at the deepest level the resolver still follows (`cap > cap`
+        // is false). The correct `>` impl reaches it -> one W03 anchored to the
+        // deepest file. A `>=`/`==` mutant stops one hop short -> NO W03 -> fails.
+        let hops = super::SERVCONF_MAX_DEPTH;
+        let (_dir, diags) = merged_conditional_match_chain(hops);
+        let w03: Vec<_> = diags.iter().filter(|d| d.code == "sshd-W03").collect();
+        assert_eq!(
+            w03.len(),
+            1,
+            "a conditional-Match weak cipher at exactly SERVCONF_MAX_DEPTH ({hops}) \
+             Include hops is reached on the conditional-Match path -> one sshd-W03; \
+             got {diags:?}"
+        );
+        let deepest = format!("inc-{hops}.conf");
+        assert!(
+            w03[0].file.to_string_lossy().ends_with(&deepest),
+            "W03 anchors to the deepest file ({deepest}): {}",
+            w03[0].file.display()
+        );
+    }
+
+    #[test]
+    fn merged_conditional_match_one_past_max_depth_does_not_fire_w03() {
+        // FINDING 2, upper edge: a conditional Match finding one Include hop BEYOND
+        // SERVCONF_MAX_DEPTH is NOT reached (`cap + 1 > cap` skips the include), so
+        // no W03 fires. Together with the at-max-depth test this straddles the exact
+        // boundary, so a `>=` mutant (which also cuts at the cap) cannot survive.
+        let hops = super::SERVCONF_MAX_DEPTH + 1;
+        let (_dir, diags) = merged_conditional_match_chain(hops);
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-W03"),
+            "a conditional-Match weak cipher one hop past SERVCONF_MAX_DEPTH ({hops}) \
+             is beyond the cap and must NOT be reached -> no sshd-W03; got {diags:?}"
+        );
+    }
 }

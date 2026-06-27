@@ -140,6 +140,10 @@ pub enum TopCommand {
     #[command(subcommand)]
     Sshd(SshdCommand),
 
+    /// `sysctl.d` / `sysctl.conf` operations
+    #[command(subcommand)]
+    Sysctl(SysctlCommand),
+
     /// Print shell-completion script for the given shell
     Completions(CompletionsArgs),
 
@@ -857,6 +861,36 @@ pub struct SshdLintArgs {
     /// false-negative.
     #[arg(long, value_enum)]
     pub target: Option<TargetSelector>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SysctlCommand {
+    /// Lint a `sysctl.d`/`sysctl.conf` file (#150)
+    ///
+    /// Parses a kernel-parameter assignment file (`/etc/sysctl.conf`,
+    /// `/etc/sysctl.d/*.conf`, etc.: whole-line `#`/`;` comments, `key = value`
+    /// assignments) and runs the `sysctl.d` lint passes over it. v1 ships
+    /// sysctld-F01 (parse error) and sysctld-W01 (last-wins conflict: the same key
+    /// assigned different effective values across the drop-in precedence order).
+    /// The STIG hardening baseline (sysctld-W02) and cross-directory system
+    /// precedence are deferred follow-ups (issue #150).
+    ///
+    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
+    /// 2 errors, 3 tool failure, 5 unparseable config (sysctld-F01).
+    Lint(SysctlLintArgs),
+}
+
+/// Arguments for `rulesteward sysctl lint` (#150).
+#[derive(Debug, Parser)]
+pub struct SysctlLintArgs {
+    /// The `sysctl.d`/`sysctl.conf` file to lint (defaults to `/etc/sysctl.conf`)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Output format (human | json; SARIF and CSV are not offered for this verb
+    /// per the locked output contracts CC-3/CC-4).
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
 }
 
 #[derive(Debug, Parser)]
