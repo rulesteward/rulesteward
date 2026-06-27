@@ -308,16 +308,37 @@ fn w02_rule(keyword: &str, target: Option<TargetVersion>) -> Option<W02Rule> {
     }
 }
 
-/// Extract the directives from the global block only.
+/// The directives that make up the EFFECTIVE global configuration: the leading
+/// global (pre-Match) block, followed by the bodies of every unconditional
+/// `Match all` block.
 ///
-/// W01 and W02 check the global (pre-Match) block: STIG baselines govern the
-/// daemon-level effective configuration, not Match overrides. (Match overrides
-/// are a future sshd-W05 concern.)
-fn global_directives(blocks: &[Block]) -> &[crate::ast::Directive] {
-    match blocks.first() {
-        Some(Block::Global(directives)) => directives,
-        _ => &[],
+/// `Match all` is always active (verified rocky9 `sshd -T`), so sshd treats its
+/// body as global context, not a per-connection override. W01 (required-present)
+/// and W02 (value-vs-baseline) therefore must see those directives too; reading
+/// only the leading global block makes a directive placed under `Match all`
+/// invisible -- a false `sshd-W01` "missing" and a dropped `sshd-W02`. Conditional
+/// `Match User/Group/...` bodies are deliberately EXCLUDED: a weak value there is
+/// `sshd-W05`'s concern, not a global finding.
+///
+/// Single-file scope note (issue #336, owner-confirmed Option A): this is the
+/// "as-written" view -- every present value is evaluated, NOT a first-`Match all`-
+/// wins effective-value dedup. If the global section sets a weak value that a later
+/// `Match all` overrides to a compliant one, W02 still reports the global line.
+/// That is intentional: effective-value precedence is the dir-mode / sshd-F02
+/// path's job ([`crate::lints::drop_in`]'s `build_merged`); do NOT "fix" it into a
+/// dedup here.
+fn effective_global_directives(blocks: &[Block]) -> Vec<&crate::ast::Directive> {
+    let mut directives = Vec::new();
+    for block in blocks {
+        match block {
+            Block::Global(global) => directives.extend(global.iter()),
+            Block::Match(match_block) if match_block.is_unconditional_all() => {
+                directives.extend(match_block.body.iter());
+            }
+            Block::Match(_) => {}
+        }
     }
+    directives
 }
 
 // ---------------------------------------------------------------------------
@@ -349,14 +370,12 @@ fn global_directives(blocks: &[Block]) -> &[crate::ast::Directive] {
 /// is the canonical comparison key).
 #[must_use]
 pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
-    let directives = global_directives(blocks);
+    let directives = effective_global_directives(blocks);
     let required = required_set(ctx.target);
 
     // Build the set of present keyword lowercases.
-    let present: std::collections::HashSet<String> = directives
-        .iter()
-        .map(crate::ast::Directive::keyword_lower)
-        .collect();
+    let present: std::collections::HashSet<String> =
+        directives.iter().map(|d| d.keyword_lower()).collect();
 
     let mut diags = Vec::new();
     for &req in required {
@@ -412,7 +431,7 @@ pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
 /// strict literal, so W02 must not fire for any Banner value.
 #[must_use]
 pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
-    let directives = global_directives(blocks);
+    let directives = effective_global_directives(blocks);
     let mut diags = Vec::new();
 
     for directive in directives {
@@ -585,6 +604,76 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d.code == "sshd-W02"),
             "Compression is not a RHEL10 STIG control; W02 must not fire"
+        );
+    }
+
+    // --- issue #336: unconditional `Match all` folds into the effective global ---
+
+    #[test]
+    fn w02_evaluates_unconditional_match_all_as_global() {
+        // `Match all` is always-active global context: a weak STIG value there is a
+        // W02 finding. Previously dropped (W02 read only the leading global block).
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("Match all\n    PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "a weak STIG value under `Match all` is a W02 finding; got {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W02");
+        assert_eq!(
+            diags[0].line, 2,
+            "W02 anchors at the real Match-body directive line (line 2)"
+        );
+    }
+
+    #[test]
+    fn w02_compliant_value_under_match_all_is_clean() {
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("Match all\n    PermitRootLogin no\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert!(
+            diags.is_empty(),
+            "a compliant value under `Match all` must not fire W02; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn w02_does_not_fold_a_conditional_match() {
+        // A weak value in a CONDITIONAL Match is W05's domain, not W02's: W02 must
+        // fold only the UNCONDITIONAL `Match all`, never a conditional Match.
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin no\nMatch Group admins\n    PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert!(
+            diags.is_empty(),
+            "a conditional Match is not global context; W02 must not fire; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn w01_counts_required_directive_present_only_in_match_all() {
+        // A required directive present ONLY inside `Match all` is effectively set
+        // (always active), so W01 must NOT report it missing (issue #336).
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin no\nMatch all\n    Banner /etc/issue.net\n");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("'banner'")),
+            "banner present inside `Match all` must not be reported missing; got {diags:?}"
         );
     }
 }

@@ -422,7 +422,7 @@ fn collect_matches_in(
             Block::Global(global) => {
                 follow_includes(base_dir, &global, chain, seen, matches);
             }
-            Block::Match(match_block) if is_unconditional_match_all(&match_block) => {
+            Block::Match(match_block) if match_block.is_unconditional_all() => {
                 // `Match all` is folded into the effective global, not a conditional
                 // block; but an Include inside it is still reachable (matches
                 // build_stream), so follow those.
@@ -642,7 +642,7 @@ fn effective_directives_of(src: &str, file: &Path) -> Vec<(crate::ast::Directive
     for block in blocks {
         match block {
             Block::Global(global) => directives.extend(global.into_iter().map(|d| (d, false))),
-            Block::Match(match_block) if is_unconditional_match_all(&match_block) => {
+            Block::Match(match_block) if match_block.is_unconditional_all() => {
                 directives.extend(match_block.body.into_iter().map(|d| (d, true)));
             }
             // Conditional Match block: per-connection, not part of the
@@ -651,14 +651,6 @@ fn effective_directives_of(src: &str, file: &Path) -> Vec<(crate::ast::Directive
         }
     }
     directives
-}
-
-/// Whether a Match block is the unconditional `Match all`: exactly one criterion
-/// whose keyword is case-insensitively `all`. `all` is always active (verified
-/// rocky9 `sshd -T`); any other criterion (or `all` combined with another) is
-/// connection-conditional and out of scope.
-fn is_unconditional_match_all(block: &MatchBlock) -> bool {
-    block.criteria.len() == 1 && block.criteria[0].keyword.eq_ignore_ascii_case("all")
 }
 
 /// Build a [`StreamEntry`] from a parsed directive, the file it came from, and

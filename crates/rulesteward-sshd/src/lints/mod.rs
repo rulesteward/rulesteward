@@ -128,7 +128,7 @@ pub fn lint(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnos
 
 #[cfg(test)]
 mod tests {
-    use super::{SshdLintContext, anchored, lint, parse_error_to_diagnostic};
+    use super::{SshdLintContext, TargetVersion, anchored, lint, parse_error_to_diagnostic};
     use crate::parser::LocatedParseError;
     use rulesteward_core::{Diagnostic, Severity};
 
@@ -206,6 +206,36 @@ mod tests {
             structural_or_error.is_empty(),
             "a syntactically valid config must not produce structural (sshd-E0x) or \
              fatal (sshd-F01) diagnostics; got {structural_or_error:?}"
+        );
+    }
+
+    #[test]
+    fn match_all_weak_value_reports_w02_not_w05_or_e04() {
+        // issue #336 full-dispatcher integration: a weak STIG value inside an
+        // unconditional `Match all` is a GLOBAL weakness. It must surface as
+        // sshd-W02, never sshd-W05 (`Match all` is not a conditional override) and
+        // never sshd-E04 (PermitRootLogin is Match-legal regardless).
+        let blocks = crate::parser::parse_config_str_located(
+            "Match all\n    PermitRootLogin yes\n",
+            std::path::Path::new("/etc/ssh/sshd_config"),
+        )
+        .expect("valid config parses");
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let diags = lint(&blocks, std::path::Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert!(
+            diags.iter().any(|d| d.code == "sshd-W02"),
+            "weak value under `Match all` must report the global W02; got {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-W05"),
+            "`Match all` is not a conditional override; W05 must not fire; got {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-E04"),
+            "PermitRootLogin is Match-legal; E04 must not fire; got {diags:?}"
         );
     }
 }

@@ -76,6 +76,27 @@ fn fires_e04_with_exit_two() {
 }
 
 #[test]
+fn match_all_with_strong_global_only_directive_is_clean() {
+    // issue #336: a global-only directive (Ciphers) inside an unconditional
+    // `Match all` is valid global context -- no sshd-E04. With a strong cipher and
+    // an otherwise STIG-compliant base, the file is lint-clean (exit 0).
+    let cfg = config_file(&format!(
+        "{CLEAN_CONFIG}Match all\n    Ciphers aes256-ctr\n"
+    ));
+    let out = run_lint(cfg.path(), &["--target", "rhel9"]);
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        !stdout.contains("sshd-E04"),
+        "Ciphers under `Match all` is global context; E04 must not fire: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an otherwise-clean config with a strong cipher under `Match all` exits 0: {stdout}"
+    );
+}
+
+#[test]
 fn fires_e03_with_exit_two() {
     let cfg = config_file("Include /nonexistent-rulesteward-e03-e2e/missing.conf\n");
     let out = run_lint(cfg.path(), &[]);
