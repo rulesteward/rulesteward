@@ -32,7 +32,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Block;
+use crate::ast::{Block, MatchBlock};
 use crate::parser::LocatedParseError;
 
 /// Target OS / OpenSSH baseline for the version-aware lints (sshd-W01..W04).
@@ -69,6 +69,30 @@ impl Default for SshdLintContext {
             single_file: true,
         }
     }
+}
+
+/// Whether a `Match` block is the unconditional `Match all`: exactly one criterion
+/// whose keyword is case-insensitively `all` AND which carries no value.
+///
+/// `Match all` is always active (verified rocky9 `sshd -T`), so its body is GLOBAL
+/// context, not a per-connection override: the structural passes (sshd-E04 illegal-
+/// in-Match, sshd-W05 permissive override) skip it, and the STIG passes (sshd-W01 /
+/// sshd-W02) fold its body into the effective-global set via
+/// `stig::effective_global_directives`. Shared by `structural`, `stig`, and
+/// `drop_in` so all three classify `Match all` identically.
+///
+/// The `values.is_empty()` guard is load-bearing: real sshd does NOT accept `all`
+/// with an argument. `Match all=` / `Match all=foo` is an "Unsupported Match
+/// attribute" that `sshd -t` rejects (rc 255; OpenSSH `servconf.c` `match_cfg_line`,
+/// where `all` is absent from the `=`-split allowlist and the `all` handler rejects
+/// any argument). The tolerant parser splits criteria on `=` first, so `all=`
+/// arrives as a single criterion `{keyword:"all", values:[""]}`; the non-empty value
+/// marks it as NOT the genuine valueless `all`, so it stays conditional and the
+/// structural passes still apply to it (issue #336).
+pub(crate) fn is_unconditional_match_all(block: &MatchBlock) -> bool {
+    block.criteria.len() == 1
+        && block.criteria[0].keyword.eq_ignore_ascii_case("all")
+        && block.criteria[0].values.is_empty()
 }
 
 /// Build a byte-anchored `Diagnostic` with the sshd emission convention: column
@@ -128,7 +152,7 @@ pub fn lint(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnos
 
 #[cfg(test)]
 mod tests {
-    use super::{SshdLintContext, anchored, lint, parse_error_to_diagnostic};
+    use super::{SshdLintContext, TargetVersion, anchored, lint, parse_error_to_diagnostic};
     use crate::parser::LocatedParseError;
     use rulesteward_core::{Diagnostic, Severity};
 
@@ -206,6 +230,36 @@ mod tests {
             structural_or_error.is_empty(),
             "a syntactically valid config must not produce structural (sshd-E0x) or \
              fatal (sshd-F01) diagnostics; got {structural_or_error:?}"
+        );
+    }
+
+    #[test]
+    fn match_all_weak_value_reports_w02_not_w05_or_e04() {
+        // issue #336 full-dispatcher integration: a weak STIG value inside an
+        // unconditional `Match all` is a GLOBAL weakness. It must surface as
+        // sshd-W02, never sshd-W05 (`Match all` is not a conditional override) and
+        // never sshd-E04 (PermitRootLogin is Match-legal regardless).
+        let blocks = crate::parser::parse_config_str_located(
+            "Match all\n    PermitRootLogin yes\n",
+            std::path::Path::new("/etc/ssh/sshd_config"),
+        )
+        .expect("valid config parses");
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let diags = lint(&blocks, std::path::Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert!(
+            diags.iter().any(|d| d.code == "sshd-W02"),
+            "weak value under `Match all` must report the global W02; got {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-W05"),
+            "`Match all` is not a conditional override; W05 must not fire; got {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "sshd-E04"),
+            "PermitRootLogin is Match-legal; E04 must not fire; got {diags:?}"
         );
     }
 }

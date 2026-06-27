@@ -422,7 +422,7 @@ fn collect_matches_in(
             Block::Global(global) => {
                 follow_includes(base_dir, &global, chain, seen, matches);
             }
-            Block::Match(match_block) if is_unconditional_match_all(&match_block) => {
+            Block::Match(match_block) if super::is_unconditional_match_all(&match_block) => {
                 // `Match all` is folded into the effective global, not a conditional
                 // block; but an Include inside it is still reachable (matches
                 // build_stream), so follow those.
@@ -642,7 +642,7 @@ fn effective_directives_of(src: &str, file: &Path) -> Vec<(crate::ast::Directive
     for block in blocks {
         match block {
             Block::Global(global) => directives.extend(global.into_iter().map(|d| (d, false))),
-            Block::Match(match_block) if is_unconditional_match_all(&match_block) => {
+            Block::Match(match_block) if super::is_unconditional_match_all(&match_block) => {
                 directives.extend(match_block.body.into_iter().map(|d| (d, true)));
             }
             // Conditional Match block: per-connection, not part of the
@@ -651,14 +651,6 @@ fn effective_directives_of(src: &str, file: &Path) -> Vec<(crate::ast::Directive
         }
     }
     directives
-}
-
-/// Whether a Match block is the unconditional `Match all`: exactly one criterion
-/// whose keyword is case-insensitively `all`. `all` is always active (verified
-/// rocky9 `sshd -T`); any other criterion (or `all` combined with another) is
-/// connection-conditional and out of scope.
-fn is_unconditional_match_all(block: &MatchBlock) -> bool {
-    block.criteria.len() == 1 && block.criteria[0].keyword.eq_ignore_ascii_case("all")
 }
 
 /// Build a [`StreamEntry`] from a parsed directive, the file it came from, and
@@ -1701,6 +1693,30 @@ X11UseLocalhost yes
         assert!(
             !diags.iter().any(|d| d.code == "sshd-E03"),
             "Include is resolved away in the merged view -> sshd-E03 must not fire; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn merged_follows_match_all_include_to_collect_nested_conditional_match() {
+        // An `Include` INSIDE an unconditional `Match all` is unconditionally active,
+        // so `collect_conditional_matches` must FOLLOW it and gather the genuine
+        // CONDITIONAL `Match` block in the included drop-in. That conditional Match
+        // sets a global-only directive (`Ciphers`), which the merged single-file
+        // suite flags as sshd-E04. If `Match all` were instead collected AS a
+        // conditional block (so its Includes were never followed), this nested E04
+        // would be silently dropped.
+        //
+        // In-crate (not only the CLI e2e) so the per-package mutation run -- which
+        // does not execute the rulesteward-cli e2e tests -- still kills the
+        // `collect_matches_in` `Match all`-guard mutant. (issue #336)
+        let diags = merged_diags(
+            "PermitRootLogin no\nMatch all\nInclude {DIR}\n",
+            &[("50-x.conf", "Match User bob\n    Ciphers aes256-ctr\n")],
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "sshd-E04"),
+            "a conditional Match reached via a `Match all` Include must be linted \
+             (E04 on the global-only Ciphers); got {diags:?}"
         );
     }
 

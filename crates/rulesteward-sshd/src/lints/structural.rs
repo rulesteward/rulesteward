@@ -409,6 +409,12 @@ pub fn e04(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
             // E04 only inspects Match bodies; the global block has no restriction.
             continue;
         };
+        if super::is_unconditional_match_all(match_block) {
+            // `Match all` is always active -- its body IS global context, not a
+            // conditional Match, so no directive in it is "illegal in a Match
+            // block". The global-only directives there are valid. (issue #336)
+            continue;
+        }
         for directive in &match_block.body {
             let keyword = directive.keyword_lower();
             // Skip keywords that are unknown to the target sshd version (or to any
@@ -462,6 +468,12 @@ pub fn w05(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
         let Block::Match(match_block) = block else {
             continue;
         };
+        if super::is_unconditional_match_all(match_block) {
+            // `Match all` is global context, not a conditional override; a weak
+            // value there is a global sshd-W02 finding, not a W05 escape hatch.
+            // (issue #336)
+            continue;
+        }
         for directive in &match_block.body {
             let kw = directive.keyword_lower();
             // A Match-illegal directive never takes effect inside the block, so
@@ -602,6 +614,67 @@ mod e04_tests {
     fn global_block_is_not_checked() {
         // Ciphers is perfectly legal in the global block; E04 only inspects Match.
         assert!(run("Ciphers aes256-ctr\n").is_empty());
+    }
+
+    // --- issue #336: unconditional `Match all` is GLOBAL context, not conditional ---
+
+    #[test]
+    fn unconditional_match_all_is_global_context_no_e04() {
+        // `Match all` is always active, so its body IS global context. A global-only
+        // directive (Ciphers) there is valid and must NOT fire E04 (issue #336).
+        assert!(
+            run("Match all\n    Ciphers aes256-ctr\n").is_empty(),
+            "Ciphers under unconditional `Match all` is global context; E04 must not fire"
+        );
+    }
+
+    #[test]
+    fn match_all_keyword_is_case_insensitive_for_e04_skip() {
+        // The `all` criterion is case-insensitive; `Match All` is still the
+        // unconditional global block and must be skipped by E04.
+        assert!(
+            run("Match All\n    Ciphers aes256-ctr\n").is_empty(),
+            "`Match All` (capitalized) is the unconditional global context; E04 must not fire"
+        );
+    }
+
+    #[test]
+    fn conditional_match_still_fires_e04_after_match_all_fix() {
+        // Regression guard: a GENUINE conditional Match still flags a global-only
+        // directive. The `Match all` skip must not over-suppress conditional Matches.
+        let diags = run("Match User bob\n    Ciphers aes256-ctr\n");
+        assert_eq!(diags.len(), 1, "conditional Match must still fire E04");
+        assert_eq!(diags[0].code, "sshd-E04");
+    }
+
+    #[test]
+    fn match_all_with_extra_criterion_is_conditional_fires_e04() {
+        // `all` combined with another criterion is connection-conditional (two
+        // criteria), NOT the unconditional `Match all`, so E04 still applies.
+        let diags = run("Match all User bob\n    Ciphers aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`Match all User bob` has two criteria (conditional); E04 still fires"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
+    }
+
+    #[test]
+    fn match_all_with_equals_glued_token_is_not_unconditional() {
+        // `Match all=` is NOT the unconditional `Match all`: real sshd rejects
+        // `all=` as an unsupported Match attribute (servconf.c `match_cfg_line`,
+        // rc 255). The tolerant parser yields a single criterion whose value is the
+        // empty string (`{keyword:"all", values:[""]}`); the NON-empty value marks
+        // it as NOT the valueless `all`, so it stays conditional and E04 still fires
+        // on the Match-illegal `Ciphers` directive. (issue #336 adversarial finding)
+        let diags = run("Match all=\n    Ciphers aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`Match all=` is malformed, not unconditional `all`; E04 must still fire"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
     }
 
     #[test]
@@ -1869,6 +1942,38 @@ mod w05_tests {
             "message must name the violating value; got: {}",
             diags[0].message
         );
+    }
+
+    // --- issue #336: unconditional `Match all` is NOT a conditional override ---
+
+    #[test]
+    fn unconditional_match_all_is_not_a_w05_override() {
+        // `Match all` is always-active global context, not a conditional override.
+        // A weak STIG value there is a GLOBAL weakness (W02's job), never W05.
+        let src = "PermitRootLogin no\nMatch all\n    PermitRootLogin yes\n";
+        assert!(
+            run_with_target(src, TargetVersion::Rhel9).is_empty(),
+            "`Match all` is not a Match override; W05 must not fire"
+        );
+    }
+
+    #[test]
+    fn match_all_case_insensitive_is_not_a_w05_override() {
+        // `Match All` (capitalized) is still the unconditional global block.
+        let src = "PermitRootLogin no\nMatch All\n    PermitRootLogin yes\n";
+        assert!(
+            run_with_target(src, TargetVersion::Rhel9).is_empty(),
+            "`Match All` is the unconditional global block; W05 must not fire"
+        );
+    }
+
+    #[test]
+    fn conditional_match_still_fires_w05_after_match_all_fix() {
+        // Regression guard: a genuine conditional Match override still fires W05.
+        let src = "PermitRootLogin no\nMatch Group admins\n    PermitRootLogin yes\n";
+        let diags = run_with_target(src, TargetVersion::Rhel9);
+        assert_eq!(diags.len(), 1, "conditional Match override still fires W05");
+        assert_eq!(diags[0].code, "sshd-W05");
     }
 
     // --- FIRES: NumericCeiling(600) baseline violation via ClientAliveInterval ---
