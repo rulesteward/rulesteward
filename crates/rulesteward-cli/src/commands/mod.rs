@@ -14,5 +14,6 @@ pub mod report;
 pub mod selinux;
 pub mod simulate;
 pub mod sshd;
+pub mod sysctl;
 pub mod target_probe;
 pub mod trustdb_compute;

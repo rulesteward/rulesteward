@@ -114,6 +114,17 @@ examine_globs = [
     # Default impl, so their only generated mutant is unviable and they add no
     # survivors. catalog.rs is const data + #[cfg(test)] only (no mutable fns).
     "crates/rulesteward-sshd/src/lints/**/*.rs",
+    # sysctl.d/sysctl.conf backend (#150 Phase 0): the parser + lints dispatcher +
+    # catalog are the real Phase-0 logic and the mutation target. Added in Phase 0
+    # BEFORE the F01/W01 pass bodies exist: a new file outside this allowlist
+    # mutates zero times and its gate false-passes (the 4a vacuity lesson) - the
+    # allowlist entry must precede the code, never follow it. The still-stub
+    # parser::lint_str / lints::lint return `Vec::new()`; Diagnostic has no Default
+    # impl, so their only generated mutant is unviable and they add no survivors.
+    # catalog.rs is const data + #[cfg(test)] only (no mutable fns).
+    "crates/rulesteward-sysctld/src/parser.rs",
+    "crates/rulesteward-sysctld/src/lints/**/*.rs",
+    "crates/rulesteward-sysctld/src/catalog.rs",
     # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",

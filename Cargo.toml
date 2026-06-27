@@ -28,6 +28,7 @@ rulesteward-fapolicyd = { path = "crates/rulesteward-fapolicyd" }
 rulesteward-selinux = { path = "crates/rulesteward-selinux", default-features = false }
 rulesteward-selinux-sys = { path = "crates/rulesteward-selinux-sys" }
 rulesteward-sshd = { path = "crates/rulesteward-sshd" }
+rulesteward-sysctld = { path = "crates/rulesteward-sysctld" }
 ariadne = "0.6"
 assert_cmd = "2"
 # JSON Schema validator (test-only): the 3e SARIF round-trip test validates rendered
