@@ -36,12 +36,25 @@ fn lint(args: &SysctlLintArgs) -> i32 {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
 
-    // Phase 0 lints a single file. The full sysctl.d/ search-path enumeration
-    // (the /etc vs /run vs /usr/lib precedence order) lands with the W01 impl
-    // (issue #150); a directory target is treated as a tool failure for now.
-    // TODO(#150): enumerate `*.conf` in load order for a directory target.
+    // A directory target is a `sysctl.d/` drop-in directory: enumerate its
+    // `*.conf` files in lexicographic order and run the cross-file last-wins W01
+    // pass (issue #150). The full cross-DIRECTORY search-path precedence (/etc vs
+    // /run vs /usr/lib) is a deferred follow-up; this reasons within one directory.
+    // Each finding is anchored to the real drop-in file it came from. Dir-mode v1
+    // does not stage per-file sources, so the human renderer prints findings as
+    // plain `file:line:col` (no ariadne snippet); staging the drop-in sources for
+    // snippet rendering is a deferred follow-up.
+    if path.is_dir() {
+        let diags = rulesteward_sysctld::parser::lint_dir(&path);
+        let sources = std::collections::BTreeMap::new();
+        emit(args, &diags, &sources);
+        return exit_code::compute(&diags, false);
+    }
+
+    // A path that is neither a file nor a directory (e.g. missing) is a tool
+    // failure.
     if !path.is_file() {
-        eprintln!("sysctl lint: not a file: {}", path.display());
+        eprintln!("sysctl lint: not a file or directory: {}", path.display());
         return EXIT_TOOL_FAILURE;
     }
 
@@ -60,20 +73,28 @@ fn lint(args: &SysctlLintArgs) -> i32 {
     // F01/W01 passes anchor findings.
     let mut sources = std::collections::BTreeMap::new();
     sources.insert(path.display().to_string(), source);
+    emit(args, &diags, &sources);
 
+    exit_code::compute(&diags, false)
+}
+
+/// Render `diags` via the format the operator selected and print non-empty
+/// output. Shared by the file and directory paths so both surface identical
+/// human / JSON envelopes.
+fn emit(
+    args: &SysctlLintArgs,
+    diags: &[rulesteward_core::Diagnostic],
+    sources: &std::collections::BTreeMap<String, String>,
+) {
     let output = match args.format {
-        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
+        HumanJsonFormat::Human => crate::output::human::render(diags, sources),
         HumanJsonFormat::Json => render_envelope(
             "sysctl-lint",
             SYSCTL_LINT_SCHEMA_VERSION,
-            &SysctlLintPayload {
-                diagnostics: &diags,
-            },
+            &SysctlLintPayload { diagnostics: diags },
         ),
     };
     if !output.is_empty() {
         print!("{output}");
     }
-
-    exit_code::compute(&diags, false)
 }

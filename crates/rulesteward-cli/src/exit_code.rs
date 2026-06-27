@@ -27,7 +27,7 @@ pub const EXIT_NO_OP: i32 = 9;
 ///
 /// Order matters:
 /// 1. `tool_err == true` → [`EXIT_TOOL_FAILURE`] (3).
-/// 2. Any parse-failure code (`fapd-F01` / `au-F01` / `sshd-F01`) → [`EXIT_RULE_PARSE_ERROR`] (5).
+/// 2. Any parse-failure code (`fapd-F01` / `au-F01` / `sshd-F01` / `sysctld-F01`) → [`EXIT_RULE_PARSE_ERROR`] (5).
 /// 3. Any `Fatal` or `Error` → [`EXIT_ERRORS`] (2).
 /// 4. Any `Warning` → [`EXIT_WARNINGS`] (1).
 /// 5. Otherwise → [`EXIT_CLEAN`] (0).
@@ -38,10 +38,12 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     }
     // Each backend's parse-failure code maps to exit 5 (spec section 9.4 uses
     // one numbering across modules; D3, session 6a).
-    if diags
-        .iter()
-        .any(|d| matches!(d.code.as_ref(), "fapd-F01" | "au-F01" | "sshd-F01"))
-    {
+    if diags.iter().any(|d| {
+        matches!(
+            d.code.as_ref(),
+            "fapd-F01" | "au-F01" | "sshd-F01" | "sysctld-F01"
+        )
+    }) {
         return EXIT_RULE_PARSE_ERROR;
     }
     if diags
@@ -110,6 +112,19 @@ mod tests {
         // merely Fatal and would fall through to EXIT_ERRORS (2).
         assert_eq!(
             compute(&[diag(Severity::Fatal, "au-F01")], false),
+            EXIT_RULE_PARSE_ERROR
+        );
+    }
+
+    #[test]
+    fn sysctld_f01_returns_five() {
+        // The sysctld backend's parse-failure code sysctld-F01 maps to the same
+        // EXIT_RULE_PARSE_ERROR as the other backends' F01 (issue #150); without
+        // the mapping it would fall through to EXIT_ERRORS (2). exit_code.rs is
+        // outside the mutation examine_globs, so this unit test is the guard that
+        // pins the `| "sysctld-F01"` arm.
+        assert_eq!(
+            compute(&[diag(Severity::Fatal, "sysctld-F01")], false),
             EXIT_RULE_PARSE_ERROR
         );
     }
