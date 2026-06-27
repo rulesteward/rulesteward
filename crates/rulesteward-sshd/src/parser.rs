@@ -3,8 +3,14 @@
 //! # Grounding (`sshd_config(5)`, OpenBSD canonical source)
 //! - Line-oriented: each non-comment, non-blank line is `Keyword arg [arg ...]`,
 //!   whitespace-separated, no `=`.
-//! - Comments are WHOLE-LINE only: a line whose first non-blank character is `#`.
-//!   There are no inline comments (unlike shell). Blank lines are ignored.
+//! - Comments are WHOLE-LINE when the first non-blank character is `#`. sshd ALSO
+//!   supports whitespace-delimited `#` as an inline end-of-line comment (verified
+//!   OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers aes128-cbc # legacy` is a valid
+//!   line that loads `aes128-cbc`. This tokenizer does NOT strip inline comments at
+//!   the parse layer -- the `#` token and any trailing words are kept as additional
+//!   args. Algorithm-list lints (W03/W06) strip a trailing `#`-comment before their
+//!   single-arg check via `algo_list_value`; broader parser-level inline-comment
+//!   handling for other directives is future work. Blank lines are ignored.
 //! - Keywords are case-insensitive; arguments are case-sensitive.
 //! - A single `=` separates a keyword from its value (OpenSSH's `strdelim` with
 //!   `split_equals`): `MaxAuthTries=4` and `MaxAuthTries = 4` both mean
@@ -146,8 +152,10 @@ pub fn parse_config_str_located(
 /// `strdelim` with `split_equals`. A `=` INSIDE an argument value is literal
 /// (`SetEnv FOO=bar` yields `["SetEnv", "FOO=bar"]`), since the delimiter is only
 /// consumed at the keyword/value boundary. A `"` is only special at a token
-/// boundary (opens a quoted token to the closing `"`); a `#` is never special
-/// here (no inline comments).
+/// boundary (opens a quoted token to the closing `"`). A `#` glued inside a
+/// bareword is literal (`Banner x#y` => `["Banner", "x#y"]`); a whitespace-
+/// delimited `#` that starts its own token is kept literally (inline-comment
+/// stripping is deferred to the lint layer via `algo_list_value`).
 ///
 /// # Errors
 /// Returns the error message for an unterminated quoted string.
@@ -203,7 +211,9 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
 
 /// Read one argument token: a double-quoted string (quotes stripped, no escapes)
 /// when it starts with `"`, otherwise a bareword running to the next whitespace
-/// (a `=` or `#` inside the bareword is literal).
+/// (a `=` or `#` inside the bareword is literal; a whitespace-delimited `#` that
+/// starts a new token is kept as a literal token -- inline-comment stripping is
+/// handled by lints, not by the tokenizer).
 ///
 /// # Errors
 /// Returns the error message for an unterminated quoted string.
