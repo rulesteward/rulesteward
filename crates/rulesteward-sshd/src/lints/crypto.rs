@@ -857,6 +857,27 @@ mod w06_tests {
             diags[0].message
         );
     }
+
+    #[test]
+    fn comma_glued_hash_does_not_fire_w06() {
+        // A `#` glued AFTER a comma (no whitespace before it) is NOT an inline
+        // comment: the operator value stays ONE token (`+aes128-cbc,#legacy`), and
+        // sshd parses it as a single malformed cipher spec, REJECTING the line
+        // ("Bad SSH2 cipher spec", rc 255 on OpenSSH 10.2p1) -- the daemon never
+        // loads it. Only a WHITESPACE-delimited `#` starts a comment (see
+        // `inline_comment_line_still_fires_w06`). The comment-strip helper only
+        // strips a `#` that STARTS its own arg, so it leaves the bare weak token
+        // exposed and W06 currently FIRES -- a false positive in the #325 class.
+        // W06 must NOT fire on these non-loading lines.
+        assert!(
+            run("Ciphers +aes256-ctr,aes128-cbc,#x\n").is_empty(),
+            "comma-glued # after a `+` list (one malformed token, sshd rc 255) must not fire W06"
+        );
+        assert!(
+            run("Ciphers +aes128-cbc,#legacy\n").is_empty(),
+            "comma-glued # in a `+` value (one malformed token, sshd rc 255) must not fire W06"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1633,6 +1654,28 @@ mod w03_tests {
         assert!(
             run("Ciphers aes128-cbc#legacy\n").is_empty(),
             "a glued value#comment token is a non-loading sshd reject and must not fire W03"
+        );
+    }
+
+    #[test]
+    fn comma_glued_hash_does_not_fire_w03() {
+        // A `#` glued AFTER a comma (no whitespace before it) is NOT an inline
+        // comment: the tokenizer keeps the whole value as ONE arg
+        // (`aes128-cbc,#legacy`), and sshd parses it as a single malformed cipher
+        // spec, REJECTING the line ("Bad SSH2 cipher spec", rc 255 on OpenSSH
+        // 10.2p1), so the daemon never loads it. Only a WHITESPACE-delimited `#`
+        // starts a comment (see `inline_comment_line_still_fires_w03`); a
+        // comma-glued `#` is part of the malformed token. The comment-strip helper
+        // only strips a `#` that STARTS its own arg, so it leaves the bare weak
+        // token before the `#` exposed and W03 currently FIRES -- a false positive
+        // in the #325 class. W03 must NOT fire on these non-loading lines.
+        assert!(
+            run("Ciphers aes128-cbc,#legacy\n").is_empty(),
+            "comma-glued # (one malformed token, sshd rc 255) must not fire W03"
+        );
+        assert!(
+            run("Ciphers aes256-ctr,aes128-cbc,#x\n").is_empty(),
+            "comma-glued # after a list (one malformed token, sshd rc 255) must not fire W03"
         );
     }
 }
