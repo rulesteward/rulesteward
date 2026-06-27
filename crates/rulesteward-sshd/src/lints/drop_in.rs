@@ -883,19 +883,19 @@ mod tests {
     // NESTED INCLUDE TESTS (issue #323)
     // ----------------------------------------------------------------------
     //
-    // Background: the current build_stream() expands Include one level deep only
-    // (main -> sshd_config.d/*.conf).  A drop-in that itself contains an Include
-    // of a SECOND file is NOT followed, so a baseline-failing value set in that
-    // second-level file is a silent false negative.
+    // Background: build_stream() PREVIOUSLY expanded Include one level deep only
+    // (main -> sshd_config.d/*.conf).  A drop-in that itself contained an Include
+    // of a SECOND file was NOT followed, so a baseline-failing value set in that
+    // second-level file was a silent false negative.
     //
-    // The fix (a separate implementer) makes build_stream() resolve Include
-    // recursively with a cycle guard, propagating the enclosing is_match_all tag
-    // and stamping each spliced directive with the file it actually came from.
+    // This fix makes build_stream() resolve Include recursively with a cycle
+    // guard, propagating the enclosing is_match_all tag and stamping each spliced
+    // directive with the file it actually came from.
     //
-    // Tests #1 and #2 below are RED under the current one-level impl and must
-    // turn GREEN after the fix.  Test #3 is a safety guard (must stay GREEN both
-    // before and after the fix).  Test #4 references an existing test that
-    // already covers the non-nested baseline.
+    // Tests #1 and #2 below WERE RED under the old one-level impl and are now
+    // GREEN under the recursive impl.  Test #3 is a safety guard (green both
+    // before and after the fix).  Test #4 references an existing test that already
+    // covers the non-nested baseline.
 
     /// Build a layout where drop-in A itself contains a verbatim `Include` of a
     /// second file (by absolute path) that is NOT inside the `*.conf` glob pattern.
@@ -933,11 +933,11 @@ mod tests {
         (dir, diags)
     }
 
-    // -- Test #1 (RED under current impl) -------------------------------------
+    // -- Test #1 (was RED under the old one-level impl; now GREEN) ------------
 
     #[test]
     fn nested_include_baseline_override_fires_f02() {
-        // RED under current one-level impl; must turn GREEN after the fix.
+        // Was RED under the old one-level impl; now GREEN under the recursive impl.
         //
         // Layout:
         //   sshd_config:       Include sshd_config.d/*.conf
@@ -958,10 +958,10 @@ mod tests {
         //   * set in 2+ locations: second.conf (via nested include) + main file
         //   * effective source: second.conf (a drop-in-chain file, NOT the main file)
         //
-        // Under the current one-level impl, 10-a.conf's Include directive is
-        // treated as an unknown directive (or skipped) and second.conf is never
-        // read, so the only location for PermitRootLogin is the main file (`no`),
-        // the 2+ location requirement is not met, and F02 does NOT fire -> RED.
+        // Under the OLD one-level impl, 10-a.conf's Include directive was
+        // treated as an unknown directive (or skipped) and second.conf was never
+        // read, so the only location for PermitRootLogin was the main file (`no`),
+        // the 2+ location requirement was not met, and F02 did NOT fire (RED).
         let main = "Include {DIR}\nPermitRootLogin no\n";
         let dropin_a = "Include {SECOND}\n";
         let second = "PermitRootLogin yes\n";
@@ -1003,11 +1003,11 @@ mod tests {
         );
     }
 
-    // -- Test #2 (RED under current impl) -------------------------------------
+    // -- Test #2 (was RED under the old one-level impl; now GREEN) ------------
 
     #[test]
     fn nested_include_inside_match_all_propagates_tag() {
-        // RED under current one-level impl; must turn GREEN after the fix.
+        // Was RED under the old one-level impl; now GREEN under the recursive impl.
         //
         // Layout:
         //   sshd_config:       PermitRootLogin no          <- baseline-passing global
@@ -1020,10 +1020,10 @@ mod tests {
         // The Include inside the main file's `Match all` block propagates
         // is_match_all=true to the spliced drop-in A directives (verified by the
         // existing `include_inside_main_match_all_block_folds_dropin_fires` test).
-        // When the fix makes build_stream() follow drop-in A's own Include
-        // recursively, the second-level Include is encountered while is_match_all
-        // is already true (inherited from the enclosing Match all), so second.conf's
-        // directives must also carry is_match_all=true.
+        // Because the recursive build_stream() follows drop-in A's own Include,
+        // the second-level Include is encountered while is_match_all is already
+        // true (inherited from the enclosing Match all), so second.conf's
+        // directives also carry is_match_all=true.
         //
         // With is_match_all=true on second.conf's `PermitRootLogin yes`, the
         // effective_entry() function picks it over the global `no` (Match-all
@@ -1039,9 +1039,9 @@ mod tests {
         //   * set in 2+ locations: main global (no) + second.conf (yes)
         //   * effective source: second.conf (a drop-in-chain file, not main)
         //
-        // Under the current one-level impl, 10-a.conf's Include is not followed,
-        // second.conf is never read, only the main file's global `no` exists, the
-        // 2+ location requirement is unmet, and F02 does NOT fire -> RED.
+        // Under the OLD one-level impl, 10-a.conf's Include was not followed,
+        // second.conf was never read, only the main file's global `no` existed, the
+        // 2+ location requirement was unmet, and F02 did NOT fire (RED).
         let main = "PermitRootLogin no\nMatch all\nInclude {DIR}\n";
         let dropin_a = "Include {SECOND}\n";
         let second = "PermitRootLogin yes\n";
@@ -1080,7 +1080,7 @@ mod tests {
         );
     }
 
-    // -- Test #3 (safety guard -- must stay GREEN before AND after the fix) ---
+    // -- Test #3 (safety guard -- GREEN before AND after the fix) ------------
 
     #[test]
     fn include_cycle_terminates() {
@@ -1095,19 +1095,18 @@ mod tests {
         //   second.conf:       Include <10-a.conf>     <- points back at 10-a.conf
         //                      PermitRootLogin yes
         //
-        // Under the CURRENT one-level impl this trivially terminates (10-a.conf's
-        // Include is not followed at all).  After the recursive fix, a cycle guard
-        // is required.  The test asserts:
+        // Under the OLD one-level impl this trivially terminated (10-a.conf's
+        // Include was not followed at all).  The recursive impl requires a cycle
+        // guard to terminate.  The test asserts:
         //   (a) lint_drop_in returns (does not hang / panic / stack-overflow), and
         //   (b) the directive is not double-counted (at most one F02).
         //
         // Termination relies on the implementation's cycle guard / depth cap (the
-        // planned recursive fix adds one); a guarded impl returns immediately.
+        // recursive impl ships one); a guarded impl returns immediately.
         // NOTE: the CI gate runs `cargo test` (libtest), which has NO per-test
         // timeout -- so an unguarded recursive impl would not "time out" but would
         // spin and WEDGE this test until the runner is killed.  That wedge IS the
-        // intended regression signal; the load-bearing requirement is that the
-        // implementer ships a cycle guard / depth cap.
+        // intended regression signal if the cycle guard / depth cap ever regresses.
         let dir = tempfile::tempdir().expect("tempdir");
         let dropin_dir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
@@ -1139,18 +1138,19 @@ mod tests {
         // This call must RETURN (no infinite loop, no panic).
         let diags = lint_drop_in(dir.path(), &ctx());
 
-        // After the fix, at most one F02 is expected (the cycle must not cause
-        // double-counting).  Before the fix, zero F02s are expected (second.conf
-        // is never read).  Either way, assert no panics and no more than one F02.
+        // Under the recursive impl, at most one F02 is expected (the cycle must
+        // not cause double-counting); under the old one-level impl it was zero
+        // (second.conf was never read).  Either way, assert no panics and no more
+        // than one F02.
         let f02_count = diags.iter().filter(|d| d.code == "sshd-F02").count();
         assert!(
             f02_count <= 1,
             "include cycle must not produce duplicate F02 diagnostics (dedup / cycle \
              guard); got {f02_count} sshd-F02 in {diags:?}"
         );
-        // (No assertion that f02_count == 1 here: before the fix it is 0, after
-        // the fix it may be 0 or 1 depending on cycle-guard semantics.  The
-        // load-bearing invariant is termination + no duplication.)
+        // (No assertion that f02_count == 1 here: it may be 0 or 1 depending on
+        // cycle-guard semantics.  The load-bearing invariant is termination + no
+        // duplication.  A separate post-GREEN test pins the exact-1 case.)
     }
 
     // -- Depth-cap boundary (post-GREEN strengthening; kills off-by-one mutants) --
