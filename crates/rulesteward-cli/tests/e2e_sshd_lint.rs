@@ -169,17 +169,28 @@ fn fires_f02_for_dropin_override_with_exit_two_and_code_in_stdout() {
 #[test]
 fn directory_with_clean_dropins_exits_zero() {
     // A directory target is accepted; a drop-in that does NOT weaken the hardened
-    // main file produces no F02 finding -> exit 0. (GREEN against the empty stub
-    // today; pins that the directory mode does not error.)
+    // main file produces no finding -> exit 0.
+    //
+    // #324 CHANGED dir-mode semantics: directory mode now runs the single-file lint
+    // suite (sshd-E01/W01..W06) over the MERGED EFFECTIVE config in addition to F02.
+    // So "clean drop-ins exit 0" now requires the MERGED VIEW to be STIG-complete and
+    // compliant, not just F02-clean. The base is the fully STIG-complete CLEAN_CONFIG
+    // (every RHEL9-required directive present + compliant) plus an Include; the drop-in
+    // re-asserts a compliant value (PermitRootLogin no) which agrees with the base, so
+    // F02 does not fire and the merged view is still STIG-complete. Pins that a genuinely
+    // clean /etc/ssh layout exits 0 under the new merged-suite behavior. (--target rhel9
+    // pins the version-aware required set the merged view is checked against.)
     let dir = etc_ssh_layout(
-        "Include {DIR}\nPermitRootLogin no\n",
+        &format!("{CLEAN_CONFIG}Include {{DIR}}\n"),
         &[("50-clean.conf", "PermitRootLogin no\n")],
     );
-    let out = run_lint(dir.path(), &[]);
+    let out = run_lint(dir.path(), &["--target", "rhel9"]);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "a directory with clean drop-ins exits 0 (stderr: {})",
+        "a directory whose MERGED view is STIG-complete + compliant exits 0 \
+         (stdout: {}; stderr: {})",
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
 }
@@ -236,5 +247,270 @@ fn fires_f02_when_include_sits_inside_a_match_all_block() {
     assert!(
         stdout.contains("sshd-F02"),
         "stdout names the code: {stdout}"
+    );
+}
+
+// ===========================================================================
+// #324: directory mode runs the single-file lint suite (sshd-E01/W01..W06)
+// over the MERGED EFFECTIVE config, not just F02.
+//
+// Today the `path.is_dir()` branch in commands/sshd.rs runs ONLY
+// `lints::drop_in::lint_drop_in` (F02) and returns, so a weak algorithm or a
+// missing/weak STIG directive that only manifests in the MERGED view (base
+// sshd_config + sshd_config.d/*.conf drop-ins) is never reported in dir mode.
+// The fix: also run the relevant single-file passes (E01, W01, W02, W03, W04,
+// W06) over a synthetic merged Block, REMAPPING each diagnostic's (file, line)
+// back to the real winning source file (a drop-in, not the base). E02/E03/W05
+// and F02 are NOT part of the merged run (F02 stays the separate cross-file
+// pass; Include is already resolved away in the merged view).
+//
+// All tests below are RED against the current F02-only dir behavior.
+// ===========================================================================
+
+/// Parse the `--format json` envelope and return its `diagnostics` array.
+/// Fails the test (with the raw stdout) if the output is not a valid envelope.
+fn diagnostics_json(out: &std::process::Output) -> Vec<serde_json::Value> {
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is a valid JSON envelope ({e}); got: {stdout}"));
+    v["diagnostics"]
+        .as_array()
+        .unwrap_or_else(|| panic!("envelope has a diagnostics array; got: {stdout}"))
+        .clone()
+}
+
+#[test]
+fn dir_mode_w03_weak_algo_in_dropin_anchors_to_the_dropin() {
+    // PROVENANCE / anchoring-fidelity (the key #324 test). The base sshd_config is
+    // otherwise fine (fully STIG-complete CLEAN_CONFIG); a drop-in `50-weak.conf`
+    // sets a weak CBC cipher that sshd-W03 flags. Because W03 runs over the MERGED
+    // view, dir mode must emit sshd-W03, and the diagnostic must be anchored to the
+    // DROP-IN file (`50-weak.conf`) -- the file the operator must edit -- NOT to the
+    // base `sshd_config`, because the weak directive physically lives in the drop-in.
+    //
+    // (Today dir mode never runs W03 -> diagnostics array is empty -> RED on both
+    // the code-presence and the anchoring assertion.)
+    let dir = etc_ssh_layout(
+        &format!("{CLEAN_CONFIG}Include {{DIR}}\n"),
+        &[("50-weak.conf", "Ciphers aes256-cbc\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9", "--format", "json"]);
+    let diags = diagnostics_json(&out);
+
+    let w03: Vec<&serde_json::Value> = diags.iter().filter(|d| d["code"] == "sshd-W03").collect();
+    assert_eq!(
+        w03.len(),
+        1,
+        "dir mode runs W03 over the merged view: exactly one sshd-W03 for the weak \
+         drop-in cipher; got diagnostics: {diags:?}"
+    );
+    let d = w03[0];
+    // ANCHORING ASSERTION (load-bearing): the diagnostic's `file` is the DROP-IN that
+    // actually contains the weak cipher, not the base sshd_config. The merged passes
+    // run over a synthetic Block whose directives come from many files; the fix must
+    // remap each finding back to its true source file.
+    let file = d["file"].as_str().expect("file is a string");
+    assert!(
+        file.ends_with("50-weak.conf"),
+        "sshd-W03 must anchor to the drop-in that holds the weak cipher (50-weak.conf), \
+         not the base sshd_config; got file = {file:?}"
+    );
+    assert!(
+        !file.ends_with("/sshd_config"),
+        "sshd-W03 must NOT anchor to the base sshd_config; got file = {file:?}"
+    );
+    // The weak cipher's line within the drop-in is line 1 (it is the drop-in's only
+    // directive), proving line provenance is preserved through the remap.
+    assert_eq!(
+        d["line"].as_u64(),
+        Some(1),
+        "sshd-W03 line must be the directive's line within the drop-in (1); got: {d:?}"
+    );
+    assert_eq!(
+        d["source_id"].as_str(),
+        Some(file),
+        "source_id is remapped to the same winning drop-in as file; got: {d:?}"
+    );
+}
+
+#[test]
+fn dir_mode_no_false_w01_when_required_directive_supplied_by_dropin() {
+    // No-false-positive when hardening is SPLIT across files. The base lacks a
+    // STIG-required directive (Banner) but a drop-in supplies it (a correct effective
+    // value). A NAIVE per-file impl would false-positive sshd-W01 "Banner missing" on
+    // the minimal base; the merged view HAS Banner, so W01 must NOT fire for Banner.
+    //
+    // Pair-guard against a trivial "never run W01" satisfier: the companion test
+    // `dir_mode_w01_fires_when_required_directive_missing_from_merged_view` requires
+    // W01 to FIRE for a genuinely-missing directive, so an impl can't satisfy both by
+    // simply never running W01. Here the merged view is otherwise STIG-complete
+    // (CLEAN_CONFIG minus Banner, with Banner restored by the drop-in), so a correct
+    // merged W01 run yields ZERO W01 findings and exit 0.
+    //
+    // (Today dir mode emits no W01 at all, so this currently passes VACUOUSLY; it
+    // becomes a real guard only alongside the firing test below and is RED-meaningful
+    // once W01 runs over the merged view.)
+    let base_without_banner = CLEAN_CONFIG.replace("Banner /etc/issue.net\n", "");
+    let dir = etc_ssh_layout(
+        &format!("{base_without_banner}Include {{DIR}}\n"),
+        &[("10-banner.conf", "Banner /etc/issue.net\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9"]);
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
+    assert!(
+        !stdout.contains("banner"),
+        "Banner is supplied by a drop-in in the merged view; W01 must NOT report it \
+         missing (no per-file false positive); stdout: {stdout}"
+    );
+    // The merged view is STIG-complete and compliant -> no findings at all -> exit 0.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a merged view that is STIG-complete via a split drop-in exits 0 \
+         (stdout: {stdout}; stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn dir_mode_w01_fires_when_required_directive_missing_from_merged_view() {
+    // W01 fires when a STIG-required directive is genuinely missing from the MERGED
+    // effective config. The base is CLEAN_CONFIG MINUS Banner, and NO drop-in supplies
+    // Banner, so the merged view lacks a required directive entirely -> sshd-W01 must
+    // fire naming `banner`, and the exit code reflects a warning (1).
+    //
+    // (Today dir mode emits no W01 -> RED.)
+    let base_without_banner = CLEAN_CONFIG.replace("Banner /etc/issue.net\n", "");
+    let dir = etc_ssh_layout(
+        &format!("{base_without_banner}Include {{DIR}}\n"),
+        // a drop-in that does NOT supply Banner (sets an unrelated value)
+        &[("50-misc.conf", "MaxAuthTries 4\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9"]);
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
+    assert!(
+        stdout.contains("sshd-W01"),
+        "a STIG-required directive missing from the merged view must fire sshd-W01; \
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("banner"),
+        "the sshd-W01 finding must name the missing directive (banner); stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only result (W01) exits 1; got stdout: {stdout}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn dir_mode_w02_no_finding_when_dropin_overrides_weak_base_to_strong() {
+    // W02 effective-value correctness, COMPLIANT case. The base sets a STIG-WEAK value
+    // (PermitRootLogin yes) and a later-winning drop-in OVERRIDES it to the strong
+    // value. Because the drop-in is Included FIRST (first-value-wins), the EFFECTIVE
+    // value is the drop-in's `no`, which is COMPLIANT -> W02 must NOT fire for
+    // PermitRootLogin. A per-file impl would false-positive on the base `yes`.
+    //
+    // (Today dir mode emits no W02 -> this currently passes vacuously; it is the
+    // compliant half of the converse pair below, which fires.)
+    let base_weak = CLEAN_CONFIG.replace("PermitRootLogin no\n", "PermitRootLogin yes\n");
+    // Include FIRST so the drop-in wins (first-value-wins), then the weak base value.
+    let dir = etc_ssh_layout(
+        &format!("Include {{DIR}}\n{base_weak}"),
+        &[("10-fix.conf", "PermitRootLogin no\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9", "--format", "json"]);
+    let diags = diagnostics_json(&out);
+    let w02_prl: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| {
+            d["code"] == "sshd-W02"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|m| m.to_ascii_lowercase().contains("permitrootlogin"))
+        })
+        .collect();
+    assert!(
+        w02_prl.is_empty(),
+        "the drop-in overrides the weak base PermitRootLogin to the compliant 'no' \
+         (effective value compliant) -> W02 must NOT fire for it; got: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_mode_w02_fires_anchored_to_dropin_when_dropin_weakens_strong_base() {
+    // W02 effective-value correctness, CONVERSE case. The base sets the STRONG value
+    // (PermitRootLogin no) but a winning drop-in WEAKENS it to `yes`. Because the
+    // drop-in is Included FIRST, the EFFECTIVE value is the drop-in's `yes`, which
+    // FAILS the STIG baseline.
+    //
+    // NOTE: the same scenario also fires F02 (a drop-in beating a main-file directive
+    // with a baseline-failing value IS the canonical F02). The #324 fix is that the
+    // value-vs-baseline finding ALSO surfaces via the merged-W02 run, anchored to the
+    // drop-in (line 1). We assert a W02 finding for PermitRootLogin anchored to the
+    // drop-in. (Today dir mode runs neither W02 nor reports a W02 code -> RED.)
+    let dir = etc_ssh_layout(
+        &format!("Include {{DIR}}\n{CLEAN_CONFIG}"),
+        &[("10-weaken.conf", "PermitRootLogin yes\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9", "--format", "json"]);
+    let diags = diagnostics_json(&out);
+    let w02_prl: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| {
+            d["code"] == "sshd-W02"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|m| m.to_ascii_lowercase().contains("permitrootlogin"))
+        })
+        .collect();
+    assert_eq!(
+        w02_prl.len(),
+        1,
+        "the drop-in weakens the strong base PermitRootLogin to 'yes' (effective value \
+         fails baseline) -> exactly one sshd-W02 for PermitRootLogin; got: {diags:?}"
+    );
+    let d = w02_prl[0];
+    let file = d["file"].as_str().expect("file is a string");
+    assert!(
+        file.ends_with("10-weaken.conf"),
+        "sshd-W02 must anchor to the drop-in that supplies the effective (weak) value, \
+         not the base; got file = {file:?}"
+    );
+    assert_eq!(
+        d["line"].as_u64(),
+        Some(1),
+        "sshd-W02 line is the directive's line within the drop-in (1); got: {d:?}"
+    );
+}
+
+#[test]
+fn dir_mode_f02_still_fires_alongside_merged_suite() {
+    // F02 must keep working after the #324 fix (the merged-suite run is ADDITIVE).
+    // A genuine cross-file override (base hardens PermitRootLogin no AFTER the Include;
+    // a drop-in sets yes which wins by first-value-wins) emits the Fatal sshd-F02, and
+    // the directory still exits 2 (F02 is Fatal). This guards against the fix breaking
+    // or shadowing F02.
+    //
+    // The base is otherwise STIG-complete (CLEAN_CONFIG) so the ONLY Fatal is F02;
+    // exit code 2 confirms F02 is still emitted at Fatal severity.
+    let dir = etc_ssh_layout(
+        &format!("Include {{DIR}}\n{CLEAN_CONFIG}"),
+        &[("50-x.conf", "PermitRootLogin yes\n")],
+    );
+    let out = run_lint(dir.path(), &["--target", "rhel9"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a Fatal sshd-F02 still exits 2 alongside the merged suite (stdout: {}; stderr: {})",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sshd-F02"),
+        "sshd-F02 is still emitted in dir mode: {stdout}"
     );
 }
