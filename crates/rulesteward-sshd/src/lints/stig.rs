@@ -332,7 +332,7 @@ fn effective_global_directives(blocks: &[Block]) -> Vec<&crate::ast::Directive> 
     for block in blocks {
         match block {
             Block::Global(global) => directives.extend(global.iter()),
-            Block::Match(match_block) if match_block.is_unconditional_all() => {
+            Block::Match(match_block) if super::is_unconditional_match_all(match_block) => {
                 directives.extend(match_block.body.iter());
             }
             Block::Match(_) => {}

@@ -422,7 +422,7 @@ fn collect_matches_in(
             Block::Global(global) => {
                 follow_includes(base_dir, &global, chain, seen, matches);
             }
-            Block::Match(match_block) if match_block.is_unconditional_all() => {
+            Block::Match(match_block) if super::is_unconditional_match_all(&match_block) => {
                 // `Match all` is folded into the effective global, not a conditional
                 // block; but an Include inside it is still reachable (matches
                 // build_stream), so follow those.
@@ -642,7 +642,7 @@ fn effective_directives_of(src: &str, file: &Path) -> Vec<(crate::ast::Directive
     for block in blocks {
         match block {
             Block::Global(global) => directives.extend(global.into_iter().map(|d| (d, false))),
-            Block::Match(match_block) if match_block.is_unconditional_all() => {
+            Block::Match(match_block) if super::is_unconditional_match_all(&match_block) => {
                 directives.extend(match_block.body.into_iter().map(|d| (d, true)));
             }
             // Conditional Match block: per-connection, not part of the

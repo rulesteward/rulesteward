@@ -32,7 +32,7 @@ use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Block;
+use crate::ast::{Block, MatchBlock};
 use crate::parser::LocatedParseError;
 
 /// Target OS / OpenSSH baseline for the version-aware lints (sshd-W01..W04).
@@ -69,6 +69,30 @@ impl Default for SshdLintContext {
             single_file: true,
         }
     }
+}
+
+/// Whether a `Match` block is the unconditional `Match all`: exactly one criterion
+/// whose keyword is case-insensitively `all` AND which carries no value.
+///
+/// `Match all` is always active (verified rocky9 `sshd -T`), so its body is GLOBAL
+/// context, not a per-connection override: the structural passes (sshd-E04 illegal-
+/// in-Match, sshd-W05 permissive override) skip it, and the STIG passes (sshd-W01 /
+/// sshd-W02) fold its body into the effective-global set via
+/// `stig::effective_global_directives`. Shared by `structural`, `stig`, and
+/// `drop_in` so all three classify `Match all` identically.
+///
+/// The `values.is_empty()` guard is load-bearing: real sshd does NOT accept `all`
+/// with an argument. `Match all=` / `Match all=foo` is an "Unsupported Match
+/// attribute" that `sshd -t` rejects (rc 255; OpenSSH `servconf.c` `match_cfg_line`,
+/// where `all` is absent from the `=`-split allowlist and the `all` handler rejects
+/// any argument). The tolerant parser splits criteria on `=` first, so `all=`
+/// arrives as a single criterion `{keyword:"all", values:[""]}`; the non-empty value
+/// marks it as NOT the genuine valueless `all`, so it stays conditional and the
+/// structural passes still apply to it (issue #336).
+pub(crate) fn is_unconditional_match_all(block: &MatchBlock) -> bool {
+    block.criteria.len() == 1
+        && block.criteria[0].keyword.eq_ignore_ascii_case("all")
+        && block.criteria[0].values.is_empty()
 }
 
 /// Build a byte-anchored `Diagnostic` with the sshd emission convention: column

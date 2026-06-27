@@ -75,18 +75,6 @@ pub struct MatchBlock {
     pub span: Span,
 }
 
-impl MatchBlock {
-    /// Whether this is the unconditional `Match all`: exactly one criterion whose
-    /// keyword is case-insensitively `all`. `all` is always active (verified rocky9
-    /// `sshd -T`), so its body is GLOBAL context, not a per-connection override. Any
-    /// other criterion -- or `all` combined with another criterion (two criteria) --
-    /// is connection-conditional and is NOT the unconditional `Match all`.
-    #[must_use]
-    pub fn is_unconditional_all(&self) -> bool {
-        self.criteria.len() == 1 && self.criteria[0].keyword.eq_ignore_ascii_case("all")
-    }
-}
-
 /// A top-level region of an `sshd_config` file: the leading global section or one
 /// `Match` block.
 #[derive(Debug, Clone, PartialEq, Eq)]

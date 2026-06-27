@@ -409,7 +409,7 @@ pub fn e04(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
             // E04 only inspects Match bodies; the global block has no restriction.
             continue;
         };
-        if match_block.is_unconditional_all() {
+        if super::is_unconditional_match_all(match_block) {
             // `Match all` is always active -- its body IS global context, not a
             // conditional Match, so no directive in it is "illegal in a Match
             // block". The global-only directives there are valid. (issue #336)
@@ -468,7 +468,7 @@ pub fn w05(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
         let Block::Match(match_block) = block else {
             continue;
         };
-        if match_block.is_unconditional_all() {
+        if super::is_unconditional_match_all(match_block) {
             // `Match all` is global context, not a conditional override; a weak
             // value there is a global sshd-W02 finding, not a W05 escape hatch.
             // (issue #336)
@@ -656,6 +656,23 @@ mod e04_tests {
             diags.len(),
             1,
             "`Match all User bob` has two criteria (conditional); E04 still fires"
+        );
+        assert_eq!(diags[0].code, "sshd-E04");
+    }
+
+    #[test]
+    fn match_all_with_equals_glued_token_is_not_unconditional() {
+        // `Match all=` is NOT the unconditional `Match all`: real sshd rejects
+        // `all=` as an unsupported Match attribute (servconf.c `match_cfg_line`,
+        // rc 255). The tolerant parser yields a single criterion whose value is the
+        // empty string (`{keyword:"all", values:[""]}`); the NON-empty value marks
+        // it as NOT the valueless `all`, so it stays conditional and E04 still fires
+        // on the Match-illegal `Ciphers` directive. (issue #336 adversarial finding)
+        let diags = run("Match all=\n    Ciphers aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`Match all=` is malformed, not unconditional `all`; E04 must still fire"
         );
         assert_eq!(diags[0].code, "sshd-E04");
     }
