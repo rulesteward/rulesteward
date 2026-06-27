@@ -74,8 +74,8 @@ fn lint(args: &SysctlLintArgs) -> i32 {
     // We deliberately do NOT stage the source here: an ariadne snippet derives its
     // header from the BYTE SPAN, so a `0..0` span would mis-anchor every finding to
     // line 1. Real-byte-span snippet rendering (which would let us stage sources
-    // and show carets) is a deferred follow-up. Pass an empty sources map so file
-    // mode matches dir mode exactly.
+    // and show carets) is a deferred follow-up (issue #337). Pass an empty sources
+    // map so file mode matches dir mode exactly.
     let sources = std::collections::BTreeMap::new();
     emit(args, &diags, &sources);
 
