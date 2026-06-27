@@ -58,12 +58,16 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     };
 
     // A directory target is the standard /etc/ssh layout: a main `sshd_config`
-    // plus a `sshd_config.d/` drop-in directory. It routes to the cross-file
-    // sshd-F02 override check (#149 Wave C). Sources are not staged for the
-    // directory mode (F02 diagnostics are anchored to the offending drop-in
-    // file). A file target keeps the single-file pass path.
+    // plus a `sshd_config.d/` drop-in directory. It runs TWO passes (#149 Wave C +
+    // #324): the cross-file sshd-F02 override check, AND the single-file lint suite
+    // (sshd-E01 / W01..W04 / W06) over the MERGED EFFECTIVE config, with each
+    // merged finding anchored to the real drop-in file it came from. Sources are
+    // not staged for directory mode (diagnostics are anchored to the offending
+    // drop-in file, which the human renderer reads directly). A file target keeps
+    // the single-file pass path.
     if path.is_dir() {
-        let diags = lints::drop_in::lint_drop_in(&path, &ctx);
+        let mut diags = lints::drop_in::lint_drop_in(&path, &ctx);
+        diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let sources = std::collections::BTreeMap::new();
         let output = match args.format {
             HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
