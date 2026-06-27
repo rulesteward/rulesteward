@@ -134,16 +134,18 @@ enum Weak03Kind {
 /// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers aes128-cbc # legacy` is a VALID
 /// line that loads `aes128-cbc` and must be linted. A genuinely malformed
 /// multi-arg value (`+ aes128-cbc`, `aes128-cbc foo`) -- which sshd rejects
-/// rc 255 -- still yields `None`. A `#` glued inside a token
-/// (`aes128-cbc#legacy`, one arg, also an sshd rc-255 reject) is NOT a comment
-/// and is left as the single token (it simply will not match a weak entry).
+/// rc 255 -- still yields `None`. Only a whitespace-delimited `#`-started token
+/// is a strippable comment; a `#` glued anywhere inside the value token (with or
+/// without a comma, e.g. `aes128-cbc#legacy` or `aes128-cbc,#legacy`) makes it a
+/// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
+/// the helper yields `None`.
 fn algo_list_value(args: &[String]) -> Option<&str> {
     let effective = match args.iter().position(|a| a.starts_with('#')) {
         Some(i) => &args[..i],
         None => args,
     };
     match effective {
-        [one] => Some(one.as_str()),
+        [one] if !one.contains('#') => Some(one.as_str()),
         _ => None,
     }
 }
