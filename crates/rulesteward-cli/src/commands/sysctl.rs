@@ -40,13 +40,11 @@ fn lint(args: &SysctlLintArgs) -> i32 {
     // `*.conf` files in lexicographic order and run the cross-file last-wins W01
     // pass (issue #150). The full cross-DIRECTORY search-path precedence (/etc vs
     // /run vs /usr/lib) is a deferred follow-up; this reasons within one directory.
-    // Each finding is anchored to the real drop-in file it came from. Dir-mode v1
-    // does not stage per-file sources, so the human renderer prints findings as
-    // plain `file:line:col` (no ariadne snippet); staging the drop-in sources for
-    // snippet rendering is a deferred follow-up.
+    // Each finding is anchored to the real drop-in file it came from, and `lint_dir`
+    // returns the staged source of every drop-in it read (keyed by display path) so
+    // the human renderer shows an ariadne snippet for a cross-file W01 (issue #337).
     if path.is_dir() {
-        let diags = rulesteward_sysctld::parser::lint_dir(&path);
-        let sources = std::collections::BTreeMap::new();
+        let (diags, sources) = rulesteward_sysctld::parser::lint_dir(&path);
         emit(args, &diags, &sources);
         return exit_code::compute(&diags, false);
     }
@@ -68,15 +66,12 @@ fn lint(args: &SysctlLintArgs) -> i32 {
 
     let diags = rulesteward_sysctld::parser::lint_str(&source, &path);
 
-    // sysctld v1 renders findings as plain `file:line:col [CODE] sev: msg` in BOTH
-    // file and dir mode: the F01/W01 diagnostics anchor with a line-start span
-    // (`0..0`) plus a real `line`, and the plain renderer uses that real `line`.
-    // We deliberately do NOT stage the source here: an ariadne snippet derives its
-    // header from the BYTE SPAN, so a `0..0` span would mis-anchor every finding to
-    // line 1. Real-byte-span snippet rendering (which would let us stage sources
-    // and show carets) is a deferred follow-up (issue #337). Pass an empty sources
-    // map so file mode matches dir mode exactly.
-    let sources = std::collections::BTreeMap::new();
+    // Stage the file's source keyed by its display path (the `source_id` convention the
+    // F01/W01 diagnostics set), so the human renderer takes the ariadne path and shows a
+    // source snippet anchored at the real offending line via each finding's byte span
+    // (issue #337). `source` is moved in after `lint_str` has finished borrowing it.
+    let mut sources = std::collections::BTreeMap::new();
+    sources.insert(path.display().to_string(), source);
     emit(args, &diags, &sources);
 
     exit_code::compute(&diags, false)

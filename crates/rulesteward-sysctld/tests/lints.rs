@@ -472,7 +472,7 @@ fn lint_dir_detects_cross_file_conflict() {
     std::fs::write(dir.path().join("10-a.conf"), "net.ipv4.ip_forward=1\n").expect("write a");
     std::fs::write(dir.path().join("90-b.conf"), "net.ipv4.ip_forward=0\n").expect("write b");
 
-    let diags = rulesteward_sysctld::parser::lint_dir(dir.path());
+    let (diags, _sources) = rulesteward_sysctld::parser::lint_dir(dir.path());
     let w = w01s(&diags);
     assert_eq!(
         w.len(),
@@ -502,7 +502,7 @@ fn lint_dir_ignores_non_conf_extension_files() {
     std::fs::write(dir.path().join("10-a.conf"), "net.ipv4.ip_forward=1\n").expect("write conf");
     std::fs::write(dir.path().join("99-z.txt"), "net.ipv4.ip_forward=0\n").expect("write txt");
 
-    let diags = rulesteward_sysctld::parser::lint_dir(dir.path());
+    let (diags, _sources) = rulesteward_sysctld::parser::lint_dir(dir.path());
     let w = w01s(&diags);
     assert!(
         w.is_empty(),
@@ -533,7 +533,7 @@ fn lint_dir_only_conf_files_in_a_mixed_dir_conflict() {
     // would change the WINNING value from 2 to 9 and the W01 message text.
     std::fs::write(dir.path().join("99-z.txt"), "kernel.kptr_restrict=9\n").expect("write txt");
 
-    let diags = rulesteward_sysctld::parser::lint_dir(dir.path());
+    let (diags, _sources) = rulesteward_sysctld::parser::lint_dir(dir.path());
     let w = w01s(&diags);
     assert_eq!(
         w.len(),
@@ -563,7 +563,7 @@ fn lint_dir_clean_dir_has_no_findings() {
     // produces no findings and does not panic.
     let dir = tempdir().expect("temp dir");
     std::fs::write(dir.path().join("10-ok.conf"), "kernel.dmesg_restrict=1\n").expect("write ok");
-    let diags = rulesteward_sysctld::parser::lint_dir(dir.path());
+    let (diags, _sources) = rulesteward_sysctld::parser::lint_dir(dir.path());
     assert!(
         diags.is_empty(),
         "a single clean `.conf` file yields no diagnostics: {diags:?}"
@@ -571,7 +571,74 @@ fn lint_dir_clean_dir_has_no_findings() {
 
     let empty = tempdir().expect("temp dir");
     assert!(
-        rulesteward_sysctld::parser::lint_dir(empty.path()).is_empty(),
+        rulesteward_sysctld::parser::lint_dir(empty.path())
+            .0
+            .is_empty(),
         "an empty directory yields no diagnostics and does not panic"
+    );
+}
+
+// ===========================================================================
+// issue #337: F01/W01 carry the REAL byte span of the offending line (not the
+// degenerate 0..0 that mis-anchored the ariadne snippet at line 1). These pin
+// the exact byte range for a known fixture, killing mutants that revert the span
+// to 0..0 or swap its endpoints. Per-package (in-crate) so the parser mutation
+// gate kills them without the CLI e2e tests.
+// ===========================================================================
+
+#[test]
+fn f01_carries_the_real_byte_span_of_the_malformed_line() {
+    // Byte layout of the source (offsets are 0-based, half-open):
+    //   "# c\n"                   bytes 0..3   then '\n' at 3
+    //   "kernel.dmesg_restrict\n" bytes 4..25  then '\n' at 25  (malformed: bare key)
+    // The F01 must span the malformed line's real bytes (4..25), NOT 0..0.
+    let source = "# c\nkernel.dmesg_restrict\n";
+    let diags = lint(source);
+    let f = f01s(&diags);
+    assert_eq!(f.len(), 1, "one malformed line -> one F01: {diags:?}");
+    assert_eq!(
+        f[0].span,
+        4..25,
+        "F01 span must cover the malformed line's real bytes (line 2 = 4..25), not 0..0"
+    );
+}
+
+#[test]
+fn f01_byte_span_counts_bytes_not_chars_with_multibyte_before_the_line() {
+    // issue #337 (strengthening, per the spec + idiomatic reviewers): the running
+    // offset accumulates BYTE lengths (`raw_line.len()`), not char counts, so a
+    // multibyte UTF-8 char on an EARLIER line shifts the offending line's span by the
+    // extra byte(s). ariadne's renderer converts the byte span to a char span, so the
+    // parser MUST emit byte offsets. A wrong char-counting impl would put the span at
+    // 7..28; the byte-correct impl puts it at 8..29.
+    //
+    //   "# caf\u{e9}\n"             bytes 0..7   ('\u{e9}' is 2 bytes) then '\n' at 7
+    //   "kernel.dmesg_restrict\n"   bytes 8..29  then '\n' at 29   (malformed: bare key)
+    let source = "# caf\u{e9}\nkernel.dmesg_restrict\n";
+    let diags = lint(source);
+    let f = f01s(&diags);
+    assert_eq!(f.len(), 1, "one malformed line -> one F01: {diags:?}");
+    assert_eq!(
+        f[0].span,
+        8..29,
+        "F01 span must count the 2-byte `\u{e9}` as 2 bytes (line 2 = 8..29), not as 1 char"
+    );
+}
+
+#[test]
+fn w01_carries_the_real_byte_span_of_the_dead_line() {
+    // Byte layout (the dead line is line 2 so BOTH endpoints differ from 0..0):
+    //   "# c\n"                      bytes 0..3   then '\n' at 3
+    //   "kernel.kptr_restrict = 2\n" bytes 4..28  then '\n' at 28  (dead: overridden)
+    //   "kernel.kptr_restrict = 1\n" bytes 29..53 then '\n' at 53  (winner)
+    // The W01 anchors at the OVERRIDDEN earlier line; its span is that line (4..28).
+    let source = "# c\nkernel.kptr_restrict = 2\nkernel.kptr_restrict = 1\n";
+    let diags = lint(source);
+    let w = w01s(&diags);
+    assert_eq!(w.len(), 1, "one last-wins conflict -> one W01: {diags:?}");
+    assert_eq!(
+        w[0].span,
+        4..28,
+        "W01 span must cover the dead earlier line's real bytes (line 2 = 4..28), not 0..0"
     );
 }

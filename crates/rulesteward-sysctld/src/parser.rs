@@ -25,8 +25,10 @@
 //! same key to a DIFFERENT value is dead -> `sysctld-W01`, anchored at the dead
 //! (overridden) earlier line - the actionable surprise the operator must remove.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use rulesteward_core::span::Span;
 use rulesteward_core::{Diagnostic, Severity, anchored};
 
 /// One classified non-trivial line: an assignment or a parse failure. Comments,
@@ -144,6 +146,10 @@ struct ParsedAssignment {
     value: String,
     file: PathBuf,
     line: usize,
+    /// Byte range of the assignment's source line within its file. When this
+    /// assignment is the OVERRIDDEN (dead) one, W01 anchors at this span so the
+    /// human renderer shows an ariadne snippet on the right line (issue #337).
+    span: Span,
 }
 
 /// Parse `source` into its assignments and the F01 diagnostics for any malformed
@@ -152,9 +158,19 @@ struct ParsedAssignment {
 fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnostic>) {
     let mut assignments = Vec::new();
     let mut f01s = Vec::new();
-    for (idx, line) in source.lines().enumerate() {
+    // Track a running byte offset so each finding carries the real byte range of its
+    // line (issue #337): the human renderer derives the ariadne snippet header from the
+    // byte SPAN, so a degenerate `0..0` would mis-anchor every finding at line 1.
+    // Iterate `split('\n')` (not `lines()`) to keep the offsets exact -- each segment is
+    // exactly the bytes between newlines. `classify_line` trims, so a trailing `\r` on
+    // CRLF and the trailing empty segment from a final `\n` classify to `None` (harmless),
+    // and the 1-based line numbers match `lines()`.
+    let mut offset = 0usize;
+    for (idx, raw_line) in source.split('\n').enumerate() {
         let lineno = idx + 1; // 1-based
-        match classify_line(line) {
+        let span = offset..offset + raw_line.len();
+        offset += raw_line.len() + 1; // +1 for the consumed '\n'
+        match classify_line(raw_line) {
             None => {}
             Some(LineKind::Assignment {
                 canonical,
@@ -167,13 +183,14 @@ fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnost
                     value,
                     file: path.to_path_buf(),
                     line: lineno,
+                    span,
                 });
             }
             Some(LineKind::Malformed) => {
                 f01s.push(anchored(
                     Severity::Fatal,
                     "sysctld-F01",
-                    0..0,
+                    span,
                     "malformed sysctl line: expected `key = value`, a `#`/`;` comment, or a bare \
                      `-key` glob-exclusion",
                     path.to_path_buf(),
@@ -215,7 +232,7 @@ fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
                 diags.push(anchored(
                     Severity::Warning,
                     "sysctld-W01",
-                    0..0,
+                    a.span.clone(),
                     format!(
                         "last-wins conflict: `{}` here (= {}) is overridden by the later \
                          assignment (= {}) at {}:{}",
@@ -258,20 +275,30 @@ pub fn lint_str(source: &str, path: &Path) -> Vec<Diagnostic> {
 ///
 /// On a directory it cannot enumerate (e.g. an unreadable dir), returns a single
 /// file-level `sysctld-F01` rather than panicking.
+///
+/// Also returns the staged source of every successfully-read `*.conf`, keyed by its
+/// display path (the `source_id` convention `anchored` sets). The CLI passes this map
+/// to the human renderer so a cross-file `sysctld-W01` shows an ariadne snippet
+/// anchored in the drop-in that holds the dead line (issue #337). The file-level F01s
+/// (unreadable dir / file) carry no `source_id`, so they need no staged source; an
+/// unreadable directory returns an empty map alongside the single file-level F01.
 #[must_use]
-pub fn lint_dir(dir: &Path) -> Vec<Diagnostic> {
+pub fn lint_dir(dir: &Path) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            return vec![Diagnostic::new(
-                Severity::Fatal,
-                "sysctld-F01",
-                0..0,
-                format!("cannot read sysctl.d directory {}: {e}", dir.display()),
-                dir.to_path_buf(),
-                0,
-                0,
-            )];
+            return (
+                vec![Diagnostic::new(
+                    Severity::Fatal,
+                    "sysctld-F01",
+                    0..0,
+                    format!("cannot read sysctl.d directory {}: {e}", dir.display()),
+                    dir.to_path_buf(),
+                    0,
+                    0,
+                )],
+                BTreeMap::new(),
+            );
         }
     };
 
@@ -287,16 +314,22 @@ pub fn lint_dir(dir: &Path) -> Vec<Diagnostic> {
 
     let mut all_assignments: Vec<ParsedAssignment> = Vec::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
+    // Stage each successfully-read drop-in's source, keyed by its display path (the
+    // `source_id` convention), so the human renderer can resolve a cross-file W01
+    // snippet against the file that holds the dead line (issue #337).
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
     for path in &conf_files {
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let (assignments, f01s) = parse_file(&source, path);
                 diags.extend(f01s);
                 all_assignments.extend(assignments);
+                sources.insert(path.display().to_string(), source);
             }
             Err(e) => {
                 // An unreadable / non-UTF8 drop-in is a parse failure for that
-                // file, not a panic; the rest of the directory still lints.
+                // file, not a panic; the rest of the directory still lints. This
+                // file-level F01 carries no `source_id`, so it needs no staged source.
                 diags.push(Diagnostic::new(
                     Severity::Fatal,
                     "sysctld-F01",
@@ -310,7 +343,7 @@ pub fn lint_dir(dir: &Path) -> Vec<Diagnostic> {
         }
     }
     diags.extend(w01_last_wins(&all_assignments));
-    diags
+    (diags, sources)
 }
 
 #[cfg(test)]

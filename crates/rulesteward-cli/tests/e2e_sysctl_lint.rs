@@ -168,11 +168,13 @@ fn human_file_mode_reports_the_real_line_not_line_one() {
     // Integration-gate regression (senior fresh-context review): in FILE mode the
     // human renderer must report the diagnostic's REAL line, not line 1.
     //
-    // The sysctld diagnostics anchor with a DEGENERATE byte span (`0..0`) plus a
-    // `source_id`. When the CLI stages the source, the human renderer takes the
-    // ariadne path and derives the snippet header `file:line:col` from the BYTE
-    // SPAN (0 -> offset 0 -> line 1), IGNORING the diagnostic's real `line`. So a
-    // W01 about line 4 used to render `:1:1` with the caret on the comment.
+    // Post-#337 the F01/W01 diagnostics carry a REAL byte span and the CLI stages the
+    // source, so the human renderer takes the ariadne path and derives the snippet
+    // header `file:line:col` from the byte span -- which now points at the real line.
+    // (Before #337 the span was a degenerate `0..0`; the v1 fix avoided the mis-anchor
+    // by NOT staging the source and falling back to plain `file:line:col`. Either way
+    // this regression pins the same invariant: the finding references the real line,
+    // never line 1.)
     //
     // Layout: the DEAD (overridden) assignment is on line 4. The later assignment
     // (line 5) wins; W01 anchors at line 4. The human output must reference `:4:`
@@ -216,6 +218,195 @@ kernel.kptr_restrict = 1
         out.status.code(),
         Some(1),
         "a warning-only run exits 1 (EXIT_WARNINGS); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// issue #337: with real byte spans + staged source, the human renderer takes the
+// ariadne path and shows a source snippet (box-drawing underline) anchored at the
+// real offending line, matching auditd/sshd. RED before the fix: the diagnostics
+// carried a 0..0 span, so the CLI staged no source and the PLAIN renderer (no
+// box-drawing) was used in both file and dir mode. The `\u{2500}` (-) box-drawing
+// char proves the snippet path; the literal `key = value` source-line text proves
+// the SNIPPET (the F01/W01 messages never contain that exact literal).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn human_file_mode_renders_ariadne_snippet_at_the_real_line() {
+    // The dead (overridden) assignment is on line 4; the line-5 assignment wins, so
+    // W01 anchors at line 4. The snippet must underline line 4 and show its source.
+    let body = "\
+# kernel hardening
+kernel.sysrq = 0
+net.ipv4.ip_forward = 0
+kernel.kptr_restrict = 2
+kernel.kptr_restrict = 1
+";
+    let cfg = config_file(body);
+    let out = bin()
+        // NO_COLOR strips ANSI so the substring matches are robust.
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W01"),
+        "the last-wins conflict emits sysctld-W01; stdout: {stdout} (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "file-mode human output must render an ariadne snippet (box-drawing underline); \
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kernel.kptr_restrict = 2"),
+        "the snippet must include the real dead source line text; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":4:"),
+        "the snippet header must anchor at the real line 4; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only run exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn human_dir_mode_renders_ariadne_snippet_for_cross_file_conflict() {
+    // dir-mode stages each `*.conf` it reads, so a cross-file last-wins W01 renders a
+    // snippet anchored in the drop-in that holds the DEAD line. The dead assignment is
+    // on line 2 of `10-a.conf` (line 1 is a comment), so the header reads `:2:`.
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_in(
+        dir.path(),
+        "10-a.conf",
+        "# earlier drop-in\nnet.ipv4.ip_forward = 1\n",
+    );
+    write_in(dir.path(), "90-b.conf", "net.ipv4.ip_forward = 0\n");
+
+    let out = bin()
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", dir.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W01"),
+        "the cross-file conflict emits sysctld-W01; stdout: {stdout} (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "dir-mode human output must render an ariadne snippet; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("net.ipv4.ip_forward = 1"),
+        "the snippet must include the dead drop-in's real source line; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":2:"),
+        "the snippet header must anchor at the dead line 2 of 10-a.conf; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only run exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn human_file_mode_renders_ariadne_snippet_for_a_malformed_line() {
+    // A malformed line on line 3 must render an F01 snippet anchored at `:3:` and show
+    // the malformed source text (the F01 message never contains that literal).
+    let body = "\
+# header
+kernel.sysrq = 0
+kernel.dmesg_restrict
+";
+    let cfg = config_file(body);
+    let out = bin()
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-F01"),
+        "the malformed line emits sysctld-F01; stdout: {stdout} (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "the F01 must render an ariadne snippet; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kernel.dmesg_restrict"),
+        "the snippet must include the malformed source line; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":3:"),
+        "the snippet header must anchor at the malformed line 3; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "sysctld-F01 maps to EXIT_RULE_PARSE_ERROR (5); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn human_file_mode_snippet_anchors_correctly_with_multibyte_before_the_finding() {
+    // issue #337 (strengthening, per the spec + idiomatic reviewers): a multibyte UTF-8
+    // char on a line BEFORE the finding exercises the byte-span -> char-span conversion
+    // the renderer does (human.rs `byte_span_to_char_span`). The parser emits a BYTE
+    // span; the renderer converts it to a char offset for ariadne. A byte/char mismatch
+    // anywhere in that chain would mis-anchor the header. The dead assignment is on line
+    // 2; the `\u{e9}` (2 bytes / 1 char) on line 1 must not shift the snippet off line 2.
+    let body = "\
+# caf\u{e9} notes
+kernel.kptr_restrict = 2
+kernel.kptr_restrict = 1
+";
+    let cfg = config_file(body);
+    let out = bin()
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W01"),
+        "the last-wins conflict emits sysctld-W01; stdout: {stdout} (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "the snippet must render even with a multibyte char before the finding; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kernel.kptr_restrict = 2"),
+        "the snippet must underline the real dead source line; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":2:"),
+        "the snippet header must anchor at line 2 despite the multibyte line 1; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only run exits 1; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
