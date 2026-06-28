@@ -6,12 +6,12 @@
 //! there is no SARIF for sysctld (locked CC-4: SARIF is `fapolicyd lint` only).
 //!
 //! # Frozen taxonomy
-//! The catalog lists the FULL planned v1 `sysctld-` taxonomy in sorted order. The
-//! v1 passes (`sysctld-F01` parse failure, `sysctld-W01` last-wins conflict) are
-//! implemented; the catalog was frozen up front so the passes emit only
-//! already-catalogued codes and never edit this shared file. The version-aware
-//! `sysctld-W02` (STIG hardening baseline) and cross-directory system precedence
-//! are deferred follow-ups (issues #150 / #335).
+//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. All three
+//! passes are implemented - `sysctld-F01` (parse failure), `sysctld-W01`
+//! (last-wins conflict), and the version-aware `sysctld-W02` (STIG hardening
+//! baseline, issue #335) - and the catalog was frozen up front so the passes emit
+//! only already-catalogued codes and never edit this shared file. Cross-directory
+//! system precedence remains a deferred follow-up (issue #150).
 
 use rulesteward_core::Severity;
 
@@ -35,6 +35,11 @@ pub const SYSCTLD_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "last-wins conflict: the same key is assigned different effective values across the drop-in precedence order",
     },
+    LintCode {
+        code: "sysctld-W02",
+        severity: Severity::Warning,
+        description: "STIG-required kernel-hardening key is unset or set to an insecure value (version-aware; requires --target)",
+    },
 ];
 
 #[cfg(test)]
@@ -45,7 +50,7 @@ mod tests {
     /// in v1 is listed here in sorted order; the lint pipelines start emitting an
     /// already-catalogued code rather than editing this shared file. Update this
     /// list ONLY when the taxonomy itself changes.
-    const FROZEN_CODES: &[&str] = &["sysctld-F01", "sysctld-W01"];
+    const FROZEN_CODES: &[&str] = &["sysctld-F01", "sysctld-W01", "sysctld-W02"];
 
     #[test]
     fn catalog_is_the_frozen_taxonomy() {

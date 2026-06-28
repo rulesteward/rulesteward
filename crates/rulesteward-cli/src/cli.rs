@@ -333,6 +333,19 @@ impl From<TargetVersionArg> for rulesteward_sshd::TargetVersion {
     }
 }
 
+/// The same `--target` value-enum maps to the sysctld domain's `TargetVersion`
+/// (the version-aware `sysctld-W02` STIG-baseline selector, issue #335). One CLI
+/// surface, one `From` per backend domain, so each domain crate stays clap-free.
+impl From<TargetVersionArg> for rulesteward_sysctld::TargetVersion {
+    fn from(arg: TargetVersionArg) -> Self {
+        match arg {
+            TargetVersionArg::Rhel8 => rulesteward_sysctld::TargetVersion::Rhel8,
+            TargetVersionArg::Rhel9 => rulesteward_sysctld::TargetVersion::Rhel9,
+            TargetVersionArg::Rhel10 => rulesteward_sysctld::TargetVersion::Rhel10,
+        }
+    }
+}
+
 /// CLI value-enum for `--target` on the version-aware lint verbs: `auto` triggers
 /// host detection from `/etc/os-release`, the explicit values pin a baseline. The
 /// command layer resolves this to a concrete `TargetVersionArg` (or the
@@ -869,18 +882,19 @@ pub enum SysctlCommand {
     ///
     /// Parses a kernel-parameter assignment file (`/etc/sysctl.conf`,
     /// `/etc/sysctl.d/*.conf`, etc.: whole-line `#`/`;` comments, `key = value`
-    /// assignments) and runs the `sysctl.d` lint passes over it. v1 ships
-    /// sysctld-F01 (parse error) and sysctld-W01 (last-wins conflict: the same key
-    /// assigned different effective values across the drop-in precedence order).
-    /// The STIG hardening baseline (sysctld-W02) and cross-directory system
-    /// precedence are deferred follow-ups (issue #150).
+    /// assignments) and runs the `sysctl.d` lint passes over it: sysctld-F01 (parse
+    /// error), sysctld-W01 (last-wins conflict: the same key assigned different
+    /// effective values across the drop-in precedence order), and - when a
+    /// `--target rhel8|rhel9|rhel10` baseline is selected - the version-aware
+    /// sysctld-W02 STIG kernel-hardening baseline check (#335). Cross-directory
+    /// system precedence is a deferred follow-up (issue #150).
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sysctld-F01).
     Lint(SysctlLintArgs),
 }
 
-/// Arguments for `rulesteward sysctl lint` (#150).
+/// Arguments for `rulesteward sysctl lint` (#150, #335).
 #[derive(Debug, Parser)]
 pub struct SysctlLintArgs {
     /// The `sysctl.d`/`sysctl.conf` file to lint (defaults to `/etc/sysctl.conf`)
@@ -891,6 +905,16 @@ pub struct SysctlLintArgs {
     /// per the locked output contracts CC-3/CC-4).
     #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
     pub format: HumanJsonFormat,
+
+    /// Target RHEL release for the STIG hardening baseline (auto|rhel8|rhel9|rhel10).
+    /// Enables the version-aware `sysctld-W02` check: a STIG-required kernel-hardening
+    /// key that is unset across the effective config, or set to an insecure value, is
+    /// flagged against the selected release's baseline. `auto` detects the release from
+    /// the host's /etc/os-release, falling back (with a warning) to version-agnostic
+    /// when detection fails. With no `--target`, W02 does not run (version-agnostic:
+    /// only sysctld-F01 / sysctld-W01).
+    #[arg(long, value_enum)]
+    pub target: Option<TargetSelector>,
 }
 
 #[derive(Debug, Parser)]

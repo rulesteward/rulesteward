@@ -8,6 +8,7 @@
 use serde::Serialize;
 
 use crate::cli::{HumanJsonFormat, SysctlCommand, SysctlLintArgs};
+use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_TOOL_FAILURE};
 use crate::output::json::render_envelope;
 
@@ -31,20 +32,39 @@ struct SysctlLintPayload<'a> {
 }
 
 fn lint(args: &SysctlLintArgs) -> i32 {
+    lint_with_probe(args, &LiveTargetProbe)
+}
+
+/// `lint` with the host probe injected, so the `--target auto` resolution path is
+/// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
+/// the real [`LiveTargetProbe`]; tests supply a fake.
+fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     let path = args
         .path
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
 
+    // Resolve --target in the command layer (epic #251): explicit value as-is,
+    // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
+    // `auto` degrades to version-agnostic with a warning, never an error (read-only
+    // tool). The concrete domain target is what the W02 baseline pass consumes.
+    let resolved = resolve_target(args.target, probe);
+    if let Some(warning) = &resolved.warning {
+        eprintln!("sysctl lint: {warning}");
+    }
+    let target: Option<rulesteward_sysctld::TargetVersion> = resolved.target.map(Into::into);
+
     // A directory target is a `sysctl.d/` drop-in directory: enumerate its
     // `*.conf` files in lexicographic order and run the cross-file last-wins W01
-    // pass (issue #150). The full cross-DIRECTORY search-path precedence (/etc vs
+    // pass (issue #150), plus the version-aware W02 STIG baseline when a target is
+    // selected (#335). The full cross-DIRECTORY search-path precedence (/etc vs
     // /run vs /usr/lib) is a deferred follow-up; this reasons within one directory.
-    // Each finding is anchored to the real drop-in file it came from, and `lint_dir`
-    // returns the staged source of every drop-in it read (keyed by display path) so
-    // the human renderer shows an ariadne snippet for a cross-file W01 (issue #337).
+    // Each finding is anchored to the real drop-in file it came from, and
+    // `lint_dir_with_target` returns the staged source of every drop-in it read
+    // (keyed by display path) so the human renderer shows an ariadne snippet for a
+    // cross-file W01 or a present-but-insecure W02 (issue #337).
     if path.is_dir() {
-        let (diags, sources) = rulesteward_sysctld::parser::lint_dir(&path);
+        let (diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
         emit(args, &diags, &sources);
         return exit_code::compute(&diags, false);
     }
@@ -64,12 +84,13 @@ fn lint(args: &SysctlLintArgs) -> i32 {
         }
     };
 
-    let diags = rulesteward_sysctld::parser::lint_str(&source, &path);
+    let diags = rulesteward_sysctld::parser::lint_str_with_target(&source, &path, target);
 
     // Stage the file's source keyed by its display path (the `source_id` convention the
-    // F01/W01 diagnostics set), so the human renderer takes the ariadne path and shows a
-    // source snippet anchored at the real offending line via each finding's byte span
-    // (issue #337). `source` is moved in after `lint_str` has finished borrowing it.
+    // F01/W01 and present-but-insecure W02 diagnostics set), so the human renderer takes
+    // the ariadne path and shows a source snippet anchored at the real offending line via
+    // each finding's byte span (issue #337). A MISSING-key W02 carries no source_id and
+    // renders as a plain `file:0:0` line. `source` is moved in after the borrow ends.
     let mut sources = std::collections::BTreeMap::new();
     sources.insert(path.display().to_string(), source);
     emit(args, &diags, &sources);

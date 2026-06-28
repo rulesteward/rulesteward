@@ -410,3 +410,145 @@ kernel.kptr_restrict = 1
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// issue #335: the version-aware sysctld-W02 STIG baseline, gated on --target.
+// RED before the impl: --target is unknown to clap (or W02 is the empty stub), so
+// these fail for the right reason (no W02 emitted / wrong exit code).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn target_rhel9_flags_unset_baseline_keys() {
+    // A config that sets no STIG-required key leaves them all unset; --target rhel9
+    // runs the W02 baseline and reports them as warnings (exit 1).
+    let cfg = config_file("# nothing hardened here\nkernel.sysrq = 0\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--target",
+            "rhel9",
+        ])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W02"),
+        "an unhardened config under --target rhel9 emits sysctld-W02; stdout: {stdout} \
+         (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("kernel.dmesg_restrict"),
+        "a W02 names a concrete unset STIG key; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only W02 run exits 1 (EXIT_WARNINGS); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn no_target_emits_no_w02() {
+    // Without --target the STIG baseline does not run: the same unhardened config
+    // is clean (exit 0, no sysctld-W02).
+    let cfg = config_file("kernel.sysrq = 0\n");
+    let out = bin()
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        !stdout.contains("sysctld-W02"),
+        "no --target means no W02; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "no findings without a target -> exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn target_rhel9_present_insecure_renders_key_and_snippet() {
+    // A present-but-insecure key (dmesg_restrict=0, requires 1) renders an ariadne
+    // snippet anchored at its real line, naming the key. Functional-smoke for the
+    // human surface.
+    let cfg = config_file("kernel.dmesg_restrict = 0\n");
+    let out = bin()
+        .env("NO_COLOR", "1")
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--target",
+            "rhel9",
+        ])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-W02") && stdout.contains("kernel.dmesg_restrict"),
+        "the insecure value is reported as a W02 naming the key; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "a present-but-insecure W02 renders an ariadne snippet (box-drawing); stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":1:"),
+        "the snippet anchors at the real assignment line 1; stdout: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only W02 run exits 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn json_envelope_carries_w02_under_target() {
+    let cfg = config_file("kernel.sysrq = 0\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--target",
+            "rhel9",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON envelope");
+    let diags = v["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diags.iter().any(|d| d["code"] == "sysctld-W02"),
+        "the JSON envelope carries at least one sysctld-W02 diagnostic; stdout: {stdout}"
+    );
+}
+
+#[test]
+fn help_lists_the_target_flag() {
+    let out = bin()
+        .args(["sysctl", "lint", "--help"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(out.status.code(), Some(0), "--help exits 0");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("--target"),
+        "sysctl lint --help advertises the --target flag; stdout: {stdout}"
+    );
+}
