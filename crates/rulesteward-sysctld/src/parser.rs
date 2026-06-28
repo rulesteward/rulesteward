@@ -25,11 +25,13 @@
 //! same key to a DIFFERENT value is dead -> `sysctld-W01`, anchored at the dead
 //! (overridden) earlier line - the actionable surprise the operator must remove.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use rulesteward_core::span::Span;
 use rulesteward_core::{Diagnostic, Severity, anchored};
+
+use crate::lints::baseline::{TargetVersion, w02_baseline};
 
 /// One classified non-trivial line: an assignment or a parse failure. Comments,
 /// blank lines, and bare glob-exclusions carry no semantic payload and are not
@@ -70,7 +72,7 @@ enum LineKind {
 /// (dot-first -> swap -> `.../enp3s0/200/forwarding`) is a DIFFERENT key from
 /// `net/ipv4/conf/enp3s0.200/forwarding` (slash-first -> as-is ->
 /// `.../enp3s0.200/forwarding`); a blanket `/`->`.` rule wrongly collapses them.
-fn canonical_key(raw: &str) -> String {
+pub(crate) fn canonical_key(raw: &str) -> String {
     // `raw` is the assignment key with the leading ignore-error `-` already
     // stripped by the caller; canonicalization keys off the first separator only.
     match raw.find(['/', '.']) {
@@ -137,19 +139,22 @@ fn classify_line(line: &str) -> Option<LineKind> {
     Some(LineKind::Malformed)
 }
 
-/// One parsed assignment with its 1-based source line, for cross-line/file W01.
-struct ParsedAssignment {
-    /// `/proc/sys` path form, used for last-wins key IDENTITY.
-    canonical: String,
-    /// The key as the operator wrote it (dash-stripped), for the W01 message.
-    display: String,
-    value: String,
-    file: PathBuf,
-    line: usize,
+/// One parsed assignment with its 1-based source line, for cross-line/file W01
+/// and the W02 baseline check. `pub(crate)` so the `lints::baseline` pass can read
+/// the effective value, file, line, and span of each assignment.
+pub(crate) struct ParsedAssignment {
+    /// `/proc/sys` path form, used for last-wins key IDENTITY and W02 lookup.
+    pub(crate) canonical: String,
+    /// The key as the operator wrote it (dash-stripped), for the W01/W02 message.
+    pub(crate) display: String,
+    pub(crate) value: String,
+    pub(crate) file: PathBuf,
+    pub(crate) line: usize,
     /// Byte range of the assignment's source line within its file. When this
     /// assignment is the OVERRIDDEN (dead) one, W01 anchors at this span so the
-    /// human renderer shows an ariadne snippet on the right line (issue #337).
-    span: Span,
+    /// human renderer shows an ariadne snippet on the right line (issue #337); a
+    /// present-but-insecure W02 anchors at the same span.
+    pub(crate) span: Span,
 }
 
 /// Parse `source` into its assignments and the F01 diagnostics for any malformed
@@ -202,6 +207,18 @@ fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnost
     (assignments, f01s)
 }
 
+/// The winning (last) assignment index for each canonical key, in precedence
+/// order (later wins). The single source of the effective-value map shared by the
+/// W01 last-wins pass and the W02 baseline pass, so both reason over identical
+/// key IDENTITY (the canonical `/proc/sys` path form).
+pub(crate) fn effective_values(assignments: &[ParsedAssignment]) -> HashMap<&str, usize> {
+    let mut winner: HashMap<&str, usize> = HashMap::new();
+    for (idx, a) in assignments.iter().enumerate() {
+        winner.insert(a.canonical.as_str(), idx);
+    }
+    winner
+}
+
 /// Run the last-wins (`sysctld-W01`) pass over an ordered list of assignments.
 ///
 /// The assignments are in precedence order: LATER entries win. For each key, an
@@ -210,14 +227,9 @@ fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnost
 /// the winning value/location. Same key + same value, or an earlier entry that is
 /// itself the eventual winner, never fires.
 fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
-    use std::collections::HashMap;
-
     // Key IDENTITY is the canonical /proc/sys path form; the winner for each key
     // is its LAST assignment (highest index).
-    let mut winner: HashMap<&str, usize> = HashMap::new();
-    for (idx, a) in assignments.iter().enumerate() {
-        winner.insert(a.canonical.as_str(), idx);
-    }
+    let winner = effective_values(assignments);
 
     let mut diags = Vec::new();
     for (idx, a) in assignments.iter().enumerate() {
@@ -252,13 +264,28 @@ fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
 }
 
 /// Parse `source` (the contents of a `sysctl.d`/`sysctl.conf` file at `path`) and
-/// run the `sysctld-` lint passes over it, returning the merged diagnostics:
-/// every malformed line's `sysctld-F01`, then the within-file last-wins
-/// `sysctld-W01` findings.
+/// run the version-agnostic `sysctld-` lint passes over it: every malformed line's
+/// `sysctld-F01`, then the within-file last-wins `sysctld-W01`. A thin wrapper over
+/// [`lint_str_with_target`] with no STIG baseline selected.
 #[must_use]
 pub fn lint_str(source: &str, path: &Path) -> Vec<Diagnostic> {
+    lint_str_with_target(source, path, None)
+}
+
+/// As [`lint_str`], plus the version-aware `sysctld-W02` STIG baseline pass when
+/// `target` is `Some`. A MISSING required key is anchored at `path` (file mode); a
+/// present-but-insecure key is anchored at its real assignment line/span.
+#[must_use]
+pub fn lint_str_with_target(
+    source: &str,
+    path: &Path,
+    target: Option<TargetVersion>,
+) -> Vec<Diagnostic> {
     let (assignments, mut diags) = parse_file(source, path);
     diags.extend(w01_last_wins(&assignments));
+    if let Some(t) = target {
+        diags.extend(w02_baseline(&assignments, t, path));
+    }
     diags
 }
 
@@ -284,6 +311,19 @@ pub fn lint_str(source: &str, path: &Path) -> Vec<Diagnostic> {
 /// unreadable directory returns an empty map alongside the single file-level F01.
 #[must_use]
 pub fn lint_dir(dir: &Path) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
+    lint_dir_with_target(dir, None)
+}
+
+/// As [`lint_dir`], plus the version-aware `sysctld-W02` STIG baseline pass when
+/// `target` is `Some`. A MISSING required key is anchored at `dir` (the drop-in
+/// set has no single source line); a present-but-insecure key is anchored at the
+/// real drop-in file it came from (whose source is staged, so the human renderer
+/// shows a snippet).
+#[must_use]
+pub fn lint_dir_with_target(
+    dir: &Path,
+    target: Option<TargetVersion>,
+) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -343,6 +383,9 @@ pub fn lint_dir(dir: &Path) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
         }
     }
     diags.extend(w01_last_wins(&all_assignments));
+    if let Some(t) = target {
+        diags.extend(w02_baseline(&all_assignments, t, dir));
+    }
     (diags, sources)
 }
 
