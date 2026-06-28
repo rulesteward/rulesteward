@@ -207,13 +207,6 @@ fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnost
     (assignments, f01s)
 }
 
-/// Run the last-wins (`sysctld-W01`) pass over an ordered list of assignments.
-///
-/// The assignments are in precedence order: LATER entries win. For each key, an
-/// earlier assignment whose value DIFFERS from the final (winning) value for that
-/// key is dead -> one W01 anchored at the dead earlier line, naming the key and
-/// the winning value/location. Same key + same value, or an earlier entry that is
-/// itself the eventual winner, never fires.
 /// The winning (last) assignment index for each canonical key, in precedence
 /// order (later wins). The single source of the effective-value map shared by the
 /// W01 last-wins pass and the W02 baseline pass, so both reason over identical
@@ -226,6 +219,13 @@ pub(crate) fn effective_values(assignments: &[ParsedAssignment]) -> HashMap<&str
     winner
 }
 
+/// Run the last-wins (`sysctld-W01`) pass over an ordered list of assignments.
+///
+/// The assignments are in precedence order: LATER entries win. For each key, an
+/// earlier assignment whose value DIFFERS from the final (winning) value for that
+/// key is dead -> one W01 anchored at the dead earlier line, naming the key and
+/// the winning value/location. Same key + same value, or an earlier entry that is
+/// itself the eventual winner, never fires.
 fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
     // Key IDENTITY is the canonical /proc/sys path form; the winner for each key
     // is its LAST assignment (highest index).

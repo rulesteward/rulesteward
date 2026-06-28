@@ -511,6 +511,8 @@ fn parse_sysctl_int(value: &str) -> Option<i64> {
     if body.is_empty() || body.starts_with('+') || body.starts_with('-') {
         return None;
     }
+    // An out-of-`i64` magnitude makes `from_str_radix` return `Err` -> `None`, so
+    // an absurd value is flagged rather than silently wrapped.
     let magnitude = i64::from_str_radix(body, radix).ok()?;
     Some(if negative { -magnitude } else { magnitude })
 }
