@@ -256,7 +256,11 @@ impl Parser {
     fn or_expr(&mut self, f: &ProductFacts) -> Result<bool, String> {
         let mut v = self.and_expr(f)?;
         while self.eat(&Tok::Or) {
-            v = self.and_expr(f)? || v;
+            // Bind the parse FIRST so it always runs, then fold left-to-right. Writing
+            // `v = v || self.and_expr(f)?` would short-circuit and SKIP the parse once
+            // `v` is true, dropping the rest of the expression.
+            let rhs = self.and_expr(f)?;
+            v = v || rhs;
         }
         Ok(v)
     }
@@ -264,7 +268,8 @@ impl Parser {
     fn and_expr(&mut self, f: &ProductFacts) -> Result<bool, String> {
         let mut v = self.atom(f)?;
         while self.eat(&Tok::And) {
-            v = self.atom(f)? && v;
+            let rhs = self.atom(f)?;
+            v = v && rhs;
         }
         Ok(v)
     }
