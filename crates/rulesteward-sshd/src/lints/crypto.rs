@@ -127,8 +127,11 @@ enum Weak03Kind {
     Kex,
 }
 
-/// The single algorithm-list token for a directive's `args`, with any inline
-/// `#` comment stripped, or `None` if the value is not a well-formed single arg.
+/// The effective algorithm-list value for a directive's `args`, with any inline
+/// `#` comment stripped and embedded double-quotes removed, or `None` if the
+/// value is not a well-formed sshd-loading form.
+///
+/// # Inline `#` comment stripping
 ///
 /// sshd treats a whitespace-delimited `#` as an end-of-line comment (verified
 /// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers aes128-cbc # legacy` is a VALID
@@ -140,19 +143,84 @@ enum Weak03Kind {
 /// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
 /// the helper yields `None`.
 ///
-/// Known limitation: embedded double-quotes inside an algo value are NOT handled.
-/// The parser keeps `"` literal mid-token while sshd strips quotes anywhere, so a
-/// quoted individual-algorithm value (e.g. `Ciphers "aes128-cbc",aes256-ctr`,
-/// very low realism) can false-negative. Tracked in issue #327.
-fn algo_list_value(args: &[String]) -> Option<&str> {
+/// # Embedded double-quote handling (issue #327, option b -- localized fix)
+///
+/// sshd strips double-quotes anywhere in a token before re-parsing the comma
+/// list (verified OpenSSH 9.9p1/10.2p1 `sshd -T`). Two quote-induced arg
+/// shapes reach this helper:
+///
+/// - **Embedded quotes in a single arg**: `Ciphers +"aes128-cbc"` -- the
+///   leading `+` causes `read_arg` to read a bareword, yielding `+"aes128-cbc"`
+///   (literal `"` chars) as a single arg. After stripping `"`, the effective
+///   value is `+aes128-cbc`, which W06 then processes normally.
+///
+/// - **Quote-split multi-arg**: `Ciphers "aes128-cbc",aes256-ctr` -- `read_arg`
+///   strips the outer quotes of `"aes128-cbc"` and yields `aes128-cbc`, then
+///   `,aes256-ctr` (starting with `,`) becomes the next bareword token. The
+///   parser therefore produces `args = ["aes128-cbc", ",aes256-ctr"]`. sshd loads
+///   these as the comma-joined value `aes128-cbc,aes256-ctr`. This helper
+///   recognizes the `,`-prefix signal and concatenates all effective args (no
+///   separator) to reconstruct the sshd-equivalent value.
+///
+/// Counter-check: `Ciphers "aes128-cbc # x"` -- the parser strips outer quotes,
+/// yielding the single arg `aes128-cbc # x` (which contains `#`). The `#` check
+/// below suppresses it correctly, matching sshd's rejection (rc 255, verified
+/// OpenSSH 10.2p1). The `,`-prefix join does not affect this case.
+fn algo_list_value(args: &[String]) -> Option<String> {
+    // Step 1: strip trailing inline `#` comment args.
     let effective = match args.iter().position(|a| a.starts_with('#')) {
         Some(i) => &args[..i],
         None => args,
     };
-    match effective {
-        [one] if !one.contains('#') => Some(one.as_str()),
-        _ => None,
+
+    // Step 2: assemble the raw value string.
+    //
+    // If all args from index 1 onward start with `,`, they were produced by the
+    // tokenizer splitting a quoted-then-bareword sequence on token boundaries
+    // (e.g. `"aes128-cbc",aes256-ctr` -> `["aes128-cbc", ",aes256-ctr"]`). In
+    // that case, concatenate all effective args directly (no separator) to
+    // reconstruct the logical comma-list sshd would see. Otherwise, two or more
+    // genuinely whitespace-separated args is a real multi-arg value that sshd
+    // rejects (rc 255); return None to suppress it.
+    let raw: String = match effective {
+        [one] => one.clone(),
+        [_first, rest @ ..] if rest.iter().all(|a| a.starts_with(',')) => effective.concat(),
+        _ => return None,
+    };
+
+    // Step 3a: guard against a hash inside a bareword-embedded quoted string
+    // that was split by the tokenizer's whitespace boundary.
+    //
+    // Consider `Ciphers +"aes128-cbc # x"`: the leading `+` makes `read_arg`
+    // read a bareword, which stops at the space inside the quoted part. The
+    // tokenizer yields args=[`+"aes128-cbc`, `#`, `x"`]. The comment-strip
+    // (step 1) removes `#` and `x"`, leaving effective=[`+"aes128-cbc`].
+    // After stripping `"` we would get `+aes128-cbc` and W06 would fire --
+    // a false positive, since sshd rejects `+"aes128-cbc # x"` (rc 255).
+    //
+    // Signal: the remaining raw value has an ODD number of `"` chars. Balanced
+    // pairs (zero, two, four, ...) are fine; a lone `"` means the closing
+    // quote of a quoted string was consumed by the comment-strip, which implies
+    // a hash was inside the quoted string and the line is a sshd reject.
+    if raw.chars().filter(|&c| c == '"').count() % 2 != 0 {
+        return None;
     }
+
+    // Step 3b: strip ALL embedded `"` characters to match sshd's quote-stripping
+    // behavior. This handles single-arg forms like `+"aes128-cbc"` where the
+    // leading `+` prevented quoted-string tokenization (option b localized fix).
+    let value: String = raw.chars().filter(|&c| c != '"').collect();
+
+    // Step 4: a `#` anywhere in the value (after quote-stripping) means the
+    // cipher spec contains a hash character that sshd would reject (rc 255):
+    // - bare glued hash: `aes128-cbc#x` (whole token, no whitespace to split on)
+    // - hash-inside-quotes: `"aes128-cbc # x"` (outer quotes stripped by parser,
+    //   inner ` # x` part retained in the arg, sshd rejects the whole spec)
+    if value.contains('#') {
+        return None;
+    }
+
+    Some(value)
 }
 
 /// Return `true` when the lowercased token is a weak KEX algorithm.
@@ -885,6 +953,119 @@ mod w06_tests {
         assert!(
             run("Ciphers +aes128-cbc,#legacy\n").is_empty(),
             "comma-glued # in a `+` value (one malformed token, sshd rc 255) must not fire W06"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Embedded double-quotes inside algo-list value (issue #327, option b)
+    // -----------------------------------------------------------------------
+    //
+    // sshd strips double-quotes anywhere in a token before re-parsing the cipher
+    // spec (verified OpenSSH 9.9p1 / 10.2p1 `sshd -T -f <fixture>`). Embedded
+    // quotes can reach W06 in two ways:
+    //
+    //   1. `Ciphers +"aes128-cbc"`: the leading `+` prevents read_arg from
+    //      entering quoted-string mode, so the whole token `+"aes128-cbc"` (with
+    //      literal embedded quotes) arrives as a single arg. sshd sees `+aes128-cbc`
+    //      (quotes stripped) and reintroduces aes128-cbc -- W06 must fire.
+    //      Grounding: `sshd -T -f <fixture>` -> `ciphers ...,aes128-cbc` (exit 0).
+    //
+    //   2. Counter-check: `Ciphers +"aes128-cbc # x"` -- the token after `+` has
+    //      hash-inside-quotes; the tokenizer produces args=[`+"aes128-cbc # x"`].
+    //      sshd rejects "Bad SSH2 cipher spec" (rc 255) -- W06 must NOT fire.
+
+    #[test]
+    fn quoted_plus_weak_algo_fires_w06() {
+        // `Ciphers +"aes128-cbc"` -- the `+` prevents quoted-string tokenization;
+        // the parser produces args=[`+"aes128-cbc"`] (literal embedded quotes).
+        // sshd strips the quotes and loads the default set plus aes128-cbc (exit 0,
+        // verified OpenSSH 10.2p1 `sshd -T`). W06 must fire on aes128-cbc.
+        let diags = run("Ciphers +\"aes128-cbc\"\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`+\"aes128-cbc\"` reintroduces weak aes128-cbc => one W06; got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('+'),
+            "message names the operator, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn quoted_plus_hash_inside_quotes_does_not_fire_w06() {
+        // `Ciphers +"aes128-cbc # x"` -- embedded `#` inside the quoted part.
+        // The parser yields args=[`+"aes128-cbc # x"`] (literal embedded quotes and
+        // a hash). sshd sees the whole thing as one malformed spec (rc 255, verified
+        // OpenSSH 10.2p1) and rejects it. W06 must NOT fire.
+        assert!(
+            run("Ciphers +\"aes128-cbc # x\"\n").is_empty(),
+            "embedded hash inside operator-quoted value is a non-loading sshd rc-255 reject; \
+             W06 must not fire"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Glued-hash-after-closing-quote regression (issue #327 fix regression)
+    // -----------------------------------------------------------------------
+    //
+    // sshd_config tokenization (verified OpenSSH 10.2p1 `sshd -T`):
+    //   - `Ciphers +"aes128-cbc"#x`  -> Bad SSH2 cipher spec '+aes128-cbc#x' (rc 255)
+    //     The `+` forces bareword mode; the whole token `+"aes128-cbc"#x` is one arg.
+    //     After stripping `"`, value = `+aes128-cbc#x`; the `#` embedded in the value
+    //     is caught by step 4 of algo_list_value and suppresses the finding. CORRECT.
+    //   - `Ciphers +"aes128-cbc" #x` -> ciphers includes aes128-cbc (rc 0, exit 0).
+    //     The `+` bareword ends at the space; args = [`+"aes128-cbc"`, `#x`].
+    //     After comment-strip and quote-strip, value = `+aes128-cbc`; W06 fires. CORRECT.
+    //
+    // These killing tests confirm the W06 glued/spaced discrimination works correctly:
+
+    #[test]
+    fn glued_hash_after_closing_quote_plus_prefix_does_not_fire_w06() {
+        // `Ciphers +"aes128-cbc"#x` -- `#x` glued directly to the closing quote.
+        // The leading `+` forces bareword tokenization; the whole token
+        // `+"aes128-cbc"#x` arrives as ONE arg with embedded `"` and `#`.
+        // After quote-strip: `+aes128-cbc#x`; the `#` is in the cipher spec.
+        // sshd rejects: "Bad SSH2 cipher spec '+aes128-cbc#x'" (rc 255, verified
+        // OpenSSH 10.2p1 `sshd -T`). W06 must NOT fire.
+        assert!(
+            run("Ciphers +\"aes128-cbc\"#x\n").is_empty(),
+            "glued `#` after closing quote with `+` prefix: sshd rc 255 => W06 must not fire"
+        );
+    }
+
+    #[test]
+    fn spaced_hash_after_closing_quote_plus_prefix_fires_w06() {
+        // `Ciphers +"aes128-cbc" #x` -- SPACE before `#x` (inline comment).
+        // The `+` forces bareword mode; the bareword ends at the space, yielding
+        // args=[`+"aes128-cbc"`, `#x`]. After comment-strip (removes `#x`) and
+        // quote-strip (removes `"`), value = `+aes128-cbc`. sshd strips quotes and
+        // loads the default set plus aes128-cbc (rc 0, verified OpenSSH 10.2p1
+        // `sshd -T`). W06 must fire on aes128-cbc.
+        let diags = run("Ciphers +\"aes128-cbc\" #x\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "`+\"aes128-cbc\"` with spaced inline comment loads aes128-cbc => one W06; \
+             got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains('+'),
+            "message names the operator, got: {}",
+            diags[0].message
         );
     }
 }
@@ -1666,6 +1847,92 @@ mod w03_tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Embedded double-quotes inside algo-list value (issue #327, option b)
+    // -----------------------------------------------------------------------
+    //
+    // sshd strips double-quotes anywhere in a token before re-parsing the cipher
+    // spec (verified OpenSSH 9.9p1 / 10.2p1 `sshd -T -f <fixture>`). The
+    // parser may produce either: a single arg with embedded `"` chars (for the
+    // `+"aes128-cbc"` case, where the leading `+` means read_arg reads a
+    // bareword), or multiple args (for `"aes128-cbc",aes256-ctr`, where
+    // read_arg strips the outer quotes -> `aes128-cbc`, then `,aes256-ctr` is
+    // the next bareword token starting with `,`). Both cases must fire W03 when
+    // the underlying algorithm is in the denylist; counter-checks must still hold.
+    //
+    // Grounding: `sshd -T -f <fixture>` (OpenSSH 10.2p1, run 2026-06-29):
+    //   - `Ciphers "aes128-cbc",aes256-ctr` -> ciphers aes128-cbc,aes256-ctr (exit 0)
+    //   - `Ciphers "aes256-ctr,aes128-cbc"` -> ciphers aes256-ctr,aes128-cbc (exit 0)
+    //   - `Ciphers "aes128-cbc # x"` -> Bad SSH2 cipher spec (exit 255)
+    //   - `Ciphers "aes128-cbc # x",aes256-ctr` -> Bad SSH2 cipher spec (exit 255)
+
+    #[test]
+    fn quoted_mixed_weak_algo_fires_w03() {
+        // `Ciphers "aes128-cbc",aes256-ctr` -- the quoted `"aes128-cbc"` part is
+        // tokenized as one arg (`aes128-cbc`, quotes stripped by read_arg), then
+        // `,aes256-ctr` (starting with `,`) is the next bareword token. The parser
+        // yields args=["aes128-cbc", ",aes256-ctr"]. sshd strips quotes and loads
+        // the comma-joined cipher list including aes128-cbc (exit 0, OpenSSH 10.2p1
+        // `sshd -T`). W03 must fire on aes128-cbc.
+        let diags = run("Ciphers \"aes128-cbc\",aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "quoted-arg+bareword list with weak aes128-cbc => one W03; got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn hash_inside_quotes_does_not_fire_w03() {
+        // `Ciphers "aes128-cbc # x"` -- hash INSIDE the quoted part.
+        // The parser strips the outer quotes and yields args=["aes128-cbc # x"].
+        // sshd rejects "Bad SSH2 cipher spec 'aes128-cbc # x'" (exit 255, verified
+        // OpenSSH 10.2p1). The daemon never loads this line; W03 must NOT fire.
+        assert!(
+            run("Ciphers \"aes128-cbc # x\"\n").is_empty(),
+            "hash inside quotes is a non-loading sshd rc-255 reject; W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn hash_inside_quotes_with_continuation_does_not_fire_w03() {
+        // `Ciphers "aes128-cbc # x",aes256-ctr` -- hash-inside-quotes with a
+        // comma-prefixed continuation. The parser yields args=["aes128-cbc # x",
+        // ",aes256-ctr"]. sshd sees the whole joined value as one malformed spec
+        // (exit 255, verified OpenSSH 10.2p1). W03 must NOT fire.
+        assert!(
+            run("Ciphers \"aes128-cbc # x\",aes256-ctr\n").is_empty(),
+            "hash inside quotes with comma continuation is a sshd rc-255 reject; \
+             W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn fully_quoted_value_still_fires_w03() {
+        // `Ciphers "aes256-ctr,aes128-cbc"` -- whole value in one quoted token.
+        // The parser yields args=["aes256-ctr,aes128-cbc"] (no embedded `"`).
+        // sshd loads aes256-ctr,aes128-cbc (exit 0, OpenSSH 10.2p1). W03 already
+        // fires without the quote fix, but must still fire after (no regression).
+        let diags = run("Ciphers \"aes256-ctr,aes128-cbc\"\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "fully-quoted list with weak aes128-cbc => one W03; got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
+
     #[test]
     fn comma_glued_hash_does_not_fire_w03() {
         // A `#` glued AFTER a comma (no whitespace before it) is NOT an inline
@@ -1685,6 +1952,82 @@ mod w03_tests {
         assert!(
             run("Ciphers aes256-ctr,aes128-cbc,#x\n").is_empty(),
             "comma-glued # after a list (one malformed token, sshd rc 255) must not fire W03"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Glued-hash-after-closing-quote regression (issue #327 fix regression)
+    // -----------------------------------------------------------------------
+    //
+    // sshd tokenization (verified OpenSSH 10.2p1 `sshd -T`):
+    //   - `Ciphers "aes128-cbc"#x`  -> "Bad SSH2 cipher spec 'aes128-cbc#x'" (rc 255)
+    //   - `Ciphers "aes128-cbc" #x` -> ciphers aes128-cbc (rc 0, loads aes128-cbc)
+    //
+    // PARSER LIMITATION: the parser's read_arg strips the outer quotes from
+    // `"aes128-cbc"` regardless of what follows the closing `"`. Whether the input
+    // is `"aes128-cbc"#x` (glued) or `"aes128-cbc" #x` (spaced), read_arg returns
+    // `aes128-cbc` and the tokenizer's skip_whitespace discards any leading space
+    // before the next token. Both cases produce IDENTICAL args = ["aes128-cbc", "#x"].
+    //
+    // This means the glued case CANNOT be distinguished from the spaced case at the
+    // algo_list_value level -- the fix requires a parser-layer change to preserve
+    // the whitespace-boundary information. As documented in the task notes, this is
+    // a known limitation (low-realism, documented gap). The tests below are RED and
+    // document the false-positive behavior so a future parser fix can make them GREEN.
+    //
+    // Note: this is distinct from the `+"aes128-cbc"#x` case (W06), where the `+`
+    // forces bareword mode and the `#` IS embedded in the single-arg bareword token
+    // after quote-strip, making the glued case correctly suppressible at the
+    // algo_list_value level. See glued_hash_after_closing_quote_plus_prefix_does_not_fire_w06
+    // in the w06_tests module.
+
+    // NOTE: These two tests document known false-positive cases that CANNOT be fixed
+    // in algo_list_value because the parser discards the whitespace-boundary
+    // information. They are skipped (cfg attribute) to avoid blocking CI while the
+    // parser limitation is tracked. The behavior they assert is currently WRONG
+    // (the tests would fail if enabled): W03 fires but sshd would reject these lines.
+    //
+    // Remove the #[ignore] and the "documented gap" status when a parser-layer fix
+    // lands that preserves the glued-vs-spaced distinction for quoted-string args.
+
+    #[test]
+    #[ignore = "documented gap: parser discards whitespace-boundary after quoted arg; \
+                Ciphers \"aes128-cbc\"#x and \"aes128-cbc\" #x produce identical args; \
+                fix requires parser change (tracked)"]
+    fn glued_hash_after_closing_quote_no_prefix_does_not_fire_w03() {
+        // `Ciphers "aes128-cbc"#x` -- `#x` glued directly to the closing quote.
+        // The parser strips the quotes and yields args=["aes128-cbc", "#x"] --
+        // IDENTICAL to the spaced case `"aes128-cbc" #x`. The algo_list_value
+        // function cannot tell them apart from args alone.
+        // sshd rejects: "Bad SSH2 cipher spec 'aes128-cbc#x'" (rc 255, verified
+        // OpenSSH 10.2p1 `sshd -T`). W03 must NOT fire (but currently DOES --
+        // false positive / documented gap).
+        assert!(
+            run("Ciphers \"aes128-cbc\"#x\n").is_empty(),
+            "glued `#` after closing quote (no prefix): sshd rc 255 => W03 must not fire \
+             (currently a false positive -- documented gap, requires parser fix)"
+        );
+    }
+
+    #[test]
+    fn spaced_hash_after_closing_quote_no_prefix_fires_w03() {
+        // `Ciphers "aes128-cbc" #x` -- SPACE before `#x` (inline comment).
+        // The parser yields args=["aes128-cbc", "#x"] (same as the glued case, but
+        // sshd accepts this: the space makes `#x` a comment, so aes128-cbc is loaded).
+        // W03 must fire. Grounding: sshd -T yields `ciphers aes128-cbc` (rc 0,
+        // verified OpenSSH 10.2p1).
+        let diags = run("Ciphers \"aes128-cbc\" #x\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "\"aes128-cbc\" with spaced inline comment loads aes128-cbc => one W03; \
+             got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
         );
     }
 }
