@@ -8,29 +8,37 @@
 //!
 //! ## Weakening-present (per-file, #333) -- fire on presence
 //!
-//! DISA RHEL 8 / RHEL 9 sudo STIG controls (plus the general-hardening
-//! `visiblepw`). Exact rule IDs are cited inline and marked `[VERIFY]` where not
-//! confirmed from a local primary source.
+//! A mix of DISA RHEL 8 / RHEL 9 sudo STIG controls (`!authenticate` and the
+//! `targetpw` / `rootpw` / `runaspw` family) and CIS / general-hardening
+//! controls with no DISA `stigid@` mapping (`use_pty`, `visiblepw`). Each
+//! finding cites its grounded control id and framework inline (see the
+//! per-setting list below).
 //!
-//! NOTE: a #347 grounding pass found several of these `[VERIFY]` IDs are mismapped
-//! (e.g. `!use_pty` cites RHEL-08-010382, which is actually the "restrict
-//! privilege elevation to authorized personnel" control, and `!use_pty` has no
-//! STIG ID at all). Re-grounding them against the RHEL 8 V2R7 / RHEL 9 V2R8
-//! clusters is tracked as a follow-up (#359); the IDs below are left unchanged
-//! (still `[VERIFY]`) to keep this change focused.
+//! These IDs were RE-GROUNDED 2026-06-29 (#355, #359) against
+//! ComplianceAsCode/content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`
+//! (the `stigid@ol8` keys) plus the DISA RHEL 9 4320xx cluster. The earlier
+//! `[VERIFY]` IDs were mismapped: the RHEL-08 `!authenticate` and pw IDs were
+//! swapped, and `use_pty`/`visiblepw` were wrongly attributed to DISA STIG
+//! (both are CIS / general-hardening controls with no `stigid@` mapping). The
+//! `tests::w04_weakening_findings_cite_grounded_controls` drift-guard pins these.
 //!
 //! - `!authenticate` -- bypasses per-invocation re-authentication.
-//!   RHEL-08-010383 / RHEL-09-432025 [VERIFY exact IDs].
+//!   DISA STIG RHEL-08-010381 / RHEL-09-432025
+//!   (ComplianceAsCode `sudo_remove_no_authenticate`).
 //! - `targetpw` / `rootpw` / `runaspw` -- prompts for the target/root/runas
 //!   user's password rather than the invoking user's, breaking PAM/audit
 //!   accountability.
-//!   RHEL-08-010381 / RHEL-09-432015 [VERIFY exact IDs].
+//!   DISA STIG RHEL-08-010383 / RHEL-09-432020
+//!   (ComplianceAsCode `sudoers_validate_passwd`).
 //! - `visiblepw` -- allows sudo to proceed when the password would be visible
 //!   (e.g. when a tty is not associated with stdin).
-//!   General CIS / STIG hardening; no dedicated single STIG ID confirmed [VERIFY].
+//!   CIS / general hardening; no DISA sudo STIG control.
 //! - `!use_pty` (explicit negation of the pty requirement) -- deliberately
 //!   disabling pseudo-terminal allocation is a present weakening.
-//!   RHEL-08-010382 / RHEL-09-432020 [VERIFY exact IDs].
+//!   CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control
+//!   (ComplianceAsCode `sudo_add_use_pty` carries no `stigid@` key; the
+//!   RHEL-08-010382 it formerly cited is the unrelated "restrict privilege
+//!   elevation to authorized personnel" control).
 //!
 //! ## Missing-required (merged, #347) -- fire on absence
 //!
@@ -72,42 +80,46 @@ use crate::lints::{SudoersLintContext, anchored};
 // Weakening settings: fire when any of these appear (any scope).
 // ---------------------------------------------------------------------------
 
-/// Non-negated settings that weaken the sudo security posture below the STIG
-/// baseline when present. Each tuple is `(name_as_written, human_explanation)`.
+/// Non-negated settings that weaken the sudo security posture below the sudo
+/// hardening baseline when present. Each tuple is
+/// `(name_as_written, human_explanation, grounded_citation)`; the citation
+/// (control id + framework) is appended to the diagnostic so an operator can
+/// cross-reference the finding. It is re-grounded per the module doc and pinned
+/// by `tests::w04_weakening_findings_cite_grounded_controls`.
 ///
 /// Note: `!authenticate` is NOT in this table because it is a NEGATED setting
 /// (`DefaultSetting { negated: true, name: "authenticate" }`); it is handled
 /// separately in `check_file`'s negated arm. This table covers settings that
 /// are dangerous when present WITHOUT a `!` prefix.
-const WEAKENING_PRESENT: &[(&str, &str)] = &[
+const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
     // targetpw: prompts for the target user's password rather than the invoking
     // user's -- breaks PAM accountability chain.
-    // RHEL-08-010381 / RHEL-09-432015 [VERIFY].
     (
         "targetpw",
         "prompts for the target user's password instead of the invoking user's; \
-         breaks PAM accountability (STIG: re-auth must use the user's own credentials)",
+         breaks PAM accountability (re-auth must use the user's own credentials)",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
     ),
     // rootpw: prompts for root's password -- also breaks accountability.
-    // RHEL-08-010381 / RHEL-09-432015 [VERIFY].
     (
         "rootpw",
         "prompts for the root password instead of the invoking user's; \
-         breaks PAM accountability (STIG: re-auth must use the user's own credentials)",
+         breaks PAM accountability (re-auth must use the user's own credentials)",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
     ),
     // runaspw: prompts for the run-as user's password.
-    // RHEL-08-010381 / RHEL-09-432015 [VERIFY].
     (
         "runaspw",
         "prompts for the run-as user's password instead of the invoking user's; \
-         breaks PAM accountability (STIG: re-auth must use the user's own credentials)",
+         breaks PAM accountability (re-auth must use the user's own credentials)",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
     ),
     // visiblepw: allows sudo when the password would be echoed in plain text.
-    // General STIG hardening [VERIFY exact ID].
     (
         "visiblepw",
         "allows sudo to proceed when the password would be visible on the terminal; \
-         STIG baseline requires this to be disabled",
+         the CIS / general hardening baseline requires this to be disabled",
+        "CIS / general hardening; not a DISA STIG control",
     ),
 ];
 
@@ -150,7 +162,7 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
             if setting.negated {
                 match name {
                     // `!authenticate`: disables per-invocation password re-authentication.
-                    // RHEL-08-010383 / RHEL-09-432025 [VERIFY].
+                    // DISA STIG RHEL-08-010381 / RHEL-09-432025.
                     "authenticate" => {
                         diags.push(anchored(
                             Severity::Warning,
@@ -160,7 +172,7 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                                 "Defaults setting '!authenticate' {} disables \
                                  per-invocation sudo re-authentication; \
                                  STIG requires authentication for every invocation \
-                                 (RHEL-08-010383 / RHEL-09-432025 [VERIFY])",
+                                 (DISA STIG RHEL-08-010381 / RHEL-09-432025)",
                                 scope_paren(&defaults.scope),
                             ),
                             &file.path,
@@ -168,7 +180,7 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                         ));
                     }
                     // `!use_pty`: explicit negation of the pty requirement.
-                    // RHEL-08-010382 / RHEL-09-432020 [VERIFY].
+                    // CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
                     "use_pty" => {
                         diags.push(anchored(
                             Severity::Warning,
@@ -176,9 +188,11 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                             line.span.clone(),
                             format!(
                                 "Defaults setting '!use_pty' {} disables \
-                                 pseudo-terminal allocation; STIG requires 'Defaults use_pty' \
-                                 to prevent I/O redirection attacks \
-                                 (RHEL-08-010382 / RHEL-09-432020 [VERIFY])",
+                                 pseudo-terminal allocation; the CIS / PCI hardening \
+                                 baseline requires 'Defaults use_pty' to prevent I/O \
+                                 redirection attacks \
+                                 (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; \
+                                 not a DISA STIG control)",
                                 scope_paren(&defaults.scope),
                             ),
                             &file.path,
@@ -194,14 +208,15 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
 
             // Fire for weakening non-negated settings (all entries in the table;
             // `!authenticate` is handled in the negated arm above).
-            for &(weakening_name, explanation) in WEAKENING_PRESENT {
+            for &(weakening_name, explanation, citation) in WEAKENING_PRESENT {
                 if name == weakening_name {
                     diags.push(anchored(
                         Severity::Warning,
                         "sudo-W04",
                         line.span.clone(),
                         format!(
-                            "Defaults setting '{name}' {} weakens sudo security: {explanation}",
+                            "Defaults setting '{name}' {} weakens sudo security: \
+                             {explanation} ({citation})",
                             scope_paren(&defaults.scope),
                         ),
                         &file.path,
@@ -372,7 +387,7 @@ mod tests {
 
     /// `Defaults !authenticate` fires W04.
     ///
-    /// STIG grounding: RHEL-08-010383 / RHEL-09-432025 [VERIFY].
+    /// Grounding: DISA STIG RHEL-08-010381 / RHEL-09-432025.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_not_authenticate_global() {
@@ -391,7 +406,7 @@ mod tests {
     /// Scoped `Defaults:someuser !authenticate` still fires W04.
     /// A per-user weakening is still a finding.
     ///
-    /// STIG grounding: RHEL-08-010383 / RHEL-09-432025 [VERIFY].
+    /// Grounding: DISA STIG RHEL-08-010381 / RHEL-09-432025.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_not_authenticate_user_scope() {
@@ -438,7 +453,7 @@ mod tests {
 
     /// `Defaults targetpw` fires W04.
     ///
-    /// STIG grounding: RHEL-08-010381 / RHEL-09-432015 [VERIFY].
+    /// Grounding: DISA STIG RHEL-08-010383 / RHEL-09-432020.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_targetpw() {
@@ -454,7 +469,7 @@ mod tests {
 
     /// `Defaults rootpw` fires W04.
     ///
-    /// STIG grounding: RHEL-08-010381 / RHEL-09-432015 [VERIFY].
+    /// Grounding: DISA STIG RHEL-08-010383 / RHEL-09-432020.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_rootpw() {
@@ -470,7 +485,7 @@ mod tests {
 
     /// `Defaults runaspw` fires W04.
     ///
-    /// STIG grounding: RHEL-08-010381 / RHEL-09-432015 [VERIFY].
+    /// Grounding: DISA STIG RHEL-08-010383 / RHEL-09-432020.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_runaspw() {
@@ -490,7 +505,7 @@ mod tests {
 
     /// `Defaults visiblepw` fires W04.
     ///
-    /// STIG grounding: general sudo hardening baseline [VERIFY exact ID].
+    /// Grounding: CIS / general hardening; no DISA sudo STIG control.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_visiblepw() {
@@ -510,7 +525,7 @@ mod tests {
 
     /// `Defaults !use_pty` fires W04 (explicit negation of the pty requirement).
     ///
-    /// STIG grounding: RHEL-08-010382 / RHEL-09-432020 [VERIFY].
+    /// Grounding: CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_not_use_pty_explicit() {
@@ -524,6 +539,70 @@ mod tests {
                 .any(|d| d.message.contains("!use_pty") || d.message.contains("use_pty")),
             "W04 must fire for explicit '!use_pty'; got {diags:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Grounding drift-guard: each W04 weakening finding cites the CORRECT
+    // control id / framework.
+    // -----------------------------------------------------------------------
+
+    /// Each W04 weakening finding must cite its grounded control id / framework.
+    ///
+    /// Re-grounded 2026-06-29 against ComplianceAsCode/content commit
+    /// `65ccea603ee2c305fdb4c6f54cb911449d969d55` (`stigid@ol8` keys) + DISA
+    /// stigviewer (RHEL 8 V2R7 / RHEL 9 4320xx cluster):
+    /// - `!authenticate` -> DISA STIG RHEL-08-010381 / RHEL-09-432025
+    /// - `targetpw` / `rootpw` / `runaspw` -> DISA STIG RHEL-08-010383 / RHEL-09-432020
+    /// - `use_pty` (incl. `!use_pty`) -> CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5
+    ///   (no DISA sudo STIG control)
+    /// - `visiblepw` -> CIS / general hardening (no DISA STIG control)
+    ///
+    /// If this fails, RE-RUN the grounding pass against a pinned ComplianceAsCode
+    /// commit + DISA -- do NOT just edit the string to make it pass (#355, #359).
+    #[test]
+    fn w04_weakening_findings_cite_grounded_controls() {
+        // Each finding's message must contain the grounded citation.
+        let must_cite = [
+            ("Defaults !authenticate\n", "RHEL-08-010381"),
+            ("Defaults !authenticate\n", "RHEL-09-432025"),
+            ("Defaults targetpw\n", "RHEL-08-010383"),
+            ("Defaults targetpw\n", "RHEL-09-432020"),
+            ("Defaults rootpw\n", "RHEL-08-010383"),
+            ("Defaults runaspw\n", "RHEL-08-010383"),
+            ("Defaults !use_pty\n", "CIS Benchmark 1.3.2"),
+            ("Defaults !use_pty\n", "PCI-DSS Req-10.2.5"),
+            ("Defaults visiblepw\n", "CIS / general hardening"),
+        ];
+        for (defaults, needle) in must_cite {
+            let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.code == "sudo-W04" && d.message.contains(needle)),
+                "W04 finding for {defaults:?} must cite '{needle}'; got {diags:?}"
+            );
+        }
+
+        // The mis-grounded ids found in #355/#359 must NOT reappear in their
+        // respective findings (the swapped pair, and the bogus use_pty STIG id).
+        let must_not_cite = [
+            ("Defaults !authenticate\n", "010383"), // swapped: !authenticate is 010381
+            ("Defaults targetpw\n", "010381"),      // swapped: pw family is 010383
+            ("Defaults !use_pty\n", "RHEL-08-010382"), // use_pty has no DISA STIG id
+            ("Defaults !use_pty\n", "RHEL-09-432020"), // 432020 is the pw control, not use_pty
+        ];
+        for (defaults, bad) in must_not_cite {
+            let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            assert!(
+                diags
+                    .iter()
+                    .filter(|d| d.code == "sudo-W04")
+                    .all(|d| !d.message.contains(bad)),
+                "W04 finding for {defaults:?} must NOT cite the mis-grounded '{bad}'; got {diags:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
