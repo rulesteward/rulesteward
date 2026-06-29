@@ -28,8 +28,9 @@ use std::path::Path;
 use rulesteward_core::Span;
 
 use crate::ast::{
-    AliasDef, AliasKind, CmndItem, CmndSpec, DefaultSetting, DefaultsEntry, DefaultsScope,
-    IncludeDirective, IncludeKind, LineKind, LogicalLine, RunasSpec, SudoersFile, Tag, UserSpec,
+    AliasDef, AliasKind, AliasSpec, CmndItem, CmndSpec, DefaultSetting, DefaultsEntry,
+    DefaultsScope, HostGroup, IncludeDirective, IncludeKind, LineKind, LogicalLine, RunasSpec,
+    SudoersFile, Tag, UserSpec,
 };
 
 /// Parse a sudoers file's `source` (read from `path`) into a [`SudoersFile`].
@@ -438,45 +439,55 @@ fn classify_alias(trimmed: &str) -> Option<LineKind> {
         _ => return None,
     };
 
-    // `NAME = member, member, ...`. Split on the FIRST `=`.
-    let Some(eq) = rest.find('=') else {
-        return Some(LineKind::Malformed(format!(
-            "{kw} definition is missing its `=` and member list"
-        )));
-    };
-    let name = rest[..eq].trim();
-    if name.is_empty() {
-        return Some(LineKind::Malformed(format!("{kw} definition has no name")));
+    // One alias line may define SEVERAL aliases of the same kind, separated by a
+    // top-level `:` (`Alias ::= '<Kind>_Alias' Spec (':' Spec)*`, sudoers(5) #345).
+    // Split on those segment colons; alias defs carry no tag colons, so
+    // `skip_tag_colons = false`. Each segment is one `NAME = member, member, ...`.
+    let mut specs: Vec<AliasSpec> = Vec::new();
+    for seg in split_top_level_segments(rest, false) {
+        let Some(eq) = seg.find('=') else {
+            return Some(LineKind::Malformed(format!(
+                "{kw} definition is missing its `=` and member list"
+            )));
+        };
+        let name = seg[..eq].trim();
+        if name.is_empty() {
+            return Some(LineKind::Malformed(format!("{kw} definition has no name")));
+        }
+        let members: Vec<String> = seg[eq + 1..]
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect();
+        if members.is_empty() {
+            return Some(LineKind::Malformed(format!(
+                "{kw} {name} has an empty member list"
+            )));
+        }
+        specs.push(AliasSpec {
+            name: name.to_string(),
+            members,
+        });
     }
-    let members: Vec<String> = rest[eq + 1..]
-        .split(',')
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
-        .map(str::to_string)
-        .collect();
-    if members.is_empty() {
-        return Some(LineKind::Malformed(format!(
-            "{kw} {name} has an empty member list"
-        )));
-    }
-    Some(LineKind::Alias(AliasDef {
-        kind,
-        name: name.to_string(),
-        members,
-    }))
+    // `split_top_level_segments` always yields at least one segment, so `specs` is
+    // non-empty here.
+    Some(LineKind::Alias(AliasDef { kind, specs }))
 }
 
 /// Classify a user specification, or report it Malformed.
 ///
-/// Shape: `User_List Host_List = Cmnd_Spec_List [: Host_List = Cmnd_Spec_List]*`.
-/// Phase 0 splits on the FIRST `=`: the left side is `User_List Host_List`
-/// (whitespace-separated into a user list then a host list), the right side is the
-/// comma-separated `Cmnd_Spec_List`. The multi-host `: ... = ...` continuation is
-/// flattened: every `=`-delimited segment after the first contributes its
-/// commands.
+/// Shape: `User_List Host_List = Cmnd_Spec_List (: Host_List = Cmnd_Spec_List)*`
+/// (sudoers(5) `User_Spec`). The line is split into top-level `:`-separated
+/// host-group segments (see [`split_top_level_segments`]); the FIRST segment is
+/// `User_List Host_List = Cmnd_Spec_List` (the user list is the leading
+/// whitespace-run), and every later segment is `Host_List = Cmnd_Spec_List` sharing
+/// that same user list. Each segment becomes one [`HostGroup`], so tag inheritance is
+/// per-group and does not cross the `:` (the #345 fix; grounded against
+/// `cvtsudoers -f json`, sudo 1.9.17p2).
 fn classify_user_spec(trimmed: &str) -> LineKind {
     // A user-spec MUST contain an `=` (the User/Host = Cmnd boundary). Without one
-    // it is not a valid spec.
+    // it is not a valid spec - report the dispatcher's catch-all message.
     if !trimmed.contains('=') {
         return LineKind::Malformed(
             "not a recognized sudoers entry (expected a Defaults entry, an alias \
@@ -485,45 +496,145 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
         );
     }
 
-    // The left of the first `=` is `User_List Host_List`; split it into a user
-    // list (first whitespace-run token, comma-split) and a host list (the rest,
-    // comma-split). sudoers requires both a user list and a host list.
-    let first_eq = trimmed.find('=').expect("checked contains('=') above");
-    let lhs = trimmed[..first_eq].trim();
-    let rhs = &trimmed[first_eq + 1..];
+    // Split into host-group segments on the top-level `:` (told apart from the
+    // `NOPASSWD:` tag colon, the runas `(u:g)` colon, and an escaped `\:` by the
+    // splitter). `skip_tag_colons = true` for user-specs.
+    let segments = split_top_level_segments(trimmed, true);
 
-    let (user_part, host_part) = split_first_word(lhs);
-    let host_part = host_part.trim();
-    if user_part.is_empty() || host_part.is_empty() {
-        return LineKind::Malformed(
-            "user specification needs both a user list and a host list before the `=`".to_string(),
-        );
+    let mut users: Vec<String> = Vec::new();
+    let mut host_groups: Vec<HostGroup> = Vec::new();
+    for (idx, seg) in segments.iter().enumerate() {
+        let Some(eq) = seg.find('=') else {
+            return LineKind::Malformed(
+                "user specification segment is missing its `= command` part".to_string(),
+            );
+        };
+        let lhs = seg[..eq].trim();
+        let rhs = &seg[eq + 1..];
+
+        let hosts = if idx == 0 {
+            // First segment: `User_List Host_List`. The user list is the leading
+            // whitespace-run; the rest is the host list. sudoers requires both.
+            let (user_part, host_part) = split_first_word(lhs);
+            let host_part = host_part.trim();
+            if user_part.is_empty() || host_part.is_empty() {
+                return LineKind::Malformed(
+                    "user specification needs both a user list and a host list before the `=`"
+                        .to_string(),
+                );
+            }
+            users = comma_split(user_part);
+            comma_split(host_part)
+        } else {
+            // Continuation segment: the whole LHS is the host list (the user list is
+            // shared from the first segment).
+            if lhs.is_empty() {
+                return LineKind::Malformed(
+                    "user specification continuation segment needs a host list before its `=`"
+                        .to_string(),
+                );
+            }
+            comma_split(lhs)
+        };
+
+        let cmnd_specs = parse_cmnd_spec_list(rhs);
+        if cmnd_specs.is_empty() {
+            return LineKind::Malformed(
+                "user specification has no command after the `=`".to_string(),
+            );
+        }
+        host_groups.push(HostGroup { hosts, cmnd_specs });
     }
-    let users = comma_split(user_part);
-    let hosts = comma_split(host_part);
 
-    // The right side is the Cmnd_Spec_List (comma-separated commands). Phase 0
-    // treats the WHOLE RHS as one Cmnd_Spec_List so the tag `:` (e.g. `NOPASSWD:`)
-    // is handled inside each spec by `parse_cmnd_spec`.
-    //
-    // #330/#334: the multi-host continuation form
-    // `User Host = Cmnd : Host = Cmnd` carries a `:` at the Host=Cmnd boundary.
-    // Phase 0 does NOT split on it (a naive `:` split collides with the tag `:`);
-    // a `: Host = Cmnd` tail lands inside the last command token. This is an
-    // accepted Phase-0 simplification - the leaf passes (#330 tag walk, #331 alias
-    // walk) do not depend on per-host splitting, and a faithful multi-host model is
-    // a documented extension point here.
-    let cmnd_specs: Vec<CmndSpec> = parse_cmnd_spec_list(rhs);
+    LineKind::UserSpec(UserSpec { users, host_groups })
+}
 
-    if cmnd_specs.is_empty() {
-        return LineKind::Malformed("user specification has no command after the `=`".to_string());
+/// Split `s` into top-level `:`-separated segments, in source order (always >= 1).
+///
+/// The sudoers(5) top-level `:` separates user-spec host-groups
+/// (`Host_List = Cmnd_Spec_List`) and alias-def specs (`NAME = members`). It must be
+/// told apart from three other colons (all grounded against `visudo`/`cvtsudoers`,
+/// sudo 1.9.17p2 - see #345):
+///   * the runas-group colon inside `(runas_users:runas_groups)` - tracked by paren
+///     `depth`, so only a depth-0 colon can separate;
+///   * a literal colon inside a command/argument - sudo REQUIRES it to be
+///     backslash-escaped (`\:`; an unescaped `:` in a command is a syntax error), so
+///     the char after a backslash is skipped;
+///   * when `skip_tag_colons` (user-specs only), the `NOPASSWD:` / `PASSWD:` tag
+///     colon - recognised because the token immediately before it (back to the last
+///     `,` / `=` / `(` / `)` / consumed colon, with whitespace irrelevant) is a
+///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`.
+fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut seg_start = 0usize;
+    // Start of the token immediately preceding the cursor, reset at each token-list
+    // boundary (`,` / `=` / `(` / `)` / a consumed colon - NOT whitespace, so a tag
+    // keyword spaced away from its colon is still recognised). Used only to spot a
+    // tag keyword sitting just before a colon.
+    let mut tok_start = 0usize;
+    let mut depth: i32 = 0;
+    let mut escaped = false;
+    // Inside a `"..."` quoted command token nothing is structural: sudo groups the
+    // token, so a `(` / `:` / `,` there is a literal command byte, not a runas paren /
+    // segment colon / list comma (cvtsudoers keeps `/bin/sh -c "a(b"` as ONE command,
+    // splitting only on the LATER unquoted `:`). Mirrors stage-1 `strip_inline_comment`'s
+    // quote tracking; without it an unbalanced `(` in a quoted arg desyncs `depth` and a
+    // real segment `:` is swallowed (#345 adversarial-review fix).
+    let mut in_quotes = false;
+
+    for (i, c) in s.char_indices() {
+        if escaped {
+            // The previous char was a backslash; this char is a literal part of the
+            // current token (`\:`, `\,`, `\"`, ...). Never a separator or a boundary.
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if in_quotes {
+            // Literal token content; only the closing quote is structural.
+            if c == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quotes = true,
+            // No `tok_start` reset here: while `depth > 0` every colon is skipped, and
+            // `tok_start` is overwritten at the matching `)` before any depth-0 colon
+            // reads it, so resetting it on `(` would be dead.
+            '(' => depth += 1,
+            ')' => {
+                // `if depth > 0` only guards a malformed UNBALANCED `)` (which visudo
+                // rejects); for valid input depth is always >= 1 here.
+                if depth > 0 {
+                    depth -= 1;
+                }
+                tok_start = i + c.len_utf8();
+            }
+            ',' | '=' => tok_start = i + c.len_utf8(),
+            ':' if depth == 0 => {
+                let preceding = s[tok_start..i].trim();
+                if skip_tag_colons && parse_tag(preceding).is_some() {
+                    // A tag colon (`NOPASSWD:`): not a segment separator. The next
+                    // token starts just after it.
+                    tok_start = i + 1;
+                } else {
+                    // A genuine top-level segment separator. `tok_start = i + 1` resets
+                    // the preceding-token start for the next segment; valid input always
+                    // overwrites it at that segment's `=` before the next colon is seen.
+                    segments.push(s[seg_start..i].trim());
+                    seg_start = i + 1;
+                    tok_start = i + 1;
+                }
+            }
+            _ => {}
+        }
     }
-
-    LineKind::UserSpec(UserSpec {
-        users,
-        hosts,
-        cmnd_specs,
-    })
+    segments.push(s[seg_start..].trim());
+    segments
 }
 
 /// Parse a comma-separated `Cmnd_Spec_List` into [`CmndSpec`]s.
@@ -677,9 +788,9 @@ mod tests {
         let LineKind::UserSpec(spec) = &specs[0].kind else {
             unreachable!()
         };
-        assert_eq!(spec.cmnd_specs.len(), 1);
-        assert_eq!(spec.cmnd_specs[0].tags, vec![Tag::NoPasswd]);
-        assert_eq!(spec.cmnd_specs[0].cmnd, CmndItem::All);
+        assert_eq!(spec.host_groups[0].cmnd_specs.len(), 1);
+        assert_eq!(spec.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(spec.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
     }
 
     #[test]
@@ -750,7 +861,7 @@ mod tests {
         match &k[0] {
             LineKind::UserSpec(spec) => {
                 assert_eq!(spec.users, vec!["#1000".to_string()]);
-                assert_eq!(spec.cmnd_specs[0].cmnd, CmndItem::All);
+                assert_eq!(spec.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
             }
             other => panic!("expected a user-spec for a #uid subject, got {other:?}"),
         }
@@ -772,8 +883,10 @@ mod tests {
             k,
             vec![LineKind::Alias(AliasDef {
                 kind: AliasKind::User,
-                name: "ADMINS".to_string(),
-                members: vec!["alice".to_string(), "bob".to_string(), "%wheel".to_string()],
+                specs: vec![AliasSpec {
+                    name: "ADMINS".to_string(),
+                    members: vec!["alice".to_string(), "bob".to_string(), "%wheel".to_string()],
+                }],
             })]
         );
     }
@@ -874,9 +987,9 @@ mod tests {
         match &k[0] {
             LineKind::UserSpec(s) => {
                 assert_eq!(s.users, vec!["root".to_string()]);
-                assert_eq!(s.hosts, vec!["ALL".to_string()]);
-                assert_eq!(s.cmnd_specs.len(), 1);
-                let cs = &s.cmnd_specs[0];
+                assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+                assert_eq!(s.host_groups[0].cmnd_specs.len(), 1);
+                let cs = &s.host_groups[0].cmnd_specs[0];
                 assert_eq!(
                     cs.runas,
                     Some(RunasSpec {
@@ -900,20 +1013,23 @@ mod tests {
         let LineKind::UserSpec(s) = &k[0] else {
             panic!("expected a user-spec, got {:?}", k[0]);
         };
-        assert_eq!(s.cmnd_specs.len(), 3);
+        assert_eq!(s.host_groups[0].cmnd_specs.len(), 3);
         // First command carries the explicit NOPASSWD.
-        assert_eq!(s.cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
         assert_eq!(
-            s.cmnd_specs[0].cmnd,
+            s.host_groups[0].cmnd_specs[0].cmnd,
             CmndItem::Cmnd("/bin/kill".to_string())
         );
         // Second command carries the explicit PASSWD (the reset).
-        assert_eq!(s.cmnd_specs[1].tags, vec![Tag::Passwd]);
-        assert_eq!(s.cmnd_specs[1].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
-        // Third command carries NO explicit tag (inheritance is #330's job).
-        assert_eq!(s.cmnd_specs[2].tags, Vec::<Tag>::new());
+        assert_eq!(s.host_groups[0].cmnd_specs[1].tags, vec![Tag::Passwd]);
         assert_eq!(
-            s.cmnd_specs[2].cmnd,
+            s.host_groups[0].cmnd_specs[1].cmnd,
+            CmndItem::Cmnd("/bin/ls".to_string())
+        );
+        // Third command carries NO explicit tag (inheritance is #330's job).
+        assert_eq!(s.host_groups[0].cmnd_specs[2].tags, Vec::<Tag>::new());
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[2].cmnd,
             CmndItem::Cmnd("/usr/bin/lprm".to_string())
         );
     }
@@ -925,7 +1041,10 @@ mod tests {
         let LineKind::UserSpec(s) = &k[0] else {
             panic!("expected a user-spec, got {:?}", k[0]);
         };
-        assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::Cmnd("SERVICES".to_string()));
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("SERVICES".to_string())
+        );
     }
 
     // ---- malformed (#329 / sudo-F01) ----
@@ -993,8 +1112,11 @@ mod tests {
         // visudo: `alice ALL = /bin/ls # note` -> the command is "/bin/ls"; the
         // trailing `# note` is a comment, NOT part of the command token.
         let s = only_spec("alice ALL = /bin/ls # note\n");
-        assert_eq!(s.cmnd_specs.len(), 1);
-        assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+        assert_eq!(s.host_groups[0].cmnd_specs.len(), 1);
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/ls".to_string())
+        );
     }
 
     #[test]
@@ -1002,12 +1124,12 @@ mod tests {
         // visudo: `bob ALL=(ALL) NOPASSWD: ALL # ok` -> command is ALL (not the
         // string "ALL # ok"), and the NOPASSWD tag is retained so W01 can fire.
         let s = only_spec("bob ALL=(ALL) NOPASSWD: ALL # ok\n");
-        assert_eq!(s.cmnd_specs.len(), 1);
-        assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::All);
+        assert_eq!(s.host_groups[0].cmnd_specs.len(), 1);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
         assert!(
-            s.cmnd_specs[0].tags.contains(&Tag::NoPasswd),
+            s.host_groups[0].cmnd_specs[0].tags.contains(&Tag::NoPasswd),
             "the NOPASSWD tag must survive the inline comment so W01 can fire; got {:?}",
-            s.cmnd_specs[0].tags
+            s.host_groups[0].cmnd_specs[0].tags
         );
     }
 
@@ -1062,7 +1184,7 @@ mod tests {
         // (visudo: `#1000 ALL=(ALL) ALL # uid spec` -> userid 1000).
         let s = only_spec("#1000 ALL=(ALL) ALL # uid spec\n");
         assert_eq!(s.users, vec!["#1000".to_string()]);
-        assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::All);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
     }
 
     #[test]
@@ -1075,7 +1197,7 @@ mod tests {
         // here is solely that the post-comma `#1000` survives the comment strip.)
         let s = only_spec("root,#1000 ALL=(ALL) ALL\n");
         assert_eq!(s.users, vec!["root".to_string(), "#1000".to_string()]);
-        assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::All);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
     }
 
     // The next four tests pin `strip_inline_comment`'s `#<digits>` UID-token
@@ -1156,7 +1278,7 @@ mod tests {
         );
         let k = kinds("User_Alias FOO = #1000\n");
         match &k[0] {
-            LineKind::Alias(a) => assert_eq!(a.members, vec!["#1000".to_string()]),
+            LineKind::Alias(a) => assert_eq!(a.specs[0].members, vec!["#1000".to_string()]),
             other => panic!("expected an alias def, got {other:?}"),
         }
     }
@@ -1201,8 +1323,12 @@ mod tests {
             })
             .expect("bob's rule on line 2 is a live UserSpec, not swallowed");
         assert_eq!(spec.users, vec!["bob".to_string()]);
-        assert_eq!(spec.cmnd_specs[0].cmnd, CmndItem::All);
-        assert!(spec.cmnd_specs[0].tags.contains(&Tag::NoPasswd));
+        assert_eq!(spec.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+        assert!(
+            spec.host_groups[0].cmnd_specs[0]
+                .tags
+                .contains(&Tag::NoPasswd)
+        );
     }
 
     #[test]
@@ -1231,10 +1357,14 @@ mod tests {
             let LineKind::UserSpec(s) = &specs[0].kind else {
                 unreachable!()
             };
-            assert_eq!(s.cmnd_specs.len(), 1, "{label}");
-            assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::All, "{label}");
+            assert_eq!(s.host_groups[0].cmnd_specs.len(), 1, "{label}");
+            assert_eq!(
+                s.host_groups[0].cmnd_specs[0].cmnd,
+                CmndItem::All,
+                "{label}"
+            );
             assert!(
-                s.cmnd_specs[0].tags.contains(&Tag::NoPasswd),
+                s.host_groups[0].cmnd_specs[0].tags.contains(&Tag::NoPasswd),
                 "{label}: NOPASSWD from the continued physical line"
             );
         }
@@ -1271,7 +1401,10 @@ mod tests {
                 non_blank[0].kind
             );
         };
-        assert_eq!(s1.cmnd_specs[0].cmnd, CmndItem::Cmnd("\\x".to_string()));
+        assert_eq!(
+            s1.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("\\x".to_string())
+        );
         // Line 2 (`NOPASSWD: ALL`) is its OWN separate logical line, NOT joined onto
         // line 1. Alone it is not a valid spec, so it is Malformed - the proof it
         // was parsed independently rather than appended to line 1.
@@ -1311,11 +1444,14 @@ mod tests {
             let src = format!("u h = {kw}: /bin/ls\n");
             let s = only_spec(&src);
             assert_eq!(
-                s.cmnd_specs[0].tags,
+                s.host_groups[0].cmnd_specs[0].tags,
                 vec![*want],
                 "tag keyword {kw} must map to {want:?}"
             );
-            assert_eq!(s.cmnd_specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+            assert_eq!(
+                s.host_groups[0].cmnd_specs[0].cmnd,
+                CmndItem::Cmnd("/bin/ls".to_string())
+            );
         }
     }
 
@@ -1347,6 +1483,214 @@ mod tests {
         assert!(
             matches!(kinds("alice = /bin/ls\n")[0], LineKind::Malformed(_)),
             "host-empty (`alice = /bin/ls`) must be Malformed; a `&&` mutant would make it a UserSpec"
+        );
+    }
+
+    // ---- #345: top-level `:` segment splitting (grounded vs visudo -c / cvtsudoers) ----
+
+    #[test]
+    fn multi_host_user_spec_splits_into_host_groups() {
+        // `alice h1 = NOPASSWD: ALL : h2 = /bin/id` (visudo -c rc 0) -> two host-groups
+        // sharing the user list. cvtsudoers -f json confirms two User_Spec entries
+        // {h1 -> NOPASSWD ALL} and {h2 -> /bin/id}; the h2 group is a FRESH
+        // Cmnd_Spec_List, so NOPASSWD does not carry into it.
+        let s = only_spec("alice h1 = NOPASSWD: ALL : h2 = /bin/id\n");
+        assert_eq!(s.users, vec!["alice".to_string()]);
+        assert_eq!(s.host_groups.len(), 2, "two `:`-separated host-groups");
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(s.host_groups[0].cmnd_specs.len(), 1);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].tags,
+            Vec::<Tag>::new(),
+            "NOPASSWD does not cross the `:` into the next host-group"
+        );
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/id".to_string())
+        );
+    }
+
+    #[test]
+    fn tag_colon_with_surrounding_space_is_not_a_segment_separator() {
+        // `NOPASSWD : ALL` (space before the tag colon, visudo -c rc 0) stays ONE
+        // host-group with the NOPASSWD tag: the splitter recognises the tag keyword
+        // regardless of whitespace around the `:` (whitespace is not a token boundary
+        // for the tag-keyword check).
+        let s = only_spec("alice h1 = NOPASSWD : ALL\n");
+        assert_eq!(s.host_groups.len(), 1, "a tag colon must not split");
+        assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+    }
+
+    #[test]
+    fn runas_group_colon_is_not_a_segment_separator() {
+        // The `:` inside `(runas_users:runas_groups)` is at paren depth > 0 and must
+        // not split. `alice h1 = (root:wheel) /bin/ls` (visudo -c rc 0) -> one
+        // host-group, runas users=[root] groups=[wheel].
+        let s = only_spec("alice h1 = (root:wheel) /bin/ls\n");
+        assert_eq!(s.host_groups.len(), 1, "a runas colon must not split");
+        let cs = &s.host_groups[0].cmnd_specs[0];
+        let runas = cs.runas.as_ref().expect("runas group present");
+        assert_eq!(runas.users, vec!["root".to_string()]);
+        assert_eq!(runas.groups, vec!["wheel".to_string()]);
+    }
+
+    #[test]
+    fn escaped_colon_in_command_is_not_a_segment_separator() {
+        // sudo requires a literal `:` in a command to be backslash-escaped (`\:`); an
+        // unescaped one is a syntax error. `alice h1 = /usr/bin/scp user@host\:/tmp`
+        // (visudo -c rc 0) -> ONE host-group, ONE command token keeping the escaped
+        // colon verbatim (the lints do not inspect argument contents).
+        let s = only_spec("alice h1 = /usr/bin/scp user@host\\:/tmp\n");
+        assert_eq!(s.host_groups.len(), 1, "an escaped colon must not split");
+        assert_eq!(s.host_groups[0].cmnd_specs.len(), 1);
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/usr/bin/scp user@host\\:/tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn multi_spec_cmnd_alias_splits_into_specs() {
+        // `Cmnd_Alias A = ALL : B = /bin/ls, /bin/id` (visudo -c rc 0, both unused) ->
+        // two same-kind specs: A=[ALL], B=[/bin/ls, /bin/id]. The `,` still splits
+        // members WITHIN a spec; the `:` splits specs.
+        match &kinds("Cmnd_Alias A = ALL : B = /bin/ls, /bin/id\n")[0] {
+            LineKind::Alias(a) => {
+                assert_eq!(a.kind, AliasKind::Cmnd);
+                assert_eq!(a.specs.len(), 2, "two `:`-separated alias specs");
+                assert_eq!(a.specs[0].name, "A");
+                assert_eq!(a.specs[0].members, vec!["ALL".to_string()]);
+                assert_eq!(a.specs[1].name, "B");
+                assert_eq!(
+                    a.specs[1].members,
+                    vec!["/bin/ls".to_string(), "/bin/id".to_string()]
+                );
+            }
+            other => panic!("expected an alias def, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continuation_segment_without_equals_is_malformed() {
+        // A `: Host` continuation segment with no `= Cmnds` is rejected by visudo -c
+        // (`alice h1 = /bin/ls : h2` -> syntax error), so it must be sudo-F01
+        // Malformed, not a silently-accepted UserSpec.
+        assert!(
+            matches!(
+                kinds("alice h1 = /bin/ls : h2\n")[0],
+                LineKind::Malformed(_)
+            ),
+            "a continuation segment missing its `=` must be Malformed; got {:?}",
+            kinds("alice h1 = /bin/ls : h2\n")[0]
+        );
+    }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_desync_segment_split() {
+        // #345 adversarial-review fix: an unbalanced `(` INSIDE a double-quoted command
+        // argument is a literal command byte, not a runas open-paren, so it must not
+        // desync `depth` and swallow the later real segment `:`. visudo -c rc 0 +
+        // cvtsudoers -f json (sudo 1.9.17p2): `alice h1 = /bin/sh -c "a(b" : h2 = /bin/id`
+        // parses as TWO host-groups {h1 -> /bin/sh -c "a(b"} and {h2 -> /bin/id}.
+        let s = only_spec("alice h1 = /bin/sh -c \"a(b\" : h2 = /bin/id\n");
+        assert_eq!(
+            s.host_groups.len(),
+            2,
+            "an unbalanced `(` inside quotes must not swallow the `:` separator"
+        );
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/sh -c \"a(b\"".to_string())
+        );
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/id".to_string())
+        );
+    }
+
+    #[test]
+    fn runas_group_then_segment_colon_splits() {
+        // A runas `(root)` in the FIRST segment then a real segment `:`: paren-depth
+        // must return to 0 at `)` so the `:` splits. visudo -c rc 0 + cvtsudoers:
+        // `alice h1 = (root) /bin/ls : h2 = /bin/id` -> {h1, runas root, /bin/ls},
+        // {h2, /bin/id}. (Kills the depth `+=`/`-=`, `>` and `)`-arm mutants.)
+        let s = only_spec("alice h1 = (root) /bin/ls : h2 = /bin/id\n");
+        assert_eq!(
+            s.host_groups.len(),
+            2,
+            "depth must return to 0 after the runas `)` so the `:` splits"
+        );
+        let cs0 = &s.host_groups[0].cmnd_specs[0];
+        assert_eq!(
+            cs0.runas.as_ref().map(|r| r.users.clone()),
+            Some(vec!["root".to_string()])
+        );
+        assert_eq!(cs0.cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/id".to_string())
+        );
+    }
+
+    #[test]
+    fn runas_group_then_tag_colon_stays_one_group() {
+        // A runas `(root)` then a tag colon `NOPASSWD:` must stay ONE host-group with
+        // the tag recognised (`tok_start` reset just after `)`). visudo -c rc 0 +
+        // cvtsudoers: `alice h1 = (root) NOPASSWD: ALL` -> one group {h1, runas root,
+        // NOPASSWD, ALL}. (Kills the `)`-arm `tok_start` offset mutants.)
+        let s = only_spec("alice h1 = (root) NOPASSWD: ALL\n");
+        assert_eq!(
+            s.host_groups.len(),
+            1,
+            "a tag colon after a runas group must not split"
+        );
+        let cs = &s.host_groups[0].cmnd_specs[0];
+        assert_eq!(
+            cs.runas.as_ref().map(|r| r.users.clone()),
+            Some(vec!["root".to_string()])
+        );
+        assert_eq!(cs.tags, vec![Tag::NoPasswd]);
+        assert_eq!(cs.cmnd, CmndItem::All);
+    }
+
+    #[test]
+    fn glued_equals_then_tag_colon_stays_one_group() {
+        // `host=NOPASSWD:` (no spaces around `=`, the common glued `ALL=(ALL)` form):
+        // the `=` resets the preceding-token start so `NOPASSWD` is still recognised as
+        // a tag, not a segment. visudo -c rc 0: `alice h1=NOPASSWD: ALL` -> one group
+        // with the NOPASSWD tag. (Kills the `,`/`=`-arm `tok_start` offset mutant.)
+        let s = only_spec("alice h1=NOPASSWD: ALL\n");
+        assert_eq!(s.host_groups.len(), 1);
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+    }
+
+    #[test]
+    fn unterminated_quote_swallows_the_separator_documented_limitation() {
+        // DOCUMENTED LIMITATION (classifier-not-validator class, #346): an UNTERMINATED
+        // double-quote desyncs the quote tracker so the later `:` is treated as quoted
+        // and not split. Real sudo is surprising here - `cvtsudoers` ACCEPTS
+        //   `alice h1 = /bin/sh -c "oops : h2 = ALL`
+        // and STILL splits it into two host-groups {h1 -> `/bin/sh -c "oops`} and
+        // {h2 -> ALL}. We instead keep it as ONE group (the unbalanced quote is an
+        // unvalidated token shape, like the other #346 cases). This pins the current
+        // behavior; a future quote-balance validator (#346) would reject or split it.
+        // A BALANCED quote with parens - the realistic case - is handled correctly (see
+        // `quoted_paren_in_command_does_not_desync_segment_split`); a literal `:` inside
+        // a balanced quote is rejected by sudo, so valid configs never hit this path.
+        let s = only_spec("alice h1 = /bin/sh -c \"oops : h2 = ALL\n");
+        assert_eq!(
+            s.host_groups.len(),
+            1,
+            "unterminated quote swallows the `:` (documented #346-class limitation)"
         );
     }
 }

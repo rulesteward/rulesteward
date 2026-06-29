@@ -50,32 +50,38 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
             let LineKind::UserSpec(spec) = &logical.kind else {
                 continue;
             };
-            // Forward tag-state: NOPASSWD effective until an explicit PASSWD resets
-            // it. Inherits across the Cmnd_Spec_List in source order.
-            let mut nopasswd = false;
-            for cmnd_spec in &spec.cmnd_specs {
-                // Fold THIS command's explicit tags into the state BEFORE evaluating
-                // it: an explicit PASSWD on the very command being checked cancels
-                // inheritance for that command (e.g. `NOPASSWD: /bin/ls, PASSWD: ALL`
-                // -> the ALL is password-gated).
-                for tag in &cmnd_spec.tags {
-                    match tag {
-                        Tag::NoPasswd => nopasswd = true,
-                        Tag::Passwd => nopasswd = false,
-                        _ => {}
+            // Each `:`-separated host-group is an INDEPENDENT Cmnd_Spec_List: the
+            // forward NOPASSWD/PASSWD tag-state starts fresh per group and does NOT
+            // cross the `:` (#345; grounded against cvtsudoers -f json, sudo 1.9.17p2).
+            for host_group in &spec.host_groups {
+                // Forward tag-state: NOPASSWD effective until an explicit PASSWD
+                // resets it. Inherits across this group's Cmnd_Spec_List in source
+                // order.
+                let mut nopasswd = false;
+                for cmnd_spec in &host_group.cmnd_specs {
+                    // Fold THIS command's explicit tags into the state BEFORE
+                    // evaluating it: an explicit PASSWD on the very command being
+                    // checked cancels inheritance for it (e.g.
+                    // `NOPASSWD: /bin/ls, PASSWD: ALL` -> the ALL is password-gated).
+                    for tag in &cmnd_spec.tags {
+                        match tag {
+                            Tag::NoPasswd => nopasswd = true,
+                            Tag::Passwd => nopasswd = false,
+                            _ => {}
+                        }
                     }
-                }
-                if nopasswd && cmnd_spec.cmnd == CmndItem::All {
-                    diags.push(anchored(
-                        Severity::Warning,
-                        "sudo-W01",
-                        logical.span.clone(),
-                        "NOPASSWD applies to the reserved ALL command: this grants \
-                         passwordless authority to run any command"
-                            .to_string(),
-                        file.path.clone(),
-                        logical.line,
-                    ));
+                    if nopasswd && cmnd_spec.cmnd == CmndItem::All {
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "sudo-W01",
+                            logical.span.clone(),
+                            "NOPASSWD applies to the reserved ALL command: this grants \
+                             passwordless authority to run any command"
+                                .to_string(),
+                            file.path.clone(),
+                            logical.line,
+                        ));
+                    }
                 }
             }
         }
@@ -114,41 +120,42 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
             let LineKind::UserSpec(spec) = &logical.kind else {
                 continue;
             };
-            // Forward tag-state: NOPASSWD effective until an explicit PASSWD resets
-            // it. Inherits across the Cmnd_Spec_List in source order (same machine
-            // as W01).
-            let mut nopasswd = false;
-            for cmnd_spec in &spec.cmnd_specs {
-                // Fold THIS command's explicit tags into the state BEFORE evaluating
-                // it (last-written tag wins; an explicit PASSWD on the very command
-                // being checked cancels inheritance for it).
-                for tag in &cmnd_spec.tags {
-                    match tag {
-                        Tag::NoPasswd => nopasswd = true,
-                        Tag::Passwd => nopasswd = false,
-                        _ => {}
+            // Per-host-group, same as W01: the NOPASSWD/PASSWD tag-state is fresh per
+            // `:`-separated host-group and does not cross the `:` (#345).
+            for host_group in &spec.host_groups {
+                let mut nopasswd = false;
+                for cmnd_spec in &host_group.cmnd_specs {
+                    // Fold THIS command's explicit tags into the state BEFORE
+                    // evaluating it (last-written tag wins; an explicit PASSWD on the
+                    // very command being checked cancels inheritance for it).
+                    for tag in &cmnd_spec.tags {
+                        match tag {
+                            Tag::NoPasswd => nopasswd = true,
+                            Tag::Passwd => nopasswd = false,
+                            _ => {}
+                        }
                     }
-                }
-                // The command must be a POSITIVE named alias (no leading `!`) whose
-                // name transitively expands to ALL. `CmndItem::All` is the literal
-                // reserved ALL (W01's case) and is excluded here.
-                if nopasswd
-                    && let CmndItem::Cmnd(token) = &cmnd_spec.cmnd
-                    && !token.starts_with('!')
-                    && expands_to_all.contains(token)
-                {
-                    diags.push(anchored(
-                        Severity::Warning,
-                        "sudo-W02",
-                        logical.span.clone(),
-                        format!(
-                            "NOPASSWD applies to Cmnd_Alias \"{token}\", which expands to \
-                             the reserved ALL command: this grants passwordless authority \
-                             to run any command"
-                        ),
-                        file.path.clone(),
-                        logical.line,
-                    ));
+                    // The command must be a POSITIVE named alias (no leading `!`)
+                    // whose name transitively expands to ALL. `CmndItem::All` is the
+                    // literal reserved ALL (W01's case) and is excluded here.
+                    if nopasswd
+                        && let CmndItem::Cmnd(token) = &cmnd_spec.cmnd
+                        && !token.starts_with('!')
+                        && expands_to_all.contains(token)
+                    {
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "sudo-W02",
+                            logical.span.clone(),
+                            format!(
+                                "NOPASSWD applies to Cmnd_Alias \"{token}\", which expands to \
+                                 the reserved ALL command: this grants passwordless authority \
+                                 to run any command"
+                            ),
+                            file.path.clone(),
+                            logical.line,
+                        ));
+                    }
                 }
             }
         }
@@ -432,31 +439,62 @@ mod tests {
         );
     }
 
-    // ---- documented Phase-0 limitation: multi-host `: Host = Cmnd` lines (#330) ----
+    // ---- multi-host `: Host = Cmnd_Spec_List` segment splitting (#345) ----
 
     #[test]
-    fn multi_host_continuation_is_a_documented_phase0_limitation() {
-        // KNOWN LIMITATION (issue #330 v1, documented in parser.rs `classify_user_spec`):
-        // the frozen Phase-0 parser does NOT split a user-spec on the multi-host
-        // `: Host = Cmnd_Spec_List` boundary - the `: h2 = ...` tail is swallowed into
-        // the last command token of the FIRST host group. So in
-        //   `alice h1 = NOPASSWD: /bin/ls : h2 = /bin/id, ALL`  (visudo -c rc 0)
-        // the parser yields cmnd_specs
-        //   [ {NoPasswd, Cmnd("/bin/ls : h2 = /bin/id")}, {[], ALL} ]
-        // and W01 fires ONCE on the trailing `, ALL`. In REAL sudo (`visudo -x`) each
-        // `: Host = ...` group is a SEPARATE Cmnd_Spec_List, so NOPASSWD does NOT
-        // cross the `:` boundary and that h2 ALL is password-REQUIRED - i.e. a real
-        // sudo evaluator would NOT flag it. This is a FALSE POSITIVE inherent to the
-        // frozen Phase-0 AST/parser flattening, NOT fixable in this W01 pass without
-        // changing the frozen parser + UserSpec AST (surfaced to the orchestrator as
-        // an out-of-scope question; see the W01 task report). This test PINS the
-        // current behavior so any future parser fix that adds per-host-group
-        // modelling deliberately revisits this assertion.
+    fn nopasswd_does_not_cross_the_host_group_colon_no_false_positive() {
+        // #345: a user-spec `User h1 = ... : h2 = ...` is several host-group segments;
+        // each `: Host = Cmnd_Spec_List` is an INDEPENDENT Cmnd_Spec_List, so NOPASSWD
+        // does NOT cross the `:`. Grounded against cvtsudoers -f json (sudo 1.9.17p2):
+        //   `alice h1 = NOPASSWD: /bin/ls : h2 = /bin/id, ALL`   (visudo -c rc 0)
+        // parses as two host-groups {h1 -> NOPASSWD /bin/ls} and {h2 -> /bin/id, ALL};
+        // the h2 group carries NO `authenticate:false`, so the trailing ALL is
+        // password-REQUIRED and W01 must NOT fire. (Pre-#345 the flattened parser made
+        // ALL inherit h1's NOPASSWD - a false positive; pinned here so it stays fixed.)
         assert_eq!(
             w01_count("alice h1 = NOPASSWD: /bin/ls : h2 = /bin/id, ALL\n"),
+            0,
+            "the trailing ALL belongs to the password-required h2 segment; NOPASSWD \
+             does not cross the `:`, so W01 must not fire"
+        );
+    }
+
+    #[test]
+    fn nopasswd_all_in_first_host_group_fires_once_not_swallowed() {
+        // #345 false-NEGATIVE fix: `alice h1 = NOPASSWD: ALL : h2 = ALL`. h1's ALL is
+        // genuinely passwordless and MUST fire W01; h2's ALL is a separate
+        // password-required segment and must NOT. Exactly one finding. Pre-#345 the
+        // `: h2 = ALL` tail was swallowed into a single command token
+        // `Cmnd("ALL : h2 = ALL")`, so W01 saw no `CmndItem::All` and missed it.
+        assert_eq!(
+            w01_count("alice h1 = NOPASSWD: ALL : h2 = ALL\n"),
             1,
-            "Phase-0 multi-host flattening: W01 fires once on the swallowed-tail ALL \
-             (a known false positive vs real per-host-group sudo semantics)"
+            "h1's passwordless ALL fires exactly once; h2's ALL is password-required"
+        );
+    }
+
+    #[test]
+    fn nopasswd_all_in_a_later_host_group_fires() {
+        // The passwordless ALL is in the SECOND `:`-separated segment; the per-group
+        // tag-state machine must still catch it, and the first group's plain /bin/ls
+        // must not fire. `alice h1 = /bin/ls : h2 = NOPASSWD: ALL` (visudo -c rc 0).
+        assert_eq!(
+            w01_count("alice h1 = /bin/ls : h2 = NOPASSWD: ALL\n"),
+            1,
+            "h2's passwordless ALL fires; h1's /bin/ls does not"
+        );
+    }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_hide_a_later_nopasswd_all() {
+        // #345 adversarial-review fix: an unbalanced `(` in a double-quoted command
+        // argument in the FIRST segment must not swallow the `: h2 = NOPASSWD: ALL`
+        // segment. visudo -c rc 0; cvtsudoers shows h2 with authenticate:false + ALL, so
+        // W01 must fire exactly once.
+        assert_eq!(
+            w01_count("alice h1 = /bin/sh -c \"a(b\" : h2 = NOPASSWD: ALL\n"),
+            1,
+            "the h2 passwordless ALL must not be hidden by a quoted `(` in h1's command"
         );
     }
 }
@@ -761,37 +799,35 @@ mod w02_tests {
     }
 
     #[test]
-    fn colon_separated_cmnd_alias_spec_is_a_documented_phase0_limitation() {
-        // KNOWN LIMITATION (frozen Phase-0 parser, `classify_alias` in parser.rs):
-        // the sudoers(5) grammar allows MULTIPLE `Cmnd_Alias_Spec`s on one
-        // `Cmnd_Alias` line, separated by `:` -
-        //   `Cmnd_Alias` Cmnd_Alias_Spec (`:` Cmnd_Alias_Spec)*
-        // so `Cmnd_Alias A = ALL : B = /bin/ls` defines TWO aliases (A=ALL, B=/bin/ls)
-        // and `visudo -x` confirms A expands to ALL. But the frozen parser splits the
-        // member list only on `,` (NOT on the `:` Cmnd_Alias_Spec boundary), so it
-        // yields ONE alias `A` with a single swallowed member token
-        // `"ALL : B = /bin/ls"`. That token is neither the literal `ALL` nor a valid
-        // alias-name pattern, so `cmnd_aliases_expanding_to_all` never marks A as
-        // expanding-to-ALL, and W02 does NOT fire on `bob ALL = NOPASSWD: A`.
-        //
-        // In REAL sudo this IS a passwordless-run-anything finding (A => ALL). This is
-        // a FALSE NEGATIVE inherent to the frozen Phase-0 parser/AST - the SAME
-        // structural class as the user-spec multi-host `: Host = Cmnd` flattening
-        // documented in `parser.rs::classify_user_spec` and pinned by the W01 module's
-        // `multi_host_continuation_is_a_documented_phase0_limitation`. It is NOT fixable
-        // in this W02 leaf pass without changing the frozen `classify_alias` parser +
-        // the AliasDef contract that #331's E01/W03 also read (the swallowed `B` is
-        // likewise invisible to W03's dead-alias check, though `visudo -c` reports it
-        // unused). Surfaced to the orchestrator as an out-of-scope parser question;
-        // see the W02 task report. This test PINS the current behavior so any future
-        // parser fix that splits `Cmnd_Alias` on `:` deliberately revisits it.
+    fn colon_separated_cmnd_alias_spec_w02_fires() {
+        // #345: the sudoers(5) grammar allows MULTIPLE `Cmnd_Alias_Spec`s on one line,
+        // separated by `:` - `Cmnd_Alias` Cmnd_Alias_Spec (`:` Cmnd_Alias_Spec)*. So
+        //   `Cmnd_Alias A = ALL : B = /bin/ls`
+        // defines TWO aliases (A=ALL, B=/bin/ls); cvtsudoers -f json (sudo 1.9.17p2)
+        // shows both `Command_Aliases` A and B, and A expands to ALL. Therefore
+        // `bob ALL = NOPASSWD: A` is a passwordless-run-anything finding and W02 MUST
+        // fire. Pre-#345 the `: B = /bin/ls` tail was swallowed into A's single member
+        // token, so A was never seen as expanding-to-ALL and W02 missed it.
         //
         // Fixture is `visudo -c -f` rc 0 (sudo 1.9.17p2).
         assert_eq!(
             w02_count("Cmnd_Alias A = ALL : B = /bin/ls\nbob ALL = NOPASSWD: A\n"),
-            0,
-            "Phase-0 alias-spec `:` flattening: W02 misses the colon-form A=>ALL (a \
-             known false negative vs real per-Cmnd_Alias_Spec sudo semantics)"
+            1,
+            "the colon-form alias A => ALL must fire W02 under NOPASSWD"
+        );
+    }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_hide_a_later_w02_alias() {
+        // #345 adversarial-review fix (W02 analog of the W01 quoted-paren case): an
+        // unbalanced `(` in a double-quoted command argument in h1 must not swallow the
+        // `: h2 = NOPASSWD: EVERYTHING` segment where EVERYTHING => ALL. visudo -c rc 0.
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias EVERYTHING = ALL\ndeploy h1 = /usr/bin/awk \"x(\" : h2 = NOPASSWD: EVERYTHING\n"
+            ),
+            1,
+            "the h2 NOPASSWD alias-expanding-to-ALL must not be hidden by a quoted `(`"
         );
     }
 
