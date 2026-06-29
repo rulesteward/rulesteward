@@ -923,15 +923,21 @@ pub struct SysctlLintArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum SudoersCommand {
-    /// Lint a `sudoers` file or `sudoers.d` directory (#329)
+    /// Lint a `sudoers` file or `sudoers.d` directory
     ///
     /// Parses a `sudoers(5)` policy file (line-continuation joins, `#` comment
     /// disambiguation, `Defaults` entries, alias definitions, `@include` /
-    /// `@includedir` directives, and user specifications) and runs the `sudoers`
-    /// lint passes over it. In this Phase-0 build only sudo-F01 (the file does not
-    /// parse / a malformed line) emits; the remaining codes (sudo-E01 undefined
-    /// alias, sudo-W01/W02 NOPASSWD-on-ALL hazards, sudo-W03 dead alias, sudo-W04
-    /// Defaults STIG baseline) land per the sudoers milestone plan.
+    /// `@includedir` directives, and user specifications) and runs all `sudoers`
+    /// lint passes over it. It detects:
+    ///
+    /// - parse errors / malformed lines (sudo-F01);
+    /// - undefined alias references and dead (never-referenced) aliases
+    ///   (sudo-E01 / sudo-W03);
+    /// - passwordless run-anything grants - NOPASSWD on the reserved `ALL`
+    ///   (sudo-W01) or on a `Cmnd_Alias` that transitively expands to `ALL`
+    ///   (sudo-W02);
+    /// - STIG-weakening `Defaults` settings such as `targetpw`, `rootpw`,
+    ///   `visiblepw`, `!authenticate`, and `!use_pty` (sudo-W04).
     ///
     /// A directory target (e.g. `/etc/sudoers.d`) lints each eligible drop-in
     /// (sorted; names ending in `~` or containing `.` are skipped, per the man

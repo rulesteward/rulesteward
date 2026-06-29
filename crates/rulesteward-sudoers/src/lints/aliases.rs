@@ -44,7 +44,7 @@
 //! has no entry in the defined set for that kind. Anchored at the reference site's
 //! line/span.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rulesteward_core::{Diagnostic, Severity};
 
@@ -105,61 +105,79 @@ fn is_positive_all(token: &str) -> bool {
 /// the literal-ALL case and require a non-`!`-prefixed token for the alias-ref
 /// case.
 ///
-/// Reuses the #331 alias-table construction shape: one pass builds a
-/// `Cmnd_Alias name -> member tokens` map (covering the `Cmd_Alias` synonym, since
-/// both map to [`AliasKind::Cmnd`]), then a fixpoint marks every name reachable to
-/// ALL. The fixpoint terminates on cycles: a name is only added to the result set
-/// once and the loop stops when a full pass adds nothing, so a self- or mutual
-/// reference (`X = Y`, `Y = X`) that never reaches ALL simply never gets marked.
+/// Reuses the #331 alias-table construction shape: one pass builds a REVERSE-edge
+/// map (`member-name -> the aliases that reference it as a positive member`,
+/// covering the `Cmd_Alias` synonym, since both map to [`AliasKind::Cmnd`]) and
+/// records the SEED set (aliases whose own member list directly contains a positive
+/// literal `ALL`). A backward worklist/BFS then propagates "expands-to-ALL" from the
+/// seeds along the reverse edges: each defined alias is enqueued at most once and
+/// each reverse edge is relaxed at most once, so the walk is O(V+E) (LINEAR) rather
+/// than the previous re-scan-every-pass O(V^2) fixpoint. The result SET is identical:
+/// a name is marked iff it directly contains positive `ALL`, or some positive
+/// `Cmnd_Alias` member it references is marked (transitively). It is cycle-safe: a
+/// self- or mutual reference (`X = Y`, `Y = X`) that never reaches `ALL` has no seed
+/// in its component, so the worklist never enters it and it is never marked; a cycle
+/// member that DOES reach `ALL` is reached from that seed exactly once (the
+/// "already marked" guard prevents re-enqueue, so a cycle cannot loop forever).
 ///
 /// This is the alias-expansion case the #330 / sudo-W01 pass deliberately leaves
 /// as a documented false-negative: W01 keys off the LITERAL [`CmndItem::All`] only.
 #[must_use]
 pub(crate) fn cmnd_aliases_expanding_to_all(files: &[SudoersFile]) -> HashSet<String> {
-    // name -> the POSITIVE Cmnd_Alias-ref member tokens of that alias (the edges of
-    // the expansion graph). We only keep positive alias refs here; a literal ALL
-    // member is recorded separately as the seed condition below.
-    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    // Reverse adjacency: member-name -> the alias NAMEs that reference it via a
+    // POSITIVE same-kind (Cmnd) member edge. To propagate "X expands-to-ALL"
+    // BACKWARD (X marked => everyone that references X is marked), we index edges
+    // by the referenced member, not by the referencing alias. We only record
+    // positive alias refs; a literal ALL member is recorded separately as a seed.
+    let mut rev_edges: HashMap<String, Vec<String>> = HashMap::new();
     // Seed: aliases whose OWN member list directly contains a positive literal ALL.
-    let mut expands: HashSet<String> = HashSet::new();
+    let mut seeds: Vec<String> = Vec::new();
 
     for file in files {
         for ll in &file.lines {
             if let LineKind::Alias(def) = &ll.kind
                 && def.kind == AliasKind::Cmnd
             {
-                let e = edges.entry(def.name.clone()).or_default();
                 for tok in &def.members {
                     if is_positive_all(tok) {
-                        expands.insert(def.name.clone());
+                        seeds.push(def.name.clone());
                     } else if !tok.starts_with('!') && is_alias_ref(tok) {
                         // A POSITIVE same-kind (Cmnd) alias reference: an expansion
-                        // edge, keyed by the bare alias NAME so it matches the
-                        // `def.name` keys in `expands`. `!`-prefixed refs are
-                        // subtractions (deny), excluded by the `!starts_with('!')`
-                        // guard above - WITHOUT that guard a `!A` edge would strip to
-                        // `A` and wrongly propagate A's expand-to-ALL into the
-                        // negating alias.
-                        e.push(tok.trim_start_matches('!').to_string());
+                        // edge `def.name -> member`. We store it REVERSED
+                        // (`member -> def.name`) keyed by the bare member NAME, so
+                        // that marking `member` lets us reach `def.name` in O(1) per
+                        // edge. `!`-prefixed refs are subtractions (deny), excluded by
+                        // the `!starts_with('!')` guard above - WITHOUT that guard a
+                        // `!A` edge would strip to `A` and wrongly propagate A's
+                        // expand-to-ALL into the negating alias.
+                        let member = tok.trim_start_matches('!').to_string();
+                        rev_edges.entry(member).or_default().push(def.name.clone());
                     }
                 }
             }
         }
     }
 
-    // Fixpoint: propagate expands-to-ALL backwards along the edges. An alias
-    // expands-to-ALL if any of its positive member aliases does. Terminates because
-    // `expands` only grows and is bounded by the number of defined Cmnd_Aliases.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (name, members) in &edges {
-            if expands.contains(name) {
-                continue;
-            }
-            if members.iter().any(|m| expands.contains(m)) {
-                expands.insert(name.clone());
-                changed = true;
+    // Backward worklist/BFS from the seeds along the reverse edges. `expands` is the
+    // result set AND the visited set: a name is pushed onto the queue exactly when it
+    // is first inserted, so every defined alias is dequeued at most once and every
+    // reverse edge is relaxed at most once -> O(V+E). Cycle-safe: the `insert`
+    // returning `false` (already present) prevents re-enqueue, so a cycle that is
+    // reachable from a seed is traversed once and a cycle with no seed in its
+    // component is never entered.
+    let mut expands: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for s in seeds {
+        if expands.insert(s.clone()) {
+            queue.push_back(s);
+        }
+    }
+    while let Some(name) = queue.pop_front() {
+        if let Some(preds) = rev_edges.get(&name) {
+            for pred in preds {
+                if expands.insert(pred.clone()) {
+                    queue.push_back(pred.clone());
+                }
             }
         }
     }
@@ -445,28 +463,41 @@ pub fn w03(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     }
 
     // Seed: all alias names referenced directly from user-specs.
-    // We store reachable per kind as a Vec<String> (small N, linear search is fine).
-    let mut reachable: [Vec<String>; 4] = [
-        tables.user_spec_refs.clone(),
-        tables.runas_spec_refs.clone(),
-        tables.host_spec_refs.clone(),
-        tables.cmnd_spec_refs.clone(),
+    // Reachability is a FORWARD worklist/BFS per kind along the alias-member edges:
+    // each kind's `reachable` set is both the result and the visited set, so every
+    // alias name is enqueued at most once and every member edge is relaxed at most
+    // once -> O(V+E) (LINEAR), replacing the previous re-scan-every-pass O(V^2)
+    // fixpoint. We use a HashSet for O(1) membership (the prior Vec + `contains`
+    // linear scan was the other quadratic factor) plus a per-kind work queue.
+    // The reachable SET is identical to the fixpoint: a name is reachable iff it is
+    // referenced directly from a user-spec, or it is a member of an already-reachable
+    // alias (transitively). Cycle-safe: a name inserted once is never re-enqueued, so
+    // a cyclic member chain (`A` members include `B`, `B` members include `A`) is
+    // traversed once instead of looping.
+    let mut reachable: [HashSet<String>; 4] = [
+        HashSet::new(),
+        HashSet::new(),
+        HashSet::new(),
+        HashSet::new(),
     ];
-
-    // Fixpoint expansion: for each newly reachable alias, add its member alias refs.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for ki in 0..4 {
-            // Collect the names currently in reachable[ki] to avoid borrow issues.
-            let current: Vec<String> = reachable[ki].clone();
-            for name in &current {
-                if let Some(members) = member_alias_refs[ki].get(name) {
-                    for m in members {
-                        if !reachable[ki].contains(m) {
-                            reachable[ki].push(m.clone());
-                            changed = true;
-                        }
+    let seed_refs = [
+        &tables.user_spec_refs,
+        &tables.runas_spec_refs,
+        &tables.host_spec_refs,
+        &tables.cmnd_spec_refs,
+    ];
+    for ki in 0..4 {
+        let mut queue: VecDeque<String> = VecDeque::new();
+        for name in seed_refs[ki] {
+            if reachable[ki].insert(name.clone()) {
+                queue.push_back(name.clone());
+            }
+        }
+        while let Some(name) = queue.pop_front() {
+            if let Some(members) = member_alias_refs[ki].get(&name) {
+                for m in members {
+                    if reachable[ki].insert(m.clone()) {
+                        queue.push_back(m.clone());
                     }
                 }
             }
@@ -1036,6 +1067,68 @@ mod tests {
         assert!(
             diags.is_empty(),
             "ADMIN_2 is referenced -> not dead, no W03; got {diags:?}"
+        );
+    }
+
+    // ---- bounded-time: linear alias-graph walks on a long valid chain ----
+    //
+    // This test exists to PIN the LINEAR-time behavior of the two alias-graph walks:
+    //   - `cmnd_aliases_expanding_to_all` (W02's backward expands-to-ALL worklist), and
+    //   - `w03`'s forward reachability worklist.
+    // Both were originally `while changed { for ..all-edges }` fixpoints that re-scan
+    // the WHOLE edge map every pass -> O(V^2). On an adversarial-but-VALID chained
+    // `Cmnd_Alias` file (`A0 = A1`, ..., `A_{n-1} = ALL`, head referenced under
+    // NOPASSWD) the quadratic versions took seconds-to-minutes (N~4000 ~ 43s release)
+    // while `visudo -c` parses it in ~20ms - a CPU-DoS on valid input. The linear
+    // rewrites finish in milliseconds.
+    //
+    // There is deliberately NO `Instant`/timeout assertion (wall-clock asserts are
+    // flaky in CI). The pin is structural: a quadratic impl at N=5000 would take
+    // minutes and effectively hang the suite, so the test merely COMPLETING in the
+    // normal run is the linear-time evidence. We also assert the OUTPUT is exactly
+    // correct (one W02; zero W03 - every link is referenced down the chain, so none
+    // is a dead alias), guarding against a "fast but wrong" regression.
+    #[test]
+    fn large_valid_alias_chain_lints_correctly_and_in_linear_time() {
+        const N: usize = 5000;
+        // Build `Cmnd_Alias A0 = A1`, `Cmnd_Alias A1 = A2`, ..., `A_{N-1} = ALL`,
+        // then a user-spec granting NOPASSWD on the head alias A0. The whole chain
+        // is VALID sudoers (each fixture shape is `visudo -c -f` rc 0, sudo 1.9.17p2):
+        // A0 transitively expands to ALL via A1 -> A2 -> ... -> ALL.
+        use std::fmt::Write as _;
+        let mut src = String::new();
+        for i in 0..N - 1 {
+            writeln!(src, "Cmnd_Alias A{i} = A{}", i + 1).unwrap();
+        }
+        writeln!(src, "Cmnd_Alias A{} = ALL", N - 1).unwrap();
+        src.push_str("bob ALL = NOPASSWD: A0\n");
+
+        let files = parse_one(&src);
+        let ctx = SudoersLintContext::default();
+
+        // W02: exactly one finding - A0 (the only NOPASSWD-granted command) expands
+        // to ALL through the whole chain.
+        let w02_diags = crate::lints::tags::w02(&files, &ctx);
+        let w02_count = w02_diags.iter().filter(|d| d.code == "sudo-W02").count();
+        assert_eq!(
+            w02_count, 1,
+            "the head alias A0 expands to ALL via the chain -> exactly one W02; got {w02_diags:?}"
+        );
+
+        // W03: zero dead aliases - A0 is referenced from the user-spec and each Ai is
+        // referenced as the member of A_{i-1}, so the whole chain is reachable.
+        let w03_diags = w03(&files, &ctx);
+        let w03_count = w03_diags.iter().filter(|d| d.code == "sudo-W03").count();
+        assert_eq!(
+            w03_count, 0,
+            "every link in the chain is referenced -> no dead alias (no W03); got {w03_count} W03"
+        );
+
+        // E01 sanity: every referenced alias is defined -> no undefined-reference error.
+        let e01_diags = e01(&files, &ctx);
+        assert!(
+            e01_diags.is_empty(),
+            "all chain links are defined -> no E01; got {e01_diags:?}"
         );
     }
 
