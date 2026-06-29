@@ -433,6 +433,17 @@ exclude_re = [
     'replace skip_whitespace with \(\)',
     'replace read_arg -> Result<String, String> with Ok\(String::new\(\)\)',
     'replace read_arg -> Result<String, String> with Ok\("xyzzy"\.into\(\)\)',
+    # sudoers `short_hostname` (#334): reads `/proc/sys/kernel/hostname` (or the
+    # HOSTNAME env) for the `@include ... %h` escape. Its return is the live host's
+    # name, which varies by machine, so no unit test can pin it; a mutant returning
+    # "" / "xyzzy" still resolves a `%h` include to a (almost-certainly-missing)
+    # path that surfaces a Malformed - no observable test failure. Same I/O-without-
+    # a-unit-seam rationale as the LiveProbe shell-outs above. The `%h` EXPANSION
+    # logic IS fully tested: `expand_host_escape` has direct unit tests (separator
+    # `/`->`_`, multi-`%h`, no-`%h`) and `resolve_target_with_host` exercises an
+    # injected hostname end-to-end, so the substitution itself stays in the gate.
+    'replace short_hostname -> String',
+    'delete ! in short_hostname',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
