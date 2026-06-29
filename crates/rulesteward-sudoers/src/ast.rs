@@ -91,19 +91,32 @@ pub enum AliasKind {
     Cmnd,
 }
 
-/// One alias definition: `<Kind>_Alias NAME = member, member, ...`.
+/// One `NAME = member, member, ...` spec within an alias definition line.
 ///
-/// `members` holds the RAW comma-split member tokens (each trimmed). They are not
-/// further classified here - the #331 alias-reference walk reads them as-is to
-/// resolve alias-to-alias references and detect undefined / dead aliases.
+/// sudoers(5) lets one alias line define SEVERAL aliases of the same kind, separated
+/// by a top-level `:`; this is one such spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AliasDef {
-    /// Which alias namespace.
-    pub kind: AliasKind,
+pub struct AliasSpec {
     /// The alias NAME (the uppercase identifier being defined).
     pub name: String,
     /// Raw comma-split member tokens (trimmed), in source order.
     pub members: Vec<String>,
+}
+
+/// An alias definition line: `<Kind>_Alias NAME = members (: NAME = members)*`.
+///
+/// `Alias ::= '<Kind>_Alias' Spec (':' Spec)*` (sudoers(5)). `specs` holds one
+/// [`AliasSpec`] per top-level `:`-separated segment, in source order (always >= 1;
+/// the common single-alias form is a one-element `specs`). Every spec shares `kind`.
+/// Member tokens are RAW comma-split (each trimmed); the #331 alias-reference walk
+/// reads them as-is to resolve alias-to-alias references and detect undefined / dead
+/// aliases. Splitting the specs (vs the old single-name flattening) is the #345 fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasDef {
+    /// Which alias namespace (shared by every spec on the line).
+    pub kind: AliasKind,
+    /// The `:`-separated alias specs, in source order (always >= 1).
+    pub specs: Vec<AliasSpec>,
 }
 
 /// The scope a `Defaults` entry applies to.
@@ -243,22 +256,36 @@ pub struct CmndSpec {
     pub cmnd: CmndItem,
 }
 
-/// A user specification: `User_List Host_List = Cmnd_Spec_List`.
+/// One host-group segment of a user specification: `Host_List = Cmnd_Spec_List`.
 ///
-/// Each of `users` / `hosts` is the RAW comma-split token list (trimmed). The
-/// `cmnd_specs` are the comma-separated `Cmnd_Spec`s after the `=`, in source
-/// order, so the #330 tag-state-machine can walk them as one list. The multi-host
-/// `(: Host_List = Cmnd_Spec_List)*` continuation form is flattened: every
-/// `Cmnd_Spec` from every host group is appended in source order (Phase 0 keeps
-/// the common single-host form rich and does not separately model per-host groups;
-/// the leaf passes that need it can be extended without re-parsing).
+/// A user-spec is `User_List Host_List = Cmnd_Spec_List (: Host_List = Cmnd_Spec_List)*`
+/// (sudoers(5) `User_Spec`). Each `: Host_List = Cmnd_Spec_List` is an INDEPENDENT
+/// host-group: `Cmnd_Spec` tag inheritance (the #330 NOPASSWD/PASSWD state machine)
+/// is per-group and does NOT cross the `:` separator (grounded against
+/// `cvtsudoers -f json`, sudo 1.9.17p2 - see #345). The subject user list is shared
+/// across the groups and lives on [`UserSpec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostGroup {
+    /// The host list for this segment (comma-split, trimmed).
+    pub hosts: Vec<String>,
+    /// The command specs after this segment's `=`, in source order. Tag inheritance
+    /// is resolved per-group by the lint pass, not pre-resolved here.
+    pub cmnd_specs: Vec<CmndSpec>,
+}
+
+/// A user specification: `User_List Host_List = Cmnd_Spec_List (: Host = Cmnds)*`.
+///
+/// `users` is the shared RAW comma-split subject list (trimmed). `host_groups` holds
+/// one [`HostGroup`] per top-level `:`-separated segment, in source order (always at
+/// least one; the common single-segment form is a one-element `host_groups`).
+/// Splitting the segments (vs the old flattening) is what makes the #330/#332 tag
+/// machine and the #331 alias walk faithful to real per-host-group sudo semantics
+/// (#345).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserSpec {
     /// The subject user list (comma-split): users, `%group`, `#uid`, `+netgroup`,
     /// `User_Alias` references, each optionally `!`-negated (kept verbatim).
     pub users: Vec<String>,
-    /// The host list (comma-split).
-    pub hosts: Vec<String>,
-    /// The command specs after the `=`, in source order.
-    pub cmnd_specs: Vec<CmndSpec>,
+    /// The `:`-separated host-group segments, in source order (always >= 1).
+    pub host_groups: Vec<HostGroup>,
 }

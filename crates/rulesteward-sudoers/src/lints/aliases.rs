@@ -138,20 +138,24 @@ pub(crate) fn cmnd_aliases_expanding_to_all(files: &[SudoersFile]) -> HashSet<St
             if let LineKind::Alias(def) = &ll.kind
                 && def.kind == AliasKind::Cmnd
             {
-                for tok in &def.members {
-                    if is_positive_all(tok) {
-                        seeds.push(def.name.clone());
-                    } else if !tok.starts_with('!') && is_alias_ref(tok) {
-                        // A POSITIVE same-kind (Cmnd) alias reference: an expansion
-                        // edge `def.name -> member`. We store it REVERSED
-                        // (`member -> def.name`) keyed by the bare member NAME, so
-                        // that marking `member` lets us reach `def.name` in O(1) per
-                        // edge. `!`-prefixed refs are subtractions (deny), excluded by
-                        // the `!starts_with('!')` guard above - WITHOUT that guard a
-                        // `!A` edge would strip to `A` and wrongly propagate A's
-                        // expand-to-ALL into the negating alias.
-                        let member = tok.trim_start_matches('!').to_string();
-                        rev_edges.entry(member).or_default().push(def.name.clone());
+                // One Cmnd_Alias line may define several specs (`A = .. : B = ..`,
+                // #345); each spec name is its own graph node.
+                for spec in &def.specs {
+                    for tok in &spec.members {
+                        if is_positive_all(tok) {
+                            seeds.push(spec.name.clone());
+                        } else if !tok.starts_with('!') && is_alias_ref(tok) {
+                            // A POSITIVE same-kind (Cmnd) alias reference: an
+                            // expansion edge `spec.name -> member`. We store it
+                            // REVERSED (`member -> spec.name`) keyed by the bare member
+                            // NAME, so that marking `member` lets us reach `spec.name`
+                            // in O(1) per edge. `!`-prefixed refs are subtractions
+                            // (deny), excluded by the `!starts_with('!')` guard above -
+                            // WITHOUT it a `!A` edge would strip to `A` and wrongly
+                            // propagate A's expand-to-ALL into the negating alias.
+                            let member = tok.trim_start_matches('!').to_string();
+                            rev_edges.entry(member).or_default().push(spec.name.clone());
+                        }
                     }
                 }
             }
@@ -304,14 +308,18 @@ fn build_tables(files: &[SudoersFile]) -> Tables {
     for (fi, file) in files.iter().enumerate() {
         for ll in &file.lines {
             if let LineKind::Alias(def) = &ll.kind {
-                t.def_map_mut(def.kind).insert(
-                    def.name.clone(),
-                    DefSite {
-                        file_idx: fi,
-                        line: ll.line,
-                        span: ll.span.clone(),
-                    },
-                );
+                // One alias line may define several names (`A = .. : B = ..`, #345);
+                // register each spec as its own definition (same line/span).
+                for spec in &def.specs {
+                    t.def_map_mut(def.kind).insert(
+                        spec.name.clone(),
+                        DefSite {
+                            file_idx: fi,
+                            line: ll.line,
+                            span: ll.span.clone(),
+                        },
+                    );
+                }
             }
         }
     }
@@ -322,37 +330,41 @@ fn build_tables(files: &[SudoersFile]) -> Tables {
             match &ll.kind {
                 LineKind::UserSpec(spec) => {
                     push_token_refs(&mut t, &spec.users, AliasKind::User, fi, ll.line, &ll.span);
-                    push_token_refs(&mut t, &spec.hosts, AliasKind::Host, fi, ll.line, &ll.span);
-                    for cs in &spec.cmnd_specs {
-                        if let Some(runas) = &cs.runas {
-                            let all_runas: Vec<String> = runas
-                                .users
-                                .iter()
-                                .chain(runas.groups.iter())
-                                .cloned()
-                                .collect();
-                            push_token_refs(
-                                &mut t,
-                                &all_runas,
-                                AliasKind::Runas,
-                                fi,
-                                ll.line,
-                                &ll.span,
-                            );
-                        }
-                        // CmndItem::All is the built-in ALL - never a Cmnd_Alias ref.
-                        if let CmndItem::Cmnd(tok) = &cs.cmnd
-                            && is_alias_ref(tok)
-                        {
-                            let name = tok.trim_start_matches('!').to_string();
-                            t.push_spec_ref(AliasKind::Cmnd, name.clone());
-                            t.all_refs.push(RefSite {
-                                kind: AliasKind::Cmnd,
-                                name,
-                                file_idx: fi,
-                                line: ll.line,
-                                span: ll.span.clone(),
-                            });
+                    // Hosts and commands live per host-group (`: Host = Cmnds`, #345);
+                    // walk every group.
+                    for hg in &spec.host_groups {
+                        push_token_refs(&mut t, &hg.hosts, AliasKind::Host, fi, ll.line, &ll.span);
+                        for cs in &hg.cmnd_specs {
+                            if let Some(runas) = &cs.runas {
+                                let all_runas: Vec<String> = runas
+                                    .users
+                                    .iter()
+                                    .chain(runas.groups.iter())
+                                    .cloned()
+                                    .collect();
+                                push_token_refs(
+                                    &mut t,
+                                    &all_runas,
+                                    AliasKind::Runas,
+                                    fi,
+                                    ll.line,
+                                    &ll.span,
+                                );
+                            }
+                            // CmndItem::All is the built-in ALL - never a Cmnd_Alias ref.
+                            if let CmndItem::Cmnd(tok) = &cs.cmnd
+                                && is_alias_ref(tok)
+                            {
+                                let name = tok.trim_start_matches('!').to_string();
+                                t.push_spec_ref(AliasKind::Cmnd, name.clone());
+                                t.all_refs.push(RefSite {
+                                    kind: AliasKind::Cmnd,
+                                    name,
+                                    file_idx: fi,
+                                    line: ll.line,
+                                    span: ll.span.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -362,16 +374,19 @@ fn build_tables(files: &[SudoersFile]) -> Tables {
                     // only referenced from another dead alias is still W03-dead (visudo
                     // 1.9.17p2 "dead chain" behavior). W03 uses a transitive reachability
                     // expansion from spec_refs, so members are processed there separately.
-                    for tok in &def.members {
-                        if is_alias_ref(tok) {
-                            let name = tok.trim_start_matches('!').to_string();
-                            t.all_refs.push(RefSite {
-                                kind: def.kind,
-                                name,
-                                file_idx: fi,
-                                line: ll.line,
-                                span: ll.span.clone(),
-                            });
+                    // One line may define several specs (`A = .. : B = ..`, #345).
+                    for spec in &def.specs {
+                        for tok in &spec.members {
+                            if is_alias_ref(tok) {
+                                let name = tok.trim_start_matches('!').to_string();
+                                t.all_refs.push(RefSite {
+                                    kind: def.kind,
+                                    name,
+                                    file_idx: fi,
+                                    line: ll.line,
+                                    span: ll.span.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -451,11 +466,15 @@ pub fn w03(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
         for ll in &file.lines {
             if let LineKind::Alias(def) = &ll.kind {
                 let idx = kind_to_idx(def.kind);
-                let entry = member_alias_refs[idx].entry(def.name.clone()).or_default();
-                for tok in &def.members {
-                    if is_alias_ref(tok) {
-                        let name = tok.trim_start_matches('!').to_string();
-                        entry.push(name);
+                // One line may define several specs (`A = .. : B = ..`, #345); each is
+                // its own node in the member-reachability graph.
+                for spec in &def.specs {
+                    let entry = member_alias_refs[idx].entry(spec.name.clone()).or_default();
+                    for tok in &spec.members {
+                        if is_alias_ref(tok) {
+                            let name = tok.trim_start_matches('!').to_string();
+                            entry.push(name);
+                        }
                     }
                 }
             }
@@ -745,6 +764,58 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Warning);
         assert!(diags[0].message.contains("UNUSED"));
         assert!(diags[0].message.contains("Cmnd_Alias"));
+    }
+
+    #[test]
+    fn colon_separated_cmnd_alias_defines_both_specs_only_unreferenced_is_dead() {
+        // #345: `Cmnd_Alias A = ALL : B = /bin/ls` defines BOTH A and B (cvtsudoers
+        // -f json shows two Command_Aliases). With a user-spec referencing only A, B is
+        // the dead alias - W03 must fire exactly once, for B (not A). Pre-#345 the
+        // `: B = /bin/ls` tail was swallowed into A's member token so B was invisible
+        // to the symbol table entirely.
+        let files = parse_one("Cmnd_Alias A = ALL : B = /bin/ls\nbob ALL = A\n");
+        let diags = w03(&files, &SudoersLintContext::default());
+        assert_eq!(diags.len(), 1, "only B is dead; got {diags:?}");
+        assert!(
+            diags[0].message.contains("\"B\""),
+            "the dead alias must be B; got {:?}",
+            diags[0].message
+        );
+        assert!(
+            !diags[0].message.contains("\"A\""),
+            "A is referenced and must not be reported dead; got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn e01_fires_for_undefined_alias_in_a_continuation_host_group_command() {
+        // #345: an undefined Cmnd_Alias referenced in a LATER `:`-separated host-group's
+        // command position must still be caught (build_tables walks every host-group).
+        // visudo -c: `Cmnd_Alias "NOTDEFINED" referenced but not defined` for
+        // `alice h1 = /bin/ls : h2 = NOTDEFINED`.
+        let files = parse_one("alice h1 = /bin/ls : h2 = NOTDEFINED\n");
+        let diags = e01(&files, &SudoersLintContext::default());
+        assert_eq!(diags.len(), 1, "the continuation-segment ref must fire E01");
+        assert_eq!(diags[0].code, "sudo-E01");
+        assert!(
+            diags[0].message.contains("NOTDEFINED"),
+            "got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn w03_host_alias_used_only_in_a_continuation_host_group_is_not_dead() {
+        // #345: a Host_Alias referenced ONLY in a LATER `:`-separated host-group's host
+        // list is reachable and must NOT be reported dead. visudo -c accepts (no
+        // "unused") `Host_Alias HG = serverbox` + `alice h1 = /bin/ls : HG = /bin/id`.
+        let files = parse_one("Host_Alias HG = serverbox\nalice h1 = /bin/ls : HG = /bin/id\n");
+        let diags = w03(&files, &SudoersLintContext::default());
+        assert!(
+            diags.is_empty(),
+            "HG is referenced in a continuation host list -> not dead; got {diags:?}"
+        );
     }
 
     /// Grounded: `User_Alias DEADGUYS = charlie, dave` + `root ALL = ALL`.
