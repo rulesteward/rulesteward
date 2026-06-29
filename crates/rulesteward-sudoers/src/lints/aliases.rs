@@ -16,12 +16,12 @@
 //!
 //! - `UserSpec.users`: tokens matching `[A-Z][A-Z0-9_]*` (not `ALL`) ->
 //!   `User_Alias` reference.
-//! - `UserSpec.hosts`: same pattern -> `Host_Alias` reference.
+//! - `HostGroup.hosts`: same pattern -> `Host_Alias` reference.
 //! - `CmndSpec.runas.users` / `CmndSpec.runas.groups`: same pattern ->
 //!   `Runas_Alias` reference.
 //! - `CmndSpec.cmnd` (`CmndItem::Cmnd`): token (after stripping `!`) matching
 //!   the pattern -> `Cmnd_Alias` reference.
-//! - `AliasDef.members`: token (after stripping `!`) matching the pattern ->
+//! - `AliasSpec.members`: token (after stripping `!`) matching the pattern ->
 //!   same-kind alias reference (an alias referencing another alias).
 //!
 //! The built-in `ALL` is NEVER flagged. `CmndItem::All` is excluded directly;

@@ -484,6 +484,19 @@ mod tests {
             "h2's passwordless ALL fires; h1's /bin/ls does not"
         );
     }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_hide_a_later_nopasswd_all() {
+        // #345 adversarial-review fix: an unbalanced `(` in a double-quoted command
+        // argument in the FIRST segment must not swallow the `: h2 = NOPASSWD: ALL`
+        // segment. visudo -c rc 0; cvtsudoers shows h2 with authenticate:false + ALL, so
+        // W01 must fire exactly once.
+        assert_eq!(
+            w01_count("alice h1 = /bin/sh -c \"a(b\" : h2 = NOPASSWD: ALL\n"),
+            1,
+            "the h2 passwordless ALL must not be hidden by a quoted `(` in h1's command"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -801,6 +814,20 @@ mod w02_tests {
             w02_count("Cmnd_Alias A = ALL : B = /bin/ls\nbob ALL = NOPASSWD: A\n"),
             1,
             "the colon-form alias A => ALL must fire W02 under NOPASSWD"
+        );
+    }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_hide_a_later_w02_alias() {
+        // #345 adversarial-review fix (W02 analog of the W01 quoted-paren case): an
+        // unbalanced `(` in a double-quoted command argument in h1 must not swallow the
+        // `: h2 = NOPASSWD: EVERYTHING` segment where EVERYTHING => ALL. visudo -c rc 0.
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias EVERYTHING = ALL\ndeploy h1 = /usr/bin/awk \"x(\" : h2 = NOPASSWD: EVERYTHING\n"
+            ),
+            1,
+            "the h2 NOPASSWD alias-expanding-to-ALL must not be hidden by a quoted `(`"
         );
     }
 

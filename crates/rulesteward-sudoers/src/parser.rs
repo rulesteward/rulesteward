@@ -574,21 +574,41 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut tok_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
+    // Inside a `"..."` quoted command token nothing is structural: sudo groups the
+    // token, so a `(` / `:` / `,` there is a literal command byte, not a runas paren /
+    // segment colon / list comma (cvtsudoers keeps `/bin/sh -c "a(b"` as ONE command,
+    // splitting only on the LATER unquoted `:`). Mirrors stage-1 `strip_inline_comment`'s
+    // quote tracking; without it an unbalanced `(` in a quoted arg desyncs `depth` and a
+    // real segment `:` is swallowed (#345 adversarial-review fix).
+    let mut in_quotes = false;
 
     for (i, c) in s.char_indices() {
         if escaped {
             // The previous char was a backslash; this char is a literal part of the
-            // current token (`\:`, `\,`, ...). Never a separator or a boundary.
+            // current token (`\:`, `\,`, `\"`, ...). Never a separator or a boundary.
             escaped = false;
             continue;
         }
-        match c {
-            '\\' => escaped = true,
-            '(' => {
-                depth += 1;
-                tok_start = i + c.len_utf8();
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if in_quotes {
+            // Literal token content; only the closing quote is structural.
+            if c == '"' {
+                in_quotes = false;
             }
+            continue;
+        }
+        match c {
+            '"' => in_quotes = true,
+            // No `tok_start` reset here: while `depth > 0` every colon is skipped, and
+            // `tok_start` is overwritten at the matching `)` before any depth-0 colon
+            // reads it, so resetting it on `(` would be dead.
+            '(' => depth += 1,
             ')' => {
+                // `if depth > 0` only guards a malformed UNBALANCED `)` (which visudo
+                // rejects); for valid input depth is always >= 1 here.
                 if depth > 0 {
                     depth -= 1;
                 }
@@ -602,7 +622,9 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     // token starts just after it.
                     tok_start = i + 1;
                 } else {
-                    // A genuine top-level segment separator.
+                    // A genuine top-level segment separator. `tok_start = i + 1` resets
+                    // the preceding-token start for the next segment; valid input always
+                    // overwrites it at that segment's `=` before the next colon is seen.
                     segments.push(s[seg_start..i].trim());
                     seg_start = i + 1;
                     tok_start = i + 1;
@@ -1565,5 +1587,89 @@ mod tests {
             "a continuation segment missing its `=` must be Malformed; got {:?}",
             kinds("alice h1 = /bin/ls : h2\n")[0]
         );
+    }
+
+    #[test]
+    fn quoted_paren_in_command_does_not_desync_segment_split() {
+        // #345 adversarial-review fix: an unbalanced `(` INSIDE a double-quoted command
+        // argument is a literal command byte, not a runas open-paren, so it must not
+        // desync `depth` and swallow the later real segment `:`. visudo -c rc 0 +
+        // cvtsudoers -f json (sudo 1.9.17p2): `alice h1 = /bin/sh -c "a(b" : h2 = /bin/id`
+        // parses as TWO host-groups {h1 -> /bin/sh -c "a(b"} and {h2 -> /bin/id}.
+        let s = only_spec("alice h1 = /bin/sh -c \"a(b\" : h2 = /bin/id\n");
+        assert_eq!(
+            s.host_groups.len(),
+            2,
+            "an unbalanced `(` inside quotes must not swallow the `:` separator"
+        );
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/sh -c \"a(b\"".to_string())
+        );
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/id".to_string())
+        );
+    }
+
+    #[test]
+    fn runas_group_then_segment_colon_splits() {
+        // A runas `(root)` in the FIRST segment then a real segment `:`: paren-depth
+        // must return to 0 at `)` so the `:` splits. visudo -c rc 0 + cvtsudoers:
+        // `alice h1 = (root) /bin/ls : h2 = /bin/id` -> {h1, runas root, /bin/ls},
+        // {h2, /bin/id}. (Kills the depth `+=`/`-=`, `>` and `)`-arm mutants.)
+        let s = only_spec("alice h1 = (root) /bin/ls : h2 = /bin/id\n");
+        assert_eq!(
+            s.host_groups.len(),
+            2,
+            "depth must return to 0 after the runas `)` so the `:` splits"
+        );
+        let cs0 = &s.host_groups[0].cmnd_specs[0];
+        assert_eq!(
+            cs0.runas.as_ref().map(|r| r.users.clone()),
+            Some(vec!["root".to_string()])
+        );
+        assert_eq!(cs0.cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(
+            s.host_groups[1].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/id".to_string())
+        );
+    }
+
+    #[test]
+    fn runas_group_then_tag_colon_stays_one_group() {
+        // A runas `(root)` then a tag colon `NOPASSWD:` must stay ONE host-group with
+        // the tag recognised (`tok_start` reset just after `)`). visudo -c rc 0 +
+        // cvtsudoers: `alice h1 = (root) NOPASSWD: ALL` -> one group {h1, runas root,
+        // NOPASSWD, ALL}. (Kills the `)`-arm `tok_start` offset mutants.)
+        let s = only_spec("alice h1 = (root) NOPASSWD: ALL\n");
+        assert_eq!(
+            s.host_groups.len(),
+            1,
+            "a tag colon after a runas group must not split"
+        );
+        let cs = &s.host_groups[0].cmnd_specs[0];
+        assert_eq!(
+            cs.runas.as_ref().map(|r| r.users.clone()),
+            Some(vec!["root".to_string()])
+        );
+        assert_eq!(cs.tags, vec![Tag::NoPasswd]);
+        assert_eq!(cs.cmnd, CmndItem::All);
+    }
+
+    #[test]
+    fn glued_equals_then_tag_colon_stays_one_group() {
+        // `host=NOPASSWD:` (no spaces around `=`, the common glued `ALL=(ALL)` form):
+        // the `=` resets the preceding-token start so `NOPASSWD` is still recognised as
+        // a tag, not a segment. visudo -c rc 0: `alice h1=NOPASSWD: ALL` -> one group
+        // with the NOPASSWD tag. (Kills the `,`/`=`-arm `tok_start` offset mutant.)
+        let s = only_spec("alice h1=NOPASSWD: ALL\n");
+        assert_eq!(s.host_groups.len(), 1);
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+        assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
     }
 }
