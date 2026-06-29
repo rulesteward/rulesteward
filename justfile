@@ -84,3 +84,43 @@ diff-fapolicyd corpus glob:
 trustdb-contention:
     cargo test -p rulesteward-fapolicyd --features test-fixtures \
         --test trustdb_contention --locked -- --ignored --test-threads=1
+
+# (#335 follow-up) Drift-check / refresh the sysctld STIG baselines against
+# ComplianceAsCode/content. The tool lives in its OWN workspace (tools/stig-update),
+# OUT of `just ci`. All three recipes skip gracefully (exit 0) when curl is absent.
+#
+# stig-check         : derive at the PINNED refs (stig-refs.toml); exit 1 on any drift
+#                      vs the shipped baseline.rs tables (the CI drift gate uses this).
+# stig-check-latest  : derive at the LATEST CaC release; report pending upstream changes.
+# stig-derive <p>    : print the derived table + diff + paste-ready k(...) lines for
+#                      review (p = rhel8|rhel9|rhel10, or `all`). Usage: just stig-derive rhel9
+stig-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "stig-check: prerequisites missing - need curl + network access to ComplianceAsCode" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check
+
+stig-check-latest:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "stig-check-latest: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check --latest
+
+stig-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "stig-derive: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive --product "{{product}}"
+    fi

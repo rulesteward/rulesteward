@@ -1,0 +1,25 @@
+# Pinned ComplianceAsCode/content refs + exclusions for the sysctld STIG baselines.
+#
+# Update workflow: bump a product's ref below when DISA/ComplianceAsCode publish that
+# product's STIG update, then run `stig-update derive --product <p>`, review the diff,
+# update crates/rulesteward-sysctld/src/lints/baseline.rs, re-gate (adversarial +
+# mutation), and confirm `stig-update check` reports 0 drift.
+#
+# NOTE on TOML layout: top-level keys (exclude_rules) MUST come before the [products]
+# table header, or they would be parsed as members of [products].
+
+# STIG-listed sysctl rules that are NOT /etc/sysctl.d-settable on RHEL, so the
+# baseline deliberately excludes them (flagging them "missing" would be an unfixable
+# false positive). A NON-excluded rule with no sysctl template is a hard error, so
+# this is the explicit allow-to-drop.
+#   - sysctl_crypto_fips_enabled : boot-time `fips=1`, read-only in /proc/sys.
+#   - sysctl_kernel_exec_shield  : a GRUB noexec / 32-bit-only check on RHEL.
+exclude_rules = ["sysctl_crypto_fips_enabled", "sysctl_kernel_exec_shield"]
+
+# Per-product pinned ref. The three RHEL STIGs version INDEPENDENTLY, so each has its
+# own ref and can be bumped on its own. Today all three point at the commit issue
+# #335 was grounded against.
+[products]
+rhel8 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
+rhel9 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
+rhel10 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
