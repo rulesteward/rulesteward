@@ -44,7 +44,7 @@
 //! has no entry in the defined set for that kind. Anchored at the reference site's
 //! line/span.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rulesteward_core::{Diagnostic, Severity};
 
@@ -82,6 +82,89 @@ fn is_alias_ref(token: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Returns `true` when `token` is a POSITIVE reference (no leading `!`) to the
+/// reserved built-in `ALL`.
+///
+/// A leading `!` makes the token a NEGATION (`!ALL` = "deny everything"), the
+/// OPPOSITE of the run-anything grant, so it must NOT count as expanding-to-ALL.
+/// Grounded against `visudo -x` (sudo 1.9.17p2): `!ALL` exports with
+/// `"negated": true`, a subtraction rather than a grant.
+fn is_positive_all(token: &str) -> bool {
+    token == "ALL"
+}
+
+/// Build the set of `Cmnd_Alias` NAMEs that TRANSITIVELY expand to the reserved
+/// `ALL`, for the sudo-W02 walk (#332).
+///
+/// A `Cmnd_Alias` expands-to-ALL when its member list contains the POSITIVE
+/// literal `ALL`, OR contains a POSITIVE `Cmnd_Alias` reference that itself
+/// expands-to-ALL. A leading `!` on a member (a negation / subtraction, not a
+/// grant) does NOT contribute - so we test members with [`is_positive_all`] for
+/// the literal-ALL case and require a non-`!`-prefixed token for the alias-ref
+/// case.
+///
+/// Reuses the #331 alias-table construction shape: one pass builds a
+/// `Cmnd_Alias name -> member tokens` map (covering the `Cmd_Alias` synonym, since
+/// both map to [`AliasKind::Cmnd`]), then a fixpoint marks every name reachable to
+/// ALL. The fixpoint terminates on cycles: a name is only added to the result set
+/// once and the loop stops when a full pass adds nothing, so a self- or mutual
+/// reference (`X = Y`, `Y = X`) that never reaches ALL simply never gets marked.
+///
+/// This is the alias-expansion case the #330 / sudo-W01 pass deliberately leaves
+/// as a documented false-negative: W01 keys off the LITERAL [`CmndItem::All`] only.
+#[must_use]
+pub(crate) fn cmnd_aliases_expanding_to_all(files: &[SudoersFile]) -> HashSet<String> {
+    // name -> the POSITIVE Cmnd_Alias-ref member tokens of that alias (the edges of
+    // the expansion graph). We only keep positive alias refs here; a literal ALL
+    // member is recorded separately as the seed condition below.
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    // Seed: aliases whose OWN member list directly contains a positive literal ALL.
+    let mut expands: HashSet<String> = HashSet::new();
+
+    for file in files {
+        for ll in &file.lines {
+            if let LineKind::Alias(def) = &ll.kind
+                && def.kind == AliasKind::Cmnd
+            {
+                let e = edges.entry(def.name.clone()).or_default();
+                for tok in &def.members {
+                    if is_positive_all(tok) {
+                        expands.insert(def.name.clone());
+                    } else if !tok.starts_with('!') && is_alias_ref(tok) {
+                        // A POSITIVE same-kind (Cmnd) alias reference: an expansion
+                        // edge, keyed by the bare alias NAME so it matches the
+                        // `def.name` keys in `expands`. `!`-prefixed refs are
+                        // subtractions (deny), excluded by the `!starts_with('!')`
+                        // guard above - WITHOUT that guard a `!A` edge would strip to
+                        // `A` and wrongly propagate A's expand-to-ALL into the
+                        // negating alias.
+                        e.push(tok.trim_start_matches('!').to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fixpoint: propagate expands-to-ALL backwards along the edges. An alias
+    // expands-to-ALL if any of its positive member aliases does. Terminates because
+    // `expands` only grows and is bounded by the number of defined Cmnd_Aliases.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (name, members) in &edges {
+            if expands.contains(name) {
+                continue;
+            }
+            if members.iter().any(|m| expands.contains(m)) {
+                expands.insert(name.clone());
+                changed = true;
+            }
+        }
+    }
+
+    expands
 }
 
 /// A single alias definition site (where the name is defined, for W03 anchoring).

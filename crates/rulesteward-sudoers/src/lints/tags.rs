@@ -83,11 +83,77 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags
 }
 
-/// sudo-W02: a `Cmnd_Alias` transitively expands to `ALL` while under NOPASSWD.
-/// STUB in Phase 0 (#332).
+/// sudo-W02: a `Cmnd_Alias` transitively expands to the reserved `ALL` while under
+/// effective NOPASSWD (#332).
+///
+/// W02 is the alias-expansion companion to W01. W01 keys off the LITERAL reserved
+/// `ALL` ([`CmndItem::All`]) and deliberately leaves `NOPASSWD: <alias-that-is-ALL>`
+/// as a documented false-negative; W02 covers exactly that case.
+///
+/// # Algorithm
+///
+/// 1. Build the set of `Cmnd_Alias` names that TRANSITIVELY expand to `ALL` via
+///    [`crate::lints::aliases::cmnd_aliases_expanding_to_all`] (reuses the #331
+///    alias-table construction; cycle-safe fixpoint).
+/// 2. Walk each user-spec's `Cmnd_Spec_List` with the SAME forward NOPASSWD/PASSWD
+///    tag-state machine the #330 / W01 pass uses (`PASSWD` overrides `NOPASSWD`;
+///    state inherits across the list in source order and is per-user-spec).
+/// 3. When NOPASSWD is effective AND the command is a POSITIVE named `Cmnd_Alias`
+///    reference (no leading `!` - a `!ALIAS` is a deny/subtraction, not a grant)
+///    whose name is in the expand-to-ALL set, fire `sudo-W02` (Warning), anchored
+///    at the user-spec's logical line and byte span.
+///
+/// The literal-`ALL` command is `CmndItem::All` (W01's domain), never a
+/// `CmndItem::Cmnd`, so W02 and W01 are mutually exclusive by construction.
 #[must_use]
-pub fn w02(_files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
-    Vec::new()
+pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
+    let expands_to_all = crate::lints::aliases::cmnd_aliases_expanding_to_all(files);
+    let mut diags = Vec::new();
+    for file in files {
+        for logical in &file.lines {
+            let LineKind::UserSpec(spec) = &logical.kind else {
+                continue;
+            };
+            // Forward tag-state: NOPASSWD effective until an explicit PASSWD resets
+            // it. Inherits across the Cmnd_Spec_List in source order (same machine
+            // as W01).
+            let mut nopasswd = false;
+            for cmnd_spec in &spec.cmnd_specs {
+                // Fold THIS command's explicit tags into the state BEFORE evaluating
+                // it (last-written tag wins; an explicit PASSWD on the very command
+                // being checked cancels inheritance for it).
+                for tag in &cmnd_spec.tags {
+                    match tag {
+                        Tag::NoPasswd => nopasswd = true,
+                        Tag::Passwd => nopasswd = false,
+                        _ => {}
+                    }
+                }
+                // The command must be a POSITIVE named alias (no leading `!`) whose
+                // name transitively expands to ALL. `CmndItem::All` is the literal
+                // reserved ALL (W01's case) and is excluded here.
+                if nopasswd
+                    && let CmndItem::Cmnd(token) = &cmnd_spec.cmnd
+                    && !token.starts_with('!')
+                    && expands_to_all.contains(token)
+                {
+                    diags.push(anchored(
+                        Severity::Warning,
+                        "sudo-W02",
+                        logical.span.clone(),
+                        format!(
+                            "NOPASSWD applies to Cmnd_Alias \"{token}\", which expands to \
+                             the reserved ALL command: this grants passwordless authority \
+                             to run any command"
+                        ),
+                        file.path.clone(),
+                        logical.line,
+                    ));
+                }
+            }
+        }
+    }
+    diags
 }
 
 #[cfg(test)]
@@ -391,6 +457,402 @@ mod tests {
             1,
             "Phase-0 multi-host flattening: W01 fires once on the swallowed-tail ALL \
              (a known false positive vs real per-host-group sudo semantics)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod w02_tests {
+    use super::{w01, w02};
+    use crate::lints::SudoersLintContext;
+    use crate::parser::parse;
+    use std::path::Path;
+
+    /// Parse one source string into the single-element file slice the passes take.
+    fn files(src: &str) -> Vec<crate::ast::SudoersFile> {
+        vec![parse(src, Path::new("/etc/sudoers"))]
+    }
+
+    /// Run W02 over `src` and return the diagnostics.
+    fn lint(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        let f = files(src);
+        w02(&f, &SudoersLintContext::default())
+    }
+
+    /// Count the `sudo-W02` diagnostics in a W02 run.
+    fn w02_count(src: &str) -> usize {
+        lint(src).iter().filter(|d| d.code == "sudo-W02").count()
+    }
+
+    /// Count the `sudo-W01` diagnostics over `src` (for the W01/W02 boundary tests).
+    fn w01_count(src: &str) -> usize {
+        let f = files(src);
+        w01(&f, &SudoersLintContext::default())
+            .iter()
+            .filter(|d| d.code == "sudo-W01")
+            .count()
+    }
+
+    // ---- the adversarial seeds (each fixture verified VALID via `visudo -c -f`,
+    // sudo 1.9.17p2) ----
+
+    #[test]
+    fn headline_alias_directly_is_all_under_nopasswd_fires() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `frank ALL = NOPASSWD: EVERYTHING`
+        // (visudo -c rc 0): the command is the named alias EVERYTHING, whose single
+        // member is the reserved ALL. Under effective NOPASSWD this grants
+        // passwordless run-anything via the alias -> W02 fires. This is the issue's
+        // headline case and exactly the documented W01 false-negative (W01 keys off
+        // the LITERAL ALL only; the command here is `CmndItem::Cmnd("EVERYTHING")`).
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\nfrank ALL = NOPASSWD: EVERYTHING\n"),
+            1,
+            "an alias whose member is ALL, under NOPASSWD, must fire W02"
+        );
+    }
+
+    #[test]
+    fn transitive_b_to_a_to_all_under_nopasswd_fires() {
+        // `Cmnd_Alias A = ALL` + `Cmnd_Alias B = A, /bin/ls` + `bob ALL = NOPASSWD: B`
+        // (visudo -c rc 0): B does not directly list ALL, but its member A is a
+        // Cmnd_Alias that expands to ALL. Reachability B -> A -> ALL -> W02 fires.
+        assert_eq!(
+            w02_count("Cmnd_Alias A = ALL\nCmnd_Alias B = A, /bin/ls\nbob ALL = NOPASSWD: B\n"),
+            1,
+            "transitive expansion B -> A -> ALL must fire W02"
+        );
+    }
+
+    #[test]
+    fn alias_that_does_not_expand_to_all_does_not_fire() {
+        // `Cmnd_Alias OPS = /bin/systemctl, /bin/journalctl`
+        // + `carol ALL = NOPASSWD: OPS` (visudo -c rc 0): OPS is a bounded set of
+        // specific binaries; it never reaches ALL -> NO W02.
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias OPS = /bin/systemctl, /bin/journalctl\ncarol ALL = NOPASSWD: OPS\n"
+            ),
+            0,
+            "an alias of specific commands does not expand to ALL: no W02"
+        );
+    }
+
+    #[test]
+    fn alias_expands_to_all_but_not_under_nopasswd_does_not_fire() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `dave ALL = PASSWD: EVERYTHING`
+        // (visudo -c rc 0): the alias expands to ALL, but the command carries an
+        // explicit PASSWD, so NOPASSWD is NOT effective. Password-gated run-anything
+        // is not the W02 hazard -> NO W02.
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\ndave ALL = PASSWD: EVERYTHING\n"),
+            0,
+            "an alias-expands-to-ALL command under PASSWD (not NOPASSWD) does not fire"
+        );
+    }
+
+    #[test]
+    fn alias_expands_to_all_with_no_tag_at_all_does_not_fire() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `gus ALL = EVERYTHING` (visudo -c rc 0):
+        // no NOPASSWD anywhere -> the default password-required policy applies -> NO
+        // W02 (W02 is specifically the NOPASSWD-on-alias-that-is-ALL hazard).
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\ngus ALL = EVERYTHING\n"),
+            0,
+            "an alias-expands-to-ALL command with no NOPASSWD in effect does not fire"
+        );
+    }
+
+    #[test]
+    fn literal_all_under_nopasswd_is_w01_not_w02() {
+        // `frank ALL = NOPASSWD: ALL` (visudo -c rc 0): the command is the LITERAL
+        // reserved ALL (`CmndItem::All`), which is W01's domain. W02 covers ONLY the
+        // alias-expansion case, so W02 must NOT fire here (and W01 must).
+        assert_eq!(
+            w02_count("frank ALL = NOPASSWD: ALL\n"),
+            0,
+            "literal ALL under NOPASSWD is W01 territory; W02 must not fire"
+        );
+        assert_eq!(
+            w01_count("frank ALL = NOPASSWD: ALL\n"),
+            1,
+            "W01 still owns the literal-ALL case"
+        );
+    }
+
+    #[test]
+    fn nopasswd_inherits_forward_to_a_later_alias_that_is_all_fires() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `eve ALL = NOPASSWD: /bin/ls, EVERYTHING`
+        // (visudo -c rc 0): NOPASSWD set on the first command (/bin/ls) inherits
+        // forward to EVERYTHING (the alias carries no own tag). The inherited
+        // NOPASSWD applies to an alias-that-is-ALL -> W02 fires on EVERYTHING.
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\neve ALL = NOPASSWD: /bin/ls, EVERYTHING\n"),
+            1,
+            "NOPASSWD inherits forward to a later alias-that-is-ALL: W02 fires"
+        );
+    }
+
+    #[test]
+    fn alias_cycle_with_no_all_terminates_and_does_not_fire() {
+        // `Cmnd_Alias X = Y` + `Cmnd_Alias Y = X` + `u ALL = NOPASSWD: X`
+        // (visudo -c rc 0): X and Y form a cycle that never reaches the reserved
+        // ALL. The reachability walk MUST terminate (cycle guard) and NOT fire -> NO
+        // W02, no hang.
+        assert_eq!(
+            w02_count("Cmnd_Alias X = Y\nCmnd_Alias Y = X\nu ALL = NOPASSWD: X\n"),
+            0,
+            "an alias cycle that never reaches ALL terminates and does not fire"
+        );
+    }
+
+    // ---- W01/W02 boundary: each owns exactly its case ----
+
+    #[test]
+    fn w01_does_not_fire_on_the_alias_expansion_case() {
+        // The headline W02 case must NOT trip W01: the command is the named alias,
+        // not the literal ALL. (This is the SAME source the W01 module asserts is a
+        // documented v1 false-negative; here we re-pin it from the W02 module's
+        // perspective so the boundary is locked from both sides.)
+        assert_eq!(
+            w01_count("Cmnd_Alias EVERYTHING = ALL\nfrank ALL = NOPASSWD: EVERYTHING\n"),
+            0,
+            "W01 must not fire on an alias that expands to ALL (that is W02's case)"
+        );
+    }
+
+    // ---- cross-user-spec isolation (NOPASSWD state is per-user-spec) ----
+
+    #[test]
+    fn nopasswd_does_not_bleed_across_user_specs_for_w02() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `a ALL = NOPASSWD: EVERYTHING`
+        // + `b ALL = EVERYTHING` (visudo -c rc 0): the first user-spec is under
+        // NOPASSWD (fires); the second is a tagless EVERYTHING on its own line. Tag
+        // state is per-user-spec, so it must NOT leak forward -> exactly ONE W02.
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias EVERYTHING = ALL\na ALL = NOPASSWD: EVERYTHING\nb ALL = EVERYTHING\n"
+            ),
+            1,
+            "NOPASSWD state resets at each user-spec; it must not bleed across lines"
+        );
+    }
+
+    // ---- within-spec tag fold: explicit PASSWD on the alias command cancels it ----
+
+    #[test]
+    fn explicit_passwd_on_the_alias_command_cancels_inheritance_no_fire() {
+        // `Cmnd_Alias EVERYTHING = ALL`
+        // + `u ALL = NOPASSWD: /bin/ls, PASSWD: EVERYTHING` (visudo -c rc 0): the
+        // alias command carries an explicit PASSWD which resets the inherited
+        // NOPASSWD before it is evaluated -> NO W02 (password-gated).
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias EVERYTHING = ALL\nu ALL = NOPASSWD: /bin/ls, PASSWD: EVERYTHING\n"
+            ),
+            0,
+            "an explicit PASSWD on the alias-that-is-ALL command cancels inheritance"
+        );
+    }
+
+    // ---- diamond / self-cycle reachability (terminate + no double-count) ----
+
+    #[test]
+    fn diamond_reachability_to_all_fires_exactly_once() {
+        // `A = ALL`, `B = A`, `C = A`, `D = B, C`, `e ALL = NOPASSWD: D`
+        // (visudo -c rc 0): D reaches ALL via TWO paths (D->B->A->ALL and
+        // D->C->A->ALL). The walk must visit A once (cycle/visited guard) and the
+        // single command D must fire exactly ONE W02 (one finding per command, not
+        // per path).
+        assert_eq!(
+            w02_count(
+                "Cmnd_Alias A = ALL\nCmnd_Alias B = A\nCmnd_Alias C = A\nCmnd_Alias D = B, C\ne ALL = NOPASSWD: D\n"
+            ),
+            1,
+            "a diamond that reaches ALL via two paths fires exactly one W02"
+        );
+    }
+
+    #[test]
+    fn self_cycle_containing_all_terminates_and_fires() {
+        // `Cmnd_Alias Z = Z, ALL` + `u ALL = NOPASSWD: Z` (visudo -c rc 0; visudo
+        // notes "cycle in Cmnd_Alias Z" but still accepts the file): Z references
+        // itself AND lists the reserved ALL. The walk must terminate on the self
+        // reference (visited guard) and still detect the ALL member -> W02 fires.
+        assert_eq!(
+            w02_count("Cmnd_Alias Z = Z, ALL\nu ALL = NOPASSWD: Z\n"),
+            1,
+            "a self-referential alias that also lists ALL terminates and fires"
+        );
+    }
+
+    // ---- negation: a negated alias is a DENY/subtraction, not a run-anything grant ----
+
+    #[test]
+    fn negated_alias_command_does_not_fire() {
+        // `Cmnd_Alias EVERYTHING = ALL` + `u ALL = NOPASSWD: !EVERYTHING`
+        // (visudo -c rc 0): the command token is `!EVERYTHING`. visudo -x exports it
+        // as `"cmndalias": "EVERYTHING", "negated": true` - a passwordless DENY of
+        // everything, the OPPOSITE of run-anything. So W02 must NOT fire. (Mirrors
+        // W01: a `!ALL` command is `CmndItem::Cmnd("!ALL")`, not `CmndItem::All`, so
+        // W01 already does not fire on negated literal ALL.)
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\nu ALL = NOPASSWD: !EVERYTHING\n"),
+            0,
+            "a negated alias command (!EVERYTHING) is a deny, not a run-anything grant"
+        );
+    }
+
+    #[test]
+    fn negated_member_does_not_make_an_alias_expand_to_all() {
+        // `Cmnd_Alias A = ALL` + `Cmnd_Alias B = !A, /bin/ls` + `u ALL = NOPASSWD: B`
+        // (visudo -c rc 0): B's member `!A` is `"cmndalias": "A", "negated": true` -
+        // a subtraction of everything A matches, leaving effectively just /bin/ls. B
+        // does NOT grant run-anything -> NO W02. A POSITIVE member is required to
+        // contribute the expand-to-ALL grant.
+        assert_eq!(
+            w02_count("Cmnd_Alias A = ALL\nCmnd_Alias B = !A, /bin/ls\nu ALL = NOPASSWD: B\n"),
+            0,
+            "a negated member (!A) subtracts; it must not make B expand-to-ALL"
+        );
+    }
+
+    #[test]
+    fn negated_alias_member_to_all_does_not_propagate_expansion() {
+        // `Cmnd_Alias A = ALL` + `Cmnd_Alias B = !A` + `bob ALL = NOPASSWD: B`
+        // (visudo -c rc 0): B's ONLY member is `!A`, a negation of the
+        // alias-that-is-ALL. visudo -x exports it `"cmndalias": "A", "negated": true`
+        // - B denies everything A matches, so B does NOT expand to ALL -> NO W02.
+        // Pins the `!`-guard on the expansion edge: a `!A` member must not create an
+        // ALL-propagating edge (it would if the bare `is_alias_ref` alone decided the
+        // edge).
+        assert_eq!(
+            w02_count("Cmnd_Alias A = ALL\nCmnd_Alias B = !A\nbob ALL = NOPASSWD: B\n"),
+            0,
+            "a negated alias-to-ALL member (!A) must not propagate the expansion"
+        );
+    }
+
+    #[test]
+    fn negated_literal_all_member_does_not_expand_to_all() {
+        // `Cmnd_Alias B = !ALL, /bin/ls` + `u ALL = NOPASSWD: B` (visudo -c rc 0):
+        // B's member `!ALL` is a negated literal ALL (deny everything), plus
+        // /bin/ls. B does not grant run-anything -> NO W02. A POSITIVE literal ALL
+        // member is required.
+        assert_eq!(
+            w02_count("Cmnd_Alias B = !ALL, /bin/ls\nu ALL = NOPASSWD: B\n"),
+            0,
+            "a negated literal-ALL member (!ALL) must not make B expand-to-ALL"
+        );
+    }
+
+    // ---- robustness: undefined alias members do not crash or hang ----
+
+    #[test]
+    fn undefined_alias_member_does_not_hang_and_does_not_fire() {
+        // `Cmnd_Alias B = MISSING, /bin/ls` + `u ALL = NOPASSWD: B` (visudo -c rc 0;
+        // visudo notes MISSING is referenced-but-not-defined, that is E01's concern).
+        // The W02 walk reaches MISSING, finds no definition, and treats it as a
+        // non-expanding leaf -> NO W02, no hang.
+        assert_eq!(
+            w02_count("Cmnd_Alias B = MISSING, /bin/ls\nu ALL = NOPASSWD: B\n"),
+            0,
+            "an undefined member is a non-expanding leaf; no hang, no W02"
+        );
+    }
+
+    #[test]
+    fn colon_separated_cmnd_alias_spec_is_a_documented_phase0_limitation() {
+        // KNOWN LIMITATION (frozen Phase-0 parser, `classify_alias` in parser.rs):
+        // the sudoers(5) grammar allows MULTIPLE `Cmnd_Alias_Spec`s on one
+        // `Cmnd_Alias` line, separated by `:` -
+        //   `Cmnd_Alias` Cmnd_Alias_Spec (`:` Cmnd_Alias_Spec)*
+        // so `Cmnd_Alias A = ALL : B = /bin/ls` defines TWO aliases (A=ALL, B=/bin/ls)
+        // and `visudo -x` confirms A expands to ALL. But the frozen parser splits the
+        // member list only on `,` (NOT on the `:` Cmnd_Alias_Spec boundary), so it
+        // yields ONE alias `A` with a single swallowed member token
+        // `"ALL : B = /bin/ls"`. That token is neither the literal `ALL` nor a valid
+        // alias-name pattern, so `cmnd_aliases_expanding_to_all` never marks A as
+        // expanding-to-ALL, and W02 does NOT fire on `bob ALL = NOPASSWD: A`.
+        //
+        // In REAL sudo this IS a passwordless-run-anything finding (A => ALL). This is
+        // a FALSE NEGATIVE inherent to the frozen Phase-0 parser/AST - the SAME
+        // structural class as the user-spec multi-host `: Host = Cmnd` flattening
+        // documented in `parser.rs::classify_user_spec` and pinned by the W01 module's
+        // `multi_host_continuation_is_a_documented_phase0_limitation`. It is NOT fixable
+        // in this W02 leaf pass without changing the frozen `classify_alias` parser +
+        // the AliasDef contract that #331's E01/W03 also read (the swallowed `B` is
+        // likewise invisible to W03's dead-alias check, though `visudo -c` reports it
+        // unused). Surfaced to the orchestrator as an out-of-scope parser question;
+        // see the W02 task report. This test PINS the current behavior so any future
+        // parser fix that splits `Cmnd_Alias` on `:` deliberately revisits it.
+        //
+        // Fixture is `visudo -c -f` rc 0 (sudo 1.9.17p2).
+        assert_eq!(
+            w02_count("Cmnd_Alias A = ALL : B = /bin/ls\nbob ALL = NOPASSWD: A\n"),
+            0,
+            "Phase-0 alias-spec `:` flattening: W02 misses the colon-form A=>ALL (a \
+             known false negative vs real per-Cmnd_Alias_Spec sudo semantics)"
+        );
+    }
+
+    #[test]
+    fn no_user_specs_at_all_is_clean_for_w02() {
+        // A file with no user-specs (just an alias definition) has nothing to walk
+        // for W02 -> no findings.
+        assert_eq!(
+            w02_count("Cmnd_Alias EVERYTHING = ALL\n"),
+            0,
+            "an alias definition with no user-spec referencing it produces no W02"
+        );
+    }
+
+    // ---- emission metadata: severity, anchoring, span ----
+
+    #[test]
+    fn fires_with_warning_severity_and_anchors_at_the_user_spec_line() {
+        // The W02 diagnostic anchors at the offending user-spec's logical line and
+        // byte span, carries the file source_id (for ariadne), and is Warning
+        // severity. The source string places the user-spec on physical line 2.
+        let src = "Cmnd_Alias EVERYTHING = ALL\nfrank ALL = NOPASSWD: EVERYTHING\n";
+        let diags = lint(src);
+        let w02s: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W02").collect();
+        assert_eq!(w02s.len(), 1);
+        let d = w02s[0];
+        assert_eq!(d.severity, rulesteward_core::Severity::Warning);
+        assert_eq!(d.line, 2, "anchors at the user-spec's 1-based line");
+        // The user-spec is the second logical line: its byte span starts after the
+        // 28-byte first line (`Cmnd_Alias EVERYTHING = ALL\n`).
+        let spec_start = "Cmnd_Alias EVERYTHING = ALL\n".len();
+        assert_eq!(
+            d.span,
+            spec_start..src.len() - 1,
+            "anchors at the user-spec's logical-line byte span"
+        );
+        assert!(
+            d.source_id.is_some(),
+            "an anchored W02 carries the file source_id for ariadne rendering"
+        );
+        assert_eq!(d.file, Path::new("/etc/sudoers"));
+    }
+
+    #[test]
+    fn message_names_the_alias_and_describes_the_hazard() {
+        // The operator-facing message names the offending alias and conveys the
+        // passwordless-run-anything-via-alias hazard.
+        let diags = lint("Cmnd_Alias EVERYTHING = ALL\nfrank ALL = NOPASSWD: EVERYTHING\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W02")
+            .expect("W02 fires for frank");
+        assert!(
+            d.message.contains("EVERYTHING"),
+            "the message names the offending Cmnd_Alias; got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.to_ascii_uppercase().contains("ALL"),
+            "the message mentions the ALL expansion; got {:?}",
+            d.message
         );
     }
 }
