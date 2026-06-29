@@ -46,10 +46,10 @@
 
 use std::collections::HashMap;
 
-use rulesteward_core::{Diagnostic, Severity, anchored};
+use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{AliasKind, CmndItem, LineKind, SudoersFile};
-use crate::lints::SudoersLintContext;
+use crate::lints::{SudoersLintContext, anchored};
 
 /// Human-readable name of an alias kind, for diagnostic messages.
 fn kind_name(kind: AliasKind) -> &'static str {
@@ -61,13 +61,18 @@ fn kind_name(kind: AliasKind) -> &'static str {
     }
 }
 
-/// Returns `true` when `token` (after stripping a leading `!`) matches the
+/// Returns `true` when `token` (after stripping ALL leading `!`) matches the
 /// sudoers alias-name pattern `[A-Z][A-Z0-9_]*` AND is not the built-in `ALL`.
+///
+/// The sudoers grammar allows zero or more `!` before an alias name (`'!'* Cmnd_Alias`
+/// per sudoers(5)); we must strip ALL of them, not just one, before testing the NAME
+/// pattern. A single `strip_prefix('!')` would leave `!NAME` and silently mis-classify
+/// a `!!NAME` token as a non-alias, causing W03 false-positives and E01 false-negatives.
 ///
 /// Used to decide whether a raw token in a user-spec or alias-member list is an
 /// alias reference (vs a path, a username, a group, etc.).
 fn is_alias_ref(token: &str) -> bool {
-    let t = token.strip_prefix('!').unwrap_or(token);
+    let t = token.trim_start_matches('!');
     if t == "ALL" {
         return false;
     }
@@ -167,7 +172,7 @@ fn push_token_refs(
 ) {
     for tok in tokens {
         if is_alias_ref(tok) {
-            let name = tok.strip_prefix('!').unwrap_or(tok).to_string();
+            let name = tok.trim_start_matches('!').to_string();
             tables.push_spec_ref(kind, name.clone());
             tables.all_refs.push(RefSite {
                 kind,
@@ -238,7 +243,7 @@ fn build_tables(files: &[SudoersFile]) -> Tables {
                         if let CmndItem::Cmnd(tok) = &cs.cmnd
                             && is_alias_ref(tok)
                         {
-                            let name = tok.strip_prefix('!').unwrap_or(tok).to_string();
+                            let name = tok.trim_start_matches('!').to_string();
                             t.push_spec_ref(AliasKind::Cmnd, name.clone());
                             t.all_refs.push(RefSite {
                                 kind: AliasKind::Cmnd,
@@ -258,7 +263,7 @@ fn build_tables(files: &[SudoersFile]) -> Tables {
                     // expansion from spec_refs, so members are processed there separately.
                     for tok in &def.members {
                         if is_alias_ref(tok) {
-                            let name = tok.strip_prefix('!').unwrap_or(tok).to_string();
+                            let name = tok.trim_start_matches('!').to_string();
                             t.all_refs.push(RefSite {
                                 kind: def.kind,
                                 name,
@@ -348,7 +353,7 @@ pub fn w03(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                 let entry = member_alias_refs[idx].entry(def.name.clone()).or_default();
                 for tok in &def.members {
                     if is_alias_ref(tok) {
-                        let name = tok.strip_prefix('!').unwrap_or(tok).to_string();
+                        let name = tok.trim_start_matches('!').to_string();
                         entry.push(name);
                     }
                 }
@@ -434,9 +439,6 @@ fn kind_to_idx(kind: AliasKind) -> usize {
         AliasKind::Cmnd => 3,
     }
 }
-
-// Remove the duplicate `build_tables` function that returns 3 values inconsistently;
-// `build_tables_inner` is the real implementation.
 
 #[cfg(test)]
 mod tests {
@@ -751,6 +753,206 @@ mod tests {
         assert!(
             diags.is_empty(),
             "no aliases defined -> no W03; got {diags:?}"
+        );
+    }
+
+    // ---- Bug 1: multi-`!` negation (!! / !!!  ...) ----
+    //
+    // The sudoers grammar allows `'!'*` (zero OR MORE `!`) before an alias name.
+    // Grounded: `visudo -c -f` rc 0 on all three cases below (sudo 1.9.17p2).
+
+    /// Grounded: `Cmnd_Alias DANGEROUS = /bin/rm` + `alice ALL = !!DANGEROUS`
+    /// visudo -c: parsed OK (DANGEROUS is referenced via double-negation -> NOT dead).
+    /// Bug: single `strip_prefix('!')` leaves `!DANGEROUS`; `is_alias_ref` fails ->
+    /// `push_spec_ref` never fires -> DANGEROUS is falsely emitted as W03-dead.
+    #[test]
+    fn w03_double_negation_in_cmnd_not_dead() {
+        let files = parse_one("Cmnd_Alias DANGEROUS = /bin/rm\nalice ALL = !!DANGEROUS\n");
+        let ctx = SudoersLintContext::default();
+        let diags = w03(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "DANGEROUS is referenced via !!DANGEROUS -> not dead, no W03; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `User_Alias ADMINS = alice` + `!!ADMINS ALL = ALL`
+    /// visudo -c: parsed OK (ADMINS referenced in subject position via !!).
+    /// Bug: single `strip_prefix('!')` leaves `!ADMINS` in the token; not matched as
+    /// alias ref -> ADMINS falsely appears dead.
+    #[test]
+    fn w03_double_negation_in_user_subject_not_dead() {
+        let files = parse_one("User_Alias ADMINS = alice\n!!ADMINS ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = w03(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "ADMINS is referenced via !!ADMINS in subject position -> not dead, no W03; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `alice ALL = !!MISSING` where MISSING (`Cmnd_Alias`) is never defined.
+    /// visudo -c: `Cmnd_Alias "MISSING" referenced but not defined`.
+    /// Bug: single `strip_prefix('!')` leaves `!MISSING`; `is_alias_ref` never fires
+    /// -> the undefined reference goes unreported (E01 false-negative).
+    #[test]
+    fn e01_double_negation_undefined_alias_fires() {
+        let files = parse_one("alice ALL = !!MISSING\n");
+        let ctx = SudoersLintContext::default();
+        let diags = e01(&files, &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "!!MISSING strips to MISSING which is undefined -> one sudo-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sudo-E01");
+        assert!(
+            diags[0].message.contains("MISSING"),
+            "message names the undefined alias name"
+        );
+        assert!(
+            diags[0].message.contains("Cmnd_Alias"),
+            "message names the alias kind"
+        );
+    }
+
+    // ---- Bug 2 (mutation survivors): is_alias_ref predicate pinning ----
+    //
+    // Three survivors from the mutation gate, all in `is_alias_ref`:
+    //   guard: `c.is_ascii_uppercase()` replaced with `true`
+    //   second ||: `||` replaced with `&&` (between is_ascii_digit() and c == '_')
+    //   equality: `== '_'` replaced with `!= '_'`
+    // Grounded: visudo treats `[A-Z][A-Z0-9_]*` as an alias NAME; anything else
+    // (non-uppercase first char, lowercase tail char, digit-first, etc.) is a
+    // username, path, UID spec, or group spec - not an alias reference.
+    //
+    // The KEY DISTINGUISHING CASES (beyond what the simple lowercase tests cover):
+    //
+    // Survivor 1 (guard -> true):
+    //   `admin` has lowercase 'a' -> lowercase tail 'dmin' fails all() anyway -> mutant can't be
+    //   distinguished by `admin` alone. Need a non-uppercase first char with an all-uppercase/
+    //   digit/_ tail. `#1000` (UID spec in user position): '#' is non-uppercase, "1000" is all-
+    //   digits -> under guard-true mutant, chars.all passes -> is_alias_ref returns true -> E01
+    //   fires spuriously. visudo -c: parsed OK (UID spec, no User_Alias error).
+    //
+    // Survivor 2 (|| -> &&, effectively only uppercase chars pass the tail predicate):
+    //   The mutation makes `c == '_'` unreachable (the && makes it impossible to satisfy).
+    //   An alias name containing `_` or a digit fails recognition under this mutant:
+    //   `SAFE_CMD` -> tail char `_` -> under && mutant, `_`.is_ascii_uppercase()=false -> all()
+    //   returns false -> alias ref not recognized -> W03 fires when alias IS referenced (false
+    //   positive), or E01 fires when it's NOT defined (expected, but key is: referencing it doesn't
+    //   suppress the false-positive dead-alias warning). Test: W03 must NOT fire for a referenced
+    //   alias whose name contains `_`.
+    //
+    // Survivor 3 (== -> !=, i.e. '_' FAILS the equality):
+    //   Same shape as survivor 2: `_` in an alias name is no longer recognized as valid -> same
+    //   test kills it.
+
+    /// Grounded: `admin ALL = ALL` -> visudo treats `admin` as a username (no alias
+    /// lookup, no "referenced but not defined" error). `is_alias_ref("admin")` must
+    /// return false (lowercase first char).
+    /// visudo -c: parsed OK (no `User_Alias` error for `admin`).
+    #[test]
+    fn e01_lowercase_first_char_is_not_alias_ref() {
+        // `admin` has a lowercase first char -> username, NOT a User_Alias ref.
+        // visudo -c on `admin ALL = ALL` -> parsed OK (no alias error).
+        let files = parse_one("admin ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = e01(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "admin (lowercase first char) is a username, not an alias ref -> no E01; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `Admin ALL = ALL` -> visudo treats `Admin` as a username (mixed-case
+    /// names are usernames; the alias NAME grammar requires ALL uppercase).
+    /// `is_alias_ref("Admin")` must return false (lowercase `d` in tail).
+    /// visudo -c: parsed OK (no alias error for `Admin`).
+    #[test]
+    fn e01_mixed_case_name_is_not_alias_ref() {
+        // `Admin` starts uppercase but has lowercase tail char 'd' -> NOT a valid alias NAME.
+        let files = parse_one("Admin ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = e01(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "Admin (mixed case) is a username, not an alias ref -> no E01; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `ADMINs ALL = ALL` -> visudo treats `ADMINs` as a username (lowercase
+    /// tail char `s`). `is_alias_ref("ADMINs")` must return false.
+    /// visudo -c: parsed OK (no alias error for `ADMINs`).
+    #[test]
+    fn e01_uppercase_with_lowercase_tail_is_not_alias_ref() {
+        // `ADMINs` has lowercase tail char 's' -> NOT a valid alias NAME.
+        let files = parse_one("ADMINs ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = e01(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "ADMINs (lowercase tail) is a username, not an alias ref -> no E01; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `#1000 ALL = ALL` -> visudo treats `#1000` as a UID spec, NOT a
+    /// `User_Alias` reference. No "`User_Alias` referenced but not defined" error.
+    /// visudo -c: parsed OK.
+    ///
+    /// Kills survivor: guard `c.is_ascii_uppercase()` -> `true`. Under that mutant,
+    /// `#` passes the guard; "1000" is all-digits so `chars.all` passes; `is_alias_ref`
+    /// returns true (wrong) and E01 fires spuriously. The real code: `#` is not
+    /// `ascii_uppercase` -> guard fails -> returns false -> no E01.
+    #[test]
+    fn e01_uid_spec_token_is_not_alias_ref() {
+        // `#1000` in user-spec position is a UID reference, not a User_Alias ref.
+        // visudo -c on `#1000 ALL = ALL` -> parsed OK (no User_Alias error).
+        let files = parse_one("#1000 ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = e01(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "#1000 is a UID spec, not a User_Alias ref -> no E01; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `Cmnd_Alias SAFE_CMD = /bin/ls` + `alice ALL = SAFE_CMD` (alias name
+    /// contains `_`). visudo -c: parsed OK (`SAFE_CMD` is defined and referenced -> no W03).
+    ///
+    /// Kills survivor: second `||` -> `&&` (between `is_ascii_digit()` and `c == '_'`).
+    /// Under that mutant, `_` is no longer a valid tail char: `_`.`is_ascii_uppercase()`=false,
+    /// the `&&` makes `c == '_'` unreachable. So `is_alias_ref("SAFE_CMD")` returns false ->
+    /// `SAFE_CMD` is not recognized as referenced -> W03 fires spuriously.
+    /// Also kills `== '_'` -> `!= '_'`: `_` would fail the inverted predicate -> same result.
+    #[test]
+    fn w03_alias_name_with_underscore_not_dead_when_referenced() {
+        // SAFE_CMD contains '_' in its name: tests that '_' is accepted as a valid alias char.
+        // visudo -c on this fixture: parsed OK (no W03).
+        let files = parse_one("Cmnd_Alias SAFE_CMD = /bin/ls\nalice ALL = SAFE_CMD\n");
+        let ctx = SudoersLintContext::default();
+        let diags = w03(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "SAFE_CMD is referenced -> not dead, no W03; got {diags:?}"
+        );
+    }
+
+    /// Grounded: `User_Alias ADMIN_2 = alice` + `ADMIN_2 ALL = ALL`.
+    /// visudo -c: parsed OK. `ADMIN_2` contains both `_` and a digit.
+    /// `is_alias_ref("ADMIN_2")` must return true (first char uppercase, all tail
+    /// chars are uppercase/digit/underscore).
+    /// Kills survivor: second `||` -> `&&` and `== '_'` -> `!= '_'`: `_` and digit
+    /// chars would fail recognition, causing W03 to fire spuriously for `ADMIN_2`.
+    #[test]
+    fn w03_alias_name_with_underscore_and_digit_not_dead_when_referenced() {
+        // visudo -c: parsed OK (ADMIN_2 defined and referenced -> no W03).
+        let files = parse_one("User_Alias ADMIN_2 = alice\nADMIN_2 ALL = ALL\n");
+        let ctx = SudoersLintContext::default();
+        let diags = w03(&files, &ctx);
+        assert!(
+            diags.is_empty(),
+            "ADMIN_2 is referenced -> not dead, no W03; got {diags:?}"
         );
     }
 
