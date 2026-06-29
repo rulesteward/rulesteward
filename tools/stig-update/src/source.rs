@@ -26,12 +26,53 @@ fn raw(reff: &str, path: &str) -> String {
     format!("https://raw.githubusercontent.com/{REPO}/{reff}/{path}")
 }
 
-/// Fetch a product's STIG controls file at `reff`.
-pub fn controls(reff: &str, product: &str) -> Result<String, String> {
-    curl(&raw(
+/// Fetch a product's STIG controls file at `reff`, returning `None` when it does not
+/// exist there (HTTP 404). A product can be absent at a given ref - e.g. `rhel10` is
+/// on ComplianceAsCode master but not yet in a tagged release - so `check --latest`
+/// treats `None` as "not yet released; skip" rather than a hard error.
+pub fn controls_optional(reff: &str, product: &str) -> Result<Option<String>, String> {
+    let url = raw(
         reff,
         &format!("products/{product}/controls/stig_{product}.yml"),
-    ))
+    );
+    let (code, body) = fetch_status(&url)?;
+    match code {
+        200 => Ok(Some(body)),
+        404 => Ok(None),
+        other => Err(format!("curl {url}: HTTP {other}")),
+    }
+}
+
+/// `curl` that returns the HTTP status code alongside the body (so a 404 is
+/// distinguishable from a transport failure). `-f` is intentionally NOT passed, so an
+/// HTTP 404 still exits 0 and we read the code; `%{http_code}` is appended to stdout.
+fn fetch_status(url: &str) -> Result<(u16, String), String> {
+    let out = Command::new("curl")
+        .args(["-sSL", "--max-time", "60", "-w", "%{http_code}", url])
+        .output()
+        .map_err(|e| format!("spawn curl (is it installed?): {e}"))?;
+    if !out.status.success() {
+        // Transport failure (DNS, connection): curl exits non-zero, code is 000.
+        return Err(format!(
+            "curl {url} (transport): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let body =
+        String::from_utf8(out.stdout).map_err(|e| format!("curl {url}: non-utf8 body: {e}"))?;
+    parse_curl_status(&body).map_err(|e| format!("curl {url}: {e}"))
+}
+
+/// Split curl's `<body><http_code>` output - the 3-digit code is appended last.
+fn parse_curl_status(body_with_code: &str) -> Result<(u16, String), String> {
+    if body_with_code.len() < 3 {
+        return Err("response too short to carry an HTTP status code".to_string());
+    }
+    let (text, code) = body_with_code.split_at(body_with_code.len() - 3);
+    let code: u16 = code
+        .parse()
+        .map_err(|_| format!("trailing status code not a number: {code:?}"))?;
+    Ok((code, text.to_string()))
 }
 
 /// Fetch the recursive git-tree (all paths) at `reff` once - used to locate each
@@ -133,5 +174,23 @@ mod tests {
             extract_json_string(json, "tag_name").as_deref(),
             Some("v0.1.76")
         );
+    }
+
+    #[test]
+    fn parse_curl_status_splits_body_and_code() {
+        use super::parse_curl_status;
+        // curl appends the 3-digit code with no newline.
+        assert_eq!(
+            parse_curl_status("controls: []\n200").unwrap(),
+            (200, "controls: []\n".to_string())
+        );
+        // a 404 body (raw.githubusercontent's "404: Not Found") + code.
+        let (code, _body) = parse_curl_status("404: Not Found404").unwrap();
+        assert_eq!(code, 404);
+        // transport failure: curl writes 000.
+        assert_eq!(parse_curl_status("000").unwrap(), (0, String::new()));
+        // too short / non-numeric tail -> error, not a panic.
+        assert!(parse_curl_status("ab").is_err());
+        assert!(parse_curl_status("bodyXYZ").is_err());
     }
 }

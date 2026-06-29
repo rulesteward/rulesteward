@@ -71,7 +71,21 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
     for (product, pinned) in &cfg.products {
         let reff = upstream.as_deref().unwrap_or(pinned);
         eprintln!("checking {product} @ {reff} ...");
-        let diff = derive::diff_tables(&derive_for(&cfg, product, reff)?, &code_table(product)?);
+        let Some(derived) = derive_for_optional(&cfg, product, reff)? else {
+            // The product's controls file is absent at this ref. Under --latest that
+            // just means it is not yet in a tagged release (e.g. rhel10 is master-only),
+            // so skip it; under a pinned ref it is a misconfigured ref, so error.
+            if latest {
+                println!(
+                    "{product}: not present at {reff} (master-only / not yet released); skipped"
+                );
+                continue;
+            }
+            return Err(format!(
+                "{product}: controls file not found at the pinned ref {reff}"
+            ));
+        };
+        let diff = derive::diff_tables(&derived, &code_table(product)?);
         if diff.is_empty() {
             println!("{product}: OK (0 drift)");
         } else {
@@ -135,12 +149,32 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
 
 // --- glue --------------------------------------------------------------------
 
-/// Derive a product's table at `reff` (controls + git-tree + each rule.yml).
-fn derive_for(cfg: &Config, product: &str, reff: &str) -> Result<Vec<DerivedKey>, String> {
-    let controls = source::controls(reff, product)?;
+/// Derive a product's table at `reff` (controls + git-tree + each rule.yml), or `None`
+/// when the product's controls file is absent at that ref (HTTP 404 - e.g. rhel10 not
+/// yet in a tagged release).
+fn derive_for_optional(
+    cfg: &Config,
+    product: &str,
+    reff: &str,
+) -> Result<Option<Vec<DerivedKey>>, String> {
+    let Some(controls) = source::controls_optional(reff, product)? else {
+        return Ok(None);
+    };
     let tree = source::tree(reff)?;
     let get_rule = source::rule_fetcher(reff, &tree);
-    derive::derive_table(&controls, product, &cfg.exclude_rules, get_rule)
+    Ok(Some(derive::derive_table(
+        &controls,
+        product,
+        &cfg.exclude_rules,
+        get_rule,
+    )?))
+}
+
+/// `derive_for_optional` that errors when the product is absent at `reff` (used by
+/// `derive`, where an explicit `--product` / `--ref` that 404s is a user error).
+fn derive_for(cfg: &Config, product: &str, reff: &str) -> Result<Vec<DerivedKey>, String> {
+    derive_for_optional(cfg, product, reff)?
+        .ok_or_else(|| format!("{product}: controls file not found at {reff}"))
 }
 
 /// The shipped Rust const table for `product`, projected into the comparison shape.
