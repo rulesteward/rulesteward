@@ -126,35 +126,44 @@ mod tests {
     }
 
     #[test]
-    fn clean_file_produces_no_diagnostics_in_phase_0() {
-        // A fully valid sudoers file emits nothing today: F01 finds no malformed
-        // lines and the e01/w01..w04 passes are stubs.
+    fn clean_file_produces_no_diagnostics() {
+        // A STIG-clean sudoers file emits nothing: no malformed lines, no weakening
+        // Defaults, and the merged missing-required check (#347) is satisfied by the
+        // `use_pty` + `logfile` lines.
         let files = parse_one(
-            "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n",
+            "Defaults env_reset\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n",
         );
         let diags = lint(&files, &SudoersLintContext::default());
         assert!(
             diags.is_empty(),
-            "a clean file produces no diagnostics in Phase 0; got {diags:?}"
+            "a STIG-clean file produces no diagnostics; got {diags:?}"
         );
     }
 
     #[test]
     fn lint_dispatcher_emits_f01_for_a_malformed_file() {
+        // The dispatcher routes a malformed line to F01. (W04's merged
+        // missing-required check also fires here since this minimal file sets no
+        // hardening; assert on F01 specifically rather than the total count.)
         let files = parse_one("this is not valid sudoers\n");
         let diags = lint(&files, &SudoersLintContext::default());
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, "sudo-F01");
+        let f01: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F01").collect();
+        assert_eq!(f01.len(), 1, "one malformed line -> one F01; got {diags:?}");
     }
 
     #[test]
     fn lint_spans_multiple_files() {
         // The slice signature lets #334 feed several SudoersFiles; F01 reports
-        // across all of them.
+        // across all of them. (W04 absence also fires once for the merged slice
+        // since neither file sets the hardening; assert on F01 specifically.)
         let mut files = parse_one("root ALL=(ALL) ALL\n");
         files.extend(parse_one("garbage here\n"));
         let diags = lint(&files, &SudoersLintContext::default());
-        assert_eq!(diags.len(), 1, "the malformed second file yields one F01");
-        assert_eq!(diags[0].code, "sudo-F01");
+        let f01: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F01").collect();
+        assert_eq!(
+            f01.len(),
+            1,
+            "the malformed second file yields one F01; got {diags:?}"
+        );
     }
 }
