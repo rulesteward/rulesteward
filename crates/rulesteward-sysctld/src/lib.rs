@@ -24,4 +24,4 @@ pub mod catalog;
 pub mod lints;
 pub mod parser;
 
-pub use lints::baseline::TargetVersion;
+pub use lints::baseline::{StigEntry, TargetVersion, stig_baseline};

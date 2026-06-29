@@ -78,6 +78,36 @@ pub(crate) fn baseline_for(target: TargetVersion) -> &'static [BaselineKey] {
     }
 }
 
+/// A stable, public view of one STIG baseline entry. Exists so external dev tooling
+/// (the `tools/stig-update` drift checker) can diff the shipped tables against
+/// `ComplianceAsCode` by IMPORTING them, instead of parsing this source file.
+pub struct StigEntry {
+    /// Dotted sysctl key (the STIG form, e.g. `net.ipv4.conf.all.rp_filter`).
+    pub key: &'static str,
+    /// The STIG-accepted value(s).
+    pub accepted: &'static [&'static str],
+    /// The STIG control id.
+    pub stig_id: &'static str,
+    /// `true` for an integer-typed key (base-0 compare), `false` for the exact-string
+    /// `kernel.core_pattern`.
+    pub numeric: bool,
+}
+
+/// The STIG baseline for `target` as a stable public view (projects the crate-private
+/// [`BaselineKey`] / [`ValueKind`]). Consumed by `tools/stig-update`.
+#[must_use]
+pub fn stig_baseline(target: TargetVersion) -> Vec<StigEntry> {
+    baseline_for(target)
+        .iter()
+        .map(|k| StigEntry {
+            key: k.key,
+            accepted: k.accepted,
+            stig_id: k.stig_id,
+            numeric: matches!(k.kind, ValueKind::Int),
+        })
+        .collect()
+}
+
 // Accepted-value sets, named for readability. Most STIG keys require a single
 // value; the set-valued ones are spelled out so a divergence is obvious.
 const DISABLE: &[&str] = &["0"];
@@ -685,5 +715,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stig_baseline_public_view_is_stable() {
+        // The public accessor `tools/stig-update` imports: sizes + a divergent
+        // projection. Guards the public surface (and the numeric projection) against
+        // drift / a mutation that flips the ValueKind mapping.
+        use super::stig_baseline;
+        assert_eq!(stig_baseline(TargetVersion::Rhel8).len(), 28);
+        assert_eq!(stig_baseline(TargetVersion::Rhel9).len(), 33);
+        assert_eq!(stig_baseline(TargetVersion::Rhel10).len(), 32);
+
+        let r9 = stig_baseline(TargetVersion::Rhel9);
+        let kptr = r9.iter().find(|e| e.key == "kernel.kptr_restrict").unwrap();
+        assert_eq!(kptr.accepted, ["1", "2"], "rhel9 kptr accepts 1 or 2");
+        assert!(kptr.numeric, "kptr is int-typed");
+        let cp = r9.iter().find(|e| e.key == "kernel.core_pattern").unwrap();
+        assert!(!cp.numeric, "core_pattern is string-typed");
+        assert_eq!(cp.stig_id, "RHEL-09-213040");
     }
 }
