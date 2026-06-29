@@ -57,7 +57,7 @@ pub const SUDO_CODES: &[LintCode] = &[
     LintCode {
         code: "sudo-W04",
         severity: Severity::Warning,
-        description: "Defaults setting weaker than the sudo STIG baseline",
+        description: "Defaults setting weaker than, or required hardening absent from, the sudo security baseline",
     },
 ];
 

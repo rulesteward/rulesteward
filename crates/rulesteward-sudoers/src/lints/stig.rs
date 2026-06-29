@@ -1,14 +1,23 @@
-//! sudo STIG-baseline Defaults lint pass (#333): sudo-W04 (a `Defaults` setting
-//! weaker than the DISA sudo STIG baseline).
+//! sudo hardening-baseline Defaults lint pass (#333, #347): sudo-W04 (a `Defaults`
+//! setting weaker than, OR a required hardening absent from, the sudo security
+//! baseline).
 //!
-//! # Grounding: DISA RHEL 8 / RHEL 9 sudo STIG
+//! # Grounding
 //!
-//! Every check below is grounded in DISA STIG controls that appear in both the
-//! RHEL 8 V2R1+ and RHEL 9 V1R1+ sudo-specific benchmarks. Exact rule IDs are
-//! cited inline; those not confirmed from a local primary source are marked
-//! `[VERIFY]` rather than fabricated.
+//! W04 covers two complementary baselines.
 //!
-//! ## Weakening settings (fire on presence):
+//! ## Weakening-present (per-file, #333) -- fire on presence
+//!
+//! DISA RHEL 8 / RHEL 9 sudo STIG controls (plus the general-hardening
+//! `visiblepw`). Exact rule IDs are cited inline and marked `[VERIFY]` where not
+//! confirmed from a local primary source.
+//!
+//! NOTE: a #347 grounding pass found several of these `[VERIFY]` IDs are mismapped
+//! (e.g. `!use_pty` cites RHEL-08-010382, which is actually the "restrict
+//! privilege elevation to authorized personnel" control, and `!use_pty` has no
+//! STIG ID at all). Re-grounding them against the RHEL 8 V2R7 / RHEL 9 V2R8
+//! clusters is tracked as a follow-up (#359); the IDs below are left unchanged
+//! (still `[VERIFY]`) to keep this change focused.
 //!
 //! - `!authenticate` -- bypasses per-invocation re-authentication.
 //!   RHEL-08-010383 / RHEL-09-432025 [VERIFY exact IDs].
@@ -23,13 +32,20 @@
 //!   disabling pseudo-terminal allocation is a present weakening.
 //!   RHEL-08-010382 / RHEL-09-432020 [VERIFY exact IDs].
 //!
-//! ## Deferred: missing-required-hardening check
+//! ## Missing-required (merged, #347) -- fire on absence
 //!
-//! The check for `use_pty` / `logfile` / `log_output` being absent from a file
-//! is DEFERRED to a follow-up issue. It must run on the merged resolved config
-//! set (all included files together), analogous to sshd-W01, to avoid
-//! per-fragment false positives: each sudoers.d drop-in would be flagged for
-//! missing use_pty even when the main /etc/sudoers sets it.
+//! The sudo `use_pty` and I/O-logging (`logfile` / `log_output`) hardening,
+//! checked over the MERGED resolved config set (all included files together),
+//! firing ONCE at the top-level file -- not per-file -- to avoid the per-fragment
+//! false positive (a `sudoers.d` drop-in flagged for missing `use_pty` when the
+//! main `/etc/sudoers` sets it). Analogous to sshd-W01. See
+//! [`check_merged_required`].
+//!
+//! These are NOT DISA STIG controls: primary sources (ComplianceAsCode
+//! `sudo_add_use_pty` / `sudo_custom_logfile` rule.yml; the RHEL 8 V2R7 /
+//! RHEL 9 V2R8 / RHEL 10 V1R1 STIG sudo clusters) confirm neither carries a
+//! `stigid@` mapping. They are CIS Benchmark 1.3.2 (use_pty) / 1.3.3 (logfile) +
+//! PCI-DSS Req-10.2.5 controls, and are cited as such.
 //!
 //! # Scope design
 //!
@@ -99,14 +115,13 @@ const WEAKENING_PRESENT: &[(&str, &str)] = &[
 ///
 /// # Checks
 ///
-/// **Weakening present**: `!authenticate` (any scope), `targetpw`,
-/// `rootpw`, `runaspw`, `visiblepw`, `!use_pty` -- fires at the offending
-/// `Defaults` line.
+/// **Weakening present** (per-file, [`check_file`]): `!authenticate` (any scope),
+/// `targetpw`, `rootpw`, `runaspw`, `visiblepw`, `!use_pty` -- fires at the
+/// offending `Defaults` line.
 ///
-/// The missing-required-hardening check (`use_pty` / I/O logging absent) is
-/// DEFERRED to a follow-up issue; it must run on the merged resolved config
-/// set (all included files together), analogous to sshd-W01, to avoid
-/// per-fragment false positives.
+/// **Missing required** (merged, [`check_merged_required`], #347): fires once at
+/// the top-level file if a positive `use_pty` is not set anywhere in the resolved
+/// tree, and once if no I/O logging (`logfile=` or `log_output`) is set anywhere.
 ///
 /// See module-level doc for grounding and scope design.
 #[must_use]
@@ -115,6 +130,7 @@ pub fn w04(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     for file in files {
         diags.extend(check_file(file));
     }
+    diags.extend(check_merged_required(files));
     diags
 }
 
@@ -199,6 +215,93 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
     diags
 }
 
+/// sudo-W04 missing-required hardening, checked over the MERGED resolved slice
+/// (#347). Unlike the per-file weakening checks in [`check_file`], this runs ONCE
+/// across every file `resolve_target` produced (the top-level file plus its
+/// `@include`/`@includedir` drop-ins) and fires at most twice:
+///
+/// * once if a positive `use_pty` is not set ANYWHERE in the tree, and
+/// * once if no I/O logging (`logfile=` or `log_output`) is set anywhere.
+///
+/// Running over the merged set (not per-file) is what prevents the per-fragment
+/// false positive a naive per-file check produces: a `sudoers.d` drop-in must not
+/// be flagged for "missing use_pty" when the main `/etc/sudoers` sets it. This
+/// mirrors the sshd-W01 merged-config required-directive check.
+///
+/// # Grounded semantics
+///
+/// * **Negation never satisfies.** A `!use_pty` / `!log_output` is a deliberate
+///   weakening (already a per-file finding); it does NOT count as positively set,
+///   so an explicit `Defaults !use_pty` correctly draws both a weakening finding
+///   and this absence finding.
+/// * **Any scope satisfies.** A positive `use_pty` in any scope (global or
+///   `Defaults:user` / `@host` / ...) counts. This matches the CIS audit check,
+///   which greps for any `use_pty` occurrence rather than requiring a
+///   global-scope setting.
+/// * **I/O logging alternatives.** Per `sudoers(5)`, `log_output` enables
+///   pseudo-terminal session logging and `logfile` sets the sudo log destination;
+///   either satisfies the requirement (matching issue #347's scope). `log_input`
+///   alone is intentionally not counted.
+///
+/// Absence findings anchor at the top-level file (`files[0]`) with the missing-key
+/// convention (span `0..0`, line `0`): there is no offending line to caret.
+fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
+    let Some(top) = files.first() else {
+        // No resolved files at all -> nothing to require against.
+        return Vec::new();
+    };
+
+    let mut has_use_pty = false;
+    let mut has_io_log = false;
+    for file in files {
+        for line in &file.lines {
+            let LineKind::Defaults(defaults) = &line.kind else {
+                continue;
+            };
+            for setting in &defaults.settings {
+                if setting.negated {
+                    // `!use_pty` / `!log_output`: a clear, not a positive set.
+                    continue;
+                }
+                match setting.name.as_str() {
+                    "use_pty" => has_use_pty = true,
+                    "logfile" | "log_output" => has_io_log = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut diags = Vec::new();
+    if !has_use_pty {
+        diags.push(anchored(
+            Severity::Warning,
+            "sudo-W04",
+            0..0,
+            "required 'Defaults use_pty' is not set anywhere in the resolved \
+             sudoers configuration; without it sudo does not allocate a \
+             pseudo-terminal, leaving privileged sessions open to I/O redirection \
+             (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+            &top.path,
+            0,
+        ));
+    }
+    if !has_io_log {
+        diags.push(anchored(
+            Severity::Warning,
+            "sudo-W04",
+            0..0,
+            "required sudo I/O logging is not configured anywhere in the resolved \
+             sudoers configuration (no 'Defaults logfile=' or 'Defaults \
+             log_output'); privileged command sessions are not recorded for audit \
+             (CIS Benchmark 1.3.3 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+            &top.path,
+            0,
+        ));
+    }
+    diags
+}
+
 /// Human-readable parenthetical naming the `Defaults` scope, used in diagnostic
 /// messages. A global `Defaults` reads naturally as `(global scope)`; a scoped
 /// `Defaults` names the binding, e.g. `(user:alice scope)` / `(host:web1 scope)`.
@@ -229,6 +332,23 @@ mod tests {
     /// Parse a single sudoers source string into a one-element slice.
     fn parse_one(src: &str) -> Vec<SudoersFile> {
         vec![parse(src, Path::new(SUDOERS_PATH))]
+    }
+
+    /// Parse several `(path, source)` pairs into a merged slice, in evaluation
+    /// order -- the shape `resolve_target` produces for a main file plus its
+    /// `@include`/`@includedir` drop-ins. `parts[0]` is the top-level file.
+    fn parse_files(parts: &[(&str, &str)]) -> Vec<SudoersFile> {
+        parts.iter().map(|(p, s)| parse(s, Path::new(p))).collect()
+    }
+
+    /// W04 absence findings (the merged missing-required check) anchor at line 0
+    /// (the missing-key convention); weakening-present findings sit at the real
+    /// `Defaults` line (>= 1). The line number is the discriminator.
+    fn w04_absence(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diags
+            .iter()
+            .filter(|d| d.code == "sudo-W04" && d.line == 0)
+            .collect()
     }
 
     /// Run w04 on a source string and return the diagnostics.
@@ -410,24 +530,26 @@ mod tests {
     // Clean file: no W04 when no weakening Defaults present
     // -----------------------------------------------------------------------
 
-    /// A file with no weakening Defaults fires NO W04.
+    /// A STIG-clean file (no weakening AND the required hardening present) fires
+    /// NO W04. The `use_pty` + `logfile` lines satisfy the merged missing-required
+    /// check (#347), so neither a weakening nor an absence finding fires.
     ///
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_clean_when_no_weakening_defaults() {
-        // Fixture: env_reset only; no weakening settings.
-        // The missing-required-hardening check (use_pty / I/O logging absent) is
-        // deferred, so this plain file emits no W04.
+        // Fixture: the required hardening present, no weakening settings.
         // visudo -c: "parsed OK"
         let diags = lint_w04(
             "Defaults env_reset\n\
+             Defaults use_pty\n\
+             Defaults logfile=/var/log/sudo.log\n\
              root ALL=(ALL:ALL) ALL\n\
              %wheel ALL=(ALL) ALL\n",
         );
         let w04_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W04").collect();
         assert!(
             w04_diags.is_empty(),
-            "a file with no weakening Defaults must produce no W04; got {w04_diags:?}"
+            "a STIG-clean file must produce no W04; got {w04_diags:?}"
         );
     }
 
@@ -510,5 +632,193 @@ mod tests {
         let codes = w04_codes(&diags);
         assert!(!codes.is_empty(), "should have at least one W04 code");
         assert!(codes.iter().all(|&c| c == "sudo-W04"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Missing-required hardening (#347): merged absence checks.
+    //
+    // The check runs ONCE over the whole resolved slice (not per-file) and fires
+    // at most twice: once if `use_pty` is never positively set anywhere, once if
+    // no I/O logging (`logfile=` or `log_output`) is set anywhere. Absence
+    // findings anchor at the top-level file (`files[0]`), line 0.
+    // -----------------------------------------------------------------------
+
+    /// A minimal file with neither `use_pty` nor I/O logging fires exactly two
+    /// absence findings (one per missing requirement).
+    #[test]
+    fn w04_absence_fires_twice_when_both_missing() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04("Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n");
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            2,
+            "neither use_pty nor I/O logging set -> two absence findings; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "one absence finding must name use_pty; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("logging")),
+            "one absence finding must name I/O logging; got {absent:?}"
+        );
+    }
+
+    /// Both requirements satisfied in one file -> no absence findings.
+    #[test]
+    fn w04_absence_suppressed_when_both_present() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        assert!(
+            w04_absence(&diags).is_empty(),
+            "use_pty + logfile both present -> no absence findings; got {diags:?}"
+        );
+    }
+
+    /// `log_output` is an accepted alternative to `logfile=` for the I/O-logging
+    /// requirement (sudoers(5): both enable pseudo-terminal session logging).
+    #[test]
+    fn w04_absence_log_output_satisfies_io_logging() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04("Defaults use_pty\nDefaults log_output\nroot ALL=(ALL:ALL) ALL\n");
+        let absent = w04_absence(&diags);
+        assert!(
+            absent.iter().all(|d| !d.message.contains("logging")),
+            "log_output must satisfy the I/O-logging requirement; got {absent:?}"
+        );
+    }
+
+    /// Explicit `!use_pty` does NOT satisfy the positive requirement: it fires a
+    /// weakening finding (line >= 1) AND the absence finding (line 0).
+    #[test]
+    fn w04_absence_negated_use_pty_does_not_satisfy() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults !use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        // The weakening finding for the explicit negation sits at the real line.
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "sudo-W04" && d.line >= 1 && d.message.contains("!use_pty")),
+            "explicit !use_pty must still fire a weakening finding; got {diags:?}"
+        );
+        // The positive use_pty requirement is still unmet -> absence finding fires.
+        let absent = w04_absence(&diags);
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "!use_pty must NOT satisfy the positive requirement; got {absent:?}"
+        );
+        // I/O logging IS present, so no logging-absence finding.
+        assert!(
+            absent.iter().all(|d| !d.message.contains("logging")),
+            "logfile present -> no I/O-logging absence; got {absent:?}"
+        );
+    }
+
+    /// Across a multi-file resolved slice where NO file sets the requirements, the
+    /// absence check fires ONCE total (two findings), not once per file. This is
+    /// the per-fragment false positive the merged check exists to prevent.
+    #[test]
+    fn w04_absence_fires_once_across_merged_slice_not_per_file() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/10-a", "alice ALL=(ALL) ALL\n"),
+            ("/etc/sudoers.d/20-b", "bob ALL=(ALL) NOPASSWD: /bin/ls\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            2,
+            "three files, none hardened -> two absence findings total, not six; got {absent:?}"
+        );
+    }
+
+    /// A drop-in that sets the hardening satisfies the requirement for the whole
+    /// merged tree, even when the top-level file does not set it. The per-fragment
+    /// FP (flag the main file for "missing use_pty" when a drop-in sets it) must
+    /// NOT occur.
+    #[test]
+    fn w04_absence_drop_in_satisfies_top_level() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            (
+                "/etc/sudoers.d/10-hardening",
+                "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\n",
+            ),
+        ]);
+        let diags = w04(&files, &CTX);
+        assert!(
+            w04_absence(&diags).is_empty(),
+            "a drop-in setting the hardening satisfies the merged tree; got {diags:?}"
+        );
+    }
+
+    /// Absence findings anchor at the TOP-LEVEL file (`files[0]`), line 0, with a
+    /// source-id set (the missing-key convention), regardless of which drop-ins
+    /// follow.
+    #[test]
+    fn w04_absence_anchors_at_top_level_file() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/10-a", "alice ALL=(ALL) ALL\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(absent.len(), 2, "two absence findings; got {absent:?}");
+        for d in &absent {
+            assert_eq!(d.line, 0, "absence findings anchor at line 0");
+            assert_eq!(d.span, 0..0, "absence findings carry an empty span");
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "absence findings are Warning severity"
+            );
+            assert_eq!(
+                d.source_id.as_deref(),
+                Some("/etc/sudoers"),
+                "absence findings anchor at the top-level file path"
+            );
+        }
+    }
+
+    /// An empty resolved slice yields no findings (guard against indexing
+    /// `files[0]` on an empty input).
+    #[test]
+    fn w04_absence_empty_slice_no_findings() {
+        let diags = w04(&[], &CTX);
+        assert!(
+            diags.is_empty(),
+            "an empty slice produces no diagnostics; got {diags:?}"
+        );
+    }
+
+    /// A scoped positive `Defaults:alice use_pty` satisfies the requirement: the
+    /// CIS audit check greps for any `use_pty` occurrence, so any non-negated
+    /// setting (any scope) anywhere in the merged tree counts.
+    #[test]
+    fn w04_absence_scoped_use_pty_satisfies() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults:alice use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let absent = w04_absence(&diags);
+        assert!(
+            absent.iter().all(|d| !d.message.contains("use_pty")),
+            "a scoped positive use_pty satisfies the requirement; got {absent:?}"
+        );
     }
 }
