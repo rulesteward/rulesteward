@@ -141,11 +141,11 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                             "sudo-W04",
                             line.span.clone(),
                             format!(
-                                "Defaults setting '!authenticate' ({}scope) disables \
+                                "Defaults setting '!authenticate' {} disables \
                                  per-invocation sudo re-authentication; \
                                  STIG requires authentication for every invocation \
                                  (RHEL-08-010383 / RHEL-09-432025 [VERIFY])",
-                                scope_label(&defaults.scope),
+                                scope_paren(&defaults.scope),
                             ),
                             &file.path,
                             line.line,
@@ -159,11 +159,11 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                             "sudo-W04",
                             line.span.clone(),
                             format!(
-                                "Defaults setting '!use_pty' ({}scope) disables \
+                                "Defaults setting '!use_pty' {} disables \
                                  pseudo-terminal allocation; STIG requires 'Defaults use_pty' \
                                  to prevent I/O redirection attacks \
                                  (RHEL-08-010382 / RHEL-09-432020 [VERIFY])",
-                                scope_label(&defaults.scope),
+                                scope_paren(&defaults.scope),
                             ),
                             &file.path,
                             line.line,
@@ -185,8 +185,8 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                         "sudo-W04",
                         line.span.clone(),
                         format!(
-                            "Defaults setting '{name}' ({}scope) weakens sudo security: {explanation}",
-                            scope_label(&defaults.scope),
+                            "Defaults setting '{name}' {} weakens sudo security: {explanation}",
+                            scope_paren(&defaults.scope),
                         ),
                         &file.path,
                         line.line,
@@ -199,14 +199,16 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
     diags
 }
 
-/// Human-readable prefix for the scope, used in diagnostic messages.
-fn scope_label(scope: &DefaultsScope) -> String {
+/// Human-readable parenthetical naming the `Defaults` scope, used in diagnostic
+/// messages. A global `Defaults` reads naturally as `(global scope)`; a scoped
+/// `Defaults` names the binding, e.g. `(user:alice scope)` / `(host:web1 scope)`.
+fn scope_paren(scope: &DefaultsScope) -> String {
     match scope {
-        DefaultsScope::Global => String::new(),
-        DefaultsScope::Host(h) => format!("host:{h} "),
-        DefaultsScope::User(u) => format!("user:{u} "),
-        DefaultsScope::Cmnd(c) => format!("cmnd:{c} "),
-        DefaultsScope::Runas(r) => format!("runas:{r} "),
+        DefaultsScope::Global => "(global scope)".to_string(),
+        DefaultsScope::Host(h) => format!("(host:{h} scope)"),
+        DefaultsScope::User(u) => format!("(user:{u} scope)"),
+        DefaultsScope::Cmnd(c) => format!("(cmnd:{c} scope)"),
+        DefaultsScope::Runas(r) => format!("(runas:{r} scope)"),
     }
 }
 
@@ -455,23 +457,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn scope_label_global_is_empty_string() {
-        assert_eq!(scope_label(&DefaultsScope::Global), "");
+    fn scope_paren_global_reads_global_scope() {
+        // A global `Defaults` must read naturally as `(global scope)`, NOT the
+        // awkward `(scope)` the old empty-prefix produced.
+        assert_eq!(scope_paren(&DefaultsScope::Global), "(global scope)");
     }
 
     #[test]
-    fn scope_label_user_includes_username() {
+    fn scope_paren_user_includes_username() {
         assert_eq!(
-            scope_label(&DefaultsScope::User("alice".into())),
-            "user:alice "
+            scope_paren(&DefaultsScope::User("alice".into())),
+            "(user:alice scope)"
         );
     }
 
     #[test]
-    fn scope_label_host_includes_hostname() {
+    fn scope_paren_host_includes_hostname() {
         assert_eq!(
-            scope_label(&DefaultsScope::Host("myhost".into())),
-            "host:myhost "
+            scope_paren(&DefaultsScope::Host("myhost".into())),
+            "(host:myhost scope)"
         );
     }
 
