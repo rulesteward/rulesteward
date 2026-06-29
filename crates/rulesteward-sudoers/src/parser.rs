@@ -1672,4 +1672,25 @@ mod tests {
         assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
         assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
     }
+
+    #[test]
+    fn unterminated_quote_swallows_the_separator_documented_limitation() {
+        // DOCUMENTED LIMITATION (classifier-not-validator class, #346): an UNTERMINATED
+        // double-quote desyncs the quote tracker so the later `:` is treated as quoted
+        // and not split. Real sudo is surprising here - `cvtsudoers` ACCEPTS
+        //   `alice h1 = /bin/sh -c "oops : h2 = ALL`
+        // and STILL splits it into two host-groups {h1 -> `/bin/sh -c "oops`} and
+        // {h2 -> ALL}. We instead keep it as ONE group (the unbalanced quote is an
+        // unvalidated token shape, like the other #346 cases). This pins the current
+        // behavior; a future quote-balance validator (#346) would reject or split it.
+        // A BALANCED quote with parens - the realistic case - is handled correctly (see
+        // `quoted_paren_in_command_does_not_desync_segment_split`); a literal `:` inside
+        // a balanced quote is rejected by sudo, so valid configs never hit this path.
+        let s = only_spec("alice h1 = /bin/sh -c \"oops : h2 = ALL\n");
+        assert_eq!(
+            s.host_groups.len(),
+            1,
+            "unterminated quote swallows the `:` (documented #346-class limitation)"
+        );
+    }
 }
