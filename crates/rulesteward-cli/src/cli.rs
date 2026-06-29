@@ -144,6 +144,10 @@ pub enum TopCommand {
     #[command(subcommand)]
     Sysctl(SysctlCommand),
 
+    /// `sudoers` operations
+    #[command(subcommand)]
+    Sudoers(SudoersCommand),
+
     /// Print shell-completion script for the given shell
     Completions(CompletionsArgs),
 
@@ -915,6 +919,39 @@ pub struct SysctlLintArgs {
     /// only sysctld-F01 / sysctld-W01).
     #[arg(long, value_enum)]
     pub target: Option<TargetSelector>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SudoersCommand {
+    /// Lint a `sudoers` file or `sudoers.d` directory (#329)
+    ///
+    /// Parses a `sudoers(5)` policy file (line-continuation joins, `#` comment
+    /// disambiguation, `Defaults` entries, alias definitions, `@include` /
+    /// `@includedir` directives, and user specifications) and runs the `sudoers`
+    /// lint passes over it. In this Phase-0 build only sudo-F01 (the file does not
+    /// parse / a malformed line) emits; the remaining codes (sudo-E01 undefined
+    /// alias, sudo-W01/W02 NOPASSWD-on-ALL hazards, sudo-W03 dead alias, sudo-W04
+    /// Defaults STIG baseline) land per the sudoers milestone plan.
+    ///
+    /// A directory target (e.g. `/etc/sudoers.d`) lints each eligible drop-in
+    /// (sorted; names ending in `~` or containing `.` are skipped, per the man
+    /// page). Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
+    /// 2 errors, 3 tool failure, 5 unparseable config (sudo-F01).
+    Lint(SudoersLintArgs),
+}
+
+/// Arguments for `rulesteward sudoers lint` (#329).
+#[derive(Debug, Parser)]
+pub struct SudoersLintArgs {
+    /// The `sudoers` file or `sudoers.d` directory to lint (defaults to
+    /// `/etc/sudoers`)
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Output format (human | json; SARIF and CSV are not offered for this verb
+    /// per the locked output contracts CC-3/CC-4).
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
 }
 
 #[derive(Debug, Parser)]

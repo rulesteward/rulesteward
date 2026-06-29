@@ -1138,6 +1138,7 @@ dependencies = [
  "rulesteward-fapolicyd",
  "rulesteward-selinux",
  "rulesteward-sshd",
+ "rulesteward-sudoers",
  "rulesteward-sysctld",
  "serde",
  "serde-sarif",
@@ -1218,6 +1219,14 @@ version = "0.2.1"
 dependencies = [
  "glob",
  "proptest",
+ "rulesteward-core",
+ "tempfile",
+]
+
+[[package]]
+name = "rulesteward-sudoers"
+version = "0.2.1"
+dependencies = [
  "rulesteward-core",
  "tempfile",
 ]

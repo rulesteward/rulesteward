@@ -43,6 +43,7 @@ rulesteward-fapolicyd = { workspace = true }
 # (above), making `--no-default-features` the clean Apache-2.0-only build.
 rulesteward-selinux = { workspace = true }
 rulesteward-sshd = { workspace = true }
+rulesteward-sudoers = { workspace = true }
 rulesteward-sysctld = { workspace = true }
 clap = { workspace = true }
 ariadne = { workspace = true }

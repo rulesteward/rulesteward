@@ -1,0 +1,18 @@
+[package]
+name = "rulesteward-sudoers"
+description = "sudoers(5) parser and security-baseline linter for RuleSteward."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rulesteward-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
