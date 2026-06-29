@@ -126,22 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn clean_file_produces_no_diagnostics() {
-        // A fully valid sudoers file with all STIG-required Defaults emits nothing:
-        // F01 finds no malformed lines; the e01/w01..w03 passes are still stubs;
-        // W04 is now live and requires use_pty + an I/O logging directive.
+    fn clean_file_produces_no_diagnostics_in_phase_0() {
+        // A fully valid sudoers file emits nothing today: F01 finds no malformed
+        // lines and the e01/w01..w04 passes are stubs.
         let files = parse_one(
-            "Defaults env_reset\n\
-             Defaults use_pty\n\
-             Defaults logfile=/var/log/sudo.log\n\
-             root ALL=(ALL:ALL) ALL\n\
-             %wheel ALL=(ALL) ALL\n\
-             #includedir /etc/sudoers.d\n",
+            "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n",
         );
         let diags = lint(&files, &SudoersLintContext::default());
         assert!(
             diags.is_empty(),
-            "a STIG-compliant file must produce no diagnostics; got {diags:?}"
+            "a clean file produces no diagnostics in Phase 0; got {diags:?}"
         );
     }
 
@@ -149,30 +143,18 @@ mod tests {
     fn lint_dispatcher_emits_f01_for_a_malformed_file() {
         let files = parse_one("this is not valid sudoers\n");
         let diags = lint(&files, &SudoersLintContext::default());
-        // W04 absence findings also fire on any file (use_pty + logfile missing),
-        // so filter to F01 only for this dispatcher-routing test.
-        let f01_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F01").collect();
-        assert_eq!(
-            f01_diags.len(),
-            1,
-            "one F01 for the malformed file; got {diags:?}"
-        );
-        assert_eq!(f01_diags[0].code, "sudo-F01");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "sudo-F01");
     }
 
     #[test]
     fn lint_spans_multiple_files() {
         // The slice signature lets #334 feed several SudoersFiles; F01 reports
-        // across all of them. W04 absence findings also fire per file; filter to F01.
+        // across all of them.
         let mut files = parse_one("root ALL=(ALL) ALL\n");
         files.extend(parse_one("garbage here\n"));
         let diags = lint(&files, &SudoersLintContext::default());
-        let f01_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F01").collect();
-        assert_eq!(
-            f01_diags.len(),
-            1,
-            "the malformed second file yields one F01; got {diags:?}"
-        );
-        assert_eq!(f01_diags[0].code, "sudo-F01");
+        assert_eq!(diags.len(), 1, "the malformed second file yields one F01");
+        assert_eq!(diags[0].code, "sudo-F01");
     }
 }

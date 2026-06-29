@@ -1,6 +1,5 @@
 //! sudo STIG-baseline Defaults lint pass (#333): sudo-W04 (a `Defaults` setting
-//! weaker than the DISA sudo STIG baseline, or a required hardening setting
-//! absent from a file).
+//! weaker than the DISA sudo STIG baseline).
 //!
 //! # Grounding: DISA RHEL 8 / RHEL 9 sudo STIG
 //!
@@ -20,17 +19,17 @@
 //! - `visiblepw` -- allows sudo to proceed when the password would be visible
 //!   (e.g. when a tty is not associated with stdin).
 //!   General CIS / STIG hardening; no dedicated single STIG ID confirmed [VERIFY].
-//! - `!use_pty` (explicit negation of the pty requirement) -- equivalent to the
-//!   absence finding below but written explicitly.
-//!
-//! ## Required hardening (fire on absence, per file):
-//!
-//! - `use_pty` absent (and not negated elsewhere) -- the STIG requires sudo to
-//!   allocate a pseudo-terminal so that I/O cannot be redirected.
+//! - `!use_pty` (explicit negation of the pty requirement) -- deliberately
+//!   disabling pseudo-terminal allocation is a present weakening.
 //!   RHEL-08-010382 / RHEL-09-432020 [VERIFY exact IDs].
-//! - `logfile=...` or `log_output` absent -- I/O logging ensures command input
-//!   and output are captured for audit purposes.
-//!   RHEL-08-010384 / RHEL-09-432035 [VERIFY exact IDs].
+//!
+//! ## Deferred: missing-required-hardening check
+//!
+//! The check for `use_pty` / `logfile` / `log_output` being absent from a file
+//! is DEFERRED to a follow-up issue. It must run on the merged resolved config
+//! set (all included files together), analogous to sshd-W01, to avoid
+//! per-fragment false positives: each sudoers.d drop-in would be flagged for
+//! missing use_pty even when the main /etc/sudoers sets it.
 //!
 //! # Scope design
 //!
@@ -38,13 +37,6 @@
 //! `:user`, `!cmnd`, `>runas`). A scoped weakening (`Defaults:someuser
 //! !authenticate`) is still a finding: any user that matches the scope can
 //! run sudo without re-authentication.
-//!
-//! Absence checks are per-FILE: we look at whether ANY `Defaults` line (of any
-//! scope) in the file names the required setting as a positive (non-negated)
-//! flag. A file without any `Defaults use_pty` line is flagged regardless of
-//! scope. Diagnostics anchor at byte 0..0 / line 0 (the "missing directive"
-//! convention, consistent with sshd-W01 and the project's missing-key convention
-//! documented in the core's `anchored` helper).
 //!
 //! # Version-agnostic
 //!
@@ -103,47 +95,18 @@ const WEAKENING_PRESENT: &[(&str, &str)] = &[
     ),
 ];
 
-// ---------------------------------------------------------------------------
-// Required hardening: fire when ABSENT from the file (any scope counts).
-// ---------------------------------------------------------------------------
-
-/// Settings that MUST appear (non-negated) somewhere in the file. If none of
-/// the `Defaults` entries in the file name this setting as a positive flag, a
-/// W04 absence finding is emitted at byte 0..0 (no line to anchor to).
-///
-/// Each tuple is `(setting_name, human_explanation)`.
-const REQUIRED_PRESENT: &[(&str, &str)] = &[
-    // use_pty: sudo must allocate a pseudo-terminal so command I/O cannot be
-    // trivially redirected by a malicious program.
-    // RHEL-08-010382 / RHEL-09-432020 [VERIFY].
-    (
-        "use_pty",
-        "STIG requires 'Defaults use_pty' to ensure sudo commands run in a \
-         pseudo-terminal (prevents I/O redirection attacks; \
-         RHEL-08-010382 / RHEL-09-432020 [VERIFY])",
-    ),
-    // logfile or log_output: I/O logging for sudo sessions must be configured.
-    // We check for `logfile` here; `log_output` is the alternative (see w04 impl).
-    // RHEL-08-010384 / RHEL-09-432035 [VERIFY].
-    (
-        "logfile",
-        "STIG requires sudo I/O logging; add 'Defaults logfile=/var/log/sudo.log' \
-         or 'Defaults log_output' to capture sudo session I/O \
-         (RHEL-08-010384 / RHEL-09-432035 [VERIFY])",
-    ),
-];
-
-/// sudo-W04: a `Defaults` setting is weaker than the sudo STIG baseline, or a
-/// required STIG hardening setting is absent from the file.
+/// sudo-W04: a `Defaults` setting is weaker than the sudo STIG baseline.
 ///
 /// # Checks
 ///
-/// 1. **Weakening present**: `!authenticate` (any scope), `targetpw`,
-///    `rootpw`, `runaspw`, `visiblepw`, `!use_pty` -- fires at the offending
-///    `Defaults` line.
-/// 2. **Required absent**: `use_pty` and (`logfile` or `log_output`) absent
-///    from the file in any `Defaults` entry -- fires with an empty span / line 0
-///    anchored to the file path.
+/// **Weakening present**: `!authenticate` (any scope), `targetpw`,
+/// `rootpw`, `runaspw`, `visiblepw`, `!use_pty` -- fires at the offending
+/// `Defaults` line.
+///
+/// The missing-required-hardening check (`use_pty` / I/O logging absent) is
+/// DEFERRED to a follow-up issue; it must run on the merged resolved config
+/// set (all included files together), analogous to sshd-W01, to avoid
+/// per-fragment false positives.
 ///
 /// See module-level doc for grounding and scope design.
 #[must_use]
@@ -158,10 +121,6 @@ pub fn w04(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 /// Run all W04 checks for one file.
 fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-
-    // Collect all DefaultsEntry items with their line spans for weakening checks.
-    let mut has_use_pty = false;
-    let mut has_io_log = false; // logfile=... OR log_output
 
     for line in &file.lines {
         let LineKind::Defaults(defaults) = &line.kind else {
@@ -193,7 +152,6 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                         ));
                     }
                     // `!use_pty`: explicit negation of the pty requirement.
-                    // Same control as the absence check but written explicitly.
                     // RHEL-08-010382 / RHEL-09-432020 [VERIFY].
                     "use_pty" => {
                         diags.push(anchored(
@@ -210,9 +168,6 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                             &file.path,
                             line.line,
                         ));
-                        // An explicit `!use_pty` is both a weakening finding AND means
-                        // the absence check must still fire (use_pty is not positively
-                        // set). Do NOT set `has_use_pty` here.
                     }
                     _ => {}
                 }
@@ -220,14 +175,6 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
             }
 
             // --- Non-negated checks ---
-
-            // Track required settings present (for the absence check below).
-            if name == "use_pty" {
-                has_use_pty = true;
-            }
-            if name == "logfile" || name == "log_output" {
-                has_io_log = true;
-            }
 
             // Fire for weakening non-negated settings (all entries in the table;
             // `!authenticate` is handled in the negated arm above).
@@ -247,34 +194,6 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                 }
             }
         }
-    }
-
-    // --- Absence checks (per file) ---
-
-    if !has_use_pty {
-        // No `Defaults use_pty` found anywhere in the file. Anchor at 0..0
-        // (no line to point to - the directive is absent), consistent with the
-        // sshd-W01 "missing required directive" convention.
-        diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            REQUIRED_PRESENT[0].1.to_string(),
-            &file.path,
-            0,
-        ));
-    }
-
-    if !has_io_log {
-        // No I/O logging configured anywhere in the file.
-        diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            REQUIRED_PRESENT[1].1.to_string(),
-            &file.path,
-            0,
-        ));
     }
 
     diags
@@ -486,105 +405,27 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Absence checks: use_pty missing
+    // Clean file: no W04 when no weakening Defaults present
     // -----------------------------------------------------------------------
 
-    /// A file WITHOUT `Defaults use_pty` fires W04 (missing required hardening).
-    ///
-    /// STIG grounding: RHEL-08-010382 / RHEL-09-432020 [VERIFY].
-    /// Fixture verified valid by `visudo -c`.
-    #[test]
-    fn w04_fires_for_missing_use_pty() {
-        // Fixture: only env_reset; no use_pty.
-        // visudo -c: "parsed OK"
-        let diags = lint_w04(
-            "Defaults env_reset\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
-        );
-        let w04_diags: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == "sudo-W04" && d.message.contains("use_pty"))
-            .collect();
-        assert!(
-            !w04_diags.is_empty(),
-            "W04 must fire when 'Defaults use_pty' is absent; got {diags:?}"
-        );
-        assert_eq!(
-            w04_diags[0].line, 0,
-            "absence finding anchors at line 0 (no line to point to)"
-        );
-        assert_eq!(
-            w04_diags[0].span,
-            (0..0),
-            "absence finding has empty span 0..0"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Absence checks: logfile / log_output missing
-    // -----------------------------------------------------------------------
-
-    /// A file WITHOUT any `logfile` or `log_output` fires W04.
-    ///
-    /// STIG grounding: RHEL-08-010384 / RHEL-09-432035 [VERIFY].
-    /// Fixture verified valid by `visudo -c`.
-    #[test]
-    fn w04_fires_for_missing_io_logging() {
-        // Fixture: has use_pty but no logfile or log_output.
-        // visudo -c: "parsed OK"
-        let diags = lint_w04("Defaults env_reset\nDefaults use_pty\nroot ALL=(ALL:ALL) ALL\n");
-        let w04_diags: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == "sudo-W04" && d.message.contains("logfile"))
-            .collect();
-        assert!(
-            !w04_diags.is_empty(),
-            "W04 must fire when no I/O logging is configured; got {diags:?}"
-        );
-        assert_eq!(w04_diags[0].line, 0, "absence finding anchors at line 0");
-    }
-
-    /// `Defaults log_output` satisfies the I/O logging requirement.
+    /// A file with no weakening Defaults fires NO W04.
     ///
     /// Fixture verified valid by `visudo -c`.
     #[test]
-    fn w04_log_output_satisfies_io_logging_requirement() {
-        // Fixture: Defaults use_pty and Defaults log_output (no logfile).
-        // visudo -c: "parsed OK"
-        let diags = lint_w04(
-            "Defaults env_reset\nDefaults use_pty\nDefaults log_output\nroot ALL=(ALL:ALL) ALL\n",
-        );
-        let logfile_diags: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == "sudo-W04" && d.message.contains("logfile"))
-            .collect();
-        assert!(
-            logfile_diags.is_empty(),
-            "'Defaults log_output' must satisfy the I/O logging requirement; got {diags:?}"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Clean file: no W04 when all required settings present, no weakening
-    // -----------------------------------------------------------------------
-
-    /// A file with `use_pty` + `logfile` and no weakening Defaults fires NO W04.
-    ///
-    /// Fixture verified valid by `visudo -c`.
-    #[test]
-    fn w04_clean_when_use_pty_and_logfile_and_no_weakening() {
-        // Fixture: env_reset + use_pty + logfile; no weakening settings.
+    fn w04_clean_when_no_weakening_defaults() {
+        // Fixture: env_reset only; no weakening settings.
+        // The missing-required-hardening check (use_pty / I/O logging absent) is
+        // deferred, so this plain file emits no W04.
         // visudo -c: "parsed OK"
         let diags = lint_w04(
             "Defaults env_reset\n\
-             Defaults use_pty\n\
-             Defaults logfile=/var/log/sudo.log\n\
              root ALL=(ALL:ALL) ALL\n\
              %wheel ALL=(ALL) ALL\n",
         );
         let w04_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W04").collect();
         assert!(
             w04_diags.is_empty(),
-            "a fully compliant file must produce no W04; got {w04_diags:?}"
+            "a file with no weakening Defaults must produce no W04; got {w04_diags:?}"
         );
     }
 
@@ -593,7 +434,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `Defaults env_reset` alone does NOT fire W04 (it is not a STIG finding).
-    /// (It DOES fire absence findings for use_pty and logfile, but not for env_reset.)
     #[test]
     fn w04_env_reset_is_not_a_stig_finding() {
         // Fixture: only env_reset (no other Defaults).
@@ -632,35 +472,6 @@ mod tests {
         assert_eq!(
             scope_label(&DefaultsScope::Host("myhost".into())),
             "host:myhost "
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Multi-file: each file checked independently
-    // -----------------------------------------------------------------------
-
-    /// Two files, each missing use_pty -> two W04 absence findings.
-    #[test]
-    fn w04_absence_check_fires_per_file() {
-        let files = vec![
-            parse(
-                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
-                Path::new("/etc/sudoers"),
-            ),
-            parse(
-                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
-                Path::new("/etc/sudoers.d/extra"),
-            ),
-        ];
-        let diags = w04(&files, &CTX);
-        let use_pty_diags: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == "sudo-W04" && d.message.contains("use_pty"))
-            .collect();
-        assert_eq!(
-            use_pty_diags.len(),
-            2,
-            "each file independently fires W04 for missing use_pty; got {use_pty_diags:?}"
         );
     }
 
