@@ -83,6 +83,7 @@ const E04_PERMITTED_BASE: &[&str] = &[
     "forcecommand",
     "gatewayports",
     "gssapiauthentication",
+    "gssapienablek5users",
     "hostbasedacceptedalgorithms",
     "hostbasedacceptedkeytypes",
     "hostbasedauthentication",
@@ -1103,6 +1104,39 @@ mod e04_tests {
                      for target {target:?}; got {diags:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn gssapienablek5users_in_match_is_match_permitted_on_every_target() {
+        // REGRESSION (#356): GSSAPIEnableK5Users is SSHCFG_ALL on BOTH 8.0p1 and
+        // 9.9p1, so the daemon honors it inside a Match block on every supported
+        // version. It is in RHEL8_BASE (known on every target), so the is_known gate
+        // does NOT skip it; it must therefore live in E04_PERMITTED_BASE and NEVER
+        // fire E04 inside a Match block - at no-target or under any --target. Before
+        // the fix it was absent from both E04 permitted sets, so it false-positived
+        // (exit 2) on a config the daemon accepts AND honors.
+        //   Source: depth-sshd-sets.md FINDING 1 (GSSAPIEnableK5Users SSHCFG_ALL on
+        //   8.0p1 and 9.9p1) + issue #356 live differential, 2026-06-29: `sshd -t`
+        //   rc=0; `sshd -T -C user=alice` -> yes, user=bob -> no (Match-scoped and
+        //   take-effect) on rocky8 8.0p1 and rocky9 9.9p1.
+        let src = "Match User svc\n    GSSAPIEnableK5Users yes\n";
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target(src, t),
+                None => run(src),
+            };
+            assert!(
+                diags.is_empty(),
+                "GSSAPIEnableK5Users is Match-permitted on every version \
+                 (SSHCFG_ALL) -> no sshd-E04 for target {target:?}; got {diags:?}"
+            );
         }
     }
 
