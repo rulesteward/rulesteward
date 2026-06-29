@@ -27,7 +27,7 @@ pub const EXIT_NO_OP: i32 = 9;
 ///
 /// Order matters:
 /// 1. `tool_err == true` → [`EXIT_TOOL_FAILURE`] (3).
-/// 2. Any parse-failure code (`fapd-F01` / `au-F01` / `sshd-F01` / `sysctld-F01`) → [`EXIT_RULE_PARSE_ERROR`] (5).
+/// 2. Any parse-failure code (`fapd-F01` / `au-F01` / `sshd-F01` / `sysctld-F01` / `sudo-F01`) → [`EXIT_RULE_PARSE_ERROR`] (5).
 /// 3. Any `Fatal` or `Error` → [`EXIT_ERRORS`] (2).
 /// 4. Any `Warning` → [`EXIT_WARNINGS`] (1).
 /// 5. Otherwise → [`EXIT_CLEAN`] (0).
@@ -41,7 +41,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     if diags.iter().any(|d| {
         matches!(
             d.code.as_ref(),
-            "fapd-F01" | "au-F01" | "sshd-F01" | "sysctld-F01"
+            "fapd-F01" | "au-F01" | "sshd-F01" | "sysctld-F01" | "sudo-F01"
         )
     }) {
         return EXIT_RULE_PARSE_ERROR;
@@ -137,6 +137,19 @@ mod tests {
         // and would fall through to EXIT_ERRORS (2).
         assert_eq!(
             compute(&[diag(Severity::Fatal, "sshd-F01")], false),
+            EXIT_RULE_PARSE_ERROR
+        );
+    }
+
+    #[test]
+    fn sudo_f01_returns_five() {
+        // The sudoers backend's parse-failure code sudo-F01 maps to the same
+        // EXIT_RULE_PARSE_ERROR as the other backends' F01 (issue #329). exit_code.rs
+        // is outside the mutation examine_globs, so this unit test is the guard that
+        // pins the `| "sudo-F01"` arm; without it sudo-F01 is merely Fatal and would
+        // fall through to EXIT_ERRORS (2).
+        assert_eq!(
+            compute(&[diag(Severity::Fatal, "sudo-F01")], false),
             EXIT_RULE_PARSE_ERROR
         );
     }

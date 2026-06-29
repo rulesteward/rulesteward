@@ -125,6 +125,21 @@ examine_globs = [
     "crates/rulesteward-sysctld/src/parser.rs",
     "crates/rulesteward-sysctld/src/lints/**/*.rs",
     "crates/rulesteward-sysctld/src/catalog.rs",
+    # sudoers backend (#329 Phase 0): the hand-rolled two-stage parser (physical-
+    # line join + line classification), the include/dir resolution seam, and the
+    # lints dispatcher + leaf passes are the real Phase-0 logic and the mutation
+    # target. Added in Phase 0 BEFORE the leaf pass bodies exist: a new file
+    # outside this allowlist mutates zero times and its gate false-passes (the 4a
+    # vacuity lesson) - the allowlist entry must precede the code, never follow it.
+    # Only sudo-F01 emits today (every Malformed logical line); the e01/w01..w04
+    # passes return `Vec::new()` and add no survivors (Diagnostic has no Default,
+    # so their only generated mutant is unviable - the sshd/auditd precedent).
+    # lints/catalog.rs is const data + #[cfg(test)] only (no mutable fns; covered
+    # by the lints/**/*.rs glob below). ast.rs is pure type defs and is
+    # auto-excluded by the global `**/ast.rs` exclude_globs entry.
+    "crates/rulesteward-sudoers/src/parser.rs",
+    "crates/rulesteward-sudoers/src/resolve.rs",
+    "crates/rulesteward-sudoers/src/lints/**/*.rs",
     # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",

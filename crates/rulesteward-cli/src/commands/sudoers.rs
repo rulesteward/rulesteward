@@ -1,0 +1,140 @@
+//! Body of `rulesteward sudoers <subcommand>`.
+//!
+//! Issue #329 - the `sudoers(5)` backend Phase-0 command shell. The parser and
+//! semantic lint passes live in `rulesteward_sudoers` (the crate owns the `sudo-`
+//! codes and the mutation gate); this shell does target resolution, source-map
+//! staging, rendering, and exit-code mapping only. There is NO `--target` rail
+//! (the sudo STIG findings are version-agnostic).
+
+use serde::Serialize;
+
+use crate::cli::{HumanJsonFormat, SudoersCommand, SudoersLintArgs};
+use crate::exit_code::{self, EXIT_TOOL_FAILURE};
+use crate::output::json::render_envelope;
+use rulesteward_sudoers::{SudoersLintContext, lints, resolve};
+
+/// Schema version for the `sudoers-lint` payload kind (CC-1).
+/// Bumps only on a breaking change (field removal, rename, retype).
+const SUDOERS_LINT_SCHEMA_VERSION: u32 = 1;
+
+/// Default lint target: where sudo reads its primary policy from.
+const DEFAULT_SUDOERS: &str = "/etc/sudoers";
+
+pub fn run(cmd: SudoersCommand) -> anyhow::Result<i32> {
+    match cmd {
+        SudoersCommand::Lint(args) => Ok(lint(&args)),
+    }
+}
+
+/// JSON payload for the `sudoers-lint` envelope kind (CC-1).
+#[derive(Serialize)]
+struct SudoersLintPayload<'a> {
+    diagnostics: &'a [rulesteward_core::Diagnostic],
+}
+
+fn lint(args: &SudoersLintArgs) -> i32 {
+    let path = args
+        .path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SUDOERS));
+
+    // Resolve the target into the SudoersFiles to lint: a single file -> one
+    // parsed file; a sudoers.d directory -> each eligible drop-in (#334 seam). A
+    // read failure (missing / unreadable path) is a tool failure (read-only tool).
+    let files = match resolve::resolve_target(&path) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("sudoers lint: cannot read {}: {e}", path.display());
+            return EXIT_TOOL_FAILURE;
+        }
+    };
+
+    let ctx = SudoersLintContext::default();
+    let diags = lints::lint(&files, &ctx);
+
+    // Stage each file's source (keyed by display path, the diagnostics' source_id
+    // convention) so the human renderer can resolve ariadne snippets for anchored
+    // findings. Phase 0's only emitter, sudo-F01, is UNANCHORED (no source_id), so
+    // it renders plainly; staging is in place for the later anchored passes.
+    let mut sources = std::collections::BTreeMap::new();
+    for file in &files {
+        sources.insert(file.path.display().to_string(), file.source.clone());
+    }
+
+    let output = match args.format {
+        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
+        HumanJsonFormat::Json => render_envelope(
+            "sudoers-lint",
+            SUDOERS_LINT_SCHEMA_VERSION,
+            &SudoersLintPayload {
+                diagnostics: &diags,
+            },
+        ),
+    };
+    if !output.is_empty() {
+        print!("{output}");
+    }
+
+    exit_code::compute(&diags, false)
+}
+
+#[cfg(test)]
+mod lint_shell_tests {
+    use super::lint;
+    use crate::cli::{HumanJsonFormat, SudoersLintArgs};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+
+    fn args(path: &std::path::Path, format: HumanJsonFormat) -> SudoersLintArgs {
+        SudoersLintArgs {
+            path: Some(path.to_path_buf()),
+            format,
+        }
+    }
+
+    // A valid sudoers file: a Defaults entry, two user-specs, and a #includedir.
+    // Verified `visudo -c` clean.
+    const CLEAN_SUDOERS: &str = "\
+Defaults env_reset
+root ALL=(ALL:ALL) ALL
+%wheel ALL=(ALL) ALL
+#includedir /etc/sudoers.d
+";
+
+    #[test]
+    fn missing_path_exits_tool_failure() {
+        let a = args(
+            std::path::Path::new("/nonexistent/329/sudoers"),
+            HumanJsonFormat::Human,
+        );
+        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+    }
+
+    #[test]
+    fn clean_file_exits_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        std::fs::write(&f, CLEAN_SUDOERS).expect("write");
+        let a = args(&f, HumanJsonFormat::Json);
+        assert_eq!(lint(&a), EXIT_CLEAN);
+    }
+
+    #[test]
+    fn malformed_file_exits_five() {
+        // A garbage line maps to sudo-F01 -> exit 5 (shared scheme).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        std::fs::write(&f, "this is not valid sudoers\n").expect("write");
+        let a = args(&f, HumanJsonFormat::Human);
+        assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
+    }
+
+    #[test]
+    fn clean_directory_exits_zero() {
+        // A sudoers.d directory with clean drop-ins lints clean.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("10-alice"), "alice ALL=(ALL) ALL\n").expect("w");
+        std::fs::write(dir.path().join("20-bob"), "bob ALL=(ALL) ALL\n").expect("w");
+        let a = args(dir.path(), HumanJsonFormat::Human);
+        assert_eq!(lint(&a), EXIT_CLEAN);
+    }
+}

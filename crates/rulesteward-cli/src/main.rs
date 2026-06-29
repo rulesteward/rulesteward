@@ -35,6 +35,7 @@ fn main() {
         TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd)),
         TopCommand::Sshd(cmd) => report(commands::sshd::run(cmd)),
         TopCommand::Sysctl(cmd) => report(commands::sysctl::run(cmd)),
+        TopCommand::Sudoers(cmd) => report(commands::sudoers::run(cmd)),
         TopCommand::Completions(args) => report(commands::completions::run(&args)),
         TopCommand::Mangen(args) => report(commands::mangen::run(&args)),
     };
