@@ -216,33 +216,49 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
     s
 }
 
-/// Read one argument token: a double-quoted string (quotes stripped, no escapes)
-/// when it starts with `"`, otherwise a bareword running to the next whitespace
-/// (a `=` or `#` inside the bareword is literal; a whitespace-delimited `#` that
-/// starts a new token is kept as a literal token -- inline-comment stripping is
-/// handled by lints, not by the tokenizer).
+/// Read one argument token, modelling OpenSSH's real tokenization:
+///
+/// Scan the entire whitespace-delimited token tracking an `in_quote` flag.
+/// A `"` toggles the flag (the quote character itself is stripped, not pushed).
+/// Unquoted whitespace ends the token. Characters that appear while `in_quote`
+/// is set -- including whitespace -- are pushed literally. If the scan reaches
+/// EOL while still inside a quoted span, an unterminated-quote error is returned.
+///
+/// This means every `"` inside a single whitespace-delimited token is stripped
+/// and the surrounding runs are concatenated:
+///   - `"aes128-cbc"#x`  -> one arg `aes128-cbc#x`   (glued `#`, sshd rc 255)
+///   - `""aes128-cbc`    -> one arg `aes128-cbc`      (empty quoted prefix)
+///   - `"aes128""-cbc"`  -> one arg `aes128-cbc`      (adjacent quoted runs)
+///   - `"two words"`     -> one arg `two words`        (space literal inside quotes)
+///   - `"aes128-cbc" #x` -> arg `aes128-cbc`, then a separate `#x` token
+///     (the space ends the first token; `#x` is not consumed here)
+///
+/// A `=` or `#` inside a bareword token is literal; inline-comment stripping
+/// (whitespace-delimited `#` tokens) is handled by lints, not by the tokenizer.
 ///
 /// # Errors
-/// Returns the error message for an unterminated quoted string.
+/// Returns an error message for an unterminated quoted string.
 fn read_arg(chars: &mut Peekable<Chars>) -> Result<String, String> {
-    if chars.peek() == Some(&'"') {
-        chars.next(); // consume the opening quote
-        let mut s = String::new();
-        for c in chars.by_ref() {
-            if c == '"' {
-                return Ok(s);
-            }
-            s.push(c);
-        }
-        return Err("unterminated quoted string".to_string());
-    }
     let mut s = String::new();
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
-            break;
+    let mut in_quote = false;
+    loop {
+        match chars.peek() {
+            None => {
+                if in_quote {
+                    return Err("unterminated quoted string".to_string());
+                }
+                break;
+            }
+            Some(&c) if c.is_whitespace() && !in_quote => break,
+            Some(&'"') => {
+                in_quote = !in_quote;
+                chars.next(); // consume the `"`, do not push
+            }
+            Some(&c) => {
+                s.push(c);
+                chars.next();
+            }
         }
-        s.push(c);
-        chars.next();
     }
     Ok(s)
 }
@@ -332,6 +348,84 @@ mod tests {
     #[test]
     fn tokenize_line_errors_on_unterminated_quote() {
         assert!(tokenize_line("Banner \"abc").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Quote-concatenation model (issue #348)
+    //
+    // OpenSSH strips ALL `"` characters from a whitespace-delimited token and
+    // concatenates the runs: `"aes128-cbc"#x` is the single arg `aes128-cbc#x`
+    // (verified sshd -T OpenSSH 10.2p1). The tests below are RED until
+    // `read_arg` is updated to consume the whole token (not stop at the
+    // first closing quote).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_glued_hash_after_closing_quote_concatenates() {
+        // `Ciphers "aes128-cbc"#x` -- `#x` is glued directly to the closing `"`.
+        // sshd strips the quotes and sees one token `aes128-cbc#x` (not two args).
+        // Grounding: sshd -T -> "Bad SSH2 cipher spec 'aes128-cbc#x'" (rc 255,
+        // verified OpenSSH 10.2p1). The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128-cbc\"#x").unwrap(),
+            vec!["Ciphers", "aes128-cbc#x"],
+            "glued `#` after closing quote: quote-strip + concatenation yields one arg"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_empty_quoted_prefix_concatenates() {
+        // `Ciphers ""aes128-cbc` -- an empty quoted prefix immediately followed
+        // by a bareword run. sshd strips the `""` and sees `aes128-cbc` as one
+        // token. Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH
+        // 10.2p1). The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"\"aes128-cbc").unwrap(),
+            vec!["Ciphers", "aes128-cbc"],
+            "empty quoted prefix followed by bareword: concat yields one arg"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_quote_pair_splitting_a_token_concatenates() {
+        // `Ciphers "aes128""-cbc"` -- two adjacent quoted runs with no whitespace.
+        // sshd strips both quote pairs and concatenates: `aes128` + `-cbc` = `aes128-cbc`.
+        // Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH 10.2p1).
+        // The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128\"\"-cbc\"").unwrap(),
+            vec!["Ciphers", "aes128-cbc"],
+            "adjacent quoted runs with no whitespace: concat yields one arg"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression guards: these MUST stay GREEN after the quote-concatenation fix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_spaced_hash_after_closing_quote_stays_separate() {
+        // `Ciphers "aes128-cbc" #x` -- SPACE before `#x`.
+        // The space ends the token; `#x` is a separate arg (an inline comment
+        // token kept by the tokenizer, stripped at the lint layer). This must
+        // NOT be changed by the concatenation fix.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128-cbc\" #x").unwrap(),
+            vec!["Ciphers", "aes128-cbc", "#x"],
+            "spaced `#x` after closing quote: separate token, not concatenated"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_quoted_whitespace_stays_literal() {
+        // `Banner "two words"` -- whitespace INSIDE quotes is literal; the
+        // quoted span is a single arg `two words`. The concatenation fix must
+        // not break quoted-whitespace support.
+        assert_eq!(
+            tokenize_line("Banner \"two words\"").unwrap(),
+            vec!["Banner", "two words"],
+            "whitespace inside quotes is literal: one arg"
+        );
     }
 
     #[test]
