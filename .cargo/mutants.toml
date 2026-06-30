@@ -353,6 +353,18 @@ exclude_re = [
     'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
     'replace \|\| with && in parse_audit_event',
     'replace fuzz_hooks::parse_trust_value_fuzz',
+    # sshd `algo_list_value` step-2 `[one] => one.clone()` arm (#327, crypto.rs): deleting
+    # this arm sends a 1-element slice to the next arm
+    # `[_first, rest @ ..] if rest.iter().all(|a| a.starts_with(','))`, whose guard is
+    # vacuously true on an empty `rest`, so `effective.concat()` of a 1-element slice
+    # returns a byte-identical clone of `one`. NO input distinguishes the two arms, and no
+    # semantics-preserving refactor removes the equivalence: `concat()` of a 1-element
+    # slice IS the correct single-arg value, so any restructure either relocates the
+    # equivalence onto a new guard clause or trades it for a worse `guard -> true` survivor
+    # (a whitespace-split multi-arg concats to a non-weak token that fires nothing).
+    # Genuine equivalent mutant (cf. read_fapolicyd_mode / parse_fanotify_denials above).
+    # Surfaced by nightly mutants run 28428445948 (2026-06-30); a real kill is impossible.
+    'delete match arm \[one\] in algo_list_value',
     # selinux-sys FFI shim (#131): the 12 mutants below are the survivors of the
     # restore gate run; every one is a genuine equivalent or a fault-injection-
     # only failure arm, verified against the VENDORED libsepol source where the
