@@ -29,6 +29,14 @@ use crate::lints::{SudoersLintContext, anchored};
 /// command. When NOPASSWD is effective AND the command is the reserved `ALL`
 /// ([`CmndItem::All`]), W01 fires: passwordless run-anything.
 ///
+/// # Grounding
+///
+/// DISA STIG RHEL-08-010380 / RHEL-09-611085 (`ComplianceAsCode`
+/// `sudo_remove_nopasswd`), re-grounded 2026-06-29 (#363) at `ComplianceAsCode`/
+/// content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`. The finding message
+/// cites these ids; the firing logic (the tag-state machine below) is unchanged by
+/// the citation.
+///
 /// # Anchoring
 ///
 /// The frozen AST carries no per-command span; a user-spec is exactly one logical
@@ -76,7 +84,8 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                             "sudo-W01",
                             logical.span.clone(),
                             "NOPASSWD applies to the reserved ALL command: this grants \
-                             passwordless authority to run any command"
+                             passwordless authority to run any command \
+                             (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
                                 .to_string(),
                             file.path.clone(),
                             logical.line,
@@ -495,6 +504,32 @@ mod tests {
             w01_count("alice h1 = /bin/sh -c \"a(b\" : h2 = NOPASSWD: ALL\n"),
             1,
             "the h2 passwordless ALL must not be hidden by a quoted `(` in h1's command"
+        );
+    }
+
+    // ---- STIG citation (#363): the W01 NOPASSWD-on-ALL finding cites its control ----
+
+    /// The W01 finding message carries the grounded DISA STIG citation
+    /// RHEL-08-010380 / RHEL-09-611085 (`ComplianceAsCode` `sudo_remove_nopasswd`,
+    /// re-grounded 2026-06-29 at commit
+    /// `65ccea603ee2c305fdb4c6f54cb911449d969d55`). Only the message changes; the
+    /// firing logic is unchanged.
+    #[test]
+    fn w01_message_cites_grounded_stig_control() {
+        let diags = lint("alice ALL = NOPASSWD: ALL\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W01")
+            .expect("W01 fires for alice");
+        assert!(
+            d.message.contains("RHEL-08-010380"),
+            "W01 message must cite RHEL-08-010380; got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("RHEL-09-611085"),
+            "W01 message must cite RHEL-09-611085; got {:?}",
+            d.message
         );
     }
 }

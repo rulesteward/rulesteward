@@ -92,12 +92,13 @@ mod lint_shell_tests {
     }
 
     // A STIG-clean sudoers file: env_reset, the required hardening (use_pty +
-    // logfile, satisfying the #347 merged missing-required check), two user-specs,
-    // and a #includedir. Verified `visudo -c` clean.
+    // logfile + timestamp_timeout, satisfying the #347 / #363 merged missing-required
+    // check), two user-specs, and a #includedir. Verified `visudo -c` clean.
     const CLEAN_SUDOERS: &str = "\
 Defaults env_reset
 Defaults use_pty
 Defaults logfile=/var/log/sudo.log
+Defaults timestamp_timeout=5
 root ALL=(ALL:ALL) ALL
 %wheel ALL=(ALL) ALL
 #includedir /etc/sudoers.d
@@ -134,12 +135,13 @@ root ALL=(ALL:ALL) ALL
     #[test]
     fn clean_directory_exits_zero() {
         // A sudoers.d directory with clean drop-ins lints clean. A 00-defaults
-        // drop-in supplies the #347-required hardening (use_pty + logfile) so the
-        // merged missing-required check is satisfied across the directory.
+        // drop-in supplies the #347 / #363-required hardening (use_pty + logfile +
+        // timestamp_timeout) so the merged missing-required check is satisfied across
+        // the directory.
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("00-defaults"),
-            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\n",
+            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\n",
         )
         .expect("w");
         std::fs::write(dir.path().join("10-alice"), "alice ALL=(ALL) ALL\n").expect("w");

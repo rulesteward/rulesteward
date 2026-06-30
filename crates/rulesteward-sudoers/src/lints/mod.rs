@@ -128,10 +128,10 @@ mod tests {
     #[test]
     fn clean_file_produces_no_diagnostics() {
         // A STIG-clean sudoers file emits nothing: no malformed lines, no weakening
-        // Defaults, and the merged missing-required check (#347) is satisfied by the
-        // `use_pty` + `logfile` lines.
+        // Defaults, and the merged missing-required check (#347, #363) is satisfied
+        // by the `use_pty` + `logfile` + `timestamp_timeout` lines.
         let files = parse_one(
-            "Defaults env_reset\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n",
+            "Defaults env_reset\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n%wheel ALL=(ALL) ALL\n#includedir /etc/sudoers.d\n",
         );
         let diags = lint(&files, &SudoersLintContext::default());
         assert!(
