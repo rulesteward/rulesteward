@@ -39,8 +39,15 @@
 //!   (ComplianceAsCode `sudo_add_use_pty` carries no `stigid@` key; the
 //!   RHEL-08-010382 it formerly cited is the unrelated "restrict privilege
 //!   elevation to authorized personnel" control).
+//! - `timestamp_timeout` with a NEGATIVE value (e.g. `-1`) -- the sudo credential
+//!   cache then never expires, so a user re-authenticates once and is trusted
+//!   indefinitely. A non-negative value (0 or positive) is compliant. This is a
+//!   value-conditional weakening (handled in `check_file`'s non-negated arm, not
+//!   the name-presence `WEAKENING_PRESENT` table).
+//!   DISA STIG RHEL-08-010384 / RHEL-09-432015
+//!   (ComplianceAsCode `sudo_require_reauthentication`, #363).
 //!
-//! ## Missing-required (merged, #347) -- fire on absence
+//! ## Missing-required (merged, #347, #363) -- fire on absence / conflict
 //!
 //! The sudo `use_pty` and I/O-logging (`logfile` / `log_output`) hardening,
 //! checked over the MERGED resolved config set (all included files together),
@@ -49,11 +56,19 @@
 //! main `/etc/sudoers` sets it). Analogous to sshd-W01. See
 //! [`check_merged_required`].
 //!
-//! These are NOT DISA STIG controls: primary sources (ComplianceAsCode
-//! `sudo_add_use_pty` / `sudo_custom_logfile` rule.yml; the RHEL 8 V2R7 /
-//! RHEL 9 V2R8 / RHEL 10 V1R1 STIG sudo clusters) confirm neither carries a
-//! `stigid@` mapping. They are CIS Benchmark 1.3.2 (use_pty) / 1.3.3 (logfile) +
-//! PCI-DSS Req-10.2.5 controls, and are cited as such.
+//! The `use_pty` / I/O-logging requirements are NOT DISA STIG controls: primary
+//! sources (ComplianceAsCode `sudo_add_use_pty` / `sudo_custom_logfile` rule.yml;
+//! the RHEL 8 V2R7 / RHEL 9 V2R8 / RHEL 10 V1R1 STIG sudo clusters) confirm neither
+//! carries a `stigid@` mapping. They are CIS Benchmark 1.3.2 (use_pty) / 1.3.3
+//! (logfile) + PCI-DSS Req-10.2.5 controls, and are cited as such.
+//!
+//! `timestamp_timeout` (#363) IS a DISA STIG control (RHEL-08-010384 /
+//! RHEL-09-432015, ComplianceAsCode `sudo_require_reauthentication`) and fires here
+//! in two merged ways: ABSENT (no explicit `timestamp_timeout` anywhere -- the
+//! STIG's PRIMARY trigger) and CONFLICTING (the key set to 2+ DISTINCT values
+//! across the merged files, leaving the effective timeout ambiguous). A single
+//! negative value is the per-file weakening above; a single non-negative value is
+//! compliant.
 //!
 //! # Scope design
 //!
@@ -128,12 +143,14 @@ const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
 /// # Checks
 ///
 /// **Weakening present** (per-file, [`check_file`]): `!authenticate` (any scope),
-/// `targetpw`, `rootpw`, `runaspw`, `visiblepw`, `!use_pty` -- fires at the
-/// offending `Defaults` line.
+/// `targetpw`, `rootpw`, `runaspw`, `visiblepw`, `!use_pty`, and a NEGATIVE
+/// `timestamp_timeout` -- fires at the offending `Defaults` line.
 ///
-/// **Missing required** (merged, [`check_merged_required`], #347): fires once at
-/// the top-level file if a positive `use_pty` is not set anywhere in the resolved
-/// tree, and once if no I/O logging (`logfile=` or `log_output`) is set anywhere.
+/// **Missing required / conflicting** (merged, [`check_merged_required`], #347,
+/// #363): fires once at the top-level file if a positive `use_pty` is not set
+/// anywhere in the resolved tree, once if no I/O logging (`logfile=` or
+/// `log_output`) is set anywhere, once if `timestamp_timeout` is set nowhere, and
+/// once if `timestamp_timeout` is set to 2+ distinct values across the merged files.
 ///
 /// See module-level doc for grounding and scope design.
 #[must_use]
@@ -206,6 +223,36 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
 
             // --- Non-negated checks ---
 
+            // `timestamp_timeout` with a NEGATIVE value: a value-conditional
+            // weakening (not mere name-presence), so it is handled here rather than
+            // via the `WEAKENING_PRESENT` name table. A negative timeout (e.g. -1)
+            // makes the sudo credential cache NEVER expire, so a user re-authenticates
+            // once and is then trusted indefinitely. A non-negative value (0 or
+            // positive) is compliant. DISA STIG RHEL-08-010384 / RHEL-09-432015.
+            if name == "timestamp_timeout"
+                && setting
+                    .value
+                    .as_deref()
+                    .and_then(parse_signed_minutes)
+                    .is_some_and(|v| v < 0.0)
+            {
+                diags.push(anchored(
+                    Severity::Warning,
+                    "sudo-W04",
+                    line.span.clone(),
+                    format!(
+                        "Defaults setting 'timestamp_timeout' {} sets a negative value: \
+                         the sudo credential cache never expires, so a user is \
+                         re-authenticated once and trusted indefinitely; STIG requires \
+                         re-authentication (a non-negative timeout) \
+                         (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                        scope_paren(&defaults.scope),
+                    ),
+                    &file.path,
+                    line.line,
+                ));
+            }
+
             // Fire for weakening non-negated settings (all entries in the table;
             // `!authenticate` is handled in the negated arm above).
             for &(weakening_name, explanation, citation) in WEAKENING_PRESENT {
@@ -231,12 +278,18 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
 }
 
 /// sudo-W04 missing-required hardening, checked over the MERGED resolved slice
-/// (#347). Unlike the per-file weakening checks in [`check_file`], this runs ONCE
-/// across every file `resolve_target` produced (the top-level file plus its
-/// `@include`/`@includedir` drop-ins) and fires at most twice:
+/// (#347, #363). Unlike the per-file weakening checks in [`check_file`], this runs
+/// ONCE across every file `resolve_target` produced (the top-level file plus its
+/// `@include`/`@includedir` drop-ins) and fires:
 ///
-/// * once if a positive `use_pty` is not set ANYWHERE in the tree, and
-/// * once if no I/O logging (`logfile=` or `log_output`) is set anywhere.
+/// * once if a positive `use_pty` is not set ANYWHERE in the tree,
+/// * once if no I/O logging (`logfile=` or `log_output`) is set anywhere,
+/// * once if `timestamp_timeout` is set NOWHERE in the tree (#363, the STIG's
+///   primary trigger), and
+/// * once if `timestamp_timeout` is set to 2+ DISTINCT values across the merged
+///   files (#363, an ambiguous effective timeout). Because the sudoers model
+///   retains every parsed occurrence (no last-wins collapse), the distinct values
+///   are detectable directly from the merged AST.
 ///
 /// Running over the merged set (not per-file) is what prevents the per-fragment
 /// false positive a naive per-file check produces: a `sudoers.d` drop-in must not
@@ -268,6 +321,21 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
 
     let mut has_use_pty = false;
     let mut has_io_log = false;
+    // Distinct `timestamp_timeout` values seen across the WHOLE merged tree, in
+    // first-seen order. The sudoers model retains every occurrence (no last-wins
+    // collapse), so 2+ distinct values is a detectable conflict. Each value is
+    // canonicalised through `parse_signed_minutes` and re-rendered so `=5` / `=05` /
+    // `=5.0` collapse to one entry (they ARE the same timeout); the canonical
+    // strings are the dedup key, avoiding fragile direct `f64` equality. The key is
+    // built from `v + 0.0` so signed zero normalizes (`-0.0` -> `0.0`), preventing a
+    // spurious `=0` vs `=-0` "conflict" (both are the same compliant value, 0).
+    let mut timestamp_values: Vec<String> = Vec::new();
+    // A `Defaults !timestamp_timeout` (negated) clears the timeout, which sudo
+    // treats as re-prompt-on-every-invocation -- functionally identical to `=0` and
+    // therefore COMPLIANT (#363 user decision). It SATISFIES the presence/absence
+    // requirement but contributes NO value to conflict detection and fires no
+    // weakening, so it is tracked separately from the positive-value list.
+    let mut has_negated_timestamp_timeout = false;
     for file in files {
         for line in &file.lines {
             let LineKind::Defaults(defaults) = &line.kind else {
@@ -275,12 +343,27 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
             };
             for setting in &defaults.settings {
                 if setting.negated {
-                    // `!use_pty` / `!log_output`: a clear, not a positive set.
+                    // A negated `timestamp_timeout` is a COMPLIANT clear (counts as
+                    // present, no value, no conflict). Every other negated setting
+                    // (`!use_pty` / `!log_output`) is a clear, not a positive set, so
+                    // it does not satisfy its requirement.
+                    if setting.name == "timestamp_timeout" {
+                        has_negated_timestamp_timeout = true;
+                    }
                     continue;
                 }
                 match setting.name.as_str() {
                     "use_pty" => has_use_pty = true,
                     "logfile" | "log_output" => has_io_log = true,
+                    "timestamp_timeout" => {
+                        if let Some(v) = setting.value.as_deref().and_then(parse_signed_minutes) {
+                            // Normalize signed zero (`-0.0` -> `0.0`) before keying.
+                            let canonical = (v + 0.0).to_string();
+                            if !timestamp_values.contains(&canonical) {
+                                timestamp_values.push(canonical);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -314,7 +397,66 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
             0,
         ));
     }
+    // timestamp_timeout (#363, DISA STIG RHEL-08-010384 / RHEL-09-432015,
+    // ComplianceAsCode `sudo_require_reauthentication`):
+    //
+    // * ABSENT (no explicit `Defaults timestamp_timeout=` anywhere) is the STIG's
+    //   PRIMARY trigger: the compiled-in default applies and the requirement is not
+    //   demonstrably met by the configuration.
+    // * CONFLICTING (2+ DISTINCT values across the merged files) leaves the
+    //   effective timeout ambiguous, which the STIG also flags.
+    //
+    // A single non-negative value is compliant (a single negative value is the
+    // per-file weakening handled in `check_file`). A negated `!timestamp_timeout`
+    // anywhere is a compliant clear that satisfies the requirement (so ABSENT does
+    // not fire) but never contributes to the distinct-value set, so it cannot create
+    // a conflict.
+    match timestamp_values.as_slice() {
+        // No POSITIVE value set. If a negated clear is present that is compliant
+        // (requirement satisfied); otherwise the requirement is genuinely absent.
+        [] if !has_negated_timestamp_timeout => diags.push(anchored(
+            Severity::Warning,
+            "sudo-W04",
+            0..0,
+            "required 'Defaults timestamp_timeout' is not set anywhere in the \
+             resolved sudoers configuration; without an explicit re-authentication \
+             timeout sudo relies on the compiled-in default, so the policy does not \
+             demonstrably require re-authentication \
+             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+            &top.path,
+            0,
+        )),
+        [] => {}        // negated `!timestamp_timeout` only: compliant clear, nothing fires.
+        [_single] => {} // exactly one value: unambiguous (compliance handled elsewhere).
+        _multiple => diags.push(anchored(
+            Severity::Warning,
+            "sudo-W04",
+            0..0,
+            "conflicting 'Defaults timestamp_timeout' values are set across the \
+             resolved sudoers configuration (the key is given more than one distinct \
+             value); the effective re-authentication timeout is ambiguous \
+             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+            &top.path,
+            0,
+        )),
+    }
     diags
+}
+
+/// Parse a `timestamp_timeout` value as a signed (and possibly fractional) number
+/// of minutes. `sudoers(5)` accepts an integer or a fractional value (e.g. `0.5`),
+/// and a value `< 0` means the credential cache never expires. Returns `None` when
+/// the value is not a usable finite number (a malformed value is not this check's
+/// concern).
+///
+/// This is a tiny `f64` parse, not a new value-interpreter: the sudoers AST stores
+/// the raw `name=value` string. `f64::from_str` is STRICTLY BROADER than sudo's own
+/// parser -- it also accepts `inf` / `infinity` / `nan`, which sudo rejects (verified
+/// via `visudo -c`). We filter those surplus forms out with `is_finite()` so a
+/// non-finite token returns `None` (no usable timeout) rather than a poisonous
+/// `NaN`/`inf` that would break the conflict-dedup numeric comparison. Never panics.
+fn parse_signed_minutes(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
 /// Human-readable parenthetical naming the `Defaults` scope, used in diagnostic
@@ -556,9 +698,11 @@ mod tests {
     /// - `use_pty` (incl. `!use_pty`) -> CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5
     ///   (no DISA sudo STIG control)
     /// - `visiblepw` -> CIS / general hardening (no DISA STIG control)
+    /// - `timestamp_timeout` (negative value) -> DISA STIG RHEL-08-010384 /
+    ///   RHEL-09-432015 (ComplianceAsCode `sudo_require_reauthentication`, #363)
     ///
     /// If this fails, RE-RUN the grounding pass against a pinned ComplianceAsCode
-    /// commit + DISA -- do NOT just edit the string to make it pass (#355, #359).
+    /// commit + DISA -- do NOT just edit the string to make it pass (#355, #359, #363).
     #[test]
     fn w04_weakening_findings_cite_grounded_controls() {
         // Each finding's message must contain the grounded citation.
@@ -572,6 +716,9 @@ mod tests {
             ("Defaults !use_pty\n", "CIS Benchmark 1.3.2"),
             ("Defaults !use_pty\n", "PCI-DSS Req-10.2.5"),
             ("Defaults visiblepw\n", "CIS / general hardening"),
+            // timestamp_timeout negative value (#363): per-file weakening finding.
+            ("Defaults timestamp_timeout=-1\n", "RHEL-08-010384"),
+            ("Defaults timestamp_timeout=-1\n", "RHEL-09-432015"),
         ];
         for (defaults, needle) in must_cite {
             let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
@@ -610,18 +757,21 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// A STIG-clean file (no weakening AND the required hardening present) fires
-    /// NO W04. The `use_pty` + `logfile` lines satisfy the merged missing-required
-    /// check (#347), so neither a weakening nor an absence finding fires.
+    /// NO W04. The `use_pty` + `logfile` + `timestamp_timeout` lines satisfy the
+    /// merged missing-required check (#347, #363), so neither a weakening nor an
+    /// absence finding fires.
     ///
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_clean_when_no_weakening_defaults() {
         // Fixture: the required hardening present, no weakening settings.
+        // timestamp_timeout=5 added (#363) so the new absence check is satisfied.
         // visudo -c: "parsed OK"
         let diags = lint_w04(
             "Defaults env_reset\n\
              Defaults use_pty\n\
              Defaults logfile=/var/log/sudo.log\n\
+             Defaults timestamp_timeout=5\n\
              root ALL=(ALL:ALL) ALL\n\
              %wheel ALL=(ALL) ALL\n",
         );
@@ -722,12 +872,16 @@ mod tests {
     // findings anchor at the top-level file (`files[0]`), line 0.
     // -----------------------------------------------------------------------
 
-    /// A minimal file with neither `use_pty` nor I/O logging fires exactly two
+    /// A file with neither `use_pty` nor I/O logging (but WITH timestamp_timeout, so
+    /// only the use_pty and logging requirements are unmet) fires exactly two
     /// absence findings (one per missing requirement).
     #[test]
     fn w04_absence_fires_twice_when_both_missing() {
+        // timestamp_timeout=5 present (#363) so ONLY use_pty + I/O logging are
+        // missing -> exactly two absence findings.
         // visudo -c: "parsed OK"
-        let diags = lint_w04("Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n");
+        let diags =
+            lint_w04("Defaults env_reset\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n");
         let absent = w04_absence(&diags);
         assert_eq!(
             absent.len(),
@@ -744,16 +898,17 @@ mod tests {
         );
     }
 
-    /// Both requirements satisfied in one file -> no absence findings.
+    /// All requirements satisfied in one file -> no absence findings.
     #[test]
     fn w04_absence_suppressed_when_both_present() {
+        // timestamp_timeout=5 added (#363) so all three requirements are met.
         // visudo -c: "parsed OK"
         let diags = lint_w04(
-            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
         );
         assert!(
             w04_absence(&diags).is_empty(),
-            "use_pty + logfile both present -> no absence findings; got {diags:?}"
+            "use_pty + logfile + timestamp_timeout all present -> no absence findings; got {diags:?}"
         );
     }
 
@@ -761,8 +916,12 @@ mod tests {
     /// requirement (sudoers(5): both enable pseudo-terminal session logging).
     #[test]
     fn w04_absence_log_output_satisfies_io_logging() {
+        // timestamp_timeout=5 present (#363) so it does not contribute a spurious
+        // absence; this test targets the I/O-logging requirement only.
         // visudo -c: "parsed OK"
-        let diags = lint_w04("Defaults use_pty\nDefaults log_output\nroot ALL=(ALL:ALL) ALL\n");
+        let diags = lint_w04(
+            "Defaults use_pty\nDefaults log_output\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
+        );
         let absent = w04_absence(&diags);
         assert!(
             absent.iter().all(|d| !d.message.contains("logging")),
@@ -774,9 +933,11 @@ mod tests {
     /// weakening finding (line >= 1) AND the absence finding (line 0).
     #[test]
     fn w04_absence_negated_use_pty_does_not_satisfy() {
+        // timestamp_timeout=5 present (#363) so only the use_pty requirement is at
+        // issue here.
         // visudo -c: "parsed OK"
         let diags = lint_w04(
-            "Defaults !use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            "Defaults !use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
         );
         // The weakening finding for the explicit negation sits at the real line.
         assert!(
@@ -803,10 +964,13 @@ mod tests {
     /// the per-fragment false positive the merged check exists to prevent.
     #[test]
     fn w04_absence_fires_once_across_merged_slice_not_per_file() {
+        // timestamp_timeout=5 in the top file (#363) so only use_pty + I/O logging
+        // are unmet -> two absence findings, demonstrating "once per requirement
+        // across the merged slice, not per file".
         let files = parse_files(&[
             (
                 "/etc/sudoers",
-                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
+                "Defaults env_reset\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
             ),
             ("/etc/sudoers.d/10-a", "alice ALL=(ALL) ALL\n"),
             ("/etc/sudoers.d/20-b", "bob ALL=(ALL) NOPASSWD: /bin/ls\n"),
@@ -833,7 +997,7 @@ mod tests {
             ),
             (
                 "/etc/sudoers.d/10-hardening",
-                "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\n",
+                "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\n",
             ),
         ]);
         let diags = w04(&files, &CTX);
@@ -848,10 +1012,12 @@ mod tests {
     /// follow.
     #[test]
     fn w04_absence_anchors_at_top_level_file() {
+        // timestamp_timeout=5 present (#363) so exactly the use_pty + I/O-logging
+        // absence findings remain; both must anchor at the top-level file.
         let files = parse_files(&[
             (
                 "/etc/sudoers",
-                "Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n",
+                "Defaults env_reset\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
             ),
             ("/etc/sudoers.d/10-a", "alice ALL=(ALL) ALL\n"),
         ]);
@@ -892,12 +1058,331 @@ mod tests {
     fn w04_absence_scoped_use_pty_satisfies() {
         // visudo -c: "parsed OK"
         let diags = lint_w04(
-            "Defaults:alice use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            "Defaults:alice use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n",
         );
         let absent = w04_absence(&diags);
         assert!(
             absent.iter().all(|d| !d.message.contains("use_pty")),
             "a scoped positive use_pty satisfies the requirement; got {absent:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // timestamp_timeout (#363): DISA STIG RHEL-08-010384 / RHEL-09-432015.
+    //
+    // The STIG `sudo_require_reauthentication` rule has THREE failure modes:
+    //   * NEGATIVE value (< 0, e.g. -1) -> credential cache never expires (per-file
+    //     weakening, fires at the offending Defaults line);
+    //   * ABSENT from the merged tree (no explicit timestamp_timeout anywhere) ->
+    //     the STIG's PRIMARY trigger (merged missing-required, fires at line 0);
+    //   * CONFLICTING (2+ distinct values across the merged files) -> ambiguous
+    //     policy (merged, fires at line 0).
+    // A single non-negative value (0 or positive) is COMPLIANT.
+    // -----------------------------------------------------------------------
+
+    /// `Defaults timestamp_timeout=-1` (never-expire credential cache) fires W04 as
+    /// a per-file weakening, citing the timestamp_timeout STIG control.
+    ///
+    /// Grounding: DISA STIG RHEL-08-010384 / RHEL-09-432015
+    /// (ComplianceAsCode `sudo_require_reauthentication`).
+    /// Fixture verified valid by `visudo -c`.
+    #[test]
+    fn w04_fires_for_negative_timestamp_timeout() {
+        // Fixture: Defaults timestamp_timeout=-1 (credential cache never expires).
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults timestamp_timeout=-1\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let w04_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W04").collect();
+        assert!(
+            w04_diags
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")
+                    && d.message.contains("RHEL-08-010384")),
+            "W04 must fire for negative timestamp_timeout citing RHEL-08-010384; got {diags:?}"
+        );
+    }
+
+    /// The negative-timestamp_timeout weakening finding anchors at the offending
+    /// `Defaults` line (>= 1), not at line 0 (the absence convention).
+    #[test]
+    fn w04_negative_timestamp_timeout_anchors_at_defaults_line() {
+        let diags = lint_w04(
+            "Defaults use_pty\nDefaults timestamp_timeout=-1\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let neg: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == "sudo-W04" && d.line >= 1 && d.message.contains("timestamp_timeout")
+            })
+            .collect();
+        assert_eq!(
+            neg.len(),
+            1,
+            "exactly one weakening W04 for the negative timestamp_timeout; got {neg:?}"
+        );
+        assert_eq!(
+            neg[0].line, 2,
+            "the negative-value weakening anchors at the Defaults line (line 2)"
+        );
+    }
+
+    /// `timestamp_timeout=0` (re-authenticate every invocation) is COMPLIANT: it is
+    /// non-negative, so no weakening finding fires and the presence satisfies the
+    /// absence check.
+    #[test]
+    fn w04_timestamp_timeout_zero_is_compliant() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults timestamp_timeout=0\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code == "sudo-W04" && d.message.contains("timestamp_timeout"))),
+            "timestamp_timeout=0 is compliant (no weakening, no absence); got {diags:?}"
+        );
+    }
+
+    /// A positive `timestamp_timeout=15` is COMPLIANT: no weakening, and its
+    /// presence satisfies the merged absence check.
+    #[test]
+    fn w04_timestamp_timeout_positive_is_compliant() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults timestamp_timeout=15\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code == "sudo-W04" && d.message.contains("timestamp_timeout"))),
+            "timestamp_timeout=15 is compliant (no weakening, no absence); got {diags:?}"
+        );
+    }
+
+    /// A merged tree with NO `timestamp_timeout` anywhere fires the absence finding
+    /// (the STIG's primary trigger), at line 0, citing the timestamp_timeout control.
+    #[test]
+    fn w04_absence_fires_when_timestamp_timeout_missing() {
+        // use_pty + logfile present (so those absence findings are suppressed), but
+        // NO timestamp_timeout -> the timestamp_timeout absence finding fires.
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let absent = w04_absence(&diags);
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")
+                    && d.message.contains("RHEL-08-010384")),
+            "an absent timestamp_timeout must fire a line-0 W04 citing RHEL-08-010384; got {absent:?}"
+        );
+    }
+
+    /// A scoped positive `Defaults:alice timestamp_timeout=5` satisfies the absence
+    /// requirement (any non-negated occurrence in any scope counts), mirroring the
+    /// use_pty scoped-satisfaction rule.
+    #[test]
+    fn w04_absence_scoped_timestamp_timeout_satisfies() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults:alice timestamp_timeout=5\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let absent = w04_absence(&diags);
+        assert!(
+            absent
+                .iter()
+                .all(|d| !d.message.contains("timestamp_timeout")),
+            "a scoped positive timestamp_timeout satisfies the absence requirement; got {absent:?}"
+        );
+    }
+
+    /// A drop-in setting `timestamp_timeout` satisfies the requirement for the whole
+    /// merged tree even when the top-level file omits it (no per-fragment FP).
+    #[test]
+    fn w04_absence_timestamp_timeout_drop_in_satisfies_top_level() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults env_reset\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            (
+                "/etc/sudoers.d/10-hardening",
+                "Defaults timestamp_timeout=5\n",
+            ),
+        ]);
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert!(
+            absent
+                .iter()
+                .all(|d| !d.message.contains("timestamp_timeout")),
+            "a drop-in timestamp_timeout satisfies the merged tree; got {absent:?}"
+        );
+    }
+
+    /// CONFLICTING: two merged files set `timestamp_timeout` to DISTINCT values
+    /// (`=5` and `=30`) -> a line-0 W04 conflict finding citing the control.
+    #[test]
+    fn w04_fires_for_conflicting_timestamp_timeout() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults timestamp_timeout=5\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/20-other", "Defaults timestamp_timeout=30\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")
+                    && d.message.contains("conflict")
+                    && d.message.contains("RHEL-08-010384")),
+            "two distinct timestamp_timeout values must fire a line-0 conflict W04 citing \
+             RHEL-08-010384; got {absent:?}"
+        );
+    }
+
+    /// The SAME `timestamp_timeout` value set twice across files is NOT a conflict:
+    /// the value is unambiguous, so no conflict finding fires (and the presence
+    /// satisfies the absence check).
+    #[test]
+    fn w04_no_conflict_when_same_timestamp_timeout_value_repeated() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults timestamp_timeout=5\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/20-other", "Defaults timestamp_timeout=5\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        assert!(
+            diags.iter().all(|d| !(d.code == "sudo-W04"
+                && d.message.contains("timestamp_timeout")
+                && d.message.contains("conflict"))),
+            "the same value repeated is not a conflict; got {diags:?}"
+        );
+    }
+
+    /// Signed-zero must not produce a spurious conflict: `timestamp_timeout=0` in
+    /// one file and `timestamp_timeout=-0` in another are the SAME numeric value
+    /// (0, compliant), so no conflict finding fires. (`(-0.0).to_string()` is "-0"
+    /// while `(0.0).to_string()` is "0"; the dedup key must normalize signed zero.)
+    #[test]
+    fn w04_no_conflict_for_signed_zero_timestamp_timeout() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults timestamp_timeout=0\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/20-other", "Defaults timestamp_timeout=-0\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        assert!(
+            diags.iter().all(|d| !(d.code == "sudo-W04"
+                && d.message.contains("timestamp_timeout")
+                && d.message.contains("conflict"))),
+            "0 and -0 are the same value; no conflict must fire; got {diags:?}"
+        );
+    }
+
+    /// Differently-WRITTEN spellings of the same numeric value (`5`, `5.0`, `+5`)
+    /// across merged files canonicalize to one entry, so NO conflict fires. Pins
+    /// the canonical-collapse path of the dedup key.
+    #[test]
+    fn w04_no_conflict_for_equal_values_written_differently() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults timestamp_timeout=5\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/10-a", "Defaults timestamp_timeout=5.0\n"),
+            ("/etc/sudoers.d/20-b", "Defaults timestamp_timeout=+5\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        assert!(
+            diags.iter().all(|d| !(d.code == "sudo-W04"
+                && d.message.contains("timestamp_timeout")
+                && d.message.contains("conflict"))),
+            "5, 5.0 and +5 are the same value; no conflict must fire; got {diags:?}"
+        );
+    }
+
+    /// A negated `Defaults !timestamp_timeout` is valid sudoers (cvtsudoers exports
+    /// `{"timestamp_timeout": false}`); sudo treats a cleared timeout as
+    /// re-prompt-on-every-invocation, functionally identical to `=0`. USER DECISION
+    /// (#363): treat it as COMPLIANT -- it satisfies the absence requirement (no
+    /// ABSENT finding), fires no weakening, and does not participate in conflict
+    /// detection. With use_pty + logfile present, NO timestamp_timeout W04 of any
+    /// kind fires.
+    #[test]
+    fn w04_negated_timestamp_timeout_is_compliant() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04(
+            "Defaults !timestamp_timeout\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| !(d.code == "sudo-W04" && d.message.contains("timestamp_timeout"))),
+            "a negated !timestamp_timeout is compliant: no W04 of any kind; got {diags:?}"
+        );
+    }
+
+    /// `parse_signed_minutes` rejects non-finite (`inf`/`infinity`/`nan`) and other
+    /// forms sudo's own parser rejects: they are NOT valid timeouts, so they return
+    /// `None` (treated as no usable value) rather than a finite f64 that would
+    /// poison conflict dedup. A bare `inf` with use_pty + logfile present therefore
+    /// behaves like an absent/unusable value: the ABSENT finding fires (no value was
+    /// usable), and NO conflict/weakening fires.
+    #[test]
+    fn w04_non_finite_timestamp_timeout_is_not_a_usable_value() {
+        assert_eq!(
+            parse_signed_minutes("inf"),
+            None,
+            "inf is not a valid timeout"
+        );
+        assert_eq!(
+            parse_signed_minutes("infinity"),
+            None,
+            "infinity is not a valid timeout"
+        );
+        assert_eq!(
+            parse_signed_minutes("nan"),
+            None,
+            "nan is not a valid timeout"
+        );
+        assert_eq!(
+            parse_signed_minutes("-inf"),
+            None,
+            "-inf is not a valid timeout"
+        );
+        // A finite value still parses.
+        assert_eq!(parse_signed_minutes("15"), Some(15.0));
+        assert_eq!(parse_signed_minutes("-1"), Some(-1.0));
+    }
+
+    /// With three missing requirements (no use_pty, no I/O logging, no
+    /// timestamp_timeout) the merged absence check fires exactly THREE findings.
+    #[test]
+    fn w04_absence_fires_three_times_when_all_missing() {
+        // visudo -c: "parsed OK"
+        let diags = lint_w04("Defaults env_reset\nroot ALL=(ALL:ALL) ALL\n");
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            3,
+            "use_pty + I/O logging + timestamp_timeout all missing -> three absence \
+             findings; got {absent:?}"
+        );
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")),
+            "one absence finding must name timestamp_timeout; got {absent:?}"
         );
     }
 }
