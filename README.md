@@ -19,9 +19,11 @@
 | `rulesteward-core` | Shared types: diagnostics, severity, AST |
 | `rulesteward-fapolicyd` | fapolicyd rule parser + lint engine, trust-DB reader, simulate / report / migrate |
 | `rulesteward-sshd` | `sshd_config` parser + structural lint passes |
+| `rulesteward-auditd` | auditd rules parser, semantic linter, cost calculator |
+| `rulesteward-sudoers` | `sudoers(5)` parser + security-baseline lint passes |
+| `rulesteward-sysctld` | `sysctl.d`/`sysctl.conf` parser + STIG-baseline lint passes |
 | `rulesteward-selinux` | AVC parser, denial triage, TE-module emission |
 | `rulesteward-selinux-sys` | FFI bridge to vendored libsepol (authoritative AVC categorizer) |
-| `rulesteward-auditd` | auditd rules parser, semantic linter, cost calculator |
 | `rulesteward-sink` | `EventSink` trait + implementations |
 | `rulesteward-license` | Offline license verification (planned; stub today) |
 | `rulesteward-cli` | `rulesteward` binary |
@@ -103,19 +105,17 @@ rulesteward sshd lint --format json /etc/ssh/sshd_config
 ```
 
 - **lint** - parse an `sshd_config` (whole-line `#` comments, case-insensitive keywords,
-  `Match` blocks, `Include` directives) and run the lint passes.
-- **Maturity:** 9 of the 12 `sshd-` codes emit today - `sshd-E01`..`sshd-E04`, the
-  `sshd-F01` parse fatal, and the STIG / crypto / deprecation warnings
-  `sshd-W01`..`sshd-W04`. The remaining three (`sshd-F02` drop-in override,
-  `sshd-W05` permissive Match override, `sshd-W06` algorithm-prefix reintroduction)
-  are in development per epic #149 (Wave C).
+  `Match` blocks, `Include` directives) and run the lint passes. All 12 `sshd-` codes
+  are active: structural errors (`sshd-E01`..`sshd-E04`), the parse fatal (`sshd-F01`),
+  the drop-in override fatal (`sshd-F02`), and the STIG / crypto / deprecation warnings
+  (`sshd-W01`..`sshd-W06`).
 
 ### auditd
 
 ```bash
 rulesteward auditd cost --rules /etc/audit/rules.d/    # estimate SIEM ingest volume + cost
 rulesteward auditd cost --rules /etc/audit/rules.d/ --from-log /var/log/audit/audit.log
-rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (7 au- codes)
+rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (9 au- codes)
 ```
 
 - **cost** - estimate ingest volume and USD/month from the ruleset (a low / typical / high
@@ -123,6 +123,34 @@ rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (
   `--price-per-gb` sets the rate.
 - **lint** - static semantic analysis: duplicates, shadowing, `-e 2` lock unreachability,
   exclude/never suppression conflicts, and invalid field operators.
+
+### sudoers
+
+```bash
+rulesteward sudoers lint /etc/sudoers                  # lint the sudoers policy (6 sudo- codes)
+rulesteward sudoers lint /etc/sudoers.d                # lint a sudoers.d/ drop-in directory
+rulesteward sudoers lint --format json /etc/sudoers
+```
+
+- **lint** - parse a `sudoers(5)` policy file (line-continuation joins, `#` comment
+  disambiguation, `Defaults` entries, alias definitions, `@include` / `@includedir`
+  directives, and user specifications) and run all lint passes. A directory target
+  lints each eligible drop-in (sorted; names ending in `~` or containing `.` are
+  skipped). Read-only.
+
+### sysctl.d
+
+```bash
+rulesteward sysctl lint /etc/sysctl.conf               # lint kernel parameter assignments (3 sysctld- codes)
+rulesteward sysctl lint /etc/sysctl.d/99-hardening.conf
+rulesteward sysctl lint --target rhel9 /etc/sysctl.conf   # STIG baseline check (sysctld-W02)
+```
+
+- **lint** - parse a kernel-parameter assignment file (`/etc/sysctl.conf`,
+  `/etc/sysctl.d/*.conf`, etc.) and run the lint passes: `sysctld-F01` (parse
+  error), `sysctld-W01` (last-wins conflict across the drop-in precedence order),
+  and - when `--target rhel8|rhel9|rhel10` is set - the version-aware `sysctld-W02`
+  STIG kernel-hardening baseline check. Read-only.
 
 ### SELinux
 
@@ -196,22 +224,41 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
 | `au-W04` | Warning | missing-ABI coverage: a syscall rule pins one ABI (`arch=b32`/`b64`) with no companion on the other ABI |
 
-### sshd_config (`sshd-`, 12-code taxonomy; 9 emitted today)
+### sshd_config (`sshd-`, 12 codes)
 
-| Code | Severity | Checks | Status |
+| Code | Severity | Checks |
+| --- | --- | --- |
+| `sshd-E01` | Error | unknown directive for the target OpenSSH version |
+| `sshd-E02` | Error | duplicate directive in the global block or within a `Match` block (sshd uses the first value; the later line is silently ignored) |
+| `sshd-E03` | Error | `Include` references a path or glob that resolves to nothing |
+| `sshd-E04` | Error | directive is not permitted inside a `Match` block (silently ignored at runtime) |
+| `sshd-F01` | Fatal | `sshd_config` file does not parse |
+| `sshd-F02` | Fatal | drop-in fragment overrides a required global directive |
+| `sshd-W01` | Warning | STIG-required directive is missing |
+| `sshd-W02` | Warning | directive value is weaker than the STIG baseline |
+| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms |
+| `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version |
+| `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction |
+| `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default |
+
+### sudoers (`sudo-`, 6 codes)
+
+| Code | Severity | Checks |
+| --- | --- | --- |
+| `sudo-E01` | Error | reference to an undefined alias |
+| `sudo-F01` | Fatal | sudoers file does not parse |
+| `sudo-W01` | Warning | `NOPASSWD` applies to an `ALL` command (passwordless run-anything) |
+| `sudo-W02` | Warning | a `Cmnd_Alias` transitively expands to `ALL` under `NOPASSWD` |
+| `sudo-W03` | Warning | alias defined but never referenced (dead alias) |
+| `sudo-W04` | Warning | `Defaults` setting weaker than, or required hardening absent from, the sudo security baseline (covers weakening settings such as `!authenticate`, `targetpw`, `rootpw`, `visiblepw`, `!use_pty`, and negative `timestamp_timeout`; and missing-required checks for `use_pty`, I/O logging, and `timestamp_timeout` over the merged config - DISA STIG RHEL-08-010384/RHEL-09-432015 and CIS Benchmark 1.3.2/1.3.3) |
+
+### sysctl.d (`sysctld-`, 3 codes)
+
+| Code | Severity | Checks | Gate |
 | --- | --- | --- | --- |
-| `sshd-F01` | Fatal | `sshd_config` file does not parse | emitted |
-| `sshd-E01` | Error | unknown directive for the target OpenSSH version | emitted |
-| `sshd-E02` | Error | duplicate directive in the global block or within a `Match` block (sshd uses the first value; the later line is silently ignored) | emitted |
-| `sshd-E03` | Error | `Include` references a path or glob that resolves to nothing | emitted |
-| `sshd-E04` | Error | directive is not permitted inside a `Match` block (silently ignored at runtime) | emitted |
-| `sshd-W01` | Warning | STIG-required directive is missing | emitted |
-| `sshd-W02` | Warning | directive value is weaker than the STIG baseline | emitted |
-| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms | emitted |
-| `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version | emitted |
-| `sshd-F02` | Fatal | drop-in fragment overrides a required global directive | in development |
-| `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction | in development |
-| `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default | in development |
+| `sysctld-F01` | Fatal | `sysctl.d`/`sysctl.conf` file does not parse | always |
+| `sysctld-W01` | Warning | last-wins conflict: the same key is assigned different effective values across the drop-in precedence order | always |
+| `sysctld-W02` | Warning | STIG-required kernel-hardening key is unset or set to an insecure value (version-aware) | `--target` |
 
 SELinux `triage` is denial analysis rather than file linting, so it has no `se-` lint
 codes: it categorizes each AVC denial by kind (floor classifier always; authoritative
