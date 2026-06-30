@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rulesteward sudoers lint`**: new `sudoers(5)` backend (6 `sudo-` codes). Parses
+  a policy file or a `sudoers.d/` drop-in directory (line-continuation joins, `#`
+  comment disambiguation, alias definitions, `@include`/`@includedir`, user
+  specifications). Detects: parse errors (`sudo-F01`), undefined / dead aliases
+  (`sudo-E01`, `sudo-W03`), passwordless run-anything grants (`sudo-W01`, `sudo-W02`),
+  and `Defaults` settings that weaken or omit the sudo security baseline (`sudo-W04`):
+  covers `!authenticate`, `targetpw`/`rootpw`/`runaspw`, `visiblepw`, `!use_pty`,
+  negative `timestamp_timeout` (DISA STIG RHEL-08-010384/RHEL-09-432015); and
+  merged-config absence of `use_pty`, I/O logging, and `timestamp_timeout`
+  (CIS Benchmark 1.3.2/1.3.3 and DISA STIG RHEL-08-010384/RHEL-09-432015).
+  (#329, #330, #331, #332, #333, #347, #363)
+- **`rulesteward sysctl lint`**: new `sysctl.d`/`sysctl.conf` backend (3 `sysctld-`
+  codes). Parses kernel-parameter assignment files (`key = value` format, whole-line
+  `#`/`;` comments). Detects: parse errors (`sysctld-F01`), last-wins conflicts across
+  the drop-in precedence order (`sysctld-W01`), and - when `--target rhel8|rhel9|rhel10`
+  is set - STIG-required kernel-hardening keys that are unset or insecure
+  (`sysctld-W02`, version-aware, grounded in ComplianceAsCode). (#150, #335)
 - `auditd lint --apparmor`: opt-in folding of the `WITH_APPARMOR` msgtype record
   names (`APPARMOR_DENIED` == `1503`, etc.) in the `au-W01`/`au-W02` lints. Off by
   default, since a RHEL/fapolicyd-target audit daemon does not recognize these
