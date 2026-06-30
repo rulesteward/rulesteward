@@ -109,23 +109,36 @@ pub use rulesteward_core::anchored;
 /// Map a located parse error to an `sshd-F01` Fatal diagnostic.
 ///
 /// Lives here (not in the CLI) because this crate OWNS the `sshd-` codes and is
-/// inside the mutation `examine_globs`. Parse errors carry file + line but no
-/// byte span (the failing line never became a directive), so the diagnostic is
-/// unanchored: empty span, no source-id, plain rendering. `line == 0` marks a
-/// file-level error (unreadable file) and keeps column 0; a line-level error gets
-/// column 1.
+/// inside the mutation `examine_globs`. Line-level parse errors (line != 0) are
+/// anchored via `anchored(...)`: the `span` field carries the byte range of the
+/// failing raw line (populated by the running-offset loop in the parser), and the
+/// source-id is set so ariadne can render a snippet. File-level errors (line == 0,
+/// e.g. unreadable file) stay unanchored (span 0..0, no source-id) because no
+/// source byte range exists.
 #[must_use]
 pub fn parse_error_to_diagnostic(err: &LocatedParseError) -> Diagnostic {
-    let column = usize::from(err.line != 0);
-    Diagnostic::new(
-        Severity::Fatal,
-        "sshd-F01",
-        0..0,
-        err.message.clone(),
-        err.file.clone(),
-        err.line,
-        column,
-    )
+    if err.line == 0 {
+        // File-level error: no source byte range; plain rendering.
+        Diagnostic::new(
+            Severity::Fatal,
+            "sshd-F01",
+            0..0,
+            err.message.clone(),
+            err.file.clone(),
+            0,
+            0,
+        )
+    } else {
+        // Line-level error: anchored at the failing line's byte range.
+        anchored(
+            Severity::Fatal,
+            "sshd-F01",
+            err.span.clone(),
+            err.message.clone(),
+            err.file.clone(),
+            err.line,
+        )
+    }
 }
 
 /// Run every single-file semantic lint pass over the parsed blocks and return the
@@ -175,32 +188,109 @@ mod tests {
 
     #[test]
     fn parse_error_maps_to_sshd_f01_fatal() {
+        // Line 2 of "MaxAuthTries 4\nBanner \"abc\n": "Banner \"abc" starts at
+        // byte 15 and is 11 bytes long. The span must be 15..26.
         let err = LocatedParseError {
             file: "/etc/ssh/sshd_config".into(),
-            line: 7,
+            line: 2,
             message: "unterminated quoted string".to_string(),
+            span: 15..26,
         };
         let d = parse_error_to_diagnostic(&err);
         assert_eq!(d.severity, Severity::Fatal);
         assert_eq!(d.code, "sshd-F01");
         assert_eq!(d.message, "unterminated quoted string");
         assert_eq!(d.file, err.file);
-        assert_eq!(d.line, 7);
+        assert_eq!(d.line, 2);
         assert_eq!(d.column, 1, "line-level parse errors anchor at column 1");
-        assert_eq!(d.span, 0..0, "parse errors carry no byte span");
-        assert!(d.source_id.is_none(), "unanchored: plain rendering");
+        assert_eq!(
+            d.span,
+            15..26,
+            "parse errors carry the real byte range of the failing line"
+        );
+        assert!(d.source_id.is_some(), "anchored: ariadne source-id is set");
+        assert_eq!(
+            d.source_id.as_deref(),
+            Some("/etc/ssh/sshd_config"),
+            "source-id is the file path display string"
+        );
+    }
+
+    #[test]
+    fn parse_error_span_matches_failing_line_byte_range() {
+        // "MaxAuthTries 4\nBanner \"abc\n": "MaxAuthTries 4" = 14 bytes + newline,
+        // so "Banner \"abc" starts at byte 15 and is 11 bytes long -> span = 15..26.
+        let input = "MaxAuthTries 4\nBanner \"abc\n";
+        let file = std::path::Path::new("/etc/ssh/sshd_config");
+        let errs = crate::parser::parse_config_str_located(input, file)
+            .expect_err("unterminated quote must fail");
+        assert_eq!(errs.len(), 1, "exactly one error");
+        assert_eq!(
+            errs[0].span,
+            15..26,
+            "span must cover the raw 'Banner \"abc' line: starts at byte 15, length 11"
+        );
+        assert_eq!(
+            &input[errs[0].span.clone()],
+            "Banner \"abc",
+            "span must slice to the failing raw line"
+        );
+    }
+
+    #[test]
+    fn parse_error_span_is_byte_offsets_not_char_offsets() {
+        // The failing line `Banner "naïve abc` opens a double quote that is never
+        // closed (unterminated-quote error) and carries a 2-byte UTF-8 char inside
+        // the quoted region, so its BYTE length != CHAR count. This distinguishes
+        // the correct `raw_line.len()` (bytes) span computation from a plausible
+        // `raw_line.chars().count()` (chars) regression. With "MaxAuthTries 4\n"
+        // = 15 bytes, the failing line starts at byte 15; the byte-correct span
+        // end is 15 + 18.
+        let input = "MaxAuthTries 4\nBanner \"na\u{ef}ve abc\n";
+        let failing_line = "Banner \"na\u{ef}ve abc";
+        let file = std::path::Path::new("/etc/ssh/sshd_config");
+        let errs = crate::parser::parse_config_str_located(input, file)
+            .expect_err("unterminated quote must fail on the multibyte line");
+        assert_eq!(errs.len(), 1, "exactly one error");
+        assert_eq!(
+            errs[0].span,
+            15..33,
+            "span must be BYTE offsets: failing line starts at byte 15, byte length 18"
+        );
+        assert_eq!(
+            &input[errs[0].span.clone()],
+            failing_line,
+            "span must slice to the exact failing line text"
+        );
+        let span_len = errs[0].span.end - errs[0].span.start;
+        assert_eq!(
+            span_len,
+            failing_line.len(),
+            "span length must equal the failing line's BYTE length"
+        );
+        assert!(
+            span_len > failing_line.chars().count(),
+            "byte length ({span_len}) must exceed char count ({}); a chars()-based span \
+             would be off by one here",
+            failing_line.chars().count()
+        );
     }
 
     #[test]
     fn file_level_parse_error_keeps_line_and_column_zero() {
+        // File-level errors (line == 0, e.g. unreadable file) stay unanchored:
+        // no meaningful byte range exists, so span stays 0..0 and source_id is None.
         let err = LocatedParseError {
             file: "/nonexistent".into(),
             line: 0,
             message: "cannot read file".to_string(),
+            span: 0..0,
         };
         let d = parse_error_to_diagnostic(&err);
         assert_eq!((d.line, d.column), (0, 0), "file-level errors stay 0/0");
         assert_eq!(d.code, "sshd-F01");
+        assert_eq!(d.span, 0..0, "file-level errors carry no byte span");
+        assert!(d.source_id.is_none(), "file-level errors are unanchored");
     }
 
     #[test]

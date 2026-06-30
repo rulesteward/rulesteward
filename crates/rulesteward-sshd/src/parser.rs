@@ -37,11 +37,16 @@ use crate::ast::{Block, Directive, MatchBlock, MatchCriterion};
 /// A parse error with file provenance, mapped to `sshd-F01` by the CLI.
 ///
 /// `line == 0` marks a file-level error (e.g. an unreadable file).
+///
+/// `span` is the byte range of the failing raw line within the source string,
+/// matching the running-offset pattern in [`parse_config_str_located`]. File-level
+/// errors (line == 0) carry `span = 0..0` because no source byte range exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocatedParseError {
     pub file: std::path::PathBuf,
     pub line: usize,
     pub message: String,
+    pub span: std::ops::Range<usize>,
 }
 
 /// Parse an `sshd_config` file from a string, with file provenance.
@@ -85,6 +90,7 @@ pub fn parse_config_str_located(
                     file: file.to_path_buf(),
                     line: lineno,
                     message,
+                    span: span.clone(),
                 });
                 continue;
             }
@@ -111,6 +117,7 @@ pub fn parse_config_str_located(
                     file: file.to_path_buf(),
                     line: lineno,
                     message,
+                    span: span.clone(),
                 }),
             }
             continue;

@@ -53,23 +53,36 @@ pub use rulesteward_core::anchored;
 /// Map a located parse error to an `au-F01` Fatal diagnostic.
 ///
 /// Lives here (not in the CLI) because this crate OWNS the `au-` codes and is
-/// inside the mutation `examine_globs`. Parse errors carry file + line but no
-/// byte span (the failing line never became a rule), so the diagnostic is
-/// unanchored: empty span, no source-id, plain rendering. `line == 0` marks a
-/// file-level error (unreadable file / missing path) and keeps column 0; a
-/// line-level error gets column 1.
+/// inside the mutation `examine_globs`. Line-level parse errors (line != 0) are
+/// anchored via `anchored(...)`: the `span` field carries the byte range of the
+/// failing raw line (populated by the running-offset loop in the parser), and the
+/// source-id is set so ariadne can render a snippet. File-level errors (line == 0,
+/// e.g. unreadable file / missing path) stay unanchored (span 0..0, no source-id)
+/// because no source byte range exists.
 #[must_use]
 pub fn parse_error_to_diagnostic(err: &crate::parser::LocatedParseError) -> Diagnostic {
-    let column = usize::from(err.line != 0);
-    Diagnostic::new(
-        Severity::Fatal,
-        "au-F01",
-        0..0,
-        err.message.clone(),
-        err.file.clone(),
-        err.line,
-        column,
-    )
+    if err.line == 0 {
+        // File-level error: no source byte range; plain rendering.
+        Diagnostic::new(
+            Severity::Fatal,
+            "au-F01",
+            0..0,
+            err.message.clone(),
+            err.file.clone(),
+            0,
+            0,
+        )
+    } else {
+        // Line-level error: anchored at the failing line's byte range.
+        anchored(
+            Severity::Fatal,
+            "au-F01",
+            err.span.clone(),
+            err.message.clone(),
+            err.file.clone(),
+            err.line,
+        )
+    }
 }
 
 /// Run every semantic lint pass over the concatenated rule stream and return
@@ -115,31 +128,105 @@ mod tests {
 
     #[test]
     fn parse_error_maps_to_au_f01_fatal() {
+        // Line 2 of "-D\n-Z bogus\n": "-D\n" = 3 bytes, so "-Z bogus" starts at
+        // offset 3 and its raw line length is 8. The span must be 3..11.
         let err = crate::parser::LocatedParseError {
             file: "/etc/audit/rules.d/99-bad.rules".into(),
-            line: 7,
+            line: 2,
             message: "unknown flag '-Z'".to_string(),
+            span: 3..11,
         };
         let d = super::parse_error_to_diagnostic(&err);
         assert_eq!(d.severity, Severity::Fatal);
         assert_eq!(d.code, "au-F01");
         assert_eq!(d.message, "unknown flag '-Z'");
         assert_eq!(d.file, err.file);
-        assert_eq!(d.line, 7);
+        assert_eq!(d.line, 2);
         assert_eq!(d.column, 1, "line-level parse errors anchor at column 1");
-        assert_eq!(d.span, 0..0, "parse errors carry no byte span");
-        assert!(d.source_id.is_none(), "unanchored: plain rendering");
+        assert_eq!(
+            d.span,
+            3..11,
+            "parse errors carry the real byte range of the failing line"
+        );
+        assert!(d.source_id.is_some(), "anchored: ariadne source-id is set");
+        assert_eq!(
+            d.source_id.as_deref(),
+            Some("/etc/audit/rules.d/99-bad.rules"),
+            "source-id is the file path display string"
+        );
+    }
+
+    #[test]
+    fn parse_error_span_matches_failing_line_byte_range() {
+        // "-D\n-Z bogus\n": the bad line "-Z bogus" starts at byte 3 (after "-D\n")
+        // and is 8 bytes long, so span = 3..11.
+        let input = "-D\n-Z bogus\n";
+        let file = std::path::Path::new("/etc/audit/rules.d/99-bad.rules");
+        let errs = crate::parser::parse_rules_str_located(input, file).expect_err("-Z must fail");
+        assert_eq!(errs.len(), 1, "exactly one error");
+        assert_eq!(
+            errs[0].span,
+            3..11,
+            "span must cover the raw '-Z bogus' line: starts at byte 3, length 8"
+        );
+        assert_eq!(
+            &input[errs[0].span.clone()],
+            "-Z bogus",
+            "span must slice to the failing raw line"
+        );
+    }
+
+    #[test]
+    fn parse_error_span_is_byte_offsets_not_char_offsets() {
+        // The failing line "-Z naive" (with a 2-byte UTF-8 char in place of the
+        // i) makes BYTE length != CHAR count, so this test distinguishes the
+        // correct `raw_line.len()` (bytes) span computation from a plausible
+        // `raw_line.chars().count()` (chars) regression. With "-D\n" = 3 bytes,
+        // the failing line starts at byte 3; the byte-correct span end is 3 + 9.
+        let input = "-D\n-Z na\u{ef}ve\n"; // line 2 == "-Z naïve" (ï is 2 bytes)
+        let failing_line = "-Z na\u{ef}ve";
+        let file = std::path::Path::new("/etc/audit/rules.d/99-bad.rules");
+        let errs = crate::parser::parse_rules_str_located(input, file)
+            .expect_err("-Z must fail on the multibyte line");
+        assert_eq!(errs.len(), 1, "exactly one error");
+        assert_eq!(
+            errs[0].span,
+            3..12,
+            "span must be BYTE offsets: failing line starts at byte 3, byte length 9"
+        );
+        assert_eq!(
+            &input[errs[0].span.clone()],
+            failing_line,
+            "span must slice to the exact failing line text"
+        );
+        let span_len = errs[0].span.end - errs[0].span.start;
+        assert_eq!(
+            span_len,
+            failing_line.len(),
+            "span length must equal the failing line's BYTE length"
+        );
+        assert!(
+            span_len > failing_line.chars().count(),
+            "byte length ({span_len}) must exceed char count ({}); a chars()-based span \
+             would be off by one here",
+            failing_line.chars().count()
+        );
     }
 
     #[test]
     fn file_level_parse_error_keeps_line_and_column_zero() {
+        // File-level errors (line == 0, e.g. unreadable file) stay unanchored:
+        // no meaningful byte range exists, so span stays 0..0 and source_id is None.
         let err = crate::parser::LocatedParseError {
             file: "/nonexistent".into(),
             line: 0,
             message: "path does not exist: /nonexistent".to_string(),
+            span: 0..0,
         };
         let d = super::parse_error_to_diagnostic(&err);
         assert_eq!((d.line, d.column), (0, 0), "file-level errors stay 0/0");
         assert_eq!(d.code, "au-F01");
+        assert_eq!(d.span, 0..0, "file-level errors carry no byte span");
+        assert!(d.source_id.is_none(), "file-level errors are unanchored");
     }
 }

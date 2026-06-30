@@ -34,11 +34,16 @@ pub struct ParseError {
 /// Same shape as [`ParseError`] plus the source file, so the CLI can map each
 /// error to an `au-F01` diagnostic anchored in the right file. `line == 0`
 /// marks a file-level error (unreadable file / missing path).
+///
+/// `span` is the byte range of the failing raw line within the source string,
+/// matching the running-offset pattern in [`parse_rules_str_located`]. File-level
+/// errors (line == 0) carry `span = 0..0` because no source byte range exists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocatedParseError {
     pub file: std::path::PathBuf,
     pub line: usize,
     pub message: String,
+    pub span: std::ops::Range<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,7 @@ pub fn parse_rules_str_located(
                     file: file.to_path_buf(),
                     line: e.line,
                     message: e.message,
+                    span: offset..offset + raw_line.len(),
                 }),
             }
         }
@@ -120,6 +126,7 @@ pub fn parse_rules_file_located(path: &Path) -> Result<Vec<LocatedRule>, Vec<Loc
             file: path.to_path_buf(),
             line: 0,
             message: format!("cannot read {}: {e}", path.display()),
+            span: 0..0,
         }]
     })?;
     parse_rules_str_located(&content, path)
@@ -152,6 +159,7 @@ pub fn rules_files_in_load_order(dir: &Path) -> Result<Vec<std::path::PathBuf>, 
             file: dir.to_path_buf(),
             line: 0,
             message: format!("cannot read directory {}: {e}", dir.display()),
+            span: 0..0,
         })?
         .filter_map(std::result::Result::ok)
         .filter(|entry| {
@@ -205,6 +213,7 @@ pub fn parse_target_located(path: &Path) -> Result<Vec<LocatedRule>, Vec<Located
             file: path.to_path_buf(),
             line: 0,
             message: format!("path does not exist: {}", path.display()),
+            span: 0..0,
         }])
     }
 }
