@@ -56,6 +56,41 @@ const E02_ALLOW_REPEAT: &[&str] = &[
 /// `pubkeyacceptedkeytypes` / `hostbasedacceptedkeytypes` (the pre-8.5 rename
 /// aliases) are `SSHCFG_ALL` on every version, so they belong here even though the
 /// man page omits the aliases.
+///
+/// # Provenance (hand-authored; do not edit without re-grounding on the VMs)
+///
+/// Snapshot-dated 2026-06-29. Rocky 8.10 / 9.8 / 10.2 (OpenSSH 8.0p1 / 9.9p1 /
+/// 9.9p1). The Match-legality oracle is the daemon's FATAL MESSAGE for a keyword
+/// inside a NON-ACTIVATING Match block, NOT an exit code and NOT `-o`/`-C`.
+/// `servconf.c` emits "Directive '...' is not allowed within a Match block" only
+/// when the Match is inactive AND no connection spec is supplied. So for each
+/// keyword KW, on each VM:
+///   1. Write a CONFIG FILE whose body is a non-activating Match plus KW inside it:
+///      a line `Match User nomatch_zz_user`, then a line `KW yes`.
+///   2. Run plain `sshd -t -f <file>` (no `-o`, no `-C` connection spec, so
+///      `connectinfo == NULL` and the fatal can fire). Classify by the MESSAGE:
+///      - "Bad configuration option: KW" => UNKNOWN to this build (E01's province,
+///        not these sets). TEST THIS FIRST: 8.0p1 emits BOTH the unknown message
+///        AND the "not allowed within a Match block" message for an unknown
+///        keyword, so the unknown check must short-circuit before the global check.
+///      - "...is not allowed within a Match block" => `SSHCFG_GLOBAL` (global-only;
+///        belongs in NEITHER set so it keeps firing E04 inside a Match).
+///      - parses clean (no fatal) => `SSHCFG_ALL`/`SSHCFG_MATCH` (Match-permitted;
+///        goes here if honored on every version, else in the 9.9p1 set).
+///
+/// Do NOT use `sshd -t -o "KW=yes"`: `-o` injects KW into GLOBAL context and
+/// bypasses the Match block, so nearly every recognized keyword false-reports as
+/// permitted. Do NOT use `sshd -T -C user=...` as the take-effect check either: it
+/// folds Match values into the flat dump WITHOUT the `SSHCFG_MATCH` filter, so it
+/// false-reports global-only keywords (Ciphers/Port/...) as honored-in-Match. Both
+/// are the documented wrong oracles.
+///
+/// A keyword fires sshd-E04 iff it is in neither set AND is recognized by the
+/// target registry. A set edit must be accompanied by a corresponding guard-test
+/// update (see `e04_set_guard_tests` below) and VM re-verification on Rocky
+/// 8.10 / 9.8 / 10.2. See also depth-sshd-sets.md FINDING 1 (2026-06-17, the
+/// non-activating-Match oracle) and issue #356 live differential
+/// (gssapienablek5users, 2026-06-29).
 const E04_PERMITTED_BASE: &[&str] = &[
     "acceptenv",
     "allowagentforwarding",
@@ -140,6 +175,24 @@ const E04_PERMITTED_BASE: &[&str] = &[
 /// non-activating-Match `sshd -t` per VM, 2026-06-17). `ignorerhosts` is the
 /// `{ "ignorerhosts", sIgnoreRhosts, SSHCFG_GLOBAL }` entry at `V_8_0_P1` vs
 /// `SSHCFG_ALL` at `V_9_9_P1`, identical in shape to `subsystem`.
+///
+/// # Provenance (hand-authored; do not edit without re-grounding on the VMs)
+///
+/// Snapshot-dated 2026-06-29. Rocky 8.10 / 9.8 / 10.2 (OpenSSH 8.0p1 / 9.9p1 /
+/// 9.9p1). Same non-activating-Match fatal-message oracle as `E04_PERMITTED_BASE`
+/// above (a config file with `Match User nomatch_zz_user` then `KW yes`, plain
+/// `sshd -t -f <file>`, classify by the fatal message - test the UNKNOWN message
+/// first; do NOT use `-o` or `-T -C`). The split between the two sets is per
+/// version: a keyword goes HERE (not in BASE) when it is `SSHCFG_GLOBAL` on 8.0p1
+/// but `SSHCFG_ALL` from 9.x, or is a 9.x-only keyword. Keywords here are either
+/// (a) in `RHEL8_BASE` but `SSHCFG_GLOBAL` on 8.0p1 / `SSHCFG_ALL` from 9.x
+/// (subsystem, ignorerhosts, challengeresponseauthentication, skeyauthentication),
+/// or (b) 9.x-only keywords (logverbose, requiredrsasize, rsaminsize) that are
+/// unknown to the 8.0p1 registry (E01 owns them there; they reach this set only at
+/// --target rhel9/rhel10 or no-target).
+///
+/// A set edit must be accompanied by a guard-test update (see `e04_set_guard_tests`
+/// below) and VM re-verification on Rocky 8.10 / 9.8 / 10.2.
 const E04_PERMITTED_ADDED_9_9P1: &[&str] = &[
     "challengeresponseauthentication",
     "ignorerhosts",
@@ -2347,5 +2400,210 @@ mod w05_tests {
             "PermitUserEnvironment is Match-illegal (sshd-E04's job, not W05); \
              W05 must not fire under --target rhel9; got {diags:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod e04_set_guard_tests {
+    //! Golden-snapshot size + membership guards for the E04 Match-permitted sets.
+    //!
+    //! These tests pin the exact cardinality and key members of
+    //! `E04_PERMITTED_BASE` and `E04_PERMITTED_ADDED_9_9P1` so that a silent
+    //! addition or removal is immediately caught by CI -- the same pattern the
+    //! `registry.rs` `measured_set_sizes` and `grounded_membership_spot_checks`
+    //! tests use for the E01 keyword registry.
+    //!
+    //! Grounding: 2026-06-29 snapshot on Rocky 8.10 / 9.8 / 10.2 (OpenSSH
+    //! 8.0p1 / 9.9p1 / 9.9p1). The Match-legality oracle is the daemon's FATAL
+    //! MESSAGE for a keyword inside a NON-ACTIVATING Match block: a config file
+    //! with `Match User nomatch_zz_user` then `KW yes`, run plain `sshd -t -f
+    //! <file>` (no `-o`, no `-C`). "Bad configuration option" = UNKNOWN (E01,
+    //! tested first); "...is not allowed within a Match block" = `SSHCFG_GLOBAL`
+    //! (in NEITHER set); parses clean = Match-permitted. Do NOT use `-o` (injects
+    //! into global context, bypasses the Match) or `-T -C` (folds without the
+    //! `SSHCFG_MATCH` filter). See the provenance doc-comments above the constants.
+    //!
+    //! # How to update
+    //! When a keyword is added or removed from either set, update BOTH the set
+    //! constant AND the full-membership golden literal below, and re-ground on the
+    //! Rocky VMs using the recipe in the provenance doc-comments above the
+    //! constants. Failure here means the set has drifted from the pinned snapshot.
+
+    use super::{E04_PERMITTED_ADDED_9_9P1, E04_PERMITTED_BASE};
+
+    /// The complete, sorted `E04_PERMITTED_BASE` membership as of the 2026-06-29
+    /// snapshot. A full golden literal (not just a count + spot-checks) is what
+    /// catches a count-preserving 1-in/1-out swap: removing one keyword and adding
+    /// another in the same sort slot keeps the length, sortedness, and
+    /// lowercase-ness intact but silently changes E04 behavior.
+    const EXPECTED_BASE: &[&str] = &[
+        "acceptenv",
+        "allowagentforwarding",
+        "allowgroups",
+        "allowstreamlocalforwarding",
+        "allowtcpforwarding",
+        "allowusers",
+        "authenticationmethods",
+        "authorizedkeyscommand",
+        "authorizedkeyscommanduser",
+        "authorizedkeysfile",
+        "authorizedprincipalscommand",
+        "authorizedprincipalscommanduser",
+        "authorizedprincipalsfile",
+        "banner",
+        "casignaturealgorithms",
+        "channeltimeout",
+        "chrootdirectory",
+        "clientalivecountmax",
+        "clientaliveinterval",
+        "denygroups",
+        "denyusers",
+        "disableforwarding",
+        "exposeauthinfo",
+        "forcecommand",
+        "gatewayports",
+        "gssapiauthentication",
+        "gssapienablek5users",
+        "hostbasedacceptedalgorithms",
+        "hostbasedacceptedkeytypes",
+        "hostbasedauthentication",
+        "hostbasedusesnamefrompacketonly",
+        "include",
+        "ipqos",
+        "kbdinteractiveauthentication",
+        "kerberosauthentication",
+        "kerberosusekuserok",
+        "loglevel",
+        "maxauthtries",
+        "maxsessions",
+        "pamservicename",
+        "passwordauthentication",
+        "permitemptypasswords",
+        "permitlisten",
+        "permitopen",
+        "permitrootlogin",
+        "permittty",
+        "permittunnel",
+        "permituserrc",
+        "pubkeyacceptedalgorithms",
+        "pubkeyacceptedkeytypes",
+        "pubkeyauthentication",
+        "pubkeyauthoptions",
+        "rdomain",
+        "refuseconnection",
+        "rekeylimit",
+        "revokedkeys",
+        "setenv",
+        "streamlocalbindmask",
+        "streamlocalbindunlink",
+        "trustedusercakeys",
+        "unusedconnectiontimeout",
+        "x11displayoffset",
+        "x11forwarding",
+        "x11maxdisplays",
+        "x11uselocalhost",
+    ];
+
+    /// The complete, sorted `E04_PERMITTED_ADDED_9_9P1` membership as of the
+    /// 2026-06-29 snapshot.
+    const EXPECTED_ADDED_9_9P1: &[&str] = &[
+        "challengeresponseauthentication",
+        "ignorerhosts",
+        "logverbose",
+        "requiredrsasize",
+        "rsaminsize",
+        "skeyauthentication",
+        "subsystem",
+    ];
+
+    #[test]
+    fn e04_permitted_base_equals_full_golden_membership() {
+        // FULL-ARRAY golden assertion: catches any content drift, including a
+        // count-preserving 1-in/1-out swap that a `.len()` + spot-check guard
+        // misses (e.g. removing `channeltimeout` and adding `channelfoo` in the
+        // same sort slot keeps count=65, sorted, lowercase, unique). The 65
+        // members are the 2026-06-29 snapshot grounded on Rocky 8.10/9.8/10.2 via
+        // the non-activating-Match fatal-message oracle (see the doc-comment above
+        // E04_PERMITTED_BASE). gssapienablek5users is the issue #356/#362 keyword.
+        assert_eq!(
+            E04_PERMITTED_BASE, EXPECTED_BASE,
+            "E04_PERMITTED_BASE drifted from the 2026-06-29 golden snapshot; \
+             re-ground on Rocky 8.10/9.8/10.2 (non-activating-Match `sshd -t -f`, \
+             NOT `-o`/`-T -C`) and update both the set and EXPECTED_BASE"
+        );
+    }
+
+    #[test]
+    fn e04_permitted_added_9_9p1_equals_full_golden_membership() {
+        // FULL-ARRAY golden assertion for the per-version 9.9p1 additions.
+        assert_eq!(
+            E04_PERMITTED_ADDED_9_9P1, EXPECTED_ADDED_9_9P1,
+            "E04_PERMITTED_ADDED_9_9P1 drifted from the 2026-06-29 golden snapshot; \
+             re-ground on Rocky 8.10/9.8/10.2 and update both the set and \
+             EXPECTED_ADDED_9_9P1"
+        );
+    }
+
+    #[test]
+    fn e04_permitted_set_sizes_are_pinned() {
+        // Cardinality pin (a faster-to-read companion to the full golden
+        // assertions above). E04_PERMITTED_BASE: 65; E04_PERMITTED_ADDED_9_9P1: 7.
+        assert_eq!(
+            E04_PERMITTED_BASE.len(),
+            65,
+            "E04_PERMITTED_BASE size changed from the 2026-06-29 snapshot (65); \
+             re-ground on Rocky 8.10/9.8/10.2 and update both the set and this count"
+        );
+        assert_eq!(
+            E04_PERMITTED_ADDED_9_9P1.len(),
+            7,
+            "E04_PERMITTED_ADDED_9_9P1 size changed from the 2026-06-29 snapshot (7); \
+             re-ground on Rocky 8.10/9.8/10.2 and update both the set and this count"
+        );
+    }
+
+    #[test]
+    fn e04_permitted_sets_are_sorted_ascending_and_lowercase() {
+        // Both arrays must be sorted (ascending, unique) and all-lowercase for
+        // the `slice::contains` search to be correct and for reviewers to verify
+        // membership at a glance.
+        assert!(
+            E04_PERMITTED_BASE.windows(2).all(|w| w[0] < w[1]),
+            "E04_PERMITTED_BASE is not sorted and unique ascending"
+        );
+        assert!(
+            E04_PERMITTED_BASE
+                .iter()
+                .all(|k| !k.is_empty() && !k.contains(|c: char| c.is_ascii_uppercase())),
+            "E04_PERMITTED_BASE has an empty or non-lowercase entry"
+        );
+        assert!(
+            E04_PERMITTED_ADDED_9_9P1.windows(2).all(|w| w[0] < w[1]),
+            "E04_PERMITTED_ADDED_9_9P1 is not sorted and unique ascending"
+        );
+        assert!(
+            E04_PERMITTED_ADDED_9_9P1
+                .iter()
+                .all(|k| !k.is_empty() && !k.contains(|c: char| c.is_ascii_uppercase())),
+            "E04_PERMITTED_ADDED_9_9P1 has an empty or non-lowercase entry"
+        );
+    }
+
+    #[test]
+    fn e04_base_and_added_are_disjoint() {
+        // A keyword in BOTH sets re-introduces the rhel8 over-permit bug: in
+        // `e04_match_permitted`, `E04_PERMITTED_BASE.contains` short-circuits and
+        // returns true for EVERY target, so a keyword also kept in ADDED (e.g.
+        // `subsystem`) would be wrongly Match-permitted under --target rhel8 where
+        // it is SSHCFG_GLOBAL and must still fire E04. Mirrors registry.rs's
+        // `additions_are_disjoint_from_lower_tiers`.
+        for k in E04_PERMITTED_ADDED_9_9P1 {
+            assert!(
+                !E04_PERMITTED_BASE.contains(k),
+                "'{k}' is double-listed in E04_PERMITTED_BASE and \
+                 E04_PERMITTED_ADDED_9_9P1; a base entry is Match-permitted on EVERY \
+                 target, which would defeat its rhel8-only restriction"
+            );
+        }
     }
 }
