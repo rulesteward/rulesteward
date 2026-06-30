@@ -1619,7 +1619,10 @@ mod tests {
         // A runas `(root)` in the FIRST segment then a real segment `:`: paren-depth
         // must return to 0 at `)` so the `:` splits. visudo -c rc 0 + cvtsudoers:
         // `alice h1 = (root) /bin/ls : h2 = /bin/id` -> {h1, runas root, /bin/ls},
-        // {h2, /bin/id}. (Kills the depth `+=`/`-=`, `>` and `)`-arm mutants.)
+        // {h2, /bin/id}. (Kills the depth `+=`/`-=` mutants and the `> 0` guard's
+        // `<`/`<=`/`==` variants. The balanced `)` sits at depth 1, so the depth-0-only
+        // `> 0` -> `>= 0` variant is killed instead by
+        // `unbalanced_close_paren_clamps_depth_and_keeps_later_separator`.)
         let s = only_spec("alice h1 = (root) /bin/ls : h2 = /bin/id\n");
         assert_eq!(
             s.host_groups.len(),
@@ -1691,6 +1694,42 @@ mod tests {
             s.host_groups.len(),
             1,
             "unterminated quote swallows the `:` (documented #346-class limitation)"
+        );
+    }
+
+    // These two assert the splitter's two DEFENSIVE internal contracts directly (the
+    // private fn, not the public `only_spec`/`kinds` path): the depth-clamp on a stray
+    // `)` and the separator-arm `tok_start` reset. The public path folds both edge
+    // inputs into `Malformed` either way, so it cannot distinguish the mutated code -
+    // hence the direct calls. (Nightly mutants run 28428445948 survivors.)
+
+    #[test]
+    fn unbalanced_close_paren_clamps_depth_and_keeps_later_separator() {
+        // A stray unbalanced `)` at depth 0 (malformed; visudo rejects) must CLAMP depth
+        // at 0, not drive it negative -- otherwise a later top-level `:` at the now
+        // negative depth is no longer recognised as a separator and the segments collapse
+        // into one. (Kills the line-612 `depth > 0` -> `depth >= 0` guard mutant, which
+        // lets `depth -= 1` reach -1; the existing `runas_group_then_segment_colon_splits`
+        // uses BALANCED parens so its `)` sits at depth 1 and never exercises this guard.)
+        assert_eq!(
+            split_top_level_segments("a) = b : c = d", false),
+            vec!["a) = b", "c = d"],
+            "a stray `)` must not push depth below 0 and swallow the later `:` separator"
+        );
+    }
+
+    #[test]
+    fn tag_keyword_opening_a_segment_after_a_separator_is_recognised() {
+        // After a genuine top-level `:` separator, `tok_start` must point JUST AFTER the
+        // colon so a tag keyword opening the next segment has preceding-token "NOPASSWD"
+        // (a tag), not ":NOPASSWD" (not a tag). An off-by-one in the separator arm's
+        // `tok_start = i + 1` reset (-> `i * 1` or `i - 1`) misreads the next tag colon as
+        // another separator and over-splits "NOPASSWD: b" into "NOPASSWD" + "b". (Kills
+        // both line-630 `i + 1` -> `i * 1` and `i + 1` -> `i - 1` mutants.)
+        assert_eq!(
+            split_top_level_segments("a : NOPASSWD: b", true),
+            vec!["a", "NOPASSWD: b"],
+            "a tag keyword opening the segment after a `:` separator must not re-split"
         );
     }
 }
