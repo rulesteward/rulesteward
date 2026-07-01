@@ -144,6 +144,33 @@ pub fn anchored(
     anchored_at(severity, code, span, message, file, line, 1)
 }
 
+/// Build a `Fatal` parse-error [`Diagnostic`] with the shared per-backend F01
+/// emission convention.
+///
+/// A line-level parse error (`line != 0`) is [`anchored`] at the failing line's
+/// byte `span`, column 1, with the source-id set so ariadne can render a
+/// snippet. A file-level error (`line == 0`, e.g. an unreadable file or missing
+/// path) has no source byte range, so it stays unanchored (span `0..0`,
+/// column 0, no source-id) and renders plainly.
+///
+/// Each backend's `parse_error_to_diagnostic` (which owns its `code` string and
+/// destructures its own located-parse-error type) delegates here so the
+/// anchored-vs-unanchored F01 rendering lives in one place (issue #289 family).
+#[must_use]
+pub fn parse_error_diagnostic(
+    code: impl Into<Cow<'static, str>>,
+    file: impl Into<PathBuf>,
+    line: usize,
+    span: Span,
+    message: impl Into<String>,
+) -> Diagnostic {
+    if line == 0 {
+        Diagnostic::new(Severity::Fatal, code, 0..0, message, file, 0, 0)
+    } else {
+        anchored(Severity::Fatal, code, span, message, file, line)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +264,46 @@ mod tests {
         assert_eq!(json, "\"Fatal\"");
         let back: Severity = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, Severity::Fatal);
+    }
+
+    #[test]
+    fn parse_error_diagnostic_file_level_is_unanchored() {
+        // line == 0 (unreadable file / missing path): no source byte range, so
+        // the diagnostic stays unanchored (span 0..0, column 0, no source_id)
+        // and renders plainly. Pins the `line == 0` branch.
+        let d = parse_error_diagnostic(
+            "au-F01",
+            "/etc/audit/rules.d/x.rules",
+            0,
+            0..0,
+            "cannot read file",
+        );
+        assert_eq!(d.severity, Severity::Fatal);
+        assert_eq!(d.code, "au-F01");
+        assert_eq!(d.line, 0);
+        assert_eq!(d.column, 0);
+        assert_eq!(d.span, 0..0);
+        assert_eq!(
+            d.source_id, None,
+            "a file-level parse error must stay unanchored"
+        );
+    }
+
+    #[test]
+    fn parse_error_diagnostic_line_level_is_anchored() {
+        // line != 0: anchored at the failing line's byte span, column 1, with the
+        // source_id set to the file path so ariadne renders a snippet. Pins the
+        // `else` (anchored) branch and the column-1 / source_id contract.
+        let d = parse_error_diagnostic("sshd-F01", "/etc/ssh/sshd_config", 7, 40..55, "bad token");
+        assert_eq!(d.severity, Severity::Fatal);
+        assert_eq!(d.code, "sshd-F01");
+        assert_eq!(d.line, 7);
+        assert_eq!(d.column, 1, "anchored parse errors sit at column 1");
+        assert_eq!(d.span, 40..55);
+        assert_eq!(
+            d.source_id,
+            Some("/etc/ssh/sshd_config".to_string()),
+            "a line-level parse error is anchored to its source"
+        );
     }
 }

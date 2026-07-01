@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use rulesteward_core::Diagnostic;
 
-use crate::cli::OutputFormat;
+use crate::cli::{HumanJsonFormat, OutputFormat};
 
 /// Errors a renderer can return. The human and JSON renderers are infallible;
 /// only the SARIF renderer can fail, and only at the final `serde_json`
@@ -48,5 +48,30 @@ pub fn render(
         OutputFormat::Human => Ok(human::render(diags, sources)),
         OutputFormat::Json => Ok(json::render(diags)),
         OutputFormat::Sarif => sarif::render(diags, pass),
+    }
+}
+
+/// Render `diags` in the operator-selected Human/Json format and print the
+/// non-empty result to stdout.
+///
+/// The shared lint-shell emitter for the four `HumanJsonFormat` backends
+/// (sshd / sysctl / sudoers / auditd): each supplies its own envelope `kind`
+/// string and `schema_version` constant (CC-1) and stages `sources` for the
+/// ariadne human path. fapolicyd is NOT a caller: it uses the three-variant
+/// [`render`] (with SARIF + `--sarif-include-pass` attestation). Exit-code
+/// mapping stays in the caller (`exit_code::compute`).
+pub fn emit_lint(
+    format: HumanJsonFormat,
+    kind: &str,
+    schema_version: u32,
+    diags: &[Diagnostic],
+    sources: &BTreeMap<String, String>,
+) {
+    let output = match format {
+        HumanJsonFormat::Human => human::render(diags, sources),
+        HumanJsonFormat::Json => json::render_lint_envelope(kind, schema_version, diags),
+    };
+    if !output.is_empty() {
+        print!("{output}");
     }
 }

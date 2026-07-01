@@ -5,12 +5,9 @@
 //! `sysctld-` codes and the mutation gate); this shell does source-map staging,
 //! rendering, and exit-code mapping only.
 
-use serde::Serialize;
-
-use crate::cli::{HumanJsonFormat, SysctlCommand, SysctlLintArgs};
+use crate::cli::{SysctlCommand, SysctlLintArgs};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_TOOL_FAILURE};
-use crate::output::json::render_envelope;
 
 /// Schema version for the `sysctl-lint` payload kind (CC-1).
 /// Bumps only on a breaking change (field removal, rename, retype).
@@ -23,12 +20,6 @@ pub fn run(cmd: SysctlCommand) -> anyhow::Result<i32> {
     match cmd {
         SysctlCommand::Lint(args) => Ok(lint(&args)),
     }
-}
-
-/// JSON payload for the `sysctl-lint` envelope kind (CC-1).
-#[derive(Serialize)]
-struct SysctlLintPayload<'a> {
-    diagnostics: &'a [rulesteward_core::Diagnostic],
 }
 
 fn lint(args: &SysctlLintArgs) -> i32 {
@@ -65,7 +56,13 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // cross-file W01 or a present-but-insecure W02 (issue #337).
     if path.is_dir() {
         let (diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
-        emit(args, &diags, &sources);
+        crate::output::emit_lint(
+            args.format,
+            "sysctl-lint",
+            SYSCTL_LINT_SCHEMA_VERSION,
+            &diags,
+            &sources,
+        );
         return exit_code::compute(&diags, false);
     }
 
@@ -93,28 +90,13 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // renders as a plain `file:0:0` line. `source` is moved in after the borrow ends.
     let mut sources = std::collections::BTreeMap::new();
     sources.insert(path.display().to_string(), source);
-    emit(args, &diags, &sources);
+    crate::output::emit_lint(
+        args.format,
+        "sysctl-lint",
+        SYSCTL_LINT_SCHEMA_VERSION,
+        &diags,
+        &sources,
+    );
 
     exit_code::compute(&diags, false)
-}
-
-/// Render `diags` via the format the operator selected and print non-empty
-/// output. Shared by the file and directory paths so both surface identical
-/// human / JSON envelopes.
-fn emit(
-    args: &SysctlLintArgs,
-    diags: &[rulesteward_core::Diagnostic],
-    sources: &std::collections::BTreeMap<String, String>,
-) {
-    let output = match args.format {
-        HumanJsonFormat::Human => crate::output::human::render(diags, sources),
-        HumanJsonFormat::Json => render_envelope(
-            "sysctl-lint",
-            SYSCTL_LINT_SCHEMA_VERSION,
-            &SysctlLintPayload { diagnostics: diags },
-        ),
-    };
-    if !output.is_empty() {
-        print!("{output}");
-    }
 }

@@ -32,6 +32,11 @@ examine_globs = [
     # consumed by the auditd + sshd catalogs (issue #289). New top-level core
     # file: list explicitly or its mutation gate passes vacuously (allowlist).
     "crates/rulesteward-core/src/lint_code.rs",
+    # shared base-0 integer magnitude parser (strtoul base-0 radix detection),
+    # consumed by the auditd value interpreter (#229) + sysctld STIG baseline
+    # comparison (A3). New top-level core file: must be listed explicitly or its
+    # mutation gate passes vacuously (allowlist).
+    "crates/rulesteward-core/src/num.rs",
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",

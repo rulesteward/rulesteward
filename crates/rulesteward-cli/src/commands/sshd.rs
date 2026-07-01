@@ -5,12 +5,9 @@
 //! the mutation gate); this shell does target resolution, source-map staging,
 //! rendering, and exit-code mapping only.
 
-use serde::Serialize;
-
-use crate::cli::{HumanJsonFormat, SshdCommand, SshdLintArgs};
+use crate::cli::{SshdCommand, SshdLintArgs};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_TOOL_FAILURE};
-use crate::output::json::render_envelope;
 use rulesteward_sshd::{SshdLintContext, lints, parser::parse_config_str_located};
 
 /// Schema version for the `sshd-lint` payload kind (CC-1).
@@ -24,12 +21,6 @@ pub fn run(cmd: SshdCommand) -> anyhow::Result<i32> {
     match cmd {
         SshdCommand::Lint(args) => Ok(lint(&args)),
     }
-}
-
-/// JSON payload for the `sshd-lint` envelope kind (CC-1).
-#[derive(Serialize)]
-struct SshdLintPayload<'a> {
-    diagnostics: &'a [rulesteward_core::Diagnostic],
 }
 
 fn lint(args: &SshdLintArgs) -> i32 {
@@ -69,19 +60,13 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         let mut diags = lints::drop_in::lint_drop_in(&path, &ctx);
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let sources = std::collections::BTreeMap::new();
-        let output = match args.format {
-            HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
-            HumanJsonFormat::Json => render_envelope(
-                "sshd-lint",
-                SSHD_LINT_SCHEMA_VERSION,
-                &SshdLintPayload {
-                    diagnostics: &diags,
-                },
-            ),
-        };
-        if !output.is_empty() {
-            print!("{output}");
-        }
+        crate::output::emit_lint(
+            args.format,
+            "sshd-lint",
+            SSHD_LINT_SCHEMA_VERSION,
+            &diags,
+            &sources,
+        );
         return exit_code::compute(&diags, false);
     }
 
@@ -113,19 +98,13 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     }
     sources.insert(path.display().to_string(), source);
 
-    let output = match args.format {
-        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
-        HumanJsonFormat::Json => render_envelope(
-            "sshd-lint",
-            SSHD_LINT_SCHEMA_VERSION,
-            &SshdLintPayload {
-                diagnostics: &diags,
-            },
-        ),
-    };
-    if !output.is_empty() {
-        print!("{output}");
-    }
+    crate::output::emit_lint(
+        args.format,
+        "sshd-lint",
+        SSHD_LINT_SCHEMA_VERSION,
+        &diags,
+        &sources,
+    );
 
     exit_code::compute(&diags, false)
 }
