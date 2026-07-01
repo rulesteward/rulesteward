@@ -233,6 +233,14 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
 ///   - `"aes128-cbc" #x` -> arg `aes128-cbc`, then a separate `#x` token
 ///     (the space ends the first token; `#x` is not consumed here)
 ///
+/// Backslash escape sequences (grounded against sshd -T OpenSSH 10.2p1):
+///   - `\"` -> literal `"` (backslash consumed; quote does NOT toggle `in_quote`)
+///   - `\\` -> literal `\` (both backslashes consumed, one emitted)
+///   - `\` before any other char -> backslash kept literally (not an escape)
+///   - trailing `\` (at EOL) -> backslash kept literally
+///
+///   These rules hold both inside and outside quoted spans.
+///
 /// A `=` or `#` inside a bareword token is literal; inline-comment stripping
 /// (whitespace-delimited `#` tokens) is handled by lints, not by the tokenizer.
 ///
@@ -250,6 +258,27 @@ fn read_arg(chars: &mut Peekable<Chars>) -> Result<String, String> {
                 break;
             }
             Some(&c) if c.is_whitespace() && !in_quote => break,
+            Some(&'\\') => {
+                chars.next(); // consume the backslash
+                match chars.peek() {
+                    Some(&'"') => {
+                        // `\"` -> literal `"` in value; does NOT toggle in_quote
+                        s.push('"');
+                        chars.next();
+                    }
+                    Some(&'\\') => {
+                        // `\\` -> literal `\` in value; both backslashes consumed
+                        s.push('\\');
+                        chars.next();
+                    }
+                    _ => {
+                        // `\` before anything else (including EOL): keep the backslash
+                        s.push('\\');
+                        // do NOT advance chars.next() here; the next char will be
+                        // processed on the next iteration
+                    }
+                }
+            }
             Some(&'"') => {
                 in_quote = !in_quote;
                 chars.next(); // consume the `"`, do not push
@@ -425,6 +454,102 @@ mod tests {
             tokenize_line("Banner \"two words\"").unwrap(),
             vec!["Banner", "two words"],
             "whitespace inside quotes is literal: one arg"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Backslash-escape semantics (issue #348 regression, grounded against
+    // sshd -T OpenSSH 10.2p1 on this machine -- see Step 1 grounding table).
+    //
+    // Grounded truth table (exact bytes via printf + od -c, then sshd -T):
+    //   File bytes    | rc | sshd value  | Semantic
+    //   a\"b          |  0 | a"b         | \" -> literal `"`, backslash consumed
+    //   /etc/motd\"   |  0 | /etc/motd"  | same, end-of-token
+    //   "a\"b"        |  0 | a"b         | \" also escapes inside dquotes
+    //   a\\b          |  0 | a\b         | \\ -> literal `\`, one backslash consumed
+    //   a\b           |  0 | a\b         | `\` before ordinary char: backslash KEPT
+    //   abc\          |  0 | abc\        | trailing `\`: backslash KEPT
+    //   "abc          |255 | (error)     | unterminated quote: still rejected
+    //   abc\\"        |255 | (error)     | \\ consumed -> lone " opens unterminated quote
+    //
+    // Escape rule: `\"` and `\\` are two-char escape sequences (backslash consumed).
+    // `\` before any other character keeps the backslash literal. The toggle model
+    // that omitted backslash handling regressed the `\"` cases to Err (sshd-F01).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_backslash_quote_bareword_is_accepted() {
+        // `Banner a\"b` -- backslash before the quote escapes it; sshd rc 0, value `a"b`.
+        // Without backslash handling, the current read_arg sees an opened but unterminated
+        // quoted string (the `"` toggles in_quote ON and we never see a closing `"`).
+        // After the fix, `\"` must yield a literal `"` in the value, NOT an error.
+        assert_eq!(
+            tokenize_line("Banner a\\\"b").unwrap(),
+            vec!["Banner", "a\"b"],
+            "backslash-quote mid-bareword: no error, value has literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_quote_end_of_token_is_accepted() {
+        // `Banner /etc/motd\"` -- trailing backslash-quote; sshd rc 0, value `/etc/motd"`.
+        assert_eq!(
+            tokenize_line("Banner /etc/motd\\\"").unwrap(),
+            vec!["Banner", "/etc/motd\""],
+            "backslash-quote at end of token: no error, value ends with literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_quote_inside_dquotes_is_accepted() {
+        // `Banner "a\"b"` -- backslash-quote INSIDE dquotes; sshd rc 0, value `a"b`.
+        assert_eq!(
+            tokenize_line("Banner \"a\\\"b\"").unwrap(),
+            vec!["Banner", "a\"b"],
+            "backslash-quote inside dquotes: no error, value has literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_double_backslash_yields_single_backslash() {
+        // `Banner a\\b` (file has two literal backslashes); sshd rc 0, value `a\b`.
+        // `\\` is an escape sequence: first backslash consumed, second kept.
+        assert_eq!(
+            tokenize_line("Banner a\\\\b").unwrap(),
+            vec!["Banner", "a\\b"],
+            "double backslash: yields one literal backslash in value"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_before_ordinary_char_keeps_backslash() {
+        // `Banner a\b` (file has one backslash + b); sshd rc 0, value `a\b`.
+        // `\` before an ordinary char is NOT an escape; the backslash is kept.
+        assert_eq!(
+            tokenize_line("Banner a\\b").unwrap(),
+            vec!["Banner", "a\\b"],
+            "backslash before ordinary char: backslash kept in value"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_trailing_backslash_kept() {
+        // `Banner abc\` (file has trailing backslash); sshd rc 0, value `abc\`.
+        assert_eq!(
+            tokenize_line("Banner abc\\").unwrap(),
+            vec!["Banner", "abc\\"],
+            "trailing backslash: kept in value, no error"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_double_backslash_before_quote_is_unterminated() {
+        // `Banner abc\\"` (file: two backslashes then a quote); sshd rc 255.
+        // `\\` consumes both backslashes (yields `\`), then the lone `"` opens
+        // an unterminated quoted string.
+        assert!(
+            tokenize_line("Banner abc\\\\\"").is_err(),
+            "double-backslash before a quote: \\\\ consumed, lone quote -> unterminated"
         );
     }
 
