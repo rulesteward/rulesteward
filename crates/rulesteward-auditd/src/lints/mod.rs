@@ -34,7 +34,7 @@ pub mod operator_validity;
 pub mod ordering;
 pub mod value;
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::Diagnostic;
 
 use crate::ast::LocatedRule;
 pub use value::LintOptions;
@@ -61,28 +61,13 @@ pub use rulesteward_core::anchored;
 /// because no source byte range exists.
 #[must_use]
 pub fn parse_error_to_diagnostic(err: &crate::parser::LocatedParseError) -> Diagnostic {
-    if err.line == 0 {
-        // File-level error: no source byte range; plain rendering.
-        Diagnostic::new(
-            Severity::Fatal,
-            "au-F01",
-            0..0,
-            err.message.clone(),
-            err.file.clone(),
-            0,
-            0,
-        )
-    } else {
-        // Line-level error: anchored at the failing line's byte range.
-        anchored(
-            Severity::Fatal,
-            "au-F01",
-            err.span.clone(),
-            err.message.clone(),
-            err.file.clone(),
-            err.line,
-        )
-    }
+    rulesteward_core::parse_error_diagnostic(
+        "au-F01",
+        err.file.clone(),
+        err.line,
+        err.span.clone(),
+        err.message.clone(),
+    )
 }
 
 /// Run every semantic lint pass over the concatenated rule stream and return
