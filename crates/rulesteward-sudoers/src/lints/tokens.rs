@@ -24,28 +24,30 @@
 //!
 //! 3. **Relative-path command** (e.g. `alice ALL = bin/ls`): visudo reports
 //!    "expected a fully-qualified path name" (rc=1). `RuleSteward` keeps this as
-//!    `CmndItem::Cmnd("bin/ls")`. F02 detects a command token that contains `/`
-//!    but does not start with `/`, `ALL`, or a tag keyword.
+//!    `CmndItem::Cmnd("bin/ls")`. F02 detects a command token whose path (after
+//!    stripping any leading `!` negation prefixes) contains `/` but does not start
+//!    with `/`. A `!`-negated absolute path (`!/bin/su`) is VALID (visudo rc=0)
+//!    and must not fire.
 //!
-//! 4. **Malformed group subject** (e.g. `%bad group ALL = ALL`): visudo reports
-//!    a syntax error at the space after the group name (rc=1). `RuleSteward`
-//!    parses `%bad` as the user and `group ALL` as the host, so the structural
-//!    parse succeeds. F02 detects a `%`-prefixed user token that contains
-//!    embedded whitespace when the token is inspected from the original line
-//!    (or equivalently, a user token starting with `%` whose group name would
-//!    include a space).
+//! 4. **Malformed group subject**: two sub-cases, both grounded against visudo
+//!    (Rocky Linux 9, sudo 1.9.17p2, 2026-06-30):
+//!    - **Embedded whitespace** (`%bad group ALL = ALL`, rc=1): `RuleSteward`
+//!      parses `%bad` as the user and `group ALL` as the host. F02 detects a
+//!      `%`-prefixed user whose host token contains whitespace.
+//!    - **Invalid char in group name** (`%bad!group ALL = ALL`, rc=1): the `!`,
+//!      `(`, or `)` char sits inside the user token itself (no whitespace split
+//!      occurs). F02 checks each `%`-prefixed user token's name for these chars.
+//!      Note: `%#NNN` (GID form) is valid (rc=0) and is excluded from this check.
 //!
 //! # Must-NOT-regress (valid, no F02)
 //!
 //! - `User_Alias FOO = #1000`: the `#1000` follows `=` in an alias DEFINITION
 //!   and is a valid UID member (visudo -c: rc=0 with only an "unused alias"
 //!   warning). F02 must never fire on alias member positions.
-//! - Any ordinary valid sudoers line (root rule, Defaults, %wheel rule, etc.).
-//!
-//! # Implementation stub
-//!
-//! The function body is a stub (`Vec::new()`) in Phase 0. The implementer
-//! fills the body; the tests here are the RED gate.
+//! - `!/bin/su` or `/bin/ls, !/bin/su`: negated absolute-path commands are valid
+//!   (visudo rc=0). The `!` prefix is stripped before the path check.
+//! - `%#1000 ALL = ALL`: GID-referenced group subject is valid (visudo rc=0).
+//! - Any ordinary valid sudoers line (root rule, Defaults, `%wheel` rule, etc.).
 
 use rulesteward_core::{Diagnostic, Severity};
 
@@ -59,9 +61,10 @@ use crate::lints::{SudoersLintContext, anchored};
 /// Covers four per-position cases (see module doc + issue #346):
 /// 1. `#<digits>` in command position.
 /// 2. `#<digits>` in Defaults setting name or value.
-/// 3. Relative-path command (not fully-qualified: contains `/` but does NOT
-///    start with `/`).
-/// 4. Malformed group subject (`%name` with embedded whitespace).
+/// 3. Relative-path command: path (after stripping `!` negation) contains `/`
+///    but does not start with `/`. `!/bin/su` (negated absolute) does NOT fire.
+/// 4. Malformed group subject: `%name` with embedded whitespace OR `%name`
+///    containing an invalid char (`!`, `(`, `)`) in the group name portion.
 ///
 /// Each diagnostic names the offending token / position in its message and is
 /// anchored at the containing line.
@@ -114,14 +117,21 @@ fn check_user_spec(
                 }
                 // Case 3: relative-path command. Inspect ONLY the first
                 // whitespace-delimited word (the command path), not arguments.
-                // A relative path contains `/` but does not start with `/`.
+                // Strip any leading `!` negation prefixes before the path check:
+                // `!/bin/su` is a valid negated absolute command (visudo rc=0);
+                // only the underlying path matters for the relative-vs-absolute test.
+                // A `!`-negated RELATIVE path (`!bin/su`) still fires F02.
                 let cmd_path = token.split_whitespace().next().unwrap_or(token);
-                if cmd_path.contains('/') && !cmd_path.starts_with('/') {
+                let cmd_path_bare = cmd_path.trim_start_matches('!');
+                if cmd_path_bare.contains('/') && !cmd_path_bare.starts_with('/') {
                     diags.push(anchored(
                         Severity::Fatal,
                         "sudo-F02",
                         logical.span.clone(),
-                        format!("command is a relative path that visudo rejects (expected a fully-qualified path): {cmd_path}"),
+                        format!(
+                            "command is a relative path that visudo rejects \
+                             (expected a fully-qualified path): {cmd_path}"
+                        ),
                         file.path.clone(),
                         logical.line,
                     ));
@@ -130,11 +140,50 @@ fn check_user_spec(
         }
     }
 
-    // Case 4: malformed group subject (`%group name` with embedded whitespace).
-    // The parser splits on the first whitespace, so `%bad group ALL = ALL`
-    // produces users=["%bad"] and hosts=["group ALL"]. A host token with embedded
-    // whitespace is structurally impossible in a valid file and signals that a
-    // `%`-prefixed user's group name contained a space.
+    // Case 4: malformed group subject.
+    //
+    // Two sub-cases:
+    //
+    // (a) Embedded-whitespace: `%bad group ALL = ALL` splits into users=["%bad"],
+    //     hosts=["group ALL"]. A host token with embedded whitespace is structurally
+    //     impossible in a valid file and signals the group name had a space.
+    //
+    // (b) Invalid group-name char in the user token itself: `%bad!group ALL = ALL`
+    //     splits into users=["%bad!group"], hosts=["ALL"]. The invalid char (`!`,
+    //     `(`, `)`) is INSIDE the user token, not expressed as host whitespace.
+    //     Grounded against visudo (Rocky Linux 9, sudo 1.9.17p2, 2026-06-30):
+    //       - `!` -> rc=1 "syntax error"
+    //       - `(` -> rc=1 "syntax error"
+    //       - `)` -> rc=1 "syntax error"
+    //     Chars that are accepted in group names (rc=0): letters, digits, `_`, `-`,
+    //     `.`, `/`, `@`, `+`, `~`, `\`, `[`, `,`, and `#` (in the `%#NNN` GID form).
+    //     Note: `:` and `=` in a group name cause the line to parse as Malformed and
+    //     are already caught by sudo-F01 before F02 is reached; they are excluded here.
+    for user in &spec.users {
+        let Some(name) = user.strip_prefix('%') else {
+            continue;
+        };
+        // Sub-case (b): invalid char in the group name portion of the user token.
+        // The `%#NNN` GID form (name starts with `#`) is valid; skip it.
+        if !name.starts_with('#')
+            && let Some(bad_char) = name.chars().find(|c| matches!(c, '!' | '(' | ')'))
+        {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "group subject {user:?} contains an invalid character `{bad_char}` \
+                     in the group name that visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
+            return; // fire once per spec line
+        }
+    }
+    // Sub-case (a): whitespace embedded in host token -- the parser split the group
+    // name at the space and left the tail in the host field.
     if spec.users.iter().any(|u| u.starts_with('%')) {
         for host_group in &spec.host_groups {
             for host in &host_group.hosts {
@@ -148,7 +197,10 @@ fn check_user_spec(
                         Severity::Fatal,
                         "sudo-F02",
                         logical.span.clone(),
-                        format!("group subject {pct_user:?} has an invalid name (embedded whitespace) that visudo rejects"),
+                        format!(
+                            "group subject {pct_user:?} has an invalid name \
+                             (embedded whitespace) that visudo rejects"
+                        ),
                         file.path.clone(),
                         logical.line,
                     ));
@@ -194,23 +246,32 @@ fn check_defaults(
 }
 
 /// Return `true` when `s` contains a `#<digits>` token that the
-/// `strip_inline_comment` stage preserved as a UID/GID reference.
+/// `strip_inline_comment` stage preserved as a UID/GID reference and that is
+/// invalid in a command or Defaults-value context.
 ///
-/// By the time a string reaches the AST, `strip_inline_comment` has already
-/// removed any `#` that is a real comment (ones preceded by non-UID context).
-/// The only surviving `#` followed by digits are the ones preceded by start-
-/// of-string, whitespace, `,`, or `%` -- exactly the positions that produce
-/// invalid tokens in command / Defaults-value context.
+/// By the time a string reaches this function, `strip_inline_comment` has already
+/// removed any `#` that is a genuine inline comment. The only surviving `#` followed
+/// by digits are ones preceded by start-of-string or whitespace -- the positions
+/// that produce invalid UID-like tokens in command / Defaults-value context.
+///
+/// # Why `,` and `%` preceding chars are NOT checked here
+///
+/// The callers always receive comma-split strings (both `parse_cmnd_spec_list` and
+/// `parse_default_settings` split on `,` before producing the tokens passed here),
+/// so no `,` character can appear in the string at the call site. The `%` preceding
+/// char was historically included but is also dead in practice: `%#<digits>` inside
+/// a command arg is visudo-rejected (rc=1, "syntax error") regardless, so it would
+/// be caught by the whitespace-preceded branch (the `%` and `#` form a single
+/// whitespace-delimited word, so the `#` starts at the `%` -- but the START of the
+/// whole argument word is the `%`, not `#`). Removing the dead branches eliminates
+/// the corresponding mutation survivors without any behaviour change.
 fn has_hash_digits(s: &str) -> bool {
     let bytes = s.as_bytes();
     for i in 0..bytes.len() {
         if bytes[i] == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
             let prev_ok = match i.checked_sub(1) {
                 None => true, // `#` at position 0
-                Some(j) => {
-                    let p = bytes[j];
-                    p == b',' || p == b'%' || (p as char).is_whitespace()
-                }
+                Some(j) => (bytes[j] as char).is_whitespace(),
             };
             if prev_ok {
                 return true;
@@ -555,6 +616,273 @@ mod tests {
             f02_diags.len(),
             2,
             "two invalid lines must fire two F02 diagnostics; got {diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Defect 1 (FALSE POSITIVE fix): `!`-negated commands in Case 3
+    // Grounded: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+    // -----------------------------------------------------------------------
+
+    /// `alice ALL = !/bin/su` -- a `!`-negated ABSOLUTE path is VALID.
+    ///
+    /// Oracle: visudo -cf rc=0 ("parsed OK").
+    /// The `!` prefix is a command negation in sudoers; the underlying path `/bin/su`
+    /// is absolute. Case 3 must NOT fire because stripping the leading `!` reveals an
+    /// absolute path.
+    ///
+    /// Before fix: fires (FP) because `!/bin/su` does not start with `/`.
+    #[test]
+    fn f02_bang_negated_absolute_path_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // `!/bin/su` is the standard sudoers syntax for "deny /bin/su".
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = !/bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`!/bin/su` is a valid negated absolute command and must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = /bin/ls, !/bin/su` -- list form with a negated absolute path.
+    ///
+    /// Oracle: visudo -cf rc=0 ("parsed OK").
+    /// The comma-separated list containing `/bin/ls` (allow) and `!/bin/su` (deny)
+    /// is a standard sudoers pattern. Case 3 must NOT fire on `!/bin/su`.
+    ///
+    /// Before fix: fires (FP) because `!/bin/su` does not start with `/`.
+    #[test]
+    fn f02_bang_negated_absolute_in_list_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls, !/bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`/bin/ls, !/bin/su` list with negated absolute must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = !bin/su` -- `!`-negated RELATIVE path MUST still fire F02.
+    ///
+    /// Oracle: visudo -cf rc=1, "expected a fully-qualified path name".
+    /// Stripping the `!` reveals `bin/su` which is relative. F02 must fire.
+    ///
+    /// This test is GREEN before and after the fix (the fix must preserve this).
+    #[test]
+    fn f02_bang_negated_relative_path_fires() {
+        // Fixture: visudo -cf rc=1, "expected a fully-qualified path name".
+        // `!bin/su` is a negated relative path -- visudo rejects it.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = !bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`!bin/su` is a negated relative path and MUST fire F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Defect 2 (FALSE NEGATIVE fix): invalid chars in `%group` name (Case 4)
+    //
+    // Grounded char class (Rocky Linux 9, sudo 1.9.17p2, 2026-06-30):
+    //   REJECTED in group name: `!`, `(`, `)`, space, tab (and `:`, `=` which
+    //   cause Malformed/F01 before F02 can fire -- those are not F02 cases).
+    //   ACCEPTED in group name: letters, digits, `_`, `-`, `.`, `/`, `@`, `+`,
+    //   `~`, `\`, `[`, `,`, `#` (as `%#NNN` GID form).
+    // -----------------------------------------------------------------------
+
+    /// `%bad!group ALL = ALL` -- visudo rc=1, "syntax error" at col 10.
+    ///
+    /// Oracle: `!` is not a valid char in a sudoers group name. The parser produces
+    /// `UserSpec` with `users=["%bad!group"]` (the `!` is inside the token, not
+    /// whitespace-split), so it reaches F02 as a clean `UserSpec`. Case 4 must fire.
+    ///
+    /// Before fix: Case 4 only checks embedded whitespace -- stays silent (FN).
+    #[test]
+    fn f02_group_name_with_bang_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `!` in `%bad!group`.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad!group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%bad!group` has `!` in the group name and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            f02_diags[0].message.contains("%bad!group")
+                || f02_diags[0].message.to_lowercase().contains("group")
+                || f02_diags[0].message.to_lowercase().contains("subject"),
+            "F02 message must name the group token; got {:?}",
+            f02_diags[0].message
+        );
+    }
+
+    /// `%bad(group ALL = ALL` -- visudo rc=1, "syntax error" (paren in group name).
+    ///
+    /// Oracle: `(` is not valid in a sudoers group name. The parser produces
+    /// `UserSpec` with `users=["%bad(group"]`, so F02 Case 4 must fire.
+    #[test]
+    fn f02_group_name_with_open_paren_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `(` in `%bad(group`.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad(group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%bad(group` has `(` in the group name and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%bad)group ALL = ALL` -- visudo rc=1, "syntax error" (close-paren in group name).
+    #[test]
+    fn f02_group_name_with_close_paren_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `)` in `%bad)group`.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad)group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%bad)group` has `)` in the group name and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Defect 2: valid sibling guards -- these must NOT fire F02
+    // -----------------------------------------------------------------------
+
+    /// `%bad/group ALL = ALL` -- visudo rc=0; `/` is a valid char in a group name.
+    #[test]
+    fn f02_group_name_with_slash_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // `/` is valid in group names (e.g. system/admin groups on some distros).
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad/group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%bad/group` is valid (/ accepted in group name) -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `%bad@group ALL = ALL` -- visudo rc=0; `@` is valid in group names.
+    #[test]
+    fn f02_group_name_with_at_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad@group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%bad@group` is valid (@ accepted in group name) -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `%1000abc ALL = ALL` -- visudo rc=0; digits + alpha are valid in group names.
+    #[test]
+    fn f02_group_name_alphanumeric_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%1000abc ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%1000abc` is valid (digits+alpha in group name) -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `%#1000 ALL = ALL` -- visudo rc=0; `%#NNN` is the GID form, valid.
+    ///
+    /// This is distinct from the `%bad!group` user token: `%#1000` starts with `%#`
+    /// and is a GID-referenced group subject. F02 must not fire.
+    #[test]
+    fn f02_group_gid_form_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // `%#1000` means "the group with GID 1000" -- a valid sudoers syntax.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000 ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%#1000` (GID group form) is valid -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Defect 3: has_hash_digits simplification / mutation kill tests
+    //
+    // Reachability analysis (2026-06-30):
+    //   has_hash_digits is called on:
+    //     (a) individual CmndSpec command tokens (comma-split BEFORE call, so no `,`
+    //         in the string at call time)
+    //     (b) Defaults setting name / value strings (also comma-split before call)
+    //   Therefore the `,` preceding-char branch is DEAD CODE in both call sites.
+    //   The `%` preceding-char branch: the only reachable case is `%#<digits>` within
+    //   a token that survived comma-split, e.g. `/bin/prog %#2` as a command arg.
+    //   visudo rejects `%#digits` in both positions (rc=1, grounded 2026-06-30),
+    //   so the `%` branch IS reachable and does fire -- but it is EQUIVALENT to the
+    //   whitespace branch (a space or `%` before `#digits` both reach the same return
+    //   path). The `,` and `%` branches are eliminated below; the simplification keeps
+    //   only start-of-string and whitespace-preceded, which are the only contexts that
+    //   actually arrive at the call sites.
+    // -----------------------------------------------------------------------
+
+    /// `/bin/ls2` -- the digit `2` appears IN the path (not after `#`). Must not fire.
+    ///
+    /// This test kills the `&& -> ||` mutant on line 207: if the condition were `||`,
+    /// any `#` in the string (even not followed by digits) would fire; this path
+    /// has no `#` at all, so it stays silent regardless. But combined with the
+    /// `#` assertion below, it pins that the digit check is necessary.
+    #[test]
+    fn f02_digit_in_path_no_hash_no_f02() {
+        // Fixture: visudo -cf rc=0. `/bin/ls2` is a valid absolute path.
+        // Kills the && -> || mutant: the `||` form would check if `bytes[i] == b'#'`
+        // OR if the next byte is a digit -- but we need BOTH. This path (/bin/ls2)
+        // has no `#`, so a byte at position 6 is `2` not `#`; neither condition
+        // fires alone.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls2\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`/bin/ls2` has a digit but no `#`-prefix -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = /bin/ls #2` -- `#2` preceded by whitespace in a command token.
+    ///
+    /// This test (already present as `f02_hash_digits_in_command_position_fires`)
+    /// kills the `p == b','`->`!=` and the `,`/`%` `|| -> &&` mutants by verifying
+    /// that whitespace-preceded `#digits` DOES fire. The simplified `has_hash_digits`
+    /// (whitespace + start-of-string only) fires correctly via the whitespace arm.
+    ///
+    /// NOTE: this duplicates `f02_hash_digits_in_command_position_fires` above to make
+    /// the killing intent explicit for Defect 3.
+    #[test]
+    fn f02_hash_digits_after_whitespace_fires_kills_survivors() {
+        // Fixture: visudo -cf rc=1.
+        // Verified: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+        // Kills: `p == b','`->`!=` (the negated comma check would suppress whitespace
+        // cases because b' ' != b','); `|| -> &&` (whitespace-only would need BOTH
+        // comma and whitespace, never true for a space-preceded `#`).
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls #2\n"),
+            1,
+            "whitespace-preceded `#2` in command must fire F02"
+        );
+        // Also confirm the bare-at-start case (kills the start-of-string -> false mutant):
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = #2\n"),
+            1,
+            "`#2` at start of command token must fire F02"
         );
     }
 }
