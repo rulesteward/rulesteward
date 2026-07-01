@@ -23,47 +23,38 @@ use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
 /// Fail if not running; Warn if permissive; Ok if running + enforcing.
 fn check_service(probe: &dyn SystemProbe) -> CheckResult {
     match probe.service_state() {
-        Err(e) => CheckResult {
-            name: "service-status",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query service state: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "service-status",
+            format!("could not query service state: {e}"),
+        ),
         Ok(state) => {
             if !state.running {
-                return CheckResult {
-                    name: "service-status",
-                    status: CheckStatus::Fail,
-                    detail: "fapolicyd is not running".to_string(),
-                    remediation: Some("systemctl start fapolicyd".to_string()),
-                };
+                return CheckResult::fail(
+                    "service-status",
+                    "fapolicyd is not running",
+                    "systemctl start fapolicyd",
+                );
             }
             let mode = state.mode.as_deref().unwrap_or("enforcing");
             if mode == "permissive" {
-                CheckResult {
-                    name: "service-status",
-                    status: CheckStatus::Warn,
-                    detail: "fapolicyd is running in permissive mode (permissive=1)".to_string(),
-                    remediation: Some(
-                        "Set permissive=0 in /etc/fapolicyd/fapolicyd.conf and restart the service"
-                            .to_string(),
-                    ),
-                }
+                CheckResult::warn(
+                    "service-status",
+                    "fapolicyd is running in permissive mode (permissive=1)",
+                    "Set permissive=0 in /etc/fapolicyd/fapolicyd.conf and restart the service",
+                )
             } else {
                 // Surface the ACTUAL mode string rather than hard-coding
                 // "enforcing": `read_fapolicyd_mode` defaults an absent
                 // permissive= key to "enforcing", but if a future probe ever
                 // returns some other value we report it verbatim instead of
                 // mislabeling it as enforcing.
-                CheckResult {
-                    name: "service-status",
-                    status: CheckStatus::Ok,
-                    detail: format!(
+                CheckResult::ok(
+                    "service-status",
+                    format!(
                         "fapolicyd is running, enabled={}, mode={mode}",
                         state.enabled
                     ),
-                    remediation: None,
-                }
+                )
             }
         }
     }
@@ -74,53 +65,40 @@ fn check_service(probe: &dyn SystemProbe) -> CheckResult {
 /// Fail < 4.20; Warn >= 4.20 but < 6.3; Ok >= 6.3.
 fn check_kernel(probe: &dyn SystemProbe) -> CheckResult {
     match probe.kernel_release() {
-        Err(e) => CheckResult {
-            name: "kernel-version",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query kernel release: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "kernel-version",
+            format!("could not query kernel release: {e}"),
+        ),
         Ok(release) => {
             match parse_kernel_version(&release) {
-                None => CheckResult {
-                    name: "kernel-version",
-                    status: CheckStatus::Unknown,
-                    detail: format!("could not parse kernel version from: {release:?}"),
-                    remediation: None,
-                },
+                None => CheckResult::unknown(
+                    "kernel-version",
+                    format!("could not parse kernel version from: {release:?}"),
+                ),
                 Some((major, minor)) => {
                     // Compare as (major, minor) tuples.
                     if (major, minor) < (4, 20) {
-                        CheckResult {
-                            name: "kernel-version",
-                            status: CheckStatus::Fail,
-                            detail: format!(
-                                "kernel {release} is below 4.20 (fanotify requires >= 4.20)"
-                            ),
-                            remediation: Some("Upgrade to kernel >= 4.20".to_string()),
-                        }
+                        CheckResult::fail(
+                            "kernel-version",
+                            format!("kernel {release} is below 4.20 (fanotify requires >= 4.20)"),
+                            "Upgrade to kernel >= 4.20",
+                        )
                     } else if (major, minor) < (6, 3) {
-                        CheckResult {
-                            name: "kernel-version",
-                            status: CheckStatus::Warn,
-                            detail: format!(
+                        CheckResult::warn(
+                            "kernel-version",
+                            format!(
                                 "kernel {release} supports fanotify but lacks the full \
                                  FANOTIFY field set (requires >= 6.3)"
                             ),
-                            remediation: Some(
-                                "Upgrade to kernel >= 6.3 for the full FANOTIFY field set"
-                                    .to_string(),
-                            ),
-                        }
+                            "Upgrade to kernel >= 6.3 for the full FANOTIFY field set",
+                        )
                     } else {
-                        CheckResult {
-                            name: "kernel-version",
-                            status: CheckStatus::Ok,
-                            detail: format!(
+                        CheckResult::ok(
+                            "kernel-version",
+                            format!(
                                 "kernel {release} supports fanotify and the full FANOTIFY field set"
                             ),
-                            remediation: None,
-                        }
+                        )
                     }
                 }
             }
@@ -148,60 +126,45 @@ fn parse_kernel_version(release: &str) -> Option<(u32, u32)> {
 /// Fail if count == 0; Ok otherwise.
 fn check_audit_rules(probe: &dyn SystemProbe) -> CheckResult {
     match probe.audit_rule_count() {
-        Err(e) => CheckResult {
-            name: "audit-syscall-rules",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query auditctl rules: {e}"),
-            remediation: None,
-        },
-        Ok(0) => CheckResult {
-            name: "audit-syscall-rules",
-            status: CheckStatus::Fail,
-            detail: "no audit syscall rules loaded; fapolicyd FANOTIFY events may be invisible"
-                .to_string(),
-            remediation: Some(
-                "auditctl -a always,exit -F arch=b64 -S all -k fapolicyd".to_string(),
-            ),
-        },
-        Ok(count) => CheckResult {
-            name: "audit-syscall-rules",
-            status: CheckStatus::Ok,
-            detail: format!("{count} audit rule(s) loaded"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "audit-syscall-rules",
+            format!("could not query auditctl rules: {e}"),
+        ),
+        Ok(0) => CheckResult::fail(
+            "audit-syscall-rules",
+            "no audit syscall rules loaded; fapolicyd FANOTIFY events may be invisible",
+            "auditctl -a always,exit -F arch=b64 -S all -k fapolicyd",
+        ),
+        Ok(count) => CheckResult::ok(
+            "audit-syscall-rules",
+            format!("{count} audit rule(s) loaded"),
+        ),
     }
 }
 
 /// Check 4: `fapolicyd-cli --check-config`.
 fn check_config_cmd(probe: &dyn SystemProbe) -> CheckResult {
     match probe.check_config() {
-        Err(e) => CheckResult {
-            name: "config-check",
-            status: CheckStatus::Unknown,
-            detail: format!("could not run fapolicyd-cli --check-config: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "config-check",
+            format!("could not run fapolicyd-cli --check-config: {e}"),
+        ),
         Ok(outcome) => {
             if outcome.success {
-                CheckResult {
-                    name: "config-check",
-                    status: CheckStatus::Ok,
-                    detail: if outcome.message.is_empty() {
+                CheckResult::ok(
+                    "config-check",
+                    if outcome.message.is_empty() {
                         "fapolicyd-cli --check-config passed".to_string()
                     } else {
                         outcome.message.clone()
                     },
-                    remediation: None,
-                }
+                )
             } else {
-                CheckResult {
-                    name: "config-check",
-                    status: CheckStatus::Fail,
-                    detail: format!("fapolicyd-cli --check-config failed: {}", outcome.message),
-                    remediation: Some(
-                        "Review /etc/fapolicyd/fapolicyd.conf for syntax errors".to_string(),
-                    ),
-                }
+                CheckResult::fail(
+                    "config-check",
+                    format!("fapolicyd-cli --check-config failed: {}", outcome.message),
+                    "Review /etc/fapolicyd/fapolicyd.conf for syntax errors",
+                )
             }
         }
     }
@@ -210,49 +173,40 @@ fn check_config_cmd(probe: &dyn SystemProbe) -> CheckResult {
 /// Check 5: `rulesteward fapolicyd lint /etc/fapolicyd/rules.d/`.
 fn check_lint(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
     match probe.lint_rules(rules_dir) {
-        Err(e) => CheckResult {
-            name: "rules-lint",
-            status: CheckStatus::Unknown,
-            detail: format!("lint probe failed: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown("rules-lint", format!("lint probe failed: {e}")),
         Ok(counts) => {
             if counts.errors > 0 {
-                CheckResult {
-                    name: "rules-lint",
-                    status: CheckStatus::Fail,
-                    detail: format!(
+                CheckResult::fail(
+                    "rules-lint",
+                    format!(
                         "lint found {} error(s) and {} warning(s) in {}",
                         counts.errors,
                         counts.warnings,
                         rules_dir.display()
                     ),
-                    remediation: Some(format!(
+                    format!(
                         "Run `rulesteward fapolicyd lint {}` to see full details",
                         rules_dir.display()
-                    )),
-                }
+                    ),
+                )
             } else if counts.warnings > 0 {
-                CheckResult {
-                    name: "rules-lint",
-                    status: CheckStatus::Warn,
-                    detail: format!(
+                CheckResult::warn(
+                    "rules-lint",
+                    format!(
                         "lint found {} warning(s) in {}",
                         counts.warnings,
                         rules_dir.display()
                     ),
-                    remediation: Some(format!(
+                    format!(
                         "Run `rulesteward fapolicyd lint {}` for details",
                         rules_dir.display()
-                    )),
-                }
+                    ),
+                )
             } else {
-                CheckResult {
-                    name: "rules-lint",
-                    status: CheckStatus::Ok,
-                    detail: format!("no lint issues in {}", rules_dir.display()),
-                    remediation: None,
-                }
+                CheckResult::ok(
+                    "rules-lint",
+                    format!("no lint issues in {}", rules_dir.display()),
+                )
             }
         }
     }
@@ -261,12 +215,10 @@ fn check_lint(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
 /// Check 6: `fapolicyd-cli --check-trustdb`.
 fn check_trustdb_cmd(probe: &dyn SystemProbe) -> CheckResult {
     match probe.check_trustdb() {
-        Err(e) => CheckResult {
-            name: "trustdb-check",
-            status: CheckStatus::Unknown,
-            detail: format!("could not run fapolicyd-cli --check-trustdb: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "trustdb-check",
+            format!("could not run fapolicyd-cli --check-trustdb: {e}"),
+        ),
         Ok(outcome) => cmd_outcome_to_result("trustdb-check", &outcome, "trust DB is consistent"),
     }
 }
@@ -274,12 +226,10 @@ fn check_trustdb_cmd(probe: &dyn SystemProbe) -> CheckResult {
 /// Check 7: `fapolicyd-cli --check-watch_fs`.
 fn check_watch_fs_cmd(probe: &dyn SystemProbe) -> CheckResult {
     match probe.check_watch_fs() {
-        Err(e) => CheckResult {
-            name: "watch-fs-check",
-            status: CheckStatus::Unknown,
-            detail: format!("could not run fapolicyd-cli --check-watch_fs: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "watch-fs-check",
+            format!("could not run fapolicyd-cli --check-watch_fs: {e}"),
+        ),
         Ok(outcome) => cmd_outcome_to_result(
             "watch-fs-check",
             &outcome,
@@ -293,20 +243,14 @@ fn check_watch_fs_cmd(probe: &dyn SystemProbe) -> CheckResult {
 /// Skip with note if the installed fapolicyd predates 1.4.
 fn check_ignore_mounts_cmd(probe: &dyn SystemProbe) -> CheckResult {
     match probe.check_ignore_mounts() {
-        Err(e) => CheckResult {
-            name: "ignore-mounts-check",
-            status: CheckStatus::Unknown,
-            detail: format!("could not run fapolicyd-cli --check-ignore_mounts: {e}"),
-            remediation: None,
-        },
-        Ok(None) => CheckResult {
-            name: "ignore-mounts-check",
-            status: CheckStatus::Skip,
-            detail:
-                "--check-ignore_mounts not supported by this fapolicyd version (requires >= 1.4)"
-                    .to_string(),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "ignore-mounts-check",
+            format!("could not run fapolicyd-cli --check-ignore_mounts: {e}"),
+        ),
+        Ok(None) => CheckResult::skip(
+            "ignore-mounts-check",
+            "--check-ignore_mounts not supported by this fapolicyd version (requires >= 1.4)",
+        ),
         Ok(Some(outcome)) => cmd_outcome_to_result(
             "ignore-mounts-check",
             &outcome,
@@ -324,25 +268,16 @@ fn check_ignore_mounts_cmd(probe: &dyn SystemProbe) -> CheckResult {
 /// none -> Ok, RHCOS -> Warn (fapolicyd is not the supported control path).
 fn check_container(container: Option<&ContainerReport>) -> CheckResult {
     let Some(report) = container else {
-        return CheckResult {
-            name: "container-check",
-            status: CheckStatus::Unknown,
-            detail: "container-check did not run".to_string(),
-            remediation: None,
-        };
+        return CheckResult::unknown("container-check", "container-check did not run");
     };
 
     if report.rhcos.is_rhcos {
-        return CheckResult {
-            name: "container-check",
-            status: CheckStatus::Warn,
-            detail: format!("RHCOS/OpenShift node: {}", report.rhcos.detail),
-            remediation: Some(
-                "fapolicyd does not fully support OpenShift/RHCOS app control (RHEL-114562); \
-                 see `rulesteward fapolicyd container-check`"
-                    .to_string(),
-            ),
-        };
+        return CheckResult::warn(
+            "container-check",
+            format!("RHCOS/OpenShift node: {}", report.rhcos.detail),
+            "fapolicyd does not fully support OpenShift/RHCOS app control (RHEL-114562); \
+             see `rulesteward fapolicyd container-check`",
+        );
     }
 
     let n = report.findings.len();
@@ -380,26 +315,16 @@ fn check_container(container: Option<&ContainerReport>) -> CheckResult {
 /// Ok if present; Warn if absent (live RPM trust-DB update path missing).
 fn check_rpm_plugin(probe: &dyn SystemProbe) -> CheckResult {
     match probe.rpm_plugin_installed() {
-        Err(e) => CheckResult {
-            name: "rpm-plugin",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query rpm-plugin-fapolicyd: {e}"),
-            remediation: None,
-        },
-        Ok(true) => CheckResult {
-            name: "rpm-plugin",
-            status: CheckStatus::Ok,
-            detail: "rpm-plugin-fapolicyd is installed".to_string(),
-            remediation: None,
-        },
-        Ok(false) => CheckResult {
-            name: "rpm-plugin",
-            status: CheckStatus::Warn,
-            detail:
-                "rpm-plugin-fapolicyd is not installed; RPM trust-DB updates will not be automatic"
-                    .to_string(),
-            remediation: Some("dnf install rpm-plugin-fapolicyd".to_string()),
-        },
+        Err(e) => CheckResult::unknown(
+            "rpm-plugin",
+            format!("could not query rpm-plugin-fapolicyd: {e}"),
+        ),
+        Ok(true) => CheckResult::ok("rpm-plugin", "rpm-plugin-fapolicyd is installed"),
+        Ok(false) => CheckResult::warn(
+            "rpm-plugin",
+            "rpm-plugin-fapolicyd is not installed; RPM trust-DB updates will not be automatic",
+            "dnf install rpm-plugin-fapolicyd",
+        ),
     }
 }
 
@@ -411,44 +336,29 @@ const FAIL_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
 /// Check 11: free space in /var/lib/fapolicyd/ (LMDB pre-allocates ~100 MiB).
 fn check_disk_space(probe: &dyn SystemProbe) -> CheckResult {
     match probe.fapolicyd_db_space() {
-        Err(e) => CheckResult {
-            name: "disk-space",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query /var/lib/fapolicyd/ free space: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "disk-space",
+            format!("could not query /var/lib/fapolicyd/ free space: {e}"),
+        ),
         Ok(space) => {
             let mib = space.bytes_free / (1024 * 1024);
             if space.bytes_free < FAIL_BYTES {
-                CheckResult {
-                    name: "disk-space",
-                    status: CheckStatus::Fail,
-                    detail: format!(
-                        "/var/lib/fapolicyd/ has only {mib} MiB free (< 100 MiB threshold)"
-                    ),
-                    remediation: Some(
-                        "Free space on the /var/lib/fapolicyd partition; LMDB needs >= 100 MiB"
-                            .to_string(),
-                    ),
-                }
+                CheckResult::fail(
+                    "disk-space",
+                    format!("/var/lib/fapolicyd/ has only {mib} MiB free (< 100 MiB threshold)"),
+                    "Free space on the /var/lib/fapolicyd partition; LMDB needs >= 100 MiB",
+                )
             } else if space.bytes_free < WARN_BYTES {
-                CheckResult {
-                    name: "disk-space",
-                    status: CheckStatus::Warn,
-                    detail: format!(
-                        "/var/lib/fapolicyd/ has {mib} MiB free (< 128 MiB warning threshold)"
-                    ),
-                    remediation: Some(
-                        "Consider freeing space; LMDB pre-allocates ~100 MiB".to_string(),
-                    ),
-                }
+                CheckResult::warn(
+                    "disk-space",
+                    format!("/var/lib/fapolicyd/ has {mib} MiB free (< 128 MiB warning threshold)"),
+                    "Consider freeing space; LMDB pre-allocates ~100 MiB",
+                )
             } else {
-                CheckResult {
-                    name: "disk-space",
-                    status: CheckStatus::Ok,
-                    detail: format!("/var/lib/fapolicyd/ has {mib} MiB free"),
-                    remediation: None,
-                }
+                CheckResult::ok(
+                    "disk-space",
+                    format!("/var/lib/fapolicyd/ has {mib} MiB free"),
+                )
             }
         }
     }
@@ -460,12 +370,10 @@ fn check_disk_space(probe: &dyn SystemProbe) -> CheckResult {
 /// subj/obj when present) in the detail. Spec §6.1 defines no spike threshold.
 fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
     match probe.denial_stats() {
-        Err(e) => CheckResult {
-            name: "denial-rate",
-            status: CheckStatus::Unknown,
-            detail: format!("could not query denial statistics: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "denial-rate",
+            format!("could not query denial statistics: {e}"),
+        ),
         Ok(stats) => {
             let mut detail = format!(
                 "denials: {} in past 24h, {} in past 7d",
@@ -477,12 +385,7 @@ fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
                     let _ = write!(detail, "[{subj} -> {obj} x{count}]");
                 }
             }
-            CheckResult {
-                name: "denial-rate",
-                status: CheckStatus::Ok,
-                detail,
-                remediation: None,
-            }
+            CheckResult::ok("denial-rate", detail)
         }
     }
 }
@@ -492,12 +395,10 @@ fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
 /// Each condition that is true -> Warn with specific detail. All false -> Ok.
 fn check_misconfig(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
     match probe.fapolicyd_conf(rules_dir) {
-        Err(e) => CheckResult {
-            name: "misconfiguration",
-            status: CheckStatus::Unknown,
-            detail: format!("could not read fapolicyd configuration: {e}"),
-            remediation: None,
-        },
+        Err(e) => CheckResult::unknown(
+            "misconfiguration",
+            format!("could not read fapolicyd configuration: {e}"),
+        ),
         Ok(conf) => {
             let mut issues: Vec<String> = Vec::new();
             if conf.permissive_set {
@@ -515,21 +416,13 @@ fn check_misconfig(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
                 );
             }
             if issues.is_empty() {
-                CheckResult {
-                    name: "misconfiguration",
-                    status: CheckStatus::Ok,
-                    detail: "no misconfiguration detected".to_string(),
-                    remediation: None,
-                }
+                CheckResult::ok("misconfiguration", "no misconfiguration detected")
             } else {
-                CheckResult {
-                    name: "misconfiguration",
-                    status: CheckStatus::Warn,
-                    detail: issues.join("; "),
-                    remediation: Some(
-                        "Review the listed configuration items and correct them".to_string(),
-                    ),
-                }
+                CheckResult::warn(
+                    "misconfiguration",
+                    issues.join("; "),
+                    "Review the listed configuration items and correct them",
+                )
             }
         }
     }
@@ -546,19 +439,13 @@ fn cmd_outcome_to_result(
     ok_detail: &'static str,
 ) -> CheckResult {
     if outcome.success {
-        CheckResult {
-            name,
-            status: CheckStatus::Ok,
-            detail: ok_detail.to_string(),
-            remediation: None,
-        }
+        CheckResult::ok(name, ok_detail)
     } else {
-        CheckResult {
+        CheckResult::fail(
             name,
-            status: CheckStatus::Fail,
-            detail: format!("failed: {}", outcome.message),
-            remediation: Some(format!("Investigate the {name} failure")),
-        }
+            format!("failed: {}", outcome.message),
+            format!("Investigate the {name} failure"),
+        )
     }
 }
 

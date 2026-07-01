@@ -39,6 +39,68 @@ pub struct CheckResult {
     pub remediation: Option<String>,
 }
 
+impl CheckResult {
+    /// A passing check. No remediation (per the status/remediation convention).
+    pub fn ok(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Ok,
+            detail: detail.into(),
+            remediation: None,
+        }
+    }
+
+    /// A warning check, carrying a remediation hint.
+    pub fn warn(
+        name: &'static str,
+        detail: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Warn,
+            detail: detail.into(),
+            remediation: Some(remediation.into()),
+        }
+    }
+
+    /// A failing check, carrying a remediation hint.
+    pub fn fail(
+        name: &'static str,
+        detail: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Fail,
+            detail: detail.into(),
+            remediation: Some(remediation.into()),
+        }
+    }
+
+    /// A skipped check: not applicable here. Informational, never escalates the
+    /// exit code; no remediation.
+    pub fn skip(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Skip,
+            detail: detail.into(),
+            remediation: None,
+        }
+    }
+
+    /// An indeterminate check: the probe failed. Informational, never escalates
+    /// the exit code; no remediation.
+    pub fn unknown(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            status: CheckStatus::Unknown,
+            detail: detail.into(),
+            remediation: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Probe input types -- plain data structs returned by SystemProbe methods
 // ---------------------------------------------------------------------------
@@ -139,4 +201,34 @@ pub trait SystemProbe {
 
     /// Parse /etc/fapolicyd/fapolicyd.conf and the rules dir for misconfiguration flags.
     fn fapolicyd_conf(&self, rules_dir: &Path) -> Result<FapolicydConf, String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CheckResult, CheckStatus};
+
+    #[test]
+    fn constructors_set_status_detail_and_remediation() {
+        let ok = CheckResult::ok("svc", "running");
+        assert_eq!(ok.name, "svc");
+        assert_eq!(ok.status, CheckStatus::Ok);
+        assert_eq!(ok.detail, "running");
+        assert_eq!(ok.remediation, None);
+
+        let warn = CheckResult::warn("svc", "degraded", "restart it");
+        assert_eq!(warn.status, CheckStatus::Warn);
+        assert_eq!(warn.remediation.as_deref(), Some("restart it"));
+
+        let fail = CheckResult::fail("svc", "down", "start it");
+        assert_eq!(fail.status, CheckStatus::Fail);
+        assert_eq!(fail.remediation.as_deref(), Some("start it"));
+
+        let skip = CheckResult::skip("svc", "n/a");
+        assert_eq!(skip.status, CheckStatus::Skip);
+        assert_eq!(skip.remediation, None);
+
+        let unknown = CheckResult::unknown("svc", "probe failed");
+        assert_eq!(unknown.status, CheckStatus::Unknown);
+        assert_eq!(unknown.remediation, None);
+    }
 }
