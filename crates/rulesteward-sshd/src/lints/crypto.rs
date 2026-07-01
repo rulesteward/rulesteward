@@ -154,13 +154,13 @@ enum Weak03Kind {
 ///   (literal `"` chars) as a single arg. After stripping `"`, the effective
 ///   value is `+aes128-cbc`, which W06 then processes normally.
 ///
-/// - **Quote-split multi-arg**: `Ciphers "aes128-cbc",aes256-ctr` -- `read_arg`
-///   strips the outer quotes of `"aes128-cbc"` and yields `aes128-cbc`, then
-///   `,aes256-ctr` (starting with `,`) becomes the next bareword token. The
-///   parser therefore produces `args = ["aes128-cbc", ",aes256-ctr"]`. sshd loads
-///   these as the comma-joined value `aes128-cbc,aes256-ctr`. This helper
-///   recognizes the `,`-prefix signal and concatenates all effective args (no
-///   separator) to reconstruct the sshd-equivalent value.
+/// - **Quote-glued single arg**: `Ciphers "aes128-cbc",aes256-ctr` -- `read_arg`
+///   strips the outer quotes and glues the trailing `,aes256-ctr` onto the same
+///   token, so the parser yields a SINGLE arg `aes128-cbc,aes256-ctr` (#348),
+///   which sshd loads as that comma list; it takes the `[one]` arm. A SPACE
+///   before the comma (`aes128-cbc ,aes256-ctr`) instead splits into two args,
+///   but sshd REJECTS that line (rc 255, "extra arguments at end of line"), so
+///   the helper suppresses it (`None`) rather than lint an unloadable config.
 ///
 /// Counter-check: `Ciphers "aes128-cbc # x"` -- the parser strips outer quotes,
 /// yielding the single arg `aes128-cbc # x` (which contains `#`). The `#` check
@@ -173,18 +173,19 @@ fn algo_list_value(args: &[String]) -> Option<String> {
         None => args,
     };
 
-    // Step 2: assemble the raw value string.
+    // Step 2: assemble the raw value string. A single effective arg is the value
+    // (sshd's valid single-token cipher list, including the quote-glued
+    // `"aes128-cbc",aes256-ctr` form the tokenizer emits as one arg, #348).
     //
-    // If all args from index 1 onward start with `,`, they were produced by the
-    // tokenizer splitting a quoted-then-bareword sequence on token boundaries
-    // (e.g. `"aes128-cbc",aes256-ctr` -> `["aes128-cbc", ",aes256-ctr"]`). In
-    // that case, concatenate all effective args directly (no separator) to
-    // reconstruct the logical comma-list sshd would see. Otherwise, two or more
-    // genuinely whitespace-separated args is a real multi-arg value that sshd
-    // rejects (rc 255); return None to suppress it.
+    // Any genuine multi-arg value is a line sshd rejects (rc 255, "extra arguments
+    // at end of line"; verified OpenSSH 10.2p1), so the config never loads and we
+    // must not lint it -> `None`. The only tokenizations that split a value into
+    // `[X, ",Y", ...]` have a SPACE before a comma (e.g. `aes128-cbc ,aes256-ctr`),
+    // every one of which sshd rejects. (#377/#348 follow-up: a former
+    // comma-continuation concat arm here fired a W03/W06 false positive on these
+    // sshd-invalid lines.)
     let raw: String = match effective {
         [one] => one.clone(),
-        [_first, rest @ ..] if rest.iter().all(|a| a.starts_with(',')) => effective.concat(),
         _ => return None,
     };
 
@@ -1119,6 +1120,66 @@ mod w03_tests {
         assert_eq!(diags[0].code, "sshd-W03");
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(diags[0].line, 1, "flagged at the Ciphers directive line");
+    }
+
+    #[test]
+    fn ciphers_quoted_comma_list_fires_w03_on_weak_head() {
+        // `Ciphers "aes128-cbc",aes256-ctr`: sshd strips the quotes and glues the
+        // trailing `,aes256-ctr`, so the tokenizer emits a SINGLE arg
+        // `aes128-cbc,aes256-ctr` (#348) and sshd loads it as that comma list.
+        // W03 must fire on the weak `aes128-cbc` head. Grounded: `sshd -T` on
+        // OpenSSH 10.2p1 accepts this line as `ciphers aes128-cbc,aes256-ctr`.
+        let diags = run("Ciphers \"aes128-cbc\",aes256-ctr\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "quote-glued comma-list => one W03 diagnostic on the weak head"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert_eq!(diags[0].line, 1);
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak cipher, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn ciphers_space_before_comma_is_sshd_rejected_and_does_not_fire() {
+        // `Ciphers aes128-cbc ,aes256-ctr` (SPACE before the comma) tokenizes to
+        // two args `["aes128-cbc", ",aes256-ctr"]`. Real sshd REJECTS this line --
+        // `sshd -T` on OpenSSH 10.2p1 errors "keyword Ciphers extra arguments at
+        // end of line" (rc 255) -- so the config never loads and RuleSteward must
+        // NOT report a weak cipher on it. `algo_list_value` returns `None` for any
+        // genuine multi-arg value. (#377/#348 follow-up: this was a W03 false
+        // positive; regression guard for the dropped comma-continuation arm.)
+        assert!(
+            run("Ciphers aes128-cbc ,aes256-ctr\n").is_empty(),
+            "space-before-comma multi-arg (sshd rejects the line) must not fire W03"
+        );
+        // The quoted single-arg form IS valid to sshd and still fires: the fix
+        // suppresses only the genuine multi-arg case, not the valid glued list.
+        assert_eq!(
+            run("Ciphers \"aes128-cbc\",aes256-ctr\n").len(),
+            1,
+            "the sshd-valid quote-glued comma list still fires on the weak head"
+        );
+    }
+
+    #[test]
+    fn ciphers_backslash_escaped_quote_head_does_not_fire() {
+        // `Ciphers \"aes128-cbc` -- a backslash-escaped double-quote makes the
+        // tokenizer emit a SINGLE arg with a LITERAL leading `"` (`"aes128-cbc`).
+        // Real sshd REJECTS the line ("Bad SSH2 cipher spec '\"aes128-cbc'", OpenSSH
+        // 10.2p1), so the config never loads and must not be linted. algo_list_value's
+        // odd-`"`-count guard (a lone `"` means a malformed quoted spec) returns None,
+        // so no W03 fires. Pins that guard's `count % 2 != 0`: a `% -> /` mutant would
+        // instead strip the `"`, yield `aes128-cbc`, and fire a false positive.
+        assert!(
+            run("Ciphers \\\"aes128-cbc\n").is_empty(),
+            "backslash-escaped-quote head (sshd rc255 Bad cipher spec) must not fire W03"
+        );
     }
 
     #[test]
