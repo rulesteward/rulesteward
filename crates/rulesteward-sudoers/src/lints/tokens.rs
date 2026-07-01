@@ -149,16 +149,20 @@ fn check_user_spec(
     //     impossible in a valid file and signals the group name had a space.
     //
     // (b) Invalid group-name char in the user token itself: `%bad!group ALL = ALL`
-    //     splits into users=["%bad!group"], hosts=["ALL"]. The invalid char (`!`,
-    //     `(`, `)`) is INSIDE the user token, not expressed as host whitespace.
-    //     Grounded against visudo (Rocky Linux 9, sudo 1.9.17p2, 2026-06-30):
-    //       - `!` -> rc=1 "syntax error"
-    //       - `(` -> rc=1 "syntax error"
-    //       - `)` -> rc=1 "syntax error"
-    //     Chars that are accepted in group names (rc=0): letters, digits, `_`, `-`,
-    //     `.`, `/`, `@`, `+`, `~`, `\`, `[`, `,`, and `#` (in the `%#NNN` GID form).
-    //     Note: `:` and `=` in a group name cause the line to parse as Malformed and
-    //     are already caught by sudo-F01 before F02 is reached; they are excluded here.
+    //     splits into users=["%bad!group"], hosts=["ALL"]. The invalid char is INSIDE
+    //     the user token, not expressed as host whitespace.
+    //
+    //     CLOSED grounded denylist for sub-case (b): { '!', '(', ')', '>', '"' }.
+    //     Derived from an exhaustive visudo -cf probe of every printable-ASCII char CH
+    //     in `%bad<CH>group` (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
+    //       REJECTED (rc=1, syntax error): `!  "  #  (  )  :  =  >`  (8 chars)
+    //       ACCEPTED (rc=0): the other 86 printable-ASCII chars + non-ASCII.
+    //     F01 carve-out: `#`, `:`, `=` also reject but fold the line to Malformed
+    //     in the AST, so they are caught by sudo-F01 before F02 is reached. They
+    //     MUST NOT appear here to avoid double-reporting.
+    //     The F02-relevant rejected chars are exactly the 5 above (do NOT convert
+    //     to a positive allowlist -- the parser already ensures clean tokens reach
+    //     this point; a denylist is simpler and more mutation-resistant).
     for user in &spec.users {
         let Some(name) = user.strip_prefix('%') else {
             continue;
@@ -166,7 +170,9 @@ fn check_user_spec(
         // Sub-case (b): invalid char in the group name portion of the user token.
         // The `%#NNN` GID form (name starts with `#`) is valid; skip it.
         if !name.starts_with('#')
-            && let Some(bad_char) = name.chars().find(|c| matches!(c, '!' | '(' | ')'))
+            && let Some(bad_char) = name
+                .chars()
+                .find(|c| matches!(c, '!' | '(' | ')' | '>' | '"'))
         {
             diags.push(anchored(
                 Severity::Fatal,
@@ -254,24 +260,38 @@ fn check_defaults(
 /// by digits are ones preceded by start-of-string or whitespace -- the positions
 /// that produce invalid UID-like tokens in command / Defaults-value context.
 ///
-/// # Why `,` and `%` preceding chars are NOT checked here
+/// # Which preceding chars are (and are NOT) checked here
 ///
-/// The callers always receive comma-split strings (both `parse_cmnd_spec_list` and
-/// `parse_default_settings` split on `,` before producing the tokens passed here),
-/// so no `,` character can appear in the string at the call site. The `%` preceding
-/// char was historically included but is also dead in practice: `%#<digits>` inside
-/// a command arg is visudo-rejected (rc=1, "syntax error") regardless, so it would
-/// be caught by the whitespace-preceded branch (the `%` and `#` form a single
-/// whitespace-delimited word, so the `#` starts at the `%` -- but the START of the
-/// whole argument word is the `%`, not `#`). Removing the dead branches eliminates
-/// the corresponding mutation survivors without any behaviour change.
+/// A surviving `#<digits>` is only a UID/GID token -- and thus visudo-invalid in a
+/// command / Defaults-value context -- when it is preceded by start-of-string,
+/// whitespace, or `%`. Those three are checked:
+///
+/// - **start-of-string / whitespace**: `/bin/ls #2`, a bare `#2` command.
+/// - **`%`**: `%#<digits>` glued in a command arg or a Defaults value, e.g.
+///   `/bin/prog %#2` or `Defaults passprompt=x%#2`. The byte immediately before the
+///   `#` is `%` (NOT whitespace), so the whitespace arm cannot reach it -- the `%`
+///   arm is required. Grounded: both forms are visudo-rejected (rc=1, rockylinux:9,
+///   sudo 1.9.17p2, 2026-06-30). (Round-2 wrongly dropped this arm on the claim the
+///   whitespace arm covered it; it does not -- restored in round-3.)
+///
+/// The `,` preceding char is deliberately NOT checked: it is dead. Both call sites
+/// (`parse_cmnd_spec_list` and `parse_default_settings`) split on `,` -- an
+/// unescaped `\,` is also consumed by that naive split -- before producing the
+/// tokens passed here, so no literal `,` can appear before a `#` in any string that
+/// reaches this function. Omitting it removes a mutation survivor with no behaviour
+/// change.
 fn has_hash_digits(s: &str) -> bool {
     let bytes = s.as_bytes();
     for i in 0..bytes.len() {
         if bytes[i] == b'#' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
             let prev_ok = match i.checked_sub(1) {
                 None => true, // `#` at position 0
-                Some(j) => (bytes[j] as char).is_whitespace(),
+                Some(j) => {
+                    let p = bytes[j];
+                    // whitespace-preceded (`/bin/ls #2`) OR `%`-preceded (`%#2`);
+                    // `,` is not checked (dead -- see the doc comment).
+                    p == b'%' || (p as char).is_whitespace()
+                }
             };
             if prev_ok {
                 return true;
@@ -757,6 +777,71 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Round-3 Fix 3: group-name char class completed via exhaustive grounding.
+    //
+    // Exhaustive visudo -cf probe of every printable-ASCII char CH in the middle of
+    // a `%bad<CH>group` SUBJECT token (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
+    //   REJECTED (rc=1): `!  "  #  (  )  :  =  >`  (8 chars)
+    //   ACCEPTED (rc=0): the other 86 printable-ASCII chars AND non-ASCII (e.g. `é`).
+    // Of the 8 rejected, the parser marks `#`, `:`, `=` as Malformed -> caught by
+    // sudo-F01, so they never reach F02. The 5 that reach F02 as a clean UserSpec
+    // are exactly `! ( ) > "`. Round-2 caught only `! ( )`; `>` and `"` were missed.
+    // -----------------------------------------------------------------------
+
+    /// `%bad>group ALL = ALL` -- visudo rc=1, "syntax error" (`>` in group name).
+    ///
+    /// Oracle: `>` is invalid in a sudoers group name (rc=1). The parser keeps a
+    /// clean `UserSpec` with `users=["%bad>group"]`, so F02 Case 4 must fire.
+    /// Round-2 missed this (`>` was not in the denylist).
+    #[test]
+    fn f02_group_name_with_gt_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `>` in `%bad>group`.
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30 (exhaustive probe).
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad>group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%bad>group` has `>` in the group name and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%bad"group ALL = ALL` -- visudo rc=1 (`"` in group name).
+    ///
+    /// Oracle: `"` is invalid in a sudoers group name (rc=1). The parser keeps a
+    /// clean `UserSpec` with `users=["%bad\"group"]`, so F02 Case 4 must fire.
+    /// Round-2 missed this (`"` was not in the denylist).
+    #[test]
+    fn f02_group_name_with_dquote_fires() {
+        // Fixture: visudo -cf rc=1 at the `"` in `%bad"group`.
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30 (exhaustive probe).
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad\"group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%bad\"group` has `\"` in the group name and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%bad<group ALL = ALL` -- visudo rc=0; `<` is ACCEPTED (pins the `<`/`>`
+    /// asymmetry: `<` valid, `>` invalid). Must NOT fire F02.
+    #[test]
+    fn f02_group_name_with_lt_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK". `<` is a valid group-name char even
+        // though the mirror `>` is not (grounded asymmetry).
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30 (exhaustive probe).
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%bad<group ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%bad<group` is valid (`<` accepted; asymmetric with `>`) -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Defect 2: valid sibling guards -- these must NOT fire F02
     // -----------------------------------------------------------------------
 
@@ -820,20 +905,17 @@ mod tests {
     // -----------------------------------------------------------------------
     // Defect 3: has_hash_digits simplification / mutation kill tests
     //
-    // Reachability analysis (2026-06-30):
+    // Reachability analysis (2026-06-30, refined round-3):
     //   has_hash_digits is called on:
     //     (a) individual CmndSpec command tokens (comma-split BEFORE call, so no `,`
     //         in the string at call time)
     //     (b) Defaults setting name / value strings (also comma-split before call)
-    //   Therefore the `,` preceding-char branch is DEAD CODE in both call sites.
-    //   The `%` preceding-char branch: the only reachable case is `%#<digits>` within
-    //   a token that survived comma-split, e.g. `/bin/prog %#2` as a command arg.
-    //   visudo rejects `%#digits` in both positions (rc=1, grounded 2026-06-30),
-    //   so the `%` branch IS reachable and does fire -- but it is EQUIVALENT to the
-    //   whitespace branch (a space or `%` before `#digits` both reach the same return
-    //   path). The `,` and `%` branches are eliminated below; the simplification keeps
-    //   only start-of-string and whitespace-preceded, which are the only contexts that
-    //   actually arrive at the call sites.
+    //   The `,` preceding-char branch is DEAD CODE in both call sites and is removed.
+    //   The `%` preceding-char branch is REACHABLE and NOT equivalent to whitespace:
+    //   for `/bin/prog %#2` the byte immediately before `#` is `%`, so only a `%` arm
+    //   returns true (round-3 restored it after round-2 wrongly dropped it -- see the
+    //   f02_percent_hash_digits_* tests above). visudo rejects `%#digits` in both
+    //   command and Defaults-value positions (rc=1, grounded rockylinux:9 2026-06-30).
     // -----------------------------------------------------------------------
 
     /// `/bin/ls2` -- the digit `2` appears IN the path (not after `#`). Must not fire.
@@ -883,6 +965,109 @@ mod tests {
             f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = #2\n"),
             1,
             "`#2` at start of command token must fire F02"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-3 Fix 1 (REGRESSION): `%#<digits>` glued in command / Defaults-value
+    // must fire F02. Round-2 dropped the `%` preceding-char arm of has_hash_digits
+    // on the (wrong) claim it was caught by the whitespace arm. It is NOT: for
+    // `/bin/prog %#2` the byte immediately before `#` is `%`, not whitespace, so
+    // only a `%`-preceding arm reaches the return. Parent commit 14b13d2 fired
+    // correctly; these tests restore + pin that behavior.
+    //
+    // Grounding (rockylinux:9, sudo 1.9.17p2, 2026-06-30, visudo -cf):
+    //   `alice ALL = /bin/prog %#2`   -> rc=1 (syntax error at col 24)
+    //   `Defaults passprompt=x%#2`    -> rc=1 (col 23)
+    // -----------------------------------------------------------------------
+
+    /// `alice ALL = /bin/prog %#2` -- `%#2` glued in a command arg. visudo rc=1.
+    ///
+    /// `strip_inline_comment` keeps `#2` because it is `#<digit>` preceded by `%`
+    /// (Exception 2, a GID token). The command reaches the AST as
+    /// `/bin/prog %#2`; the byte before `#` is `%` (not whitespace), so this only
+    /// fires if `has_hash_digits` has the `%`-preceding arm.
+    #[test]
+    fn f02_percent_hash_digits_in_command_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `%#2`.
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/prog %#2\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`/bin/prog %#2` (%-preceded #digits in command) must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `Defaults passprompt=x%#2` -- `%#2` glued in a Defaults value. visudo rc=1.
+    ///
+    /// `strip_inline_comment` keeps `#2` (preceded by `%`), so the value reaches the
+    /// AST as `x%#2`; the byte before `#` is `%`. Fires only with the `%`-preceding arm.
+    #[test]
+    fn f02_percent_hash_digits_in_defaults_value_fires() {
+        // Fixture: visudo -cf rc=1 at col 23.
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=x%#2\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`Defaults passprompt=x%#2` (%-preceded #digits in value) must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-3 Fix 2: kill the `has_hash_digits` `&& -> ||` mutation survivor
+    // (the `bytes[i] == b'#' && next_is_ascii_digit` guard). Two grounded rc=0
+    // inputs distinguish `&&` from `||` where the CORRECT `&&` stays silent but
+    // `||` wrongly fires:
+    //   (Case A) a `#` NOT followed by a digit at a whitespace-preceded slot.
+    //   (Case B) a digit NOT preceded by `#` at a whitespace-preceded slot.
+    // -----------------------------------------------------------------------
+
+    /// Case A: `Defaults passprompt="a #x b"` -- a quoted `#` NOT followed by a digit.
+    ///
+    /// Oracle: visudo -cf rc=0 (a `#` inside a double-quoted value is literal, and
+    /// `#x` is not a `#<digits>` token). `strip_inline_comment` KEEPS the quoted `#`
+    /// (Exception 3), so `has_hash_digits` receives a string containing `#x`. The
+    /// correct `&&` form: `#`==`#` (true) AND next-is-digit (`x`, false) -> no fire.
+    /// The `||` mutant: `#`==`#` (true) OR ... -> true -> would WRONGLY fire F02.
+    #[test]
+    fn f02_quoted_hash_nondigit_no_f02_kills_and_to_or() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        // Kills `has_hash_digits` `&& -> ||`: a `#` reaches the fn but is followed by
+        // a non-digit; only `&&` stays silent, `||` fires.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a #x b\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "a quoted `#x` (# not followed by a digit) is visudo-valid -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// Case B: `alice ALL = /bin/prog a5` -- a digit `5` NOT preceded by `#`, at a
+    /// whitespace-preceded slot (`a` follows the space, `5` follows `a`).
+    ///
+    /// Oracle: visudo -cf rc=0 (`a5` is a free-form command argument). The string
+    /// `/bin/prog a5` reaches `has_hash_digits` (no `#` stripped). The correct `&&`:
+    /// no byte is `#`, so never fires. The `||` mutant: at the `a` slot (preceded by
+    /// whitespace, `prev_ok=true`) the next byte `5` IS a digit, so `||` returns true
+    /// -> would WRONGLY fire F02.
+    #[test]
+    fn f02_digit_after_space_no_hash_no_f02_kills_and_to_or() {
+        // Fixture: visudo -cf rc=0, "parsed OK". A command with a `a5` argument.
+        // Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        // Kills `has_hash_digits` `&& -> ||`: a digit at a whitespace-preceded slot+1
+        // makes the `||` right-hand side true even though no `#` is present.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/prog a5\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`/bin/prog a5` (digit not preceded by `#`) is visudo-valid -- must NOT fire F02; got {f02_diags:?}"
         );
     }
 }
