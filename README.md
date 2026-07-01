@@ -241,12 +241,13 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction |
 | `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default |
 
-### sudoers (`sudo-`, 6 codes)
+### sudoers (`sudo-`, 7 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
 | `sudo-E01` | Error | reference to an undefined alias |
 | `sudo-F01` | Fatal | sudoers file does not parse |
+| `sudo-F02` | Fatal | contains a per-position token that `visudo` rejects but the classifier keeps as a clean spec (`#<digits>` in a command or `Defaults` value, a relative-path command, or an invalid `%group` name) |
 | `sudo-W01` | Warning | `NOPASSWD` applies to an `ALL` command (passwordless run-anything) |
 | `sudo-W02` | Warning | a `Cmnd_Alias` transitively expands to `ALL` under `NOPASSWD` |
 | `sudo-W03` | Warning | alias defined but never referenced (dead alias) |
