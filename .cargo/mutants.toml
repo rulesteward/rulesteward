@@ -445,6 +445,26 @@ exclude_re = [
     'replace skip_whitespace with \(\)',
     'replace read_arg -> Result<String, String> with Ok\(String::new\(\)\)',
     'replace read_arg -> Result<String, String> with Ok\("xyzzy"\.into\(\)\)',
+    # sudoers `is_pure_gid` `!rest.is_empty()` guard in check_user_spec (tokens.rs):
+    # The `delete !` mutant changes `!rest.is_empty() && rest.bytes().all(...)` to
+    # `rest.is_empty() && rest.bytes().all(...)`, making `is_pure_gid = true` only
+    # for `rest = ""` (i.e., a user token of exactly `%#` with no digits). For that
+    # input, visudo rc=1 ("empty group") -- so F02 SHOULD fire. But the denylist
+    # downstream only checks `{! ( ) > "}`, and `#` (the full name after strip_prefix
+    # `%`) contains none of those chars. Therefore both the CORRECT code and the mutant
+    # stay silent for `%#` -- the denylist can never distinguish them. The only way to
+    # kill this mutant would be to add `#` to the denylist, but `#` is carved out to
+    # avoid double-reporting with F01 (the parser marks `%#` as Malformed -> F01 fires
+    # instead). Genuine irreducible equivalent mutant: behavioral difference is
+    # unreachable through the denylist mechanism. The pure-GID exemption IS verified by
+    # `f02_pure_gid_group_still_silent_after_fix` (correct code and mutant both silent
+    # for `%#1000`); the denylist-escape fix IS verified by `f02_hash_prefix_group_name_with_gt_fires`
+    # and `f02_hash_prefix_group_name_with_bang_fires` (both caught because `rest` is
+    # non-empty in those cases and the mutant's `rest.is_empty()` short-circuits false,
+    # landing in the denylist). The `!rest.is_empty()` arm is semantically correct but
+    # untestable through the downstream denylist mechanism; excluded here (not via
+    # `#[mutants::skip]`) so the rationale stays in reviewable config.
+    'delete ! in check_user_spec',
     # sudoers `short_hostname` (#334): reads `/proc/sys/kernel/hostname` (or the
     # HOSTNAME env) for the `@include ... %h` escape. Its return is the live host's
     # name, which varies by machine, so no unit test can pin it; a mutant returning

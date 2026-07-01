@@ -163,13 +163,26 @@ fn check_user_spec(
     //     The F02-relevant rejected chars are exactly the 5 above (do NOT convert
     //     to a positive allowlist -- the parser already ensures clean tokens reach
     //     this point; a denylist is simpler and more mutation-resistant).
+    //     GID-form exemption: `%#NNN` (pure GID: `#` followed only by one or more
+    //     ASCII digits) is valid (visudo rc=0) and must be exempt. The exemption is
+    //     STRICTLY the pure-GID form: `%#1000>x` and `%#1000!x` contain a denylist
+    //     char after the digit run and are visudo-rejected (rc=1). A bare
+    //     `starts_with('#')` guard over-exempts any `#`-prefix name entirely; the
+    //     correct guard uses `is_pure_gid` (see below).
     for user in &spec.users {
         let Some(name) = user.strip_prefix('%') else {
             continue;
         };
         // Sub-case (b): invalid char in the group name portion of the user token.
-        // The `%#NNN` GID form (name starts with `#`) is valid; skip it.
-        if !name.starts_with('#')
+        //
+        // `%#NNN` (pure GID: `#` followed by one or more ASCII digits, nothing
+        // else) is valid (visudo rc=0). Exempt it from the denylist check.
+        // `%#1000>x` is NOT a pure GID (digit run followed by `>`): `is_pure_gid`
+        // is false, the denylist runs, and `>` is caught.
+        let is_pure_gid = name
+            .strip_prefix('#')
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()));
+        if !is_pure_gid
             && let Some(bad_char) = name
                 .chars()
                 .find(|c| matches!(c, '!' | '(' | ')' | '>' | '"'))
@@ -1068,6 +1081,85 @@ mod tests {
         assert!(
             f02_diags.is_empty(),
             "`/bin/prog a5` (digit not preceded by `#`) is visudo-valid -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-4 Fix: pure-GID guard over-exempts `#`-prefix group names
+    //
+    // The guard `!name.starts_with('#')` was meant to exempt the valid pure-GID
+    // form `%#1000` from the denylist check. But it over-exempts ANY name that
+    // starts with `#`, including `#1000>x`, `#1000!x`, etc. -- these have a
+    // denylist char after the `#<digits>` prefix and are visudo-rejected (rc=1).
+    //
+    // Grounding (rockylinux:9, sudo 1.9.17p2, 2026-06-30, visudo -cf):
+    //   `%#1000>x ALL = ALL`  -> rc=1 (syntax error at col 7, the `>`)
+    //   `%#1000!x ALL = ALL`  -> rc=1 (syntax error at col 10, the `!`)
+    //   `%#1000 ALL = ALL`    -> rc=0 (valid pure-GID form, must stay silent)
+    //   `%#1000abc ALL = ALL` -> rc=1 (syntax error; no denylist char present
+    //                                  so out of scope for this fix -- the
+    //                                  `#<digits><alpha>` class is a separate gap)
+    //
+    // The correct exemption: pure-GID form = `#` followed by one or more ASCII
+    // digits and NOTHING else.
+    // -----------------------------------------------------------------------
+
+    /// `%#1000>x ALL = ALL` -- visudo rc=1; `>` follows the digits in a `#`-prefix
+    /// group name. The old guard `!name.starts_with('#')` exempts this and stays
+    /// silent (FALSE NEGATIVE). The fixed guard recognises `#1000>x` as NOT a pure
+    /// GID (contains a non-digit after `#`) and runs the denylist, which finds `>`.
+    ///
+    /// Oracle: rockylinux:9, sudo 1.9.17p2, visudo -cf rc=1 "syntax error" at col 7.
+    #[test]
+    fn f02_hash_prefix_group_name_with_gt_fires() {
+        // Fixture: visudo -cf rc=1. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        // RED before fix (old `!starts_with('#')` exempts `#1000>x` entirely).
+        // GREEN after fix (`is_pure_gid` is false for `#1000>x` -> denylist fires on `>`).
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000>x ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%#1000>x` has `>` in group name after digits -- must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%#1000!x ALL = ALL` -- visudo rc=1; `!` follows the digits.
+    ///
+    /// Companion to the `>` case: same over-exemption in the old guard.
+    ///
+    /// Oracle: rockylinux:9, sudo 1.9.17p2, visudo -cf rc=1 "syntax error" at col 10.
+    #[test]
+    fn f02_hash_prefix_group_name_with_bang_fires() {
+        // Fixture: visudo -cf rc=1. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        // RED before fix; GREEN after fix (`is_pure_gid` false -> denylist finds `!`).
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000!x ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%#1000!x` has `!` in group name after digits -- must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%#1000 ALL = ALL` -- visudo rc=0; pure-GID form MUST stay silent after the fix.
+    ///
+    /// The fix must preserve the pure-GID exemption exactly: `is_pure_gid` is true
+    /// for `#1000` (all-digit rest), so the denylist does NOT run. No F02.
+    ///
+    /// NOTE: already covered by `f02_group_gid_form_no_f02` above; this companion
+    /// test makes the Round-4 must-not-regress intent explicit.
+    #[test]
+    fn f02_pure_gid_group_still_silent_after_fix() {
+        // Fixture: visudo -cf rc=0. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
+        // GREEN before AND after fix.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000 ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%#1000` is the valid pure-GID form -- must NOT fire F02 after the fix; got {f02_diags:?}"
         );
     }
 }
