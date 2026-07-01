@@ -80,6 +80,11 @@ mod tests {
         assert_eq!(parse_base0_u64("0x"), None);
         assert_eq!(parse_base0_u64("0xg"), None);
         assert_eq!(parse_base0_u64("0X-1"), None);
+        // `u64::from_str_radix` ACCEPTS a leading `+` (`Ok(5)` for "+5"), so the
+        // explicit hexdigit guard is what rejects a signed hex body - the
+        // fallback alone would not. Pins that guard (kills the `|| -> &&` mutant).
+        assert_eq!(parse_base0_u64("0x+5"), None);
+        assert_eq!(parse_base0_u64("0X+a"), None);
     }
 
     #[test]
