@@ -2066,4 +2066,39 @@ mod w03_tests {
             diags[0].message
         );
     }
+
+    // -----------------------------------------------------------------------
+    // argv_split fidelity gap: single-quoted algo value (issue #374)
+    //
+    // sshd accepts `Ciphers 'aes128-cbc'` (single-quote quoting): the daemon
+    // strips the single quotes and loads aes128-cbc (grounding: sshd -T
+    // OpenSSH 10.2p1, rc 0). The current tokenizer does not handle
+    // single-quote quoting; `algo_list_value` receives args=["'aes128-cbc'"]
+    // (the single quotes remain as literals), and after quote-stripping (only
+    // double-quotes are stripped) the value contains literal `'` characters
+    // that sshd would never see, so W03 misses the weak cipher. This test
+    // pins the correct behavior: W03 must fire on `Ciphers 'aes128-cbc'`.
+    // RED until #374 implements single-quote fidelity; hence #[ignore].
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn single_quoted_weak_cipher_fires_w03() {
+        // `Ciphers 'aes128-cbc'` -- single-quote quoting around a weak CBC cipher.
+        // sshd strips the single quotes and loads aes128-cbc (rc 0, grounding:
+        // sshd -T OpenSSH 10.2p1). W03 must fire on aes128-cbc.
+        // Today the lint misses it because algo_list_value strips only `"`, not `'`.
+        let diags = run("Ciphers 'aes128-cbc'\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "single-quoted weak cipher is a valid sshd-loading line => one W03; got: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("aes128-cbc"),
+            "message names the weak algorithm, got: {}",
+            diags[0].message
+        );
+    }
 }

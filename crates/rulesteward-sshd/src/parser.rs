@@ -218,6 +218,8 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
 
 /// Read one argument token, modelling OpenSSH's real tokenization:
 ///
+/// Note: Single-quote quoting, escaped-space, and `\'` are not yet handled (full `argv_split` fidelity is tracked in #374).
+///
 /// Scan the entire whitespace-delimited token tracking an `in_quote` flag.
 /// A `"` toggles the flag (the quote character itself is stripped, not pushed).
 /// Unquoted whitespace ends the token. Characters that appear while `in_quote`
@@ -573,5 +575,76 @@ mod tests {
         let sp = parse_criteria(&["User".to_string(), "alice".to_string()]).unwrap();
         assert_eq!(sp[0].keyword, "User");
         assert_eq!(sp[0].values, vec!["alice".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // argv_split fidelity gaps (issue #374)
+    //
+    // These tests pin the grounded-correct (sshd-faithful) behavior for three
+    // tokenizer gaps scoped OUT of issue #348 and tracked as follow-up in #374.
+    // All are RED until #374 is implemented, hence #[ignore].
+    //
+    // Grounding: real `/usr/sbin/sshd -T` with OpenSSH 10.2p1 (the same binary
+    // used for the #348 grounding table).
+    //
+    //   Input bytes         | rc | sshd value    | Semantic
+    //   Banner 'two words'  |  0 | two words     | single-quote quoting: space literal
+    //   Banner 'abc         |255 | (error)       | unterminated single-quote -> error
+    //   Banner a\ b         |  0 | a b           | escaped-space: backslash-space -> space
+    //   Banner a\'b         |  0 | a'b           | backslash-single-quote -> literal '
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_single_quoted_value_is_one_token() {
+        // `Banner 'two words'` -- single quotes delimit a span with a literal space.
+        // sshd rc 0, value `two words` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer does not handle single-quote quoting; this asserts
+        // the CORRECT behavior the impl does not yet produce.
+        assert_eq!(
+            tokenize_line("Banner 'two words'").unwrap(),
+            vec!["Banner", "two words"],
+            "single-quoted span with space: one arg `two words`"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_unterminated_single_quote_is_error() {
+        // `Banner 'abc` -- unterminated single-quote; sshd rc 255 (error).
+        // The correct behavior is to return Err, matching sshd's rejection.
+        assert!(
+            tokenize_line("Banner 'abc").is_err(),
+            "unterminated single-quote must be an error"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_escaped_space_outside_quotes_is_literal_space() {
+        // `Banner a\ b` (backslash then space) -- escaped space outside quotes.
+        // sshd rc 0, value `a b` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer treats `\` before space as a kept literal backslash
+        // and then the space ends the token, yielding ["Banner", "a\\", "b"] instead.
+        assert_eq!(
+            tokenize_line("Banner a\\ b").unwrap(),
+            vec!["Banner", "a b"],
+            "backslash-space: produces literal space, one arg"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_backslash_single_quote_yields_literal_quote() {
+        // `Banner a\'b` (backslash then single-quote) -- escape sequence.
+        // sshd rc 0, value `a'b` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer does not recognize `\'`; it keeps the backslash
+        // literally and then the `'` is treated as an ordinary character, yielding
+        // `a\'b` instead of `a'b`.
+        assert_eq!(
+            tokenize_line("Banner a\\'b").unwrap(),
+            vec!["Banner", "a'b"],
+            "backslash-single-quote: produces literal single-quote in value"
+        );
     }
 }
