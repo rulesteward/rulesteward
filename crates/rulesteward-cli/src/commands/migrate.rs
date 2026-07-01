@@ -671,34 +671,44 @@ fn detect_layout(rules_dir: &Path) -> Layout {
 
 fn render_human(plan: &MigratePlan) -> String {
     use std::fmt::Write as _;
-    let mut s = String::new();
     match plan.layout {
         "nothing-to-migrate" => {
+            let mut s = String::new();
             let _ = writeln!(
                 s,
                 "Nothing to migrate: no legacy {LEGACY_FILE} found in {}.",
                 plan.rules_dir
             );
-            return s;
+            s
         }
         "already-modern" => {
+            let mut s = String::new();
             let _ = writeln!(
                 s,
                 "Already migrated: {}/rules.d/ has rule files and there is no legacy {LEGACY_FILE}.",
                 plan.rules_dir
             );
-            return s;
+            s
         }
-        // Only the two real-migration layouts reach the header block below. Every
+        // Only the two real-migration layouts render the summary block. Every
         // error / refusal layout (coexistence-trap-blocked, read/parse/mkdir/write/
         // remove-error, and the version-downgrade "error") reports its reason on
         // stderr in run_with_probe_to_plan() and emits NO stdout header, so a
         // command that migrated nothing never prints "Migration applied" (#315).
-        // The header is OPT-IN (only the success layouts) rather than opt-out, so
-        // any future error layout defaults to clean stdout.
-        "legacy-only" | "coexistence-trap" => {}
-        _ => return s, // s is empty: error / refusal layouts produce no stdout
+        // The summary is OPT-IN (only the success layouts) rather than opt-out, so
+        // any future error layout defaults here to clean (empty) stdout.
+        "legacy-only" | "coexistence-trap" => render_migration_summary(plan),
+        _ => String::new(),
     }
+}
+
+/// Render the multi-line migration summary shown for the two success layouts
+/// (`legacy-only` / `coexistence-trap`): the applied / dry-run header, the legacy
+/// and target file lines, the `sha256hash=` -> `filehash=` rewrite summary, the
+/// coexistence-trap and legacy-removal notes, and the #211 verification result.
+fn render_migration_summary(plan: &MigratePlan) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
     let header = if plan.dry_run {
         "Migration plan (dry-run)"
     } else {
