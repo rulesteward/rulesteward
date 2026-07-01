@@ -386,9 +386,9 @@ mod tests {
     //
     // OpenSSH strips ALL `"` characters from a whitespace-delimited token and
     // concatenates the runs: `"aes128-cbc"#x` is the single arg `aes128-cbc#x`
-    // (verified sshd -T OpenSSH 10.2p1). The tests below are RED until
-    // `read_arg` is updated to consume the whole token (not stop at the
-    // first closing quote).
+    // (verified sshd -T OpenSSH 10.2p1). The tests below were RED until
+    // `read_arg` was updated by #348 to consume the whole token (not stop
+    // at the first closing quote); they are now GREEN.
     // -----------------------------------------------------------------------
 
     #[test]

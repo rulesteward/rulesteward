@@ -1984,7 +1984,7 @@ mod w03_tests {
         // (not two args). algo_list_value sees `#` in the value and returns None;
         // W03 must NOT fire because sshd rejects the line ("Bad SSH2 cipher spec
         // 'aes128-cbc#x'", rc 255, verified OpenSSH 10.2p1 `sshd -T`).
-        // RED until read_arg implements the quote-concatenation model (#348).
+        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         assert!(
             run("Ciphers \"aes128-cbc\"#x\n").is_empty(),
             "glued `#` after closing quote (no prefix): sshd rc 255 => W03 must not fire"
@@ -1994,12 +1994,12 @@ mod w03_tests {
     // -----------------------------------------------------------------------
     // Quote-concatenation false-negative tests (issue #348)
     //
-    // When the parser implements the concatenation model (stripping `"` and
-    // concatenating runs within one whitespace-delimited token), these forms
-    // that sshd loads as `aes128-cbc` will reach algo_list_value as a single
-    // clean arg and W03 must fire. They are RED today because the current
-    // read_arg stops at the first closing `"`, producing multiple args that
-    // algo_list_value rejects as ambiguous (None -> no W03 -> false negative).
+    // With the concatenation model (#348, stripping `"` and concatenating runs
+    // within one whitespace-delimited token), these forms that sshd loads as
+    // `aes128-cbc` reach algo_list_value as a single clean arg and W03 fires.
+    // They were RED before #348; the old read_arg stopped at the first closing
+    // `"`, producing multiple args that algo_list_value rejected as ambiguous
+    // (None -> no W03 -> false negative). Now GREEN under the fix.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2008,7 +2008,7 @@ mod w03_tests {
         // run `aes128-cbc`. Under the concatenation model the parser yields one
         // arg `aes128-cbc`; W03 must fire on the weak cipher.
         // Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH 10.2p1).
-        // RED until read_arg implements the quote-concatenation model (#348).
+        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         let diags = run("Ciphers \"\"aes128-cbc\n");
         assert_eq!(
             diags.len(),
@@ -2030,7 +2030,7 @@ mod w03_tests {
         // sshd strips both quote pairs and concatenates to `aes128-cbc` (rc 0,
         // verified OpenSSH 10.2p1). Under the concatenation model the parser
         // yields one arg `aes128-cbc`; W03 must fire on the weak cipher.
-        // RED until read_arg implements the quote-concatenation model (#348).
+        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         let diags = run("Ciphers \"aes128\"\"-cbc\"\n");
         assert_eq!(
             diags.len(),
