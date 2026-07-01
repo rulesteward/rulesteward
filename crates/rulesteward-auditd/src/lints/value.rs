@@ -39,6 +39,11 @@
 
 use std::borrow::Cow;
 
+// Base-0 magnitude parsing (strtoul base-0 radix policy, #229) is shared with
+// sysctld; the crate-local name keeps `parse_i64_base0` + the call sites reading
+// unchanged. The signed layer (leading `-`, i64::MIN) stays auditd-local below.
+use rulesteward_core::parse_base0_u64 as parse_u64_base0;
+
 use crate::ast::{CompareOp, FieldFilter};
 use crate::lints::field_type::{FieldType, field_type};
 
@@ -85,35 +90,6 @@ impl FieldValue {
             FieldValue::Unsigned(n) => Some(i128::from(n)),
             FieldValue::UidGidUnset | FieldValue::Opaque => None,
         }
-    }
-}
-
-/// Parse `s` as a non-negative integer the way C `strtoul(s, NULL, 0)` reads the
-/// magnitude: a `0x`/`0X` prefix is hex, a leading `0` (with more digits) is
-/// octal, otherwise decimal. CONSERVATIVE by construction: the WHOLE string must
-/// be a clean number in the detected radix, so this returns `None` (the caller
-/// then keeps the value [`FieldValue::Opaque`]) on any ambiguity rather than
-/// replicating strtoul's parse-a-prefix-then-stop (so `08` is `None` here, not
-/// `0`, and never produces a fold libaudit would not). No sign handling;
-/// [`parse_i64_base0`] adds the leading `-`. Grounded in libaudit
-/// `audit_rule_fieldpair_data` (lib/libaudit.c @ 3bfa048), which parses every
-/// numeric `-F` value with `strtoul`/`strtol` base 0 (#229).
-fn parse_u64_base0(s: &str) -> Option<u64> {
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        u64::from_str_radix(hex, 16).ok()
-    } else if s.len() > 1 && s.starts_with('0') {
-        let octal = &s[1..];
-        if !octal.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
-            return None;
-        }
-        u64::from_str_radix(octal, 8).ok()
-    } else if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
-        None
-    } else {
-        s.parse::<u64>().ok()
     }
 }
 

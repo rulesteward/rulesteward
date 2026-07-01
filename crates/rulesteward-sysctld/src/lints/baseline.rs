@@ -526,24 +526,13 @@ fn parse_sysctl_int(value: &str) -> Option<i64> {
         Some(rest) => (true, rest),
         None => (false, value),
     };
-    let (radix, body) = if let Some(hex) = digits
-        .strip_prefix("0x")
-        .or_else(|| digits.strip_prefix("0X"))
-    {
-        (16, hex)
-    } else if digits.len() > 1 && digits.starts_with('0') {
-        (8, &digits[1..])
-    } else {
-        (10, digits)
-    };
-    // `from_str_radix` accepts a leading sign; the kernel does not (the one leading
-    // `-` was already split off), so reject any remaining sign in `body`.
-    if body.is_empty() || body.starts_with('+') || body.starts_with('-') {
-        return None;
-    }
-    // An out-of-`i64` magnitude makes `from_str_radix` return `Err` -> `None`, so
-    // an absurd value is flagged rather than silently wrapped.
-    let magnitude = i64::from_str_radix(body, radix).ok()?;
+    // Shared base-0 magnitude parser (0x hex / leading-0 octal / decimal; rejects
+    // an embedded sign, empty, and out-of-radix digits) - the one leading `-` was
+    // already split off. An out-of-`i64` magnitude fails the `try_from` -> `None`,
+    // so an absurd value is flagged rather than silently wrapped, and a negative
+    // i64::MIN magnitude (2^63, which does not fit a positive i64) is rejected
+    // exactly as the previous `i64::from_str_radix` did.
+    let magnitude = i64::try_from(rulesteward_core::parse_base0_u64(digits)?).ok()?;
     Some(if negative { -magnitude } else { magnitude })
 }
 
