@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`rulesteward sudoers lint`**: new `sudoers(5)` backend (6 `sudo-` codes). Parses
+- **`rulesteward sudoers lint`**: new `sudoers(5)` backend (7 `sudo-` codes). Parses
   a policy file or a `sudoers.d/` drop-in directory (line-continuation joins, `#`
   comment disambiguation, alias definitions, `@include`/`@includedir`, user
   specifications). Detects: parse errors (`sudo-F01`), undefined / dead aliases
@@ -18,8 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covers `!authenticate`, `targetpw`/`rootpw`/`runaspw`, `visiblepw`, `!use_pty`,
   negative `timestamp_timeout` (DISA STIG RHEL-08-010384/RHEL-09-432015); and
   merged-config absence of `use_pty`, I/O logging, and `timestamp_timeout`
-  (CIS Benchmark 1.3.2/1.3.3 and DISA STIG RHEL-08-010384/RHEL-09-432015).
-  (#329, #330, #331, #332, #333, #347, #363)
+  (CIS Benchmark 1.3.2/1.3.3 and DISA STIG RHEL-08-010384/RHEL-09-432015); and
+  per-position tokens that `visudo` rejects but the classifier keeps as a clean
+  spec (`sudo-F02`, Fatal: a `#<digits>` token glued in a command or `Defaults`
+  value, a relative-path command, or an invalid `%group` name grounded against
+  `visudo -c`). (#329, #330, #331, #332, #333, #346, #347, #363)
 - **`rulesteward sysctl lint`**: new `sysctl.d`/`sysctl.conf` backend (3 `sysctld-`
   codes). Parses kernel-parameter assignment files (`key = value` format, whole-line
   `#`/`;` comments). Detects: parse errors (`sysctld-F01`), last-wins conflicts across
@@ -51,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   find a trusted file whose path exceeds LMDB's 511-byte max key size (the daemon
   stores it under a hashed key); previously such long paths were falsely reported
   as untrusted/absent. (#318)
+- `sshd lint` sshd-W03/W06 + tokenizer: the sshd_config `read_arg` tokenizer now
+  strips and concatenates quoted runs within a token the way OpenSSH does, so a
+  quoted weak algorithm is flagged whatever the quoting (`Ciphers ""aes128-cbc`
+  and `Ciphers "aes128""-cbc"` no longer miss W03 - false negatives), while a
+  quoted value glued to a trailing `#x` (which sshd rejects as an invalid cipher
+  spec) no longer false-fires W03. The tokenizer also honors backslash-escaped
+  quotes (`\"`, `\\`), so a valid line such as `Banner /etc/motd\"` no longer
+  raises a spurious `sshd-F01` parse error (regression avoided). Grounded against
+  `sshd -T` (OpenSSH 10.2p1); full single-quote / escaped-space `argv_split`
+  fidelity is tracked in #374. (#348)
 - `sshd lint` sshd-W03/W06: an algorithm-list directive whose value is not a single
   well-formed token is now handled the way sshd does. Internal whitespace (e.g.
   `Ciphers + aes128-cbc` or `Ciphers aes128-cbc foo`) is a fatal sshd parse error

@@ -21,6 +21,7 @@ pub mod aliases;
 pub mod catalog;
 pub mod stig;
 pub mod tags;
+pub mod tokens;
 
 use rulesteward_core::{Diagnostic, Severity};
 
@@ -53,6 +54,7 @@ pub use rulesteward_core::anchored;
 pub fn lint(files: &[SudoersFile], ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = aliases::e01(files, ctx);
     diags.extend(f01(files, ctx));
+    diags.extend(tokens::f02(files, ctx));
     diags.extend(tags::w01(files, ctx));
     diags.extend(tags::w02(files, ctx));
     diags.extend(aliases::w03(files, ctx));
@@ -164,6 +166,45 @@ mod tests {
             f01.len(),
             1,
             "the malformed second file yields one F01; got {diags:?}"
+        );
+    }
+
+    /// Dispatcher-level integration test: the public `lint()` function must emit
+    /// exactly one `sudo-F02` (Fatal) for a file containing a relative-path command.
+    ///
+    /// This test is RED now because `tokens::f02` is a stub AND it is NOT wired
+    /// into the `lint()` dispatcher. It goes GREEN ONLY when the implementer BOTH
+    /// fills `f02()` AND adds `diags.extend(tokens::f02(files, ctx))` to `lint()`.
+    ///
+    /// Fixture: `root ALL=(ALL:ALL) ALL\nalice ALL = bin/ls\n`
+    /// - `root ALL=(ALL:ALL) ALL` is a clean anchor line (satisfies W04 absence
+    ///   check is still present, but this test only asserts on sudo-F02).
+    /// - `alice ALL = bin/ls` contains a relative-path command that visudo rejects
+    ///   (rc=1, "expected a fully-qualified path name").
+    ///
+    /// Oracle: Rocky Linux 9, sudo 1.9.17p2, 2026-06-30.
+    ///
+    /// This is the "wiring" guard: a correct `f02()` body that is never called via
+    /// `lint()` makes all per-module `tokens::tests` GREEN but this test RED.
+    #[test]
+    fn lint_dispatcher_routes_f02_for_relative_path_command() {
+        // Input chosen to produce exactly one sudo-F02: the relative-path command
+        // `bin/ls` on alice's line. root's line is clean.
+        let files = parse_one("root ALL=(ALL:ALL) ALL\nalice ALL = bin/ls\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        let f02: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02.len(),
+            1,
+            "the dispatcher must route exactly one sudo-F02 (Fatal) for a relative-path \
+             command via lint(); got {diags:?} -- this is RED until f02 is both filled \
+             AND wired into lint() with diags.extend(tokens::f02(files, ctx))"
+        );
+        assert_eq!(
+            f02[0].severity,
+            rulesteward_core::Severity::Fatal,
+            "sudo-F02 must be Fatal; got {:?}",
+            f02[0].severity
         );
     }
 }

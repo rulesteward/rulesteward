@@ -40,6 +40,11 @@ pub const SUDO_CODES: &[LintCode] = &[
         description: "sudoers file does not parse",
     },
     LintCode {
+        code: "sudo-F02",
+        severity: Severity::Fatal,
+        description: "contains a token that visudo rejects (per-position invalid token)",
+    },
+    LintCode {
         code: "sudo-W01",
         severity: Severity::Warning,
         description: "NOPASSWD applies to an ALL command (passwordless run-anything)",
@@ -70,7 +75,7 @@ mod tests {
     /// already-catalogued code rather than editing this shared file. Update this
     /// list ONLY when the taxonomy itself changes.
     const FROZEN_CODES: &[&str] = &[
-        "sudo-E01", "sudo-F01", "sudo-W01", "sudo-W02", "sudo-W03", "sudo-W04",
+        "sudo-E01", "sudo-F01", "sudo-F02", "sudo-W01", "sudo-W02", "sudo-W03", "sudo-W04",
     ];
 
     #[test]
