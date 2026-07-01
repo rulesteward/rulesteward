@@ -363,7 +363,7 @@ jobs:
         with:
           # Save only on push events; see fmt-clippy comment above.
           save-if: ${{ github.event_name != 'pull_request' }}
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-llvm-cov
       # Collect coverage once (--no-report writes profdata but emits nothing),
@@ -468,7 +468,7 @@ jobs:
       # binstall + a published manifest to drop a prebuilt binary into
       # ~/.cargo/bin in ~10-20s. Pinned to a specific version for the
       # same drift-prevention reason cargo-mutants is pinned in mutants.yml.
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-audit@0.22.1
       - name: cargo audit
@@ -488,7 +488,7 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-deny@0.19.7
       - name: cargo deny check
@@ -632,7 +632,7 @@ jobs:
         with:
           key: selinux-feature-coverage
           save-if: ${{ github.event_name != 'pull_request' }}
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-llvm-cov
       - name: Collect coverage (feature on, no report)
@@ -751,7 +751,7 @@ jobs:
       # `just` is not on the GitHub-hosted runner; install it from the prebuilt
       # release via taiki-e/install-action (same SHA-pinned action the audit /
       # deny / llvm-cov jobs use) so the recipe stays the single source of truth.
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: just
 

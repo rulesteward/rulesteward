@@ -62,7 +62,7 @@ jobs:
       # 2026-06-02. Installed via cargo-binstall (prebuilt binaries) rather than
       # source-compiled. Pinned for the same drift-prevention reason ci.yml pins
       # cargo-audit / cargo-deny.
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: cargo-binstall
       # `--force` always (re)installs the binaries rather than trusting binstall's
@@ -292,14 +292,14 @@ jobs:
       # least-privilege per this workflow's design; the subject is the exact artifact
       # passed via the build artifact and published below, so the binding holds.
       - name: Attest build provenance (binary + RPM)
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
             dist/rulesteward
             dist/rulesteward-*.x86_64.rpm
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
