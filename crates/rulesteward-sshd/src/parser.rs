@@ -216,33 +216,80 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
     s
 }
 
-/// Read one argument token: a double-quoted string (quotes stripped, no escapes)
-/// when it starts with `"`, otherwise a bareword running to the next whitespace
-/// (a `=` or `#` inside the bareword is literal; a whitespace-delimited `#` that
-/// starts a new token is kept as a literal token -- inline-comment stripping is
-/// handled by lints, not by the tokenizer).
+/// Read one argument token, modelling OpenSSH's real tokenization:
+///
+/// Note: Single-quote quoting, escaped-space, and `\'` are not yet handled (full `argv_split` fidelity is tracked in #374).
+///
+/// Scan the entire whitespace-delimited token tracking an `in_quote` flag.
+/// A `"` toggles the flag (the quote character itself is stripped, not pushed).
+/// Unquoted whitespace ends the token. Characters that appear while `in_quote`
+/// is set -- including whitespace -- are pushed literally. If the scan reaches
+/// EOL while still inside a quoted span, an unterminated-quote error is returned.
+///
+/// This means every `"` inside a single whitespace-delimited token is stripped
+/// and the surrounding runs are concatenated:
+///   - `"aes128-cbc"#x`  -> one arg `aes128-cbc#x`   (glued `#`, sshd rc 255)
+///   - `""aes128-cbc`    -> one arg `aes128-cbc`      (empty quoted prefix)
+///   - `"aes128""-cbc"`  -> one arg `aes128-cbc`      (adjacent quoted runs)
+///   - `"two words"`     -> one arg `two words`        (space literal inside quotes)
+///   - `"aes128-cbc" #x` -> arg `aes128-cbc`, then a separate `#x` token
+///     (the space ends the first token; `#x` is not consumed here)
+///
+/// Backslash escape sequences (grounded against sshd -T OpenSSH 10.2p1):
+///   - `\"` -> literal `"` (backslash consumed; quote does NOT toggle `in_quote`)
+///   - `\\` -> literal `\` (both backslashes consumed, one emitted)
+///   - `\` before any other char -> backslash kept literally (not an escape)
+///   - trailing `\` (at EOL) -> backslash kept literally
+///
+///   These rules hold both inside and outside quoted spans.
+///
+/// A `=` or `#` inside a bareword token is literal; inline-comment stripping
+/// (whitespace-delimited `#` tokens) is handled by lints, not by the tokenizer.
 ///
 /// # Errors
-/// Returns the error message for an unterminated quoted string.
+/// Returns an error message for an unterminated quoted string.
 fn read_arg(chars: &mut Peekable<Chars>) -> Result<String, String> {
-    if chars.peek() == Some(&'"') {
-        chars.next(); // consume the opening quote
-        let mut s = String::new();
-        for c in chars.by_ref() {
-            if c == '"' {
-                return Ok(s);
-            }
-            s.push(c);
-        }
-        return Err("unterminated quoted string".to_string());
-    }
     let mut s = String::new();
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
-            break;
+    let mut in_quote = false;
+    loop {
+        match chars.peek() {
+            None => {
+                if in_quote {
+                    return Err("unterminated quoted string".to_string());
+                }
+                break;
+            }
+            Some(&c) if c.is_whitespace() && !in_quote => break,
+            Some(&'\\') => {
+                chars.next(); // consume the backslash
+                match chars.peek() {
+                    Some(&'"') => {
+                        // `\"` -> literal `"` in value; does NOT toggle in_quote
+                        s.push('"');
+                        chars.next();
+                    }
+                    Some(&'\\') => {
+                        // `\\` -> literal `\` in value; both backslashes consumed
+                        s.push('\\');
+                        chars.next();
+                    }
+                    _ => {
+                        // `\` before anything else (including EOL): keep the backslash
+                        s.push('\\');
+                        // do NOT advance chars.next() here; the next char will be
+                        // processed on the next iteration
+                    }
+                }
+            }
+            Some(&'"') => {
+                in_quote = !in_quote;
+                chars.next(); // consume the `"`, do not push
+            }
+            Some(&c) => {
+                s.push(c);
+                chars.next();
+            }
         }
-        s.push(c);
-        chars.next();
     }
     Ok(s)
 }
@@ -334,6 +381,180 @@ mod tests {
         assert!(tokenize_line("Banner \"abc").is_err());
     }
 
+    // -----------------------------------------------------------------------
+    // Quote-concatenation model (issue #348)
+    //
+    // OpenSSH strips ALL `"` characters from a whitespace-delimited token and
+    // concatenates the runs: `"aes128-cbc"#x` is the single arg `aes128-cbc#x`
+    // (verified sshd -T OpenSSH 10.2p1). The tests below were RED until
+    // `read_arg` was updated by #348 to consume the whole token (not stop
+    // at the first closing quote); they are now GREEN.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_glued_hash_after_closing_quote_concatenates() {
+        // `Ciphers "aes128-cbc"#x` -- `#x` is glued directly to the closing `"`.
+        // sshd strips the quotes and sees one token `aes128-cbc#x` (not two args).
+        // Grounding: sshd -T -> "Bad SSH2 cipher spec 'aes128-cbc#x'" (rc 255,
+        // verified OpenSSH 10.2p1). The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128-cbc\"#x").unwrap(),
+            vec!["Ciphers", "aes128-cbc#x"],
+            "glued `#` after closing quote: quote-strip + concatenation yields one arg"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_empty_quoted_prefix_concatenates() {
+        // `Ciphers ""aes128-cbc` -- an empty quoted prefix immediately followed
+        // by a bareword run. sshd strips the `""` and sees `aes128-cbc` as one
+        // token. Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH
+        // 10.2p1). The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"\"aes128-cbc").unwrap(),
+            vec!["Ciphers", "aes128-cbc"],
+            "empty quoted prefix followed by bareword: concat yields one arg"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_quote_pair_splitting_a_token_concatenates() {
+        // `Ciphers "aes128""-cbc"` -- two adjacent quoted runs with no whitespace.
+        // sshd strips both quote pairs and concatenates: `aes128` + `-cbc` = `aes128-cbc`.
+        // Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH 10.2p1).
+        // The concatenation model must yield ONE arg.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128\"\"-cbc\"").unwrap(),
+            vec!["Ciphers", "aes128-cbc"],
+            "adjacent quoted runs with no whitespace: concat yields one arg"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression guards: these MUST stay GREEN after the quote-concatenation fix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_spaced_hash_after_closing_quote_stays_separate() {
+        // `Ciphers "aes128-cbc" #x` -- SPACE before `#x`.
+        // The space ends the token; `#x` is a separate arg (an inline comment
+        // token kept by the tokenizer, stripped at the lint layer). This must
+        // NOT be changed by the concatenation fix.
+        assert_eq!(
+            tokenize_line("Ciphers \"aes128-cbc\" #x").unwrap(),
+            vec!["Ciphers", "aes128-cbc", "#x"],
+            "spaced `#x` after closing quote: separate token, not concatenated"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_quoted_whitespace_stays_literal() {
+        // `Banner "two words"` -- whitespace INSIDE quotes is literal; the
+        // quoted span is a single arg `two words`. The concatenation fix must
+        // not break quoted-whitespace support.
+        assert_eq!(
+            tokenize_line("Banner \"two words\"").unwrap(),
+            vec!["Banner", "two words"],
+            "whitespace inside quotes is literal: one arg"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Backslash-escape semantics (issue #348 regression, grounded against
+    // sshd -T OpenSSH 10.2p1 on this machine -- see Step 1 grounding table).
+    //
+    // Grounded truth table (exact bytes via printf + od -c, then sshd -T):
+    //   File bytes    | rc | sshd value  | Semantic
+    //   a\"b          |  0 | a"b         | \" -> literal `"`, backslash consumed
+    //   /etc/motd\"   |  0 | /etc/motd"  | same, end-of-token
+    //   "a\"b"        |  0 | a"b         | \" also escapes inside dquotes
+    //   a\\b          |  0 | a\b         | \\ -> literal `\`, one backslash consumed
+    //   a\b           |  0 | a\b         | `\` before ordinary char: backslash KEPT
+    //   abc\          |  0 | abc\        | trailing `\`: backslash KEPT
+    //   "abc          |255 | (error)     | unterminated quote: still rejected
+    //   abc\\"        |255 | (error)     | \\ consumed -> lone " opens unterminated quote
+    //
+    // Escape rule: `\"` and `\\` are two-char escape sequences (backslash consumed).
+    // `\` before any other character keeps the backslash literal. The toggle model
+    // that omitted backslash handling regressed the `\"` cases to Err (sshd-F01).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tokenize_line_backslash_quote_bareword_is_accepted() {
+        // `Banner a\"b` -- backslash before the quote escapes it; sshd rc 0, value `a"b`.
+        // Without backslash handling, the current read_arg sees an opened but unterminated
+        // quoted string (the `"` toggles in_quote ON and we never see a closing `"`).
+        // After the fix, `\"` must yield a literal `"` in the value, NOT an error.
+        assert_eq!(
+            tokenize_line("Banner a\\\"b").unwrap(),
+            vec!["Banner", "a\"b"],
+            "backslash-quote mid-bareword: no error, value has literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_quote_end_of_token_is_accepted() {
+        // `Banner /etc/motd\"` -- trailing backslash-quote; sshd rc 0, value `/etc/motd"`.
+        assert_eq!(
+            tokenize_line("Banner /etc/motd\\\"").unwrap(),
+            vec!["Banner", "/etc/motd\""],
+            "backslash-quote at end of token: no error, value ends with literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_quote_inside_dquotes_is_accepted() {
+        // `Banner "a\"b"` -- backslash-quote INSIDE dquotes; sshd rc 0, value `a"b`.
+        assert_eq!(
+            tokenize_line("Banner \"a\\\"b\"").unwrap(),
+            vec!["Banner", "a\"b"],
+            "backslash-quote inside dquotes: no error, value has literal quote"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_double_backslash_yields_single_backslash() {
+        // `Banner a\\b` (file has two literal backslashes); sshd rc 0, value `a\b`.
+        // `\\` is an escape sequence: first backslash consumed, second kept.
+        assert_eq!(
+            tokenize_line("Banner a\\\\b").unwrap(),
+            vec!["Banner", "a\\b"],
+            "double backslash: yields one literal backslash in value"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_backslash_before_ordinary_char_keeps_backslash() {
+        // `Banner a\b` (file has one backslash + b); sshd rc 0, value `a\b`.
+        // `\` before an ordinary char is NOT an escape; the backslash is kept.
+        assert_eq!(
+            tokenize_line("Banner a\\b").unwrap(),
+            vec!["Banner", "a\\b"],
+            "backslash before ordinary char: backslash kept in value"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_trailing_backslash_kept() {
+        // `Banner abc\` (file has trailing backslash); sshd rc 0, value `abc\`.
+        assert_eq!(
+            tokenize_line("Banner abc\\").unwrap(),
+            vec!["Banner", "abc\\"],
+            "trailing backslash: kept in value, no error"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_double_backslash_before_quote_is_unterminated() {
+        // `Banner abc\\"` (file: two backslashes then a quote); sshd rc 255.
+        // `\\` consumes both backslashes (yields `\`), then the lone `"` opens
+        // an unterminated quoted string.
+        assert!(
+            tokenize_line("Banner abc\\\\\"").is_err(),
+            "double-backslash before a quote: \\\\ consumed, lone quote -> unterminated"
+        );
+    }
+
     #[test]
     fn parse_criteria_rejects_empty() {
         assert!(parse_criteria(&[]).is_err());
@@ -354,5 +575,76 @@ mod tests {
         let sp = parse_criteria(&["User".to_string(), "alice".to_string()]).unwrap();
         assert_eq!(sp[0].keyword, "User");
         assert_eq!(sp[0].values, vec!["alice".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // argv_split fidelity gaps (issue #374)
+    //
+    // These tests pin the grounded-correct (sshd-faithful) behavior for three
+    // tokenizer gaps scoped OUT of issue #348 and tracked as follow-up in #374.
+    // All are RED until #374 is implemented, hence #[ignore].
+    //
+    // Grounding: real `/usr/sbin/sshd -T` with OpenSSH 10.2p1 (the same binary
+    // used for the #348 grounding table).
+    //
+    //   Input bytes         | rc | sshd value    | Semantic
+    //   Banner 'two words'  |  0 | two words     | single-quote quoting: space literal
+    //   Banner 'abc         |255 | (error)       | unterminated single-quote -> error
+    //   Banner a\ b         |  0 | a b           | escaped-space: backslash-space -> space
+    //   Banner a\'b         |  0 | a'b           | backslash-single-quote -> literal '
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_single_quoted_value_is_one_token() {
+        // `Banner 'two words'` -- single quotes delimit a span with a literal space.
+        // sshd rc 0, value `two words` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer does not handle single-quote quoting; this asserts
+        // the CORRECT behavior the impl does not yet produce.
+        assert_eq!(
+            tokenize_line("Banner 'two words'").unwrap(),
+            vec!["Banner", "two words"],
+            "single-quoted span with space: one arg `two words`"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_unterminated_single_quote_is_error() {
+        // `Banner 'abc` -- unterminated single-quote; sshd rc 255 (error).
+        // The correct behavior is to return Err, matching sshd's rejection.
+        assert!(
+            tokenize_line("Banner 'abc").is_err(),
+            "unterminated single-quote must be an error"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_escaped_space_outside_quotes_is_literal_space() {
+        // `Banner a\ b` (backslash then space) -- escaped space outside quotes.
+        // sshd rc 0, value `a b` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer treats `\` before space as a kept literal backslash
+        // and then the space ends the token, yielding ["Banner", "a\\", "b"] instead.
+        assert_eq!(
+            tokenize_line("Banner a\\ b").unwrap(),
+            vec!["Banner", "a b"],
+            "backslash-space: produces literal space, one arg"
+        );
+    }
+
+    #[test]
+    #[ignore = "argv_split fidelity gap, tracked in #374"]
+    fn tokenize_line_backslash_single_quote_yields_literal_quote() {
+        // `Banner a\'b` (backslash then single-quote) -- escape sequence.
+        // sshd rc 0, value `a'b` (grounding: sshd -T OpenSSH 10.2p1).
+        // The current tokenizer does not recognize `\'`; it keeps the backslash
+        // literally and then the `'` is treated as an ordinary character, yielding
+        // `a\'b` instead of `a'b`.
+        assert_eq!(
+            tokenize_line("Banner a\\'b").unwrap(),
+            vec!["Banner", "a'b"],
+            "backslash-single-quote: produces literal single-quote in value"
+        );
     }
 }
