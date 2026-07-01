@@ -175,13 +175,23 @@ fn check_user_spec(
         };
         // Sub-case (b): invalid char in the group name portion of the user token.
         //
-        // `%#NNN` (pure GID: `#` followed by one or more ASCII digits, nothing
-        // else) is valid (visudo rc=0). Exempt it from the denylist check.
+        // `%#NNN` (pure GID: `#` followed only by ASCII digits) is valid
+        // (visudo rc=0). Exempt it from the denylist check.
         // `%#1000>x` is NOT a pure GID (digit run followed by `>`): `is_pure_gid`
         // is false, the denylist runs, and `>` is caught.
+        //
+        // Note: `%#` (empty digit run) is vacuously a pure GID by this predicate
+        // (`"".bytes().all(...)` is vacuously true), but visudo rejects `%#` via
+        // F01 (the parser marks it Malformed before F02 runs), so F02 is silent
+        // for `%#` regardless of whether `is_pure_gid` is true or false -- the
+        // denylist contains none of `{! ( ) > "}` so `#` would not fire anyway.
+        // The empty-rest case is therefore F02-silent under BOTH the old and new
+        // predicate; dropping `!rest.is_empty()` eliminates an equivalent mutant
+        // (`delete !` in is_pure_gid was unreachable through the denylist
+        // mechanism) without changing any observable behavior.
         let is_pure_gid = name
             .strip_prefix('#')
-            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()));
+            .is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()));
         if !is_pure_gid
             && let Some(bad_char) = name
                 .chars()
