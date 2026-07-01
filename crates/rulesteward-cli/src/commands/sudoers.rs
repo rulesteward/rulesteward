@@ -6,11 +6,8 @@
 //! staging, rendering, and exit-code mapping only. There is NO `--target` rail
 //! (the sudo STIG findings are version-agnostic).
 
-use serde::Serialize;
-
-use crate::cli::{HumanJsonFormat, SudoersCommand, SudoersLintArgs};
+use crate::cli::{SudoersCommand, SudoersLintArgs};
 use crate::exit_code::{self, EXIT_TOOL_FAILURE};
-use crate::output::json::render_envelope;
 use rulesteward_sudoers::{SudoersLintContext, lints, resolve};
 
 /// Schema version for the `sudoers-lint` payload kind (CC-1).
@@ -24,12 +21,6 @@ pub fn run(cmd: SudoersCommand) -> anyhow::Result<i32> {
     match cmd {
         SudoersCommand::Lint(args) => Ok(lint(&args)),
     }
-}
-
-/// JSON payload for the `sudoers-lint` envelope kind (CC-1).
-#[derive(Serialize)]
-struct SudoersLintPayload<'a> {
-    diagnostics: &'a [rulesteward_core::Diagnostic],
 }
 
 fn lint(args: &SudoersLintArgs) -> i32 {
@@ -61,19 +52,13 @@ fn lint(args: &SudoersLintArgs) -> i32 {
         sources.insert(file.path.display().to_string(), file.source.clone());
     }
 
-    let output = match args.format {
-        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
-        HumanJsonFormat::Json => render_envelope(
-            "sudoers-lint",
-            SUDOERS_LINT_SCHEMA_VERSION,
-            &SudoersLintPayload {
-                diagnostics: &diags,
-            },
-        ),
-    };
-    if !output.is_empty() {
-        print!("{output}");
-    }
+    crate::output::emit_lint(
+        args.format,
+        "sudoers-lint",
+        SUDOERS_LINT_SCHEMA_VERSION,
+        &diags,
+        &sources,
+    );
 
     exit_code::compute(&diags, false)
 }

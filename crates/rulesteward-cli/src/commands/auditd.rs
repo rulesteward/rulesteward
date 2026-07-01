@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::cli::{AuditdCommand, AuditdLintArgs, CostArgs, HumanJsonCsvFormat, HumanJsonFormat};
+use crate::cli::{AuditdCommand, AuditdLintArgs, CostArgs, HumanJsonCsvFormat};
 use crate::exit_code::{self, EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
@@ -47,12 +47,6 @@ pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
 // the mutation gate); this shell does target resolution, source-map staging,
 // rendering, and exit-code mapping only.
 // ---------------------------------------------------------------------------
-
-/// JSON payload for the `auditd-lint` envelope kind (CC-1).
-#[derive(Serialize)]
-struct AuditdLintPayload<'a> {
-    diagnostics: &'a [rulesteward_core::Diagnostic],
-}
 
 fn lint(args: &AuditdLintArgs) -> i32 {
     let target = args
@@ -98,19 +92,13 @@ fn lint(args: &AuditdLintArgs) -> i32 {
         diags.extend(lints::lint(&rules, opts));
     }
 
-    let output = match args.format {
-        HumanJsonFormat::Human => crate::output::human::render(&diags, &sources),
-        HumanJsonFormat::Json => render_envelope(
-            "auditd-lint",
-            AUDITD_LINT_SCHEMA_VERSION,
-            &AuditdLintPayload {
-                diagnostics: &diags,
-            },
-        ),
-    };
-    if !output.is_empty() {
-        print!("{output}");
-    }
+    crate::output::emit_lint(
+        args.format,
+        "auditd-lint",
+        AUDITD_LINT_SCHEMA_VERSION,
+        &diags,
+        &sources,
+    );
 
     exit_code::compute(&diags, false)
 }
