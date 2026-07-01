@@ -62,7 +62,7 @@ jobs:
     name: fmt + clippy (ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # dtolnay/rust-toolchain handles toolchain install + PATH declaratively.
       # It assumes `rustup` exists; GitHub-hosted ubuntu-latest ships it, so this
@@ -230,7 +230,7 @@ jobs:
         run: |
           dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install stable Rust toolchain via rustup
         run: |
@@ -345,7 +345,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -391,7 +391,7 @@ jobs:
     # saved, in exchange for the wall-clock win on green pushes.
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Ensure rustup is available
         run: |
@@ -460,7 +460,7 @@ jobs:
     # ever produces a false-positive that takes more than a day to
     # mitigate.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       # Install cargo-audit from prebuilt binaries via taiki-e/install-action.
       # The previous rustsec/audit-check@v2 wrapper installed via
       # `cargo install cargo-audit` which compiled the tool from source --
@@ -487,7 +487,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2
         with:
           tool: cargo-deny@0.19.7
@@ -512,7 +512,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -563,7 +563,7 @@ jobs:
       CC_x86_64_unknown_linux_musl: musl-gcc
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -616,7 +616,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -653,7 +653,7 @@ jobs:
     name: build libsepol.a from vendored source (standalone)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install musl toolchain + make + binutils
         run: sudo apt-get update && sudo apt-get install -y musl-tools make gcc binutils
       - name: Build libsepol.a from vendored source (musl)
@@ -688,7 +688,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: fmt-clippy
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -727,7 +727,7 @@ jobs:
     name: trustdb NO_LOCK contention harness (#291)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Ensure rustup is available
         run: |
