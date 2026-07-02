@@ -186,10 +186,22 @@ fn tokenize_line(line: &str) -> Result<Vec<String>, String> {
         skip_whitespace(&mut chars);
     }
 
-    // Remaining arguments: split on unquoted ASCII whitespace (sshd's separator
-    // class is ASCII ` \t\r\n\x0c` only, NOT the Unicode `char::is_whitespace()`
-    // superset -- a VT/NBSP stays in the token), honoring OpenSSH `argv_split`
-    // quoting. This is a single `while let Some(c) = chars.next()`
+    // Remaining arguments: split on unquoted ASCII whitespace, honoring OpenSSH
+    // `argv_split` quoting. Separator-class note (grounded on real sshd -T, OpenSSH
+    // 10.2p1): sshd's argv_split separates on SPACE/TAB only and keeps other control
+    // chars (FF/CR/VT/NBSP) literal mid-token. We use `is_ascii_whitespace`
+    // (space/tab/LF/CR/FF), not Unicode `char::is_whitespace()`, for two reasons:
+    //   1. lines are split on '\n' keeping a trailing '\r' (parse_config_str_located
+    //      uses `.split('\n')`, not `.lines()`), and sshd strips that CRLF '\r'
+    //      before argv_split. Treating '\r' as a separator is load-bearing: otherwise
+    //      `Ciphers aes128-cbc\r` on a CRLF file tokenizes to `aes128-cbc\r` and MISSES
+    //      the weak cipher -- a false negative. (Unicode would strip it too, but also
+    //      splits VT/NBSP.)
+    //   2. it does NOT split VT/NBSP, matching sshd (the Unicode superset would).
+    // It does still split a mid-line FF/CR (sshd keeps those literal) -- a rare
+    // over-report on a line sshd rejects anyway, tracked with the other
+    // whitespace-class false positives in #389; never a false negative.
+    // This is a single `while let Some(c) = chars.next()`
     // state machine: every iteration consumes at least one character via the loop
     // header, so no body/return mutation can leave the shared cursor un-advanced
     // and spin the loop forever (issue #387 -- the prior
@@ -372,9 +384,10 @@ mod tests {
     //
     // OpenSSH strips ALL `"` characters from a whitespace-delimited token and
     // concatenates the runs: `"aes128-cbc"#x` is the single arg `aes128-cbc#x`
-    // (verified sshd -T OpenSSH 10.2p1). The tests below were RED until
-    // `read_arg` was updated by #348 to consume the whole token (not stop
-    // at the first closing quote); they are now GREEN.
+    // (verified sshd -T OpenSSH 10.2p1). The tests below were RED until the arg
+    // tokenizer (then a `read_arg` helper, since inlined into `tokenize_line`) was
+    // updated by #348 to consume the whole token (not stop at the first closing
+    // quote); they are now GREEN.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -468,9 +481,9 @@ mod tests {
     #[test]
     fn tokenize_line_backslash_quote_bareword_is_accepted() {
         // `Banner a\"b` -- backslash before the quote escapes it; sshd rc 0, value `a"b`.
-        // Without backslash handling, the current read_arg sees an opened but unterminated
-        // quoted string (the `"` toggles in_quote ON and we never see a closing `"`).
-        // After the fix, `\"` must yield a literal `"` in the value, NOT an error.
+        // Without backslash handling, the tokenizer would open a quote span at `"` and
+        // reach EOL still inside it (unterminated). With `\"` handling, the escaped `"`
+        // is a literal in the value, NOT an error.
         assert_eq!(
             tokenize_line("Banner a\\\"b").unwrap(),
             vec!["Banner", "a\"b"],
@@ -585,8 +598,8 @@ mod tests {
     fn tokenize_line_single_quoted_value_is_one_token() {
         // `Banner 'two words'` -- single quotes delimit a span with a literal space.
         // sshd rc 0, value `two words` (grounding: sshd -T OpenSSH 10.2p1).
-        // The current tokenizer does not handle single-quote quoting; this asserts
-        // the CORRECT behavior the impl does not yet produce.
+        // Single-quote quoting is handled since #374 (the faithful argv_split
+        // tokenizer); before #374 this yielded `["Banner", "'two", "words'"]`.
         assert_eq!(
             tokenize_line("Banner 'two words'").unwrap(),
             vec!["Banner", "two words"],
@@ -608,8 +621,8 @@ mod tests {
     fn tokenize_line_escaped_space_outside_quotes_is_literal_space() {
         // `Banner a\ b` (backslash then space) -- escaped space outside quotes.
         // sshd rc 0, value `a b` (grounding: sshd -T OpenSSH 10.2p1).
-        // The current tokenizer treats `\` before space as a kept literal backslash
-        // and then the space ends the token, yielding ["Banner", "a\\", "b"] instead.
+        // Escaped space is handled since #374; before #374 the `\` was kept literal
+        // and the space ended the token, yielding `["Banner", "a\\", "b"]`.
         assert_eq!(
             tokenize_line("Banner a\\ b").unwrap(),
             vec!["Banner", "a b"],
@@ -621,9 +634,8 @@ mod tests {
     fn tokenize_line_backslash_single_quote_yields_literal_quote() {
         // `Banner a\'b` (backslash then single-quote) -- escape sequence.
         // sshd rc 0, value `a'b` (grounding: sshd -T OpenSSH 10.2p1).
-        // The current tokenizer does not recognize `\'`; it keeps the backslash
-        // literally and then the `'` is treated as an ordinary character, yielding
-        // `a\'b` instead of `a'b`.
+        // `\'` is recognized as an escape since #374; before #374 the backslash was
+        // kept literally and the `'` treated as ordinary, yielding `a\'b`.
         assert_eq!(
             tokenize_line("Banner a\\'b").unwrap(),
             vec!["Banner", "a'b"],
@@ -659,13 +671,12 @@ mod tests {
 
     #[test]
     fn tokenize_line_separator_class_is_ascii_whitespace_only() {
-        // sshd's token separators are ASCII whitespace only (space/tab/CR/LF/FF),
-        // NOT the broader Unicode `char::is_whitespace()` set. A trailing
-        // vertical-tab (U+000B) or NBSP (U+00A0) therefore stays IN the token, so
-        // `Ciphers aes128-cbc\u{0b}` is a single glued arg that sshd REJECTS (rc 255,
-        // "Bad SSH2 cipher spec"), not a clean `aes128-cbc`. Using Unicode
-        // `is_whitespace()` would wrongly split on VT/NBSP and over-report a weak
-        // cipher. Grounding: sshd -T OpenSSH 10.2p1 (VT/NBSP -> rc 255; FF/tab -> rc 0).
+        // The tokenizer separates on ASCII whitespace (`is_ascii_whitespace`), not the
+        // Unicode `char::is_whitespace()` superset. Grounded on sshd -T OpenSSH 10.2p1:
+        // sshd's argv_split keeps VT (U+000B) and NBSP (U+00A0) LITERAL mid-token, so
+        // `Ciphers aes128-cbc\u{0b}` is one glued arg sshd REJECTS (rc 255) -- Unicode
+        // `is_whitespace()` would wrongly split it and over-report a weak cipher. We
+        // match sshd here: VT/NBSP stay in the token.
         assert_eq!(
             tokenize_line("Ciphers aes128-cbc\u{0b}").unwrap(),
             vec!["Ciphers", "aes128-cbc\u{0b}"],
@@ -676,11 +687,14 @@ mod tests {
             vec!["Ciphers", "aes128-cbc\u{a0}"],
             "NBSP is not an sshd separator; stays in the token"
         );
-        // Form-feed (U+000C) IS ASCII whitespace and DOES separate (sshd rc 0).
+        // Trailing CR (a CRLF line ending, retained because lines are split on '\n',
+        // not `.lines()`) IS stripped, matching sshd's CRLF handling. Load-bearing:
+        // keeping it would tokenize `aes128-cbc\r` and MISS the weak cipher (a false
+        // negative).
         assert_eq!(
-            tokenize_line("Ciphers\u{0c}aes128-cbc").unwrap(),
+            tokenize_line("Ciphers aes128-cbc\r").unwrap(),
             vec!["Ciphers", "aes128-cbc"],
-            "form-feed is ASCII whitespace and separates tokens"
+            "trailing CR (CRLF) is stripped; matches sshd, prevents a weak-cipher FN"
         );
     }
 }
