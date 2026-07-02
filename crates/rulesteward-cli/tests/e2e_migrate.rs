@@ -357,12 +357,16 @@ fn migrate_apply_without_fagenrules_degrades_gracefully() {
 }
 
 /// JSON output after apply (fapolicyd-cli unreachable via empty PATH):
-/// `fagenrulesCheck.status` must be `"unavailable"` (not null, not absent)
-/// per #211 D7 graceful-degrade spec.
+/// `checkRules.status` must be `"unavailable"` (not null, not absent)
+/// per #211 D7 graceful-degrade spec. #221: the field renames
+/// `fagenrulesCheck` -> `checkRules` (aligned to the `fapolicyd-cli
+/// --check-rules` verb) and the migrate envelope `schemaVersion` bumps
+/// 1 -> 2 (CC-2 breaking-only bump).
 ///
-/// RED until #211 is implemented: the current binary emits `fagenrulesCheck: null`.
+/// RED until #221 is implemented: the current binary still emits the old
+/// `fagenrulesCheck` key (a populated object, post-#211) at `schemaVersion` 1.
 #[test]
-fn migrate_apply_json_fagenrules_check_unavailable_when_binary_absent() {
+fn migrate_apply_json_check_rules_unavailable_when_binary_absent() {
     let d = tempfile::tempdir().unwrap();
     write(
         d.path(),
@@ -383,17 +387,29 @@ fn migrate_apply_json_fagenrules_check_unavailable_when_binary_absent() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("json must parse");
-    // RED: current binary has fagenrulesCheck: null; after #211 it must be
-    // {"status": "unavailable", ...}.
-    let check = &v["fagenrulesCheck"];
+    // RED: current binary emits schemaVersion 1; after #221 it must be 2.
+    assert_eq!(
+        v["schemaVersion"],
+        serde_json::json!(2),
+        "migrate envelope schemaVersion must be 2 after the #221 checkRules rename: {stdout}"
+    );
+    // RED: the old `fagenrulesCheck` key must be GONE (renamed, not shimmed).
+    // A backward-compat impl emitting BOTH keys must fail this.
+    assert!(
+        v.get("fagenrulesCheck").is_none(),
+        "old fagenrulesCheck key must be removed (renamed to checkRules) after #221: {stdout}"
+    );
+    // RED: current binary emits the check object under the old key; after #221
+    // it is `checkRules`, populated as {"status": "unavailable", ...}.
+    let check = &v["checkRules"];
     assert!(
         !check.is_null(),
-        "fagenrulesCheck must not be null after apply (must be an object with status): {stdout}"
+        "checkRules must not be null after apply (must be an object with status): {stdout}"
     );
     assert_eq!(
         check["status"],
         serde_json::json!("unavailable"),
-        "fagenrulesCheck.status must be 'unavailable' when binary absent: {stdout}"
+        "checkRules.status must be 'unavailable' when binary absent: {stdout}"
     );
     // D7: applied must still be true.
     assert_eq!(
