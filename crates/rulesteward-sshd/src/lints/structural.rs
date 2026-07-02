@@ -2675,11 +2675,19 @@ mod w07_tests {
     //!
     //! These tests drive the full dispatcher `lint()` and filter to `sshd-W07`, so
     //! they pin the observable end-to-end contract regardless of which pass emits
-    //! it. Every fixture uses same-criterion-TYPE overlaps (or structural cases)
-    //! whose overlap/disjointness is decidable from the pattern text alone; the
-    //! separate question of CROSS-type overlap (e.g. `User` vs `Group`, which no
-    //! static linter can prove or disprove) is intentionally NOT pinned here (see
-    //! the lane's open QUESTION for #302).
+    //! it. Every positive fixture uses same-criterion-TYPE overlaps whose
+    //! overlap/disjointness is decidable from the pattern text alone.
+    //!
+    //! # Cross-type criteria are INTENTIONALLY clean (conservative contract, v0.3)
+    //! Two blocks with DIFFERENT criterion types (e.g. `Match User alice` vs
+    //! `Match Group admins`) can only co-satisfy if the user is a member of the
+    //! group, which a static linter cannot know without resolving NSS membership.
+    //! For v0.3 the decided contract is the CONSERVATIVE reading: do NOT flag
+    //! cross-type pairs (no shell-out, no membership guessing), accepting the missed
+    //! case rather than risking a false positive. Opt-in NSS-backed membership
+    //! resolution that would let W07 reason about `User` vs `Group` overlap is a
+    //! post-v0.3 follow-up tracked as #400. `cross_type_user_and_group_do_not_flag_w07`
+    //! locks this so the implementer cannot accidentally flag it.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -2875,6 +2883,26 @@ mod w07_tests {
             )
             .is_empty(),
             "no keyword is shared across the two blocks, so nothing is shadowed"
+        );
+    }
+
+    #[test]
+    fn cross_type_user_and_group_do_not_flag_w07() {
+        // Conservative v0.3 contract: `Match User alice` and `Match Group admins`
+        // co-satisfy ONLY if alice is a member of admins, which a static linter
+        // cannot determine without NSS membership resolution. Rather than guess (and
+        // risk a false positive when alice is NOT in admins), W07 leaves cross-type
+        // criteria pairs CLEAN for v0.3. Opt-in membership resolution that could
+        // flag this is the post-v0.3 follow-up #400. This is the issue's headline
+        // "permissive early Match masking a stricter later one" shape, deliberately
+        // left unflagged under the conservative reading.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match Group admins\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "cross-type User/Group overlap is unknowable statically, so it is not flagged (#400)"
         );
     }
 }
