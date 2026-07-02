@@ -39,6 +39,25 @@
 //!      occurs). F02 checks each `%`-prefixed user token's name for these chars.
 //!      Note: `%#NNN` (GID form) is valid (rc=0) and is excluded from this check.
 //!
+//! ## Issue #375 tail (Case-4/Case-5 completeness)
+//!
+//! Three more visudo-rejected shapes outside the four positions above, all
+//! grounded via local `visudo -cf` 1.9.17p2, 2026-07-02:
+//!
+//! 5. **Runas-position group defects**: `CmndSpec.runas.users` /
+//!    `.groups` (the `(runas_user:runas_group)` group on an individual
+//!    command) are never scanned by the subject-position walk above. Two
+//!    sub-rules: (a) the Case-4(b) denylist (plus embedded whitespace),
+//!    applied directly to every runas.users/groups token; (b) a
+//!    runas.groups token starting with `%` is invalid regardless of
+//!    denylist chars (the post-colon position already denotes a group).
+//! 6. **Lone `!` command**: `CmndItem::Cmnd("!")` -- a negation with nothing
+//!    to negate. Keyed off the exact token `"!"`, not `starts_with('!')`, so
+//!    `!ALL` and `!/bin/su` are unaffected.
+//! 7. **GID-then-non-digit subject**: a `%#<digits><non-digit>` or `%#<all
+//!    non-digit>` name (e.g. `%#1000abc`, `%#abc`) is not a pure GID and has
+//!    no denylist char, but is still visudo-rejected.
+//!
 //! # Must-NOT-regress (valid, no F02)
 //!
 //! - `User_Alias FOO = #1000`: the `#1000` follows `=` in an alias DEFINITION
@@ -97,10 +116,46 @@ fn check_user_spec(
     spec: &crate::ast::UserSpec,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // Cases 1 and 3: check every command token in every host-group.
+    check_command_specs(file, logical, spec, diags);
+    check_group_subject(file, logical, spec, diags);
+}
+
+/// Cases 1 and 3, plus #375 Rules 1 and 2: check every command spec (and its
+/// optional runas group) in every host-group.
+fn check_command_specs(
+    file: &SudoersFile,
+    logical: &crate::ast::LogicalLine,
+    spec: &crate::ast::UserSpec,
+    diags: &mut Vec<Diagnostic>,
+) {
     for host_group in &spec.host_groups {
         for cmnd_spec in &host_group.cmnd_specs {
+            // #375 Rule 1: runas-position defects. `RunasSpec.users` /
+            // `.groups` (the `(runas_user:runas_group)` group attached to
+            // THIS command) are never scanned by the subject-position walk
+            // below (that only inspects `UserSpec.users`), so a malformed
+            // runas token reaches F02 unseen without this check.
+            if let Some(runas) = &cmnd_spec.runas {
+                check_runas(file, logical, runas, diags);
+            }
             if let CmndItem::Cmnd(token) = &cmnd_spec.cmnd {
+                // #375 Rule 2: a lone `!` command (no path to negate) is a
+                // distinct defect from a `!`-negated command with a real path
+                // (Case 3 below) or a `!`-negated `ALL`. Key off the EXACT
+                // token `"!"`, not `starts_with('!')`: `!ALL` and `!/bin/su`
+                // both start with `!` but are valid (or handled elsewhere) --
+                // only a bare `!` with nothing after it is invalid on its own.
+                if token == "!" {
+                    diags.push(anchored(
+                        Severity::Fatal,
+                        "sudo-F02",
+                        logical.span.clone(),
+                        "command is a lone `!` negation with no command to negate".to_string(),
+                        file.path.clone(),
+                        logical.line,
+                    ));
+                    continue;
+                }
                 // Case 1: `#<digits>` in command position. strip_inline_comment
                 // preserves `#<digits>` preceded by whitespace/comma/`%`/start as a
                 // UID token; visudo rejects them in command position (rc=1).
@@ -139,36 +194,49 @@ fn check_user_spec(
             }
         }
     }
+}
 
-    // Case 4: malformed group subject.
-    //
-    // Two sub-cases:
-    //
-    // (a) Embedded-whitespace: `%bad group ALL = ALL` splits into users=["%bad"],
-    //     hosts=["group ALL"]. A host token with embedded whitespace is structurally
-    //     impossible in a valid file and signals the group name had a space.
-    //
-    // (b) Invalid group-name char in the user token itself: `%bad!group ALL = ALL`
-    //     splits into users=["%bad!group"], hosts=["ALL"]. The invalid char is INSIDE
-    //     the user token, not expressed as host whitespace.
-    //
-    //     CLOSED grounded denylist for sub-case (b): { '!', '(', ')', '>', '"' }.
-    //     Derived from an exhaustive visudo -cf probe of every printable-ASCII char CH
-    //     in `%bad<CH>group` (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
-    //       REJECTED (rc=1, syntax error): `!  "  #  (  )  :  =  >`  (8 chars)
-    //       ACCEPTED (rc=0): the other 86 printable-ASCII chars + non-ASCII.
-    //     F01 carve-out: `#`, `:`, `=` also reject but fold the line to Malformed
-    //     in the AST, so they are caught by sudo-F01 before F02 is reached. They
-    //     MUST NOT appear here to avoid double-reporting.
-    //     The F02-relevant rejected chars are exactly the 5 above (do NOT convert
-    //     to a positive allowlist -- the parser already ensures clean tokens reach
-    //     this point; a denylist is simpler and more mutation-resistant).
-    //     GID-form exemption: `%#NNN` (pure GID: `#` followed only by one or more
-    //     ASCII digits) is valid (visudo rc=0) and must be exempt. The exemption is
-    //     STRICTLY the pure-GID form: `%#1000>x` and `%#1000!x` contain a denylist
-    //     char after the digit run and are visudo-rejected (rc=1). A bare
-    //     `starts_with('#')` guard over-exempts any `#`-prefix name entirely; the
-    //     correct guard uses `is_pure_gid` (see below).
+/// Case 4: malformed group subject.
+///
+/// Two sub-cases:
+///
+/// (a) Embedded-whitespace: `%bad group ALL = ALL` splits into `users = ["%bad"]`,
+///     `hosts = ["group ALL"]`. A host token with embedded whitespace is
+///     structurally impossible in a valid file and signals the group name had
+///     a space.
+///
+/// (b) Invalid group-name char in the user token itself: `%bad!group ALL = ALL`
+///     splits into `users = ["%bad!group"]`, `hosts = ["ALL"]`. The invalid
+///     char is INSIDE the user token, not expressed as host whitespace.
+///
+/// CLOSED grounded denylist for sub-case (b): `! ( ) > "`. Derived from an
+/// exhaustive visudo -cf probe of every printable-ASCII char CH in
+/// `%bad<CH>group` (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
+///
+/// ```text
+/// REJECTED (rc=1, syntax error): !  "  #  (  )  :  =  >   (8 chars)
+/// ACCEPTED (rc=0): the other 86 printable-ASCII chars + non-ASCII.
+/// ```
+///
+/// F01 carve-out: `#`, `:`, `=` also reject but fold the line to Malformed in
+/// the AST, so they are caught by sudo-F01 before F02 is reached. They MUST NOT
+/// appear here to avoid double-reporting. The F02-relevant rejected chars are
+/// exactly the 5 above (do NOT convert to a positive allowlist -- the parser
+/// already ensures clean tokens reach this point; a denylist is simpler and
+/// more mutation-resistant).
+///
+/// GID-form exemption: `%#NNN` (pure GID: `#` followed only by one or more
+/// ASCII digits) is valid (visudo rc=0) and must be exempt. The exemption is
+/// STRICTLY the pure-GID form: `%#1000>x` and `%#1000!x` contain a denylist
+/// char after the digit run and are visudo-rejected (rc=1). A bare
+/// `starts_with('#')` guard over-exempts any `#`-prefix name entirely; the
+/// correct guard uses `is_pure_gid` (see below).
+fn check_group_subject(
+    file: &SudoersFile,
+    logical: &crate::ast::LogicalLine,
+    spec: &crate::ast::UserSpec,
+    diags: &mut Vec<Diagnostic>,
+) {
     for user in &spec.users {
         let Some(name) = user.strip_prefix('%') else {
             continue;
@@ -192,23 +260,45 @@ fn check_user_spec(
         let is_pure_gid = name
             .strip_prefix('#')
             .is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()));
-        if !is_pure_gid
-            && let Some(bad_char) = name
-                .chars()
-                .find(|c| matches!(c, '!' | '(' | ')' | '>' | '"'))
-        {
-            diags.push(anchored(
-                Severity::Fatal,
-                "sudo-F02",
-                logical.span.clone(),
-                format!(
-                    "group subject {user:?} contains an invalid character `{bad_char}` \
-                     in the group name that visudo rejects"
-                ),
-                file.path.clone(),
-                logical.line,
-            ));
-            return; // fire once per spec line
+        if !is_pure_gid {
+            if let Some(bad_char) = name.chars().find(|c| is_denylist_char(*c)) {
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "group subject {user:?} contains an invalid character `{bad_char}` \
+                         in the group name that visudo rejects"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+                return; // fire once per spec line
+            }
+            // #375 Rule 3: a `#`-prefixed name that is not a pure GID (no
+            // denylist char present either, or the denylist check above would
+            // already have fired) is still GID-structurally invalid -- either
+            // a digit run followed by non-digit char(s) (`%#1000abc`) or no
+            // digits at all after the `#` (`%#abc`). Only the pure-digit-run
+            // form is a valid GID reference; a name that does NOT start with
+            // `#` (`%1000abc`, `%wheel`) is an ordinary group name and is
+            // untouched by this check. `is_malformed_gid_tail` encodes exactly
+            // this (and is shared with the runas-user check in `check_runas`);
+            // inside this `!is_pure_gid` block it reduces to `starts_with('#')`.
+            if is_malformed_gid_tail(name) {
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "group subject {user:?} has a `#`-prefixed name that is not a \
+                         pure GID digit run, which visudo rejects"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+                return; // fire once per spec line
+            }
         }
     }
     // Sub-case (a): whitespace embedded in host token -- the parser split the group
@@ -236,6 +326,137 @@ fn check_user_spec(
                     return; // fire once per spec line
                 }
             }
+        }
+    }
+}
+
+/// The five printable-ASCII chars a sudoers group/runas name may not contain,
+/// grounded via the exhaustive `visudo -cf` probe documented above in the
+/// Case-4 doc comment: `! ( ) > "`. Shared by the subject-position sub-case
+/// (b) check in `check_user_spec` and the #375 runas-position check
+/// (`check_runas`) below.
+fn is_denylist_char(c: char) -> bool {
+    matches!(c, '!' | '(' | ')' | '>' | '"')
+}
+
+/// Return the first Case-4(b) denylist char (`! ( ) > "`) or whitespace char
+/// found in `token`, or `None` if the token is clean. Used by `check_runas`
+/// (#375 Rule 1a), which -- unlike the subject-position check -- applies
+/// directly to every runas token regardless of a `%` prefix, and additionally
+/// treats embedded whitespace as invalid (a runas token is comma/colon-split
+/// only, so unlike a subject `%name` it can carry an internal space straight
+/// through to this check).
+fn first_invalid_char(token: &str) -> Option<char> {
+    token
+        .chars()
+        .find(|c| is_denylist_char(*c) || c.is_whitespace())
+}
+
+/// #375 Rule 3 predicate: `true` when `name` (the part after a `%` prefix) is a
+/// `#`-prefixed group name that is NOT a pure-digit GID run and is therefore
+/// visudo-rejected -- i.e. a digit run followed by non-digit char(s)
+/// (`#1000abc`) or no digits at all after the `#` (`#abc`). The valid pure-GID
+/// form (`#1000`) and the empty `#` (`""` after strip -- `all` is vacuously
+/// true) both return `false`, preserving the pure-GID exemption. A name that
+/// does NOT start with `#` (`1000abc`, `wheel`) returns `false` (it is an
+/// ordinary group name). Shared by `check_group_subject` (subject position) and
+/// `check_runas` (runas-user position) so the two stay consistent.
+fn is_malformed_gid_tail(name: &str) -> bool {
+    name.strip_prefix('#')
+        .is_some_and(|rest| !rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// #375 Rule 1: runas-position defects on a single `CmndSpec.runas` group.
+///
+/// `check_user_spec`'s Case-4 walk only inspects `UserSpec.users` (the
+/// SUBJECT list before ` = `); it never scans `RunasSpec.users` /
+/// `RunasSpec.groups` (the `(runas_user:runas_group)` group attached to an
+/// individual command). Two sub-rules, grounded via local `visudo -cf`
+/// 1.9.17p2, 2026-07-02:
+///
+/// (a) Reuse the Case-4(b) denylist (`is_denylist_char`) plus an embedded-
+///     whitespace check, applied directly to every `runas.users` AND
+///     `runas.groups` token. Unlike the subject-position check, this does
+///     NOT require a `%` prefix: a bare runas-user name like `grpbad!x` (no
+///     `%`) is also invalid, e.g. `(grpbad!x)`.
+/// (b) NEW, `runas.groups`-only: a token starting with `%` is invalid
+///     regardless of denylist chars. The post-colon `RUNAS_GROUP` position
+///     already denotes a group, so a `%` prefix there is a THIRD, distinct
+///     mechanism (not a denylist-char miss) -- `(root:%grp)` is rejected even
+///     though `grp` alone contains no denylist char. This does NOT apply to
+///     `runas.users`, where `%group` is the normal, valid way to reference a
+///     group (`(%wheel)` is valid).
+fn check_runas(
+    file: &SudoersFile,
+    logical: &crate::ast::LogicalLine,
+    runas: &crate::ast::RunasSpec,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for user in &runas.users {
+        // Rule 1a: denylist char / embedded whitespace, position-independent.
+        if let Some(bad) = first_invalid_char(user) {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "runas-user token {user:?} contains an invalid character `{bad}` \
+                     that visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
+            continue; // one diag per token; denylist takes priority over Rule 3
+        }
+        // Rule 3 (mirrors `check_group_subject`): a `%`-prefixed runas-user
+        // whose name is a `#`-GID with a non-digit tail (`%#1000abc`, `%#0z`)
+        // is visudo-rejected even with no denylist char. `is_malformed_gid_tail`
+        // preserves the pure-GID exemption (`%#1000` stays clean). This applies
+        // ONLY to `runas.users`: a `#`-prefixed runas.GROUP token is a separate
+        // pre-existing parser-gap case, out of scope here.
+        if let Some(name) = user.strip_prefix('%')
+            && is_malformed_gid_tail(name)
+        {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "runas-user token {user:?} has a `#`-prefixed name that is not a \
+                     pure GID digit run, which visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
+        }
+    }
+    for group in &runas.groups {
+        if group.starts_with('%') {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "runas-group token {group:?} has a `%` prefix that visudo rejects \
+                     (the runas-group position already denotes a group)"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
+            continue;
+        }
+        if let Some(bad) = first_invalid_char(group) {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "runas-group token {group:?} contains an invalid character `{bad}` \
+                     that visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
         }
     }
 }
@@ -327,7 +548,7 @@ fn has_hash_digits(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::f02;
-    use crate::lints::SudoersLintContext;
+    use crate::lints::{SudoersLintContext, f01};
     use crate::parser::parse;
     use std::path::Path;
 
@@ -340,6 +561,13 @@ mod tests {
     fn lint(src: &str) -> Vec<rulesteward_core::Diagnostic> {
         let f = files(src);
         f02(&f, &SudoersLintContext::default())
+    }
+
+    /// Run f01 over `src` and return the diagnostics (for the tests that pin a
+    /// shape as a PARSE failure caught by sudo-F01 rather than a clean-spec F02).
+    fn lint_f01(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        let f = files(src);
+        f01(&f, &SudoersLintContext::default())
     }
 
     /// Count f02 (sudo-F02) diagnostics.
@@ -1170,6 +1398,417 @@ mod tests {
         assert!(
             f02_diags.is_empty(),
             "`%#1000` is the valid pure-GID form -- must NOT fire F02 after the fix; got {f02_diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #375: out-of-scope tail (Case-4/Case-5 completeness pass)
+    //
+    // Three visudo-rejected shapes that sit OUTSIDE the four documented F02
+    // positions above (deferred from #346's post-GREEN adversarial review):
+    //   1. Runas-position group defects: a malformed `%group`/`%#gid` token
+    //      inside a `(...)` runas spec (RunasSpec.users / RunasSpec.groups),
+    //      which check_user_spec's Case-4 walk never scans today (it only
+    //      inspects UserSpec.users, the SUBJECT list).
+    //   2. Lone `!` command with no path: `CmndItem::Cmnd("!")`, a negation
+    //      with nothing to negate.
+    //   3. `%#<digits><non-digit>`: a GID-looking name whose digit run is
+    //      followed by a non-digit, non-denylist char (e.g. `1000abc`) -- the
+    //      existing denylist `{! ( ) > "}` never matches plain alnum tails.
+    //
+    // All fixtures grounded via local `visudo -cf` 1.9.17p2 (matches the
+    // rockylinux:9 sudo version this file's other oracle comments cite),
+    // 2026-07-02. See raw grounding transcript in the task's GROUNDING section.
+    // -----------------------------------------------------------------------
+
+    // --- Shape 1: runas-position group defects -----------------------------
+
+    /// `alice ALL = (grpbad!x) /bin/ls` -- issue #375's literal example.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the `!` (col 20). The `!` sits
+    /// inside the `RUNAS_USER` token (before any `:`), so `RunasSpec.users =
+    /// ["grpbad!x"]`. `check_user_spec`'s Case-4 walk only inspects
+    /// `UserSpec.users` (the SUBJECT list before ` = `), never `CmndSpec.runas`,
+    /// so today this fires ZERO sudo-F02 diagnostics (RED).
+    #[test]
+    fn f02_runas_user_position_bang_in_name_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `!` in `(grpbad!x)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02 (matches this file's
+        // rockylinux:9 sudo 1.9.17p2 oracle baseline).
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (grpbad!x) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a `!` inside a runas-USER-position token is visudo-rejected and must fire \
+             exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (%grpbad!x) /bin/ls` -- `%group` form (`RUNAS_USER` position)
+    /// with a Case-4 denylist char (`!`) inside the group name.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the `!`. This is the direct
+    /// runas-position analog of the existing SUBJECT-position
+    /// `f02_group_name_with_bang_fires` test -- same denylist char, different
+    /// AST field (`RunasSpec.users` instead of `UserSpec.users`).
+    #[test]
+    fn f02_runas_user_position_pct_group_bang_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `!` in `(%grpbad!x)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%grpbad!x) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a `%group` runas-USER token with `!` in the name must fire exactly one F02; \
+             got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (root:grp!x) /bin/ls` -- a bare (non-`%`) name in the
+    /// `RUNAS_GROUP` position (after `:`) with a Case-4 denylist char (`!`).
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the `!`. `RunasSpec.groups =
+    /// ["grp!x"]`; the walk must cover BOTH `RunasSpec.users` and
+    /// `RunasSpec.groups`, not just the pre-colon list.
+    #[test]
+    fn f02_runas_group_position_bang_in_name_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the `!` in `(root:grp!x)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:grp!x) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a `!` inside a runas-GROUP-position (post-colon) token must fire exactly \
+             one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (root : %grp) /bin/ls` -- issue #375's literal example.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at `%grp` (col 21). Grounded
+    /// separately (no embedded whitespace, no denylist char):
+    /// `alice ALL = (root:%grp) /bin/ls` is ALSO rc=1 at the `%grp` token, and
+    /// `alice ALL = (root:grp) /bin/ls` (same name, no `%`) is rc=0 "parsed OK".
+    /// So the defect here is the bare `%`-PREFIX ITSELF inside the `RUNAS_GROUP`
+    /// position -- unlike the pre-colon `RUNAS_USER` list (where `%group` is the
+    /// normal, valid way to name a group), the post-colon `RUNAS_GROUP` list
+    /// already denotes groups, so a `%` prefix there is categorically invalid
+    /// regardless of the name's contents. This is DISTINCT from the Case-4(b)
+    /// denylist-char mechanism (`grp` alone contains no denylist char) --
+    /// implementer: this is a THIRD mechanism, not a reuse of the denylist walk.
+    #[test]
+    fn f02_runas_group_position_pct_prefix_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at `%grp` in `(root : %grp)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root : %grp) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a bare `%`-prefixed token in the RUNAS_GROUP (post-colon) position is \
+             visudo-rejected regardless of denylist chars and must fire exactly one \
+             F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (root) /bin/ls` -- a plain runas user, no groups. Valid.
+    #[test]
+    fn f02_runas_user_position_plain_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(root)` is a valid runas-user spec -- must NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = (root:wheel) /bin/ls` -- a bare (non-`%`) group name after
+    /// `:`. Valid: the `RUNAS_GROUP` position never uses a `%` prefix.
+    #[test]
+    fn f02_runas_group_position_bare_name_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:wheel) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(root:wheel)` is a valid runas group-list entry -- must NOT fire F02; \
+             got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = (%wheel) /bin/ls` -- `%group` form in the `RUNAS_USER`
+    /// position with a well-formed name. Valid.
+    #[test]
+    fn f02_runas_user_position_pct_group_valid_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%wheel) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(%wheel)` is a valid runas-user group reference -- must NOT fire F02; \
+             got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = (root:#1000) /bin/ls` -- pure-GID form in the `RUNAS_GROUP`
+    /// position (no `%` prefix needed for a GID either). Valid.
+    #[test]
+    fn f02_runas_group_position_gid_form_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(root:#1000)` is a valid runas GID-group entry -- must NOT fire F02; \
+             got {f02_diags:?}"
+        );
+    }
+
+    /// `alice ALL = (%wheel:root) /bin/ls` -- both runas lists populated and
+    /// valid (a `%group` runas-user, a bare-name runas-group). Valid.
+    #[test]
+    fn f02_runas_both_positions_valid_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%wheel:root) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(%wheel:root)` has both a valid runas-user and runas-group -- must NOT \
+             fire F02; got {f02_diags:?}"
+        );
+    }
+
+    // Post-GREEN adversarial-impl finding: the GID-tail (Rule 3) structural check
+    // fires for a SUBJECT-position `%#1000abc` (see
+    // `f02_gid_form_digits_then_letters_fires` in Shape 3 below) but NOT for the
+    // SAME token in the RUNAS-USER position -- `check_runas`'s `runas.users` loop
+    // only runs the denylist (`first_invalid_char`), which finds no denylist char
+    // in `%#1000abc` and stays silent. These tests pin the consistency: the
+    // GID-tail defect must fire in the runas-user position too.
+
+    /// `alice ALL = (%#1000abc) /bin/ls` -- the runas-USER analog of the
+    /// subject-position `f02_gid_form_digits_then_letters_fires`: a `%#`-GID
+    /// token whose digit run is followed by letters, with no denylist char.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at `abc` (col 20). The token
+    /// survives `strip_inline_comment` (the `#` is preceded by `%` and followed
+    /// by a digit, so it is kept as a GID token) and reaches `check_runas` as a
+    /// clean `RunasSpec.users = ["%#1000abc"]`. RED today: the runas-user loop
+    /// only checks the denylist, and `1000abc` has no denylist char, so F02 is
+    /// silent -- the GID-tail structural check is not applied in this position.
+    #[test]
+    fn f02_runas_user_gid_form_digits_then_letters_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at `abc` in `(%#1000abc)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%#1000abc) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(%#1000abc)` runas-user (digit run followed by letters, no denylist char) \
+             is visudo-rejected and must fire exactly one F02, mirroring the \
+             subject-position case; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (%#0z) /bin/ls` -- runas-USER `%#`-GID with a single-digit
+    /// run (`0`) immediately followed by a letter (`z`). Sibling of the case
+    /// above at the shortest-digit-run boundary.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the `z` (col 17). `is_pure_gid`
+    /// is false for `#0z` (the rest is not all-digit), so once the GID-tail check
+    /// is applied to `runas.users` this must fire; RED today for the same reason.
+    #[test]
+    fn f02_runas_user_gid_form_short_digit_run_then_letter_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at `z` in `(%#0z)`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%#0z) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(%#0z)` runas-user (single-digit GID run then a letter) is visudo-rejected \
+             and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (%#1000) /bin/ls` -- the runas-USER pure-GID form MUST stay
+    /// clean after the GID-tail check is added (the exemption must be preserved,
+    /// exactly as `f02_runas_group_position_gid_form_no_f02` pins for the group
+    /// position and `f02_group_gid_form_no_f02` pins for the subject position).
+    #[test]
+    fn f02_runas_user_pure_gid_form_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (%#1000) /bin/ls\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(%#1000)` is the valid pure-GID runas-user form -- must NOT fire F02 after \
+             the GID-tail check is applied to the runas-user position; got {f02_diags:?}"
+        );
+    }
+
+    // --- Shape 2: lone `!` command with no path -----------------------------
+
+    /// `alice ALL = !` -- issue #375's literal example: a bare negation with no
+    /// command to negate.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the `!` (col 14). The parser
+    /// keeps this as `CmndItem::Cmnd("!")` (an ordinary command token whose
+    /// content happens to be exactly `"!"`), so today's Case-3 relative-path
+    /// check does not fire (`"!".trim_start_matches('!')` is `""`, which
+    /// contains no `/`) and no other case matches it either -- F02 is silent.
+    #[test]
+    fn f02_lone_bang_command_no_path_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the bare `!`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = !\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a lone `!` command with no path is visudo-rejected and must fire exactly \
+             one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = /bin/ls, !` -- a lone trailing `!` after a comma-separated
+    /// valid command. Only the SECOND `Cmnd_Spec` (`!` alone) is malformed.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at the trailing `!` (col 23).
+    /// `split_cmnd_specs` produces two `CmndSpec`s: `/bin/ls` (valid) and `!`
+    /// (the lone-bang defect). F02 must fire once (only for the second).
+    #[test]
+    fn f02_lone_bang_after_comma_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at the trailing lone `!`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls, !\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a lone trailing `!` command in a comma list must fire exactly one F02 \
+             (the valid `/bin/ls` sibling must not); got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = !ALL` -- negated `ALL` is a DIFFERENT, VALID construct; must
+    /// NOT be conflated with the lone-bang-no-command defect above.
+    ///
+    /// Oracle: `visudo -cf` rc=0, "parsed OK". Source-verified AST shape
+    /// (`parse_cmnd_spec`, parser.rs): the command token is the full string
+    /// `"!ALL"`, and the `cmnd_token == "ALL"` reserved-word check compares that
+    /// FULL string (`"!ALL" != "ALL"`), so this becomes `CmndItem::Cmnd("!ALL")`
+    /// -- the leading `!` is kept verbatim (ast.rs `CmndItem::Cmnd` doc) -- NOT
+    /// `CmndItem::All`. That makes this a sharp guard for the lone-`!` check: an
+    /// over-broad impl keyed on `token.starts_with('!')` would WRONGLY fire on
+    /// `Cmnd("!ALL")`, so the implementer must key the lone-bang defect off the
+    /// EXACT token `"!"`, not a `!` prefix.
+    #[test]
+    fn f02_bang_negated_all_no_f02() {
+        // Fixture: visudo -cf rc=0, "parsed OK".
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = !ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`!ALL` is a valid negated-ALL command, distinct from a lone `!` -- must \
+             NOT fire F02; got {f02_diags:?}"
+        );
+    }
+
+    // --- Shape 3: `%#<digits><non-digit>` GID-then-letters form -------------
+
+    /// `%#1000abc ALL = ALL` -- issue #375's literal example: a digit run
+    /// immediately followed by letters, with no Case-4 denylist char present.
+    ///
+    /// Oracle: `visudo -cf` rc=1, "syntax error" at `abc` (col 11). `is_pure_gid`
+    /// is already `false` for `#1000abc` (the rest is not all-digit), so the
+    /// existing denylist WOULD run -- but `abc` contains none of
+    /// `{! ( ) > "}`, so F02 stays silent today. This is a distinct
+    /// GID-structural-validation gap (module doc already calls it out: "a
+    /// separate gap"), not a denylist-char miss.
+    #[test]
+    fn f02_gid_form_digits_then_letters_fires() {
+        // Fixture: visudo -cf rc=1, "syntax error" at `abc` in `%#1000abc`.
+        // Verified locally: visudo 1.9.17p2, 2026-07-02.
+        let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000abc ALL = ALL\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`%#1000abc` (digit run followed by letters, no denylist char) is \
+             visudo-rejected and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `%#abc ALL = ALL` -- a `%#` immediately followed by a non-digit (zero
+    /// leading digits). visudo-rejected, but it is an F01 (parse-failure) case,
+    /// NOT an F02 (clean-spec defect) case -- the crucial distinction from the
+    /// `%#1000abc` shape above.
+    ///
+    /// Why this is F01 not F02 (source-verified, `strip_inline_comment`,
+    /// parser.rs Exception 2): the `#` in `%#abc` is preceded by `%` (a
+    /// UID/GID-allowing position) but is NOT followed by a digit (`a`). So the
+    /// stripper treats it as a genuine inline comment and drops everything from
+    /// the `#` onward, collapsing the subject token to a bare `%`. A lone `%`
+    /// group with no name fails to parse -> `LineKind::Malformed` -> sudo-F01
+    /// (the anchored parse error from #382, present on this session branch).
+    /// It therefore never reaches F02 as a clean spec.
+    ///
+    /// Contrast `%#1000abc`: there the `#` IS followed by a digit (`1`), so the
+    /// stripper keeps `#1000abc`, the line parses to a clean `UserSpec` with
+    /// `users = ["%#1000abc"]`, and F02's GID-structural check is what must fire.
+    /// The digit-run-then-letters shape is a clean-spec F02 defect; the
+    /// no-digit-run shape is an F01 parse failure.
+    ///
+    /// Oracle: `visudo -cf` on `%#abc ALL = ALL` is rc=1 "empty group" (a parse
+    /// error), consistent with the F01 classification. Verified locally: visudo
+    /// 1.9.17p2, 2026-07-02.
+    #[test]
+    fn f02_gid_form_hash_then_letters_only_is_f01_not_f02() {
+        let src = "root ALL=(ALL:ALL) ALL\n%#abc ALL = ALL\n";
+        // The `%#abc` line collapses to `%` (inline-comment strip) -> Malformed
+        // -> sudo-F01 must fire on it.
+        let f01_diags: Vec<_> = lint_f01(src)
+            .into_iter()
+            .filter(|d| d.code == "sudo-F01")
+            .collect();
+        assert_eq!(
+            f01_diags.len(),
+            1,
+            "`%#abc` collapses to a bare `%` (# not followed by a digit) and must fire \
+             exactly one sudo-F01 parse error; got {f01_diags:?}"
+        );
+        assert_eq!(f01_diags[0].severity, rulesteward_core::Severity::Fatal);
+        // And it must NOT be double-reported as an F02 clean-spec defect.
+        let f02_diags: Vec<_> = lint(src)
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%#abc` is an F01 parse failure, not an F02 clean-spec defect -- F02 must \
+             stay silent to avoid double-reporting; got {f02_diags:?}"
         );
     }
 }
