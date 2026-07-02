@@ -383,6 +383,201 @@ fn eval_dir_setref_with_untrusted_macro(
     eval_trust_field(trust, &AttrValue::Int(0), unknown_reason)
 }
 
+/// Handler for a single subject/object attribute keyword. Returns
+/// `(FieldEval, Option<reason_string>)` where the reason is non-`None` only
+/// for `NotEvaluable` cases. Every handler has this exact signature so it can
+/// be stored as a `fn` pointer in a keyword -> handler dispatch table (see
+/// `SUBJECT_FIELD_HANDLERS` / `OBJECT_FIELD_HANDLERS` below).
+type FieldHandler = fn(&AttrValue, &SetTable, &AccessFacts) -> (FieldEval, Option<String>);
+
+// ---------------------------------------------------------------------------
+// Subject-side field handlers (#384: one handler per keyword, dispatched via
+// SUBJECT_FIELD_HANDLERS below instead of a single large `match`). Each
+// handler's body is unchanged from the prior match arm; only the dispatch
+// mechanism changed.
+// ---------------------------------------------------------------------------
+
+fn subj_uid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (uid_intersection_match(&facts.uids, value, sets), None)
+}
+
+fn subj_gid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (gid_intersection_match(&facts.gids, value, sets), None)
+}
+
+fn subj_auid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (eval_optional_int(facts.auid, value, sets), None)
+}
+
+fn subj_sessionid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (eval_optional_int(facts.sessionid, value, sets), None)
+}
+
+fn subj_pid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (eval_optional_int(facts.pid, value, sets), None)
+}
+
+fn subj_ppid(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    (eval_optional_int(facts.ppid, value, sets), None)
+}
+
+/// #126: `exe=untrusted` is a TRUST MACRO - real fapolicyd has NO
+/// symmetric `trusted` macro; only `untrusted` is special in the EXE
+/// case (f1 grounding §1.4 ~line 164; upstream rules.c:1443-1463 (fapolicyd 1.4.5); live
+/// fapolicyd 1.4.5). The macro evaluates against the SUBJECT trust
+/// state, NOT the exe path. Reuse `eval_trust_field` so the
+/// NotEvaluable/Match/NoMatch return shape (and the simulate confidence
+/// downgrade on Unknown trust) matches the `trust=` arm exactly:
+///   - `untrusted` is equivalent to `trust=0` (match iff `Trust::No`)
+///
+/// `exe=trusted` is NOT a macro: it falls through to the literal
+/// exe-path compare below (it matches only if the exe path is literally
+/// the string "trusted", essentially never for a real path).
+fn subj_exe(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match as_str_literal(value) {
+        Some("untrusted") => eval_trust_field(
+            facts.subj_trust,
+            &AttrValue::Int(0),
+            "subj trust unknown (no trust DB)",
+        ),
+        // A SetRef whose resolved members CONTAIN the `untrusted` macro
+        // token: real fapolicyd's EXE case OR-s the `untrusted` macro with
+        // exact set membership (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)). So the
+        // match is (set contains "untrusted" AND subject NOT trusted) OR
+        // (exe path is an exact member). The macro path mirrors the bare
+        // `exe=untrusted` Trust::Unknown -> NotEvaluable downgrade when it is
+        // the deciding factor (no literal member matched).
+        None if set_contains_untrusted(value, sets) => {
+            eval_exe_setref_with_untrusted_macro(value, sets, facts)
+        }
+        // Any other value (incl. the literal "trusted", or a SetRef without
+        // the `untrusted` token, or an Int): literal exe path match.
+        _ => match &facts.exe {
+            None => (FieldEval::Match, None),
+            Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
+        },
+    }
+}
+
+fn subj_comm(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match &facts.comm {
+        None => (FieldEval::Match, None),
+        Some(comm_val) => (exact_string_match(comm_val, value, sets), None),
+    }
+}
+
+/// `dir=untrusted` is a SUBJECT TRUST MACRO, mirroring `exe=untrusted`
+/// (f1 §2.2 line 216; f1 §1.4 line 166: `EXE_DIR` field, the deprecated
+/// `untrusted` macro OR'd with prefix match). It evaluates against the
+/// SUBJECT trust state, NOT the exe path. Reuse `eval_trust_field` so
+/// the NotEvaluable/Match/NoMatch return shape (and the Unknown downgrade
+/// reason) mirrors the `exe=untrusted` arm and the `trust=` arm exactly:
+///   - `untrusted` is equivalent to `trust=0` (match iff `Trust::No`).
+fn subj_dir(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match as_str_literal(value) {
+        Some("untrusted") => eval_trust_field(
+            facts.subj_trust,
+            &AttrValue::Int(0),
+            "subj trust unknown (no trust DB)",
+        ),
+        // A SetRef whose resolved members CONTAIN the `untrusted` macro token:
+        // real fapolicyd's DIR case OR-s the `untrusted` macro with PREFIX
+        // membership (f1 §1.4 line 166; f1 §2.2 line 216). The macro path
+        // mirrors the bare `dir=untrusted` Trust::Unknown -> NotEvaluable
+        // downgrade when it is the deciding factor (no literal prefix matched).
+        None if set_contains_untrusted(value, sets) => eval_dir_setref_with_untrusted_macro(
+            value,
+            sets,
+            facts.exe.as_deref(),
+            facts.subj_trust,
+            "subj trust unknown (no trust DB)",
+        ),
+        // Any other value (a bare prefix literal, a SetRef without the
+        // `untrusted` token, execdirs/systemdirs keywords, or an Int):
+        // standard prefix match against the exe path.
+        _ => match &facts.exe {
+            None => (FieldEval::Match, None), // absent exe widens
+            Some(exe_path) => (prefix_string_match(exe_path, value, sets), None),
+        },
+    }
+}
+
+/// `pattern=` is a runtime ELF-access-pattern detector; cannot be
+/// statically evaluated (f1 §2.3).
+fn subj_pattern(
+    value: &AttrValue,
+    _sets: &SetTable,
+    _facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    let reason = match value {
+        AttrValue::Str(s) => format!("pattern={s} is a runtime-only construct"),
+        _ => "pattern= is a runtime-only construct".to_string(),
+    };
+    (FieldEval::NotEvaluable, Some(reason))
+}
+
+fn subj_trust(
+    value: &AttrValue,
+    _sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    eval_trust_field(facts.subj_trust, value, "subj trust unknown (no trust DB)")
+}
+
+/// Keyword -> handler dispatch table for `eval_subject_field`. Each key is
+/// matched by exact string equality (never first-match-wins fallthrough), so
+/// table order carries no semantic weight; it mirrors the original `match`
+/// arm order to ease side-by-side diffing against the pre-refactor code.
+const SUBJECT_FIELD_HANDLERS: &[(&str, FieldHandler)] = &[
+    ("uid", subj_uid),
+    ("gid", subj_gid),
+    ("auid", subj_auid),
+    ("sessionid", subj_sessionid),
+    ("pid", subj_pid),
+    ("ppid", subj_ppid),
+    ("exe", subj_exe),
+    ("comm", subj_comm),
+    ("dir", subj_dir),
+    ("pattern", subj_pattern),
+    ("trust", subj_trust),
+];
+
 /// Evaluate one subject-side attribute against the facts.
 /// Returns `(FieldEval, Option<reason_string>)` where the reason is non-None
 /// only for `NotEvaluable` cases.
@@ -392,98 +587,151 @@ fn eval_subject_field(
     sets: &SetTable,
     facts: &AccessFacts,
 ) -> (FieldEval, Option<String>) {
-    match key {
-        "uid" => (uid_intersection_match(&facts.uids, value, sets), None),
-        "gid" => (gid_intersection_match(&facts.gids, value, sets), None),
-        "auid" => (eval_optional_int(facts.auid, value, sets), None),
-        "sessionid" => (eval_optional_int(facts.sessionid, value, sets), None),
-        "pid" => (eval_optional_int(facts.pid, value, sets), None),
-        "ppid" => (eval_optional_int(facts.ppid, value, sets), None),
-        "exe" => match as_str_literal(value) {
-            // #126: `exe=untrusted` is a TRUST MACRO - real fapolicyd has NO
-            // symmetric `trusted` macro; only `untrusted` is special in the EXE
-            // case (f1 grounding §1.4 ~line 164; upstream rules.c:1443-1463 (fapolicyd 1.4.5); live
-            // fapolicyd 1.4.5). The macro evaluates against the SUBJECT trust
-            // state, NOT the exe path. Reuse `eval_trust_field` so the
-            // NotEvaluable/Match/NoMatch return shape (and the simulate confidence
-            // downgrade on Unknown trust) matches the `trust=` arm exactly:
-            //   - `untrusted` is equivalent to `trust=0` (match iff Trust::No)
-            // `exe=trusted` is NOT a macro: it falls through to the literal
-            // exe-path compare below (it matches only if the exe path is literally
-            // the string "trusted", essentially never for a real path).
-            Some("untrusted") => eval_trust_field(
-                facts.subj_trust,
-                &AttrValue::Int(0),
-                "subj trust unknown (no trust DB)",
-            ),
-            // A SetRef whose resolved members CONTAIN the `untrusted` macro
-            // token: real fapolicyd's EXE case OR-s the `untrusted` macro with
-            // exact set membership (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)). So the
-            // match is (set contains "untrusted" AND subject NOT trusted) OR
-            // (exe path is an exact member). The macro path mirrors the bare
-            // `exe=untrusted` Trust::Unknown -> NotEvaluable downgrade when it is
-            // the deciding factor (no literal member matched).
-            None if set_contains_untrusted(value, sets) => {
-                eval_exe_setref_with_untrusted_macro(value, sets, facts)
-            }
-            // Any other value (incl. the literal "trusted", or a SetRef without
-            // the `untrusted` token, or an Int): literal exe path match.
-            _ => match &facts.exe {
-                None => (FieldEval::Match, None),
-                Some(exe_path) => (exact_string_match(exe_path, value, sets), None),
-            },
-        },
-        "comm" => match &facts.comm {
-            None => (FieldEval::Match, None),
-            Some(comm_val) => (exact_string_match(comm_val, value, sets), None),
-        },
-        "dir" => match as_str_literal(value) {
-            // `dir=untrusted` is a SUBJECT TRUST MACRO, mirroring `exe=untrusted`
-            // (f1 §2.2 line 216; f1 §1.4 line 166: EXE_DIR field, the deprecated
-            // `untrusted` macro OR'd with prefix match). It evaluates against the
-            // SUBJECT trust state, NOT the exe path. Reuse `eval_trust_field` so
-            // the NotEvaluable/Match/NoMatch return shape (and the Unknown downgrade
-            // reason) mirrors the `exe=untrusted` arm and the `trust=` arm exactly:
-            //   - `untrusted` is equivalent to `trust=0` (match iff Trust::No).
-            Some("untrusted") => eval_trust_field(
-                facts.subj_trust,
-                &AttrValue::Int(0),
-                "subj trust unknown (no trust DB)",
-            ),
-            // A SetRef whose resolved members CONTAIN the `untrusted` macro token:
-            // real fapolicyd's DIR case OR-s the `untrusted` macro with PREFIX
-            // membership (f1 §1.4 line 166; f1 §2.2 line 216). The macro path
-            // mirrors the bare `dir=untrusted` Trust::Unknown -> NotEvaluable
-            // downgrade when it is the deciding factor (no literal prefix matched).
-            None if set_contains_untrusted(value, sets) => eval_dir_setref_with_untrusted_macro(
-                value,
-                sets,
-                facts.exe.as_deref(),
-                facts.subj_trust,
-                "subj trust unknown (no trust DB)",
-            ),
-            // Any other value (a bare prefix literal, a SetRef without the
-            // `untrusted` token, execdirs/systemdirs keywords, or an Int):
-            // standard prefix match against the exe path.
-            _ => match &facts.exe {
-                None => (FieldEval::Match, None), // absent exe widens
-                Some(exe_path) => (prefix_string_match(exe_path, value, sets), None),
-            },
-        },
-        "pattern" => {
-            // `pattern=` is a runtime ELF-access-pattern detector; cannot be
-            // statically evaluated (f1 §2.3).
+    for (k, handler) in SUBJECT_FIELD_HANDLERS {
+        if *k == key {
+            return handler(value, sets, facts);
+        }
+    }
+    // Any unknown attribute key: skip (widening) rather than crashing.
+    (FieldEval::Match, None)
+}
+
+// ---------------------------------------------------------------------------
+// Object-side field handlers (#384: same dispatch-table structure as the
+// subject side above).
+// ---------------------------------------------------------------------------
+
+fn obj_path(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match &facts.path {
+        None => (FieldEval::Match, None),
+        Some(p) => (exact_string_match(p, value, sets), None),
+    }
+}
+
+fn obj_device(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match &facts.device {
+        None => (FieldEval::Match, None),
+        Some(d) => (exact_string_match(d, value, sets), None),
+    }
+}
+
+/// Shared handler for the `sha256hash` / `filehash` alias.
+///
+/// #127: the object is PRESENT on disk but its hash could NOT be
+/// computed (e.g. EACCES). `FILE_HASH` treats a hash-lookup error as a
+/// denial (rules.c:1606-1611 (fapolicyd 1.4.5): "Treat errors as denial for file hash
+/// lookups" -> `return 0`), so the constraint is `NoMatch` - DISTINCT
+/// from object-absent. Pinned by
+/// `filehash_present_but_unhashable_is_denied_not_widened`.
+fn obj_hash(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match &facts.sha256 {
+        None if facts.sha256_unhashable => (FieldEval::NoMatch, None),
+        // Object ABSENT (no hash, not flagged unhashable): widen (skip), the
+        // standard absent-fact behavior (rules.c:1572-1575 (fapolicyd 1.4.5)).
+        None => (FieldEval::Match, None),
+        Some(h) => (exact_string_match(h, value, sets), None),
+    }
+}
+
+fn obj_ftype(
+    value: &AttrValue,
+    sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    match &facts.ftype {
+        None => {
+            // ftype is absent / not statically known -> NotEvaluable (f1 §2.3).
             let reason = match value {
-                AttrValue::Str(s) => format!("pattern={s} is a runtime-only construct"),
-                _ => "pattern= is a runtime-only construct".to_string(),
+                AttrValue::Str(s) if s == "any" => return (FieldEval::Match, None),
+                AttrValue::Str(s) => {
+                    format!("ftype={s} cannot be evaluated without libmagic")
+                }
+                _ => "ftype cannot be statically evaluated".to_string(),
             };
             (FieldEval::NotEvaluable, Some(reason))
         }
-        "trust" => eval_trust_field(facts.subj_trust, value, "subj trust unknown (no trust DB)"),
-        // Any unknown attribute key: skip (widening) rather than crashing.
-        _ => (FieldEval::Match, None),
+        Some(ft) => {
+            // ftype=any always matches (rules.c:1587-1591 (fapolicyd 1.4.5)).
+            let fe = match value {
+                AttrValue::Str(s) if s == "any" => FieldEval::Match,
+                _ => exact_string_match(ft, value, sets),
+            };
+            (fe, None)
+        }
     }
 }
+
+/// Object odir= uses prefix match against the object path.
+/// The `untrusted` macro is honoured against OBJECT trust
+/// (`!is_obj_trusted(e)`) per upstream rules.c ODIR case; grounding:
+/// f1 §1.4 line 174 (dir/odir object: same macro as subject dir) +
+/// f1 §2.2 line 216 (trust-DB-dependent). This mirrors the subject-side
+/// `dir=` handler exactly, substituting `facts.path` / `facts.obj_trust` for
+/// `facts.exe` / `facts.subj_trust`.
+fn obj_dir(value: &AttrValue, sets: &SetTable, facts: &AccessFacts) -> (FieldEval, Option<String>) {
+    match as_str_literal(value) {
+        // Bare `dir=untrusted` on the object side: the `untrusted` trust
+        // macro fires IFF the object is NOT trusted. Reuse `eval_trust_field`
+        // so the NotEvaluable/Match/NoMatch return shape (and the Unknown
+        // downgrade reason) mirrors the subject-side `dir=untrusted` arm.
+        Some("untrusted") => eval_trust_field(
+            facts.obj_trust,
+            &AttrValue::Int(0),
+            "obj trust unknown (no trust DB)",
+        ),
+        // A SetRef whose resolved members CONTAIN the `untrusted` macro
+        // token: OR the macro (against obj_trust) with PREFIX membership
+        // on the object path, using the shared parameterized helper.
+        None if set_contains_untrusted(value, sets) => eval_dir_setref_with_untrusted_macro(
+            value,
+            sets,
+            facts.path.as_deref(),
+            facts.obj_trust,
+            "obj trust unknown (no trust DB)",
+        ),
+        // Any other value (a bare prefix literal, a SetRef without the
+        // `untrusted` token, execdirs/systemdirs keywords, or an Int):
+        // standard prefix match against the object path.
+        _ => match &facts.path {
+            None => (FieldEval::Match, None),
+            Some(p) => (prefix_string_match(p, value, sets), None),
+        },
+    }
+}
+
+fn obj_trust(
+    value: &AttrValue,
+    _sets: &SetTable,
+    facts: &AccessFacts,
+) -> (FieldEval, Option<String>) {
+    eval_trust_field(facts.obj_trust, value, "obj trust unknown (no trust DB)")
+}
+
+/// Keyword -> handler dispatch table for `eval_object_field`. Same
+/// table-order-is-cosmetic property as `SUBJECT_FIELD_HANDLERS`; `sha256hash`
+/// and `filehash` are two entries pointing at the same `obj_hash` handler,
+/// preserving the original `"sha256hash" | "filehash" =>` alias exactly.
+const OBJECT_FIELD_HANDLERS: &[(&str, FieldHandler)] = &[
+    ("path", obj_path),
+    ("device", obj_device),
+    ("sha256hash", obj_hash),
+    ("filehash", obj_hash),
+    ("ftype", obj_ftype),
+    ("dir", obj_dir),
+    ("trust", obj_trust),
+];
 
 /// Evaluate one object-side attribute against the facts.
 fn eval_object_field(
@@ -492,91 +740,12 @@ fn eval_object_field(
     sets: &SetTable,
     facts: &AccessFacts,
 ) -> (FieldEval, Option<String>) {
-    match key {
-        "path" => match &facts.path {
-            None => (FieldEval::Match, None),
-            Some(p) => (exact_string_match(p, value, sets), None),
-        },
-        "device" => match &facts.device {
-            None => (FieldEval::Match, None),
-            Some(d) => (exact_string_match(d, value, sets), None),
-        },
-        "sha256hash" | "filehash" => match &facts.sha256 {
-            // #127: the object is PRESENT on disk but its hash could NOT be
-            // computed (e.g. EACCES). FILE_HASH treats a hash-lookup error as a
-            // denial (rules.c:1606-1611 (fapolicyd 1.4.5): "Treat errors as denial for file hash
-            // lookups" -> `return 0`), so the constraint is `NoMatch` - DISTINCT
-            // from object-absent. Pinned by
-            // `filehash_present_but_unhashable_is_denied_not_widened`.
-            None if facts.sha256_unhashable => (FieldEval::NoMatch, None),
-            // Object ABSENT (no hash, not flagged unhashable): widen (skip), the
-            // standard absent-fact behavior (rules.c:1572-1575 (fapolicyd 1.4.5)).
-            None => (FieldEval::Match, None),
-            Some(h) => (exact_string_match(h, value, sets), None),
-        },
-        "ftype" => match &facts.ftype {
-            None => {
-                // ftype is absent / not statically known -> NotEvaluable (f1 §2.3).
-                let reason = match value {
-                    AttrValue::Str(s) if s == "any" => return (FieldEval::Match, None),
-                    AttrValue::Str(s) => {
-                        format!("ftype={s} cannot be evaluated without libmagic")
-                    }
-                    _ => "ftype cannot be statically evaluated".to_string(),
-                };
-                (FieldEval::NotEvaluable, Some(reason))
-            }
-            Some(ft) => {
-                // ftype=any always matches (rules.c:1587-1591 (fapolicyd 1.4.5)).
-                let fe = match value {
-                    AttrValue::Str(s) if s == "any" => FieldEval::Match,
-                    _ => exact_string_match(ft, value, sets),
-                };
-                (fe, None)
-            }
-        },
-        "dir" => {
-            // Object odir= uses prefix match against the object path.
-            // The `untrusted` macro is honoured against OBJECT trust
-            // (`!is_obj_trusted(e)`) per upstream rules.c ODIR case; grounding:
-            // f1 §1.4 line 174 (dir/odir object: same macro as subject dir) +
-            // f1 §2.2 line 216 (trust-DB-dependent). This mirrors the subject-side
-            // `dir=` arm exactly, substituting facts.path / facts.obj_trust for
-            // facts.exe / facts.subj_trust.
-            match as_str_literal(value) {
-                // Bare `dir=untrusted` on the object side: the `untrusted` trust
-                // macro fires IFF the object is NOT trusted. Reuse `eval_trust_field`
-                // so the NotEvaluable/Match/NoMatch return shape (and the Unknown
-                // downgrade reason) mirrors the subject-side `dir=untrusted` arm.
-                Some("untrusted") => eval_trust_field(
-                    facts.obj_trust,
-                    &AttrValue::Int(0),
-                    "obj trust unknown (no trust DB)",
-                ),
-                // A SetRef whose resolved members CONTAIN the `untrusted` macro
-                // token: OR the macro (against obj_trust) with PREFIX membership
-                // on the object path, using the shared parameterized helper.
-                None if set_contains_untrusted(value, sets) => {
-                    eval_dir_setref_with_untrusted_macro(
-                        value,
-                        sets,
-                        facts.path.as_deref(),
-                        facts.obj_trust,
-                        "obj trust unknown (no trust DB)",
-                    )
-                }
-                // Any other value (a bare prefix literal, a SetRef without the
-                // `untrusted` token, execdirs/systemdirs keywords, or an Int):
-                // standard prefix match against the object path.
-                _ => match &facts.path {
-                    None => (FieldEval::Match, None),
-                    Some(p) => (prefix_string_match(p, value, sets), None),
-                },
-            }
+    for (k, handler) in OBJECT_FIELD_HANDLERS {
+        if *k == key {
+            return handler(value, sets, facts);
         }
-        "trust" => eval_trust_field(facts.obj_trust, value, "obj trust unknown (no trust DB)"),
-        _ => (FieldEval::Match, None),
     }
+    (FieldEval::Match, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -4248,5 +4417,401 @@ mod tests {
         );
         assert_eq!(v.matched_rule, Some(2));
         assert!(v.uncertain.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // #384 characterization: keyword-dispatch refactor safety net.
+    //
+    // The tests above already pin nearly every branch of `eval_subject_field` /
+    // `eval_object_field`. These fill the remaining gaps that a `&str ->
+    // handler` dispatch-table refactor (issue #384) could silently break: the
+    // default/unrecognized-key fallback, the PLAIN `trust=` key's
+    // `Trust::Unknown` path (as opposed to the `exe=`/`dir=untrusted` macro
+    // arms, which reuse `eval_trust_field` but are separately pinned above),
+    // absent-fact widening for fields not yet exercised, and the non-`Str`
+    // catch-all reason text for `pattern=`/`ftype=`. Each test is written
+    // against the CURRENT match-statement dispatch and must stay green,
+    // unchanged, after the refactor lands.
+    // -----------------------------------------------------------------------
+
+    /// An unrecognized subject attribute key is not a parse error:
+    /// `eval_subject_field`'s default arm widens (skips) the constraint
+    /// (evaluate.rs: "Any unknown attribute key: skip (widening) rather than
+    /// crashing"). A dispatch-table refactor must keep this fallback, or an
+    /// unrecognized key would panic / miss the map lookup instead of widening.
+    #[test]
+    fn unknown_subject_key_widens_rather_than_blocking() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            // "not_a_real_attr" is not one of the recognized subject keys.
+            vec![kv("not_a_real_attr", "whatever")],
+            vec![Attr::All],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // no fact backs this key at all
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "an unrecognized subject key must widen (Match), not block the rule"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(
+            v.uncertain.is_none(),
+            "unknown-key widen is decisive, not uncertain"
+        );
+    }
+
+    /// Mirror of the above on the object side: `eval_object_field`'s default arm.
+    #[test]
+    fn unknown_object_key_widens_rather_than_blocking() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv("not_a_real_attr", "whatever")],
+        )];
+        let facts = AccessFacts::new(Perm::Open);
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "an unrecognized object key must widen (Match), not block the rule"
+        );
+        assert_eq!(v.matched_rule, Some(1));
+        assert!(v.uncertain.is_none());
+    }
+
+    /// The PLAIN `trust=` subject arm (not the `exe=`/`dir=untrusted` macro
+    /// arms) with `subj_trust=Unknown` is `NotEvaluable`, via the SAME
+    /// `eval_trust_field` reason text. Pins the "trust" dispatch entry itself,
+    /// independent of the exe/dir arms that also happen to call
+    /// `eval_trust_field`.
+    #[test]
+    fn subject_trust_unknown_is_uncertain_via_plain_trust_key() {
+        use crate::facts::Trust;
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv("trust", "1")],
+                vec![Attr::All],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.subj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "rule 1's trust= is unevaluable, falls through to rule 2"
+        );
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(
+            v.uncertain.is_some(),
+            "trust=1 with Unknown subj_trust must be uncertain"
+        );
+        let reason = v.uncertain.unwrap();
+        assert!(
+            reason.contains("subj trust unknown (no trust DB)"),
+            "reason must cite the subject trust-unknown text, got: {reason}"
+        );
+    }
+
+    /// Object-side mirror: plain `trust=` with `obj_trust=Unknown`.
+    #[test]
+    fn object_trust_unknown_is_uncertain_via_plain_trust_key() {
+        use crate::facts::Trust;
+        let rules = vec![
+            rule(
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv("trust", "1")],
+            ),
+            rule(
+                Decision::Allow,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            ),
+        ];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.obj_trust = Trust::Unknown;
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(v.decision, Decision::Allow);
+        assert_eq!(v.matched_rule, Some(2));
+        assert!(
+            v.uncertain.is_some(),
+            "trust=1 with Unknown obj_trust must be uncertain"
+        );
+        let reason = v.uncertain.unwrap();
+        assert!(
+            reason.contains("obj trust unknown (no trust DB)"),
+            "reason must cite the object trust-unknown text, got: {reason}"
+        );
+    }
+
+    /// Absent `comm` fact widens a `comm=` constraint (rules.c:1374-1379
+    /// (fapolicyd 1.4.5)). The existing `comm_constraint_blocks_nonmatching_comm`
+    /// test only covers present-and-matching / present-and-mismatching; this
+    /// pins the `None` widen arm specifically.
+    #[test]
+    fn absent_comm_fact_widens_not_narrows() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("comm", "bash")],
+            vec![Attr::All],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // comm defaults to None
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent comm must widen, not block"
+        );
+    }
+
+    /// Absent `device` fact widens a `device=` constraint.
+    #[test]
+    fn absent_device_fact_widens_not_narrows() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv("device", "/dev/sda")],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // device defaults to None
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent device must widen, not block"
+        );
+    }
+
+    /// `path=` matches an EXACTLY equal fact path (the existing
+    /// `path_exact_does_not_match_longer_path` test only covers the mismatch
+    /// case). Also pins the absent-path widen arm.
+    #[test]
+    fn path_exact_matches_equal_path_and_widens_when_absent() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv("path", "/usr/bin/cat")],
+        )];
+
+        let mut facts_match = AccessFacts::new(Perm::Open);
+        facts_match.path = Some("/usr/bin/cat".to_string());
+        let v = evaluate(&rules, &empty_sets(), &facts_match);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "path= must match an identical fact path"
+        );
+
+        let facts_absent = AccessFacts::new(Perm::Open); // path defaults to None
+        let v2 = evaluate(&rules, &empty_sets(), &facts_absent);
+        assert_eq!(
+            v2.decision,
+            Decision::Deny,
+            "absent path must widen, not block"
+        );
+    }
+
+    /// Subject `dir=` (plain prefix literal, NOT the `untrusted` macro arm)
+    /// with `facts.exe = None` widens. Distinct from
+    /// `dir_untrusted_macro_absent_exe_is_trust_driven`, which covers only the
+    /// trust-macro branch's absent-exe case.
+    #[test]
+    fn subject_dir_plain_literal_absent_exe_widens() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv("dir", "/usr/bin/")],
+            vec![Attr::All],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // exe defaults to None
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent exe must widen a plain dir= prefix constraint"
+        );
+    }
+
+    /// Object `dir=` (plain prefix literal) with `facts.path = None` widens.
+    /// Distinct from `object_dir_untrusted_macro_absent_path_is_trust_driven`.
+    #[test]
+    fn object_dir_plain_literal_absent_path_widens() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv("dir", "/usr/bin/")],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // path defaults to None
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Deny,
+            "absent path must widen a plain object dir= prefix constraint"
+        );
+    }
+
+    /// `pattern=` with a non-`Str` value (here `SetRef`) produces the GENERIC
+    /// reason text (no value named), distinct from the `Str` arm pinned by
+    /// `pattern_uncertain_reason_names_the_pattern_value`. `pattern=` never
+    /// consults `sets`, so the set need not be defined.
+    #[test]
+    fn pattern_non_str_value_uses_generic_reason() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_ref("pattern", "patterns")],
+            vec![Attr::All],
+        )];
+        let facts = AccessFacts::new(Perm::Open);
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert!(
+            v.uncertain.is_some(),
+            "pattern= is always NotEvaluable regardless of value shape"
+        );
+        let reason = v.uncertain.unwrap();
+        assert!(
+            reason.contains("pattern= is a runtime-only construct"),
+            "non-Str pattern value must use the generic (un-named) reason text, got: {reason}"
+        );
+    }
+
+    /// `ftype=` with a non-`Str` value (here `Int`) AND an absent `facts.ftype`
+    /// produces the GENERIC reason text, distinct from the named-value reason
+    /// pinned by `ftype_specific_is_uncertain_when_facts_ftype_absent`.
+    #[test]
+    fn ftype_non_str_value_absent_fact_uses_generic_reason() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![Attr::All],
+            vec![kv_int("ftype", 5)],
+        )];
+        let facts = AccessFacts::new(Perm::Open); // ftype defaults to None
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert!(
+            v.uncertain.is_some(),
+            "a non-Str ftype value against an absent fact is NotEvaluable"
+        );
+        let reason = v.uncertain.unwrap();
+        assert!(
+            reason.contains("ftype cannot be statically evaluated"),
+            "non-Str ftype value must use the generic reason text, got: {reason}"
+        );
+    }
+
+    /// `exe=<Int>` (neither the `untrusted` macro literal nor a `SetRef`) falls
+    /// through to the literal exact-string compare, whose `Int` arm in
+    /// `exact_string_match` always returns `NoMatch` (an exe path is never
+    /// equal to an integer). Pins the exe arm's final catch-all for a
+    /// non-`Str`, non-`SetRef` rule value.
+    #[test]
+    fn exe_int_literal_never_matches_exe_path() {
+        let rules = vec![rule(
+            Decision::Deny,
+            Some(Perm::Any),
+            vec![kv_int("exe", 5)],
+            vec![Attr::All],
+        )];
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/anything".to_string());
+        let v = evaluate(&rules, &empty_sets(), &facts);
+        assert_eq!(
+            v.decision,
+            Decision::Allow,
+            "exe=<Int> can never match a real exe path -> fallthrough allow"
+        );
+    }
+
+    /// #384 mutation-kill: pins the `subj_exe` untrusted-set guard at
+    /// evaluate.rs:478 (`None if set_contains_untrusted(value, sets)`).
+    ///
+    /// The guard routes a `SetRef` `exe=` value: guard TRUE => the
+    /// untrusted-macro OR-membership path (`eval_exe_setref_with_untrusted_macro`,
+    /// which OR-s the `untrusted` trust macro with exact set membership); guard
+    /// FALSE => a PLAIN literal exact-membership compare (`exact_string_match`,
+    /// trust-independent). The five existing `exe_setref_*` tests all use a set
+    /// that CONTAINS the `untrusted` token (guard TRUE), so a `guard -> true`
+    /// mutation survived: no test exercised a set WITHOUT the token whose literal
+    /// leg FAILS. This asserts the exact `(FieldEval, reason)` tuple for both
+    /// sides against the CURRENT code, and that they DIFFER.
+    ///
+    /// Ground truth (f1 §1.4 line 164; rules.c:1443-1463 (fapolicyd 1.4.5)): the EXE case
+    /// does exact string membership; the `untrusted` macro is special ONLY when
+    /// the set literally contains that token. A `%set` without `untrusted` is a
+    /// pure exact-membership match and never consults trust.
+    ///
+    /// - guard FALSE (set has no `untrusted`, exe not a member): plain
+    ///   `exact_string_match` -> `(NoMatch, None)`.
+    /// - guard TRUE (set has `untrusted`, exe not a member, `subj_trust`=No): the
+    ///   macro leg fires -> `(Match, None)`.
+    ///
+    /// With `subj_trust = No` the two outcomes are `NoMatch` vs `Match`, so a
+    /// `set_contains_untrusted(...) -> true` mutation makes the plain set ALSO
+    /// take the macro path (yielding `Match`), flipping the guard-FALSE assertion.
+    #[test]
+    fn exe_setref_without_untrusted_member_is_plain_literal_not_macro() {
+        use crate::facts::{FieldEval, Trust};
+
+        // Set WITHOUT the `untrusted` token -> guard is FALSE.
+        let plain = SetTable::from_entries(&[set_def("safebins", &["/usr/bin/a", "/usr/bin/b"])]);
+        // Set WITH the `untrusted` token -> guard is TRUE.
+        let macroset = SetTable::from_entries(&[set_def("subj", &["untrusted", "/usr/bin/a"])]);
+
+        let value_plain = AttrValue::SetRef("safebins".to_string());
+        let value_macro = AttrValue::SetRef("subj".to_string());
+
+        // exe is NOT a member of either set; subject is explicitly untrusted.
+        let mut facts = AccessFacts::new(Perm::Open);
+        facts.exe = Some("/usr/bin/curl".to_string());
+        facts.subj_trust = Trust::No;
+
+        // guard FALSE: plain literal exact-membership -> NoMatch (curl not in set),
+        // trust-independent, no reason string.
+        let (fe_plain, reason_plain) = subj_exe(&value_plain, &plain, &facts);
+        assert_eq!(
+            fe_plain,
+            FieldEval::NoMatch,
+            "a SetRef WITHOUT the `untrusted` token takes the PLAIN literal path: \
+             exe not a member -> NoMatch (NOT the trust-driven macro path)"
+        );
+        assert_eq!(
+            reason_plain, None,
+            "a plain literal exact-membership result carries no reason string"
+        );
+
+        // guard TRUE: the untrusted-macro leg OR-s against subj_trust=No -> Match.
+        let (fe_macro, _reason_macro) = subj_exe(&value_macro, &macroset, &facts);
+        assert_eq!(
+            fe_macro,
+            FieldEval::Match,
+            "a SetRef WITH the `untrusted` token OR-s the macro (subj_trust=No, \
+             no literal member matched) -> Match"
+        );
+
+        // The guard is EXACTLY what discriminates these two: a
+        // `set_contains_untrusted(...) -> true` mutation would send the plain set
+        // down the macro path too, making fe_plain == Match and failing above.
+        assert_ne!(
+            fe_plain, fe_macro,
+            "the untrusted-set guard must yield DIFFERENT results for a set with vs \
+             without the `untrusted` token when the literal leg fails"
+        );
     }
 }

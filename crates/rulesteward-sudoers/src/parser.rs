@@ -643,11 +643,74 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
 /// on each spec are captured (NOT inheritance-resolved - the #330 pass walks the
 /// list and applies inheritance). A leading `(runas)` group is captured.
 fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
-    s.split(',')
-        .map(str::trim)
+    split_cmnd_specs(s)
+        .into_iter()
         .filter(|spec| !spec.is_empty())
         .map(parse_cmnd_spec)
         .collect()
+}
+
+/// Split a `Cmnd_Spec_List` on TOP-LEVEL commas, honoring backslash escapes, runas
+/// parens, and quoted arguments.
+///
+/// A `,` separates two `Cmnd_Spec`s ONLY when it is (1) not backslash-escaped, (2) at
+/// paren-depth 0, and (3) outside a `"..."` quoted argument. This mirrors the
+/// depth + quote + escape scanning in [`split_top_level_segments`] (which splits on
+/// `:`), minus its tag-keyword / `:` logic, and is grounded against `cvtsudoers -f
+/// json` (sudo 1.9.17p2, #370):
+///   * a `\,` is an ESCAPED literal comma inside one command token (like `\:`), so the
+///     char after a backslash is skipped;
+///   * a `,` inside a runas group `(root, operator)` is at paren-depth > 0 and is part
+///     of the runas user list, NOT a `Cmnd_Spec` separator - so `depth` tracks `(`/`)`;
+///   * a `,` inside a `"..."` quoted command argument is a literal byte (sudo groups
+///     the quoted token), so quote state suppresses splitting there too.
+///
+/// The backslash is kept VERBATIM in the value, matching the `\:` precedent (the
+/// lints do not inspect argument contents). Segments are trimmed, mirroring
+/// `split_top_level_segments`; empties are dropped by the caller.
+fn split_cmnd_specs(s: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut seg_start = 0usize;
+    let mut depth: i32 = 0;
+    let mut escaped = false;
+    let mut in_quotes = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            // The previous char was a backslash; this char (`\,`, ...) is a literal
+            // part of the current command token, never a separator or boundary.
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if in_quotes {
+            // Literal token content; only the closing quote is structural.
+            if c == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quotes = true,
+            '(' => depth += 1,
+            ')' => {
+                // `if depth > 0` only guards a malformed UNBALANCED `)` (visudo
+                // rejects it); for valid input depth is always >= 1 here.
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ',' if depth == 0 => {
+                segments.push(s[seg_start..i].trim());
+                seg_start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(s[seg_start..].trim());
+    segments
 }
 
 /// Parse one `Cmnd_Spec`: an optional `(runas)` group, zero or more `TAG:` tags,

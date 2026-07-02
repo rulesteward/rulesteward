@@ -578,6 +578,104 @@ fn lint_dir_clean_dir_has_no_findings() {
     );
 }
 
+#[test]
+fn lint_dir_on_an_unreadable_directory_path_returns_one_file_level_f01() {
+    // `lint_dir` must not panic when `dir` cannot be enumerated (e.g. it names a
+    // regular file, not a directory - `std::fs::read_dir` returns `Err(ENOTDIR)`
+    // on Linux for that case): it degrades to a single file-level F01 anchored at
+    // `dir` (line 0, span 0..0, no source_id -- there is no source to stage) and an
+    // EMPTY sources map, per the doc comment on `lint_dir_with_target`.
+    let outer = tempdir().expect("temp dir");
+    let not_a_dir = outer.path().join("this-is-a-file.conf");
+    std::fs::write(&not_a_dir, "kernel.dmesg_restrict = 1\n").expect("write plain file");
+
+    let (diags, sources) = rulesteward_sysctld::parser::lint_dir(&not_a_dir);
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "an unreadable directory path yields exactly one file-level F01: {diags:?}"
+    );
+    assert_eq!(diags[0].code, "sysctld-F01");
+    assert_eq!(diags[0].severity, Severity::Fatal);
+    assert_eq!(diags[0].line, 0, "no source line to anchor at");
+    assert_eq!(diags[0].span, 0..0, "no byte span to anchor at");
+    assert!(
+        diags[0].source_id.is_none(),
+        "a directory-enumeration failure has no staged source"
+    );
+    assert_eq!(
+        diags[0].file, not_a_dir,
+        "the F01 names the unreadable path itself"
+    );
+    assert!(
+        diags[0].message.contains("cannot read sysctl.d directory"),
+        "the message explains the directory could not be read: {:?}",
+        diags[0].message
+    );
+    assert!(
+        sources.is_empty(),
+        "no file was ever successfully read, so nothing is staged: {sources:?}"
+    );
+}
+
+#[test]
+fn lint_dir_a_non_utf8_dropin_yields_a_file_level_f01_but_the_rest_of_the_dir_still_lints() {
+    // A `.conf` drop-in that is present and a regular file (so it passes the
+    // `is_file() && extension == "conf"` filter) but is NOT valid UTF-8 fails at
+    // `read_to_string`, not at `read_dir`: it becomes its own file-level F01 (no
+    // panic, no source staged for IT), while a SIBLING well-formed drop-in in the
+    // same directory is still parsed and lints normally - the directory-wide scan
+    // does not abort on one bad file.
+    let dir = tempdir().expect("temp dir");
+    let good = dir.path().join("10-a.conf");
+    std::fs::write(&good, "kernel.dmesg_restrict = 1\n").expect("write good drop-in");
+    let bad = dir.path().join("20-bad.conf");
+    // 0xFF is never a valid UTF-8 lead byte, so `read_to_string` fails with
+    // `InvalidData` regardless of platform.
+    std::fs::write(&bad, [0xFFu8, 0xFE, 0x00, 0x01]).expect("write non-UTF8 drop-in");
+
+    let (diags, sources) = rulesteward_sysctld::parser::lint_dir(dir.path());
+
+    let f = f01s(&diags);
+    assert_eq!(
+        f.len(),
+        1,
+        "exactly one F01 for the unreadable non-UTF8 drop-in: {diags:?}"
+    );
+    assert_eq!(
+        f[0].file, bad,
+        "the F01 names the bad file, not the good one"
+    );
+    assert!(
+        f[0].message.contains("cannot read"),
+        "the message explains the read failure: {:?}",
+        f[0].message
+    );
+    assert!(
+        f[0].source_id.is_none(),
+        "an unreadable drop-in has no staged source"
+    );
+
+    // The good drop-in was still read and staged; the bad one was not.
+    let good_key = good.display().to_string();
+    let bad_key = bad.display().to_string();
+    assert!(
+        sources.contains_key(&good_key),
+        "the good drop-in's source is staged: {sources:?}"
+    );
+    assert!(
+        !sources.contains_key(&bad_key),
+        "the unreadable drop-in's source is never staged: {sources:?}"
+    );
+    // The good drop-in's single clean assignment produces no W01 (nothing to
+    // conflict with) - confirms the rest of the directory really did lint.
+    assert!(
+        w01s(&diags).is_empty(),
+        "the well-formed sibling drop-in has no conflicts: {diags:?}"
+    );
+}
+
 // ===========================================================================
 // issue #337: F01/W01 carry the REAL byte span of the offending line (not the
 // degenerate 0..0 that mis-anchored the ariadne snippet at line 1). These pin

@@ -59,31 +59,58 @@ pub fn lint(files: &[SudoersFile], ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags.extend(tags::w02(files, ctx));
     diags.extend(aliases::w03(files, ctx));
     diags.extend(stig::w04(files, ctx));
+    diags.extend(tags::w05(files, ctx));
     diags
 }
 
 /// sudo-F01: emit a Fatal for every [`Malformed`](LineKind::Malformed) logical
 /// line across all files.
 ///
-/// The diagnostic is UNANCHORED (empty span, no source-id, plain rendering),
-/// mirroring sshd's `parse_error_to_diagnostic` convention: a malformed line never
-/// became a structured node, so there is no byte range to caret. The 1-based line
-/// number is carried so the operator can find it; `column` is 1 for a real line.
+/// Unlike auditd/sshd (whose parsers can fail and gate anchoring on
+/// `line == 0`, a genuine file-level I/O failure), the sudoers parser is TOTAL
+/// (see `parser::parse`) and every [`LogicalLine`] -- even a synthesized
+/// `@include`-resolution marker (`resolve::malformed_marker`) -- carries a real,
+/// nonzero `line` number. The signal that distinguishes an ANCHORABLE malformed
+/// line from one that is not is therefore the line's byte `span`: a genuine
+/// malformed line inside real source text carries a non-empty span into that
+/// file's own `source`, so it anchors (`source_id` set to the file's display
+/// path, ariadne can render a caret snippet). A missing/cyclic `@include`
+/// target has no real backing source (the resolver's marker has an empty
+/// `source` and `Span::default()`), so it stays UNANCHORED (no `source_id`,
+/// span preserved as `0..0`) -- while still carrying the real directive line
+/// number, since sudoers always knows which `@include` failed (issue #382).
+/// `column` is 1 for every real line, anchored or not.
 #[must_use]
 pub fn f01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for file in files {
         for line in &file.lines {
             if let LineKind::Malformed(message) = &line.kind {
-                diags.push(Diagnostic::new(
-                    Severity::Fatal,
-                    "sudo-F01",
-                    0..0,
-                    message.clone(),
-                    file.path.clone(),
-                    line.line,
-                    1,
-                ));
+                if line.span.is_empty() {
+                    // Synthetic marker (missing/cyclic @include): no real backing
+                    // source, so it stays unanchored, preserving the real
+                    // directive line number.
+                    diags.push(Diagnostic::new(
+                        Severity::Fatal,
+                        "sudo-F01",
+                        0..0,
+                        message.clone(),
+                        file.path.clone(),
+                        line.line,
+                        1,
+                    ));
+                } else {
+                    // A genuine malformed line in real source text: anchor so
+                    // ariadne can render a caret snippet.
+                    diags.push(anchored(
+                        Severity::Fatal,
+                        "sudo-F01",
+                        line.span.clone(),
+                        message.clone(),
+                        file.path.clone(),
+                        line.line,
+                    ));
+                }
             }
         }
     }
@@ -94,6 +121,7 @@ pub fn f01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 mod tests {
     use super::{SudoersLintContext, f01, lint};
     use crate::parser::parse;
+    use crate::resolve;
     use std::path::Path;
 
     fn parse_one(src: &str) -> Vec<crate::ast::SudoersFile> {
@@ -102,18 +130,125 @@ mod tests {
 
     #[test]
     fn f01_emits_one_fatal_per_malformed_line() {
+        // Both malformed lines sit in REAL source text (not a synthesized
+        // include-resolution marker), so both anchor (#382): a non-empty byte
+        // span into the file's own source, plus a source_id so ariadne can
+        // render a caret snippet -- matching the auditd/sshd line-level F01
+        // convention. "also garbage" on line 3 (not the file's first line)
+        // pins the running byte-offset rather than a hardcoded 0..0.
         let files = parse_one("frobnicate\nroot ALL=(ALL) ALL\nalso garbage\n");
         let diags = f01(&files, &SudoersLintContext::default());
         assert_eq!(diags.len(), 2, "two malformed lines -> two sudo-F01");
         for d in &diags {
             assert_eq!(d.code, "sudo-F01");
             assert_eq!(d.severity, rulesteward_core::Severity::Fatal);
-            assert!(d.source_id.is_none(), "F01 is unanchored: plain rendering");
-            assert_eq!(d.span, 0..0);
+            assert!(
+                d.source_id.is_some(),
+                "a line-level sudo-F01 (a malformed line in real source) must be \
+                 anchored so ariadne can render a snippet; got {d:?}"
+            );
+            assert_eq!(
+                d.source_id.as_deref(),
+                Some("/etc/sudoers"),
+                "source-id is the file path display string"
+            );
+            assert!(
+                !d.span.is_empty(),
+                "an anchored sudo-F01 carries a real (non-empty) byte span; got {d:?}"
+            );
         }
-        // The first malformed line is line 1; the second is line 3.
+        // The first malformed line is line 1 ("frobnicate", bytes 0..10); the
+        // second is line 3 ("also garbage", bytes 30..42 -- after "frobnicate\n"
+        // (10 + 1 bytes) plus the clean "root ALL=(ALL) ALL\n" line (19 bytes)
+        // in between).
         assert_eq!(diags[0].line, 1);
+        assert_eq!(
+            diags[0].span,
+            0..10,
+            "span must cover the raw 'frobnicate' line, not a hardcoded 0..0"
+        );
         assert_eq!(diags[1].line, 3);
+        assert_eq!(
+            diags[1].span,
+            30..42,
+            "span must cover the raw 'also garbage' line, not the file start"
+        );
+    }
+
+    #[test]
+    fn f01_anchors_a_real_malformed_line_but_not_a_missing_include_marker() {
+        // Two distinct "unparseable" cases sudo-F01 must treat DIFFERENTLY
+        // (#382), exercised together through the real `resolve_target` ->
+        // `f01` path:
+        // * `garbage line` (line 3) is a genuinely malformed LINE inside REAL
+        //   source text: the parser's `LineKind::Malformed` carries a real,
+        //   non-empty byte span into `parent`'s own source, so it ANCHORS.
+        // * the missing `@include does_not_exist` target (line 2) has NO real
+        //   backing source: the resolver synthesizes a single-line marker
+        //   `SudoersFile` with an EMPTY `source` and `Span::default()` (see
+        //   `resolve::malformed_marker`) -- there is no byte range for ariadne
+        //   to key, so it MUST stay UNANCHORED (no source_id), even though the
+        //   real directive line number (2) is still carried: sudoers always
+        //   knows which `@include` failed, unlike an `io`-level "file
+        //   unreadable" case, which never becomes a sudo-F01 Diagnostic at all
+        //   in this crate (a top-level read failure is a plain tool-failure
+        //   exit -- see `commands/sudoers.rs` in the CLI crate -- not routed
+        //   through `lints::lint`).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent_path = dir.path().join("parent");
+        std::fs::write(
+            &parent_path,
+            "root ALL=(ALL:ALL) ALL\n@include does_not_exist\ngarbage line\n",
+        )
+        .expect("write parent");
+
+        let files = resolve::resolve_target(&parent_path)
+            .expect("resolve a file with a missing @include and a malformed line");
+        let mut diags = f01(&files, &SudoersLintContext::default());
+        diags.sort_by_key(|d| d.line);
+        assert_eq!(
+            diags.len(),
+            2,
+            "one sudo-F01 for the missing include, one for the malformed line; got {diags:?}"
+        );
+        for d in &diags {
+            assert_eq!(d.code, "sudo-F01");
+            assert_eq!(d.severity, rulesteward_core::Severity::Fatal);
+        }
+
+        let missing_include = &diags[0];
+        assert_eq!(
+            missing_include.line, 2,
+            "the @include directive sits on line 2 of parent"
+        );
+        assert_eq!(
+            missing_include.span,
+            0..0,
+            "the synthetic missing-include marker has no real byte span to carry"
+        );
+        assert!(
+            missing_include.source_id.is_none(),
+            "a missing-include sudo-F01 has no real backing source, so it must \
+             stay unanchored; got {missing_include:?}"
+        );
+
+        let malformed_line = &diags[1];
+        assert_eq!(
+            malformed_line.line, 3,
+            "the garbage line is line 3 of parent"
+        );
+        assert_eq!(
+            malformed_line.span,
+            47..59,
+            "span must cover the raw 'garbage line' text within parent's full source"
+        );
+        let parent_display = parent_path.display().to_string();
+        assert_eq!(
+            malformed_line.source_id.as_deref(),
+            Some(parent_display.as_str()),
+            "a line-level sudo-F01 anchors to its real file so ariadne can \
+             render a snippet; got {malformed_line:?}"
+        );
     }
 
     #[test]
@@ -205,6 +340,61 @@ mod tests {
             rulesteward_core::Severity::Fatal,
             "sudo-F02 must be Fatal; got {:?}",
             f02[0].severity
+        );
+    }
+
+    /// Dispatcher wiring guard for sudo-W05 (#370, the STIG-strict broad any-NOPASSWD
+    /// check): the public `lint()` must emit exactly one `sudo-W05` (Warning) for a
+    /// NOPASSWD-on-a-specific-command user-spec.
+    ///
+    /// RED until the implementer BOTH fills the `tags::w05` body AND wires
+    /// `diags.extend(tags::w05(files, ctx))` into `lint()`. A correct `w05` body that
+    /// is never called via `lint()` would make the per-module `tags::w05_tests` GREEN
+    /// but leave this test RED (the "wiring" guard, mirroring the F02 case).
+    ///
+    /// Fixture: `root ALL=(ALL:ALL) ALL` is a clean anchor line; `alice ALL=(root)
+    /// NOPASSWD: /usr/bin/systemctl` is the specific-command NOPASSWD hazard. Both
+    /// verified `visudo -c -f` rc 0 (sudo 1.9.17p2). Other passes (e.g. W04's merged
+    /// absence check) also fire on this minimal file, so the assertion filters to
+    /// `sudo-W05` specifically rather than the total count.
+    #[test]
+    fn lint_dispatcher_routes_w05_for_nopasswd_on_specific_command() {
+        let files =
+            parse_one("root ALL=(ALL:ALL) ALL\nalice ALL=(root) NOPASSWD: /usr/bin/systemctl\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        let w05: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W05").collect();
+        assert_eq!(
+            w05.len(),
+            1,
+            "the dispatcher must route exactly one sudo-W05 (Warning) via lint(); got \
+             {diags:?} -- RED until w05 is both filled AND wired into lint() with \
+             diags.extend(tags::w05(files, ctx))"
+        );
+        assert_eq!(
+            w05[0].severity,
+            rulesteward_core::Severity::Warning,
+            "sudo-W05 must be Warning; got {:?}",
+            w05[0].severity
+        );
+    }
+
+    /// End-to-end dedup guard (#370): a NOPASSWD-on-ALL user-spec routes to `sudo-W01`
+    /// through `lint()` and must NOT also raise `sudo-W05`. Complements the per-module
+    /// dedup test by pinning the boundary at the dispatcher level (both passes run).
+    /// Fixture `alice ALL = NOPASSWD: ALL` verified `visudo -c -f` rc 0 (sudo 1.9.17p2).
+    #[test]
+    fn lint_dispatcher_nopasswd_on_all_is_w01_only_not_w05() {
+        let files = parse_one("alice ALL = NOPASSWD: ALL\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "sudo-W01").count(),
+            1,
+            "the NOPASSWD-on-ALL line raises exactly one sudo-W01; got {diags:?}"
+        );
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "sudo-W05").count(),
+            0,
+            "the NOPASSWD-on-ALL line must NOT also raise sudo-W05 (dedup); got {diags:?}"
         );
     }
 }

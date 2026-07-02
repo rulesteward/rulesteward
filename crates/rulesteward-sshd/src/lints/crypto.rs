@@ -129,8 +129,8 @@ enum Weak03Kind {
 
 /// The effective algorithm-list value for a directive's `args`, with any inline
 /// `#` comment stripped, or `None` if the value is not a well-formed sshd-loading
-/// form (a genuine multi-arg value, or a spec containing an embedded `#` or a
-/// literal `"`, all of which sshd rejects rc 255).
+/// form (a genuine multi-arg value, or a spec containing an embedded `#`, a
+/// literal `"`, or residual ASCII whitespace, all of which sshd rejects rc 255).
 ///
 /// # Inline `#` comment stripping
 ///
@@ -170,6 +170,18 @@ enum Weak03Kind {
 /// quotes and keeps the inner space, yielding the single arg `aes128-cbc # x` (which
 /// contains `#`). The `#` check (Step 4) suppresses it, matching sshd's rejection
 /// (rc 255, verified OpenSSH 10.2p1).
+///
+/// # Residual ASCII whitespace inside a quoted span (#392)
+///
+/// A quoted span keeps ASCII whitespace literal (the tokenizer only splits on
+/// ASCII whitespace outside a quote), so `Ciphers "aes128-cbc "`, `Ciphers "
+/// aes128-cbc"`, `Ciphers +"aes128-cbc "`, and `Ciphers +" aes128-cbc"` all
+/// reach this helper as a single arg carrying a leading, trailing, or internal
+/// ASCII space/tab with no residual `"` or `#`. sshd's cipher/mac/kex-spec
+/// validator rejects any algorithm token containing whitespace (rc 255 "Bad
+/// SSH2 cipher spec '...'" , verified OpenSSH 10.2p1 `sshd -T`), so the whole
+/// directive never loads. Step 5 rejects the value (`None`) whenever it
+/// contains ASCII whitespace anywhere, matching sshd's whole-spec rejection.
 fn algo_list_value(args: &[String]) -> Option<String> {
     // Step 1: strip trailing inline `#` comment args.
     let effective = match args.iter().position(|a| a.starts_with('#')) {
@@ -213,6 +225,23 @@ fn algo_list_value(args: &[String]) -> Option<String> {
     // - hash-inside-quotes: `"aes128-cbc # x"` (outer quotes stripped by the
     //   tokenizer, the inner ` # x` retained in the arg, sshd rejects the spec)
     if raw.contains('#') {
+        return None;
+    }
+
+    // Step 5: reject a value containing ASCII whitespace ANYWHERE (leading,
+    // trailing, or internal). Outside a quoted span the tokenizer splits on
+    // ASCII whitespace (`quote.is_none() && c.is_ascii_whitespace()`), so the
+    // only way ASCII whitespace survives inside this single-arg value is
+    // through a genuinely quoted span (`Ciphers "aes128-cbc "`, `Ciphers
+    // +"aes128-cbc "` / `Ciphers +" aes128-cbc"`), where the tokenizer keeps it
+    // literal. sshd's own cipher/mac/kex-spec validator rejects any token
+    // containing whitespace as an invalid algorithm name (real `sshd -T`,
+    // OpenSSH 10.2p1: `Ciphers "aes128-cbc "` -> rc 255 "Bad SSH2 cipher spec
+    // 'aes128-cbc '"), so the whole directive never loads and must not be
+    // linted (#392). This must run on the WHOLE value (before splitting on
+    // commas) since a single invalid token anywhere in the comma list makes
+    // sshd reject the entire spec.
+    if raw.contains(|c: char| c.is_ascii_whitespace()) {
         return None;
     }
 
@@ -1117,6 +1146,88 @@ mod w06_tests {
             run("\"Ciphers\" +aes128-cbc\n").len(),
             1,
             "quoted keyword + space + `+`-operator loads => W06 fires"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Quoted operator value with residual internal ASCII whitespace
+    // (issue #392, FP; same family as the W03 case in `w03_tests` below)
+    //
+    // sshd's own cipher/mac/kex-spec validator rejects a token containing
+    // ASCII whitespace as an invalid algorithm name (real `sshd -T`, OpenSSH
+    // 10.2p1, cited in issue #392):
+    //   `Ciphers "aes128-cbc "` -> rc 255 "Bad SSH2 cipher spec 'aes128-cbc '"
+    //   `Ciphers " aes128-cbc"` -> rc 255 "Bad SSH2 cipher spec ' aes128-cbc'"
+    // `tokenize_line`'s state machine (verified by reading parser.rs) pushes
+    // whitespace literally whenever `quote.is_some()`, so the ASCII space
+    // stays inside the single arg through the closing quote (the same rule
+    // `tokenize_line_quoted_whitespace_stays_literal` pins for `Banner "two
+    // words"`). `algo_list_value` only rejects a residual `"` or `#`, not
+    // residual ASCII whitespace, so the value (with its leading `+`/`^`
+    // still attached) survives to the two `.trim_ascii()` calls in `w06`
+    // (~L377/~L387), which can strip an edge space and recover an exact
+    // denylist match -- a false positive on a line the daemon never applies.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn quoted_trailing_ascii_space_after_operator_does_not_fire_w06() {
+        // `Ciphers +"aes128-cbc "` -- quote-strip yields the single arg
+        // `+aes128-cbc ` (trailing ASCII space kept literal from inside the
+        // quotes). sshd rejects: "Bad SSH2 cipher spec 'aes128-cbc '" (rc 255,
+        // verified OpenSSH 10.2p1 `sshd -T`, issue #392). W06 must not fire.
+        assert!(
+            run("Ciphers +\"aes128-cbc \"\n").is_empty(),
+            "quoted operator value with trailing ASCII space (sshd rc255) must not fire W06"
+        );
+    }
+
+    #[test]
+    fn quoted_leading_ascii_space_after_operator_does_not_fire_w06() {
+        // `Ciphers +" aes128-cbc"` -- quote-strip yields the single arg
+        // `+ aes128-cbc` (residual leading ASCII space right after the
+        // operator). sshd rejects: "Bad SSH2 cipher spec ' aes128-cbc'"
+        // (rc 255, verified OpenSSH 10.2p1 `sshd -T`, issue #392). W06 must
+        // not fire.
+        assert!(
+            run("Ciphers +\" aes128-cbc\"\n").is_empty(),
+            "quoted operator value with leading ASCII space (sshd rc255) must not fire W06"
+        );
+    }
+
+    #[test]
+    fn quoted_internal_tab_after_operator_does_not_fire_w06() {
+        // `Ciphers +"aes128-cbc<TAB>aes"` -- an internal (non-edge) tab after
+        // the operator survives tokenization as part of the single arg
+        // `+aes128-cbc\taes`. sshd rejects: "Bad SSH2 cipher spec
+        // 'aes128-cbc<TAB>aes'" (rc 255, verified OpenSSH 10.2p1 `sshd -T`,
+        // issue #392). Unlike the leading/trailing cases above, `.trim_ascii()`
+        // cannot recover an exact denylist match here (the tab sits in the
+        // middle of the post-operator substring, not at either edge), so this
+        // case already does not fire on current code -- pinned as a
+        // regression guard against a future fix that strips ALL internal
+        // whitespace rather than rejecting the value outright.
+        assert!(
+            run("Ciphers +\"aes128-cbc\taes\"\n").is_empty(),
+            "quoted operator value with an internal tab (sshd rc255) must not fire W06"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Positive control: the #392 fix must not over-suppress a valid `+`
+    // reintroduction that has NO residual whitespace
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn quoted_operator_clean_value_still_fires_w06_control() {
+        // `Ciphers +"aes128-cbc"` (clean quoted single token after the
+        // operator, no residual whitespace) reintroduces aes128-cbc (rc 0,
+        // verified OpenSSH 10.2p1 `sshd -T`; see `quoted_plus_weak_algo_fires_w06`
+        // above). The #392 fix (rejecting residual ASCII whitespace) must not
+        // suppress this clean case.
+        assert_eq!(
+            run("Ciphers +\"aes128-cbc\"\n").len(),
+            1,
+            "clean quoted operator value (no internal whitespace) must still fire W06"
         );
     }
 }
@@ -2397,6 +2508,97 @@ mod w03_tests {
             diags[0].message.contains("aes128-cbc"),
             "message names the weak algorithm, got: {}",
             diags[0].message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Quoted value with residual internal ASCII whitespace (issue #392, FP)
+    //
+    // sshd's own cipher/mac/kex-spec validator rejects a token containing
+    // ASCII whitespace as an invalid algorithm name (real `sshd -T`, OpenSSH
+    // 10.2p1, cited in issue #392):
+    //   `Ciphers "aes128-cbc "` -> rc 255 "Bad SSH2 cipher spec 'aes128-cbc '"
+    //   `Ciphers " aes128-cbc"` -> rc 255 "Bad SSH2 cipher spec ' aes128-cbc'"
+    // `tokenize_line`'s state machine (verified by reading parser.rs) pushes
+    // whitespace literally whenever `quote.is_some()`, so the ASCII space
+    // stays inside the single arg through the closing quote (the same rule
+    // `tokenize_line_quoted_whitespace_stays_literal` pins for `Banner "two
+    // words"`, and the same rule the `"aes128-cbc # x"` counter-check above
+    // `algo_list_value` relies on for `#`). `algo_list_value` only rejects a
+    // residual `"` or `#`, not residual ASCII whitespace, so the value
+    // survives to the per-token `.trim_ascii()` in `w03_directive` (~L258),
+    // which strips the leading or trailing space and recovers an exact
+    // denylist match -- a false positive on a line the daemon never applies.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn quoted_trailing_ascii_space_does_not_fire_w03() {
+        // `Ciphers "aes128-cbc "` -- trailing ASCII space INSIDE the quotes
+        // survives tokenization as part of the single arg `aes128-cbc `. sshd
+        // rejects: "Bad SSH2 cipher spec 'aes128-cbc '" (rc 255, verified
+        // OpenSSH 10.2p1 `sshd -T`, issue #392). W03 must not fire.
+        assert!(
+            run("Ciphers \"aes128-cbc \"\n").is_empty(),
+            "quoted value with trailing ASCII space (sshd rc255) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn quoted_leading_ascii_space_does_not_fire_w03() {
+        // `Ciphers " aes128-cbc"` -- leading ASCII space INSIDE the quotes
+        // survives tokenization as part of the single arg ` aes128-cbc`. sshd
+        // rejects: "Bad SSH2 cipher spec ' aes128-cbc'" (rc 255, verified
+        // OpenSSH 10.2p1 `sshd -T`, issue #392). W03 must not fire.
+        assert!(
+            run("Ciphers \" aes128-cbc\"\n").is_empty(),
+            "quoted value with leading ASCII space (sshd rc255) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn quoted_internal_tab_does_not_fire_w03() {
+        // `Ciphers "aes128-cbc<TAB>aes"` -- an internal (non-edge) tab inside
+        // the quotes survives tokenization as part of the single arg
+        // `aes128-cbc\taes`. sshd rejects: "Bad SSH2 cipher spec
+        // 'aes128-cbc<TAB>aes'" (rc 255, verified OpenSSH 10.2p1 `sshd -T`,
+        // issue #392). Unlike the leading/trailing cases above, `.trim_ascii()`
+        // cannot recover an exact denylist match here (the tab is not at
+        // either edge of the token), so this case already does not fire on
+        // current code -- pinned as a regression guard against a future fix
+        // that strips ALL internal whitespace rather than rejecting the
+        // value outright.
+        assert!(
+            run("Ciphers \"aes128-cbc\taes\"\n").is_empty(),
+            "quoted value with an internal tab (sshd rc255) must not fire W03"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Positive controls: the #392 fix must not over-suppress a valid line
+    // that has NO residual whitespace
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bare_unquoted_weak_cipher_still_fires_w03_control() {
+        // `Ciphers aes128-cbc` (no quotes, no residual whitespace) is the
+        // baseline sshd-loading form (rc 0). The #392 fix must not suppress it.
+        assert_eq!(
+            run("Ciphers aes128-cbc\n").len(),
+            1,
+            "bare unquoted weak cipher (no residual whitespace) must still fire W03"
+        );
+    }
+
+    #[test]
+    fn clean_single_quoted_value_still_fires_w03_control() {
+        // `Ciphers "aes128-cbc"` (clean quoted single token, no residual
+        // whitespace) is a valid sshd-loading line (rc 0, verified OpenSSH
+        // 10.2p1 `sshd -T`). The #392 fix (rejecting residual ASCII
+        // whitespace) must not over-suppress a clean quoted value.
+        assert_eq!(
+            run("Ciphers \"aes128-cbc\"\n").len(),
+            1,
+            "clean single-quoted weak cipher (no internal whitespace) must still fire W03"
         );
     }
 }

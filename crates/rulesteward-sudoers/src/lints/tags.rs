@@ -172,6 +172,80 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags
 }
 
+/// sudo-W05: NOPASSWD grants passwordless sudo on a SPECIFIC (non-`ALL`) command
+/// -- the STIG-strict broad any-NOPASSWD check (#370).
+///
+/// W05 is the same NOPASSWD family as W01/W02 (not a `Defaults`-baseline concept,
+/// which is W04's domain). It walks each user-spec's `Cmnd_Spec_List` with the SAME
+/// forward NOPASSWD/PASSWD tag-state machine W01 uses (per `sudoers(5)`: a tag
+/// inherits to subsequent commands until the opposite tag overrides it; `PASSWD`
+/// resets `NOPASSWD`; the state is fresh per `:`-separated host-group and per
+/// user-spec, #345). When NOPASSWD is effective on a command, `sudo-W05` (Warning)
+/// fires EXCEPT when the command is the reserved literal `ALL` ([`CmndItem::All`])
+/// -- that is W01's exact domain, and excluding it IS the dedup-against-W01 (a
+/// NOPASSWD-on-`ALL` line raises W01 and NOT W05). Fires per-command (like
+/// W01/W02), anchored at the user-spec's logical line and byte span; Warning
+/// severity.
+///
+/// The dedup is scoped to W01 only (the decided #370 contract). The W02
+/// alias-expands-to-`ALL` case is deliberately NOT deduped here: a
+/// `NOPASSWD: <alias-that-is-ALL>` line may raise both W02 and W05.
+///
+/// # Grounding
+///
+/// DISA STIG RHEL-08-010380 / RHEL-09-611085 / OL08-00-010380
+/// (`ComplianceAsCode` `sudo_remove_nopasswd`, commit
+/// `65ccea603ee2c305fdb4c6f54cb911449d969d55`) -- the SAME control W01 cites, with
+/// the BROADER trigger: the rule's OVAL check
+/// (`^(?!#).*[\s]+NOPASSWD[\s]*\:.*$`), OCIL (`grep -ri nopasswd`), and fixtext
+/// ("Remove any occurrence of NOPASSWD") flag EVERY non-comment NOPASSWD usage,
+/// not only the NOPASSWD-on-`ALL` case that W01 flags.
+#[must_use]
+pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for file in files {
+        for logical in &file.lines {
+            let LineKind::UserSpec(spec) = &logical.kind else {
+                continue;
+            };
+            // Each `:`-separated host-group is an INDEPENDENT Cmnd_Spec_List: the
+            // forward NOPASSWD/PASSWD tag-state starts fresh per group and does NOT
+            // cross the `:` (#345), matching W01/W02.
+            for host_group in &spec.host_groups {
+                let mut nopasswd = false;
+                for cmnd_spec in &host_group.cmnd_specs {
+                    // Fold THIS command's explicit tags into the state BEFORE
+                    // evaluating it (last-written tag wins), same as W01/W02.
+                    for tag in &cmnd_spec.tags {
+                        match tag {
+                            Tag::NoPasswd => nopasswd = true,
+                            Tag::Passwd => nopasswd = false,
+                            _ => {}
+                        }
+                    }
+                    // Exclude the reserved literal ALL: that is W01's domain, and
+                    // excluding it here IS the dedup-against-W01. Every other
+                    // NOPASSWD-effective command (including alias references) fires.
+                    if nopasswd && cmnd_spec.cmnd != CmndItem::All {
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "sudo-W05",
+                            logical.span.clone(),
+                            "NOPASSWD is in effect on this command: DISA STIG requires \
+                             removing all NOPASSWD usage from sudoers \
+                             (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                                .to_string(),
+                            file.path.clone(),
+                            logical.line,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    diags
+}
+
 #[cfg(test)]
 mod tests {
     use super::w01;
@@ -504,6 +578,27 @@ mod tests {
             w01_count("alice h1 = /bin/sh -c \"a(b\" : h2 = NOPASSWD: ALL\n"),
             1,
             "the h2 passwordless ALL must not be hidden by a quoted `(` in h1's command"
+        );
+    }
+
+    #[test]
+    fn escaped_comma_tail_all_is_a_literal_arg_not_reserved_all_no_w01() {
+        // `alice ALL = NOPASSWD: /bin/echo a\,ALL` (visudo -c -f rc 0, sudo 1.9.17p2):
+        // the `\,` is an ESCAPED literal comma, so the whole token is ONE command,
+        // `/bin/echo a,ALL`. cvtsudoers -f json reports exactly one command with
+        // authenticate:false; the tail `ALL` is a literal command ARGUMENT, NOT the
+        // reserved ALL built-in. So W01 must fire ZERO times.
+        //
+        // RED on the current shared parser: `parse_cmnd_spec_list` splits on a raw `,`
+        // (escape-UNAWARE), so it sees a second token `ALL` and misclassifies it as
+        // `CmndItem::All` -> a spurious W01 false positive. Same root cause as the W05
+        // escaped-comma test; the fix makes the command split `\,`-aware (mirroring the
+        // `\:` handling in split_top_level_segments). Tests only -- the implementer
+        // fixes the parser.
+        assert_eq!(
+            w01_count("alice ALL = NOPASSWD: /bin/echo a\\,ALL\n"),
+            0,
+            "escaped-comma tail 'ALL' is a literal command arg, not reserved ALL"
         );
     }
 
@@ -923,6 +1018,319 @@ mod w02_tests {
         assert!(
             d.message.to_ascii_uppercase().contains("ALL"),
             "the message mentions the ALL expansion; got {:?}",
+            d.message
+        );
+    }
+}
+
+#[cfg(test)]
+mod w05_tests {
+    //! sudo-W05 (#370): the STIG-strict BROAD any-NOPASSWD check.
+    //!
+    //! W05 fires when NOPASSWD is effective (after the same forward tag-inheritance /
+    //! PASSWD-reset / per-host-group state machine W01 uses) on a command that is NOT
+    //! the reserved literal `ALL` -- excluding `CmndItem::All` IS the dedup against
+    //! W01, which owns exactly the NOPASSWD-on-`ALL` case.
+    //!
+    //! Grounding: `ComplianceAsCode` `sudo_remove_nopasswd` (commit
+    //! `65ccea603ee2c305fdb4c6f54cb911449d969d55`), OVAL pattern
+    //! `^(?!#).*[\s]+NOPASSWD[\s]*\:.*$` flags EVERY non-comment NOPASSWD usage;
+    //! DISA STIG RHEL-08-010380 / RHEL-09-611085 / OL08-00-010380. Every fixture is
+    //! verified `visudo -c -f` rc 0 and (where tag inheritance matters) its per-command
+    //! `authenticate` state confirmed via `cvtsudoers -f json` on sudo 1.9.17p2.
+
+    use super::{w01, w05};
+    use crate::lints::SudoersLintContext;
+    use crate::parser::parse;
+    use std::path::Path;
+
+    /// Parse one source string into the single-element file slice the passes take.
+    fn files(src: &str) -> Vec<crate::ast::SudoersFile> {
+        vec![parse(src, Path::new("/etc/sudoers"))]
+    }
+
+    /// Run W05 over `src` and return the diagnostics.
+    fn lint_w05(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        w05(&files(src), &SudoersLintContext::default())
+    }
+
+    /// Count the `sudo-W05` diagnostics over `src`.
+    fn w05_count(src: &str) -> usize {
+        lint_w05(src)
+            .iter()
+            .filter(|d| d.code == "sudo-W05")
+            .count()
+    }
+
+    /// Count the `sudo-W01` diagnostics over `src` (for the W05/W01 dedup boundary).
+    fn w01_count(src: &str) -> usize {
+        w01(&files(src), &SudoersLintContext::default())
+            .iter()
+            .filter(|d| d.code == "sudo-W01")
+            .count()
+    }
+
+    // ---- POSITIVE: NOPASSWD on a specific command (the case W01 misses) ----
+
+    /// `alice ALL=(root) NOPASSWD: /usr/bin/systemctl` (visudo -c -f rc 0, sudo
+    /// 1.9.17p2): NOPASSWD on a SPECIFIC command, not the reserved `ALL`. W01 keys off
+    /// the literal `ALL` only, so it does NOT catch this; the STIG-strict broad check
+    /// (W05) MUST fire. Grounding: `sudo_remove_nopasswd` flags any non-comment
+    /// NOPASSWD usage (DISA STIG RHEL-08-010380 / RHEL-09-611085).
+    #[test]
+    fn w05_fires_for_nopasswd_on_a_specific_command() {
+        assert_eq!(
+            w05_count("alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n"),
+            1,
+            "W05 must fire for NOPASSWD on a specific (non-ALL) command"
+        );
+        // And W01 must NOT fire: this is not the literal-ALL run-anything hazard.
+        assert_eq!(
+            w01_count("alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n"),
+            0,
+            "W01 must not fire on NOPASSWD applied to a specific command"
+        );
+    }
+
+    // ---- DEDUP: a NOPASSWD-on-ALL line is W01's, never also W05 ----
+
+    /// `alice ALL = NOPASSWD: ALL` (visudo -c -f rc 0): the literal reserved `ALL`
+    /// under NOPASSWD is W01's exact domain. The broad W05 must NOT double-flag this
+    /// line -- exactly one finding for this hazard, from W01 (dedup-against-W01, the
+    /// decided #370 contract). Excluding `CmndItem::All` from W05 is the mechanism.
+    #[test]
+    fn w05_dedup_nopasswd_on_all_is_w01_only_not_w05() {
+        assert_eq!(
+            w01_count("alice ALL = NOPASSWD: ALL\n"),
+            1,
+            "W01 owns the literal NOPASSWD-on-ALL case (exactly one finding)"
+        );
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: ALL\n"),
+            0,
+            "W05 must NOT also fire on a NOPASSWD-on-ALL line already flagged by W01"
+        );
+    }
+
+    // ---- NEGATIVE: no NOPASSWD anywhere -> password required -> no W05 ----
+
+    /// `alice ALL = /usr/bin/systemctl` (visudo -c -f rc 0): a password-REQUIRED
+    /// specific command; no NOPASSWD in effect anywhere -> no W05.
+    #[test]
+    fn w05_does_not_fire_without_nopasswd() {
+        assert_eq!(
+            w05_count("alice ALL = /usr/bin/systemctl\n"),
+            0,
+            "a password-required command (no NOPASSWD) must not fire W05"
+        );
+    }
+
+    // ---- tag-state machine: forward inheritance, per-command emission ----
+
+    /// `alice ALL = NOPASSWD: /bin/ls, /bin/cat` (visudo -c -f rc 0). `cvtsudoers -f
+    /// json` (sudo 1.9.17p2) shows BOTH commands in ONE `authenticate:false` block:
+    /// NOPASSWD inherits forward to `/bin/cat`, so both are passwordless. Neither is
+    /// the literal `ALL` -> W05 fires on BOTH commands (per-command, like W01/W02). A
+    /// naive "explicit-tag-only" impl would miss the inherited `/bin/cat` and report 1.
+    #[test]
+    fn w05_inherits_nopasswd_forward_and_fires_per_command() {
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: /bin/ls, /bin/cat\n"),
+            2,
+            "inherited NOPASSWD makes both specific commands passwordless -> two W05"
+        );
+    }
+
+    /// `alice ALL = NOPASSWD: /bin/ls, PASSWD: /bin/cat` (visudo -c -f rc 0).
+    /// `cvtsudoers -f json` shows `/bin/ls` `authenticate:false` and `/bin/cat`
+    /// `authenticate:true`: the explicit PASSWD resets NOPASSWD before `/bin/cat`. Only
+    /// `/bin/ls` is passwordless -> W05 fires exactly ONCE.
+    #[test]
+    fn w05_explicit_passwd_override_cancels_inheritance() {
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: /bin/ls, PASSWD: /bin/cat\n"),
+            1,
+            "an explicit PASSWD override password-gates the later command; one W05"
+        );
+    }
+
+    /// `alice ALL = NOPASSWD: /bin/ls, ALL` (visudo -c -f rc 0). `cvtsudoers -f json`
+    /// shows `/bin/ls` AND `ALL` under one `authenticate:false` block (both
+    /// passwordless). The literal `ALL` is W01's (dedup, no W05); the specific
+    /// `/bin/ls` is W05's. So exactly one W05 (on `/bin/ls`) and one W01 (on `ALL`):
+    /// per-command dedup, with no double-flag of a single command.
+    #[test]
+    fn w05_mixed_specific_and_all_dedups_per_command() {
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: /bin/ls, ALL\n"),
+            1,
+            "the specific /bin/ls fires W05; the literal ALL is W01's (excluded)"
+        );
+        assert_eq!(
+            w01_count("alice ALL = NOPASSWD: /bin/ls, ALL\n"),
+            1,
+            "the literal ALL on the same line still fires exactly one W01"
+        );
+    }
+
+    /// NOPASSWD state is per-user-spec and must not bleed across logical lines.
+    /// `a ALL = NOPASSWD: /bin/ls` + `b ALL = /bin/cat` (visudo -c -f rc 0):
+    /// `cvtsudoers -f json` shows only `a`'s `/bin/ls` `authenticate:false`; `b`'s
+    /// `/bin/cat` is a separate password-required user-spec. So exactly ONE W05.
+    #[test]
+    fn w05_nopasswd_does_not_bleed_across_user_specs() {
+        assert_eq!(
+            w05_count("a ALL = NOPASSWD: /bin/ls\nb ALL = /bin/cat\n"),
+            1,
+            "NOPASSWD state resets at each user-spec; b's /bin/cat must not fire"
+        );
+    }
+
+    // ---- escaped comma in a command: `\,` is a literal, not a Cmnd_Spec_List
+    // separator (shared-parser regression, post-GREEN impl-aware review) ----
+
+    /// `alice ALL = NOPASSWD: /bin/echo hi\,there` (visudo -c -f rc 0, sudo
+    /// 1.9.17p2): the `\,` is an ESCAPED literal comma inside a single command, not a
+    /// `Cmnd_Spec_List` separator. `cvtsudoers -f json` reports exactly ONE command,
+    /// `/bin/echo hi,there`, `authenticate:false`. So W05 must fire EXACTLY ONCE.
+    ///
+    /// This is RED on the current shared parser: `parse_cmnd_spec_list` splits on a
+    /// raw `,` (escape-UNAWARE), so it sees two commands (`/bin/echo hi` and `there`)
+    /// and W05 fires twice. sudo escapes `\,` the same way the parser already escapes
+    /// `\:` in `split_top_level_segments`; the fix makes the command split
+    /// `\,`-aware. Tests only -- the implementer fixes the parser.
+    #[test]
+    fn w05_escaped_comma_is_one_command_fires_once() {
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: /bin/echo hi\\,there\n"),
+            1,
+            "an escaped comma is one command; W05 fires once"
+        );
+    }
+
+    // ---- comma inside a runas group `(root, operator)` is NOT a Cmnd_Spec_List
+    // separator (shared-parser paren-depth regression, post-GREEN re-review) ----
+
+    /// `alice ALL = (root, operator) NOPASSWD: /bin/ls` (visudo -c -f rc 0, sudo
+    /// 1.9.17p2): the comma is INSIDE the runas group `(root, operator)`, not a
+    /// `Cmnd_Spec_List` separator. `cvtsudoers -f json` reports ONE command `/bin/ls`
+    /// with `runasusers` [root, operator] and `authenticate:false`, so NOPASSWD is in
+    /// effect on the single command `/bin/ls` -> W05 must fire EXACTLY ONCE.
+    ///
+    /// RED on the current shared parser: `split_cmnd_specs` splits on `,` without
+    /// PAREN-DEPTH awareness, so it breaks the runas group apart, the NOPASSWD tag is
+    /// swallowed, and W05 fires ZERO times -- a security FALSE NEGATIVE (a passwordless
+    /// grant goes unflagged). The fix makes the split paren-depth (and quote) aware,
+    /// mirroring `split_top_level_segments`. Tests only -- the implementer fixes the
+    /// parser.
+    #[test]
+    fn w05_runas_group_comma_is_one_command_fires_once() {
+        assert_eq!(
+            w05_count("alice ALL = (root, operator) NOPASSWD: /bin/ls\n"),
+            1,
+            "a comma-separated runas list is one command; W05 fires once"
+        );
+        // The single command is /bin/ls, not the reserved ALL -> no W01 (guard).
+        assert_eq!(
+            w01_count("alice ALL = (root, operator) NOPASSWD: /bin/ls\n"),
+            0,
+            "not on reserved ALL -> no W01"
+        );
+    }
+
+    /// Over-suppression control for the upcoming paren-depth fix: a REAL top-level
+    /// comma (no runas group involved) must STILL split the `Cmnd_Spec_List`.
+    /// `alice ALL = NOPASSWD: /bin/ls, /bin/cat` (visudo -c -f rc 0): `cvtsudoers -f
+    /// json` shows two commands, both `authenticate:false` -> W05 count 2. GREEN today;
+    /// it must STAY green after the fix so the paren-depth split suppresses ONLY
+    /// in-paren commas, never a genuine separator. (Mirrors
+    /// `w05_inherits_nopasswd_forward_and_fires_per_command`, co-located here to lock
+    /// the no-over-suppression direction alongside the paren-depth regression above.)
+    #[test]
+    fn w05_real_top_level_comma_still_splits_two_commands() {
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD: /bin/ls, /bin/cat\n"),
+            2,
+            "a real top-level comma still splits into two commands; W05 fires twice"
+        );
+    }
+
+    /// Mutation-kill coverage for the paren-depth arithmetic in `split_cmnd_specs`
+    /// (the `depth > 0` guard + `depth -= 1` on `)`): a runas GROUP `(root)` FOLLOWED
+    /// BY a real top-level comma. `alice ALL = (root) NOPASSWD: /bin/ls, /bin/cat`
+    /// (visudo -c -f rc 0, sudo 1.9.17p2): `cvtsudoers -f json` reports TWO commands
+    /// `/bin/ls` and `/bin/cat`, both under runas [root] with `authenticate:false`
+    /// -> W05 fires TWICE.
+    ///
+    /// On correct code the `(root)` group closes -- `)` drives `depth` back to 0 --
+    /// so the following top-level comma DOES split, yielding two commands. If
+    /// `depth -= 1` or the `depth > 0` close-guard is mutated, `depth` stays > 0 past
+    /// the group, the top-level comma is wrongly treated as in-paren and does NOT
+    /// split -> one command -> W05 once. So a depth-arithmetic mutation flips this from
+    /// 2 to 1. This is the case no earlier test exercised (a group AND a later real
+    /// separator), which is why the depth mutants survived.
+    #[test]
+    fn w05_runas_group_then_top_level_comma_splits_two() {
+        assert_eq!(
+            w05_count("alice ALL = (root) NOPASSWD: /bin/ls, /bin/cat\n"),
+            2,
+            "a runas group then a real top-level comma: two NOPASSWD commands both fire W05"
+        );
+    }
+
+    // ---- emission metadata: severity, anchoring, span, source_id ----
+
+    /// The W05 diagnostic is Warning severity, anchors at the user-spec's 1-based
+    /// logical line and byte span (the AST carries no per-command span, so the
+    /// user-spec line is the anchor, exactly as W01/W02), and carries the file
+    /// `source_id` for ariadne rendering.
+    #[test]
+    fn w05_fires_with_warning_severity_and_anchors_at_the_user_spec_line() {
+        let src = "alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n";
+        let diags = lint_w05(src);
+        let w05s: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W05").collect();
+        assert_eq!(w05s.len(), 1);
+        let d = w05s[0];
+        assert_eq!(d.severity, rulesteward_core::Severity::Warning);
+        assert_eq!(d.line, 1, "anchors at the user-spec's 1-based line");
+        assert_eq!(
+            d.span,
+            0..src.len() - 1,
+            "anchors at the user-spec's logical-line byte span"
+        );
+        assert!(
+            d.source_id.is_some(),
+            "an anchored W05 carries the file source_id for ariadne rendering"
+        );
+        assert_eq!(d.file, Path::new("/etc/sudoers"));
+    }
+
+    // ---- grounding: the finding cites its STIG control ----
+
+    /// The W05 message names NOPASSWD and cites the grounded DISA STIG control
+    /// RHEL-08-010380 / RHEL-09-611085 (`ComplianceAsCode` `sudo_remove_nopasswd`,
+    /// commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`) -- the same control W01
+    /// cites, with the broader trigger.
+    #[test]
+    fn w05_message_cites_grounded_stig_control() {
+        let diags = lint_w05("alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W05")
+            .expect("W05 fires for the specific-command NOPASSWD fixture");
+        assert!(
+            d.message.contains("NOPASSWD"),
+            "the W05 message names NOPASSWD; got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("RHEL-08-010380"),
+            "W05 message must cite RHEL-08-010380; got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("RHEL-09-611085"),
+            "W05 message must cite RHEL-09-611085; got {:?}",
             d.message
         );
     }

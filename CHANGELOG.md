@@ -49,6 +49,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sshd precedence (Include position, lexical drop-in order, and unconditional
   `Match all` override, including an Include nested in a `Match all`) over the
   hardened main config. Conditional `Match` blocks are out of scope. (#245)
+- `rulesteward sudoers lint` sudo-W05: a broad any-NOPASSWD STIG check that flags a
+  passwordless grant on any specific command (complementing sudo-W01's
+  NOPASSWD-on-ALL), deduped so a NOPASSWD-on-ALL line still raises only W01. Grounded
+  in ComplianceAsCode `sudo_remove_nopasswd` (DISA STIG RHEL-08-010380 /
+  RHEL-09-611085). (#370)
+- `rulesteward sudoers lint` sudo-F02: extended to three more `visudo`-rejected shapes
+  the total parser keeps as clean specs: runas-position group defects (including a
+  bare `%`-prefixed group in the post-colon runas list), a lone `!` command with no
+  path, and a `%#<digits><non-digit>` malformed numeric-gid (in both the subject and
+  runas-user positions). (#375)
+
+### Changed
+
+- `rulesteward migrate` JSON envelope: the post-apply verification field is renamed
+  `fagenrulesCheck` -> `checkRules` to match the `fapolicyd-cli --check-rules` verb,
+  and the migrate envelope `schemaVersion` bumps 1 -> 2. This is a breaking change: the
+  field name was the frozen schemaVersion-1 contract. (#221)
 
 ### Fixed
 
@@ -78,6 +95,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ancestry cycle guard and a depth cap matching OpenSSH's `SERVCONF_MAX_DEPTH`), so
   a drop-in baseline override reached through a second-level include is no longer
   silently missed. Previously only one level of `Include` was followed. (#323)
+- `rulesteward sshd lint` sshd-W03/W06: no longer false-fire on a quoted algorithm-list
+  value that carries residual internal ASCII whitespace (e.g. `Ciphers "aes128-cbc "`),
+  which sshd itself rejects as a fatal parse error (rc 255) and never loads. (#392)
+- `rulesteward sudoers lint` sudo-F01: line-level parse errors are now anchored with an
+  ariadne source snippet (matching auditd/sshd/sysctld) instead of unanchored;
+  file-level errors (an unreadable file) stay unanchored. (#382)
+- `rulesteward sudoers lint`: the `Cmnd_Spec_List` comma split is now escape-, paren-,
+  and quote-aware, fixing a sudo-W01 false positive (an escaped comma such as
+  `NOPASSWD: /bin/echo a\,ALL` was mis-split so the `ALL` tail was misclassified as the
+  reserved run-anything command) and a sudo-W05 false negative (a comma inside a runas
+  group `(root, operator)` swallowed the NOPASSWD tag). (#370)
 
 ## [0.2.1] - 2026-06-11
 
