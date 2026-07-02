@@ -13,11 +13,10 @@
 //! * `catalog` - the machine-readable `sshd-` code catalog (frozen Phase 0).
 //!
 //! The dispatcher runs every pass for real (so `rulesteward sshd lint` works end
-//! to end and a clean file exits 0). 8 of the 10 single-file passes emit today
-//! (sshd-E01..E04, sshd-W01..W04), alongside `sshd-F01` from the parser (mapped by
-//! [`parse_error_to_diagnostic`]); only sshd-W05 and sshd-W06 remain `Vec::new()`
-//! stubs (Wave C, gated on the W01 required-set and the per-version
-//! default-algorithm lists). Pass modules are `pub` so each pipeline's tests can
+//! to end and a clean file exits 0). All 11 single-file passes emit today
+//! (sshd-E01..E04, sshd-W01..W07), alongside `sshd-F01` from the parser (mapped by
+//! [`parse_error_to_diagnostic`]); the cross-file sshd-F02 has its own entrypoint
+//! (`drop_in::lint_drop_in`). Pass modules are `pub` so each pipeline's tests can
 //! call their own entrypoint directly.
 
 pub mod catalog;
@@ -129,7 +128,7 @@ pub fn parse_error_to_diagnostic(err: &LocatedParseError) -> Diagnostic {
 /// Run every single-file semantic lint pass over the parsed blocks and return the
 /// merged diagnostic list, in catalog order for byte-stable output.
 ///
-/// All 10 single-file passes emit today (sshd-E01..E04, sshd-W01..W06). The
+/// All 11 single-file passes emit today (sshd-E01..E04, sshd-W01..W07). The
 /// cross-file sshd-F02 (drop-in override) is a separate entrypoint
 /// (`drop_in::lint_drop_in`) used for directory targets, not part of this
 /// single-file dispatcher. (epic #149)
@@ -145,6 +144,7 @@ pub fn lint(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnos
     diags.extend(deprecation::w04(blocks, file, ctx));
     diags.extend(structural::w05(blocks, file, ctx));
     diags.extend(crypto::w06(blocks, file, ctx));
+    diags.extend(structural::w07(blocks, file, ctx));
     diags
 }
 

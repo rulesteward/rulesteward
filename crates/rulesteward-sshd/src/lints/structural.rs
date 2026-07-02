@@ -4,16 +4,16 @@
 //! Phase-0 foundation merges. sshd-E01 (registry-gated) and sshd-W05 (which
 //! reuses the W01 required-set) are grouped here as the structural family.
 //!
-//! sshd-E01, -E02, -E03, and -E04 ship real bodies here; only `sshd-W05`
-//! remains a `Vec::new()` stub (Wave C, #149). The lint codes are children
-//! of epic #149.
+//! sshd-E01, -E02, -E03, -E04, -W05, and -W07 ship real bodies here. The lint
+//! codes are children of epic #149.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::{Block, Directive};
+use crate::ast::{Block, Directive, MatchBlock};
 use crate::lints::{SshdLintContext, anchored, registry};
 
 /// Keywords sshd accumulates (unions) across multiple lines rather than
@@ -556,6 +556,302 @@ pub fn w05(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
         }
     }
     diags
+}
+
+/// sshd-W07: the same first-value-wins keyword set to DIFFERENT values in two
+/// `Match` blocks whose criteria can be simultaneously satisfied by one
+/// connection. sshd applies only the FIRST satisfied block's value and silently
+/// drops the later one, so the later (shadowed) instance is a hardening hazard
+/// (#302, deferred from #247). Severity Warning: criteria-overlap is a static
+/// approximation, so the pass is advisory.
+///
+/// The pass compares every ordered PAIR of conditional `Match` blocks. Overlap is
+/// decided conservatively from the criteria pattern text alone (`sshd_config(5)`
+/// `match_pattern_list` semantics): two blocks overlap only when they constrain the
+/// SAME set of criterion types and, for each type, their patterns can co-apply
+/// (shared literal, `*`/`?` wildcard, a negation-list that still admits the other
+/// value, or CIDR containment). Provably-disjoint criteria (`User alice` vs
+/// `User bob`, disjoint CIDRs/ports) are the normal per-connection pattern and stay
+/// clean, as do CROSS-type pairs (`User` vs `Group`), which can only co-satisfy
+/// through NSS group membership a static linter cannot resolve (the conservative
+/// v0.3 contract; opt-in resolution is #400).
+///
+/// Only FIRST-VALUE-WINS keywords fire: accumulating keywords (the shared
+/// [`E02_ALLOW_REPEAT`] set sshd-E02 already maintains) union across blocks rather
+/// than shadow, so a repeat drops nothing. Same-value repeats are redundant, not a
+/// shadow. The LATER instance is flagged, matching sshd-E02's convention.
+/// Unconditional `Match all` is global context (see
+/// [`super::is_unconditional_match_all`]), not a per-connection block, so it never
+/// participates.
+#[must_use]
+pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
+    // The conditional Match blocks in source order. `Match all` is always active,
+    // so its body is global context, not a per-connection override; it cannot be
+    // one of two simultaneously-satisfiable Match instances.
+    let match_blocks: Vec<&MatchBlock> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Match(m) if !super::is_unconditional_match_all(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+
+    let mut diags = Vec::new();
+    for (j, later) in match_blocks.iter().enumerate() {
+        // The first occurrence of a keyword defines a block's effective value
+        // (first-value-wins within the block), so only that first instance can be
+        // the one an earlier block shadows.
+        let mut seen: HashSet<String> = HashSet::new();
+        for directive in &later.body {
+            let keyword = directive.keyword_lower();
+            if E02_ALLOW_REPEAT.contains(&keyword.as_str()) {
+                // Accumulating keyword: unions across blocks, so nothing is dropped.
+                continue;
+            }
+            if !seen.insert(keyword.clone()) {
+                // A repeat WITHIN this block is sshd-E02's concern; only the block's
+                // first (effective) value can be shadowed by an earlier block.
+                continue;
+            }
+            let shadowed_by_earlier = match_blocks[..j].iter().any(|earlier| {
+                match_blocks_overlap(earlier, later)
+                    && first_value_for(earlier, &keyword)
+                        .is_some_and(|earlier_value| earlier_value != directive.args.as_slice())
+            });
+            if shadowed_by_earlier {
+                diags.push(anchored(
+                    Severity::Warning,
+                    "sshd-W07",
+                    directive.span.clone(),
+                    format!(
+                        "first-value-wins directive '{}' is also set in an earlier Match block \
+                         whose criteria can match the same connection; sshd applies the first \
+                         block's value and silently drops this one",
+                        directive.keyword
+                    ),
+                    file,
+                    directive.line,
+                ));
+            }
+        }
+    }
+    diags
+}
+
+/// The arguments of the FIRST occurrence of `keyword_lower` in `block`'s body (the
+/// value sshd honors under first-value-wins), or `None` when the block never sets
+/// it. Used by [`w07`] to compare an earlier block's effective value against a
+/// later block's.
+fn first_value_for<'a>(block: &'a MatchBlock, keyword_lower: &str) -> Option<&'a [String]> {
+    block
+        .body
+        .iter()
+        .find(|d| d.keyword_lower() == keyword_lower)
+        .map(|d| d.args.as_slice())
+}
+
+/// Whether two `Match` blocks can be satisfied by ONE connection, decided
+/// conservatively from their criteria pattern text (no NSS / DNS resolution).
+///
+/// The blocks overlap only when they constrain the SAME set of criterion types and
+/// every shared type's patterns can co-apply. Requiring an identical type set is
+/// the conservative reading of the v0.3 contract: any asymmetry in criterion types
+/// (including a pure CROSS-type pair like `User` vs `Group`) is left clean rather
+/// than guessing a membership relation a static linter cannot know (#400).
+fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
+    let a_types = criteria_by_type(a);
+    let b_types = criteria_by_type(b);
+    if a_types.len() != b_types.len() {
+        return false;
+    }
+    a_types.iter().all(|(kind, a_values)| {
+        b_types
+            .get(kind)
+            .is_some_and(|b_values| criterion_overlap(kind, a_values, b_values))
+    })
+}
+
+/// Group a `Match` header's criteria by lowercased criterion keyword, unioning the
+/// values of any repeated type. The map's key set is the block's set of criterion
+/// TYPES, which [`match_blocks_overlap`] compares for the same-type-set rule.
+fn criteria_by_type(block: &MatchBlock) -> BTreeMap<String, Vec<String>> {
+    let mut by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for criterion in &block.criteria {
+        by_type
+            .entry(criterion.keyword.to_ascii_lowercase())
+            .or_default()
+            .extend(criterion.values.iter().cloned());
+    }
+    by_type
+}
+
+/// Whether one connection can satisfy both value lists of a shared criterion type.
+///
+/// `sshd_config(5)` criteria are typed: name lists (`User`/`Group`/`Host`) match by
+/// `match_pattern_list` glob semantics, `Address`/`LocalAddress` accept CIDR, and
+/// `LocalPort` is a numeric list. An unmodeled criterion type is treated as
+/// non-overlapping (conservative: an undecidable type never manufactures a finding).
+fn criterion_overlap(kind: &str, a_values: &[String], b_values: &[String]) -> bool {
+    match kind {
+        "user" | "group" | "host" => pattern_lists_overlap(a_values, b_values),
+        "address" | "localaddress" => cidr_lists_overlap(a_values, b_values),
+        "localport" => port_lists_overlap(a_values, b_values),
+        _ => false,
+    }
+}
+
+/// Whether some name satisfies BOTH `match_pattern_list` value lists at once.
+///
+/// The witness search is exact for literal and `*`/`?`-wildcard patterns: any name
+/// admitted by both lists must either equal one of the listed literals or be some
+/// name distinct from all of them, so testing every literal plus one fresh sentinel
+/// decides overlap. (`!bob,*` vs `bob` is disjoint: bob is excluded by the negation
+/// and every other name fails the literal `bob`.)
+fn pattern_lists_overlap(a: &[String], b: &[String]) -> bool {
+    // A name matching none of the listed literals, to witness wildcard-only overlaps
+    // (e.g. `*` vs `*`). The NUL bytes keep it distinct from any real criterion value.
+    const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
+    let mut candidates: Vec<&str> = Vec::new();
+    for value in a.iter().chain(b) {
+        let literal = value.strip_prefix('!').unwrap_or(value);
+        if !literal.is_empty() && !literal.contains(['*', '?']) {
+            candidates.push(literal);
+        }
+    }
+    candidates.push(FRESH);
+    candidates
+        .iter()
+        .any(|name| match_pattern_list(name, a) && match_pattern_list(name, b))
+}
+
+/// OpenSSH `match_pattern_list`: a value matches iff some POSITIVE pattern matches
+/// AND no negated (`!`-prefixed) pattern matches. A negated match fails the whole
+/// list immediately, mirroring sshd's early return.
+fn match_pattern_list(value: &str, patterns: &[String]) -> bool {
+    let mut matched_positive = false;
+    for pattern in patterns {
+        if let Some(negated) = pattern.strip_prefix('!') {
+            if glob_match(negated, value) {
+                return false;
+            }
+        } else if glob_match(pattern, value) {
+            matched_positive = true;
+        }
+    }
+    matched_positive
+}
+
+/// OpenSSH `match_pattern` glob: `*` matches any run of characters and `?` matches
+/// exactly one. Case-sensitive (sshd criterion values are case-sensitive). Iterative
+/// with `*` backtracking, so it never recurses.
+fn glob_match(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let (mut p, mut v) = (0usize, 0usize);
+    let (mut star, mut star_v) = (None, 0usize);
+    while v < value.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == value[v]) {
+            p += 1;
+            v += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            star_v = v;
+            p += 1;
+        } else if let Some(star_p) = star {
+            p = star_p + 1;
+            star_v += 1;
+            v = star_v;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+/// Whether some address satisfies BOTH `Address`/`LocalAddress` CIDR lists. CIDR
+/// blocks are power-of-two aligned, so any two are either disjoint or nested; the
+/// lists overlap iff some positive network from each intersects. Negated and
+/// unparseable entries are ignored (conservative: they never manufacture overlap).
+fn cidr_lists_overlap(a: &[String], b: &[String]) -> bool {
+    let a_nets = parse_cidr_list(a);
+    let b_nets = parse_cidr_list(b);
+    a_nets
+        .iter()
+        .any(|a_net| b_nets.iter().any(|b_net| cidr_intersects(*a_net, *b_net)))
+}
+
+/// Parse the positive (non-negated) entries of an `Address` list into
+/// `(network, prefix_len)` pairs, dropping any that do not parse.
+fn parse_cidr_list(values: &[String]) -> Vec<(IpAddr, u8)> {
+    values
+        .iter()
+        .filter(|v| !v.starts_with('!'))
+        .filter_map(|v| parse_cidr(v))
+        .collect()
+}
+
+/// Parse one `Address` value: `a.b.c.d[/n]` or an IPv6 form. A bare address is a
+/// host route (`/32` for IPv4, `/128` for IPv6). Returns `None` for a malformed
+/// address or an out-of-range prefix.
+fn parse_cidr(value: &str) -> Option<(IpAddr, u8)> {
+    if let Some((addr, prefix)) = value.split_once('/') {
+        let addr: IpAddr = addr.parse().ok()?;
+        let prefix: u8 = prefix.parse().ok()?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        (prefix <= max).then_some((addr, prefix))
+    } else {
+        let addr: IpAddr = value.parse().ok()?;
+        Some((addr, if addr.is_ipv4() { 32 } else { 128 }))
+    }
+}
+
+/// Whether two CIDR networks share any address. Same-family networks intersect iff
+/// they agree on the first `min(prefix)` bits (CIDR blocks nest or are disjoint);
+/// different-family networks never intersect.
+fn cidr_intersects(a: (IpAddr, u8), b: (IpAddr, u8)) -> bool {
+    let prefix = a.1.min(b.1);
+    match (a.0, b.0) {
+        (IpAddr::V4(x), IpAddr::V4(y)) => leading_bits_equal(
+            u128::from(u32::from(x)),
+            u128::from(u32::from(y)),
+            prefix,
+            32,
+        ),
+        (IpAddr::V6(x), IpAddr::V6(y)) => {
+            leading_bits_equal(u128::from(x), u128::from(y), prefix, 128)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `x` and `y` agree on their most-significant `prefix` bits within a
+/// `width`-bit address. `prefix == 0` trivially agrees (the whole address space).
+fn leading_bits_equal(x: u128, y: u128, prefix: u8, width: u8) -> bool {
+    if prefix == 0 {
+        return true;
+    }
+    let shift = width - prefix;
+    (x >> shift) == (y >> shift)
+}
+
+/// Whether two `LocalPort` lists share a port. A connection arrives on exactly one
+/// local port, so disjoint numeric lists can never co-satisfy. Negated and
+/// non-numeric entries are ignored (conservative).
+fn port_lists_overlap(a: &[String], b: &[String]) -> bool {
+    let b_ports = parse_port_list(b);
+    parse_port_list(a).iter().any(|port| b_ports.contains(port))
+}
+
+/// Parse the positive (non-negated) numeric entries of a `LocalPort` list.
+fn parse_port_list(values: &[String]) -> Vec<u32> {
+    values
+        .iter()
+        .filter(|v| !v.starts_with('!'))
+        .filter_map(|v| v.parse::<u32>().ok())
+        .collect()
 }
 
 #[cfg(test)]
