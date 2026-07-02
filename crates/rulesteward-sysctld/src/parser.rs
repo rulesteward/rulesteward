@@ -415,6 +415,22 @@ mod tests {
     }
 
     #[test]
+    fn canonical_key_dot_first_with_an_embedded_slash_swaps_both_directions() {
+        // The module doc's OTHER worked example (line 61-62): a dot-first key that
+        // itself contains a literal `/` (the VLAN id spelled the other way around,
+        // e.g. `enp3s0/200`) must swap EVERY `.`<->`/` in one pass, not just the
+        // `.`->`/` direction. This is the only input that exercises the `'/' => '.'`
+        // arm of the swap map (every other fixture in this file is either
+        // slash-first, or dot-first with no embedded `/`).
+        assert_eq!(
+            canonical_key("net.ipv4.conf.enp3s0/200.forwarding"),
+            "net/ipv4/conf/enp3s0.200/forwarding",
+            "a dot-first key's embedded `/` must swap to `.`, matching the man page's \
+             `net.ipv4.conf.enp3s0/200.forwarding` == `net/ipv4/conf/enp3s0.200/forwarding` example"
+        );
+    }
+
+    #[test]
     fn classify_comment_blank_and_glob_exclusion_emit_nothing() {
         assert!(classify_line("# comment").is_none());
         assert!(classify_line("   ; comment").is_none());

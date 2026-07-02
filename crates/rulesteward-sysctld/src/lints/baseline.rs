@@ -540,7 +540,7 @@ fn parse_sysctl_int(value: &str) -> Option<i64> {
 mod tests {
     use super::{
         BaselineKey, RHEL8_BASELINE, RHEL9_BASELINE, RHEL10_BASELINE, TargetVersion, ValueKind,
-        baseline_for, is_compliant, parse_sysctl_int, requirement_phrase,
+        baseline_for, is_compliant, k, k_exact, parse_sysctl_int, requirement_phrase,
     };
     use crate::parser::canonical_key;
 
@@ -723,5 +723,35 @@ mod tests {
         let cp = r9.iter().find(|e| e.key == "kernel.core_pattern").unwrap();
         assert!(!cp.numeric, "core_pattern is string-typed");
         assert_eq!(cp.stig_id, "RHEL-09-213040");
+    }
+
+    #[test]
+    fn k_and_k_exact_constructors_set_the_kind_and_carry_every_field_through() {
+        // `k`/`k_exact` are the terse table constructors every RHEL8/9/10 baseline
+        // entry above is built with, but every one of those call sites is inside a
+        // `const` table initializer, so the constructor bodies run at COMPILE time
+        // (const evaluation), not as instrumented runtime code -- llvm-cov never
+        // sees them execute even though they build every real table entry. Calling
+        // them here, at runtime, in a non-const binding is the only way to exercise
+        // the function bodies under coverage; it also pins their one real behavior:
+        // `k` maps to `ValueKind::Int` and `k_exact` maps to `ValueKind::Exact`,
+        // with every field passed straight through unchanged.
+        let int_entry: BaselineKey = k("test.int.key", &["1", "2"], "TEST-INT-01");
+        assert_eq!(int_entry.key, "test.int.key");
+        assert_eq!(int_entry.accepted, ["1", "2"]);
+        assert_eq!(int_entry.stig_id, "TEST-INT-01");
+        assert!(
+            matches!(int_entry.kind, ValueKind::Int),
+            "`k` must build an Int-typed entry"
+        );
+
+        let exact_entry: BaselineKey = k_exact("test.exact.key", &["|/bin/false"], "TEST-EXACT-01");
+        assert_eq!(exact_entry.key, "test.exact.key");
+        assert_eq!(exact_entry.accepted, ["|/bin/false"]);
+        assert_eq!(exact_entry.stig_id, "TEST-EXACT-01");
+        assert!(
+            matches!(exact_entry.kind, ValueKind::Exact),
+            "`k_exact` must build an Exact-typed entry"
+        );
     }
 }
