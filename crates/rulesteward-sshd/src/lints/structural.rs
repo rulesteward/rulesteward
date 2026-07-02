@@ -2673,6 +2673,24 @@ mod w07_tests {
     //!   `User bob`) are the normal, intended pattern and are never flagged - the
     //!   false positive the issue explicitly guards against.
     //!
+    //! # W07 fires only on FIRST-VALUE-WINS keywords set to DIFFERENT values
+    //! Two further restrictions the pass must honor (each locked by a negative test):
+    //! - ACCUMULATING keywords are EXCLUDED. `sshd_config(5)` says `AcceptEnv`'s
+    //!   variables "may be separated by whitespace or spread across multiple
+    //!   `AcceptEnv` directives": such keywords union across lines rather than
+    //!   shadow, so a repeat across two Match blocks drops nothing. W07's scope is
+    //!   the first-value-wins set ONLY; the accumulating set that sshd-E02 already
+    //!   maintains (`E02_ALLOW_REPEAT`: `AcceptEnv`, `Port`, `ListenAddress`,
+    //!   `HostKey`, `Include`, and the `Allow*`/`Deny*` user/group keywords) never
+    //!   fires W07. An
+    //!   implementer should REUSE `E02_ALLOW_REPEAT` here rather than re-deriving the
+    //!   list (e.g. `SetEnv` is first-value-wins in this codebase's `sshd -T`
+    //!   grounding and is deliberately absent from that set, so it IS W07-eligible).
+    //! - SAME-value repeats are CLEAN. A shadow is a hazard only when the dropped
+    //!   value DIFFERS from the winning one; two co-satisfiable blocks setting the
+    //!   same first-value-wins keyword to the SAME value have no behavioral effect,
+    //!   so W07 reports drift, not redundancy.
+    //!
     //! These tests drive the full dispatcher `lint()` and filter to `sshd-W07`, so
     //! they pin the observable end-to-end contract regardless of which pass emits
     //! it. Every positive fixture uses same-criterion-TYPE overlaps whose
@@ -2903,6 +2921,44 @@ mod w07_tests {
             )
             .is_empty(),
             "cross-type User/Group overlap is unknowable statically, so it is not flagged (#400)"
+        );
+    }
+
+    #[test]
+    fn accumulating_keyword_across_overlapping_blocks_is_clean() {
+        // W07 fires ONLY on FIRST-VALUE-WINS keywords. `AcceptEnv` ACCUMULATES:
+        // `sshd_config(5)` says its variables "may be separated by whitespace or
+        // spread across multiple AcceptEnv directives", so a carol connection
+        // (which matches both overlapping User lists) keeps BOTH LANG and LC_TIME -
+        // nothing is shadowed. AcceptEnv is in the accumulating set
+        // (`E02_ALLOW_REPEAT`), so W07 must exclude it exactly as sshd-E02 does.
+        // Guards against an impl that flags any repeated keyword across overlapping
+        // blocks regardless of accumulate-vs-shadow semantics.
+        assert!(
+            w07_diags(
+                "Match User alice,carol\n    AcceptEnv LANG\n\
+                 Match User carol,dave\n    AcceptEnv LC_TIME\n",
+            )
+            .is_empty(),
+            "accumulating keywords union across blocks, so there is no shadow to flag"
+        );
+    }
+
+    #[test]
+    fn same_value_repeat_across_overlapping_blocks_is_clean() {
+        // A shadow is a hazard only when the dropped value DIFFERS from the winning
+        // one. Two co-satisfiable `User alice` blocks setting X11Forwarding to the
+        // SAME value `yes` have no behavioral effect (the first wins, but the second
+        // would have applied the identical value), so W07 reports drift, not
+        // redundancy. Guards against an impl that flags on keyword-repeat alone
+        // without comparing the values.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match User alice\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "identical values across co-satisfiable blocks are redundant, not a shadow"
         );
     }
 }
