@@ -2994,6 +2994,22 @@ mod w07_tests {
     //!   `User bob`) are the normal, intended pattern and are never flagged - the
     //!   false positive the issue explicitly guards against.
     //!
+    //! # Negation-aware CIDR/LocalPort overlap (#403)
+    //! A negated CIDR/port entry does not blanket-disable overlap for the whole
+    //! criterion; it narrows the criterion's positive match set by exactly the
+    //! negated range, and overlap is decided against what remains:
+    //! - An IRRELEVANT negation (the negated range does not intersect the other
+    //!   block's positive range) leaves the shared range untouched, so the two
+    //!   blocks still co-satisfy on it.
+    //! - A RELEVANT carve-out that fully COVERS the positive intersection makes
+    //!   the two blocks disjoint - no connection can satisfy both.
+    //! - A carve-out that only PARTIALLY covers the positive intersection still
+    //!   leaves an overlapping remainder, so the blocks still co-satisfy.
+    //!
+    //! Treating any negated CIDR/port entry as blanket non-overlapping (rather than
+    //! computing the actual remainder) is a real false-negative source: it hides
+    //! genuine shadows whenever the negation is irrelevant or only partial.
+    //!
     //! # W07 fires only on FIRST-VALUE-WINS keywords set to DIFFERENT values
     //! Two further restrictions the pass must honor (each locked by a negative test):
     //! - ACCUMULATING keywords are EXCLUDED. `sshd_config(5)` says `AcceptEnv`'s
@@ -3027,6 +3043,23 @@ mod w07_tests {
     //! resolution that would let W07 reason about `User` vs `Group` overlap is a
     //! post-v0.3 follow-up tracked as #400. `cross_type_user_and_group_do_not_flag_w07`
     //! locks this so the implementer cannot accidentally flag it.
+    //!
+    //! # Other documented v0.3 accepted false negatives
+    //! Besides the cross-type conservative reading above (#400), two further gaps are
+    //! intentionally accepted for v0.3 rather than implemented:
+    //! - WILDCARD-vs-WILDCARD glob overlap (e.g. `User dev-*` vs `User *-web`) is a
+    //!   deferred false negative: the overlap oracle only witnesses a wildcard
+    //!   pattern against a LITERAL value on the other side, not two wildcard
+    //!   patterns against each other, so a pair of only-wildcard criteria that could
+    //!   co-satisfy some literal user is not flagged.
+    //! - Sub-population partitioning across MORE THAN TWO blocks (e.g. `Host alpha`
+    //!   yes / `Host beta` no / `Host alpha,beta` yes) can leave a real
+    //!   per-connection shadow undetected: the block-level rule only asks whether
+    //!   SOME earlier overlapping block already agrees with the later value, not
+    //!   whether it agrees for the SAME sub-population a middle block disagrees
+    //!   with. `partitioned_host_sets_are_an_accepted_fn_v0_3` locks this as an
+    //!   accepted v0.3 false negative; per-sub-population detection is a tracked
+    //!   post-v0.3 follow-up.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -3287,12 +3320,15 @@ mod w07_tests {
     fn negated_cidr_carveout_makes_blocks_disjoint_is_clean() {
         // `ssh_config(5)` PATTERNS: a negated entry carves its range OUT of the
         // match set. `192.168.0.0/16,!192.168.5.0/24` matches all of 192.168/16
-        // EXCEPT 192.168.5.0/24, so it is DISJOINT from a block matching exactly
-        // 192.168.5.0/24 - no source address satisfies both, so the second block is
-        // never shadowed even though the values differ (no vs yes). An impl that
-        // drops the negated entry models the wider /16 and false-fires here; the
-        // simplest correct fix is to treat any negated CIDR/port entry as
-        // conservatively non-overlapping.
+        // EXCEPT 192.168.5.0/24. The two blocks' positive intersection (the /16
+        // vs the /24) is exactly 192.168.5.0/24, and the negation fully COVERS
+        // that intersection, so under the negation-aware overlap rule (an
+        // intersection fully covered by a negation is disjoint; a negation that
+        // only partially covers it still overlaps) the two blocks are DISJOINT -
+        // no source address satisfies both, so the second block is never
+        // shadowed even though the values differ (no vs yes). An impl that drops
+        // the negated entry entirely (reading the criterion as the wider,
+        // un-carved /16) false-fires here.
         assert!(
             w07_diags(
                 "Match Address 192.168.0.0/16,!192.168.5.0/24\n    X11Forwarding no\n\
@@ -3322,6 +3358,279 @@ mod w07_tests {
         assert_eq!(
             d[0].line, 4,
             "line 4 (no) differs from the winning line 2 (yes); line 6 (yes) equals it"
+        );
+    }
+
+    // ---- POSITIVE: negation-aware CIDR/LocalPort overlap (#403) ----
+
+    #[test]
+    fn irrelevant_negation_still_overlaps_flags_w07() {
+        // The negated `!192.168.0.0/16` carves out a range that does not intersect
+        // 10.0.0.0/8 at all, so it is IRRELEVANT to this pair's overlap: the shared
+        // range (all of 10.0.0.0/8) is untouched, and the two blocks still
+        // co-satisfy. An impl that treats ANY negated entry as blanket
+        // non-overlapping would wrongly clear this pair.
+        let d = w07_diags(
+            "Match Address 10.0.0.0/8,!192.168.0.0/16\n    X11Forwarding yes\n\
+             Match Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "an irrelevant negation does not prevent overlap"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn three_block_shadow_compares_against_the_overlapping_winner_not_any_earlier() {
+        // The #403 headline case: three co-satisfiable Address 10.0.0.0/8 blocks
+        // (the first with an irrelevant `!192.168.0.0/16` carve-out) set no / yes /
+        // no. Block 0 (no) is the winner for every 10.x connection. Block 1's line 4
+        // (yes) differs from the winner -> a real shadow. Block 2's line 6 (no)
+        // EQUALS block 0's value -> redundant against the winner, not a differing
+        // shadow, even though it differs from block 1's (also-shadowed) yes. An
+        // impl that only compares a later instance against the IMMEDIATELY prior
+        // differing instance (rather than every earlier overlapping block) would
+        // wrongly also flag line 6.
+        let d = w07_diags(
+            "Match Address 10.0.0.0/8,!192.168.0.0/16\n    X11Forwarding no\n\
+             Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "only the winner-differing instance is a shadow");
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (yes) differs from the winning block 0 (no)"
+        );
+    }
+
+    #[test]
+    fn partial_negation_coverage_still_overlaps_flags_w07() {
+        // The negated `!192.168.5.0/24` covers only ONE /24 out of the full /16 the
+        // other block matches (e.g. 192.168.6.1 satisfies both blocks), so the
+        // carve-out is PARTIAL, not full: the blocks still co-satisfy on the
+        // uncovered remainder. Contrast with
+        // `negated_cidr_carveout_makes_blocks_disjoint_is_clean`, where the
+        // negation exactly equals the other block's entire positive range (full
+        // coverage -> disjoint).
+        let d = w07_diags(
+            "Match Address 192.168.0.0/16,!192.168.5.0/24\n    X11Forwarding yes\n\
+             Match Address 192.168.0.0/16\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "a partial carve-out leaves an overlapping remainder"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn overlapping_localport_lists_flag_w07() {
+        // LocalPort is a numeric comma-list (OR within the criterion, same as
+        // User/Host name-lists). `22,2222` and `2222` share port 2222, so a
+        // connection arriving on local port 2222 satisfies both blocks.
+        let d = w07_diags(
+            "Match LocalPort 22,2222\n    X11Forwarding yes\n\
+             Match LocalPort 2222\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "intersecting LocalPort lists co-satisfy -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn ipv6_cidr_supernet_contains_host_address_flags_w07() {
+        // `Address` CIDR handling is not IPv4-only: 2001:db8::1 is inside the
+        // 2001:db8::/32 supernet, exactly as the IPv4
+        // `cidr_supernet_contains_host_address_flags_w07` case above.
+        let d = w07_diags(
+            "Match Address 2001:db8::/32\n    X11Forwarding yes\n\
+             Match Address 2001:db8::1\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "IPv6 host address inside the supernet -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    // ---- POSITIVE: glob wildcard vs a LITERAL value (wildcard-vs-wildcard is a
+    // ---- documented deferred false negative for v0.3; see the module doc-comment) ----
+
+    #[test]
+    fn trailing_star_glob_matches_literal_flags_w07() {
+        // `dev-*` (glob) against the LITERAL `dev-web` is exactly the kind of
+        // wildcard-vs-literal overlap `match_pattern_list` decides: `*` matches any
+        // (possibly empty) suffix, so `dev-*` matches `dev-web`.
+        let d = w07_diags(
+            "Match User dev-*\n    X11Forwarding yes\n\
+             Match User dev-web\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "trailing-star glob matches the literal -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn mid_pattern_star_glob_matches_literal_flags_w07() {
+        // `a*c` against the LITERAL `abac` forces the `*`'s backtracking loop (the
+        // `*` must first try consuming zero chars, then one, ... until the
+        // remaining literal `c` lines up), unlike a simple trailing-star case.
+        let d = w07_diags(
+            "Match User a*c\n    X11Forwarding yes\n\
+             Match User abac\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "mid-pattern glob matches the literal -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn question_mark_glob_matches_literal_flags_w07() {
+        // `al?ce` against the LITERAL `alice`: `?` matches exactly one character
+        // (the `i`), distinct from `*`'s zero-or-more.
+        let d = w07_diags(
+            "Match User al?ce\n    X11Forwarding yes\n\
+             Match User alice\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "`?` glob matches the literal -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    // ---- POSITIVE: additional criterion TYPES must each dispatch (Host, LocalAddress) ----
+
+    #[test]
+    fn identical_host_criteria_shadow_flags_w07() {
+        // `Host` is a name-list criterion just like `User`/`Group`, and
+        // `sshd_config(5)`'s "only the first instance of the keyword is applied"
+        // rule spans ALL Match block types. Two identical `Host web1` blocks
+        // co-satisfy (a connection whose client hostname is web1 matches both), so
+        // the pass must handle Host as a first-class overlap type, not fall through
+        // a `_ => no_overlap` arm that silently skips it.
+        let d = w07_diags(
+            "Match Host web1\n    X11Forwarding yes\n\
+             Match Host web1\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "identical Host criteria co-satisfy -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn localaddress_cidr_supernet_contains_host_flags_w07() {
+        // `LocalAddress` is a DISTINCT criterion string from `Address` (it is the
+        // local address sshd accepted the connection on), and `sshd_config(5)` says
+        // it too accepts CIDR. 10.1.2.3 is inside 10.0.0.0/8, so a connection
+        // accepted on 10.1.2.3 satisfies both blocks. Guards against a dispatcher
+        // that wires up `address` CIDR handling but leaves `localaddress` in a
+        // fall-through no-overlap arm.
+        let d = w07_diags(
+            "Match LocalAddress 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match LocalAddress 10.1.2.3\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "LocalAddress host inside the supernet -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    // ---- POSITIVE + NEGATIVE: LocalPort negation is negation-aware, like CIDR ----
+
+    #[test]
+    fn irrelevant_localport_negation_still_overlaps_flags_w07() {
+        // Port lists are negation-aware exactly like CIDR lists. `!443` carves out
+        // a port that is NOT in the shared set, so it is IRRELEVANT to this pair's
+        // overlap: both lists still admit 2222, so the blocks co-satisfy on it. An
+        // impl that treats any negated port entry as blanket non-overlapping wrongly
+        // clears this pair (the LocalPort analogue of
+        // `irrelevant_negation_still_overlaps_flags_w07`).
+        let d = w07_diags(
+            "Match LocalPort 22,2222,!443\n    X11Forwarding yes\n\
+             Match LocalPort 2222\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "an irrelevant port negation does not prevent overlap"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn full_localport_carveout_makes_blocks_disjoint_is_clean() {
+        // `!2222` fully carves out the ONLY port the two lists would otherwise
+        // share, so the effective sets ({22} vs {2222}) are disjoint - no
+        // connection arrives on a port that satisfies both blocks, so the second is
+        // never shadowed even though the values differ (yes vs no). The LocalPort
+        // analogue of `negated_cidr_carveout_makes_blocks_disjoint_is_clean`, and a
+        // regression lock that a negation which FULLY covers the intersection still
+        // yields disjoint (not overlap) for ports.
+        assert!(
+            w07_diags(
+                "Match LocalPort 22,2222,!2222\n    X11Forwarding yes\n\
+                 Match LocalPort 2222\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a full port carve-out makes the two LocalPort blocks disjoint"
+        );
+    }
+
+    // ---- NEGATIVE: accepted v0.3 false negatives (documented, not implemented) ----
+
+    #[test]
+    fn partitioned_host_sets_are_an_accepted_fn_v0_3() {
+        // The MISS-A shape (#403): `Host alpha` yes / `Host beta` no / `Host
+        // alpha,beta` yes. For a BETA connection, block 1 (no) wins over block 2's
+        // yes - a real per-connection shadow. But the block-level rule only asks
+        // "does SOME earlier overlapping block already agree with block 2's value
+        // (yes) anywhere in its overlap?" - and block 0 (`Host alpha`, yes) does
+        // overlap block 2 (alpha is in `alpha,beta`) with the SAME value, so the
+        // rule's "not exists an agreeing earlier overlap" condition is false and
+        // line 6 is NOT flagged. This is an ACCEPTED v0.3 false negative (the rule
+        // cannot see that block 0's agreement covers only the alpha sub-population,
+        // not the beta one that actually collides with block 1); per-
+        // sub-population detection is a tracked post-v0.3 follow-up. Do NOT
+        // "fix" this by making the rule flag here - see the module doc-comment.
+        assert!(
+            w07_diags(
+                "Match Host alpha\n    X11Forwarding yes\n\
+                 Match Host beta\n    X11Forwarding no\n\
+                 Match Host alpha,beta\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "block-level overlap cannot see the beta-only sub-population collision (accepted v0.3 FN)"
+        );
+    }
+
+    #[test]
+    fn match_all_is_global_context_not_a_shadow_participant() {
+        // An unconditional `Match all` resets to a global-like state (`sshd_config(5)`
+        // treats an empty/absent Match criteria as always-satisfied). It is treated
+        // as global context here, exactly like a bare top-level directive in
+        // `global_then_single_match_override_is_clean` above, not as one of two
+        // co-satisfiable per-connection Match blocks: only ONE conditional Match
+        // block (`User bob`) actually sets X11Forwarding, so there is no second
+        // satisfiable instance to shadow.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User bob\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "Match all is global context, not a shadow participant"
         );
     }
 }
