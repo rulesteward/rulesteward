@@ -1183,6 +1183,66 @@ mod w03_tests {
     }
 
     #[test]
+    fn quoted_keyword_hides_weak_cipher_still_fires_w03() {
+        // #388 (security false negative). sshd's keyword tokenizer (strdelim) strips
+        // a BALANCED double-quote span from the keyword, so the directive is
+        // recognized and LOADED. Real sshd -T (OpenSSH 10.2p1): `"Ciphers" aes128-cbc`
+        // -> rc 0, `ciphers aes128-cbc` (the weak CBC cipher is applied). Before the
+        // fix `read_keyword` kept the quotes, the keyword classified as unknown
+        // (sshd-E01), and W03 never fired -- the weak cipher was invisible to the
+        // operator. After the fix the keyword resolves to `Ciphers` and W03 fires.
+        let diags = run("\"Ciphers\" aes128-cbc\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "fully-quoted keyword must still surface the loaded weak cipher"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+
+        // A mid-token balanced span also resolves and loads (real sshd -T: rc 0,
+        // `ciphers aes128-cbc`): `Cip"hers"` -> keyword `Ciphers`.
+        assert_eq!(
+            run("Cip\"hers\" aes128-cbc\n").len(),
+            1,
+            "mid-token balanced quote span resolves to Ciphers and fires W03"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_negatives_do_not_fire_w03() {
+        // Grounded against real sshd -T (OpenSSH 10.2p1). Each line is one sshd
+        // REJECTS (rc 255) or SILENTLY IGNORES, so no weak cipher loads and W03 must
+        // stay silent -- matching sshd's keyword-quote (strdelim) semantics exactly.
+
+        // Single quotes are NOT stripped by strdelim: `'Ciphers'` is an unknown
+        // keyword -> rc 255 "Bad configuration option: 'Ciphers'" (E01's province).
+        assert!(
+            run("'Ciphers' aes128-cbc\n").is_empty(),
+            "single-quoted keyword (sshd rc255) must not fire W03"
+        );
+        // strdelim ENDS the keyword token at the closing quote: `Ci"ph"ers` -> keyword
+        // `Ciph` (unknown) + a separate token `ers` -> rc 255 "Bad configuration
+        // option: Ciph".
+        assert!(
+            run("Ci\"ph\"ers aes128-cbc\n").is_empty(),
+            "Ci\"ph\"ers resolves to keyword Ciph (sshd rc255) -- no W03"
+        );
+        // Trailing junk after the close quote becomes a separate token: `"Ciphers"x`
+        // -> keyword `Ciphers` + arg `x` + `aes128-cbc` = multi-arg, which sshd
+        // rejects (rc 255 "Bad SSH2 cipher spec 'x'"); algo_list_value returns None.
+        assert!(
+            run("\"Ciphers\"x aes128-cbc\n").is_empty(),
+            "junk after close quote makes a multi-arg value (sshd rc255) -- no W03"
+        );
+        // An UNTERMINATED keyword quote makes sshd silently IGNORE the whole line
+        // (rc 0, defaults applied), so no weak cipher is loaded.
+        assert!(
+            run("\"Ciphers aes128-cbc\n").is_empty(),
+            "unterminated keyword quote (sshd ignores the line) -- no W03"
+        );
+    }
+
+    #[test]
     fn ciphers_3des_cbc_fires_w03() {
         // 3des-cbc: TDEA, disallowed after 2023 per NIST SP 800-131A R2 Table 1.
         let diags = run("Ciphers 3des-cbc\n");

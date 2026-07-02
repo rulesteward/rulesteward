@@ -276,15 +276,38 @@ fn skip_whitespace(chars: &mut Peekable<Chars>) {
     }
 }
 
-/// Read the keyword token: characters up to whitespace or a `=` separator.
+/// Read the keyword token, honoring sshd's keyword-quoting (`strdelim`).
 ///
-/// Keywords are never quoted, so `"` is treated as an ordinary keyword character;
-/// a malformed quoted keyword is a lint concern, not the tokenizer's.
+/// The keyword ends at unquoted ASCII whitespace or a `=` separator. A double-quote
+/// opens a quoted span: the content up to the matching `"` is taken literally (the
+/// quote chars removed) and -- unlike the argument tokenizer's `argv_split`, which
+/// CONTINUES past a close quote -- the keyword TOKEN ENDS at the closing quote, so
+/// any characters after it begin the next token. Grounded on real `sshd -T` (OpenSSH
+/// 10.2p1): `"Ciphers"` and `Cip"hers"` both resolve to keyword `Ciphers` and load
+/// (rc 0); `Ci"ph"ers` resolves to `Ciph` (then a separate `ers` token) and is
+/// rejected (rc 255). Single quotes are NOT special in a keyword (`'Ciphers'` stays
+/// literal -> unknown directive, sshd rc 255). An unterminated span consumes the rest
+/// of the line (real sshd then silently ignores the line); the partial content is
+/// returned and can only classify as an UNKNOWN directive, never a recognized one, so
+/// a quoted keyword can never hide a weak algorithm behind an "unknown" verdict (#388).
 fn read_keyword(chars: &mut Peekable<Chars>) -> String {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
         if c.is_ascii_whitespace() || c == '=' {
             break;
+        }
+        if c == '"' {
+            // Open a quoted span; the keyword token ends at the closing quote
+            // (strdelim), so we return there rather than continuing the outer scan.
+            chars.next();
+            for d in chars.by_ref() {
+                if d == '"' {
+                    return s;
+                }
+                s.push(d);
+            }
+            // Unterminated span: consumed to end of line.
+            return s;
         }
         s.push(c);
         chars.next();

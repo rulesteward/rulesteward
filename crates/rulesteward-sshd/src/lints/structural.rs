@@ -1740,6 +1740,38 @@ mod e01_tests {
     }
 
     #[test]
+    fn quoted_recognized_keyword_does_not_fire_e01() {
+        // #388: sshd's keyword tokenizer (strdelim) strips a BALANCED double-quote
+        // span, so `"Ciphers"` unquotes to the recognized directive `Ciphers` and
+        // LOADS (real sshd -T, OpenSSH 10.2p1: rc 0, `ciphers aes128-cbc`). Before the
+        // fix read_keyword kept the quotes, the keyword classified as unknown, and E01
+        // fired -- a false positive that ALSO masked the weak-cipher W03 finding.
+        // After the fix the keyword resolves to a recognized keyword -> no E01.
+        for target in ALL_TARGETS {
+            assert!(
+                run("\"Ciphers\" aes128-cbc\n", target).is_empty(),
+                "a balanced-quoted recognized keyword must not fire E01 for {target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_quoted_keyword_is_unknown_e01() {
+        // strdelim does NOT strip single quotes: `'Ciphers'` stays literal and is an
+        // unknown keyword -> real sshd rc 255 "Bad configuration option: 'Ciphers'".
+        // E01 fires (the quotes are NOT part of a recognized directive).
+        for target in ALL_TARGETS {
+            let diags = run("'Ciphers' aes128-cbc\n", target);
+            assert_eq!(
+                diags.len(),
+                1,
+                "single-quoted keyword is unknown for {target:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-E01");
+        }
+    }
+
+    #[test]
     fn requiredrsasize_is_unknown_on_rhel8_only() {
         // The sharpest boundary: added in 9.9p1. Probe: "Bad configuration option"
         // on 8.0p1, accepted on 9.9p1. A single-global-keyword-set impl passes every
