@@ -177,11 +177,18 @@ fn tokenize_line(line: &str) -> Result<Vec<String>, String> {
     }
 
     // The keyword is the first token; it ends at whitespace or a `=` separator.
-    tokens.push(read_keyword(&mut chars));
+    let (keyword, keyword_quoted) = read_keyword(&mut chars);
+    tokens.push(keyword);
 
     // Consume a single `=` keyword/value separator (with surrounding whitespace).
+    // sshd's strdelim honors `=` as the separator ONLY on the UNQUOTED path: after a
+    // keyword that ended at a closing quote, a following `=` is NOT a separator -- it
+    // becomes the first char of the value, an invalid spec sshd rejects rc 255
+    // (`"Ciphers"=aes128-cbc` -> "Bad SSH2 cipher spec '=aes128-cbc'", verified OpenSSH
+    // 10.2p1 `sshd -T`). So skip `=` consumption when the keyword was quote-terminated
+    // (otherwise we'd lint an unloadable line -- #388 regression).
     skip_whitespace(&mut chars);
-    if chars.peek() == Some(&'=') {
+    if !keyword_quoted && chars.peek() == Some(&'=') {
         chars.next();
         skip_whitespace(&mut chars);
     }
@@ -290,7 +297,12 @@ fn skip_whitespace(chars: &mut Peekable<Chars>) {
 /// of the line (real sshd then silently ignores the line); the partial content is
 /// returned and can only classify as an UNKNOWN directive, never a recognized one, so
 /// a quoted keyword can never hide a weak algorithm behind an "unknown" verdict (#388).
-fn read_keyword(chars: &mut Peekable<Chars>) -> String {
+///
+/// Returns `(keyword, quote_terminated)`. `quote_terminated` is `true` when the token
+/// ended via a double-quote span (balanced or unterminated); the caller uses it to
+/// suppress `=`-separator consumption, since sshd only honors `=` after an unquoted
+/// keyword (`"Ciphers"=aes128-cbc` is an sshd reject, not `Ciphers` + value).
+fn read_keyword(chars: &mut Peekable<Chars>) -> (String, bool) {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
         if c.is_ascii_whitespace() || c == '=' {
@@ -302,17 +314,17 @@ fn read_keyword(chars: &mut Peekable<Chars>) -> String {
             chars.next();
             for d in chars.by_ref() {
                 if d == '"' {
-                    return s;
+                    return (s, true);
                 }
                 s.push(d);
             }
             // Unterminated span: consumed to end of line.
-            return s;
+            return (s, true);
         }
         s.push(c);
         chars.next();
     }
-    s
+    (s, false)
 }
 
 /// Parse the criteria tokens of a `Match` header into `(keyword, values)` pairs.

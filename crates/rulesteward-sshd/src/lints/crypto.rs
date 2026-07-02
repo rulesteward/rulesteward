@@ -1100,6 +1100,25 @@ mod w06_tests {
             "trailing vertical-tab after `+` (sshd rc255) must not fire W06"
         );
     }
+
+    #[test]
+    fn quoted_keyword_then_equals_does_not_fire_w06() {
+        // #388 regression guard (W06 path): `"Ciphers"=+aes128-cbc` -- the `=` after a
+        // quoted keyword is not a separator, so the value is `=+aes128-cbc`, which sshd
+        // rejects (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad SSH2 cipher spec
+        // '=+aes128-cbc'"). W06 must not fire.
+        assert!(
+            run("\"Ciphers\"=+aes128-cbc\n").is_empty(),
+            "quoted keyword + `=` + operator (sshd rc255) must not fire W06"
+        );
+        // Control: quoted keyword + SPACE + operator DOES load (real sshd -T:
+        // `"Ciphers" +aes128-cbc` -> rc 0), so W06 still fires.
+        assert_eq!(
+            run("\"Ciphers\" +aes128-cbc\n").len(),
+            1,
+            "quoted keyword + space + `+`-operator loads => W06 fires"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1344,6 +1363,49 @@ mod w03_tests {
             run("Ciphers aes128-cbc\t\n").len(),
             1,
             "trailing tab is an ASCII separator (sshd rc0) -- W03 still fires"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_then_equals_does_not_fire_w03() {
+        // #388 regression guard. sshd's strdelim consumes `=` as the keyword/value
+        // separator ONLY on the UNQUOTED path. After a keyword that ended at a closing
+        // quote, a following `=` is NOT a separator -- it becomes the first char of the
+        // value, an invalid spec sshd rejects (real sshd -T, OpenSSH 10.2p1:
+        // `"Ciphers"=aes128-cbc` -> rc 255 "Bad SSH2 cipher spec '=aes128-cbc'";
+        // `"MACs"=hmac-md5` -> rc 255 "Bad SSH2 mac spec '=hmac-md5'"). The config never
+        // loads, so W03 must not fire on any of these.
+        for line in [
+            "\"Ciphers\"=aes128-cbc\n",
+            "\"Ciphers\" = aes128-cbc\n",
+            "\"Ciphers\"= aes128-cbc\n",
+            "Cip\"hers\"=aes128-cbc\n",
+            "\"MACs\"=hmac-md5\n",
+            "\"KexAlgorithms\"=diffie-hellman-group1-sha1\n",
+            "\"HostKeyAlgorithms\"=ssh-rsa\n",
+        ] {
+            assert!(
+                run(line).is_empty(),
+                "quoted keyword + `=` (sshd rc255) must not fire W03: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unquoted_keyword_equals_separator_still_fires_w03() {
+        // Control for the above: an UNQUOTED keyword with a `=` separator DOES load
+        // (real sshd -T: `Ciphers=aes128-cbc` and `Ciphers = aes128-cbc` -> rc 0,
+        // `ciphers aes128-cbc`), so W03 must still fire. Guards against an over-broad
+        // fix that drops the `=` separator entirely.
+        assert_eq!(
+            run("Ciphers=aes128-cbc\n").len(),
+            1,
+            "unquoted `=` separator loads => W03 fires"
+        );
+        assert_eq!(
+            run("Ciphers = aes128-cbc\n").len(),
+            1,
+            "unquoted spaced `=` separator loads => W03 fires"
         );
     }
 
