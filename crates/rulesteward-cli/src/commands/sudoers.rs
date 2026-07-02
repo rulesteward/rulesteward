@@ -45,8 +45,10 @@ fn lint(args: &SudoersLintArgs) -> i32 {
 
     // Stage each file's source (keyed by display path, the diagnostics' source_id
     // convention) so the human renderer can resolve ariadne snippets for anchored
-    // findings. Phase 0's only emitter, sudo-F01, is UNANCHORED (no source_id), so
-    // it renders plainly; staging is in place for the later anchored passes.
+    // findings. sudo-F01 anchors a genuine malformed line in real source text
+    // (non-empty byte span, source_id set, ariadne renders a caret snippet); a
+    // missing/cyclic @include marker has no real backing source, so it stays
+    // unanchored and renders plainly (#382).
     let mut sources = std::collections::BTreeMap::new();
     for file in &files {
         sources.insert(file.path.display().to_string(), file.source.clone());
