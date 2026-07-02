@@ -128,8 +128,9 @@ enum Weak03Kind {
 }
 
 /// The effective algorithm-list value for a directive's `args`, with any inline
-/// `#` comment stripped and embedded double-quotes removed, or `None` if the
-/// value is not a well-formed sshd-loading form.
+/// `#` comment stripped, or `None` if the value is not a well-formed sshd-loading
+/// form (a genuine multi-arg value, or a spec containing an embedded `#` or a
+/// literal `"`, all of which sshd rejects rc 255).
 ///
 /// # Inline `#` comment stripping
 ///
@@ -143,29 +144,32 @@ enum Weak03Kind {
 /// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
 /// the helper yields `None`.
 ///
-/// # Embedded double-quote handling (issue #327, option b -- localized fix)
+/// # Double-quote handling (post-#374 tokenizer)
 ///
-/// sshd strips double-quotes anywhere in a token before re-parsing the comma
-/// list (verified OpenSSH 9.9p1/10.2p1 `sshd -T`). Two quote-induced arg
-/// shapes reach this helper:
+/// The argument tokenizer (`parser::tokenize_line`, a faithful `argv_split`) strips
+/// the quote chars from a genuine quoted span BEFORE this helper runs (verified
+/// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers "aes128-cbc"` arrives as the arg
+/// `aes128-cbc`, `Ciphers +"aes128-cbc"` as `+aes128-cbc`, and the quote-glued
+/// `Ciphers "aes128-cbc",aes256-ctr` as the SINGLE arg `aes128-cbc,aes256-ctr` (the
+/// tokenizer continues past the close quote and glues the trailing run). A
+/// well-formed quoted value therefore reaches this helper with no `"` at all, takes
+/// the `[one]` arm, and is linted as its comma list.
 ///
-/// - **Embedded quotes in a single arg**: `Ciphers +"aes128-cbc"` -- the
-///   leading `+` causes `read_arg` to read a bareword, yielding `+"aes128-cbc"`
-///   (literal `"` chars) as a single arg. After stripping `"`, the effective
-///   value is `+aes128-cbc`, which W06 then processes normally.
+/// A literal `"` only survives into the value when the file used a BACKSLASH-ESCAPED
+/// quote (`\"`), which the tokenizer keeps literal and which sshd rejects (rc 255
+/// "Bad SSH2 cipher spec"). Step 3 suppresses any such value (`None`) rather than
+/// lint an unloadable line (#389 Case A).
 ///
-/// - **Quote-glued single arg**: `Ciphers "aes128-cbc",aes256-ctr` -- `read_arg`
-///   strips the outer quotes and glues the trailing `,aes256-ctr` onto the same
-///   token, so the parser yields a SINGLE arg `aes128-cbc,aes256-ctr` (#348),
-///   which sshd loads as that comma list; it takes the `[one]` arm. A SPACE
-///   before the comma (`aes128-cbc ,aes256-ctr`) instead splits into two args,
-///   but sshd REJECTS that line (rc 255, "extra arguments at end of line"), so
-///   the helper suppresses it (`None`) rather than lint an unloadable config.
+/// Multi-arg values are rejected: a SPACE before a comma (`aes128-cbc ,aes256-ctr`)
+/// or after an operator (`+ aes128-cbc`) splits into two args, which sshd REJECTS
+/// (rc 255 "extra arguments at end of line"), so the helper yields `None`. This also
+/// covers a quoted value followed by a comma-run (`"aes128-cbc" ,aes256-ctr`), which
+/// tokenizes to two args `["aes128-cbc", ",aes256-ctr"]` and is suppressed (#376).
 ///
-/// Counter-check: `Ciphers "aes128-cbc # x"` -- the parser strips outer quotes,
-/// yielding the single arg `aes128-cbc # x` (which contains `#`). The `#` check
-/// below suppresses it correctly, matching sshd's rejection (rc 255, verified
-/// OpenSSH 10.2p1). The `,`-prefix join does not affect this case.
+/// Counter-check: `Ciphers "aes128-cbc # x"` -- the tokenizer strips the outer
+/// quotes and keeps the inner space, yielding the single arg `aes128-cbc # x` (which
+/// contains `#`). The `#` check (Step 4) suppresses it, matching sshd's rejection
+/// (rc 255, verified OpenSSH 10.2p1).
 fn algo_list_value(args: &[String]) -> Option<String> {
     // Step 1: strip trailing inline `#` comment args.
     let effective = match args.iter().position(|a| a.starts_with('#')) {
@@ -189,39 +193,30 @@ fn algo_list_value(args: &[String]) -> Option<String> {
         _ => return None,
     };
 
-    // Step 3a: guard against a hash inside a bareword-embedded quoted string
-    // that was split by the tokenizer's whitespace boundary.
-    //
-    // Consider `Ciphers +"aes128-cbc # x"`: the leading `+` makes `read_arg`
-    // read a bareword, which stops at the space inside the quoted part. The
-    // tokenizer yields args=[`+"aes128-cbc`, `#`, `x"`]. The comment-strip
-    // (step 1) removes `#` and `x"`, leaving effective=[`+"aes128-cbc`].
-    // After stripping `"` we would get `+aes128-cbc` and W06 would fire --
-    // a false positive, since sshd rejects `+"aes128-cbc # x"` (rc 255).
-    //
-    // Signal: the remaining raw value has an ODD number of `"` chars. Balanced
-    // pairs (zero, two, four, ...) are fine; a lone `"` means the closing
-    // quote of a quoted string was consumed by the comment-strip, which implies
-    // a hash was inside the quoted string and the line is a sshd reject.
-    if raw.chars().filter(|&c| c == '"').count() % 2 != 0 {
+    // Step 3: reject any value that still contains a literal `"`. Post-#374 the
+    // tokenizer strips the quote chars from a genuine quoted span (`"aes128-cbc"`
+    // arrives as `aes128-cbc`), so a `"` only survives here when the file used a
+    // BACKSLASH-ESCAPED quote (`\"`), which the tokenizer keeps literal. sshd rejects
+    // any cipher/MAC spec containing a `"` (rc 255 "Bad SSH2 cipher spec", verified
+    // OpenSSH 10.2p1 `sshd -T`), so the line never loads and must not be linted --
+    // for an odd count (`\"aes128-cbc`) AND an even count (`+\"aes128-cbc\"`, and the
+    // sharper `\"aes128-cbc\",aes256-cbc` where a stripped quote would fire on the
+    // weak tail). Replaces the old odd-`"`-count guard, which passed even counts.
+    // (#389 Case A.)
+    if raw.contains('"') {
         return None;
     }
 
-    // Step 3b: strip ALL embedded `"` characters to match sshd's quote-stripping
-    // behavior. This handles single-arg forms like `+"aes128-cbc"` where the
-    // leading `+` prevented quoted-string tokenization (option b localized fix).
-    let value: String = raw.chars().filter(|&c| c != '"').collect();
-
-    // Step 4: a `#` anywhere in the value (after quote-stripping) means the
-    // cipher spec contains a hash character that sshd would reject (rc 255):
+    // Step 4: a `#` anywhere in the value means the cipher spec contains a hash
+    // character that sshd would reject (rc 255):
     // - bare glued hash: `aes128-cbc#x` (whole token, no whitespace to split on)
-    // - hash-inside-quotes: `"aes128-cbc # x"` (outer quotes stripped by parser,
-    //   inner ` # x` part retained in the arg, sshd rejects the whole spec)
-    if value.contains('#') {
+    // - hash-inside-quotes: `"aes128-cbc # x"` (outer quotes stripped by the
+    //   tokenizer, the inner ` # x` retained in the arg, sshd rejects the spec)
+    if raw.contains('#') {
         return None;
     }
 
-    Some(value)
+    Some(raw)
 }
 
 /// Return `true` when the lowercased token is a weak KEX algorithm.
@@ -257,7 +252,10 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
     };
 
     for raw_token in value.split(',') {
-        let token = raw_token.trim().to_ascii_lowercase();
+        // ASCII-only trim: sshd's separator class is ASCII whitespace, so a VT/NBSP
+        // the tokenizer correctly KEEPS must stay in the token (a Unicode `str::trim`
+        // would re-strip it and fire on a spec sshd rejects). (#389 Case B.)
+        let token = raw_token.trim_ascii().to_ascii_lowercase();
         if token.is_empty() {
             continue;
         }
@@ -273,7 +271,7 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
                 format!(
                     "weak algorithm '{}' in '{}': CBC ciphers, HMAC-MD5/SHA-1, \
                      DH-group1/group14-sha1, or ssh-rsa/ssh-dss (NIST SP 800-131A R2)",
-                    raw_token.trim(),
+                    raw_token.trim_ascii(),
                     directive.keyword,
                 ),
                 file,
@@ -373,7 +371,10 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some(first_raw) = tokens.next() else {
                 continue;
             };
-            let first_trimmed = first_raw.trim();
+            // ASCII-only trim throughout: a VT/NBSP kept by the tokenizer must stay in
+            // the token so an sshd-rejected spec is not recovered by a Unicode trim
+            // (#389 Case B).
+            let first_trimmed = first_raw.trim_ascii();
             let Some(operator) = first_trimmed.chars().next() else {
                 continue;
             };
@@ -383,8 +384,8 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             }
             // Strip the leading operator char from the first token and check it,
             // then check all remaining tokens (they carry no operator).
-            let first_algo = first_trimmed[operator.len_utf8()..].trim();
-            let all_tokens = std::iter::once(first_algo).chain(tokens.map(str::trim));
+            let first_algo = first_trimmed[operator.len_utf8()..].trim_ascii();
+            let all_tokens = std::iter::once(first_algo).chain(tokens.map(str::trim_ascii));
             for raw_tok in all_tokens {
                 let tok = raw_tok.to_ascii_lowercase();
                 if tok.is_empty() {
@@ -1069,6 +1070,55 @@ mod w06_tests {
             diags[0].message
         );
     }
+
+    #[test]
+    fn literal_quoted_operator_cipher_does_not_fire_w06() {
+        // #389 Case A (even-count literal quotes, W06 path). A backslash-escaped quote
+        // keeps a LITERAL `"` in the operator value; sshd rejects any spec containing a
+        // `"` (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad SSH2 cipher/mac spec"), so the
+        // line never loads and must not be linted. The old odd-count guard let an even
+        // count (2) through, step-3b stripped both, and W06 fired -- a false positive.
+        assert!(
+            run("Ciphers +\\\"aes128-cbc\\\"\n").is_empty(),
+            "even-count literal quotes after `+` (sshd rc255) must not fire W06"
+        );
+        assert!(
+            run("MACs +\\\"hmac-md5\\\"\n").is_empty(),
+            "even-count literal quotes after `+` on MACs (sshd rc255) must not fire W06"
+        );
+    }
+
+    #[test]
+    fn non_ascii_whitespace_after_operator_does_not_fire_w06() {
+        // #389 Case B (W06 path). A trailing vertical-tab (U+000B) is kept literal in
+        // the token; sshd's separator class is ASCII-only, so `+aes128-cbc<VT>` is an
+        // invalid spec (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad SSH2 cipher spec").
+        // A Unicode `str::trim` in the W06 walker would strip the VT and recover
+        // `+aes128-cbc`, a false positive on a line sshd rejects.
+        assert!(
+            run("Ciphers +aes128-cbc\u{0b}\n").is_empty(),
+            "trailing vertical-tab after `+` (sshd rc255) must not fire W06"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_then_equals_does_not_fire_w06() {
+        // #388 regression guard (W06 path): `"Ciphers"=+aes128-cbc` -- the `=` after a
+        // quoted keyword is not a separator, so the value is `=+aes128-cbc`, which sshd
+        // rejects (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad SSH2 cipher spec
+        // '=+aes128-cbc'"). W06 must not fire.
+        assert!(
+            run("\"Ciphers\"=+aes128-cbc\n").is_empty(),
+            "quoted keyword + `=` + operator (sshd rc255) must not fire W06"
+        );
+        // Control: quoted keyword + SPACE + operator DOES load (real sshd -T:
+        // `"Ciphers" +aes128-cbc` -> rc 0), so W06 still fires.
+        assert_eq!(
+            run("\"Ciphers\" +aes128-cbc\n").len(),
+            1,
+            "quoted keyword + space + `+`-operator loads => W06 fires"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1173,12 +1223,200 @@ mod w03_tests {
         // tokenizer emit a SINGLE arg with a LITERAL leading `"` (`"aes128-cbc`).
         // Real sshd REJECTS the line ("Bad SSH2 cipher spec '\"aes128-cbc'", OpenSSH
         // 10.2p1), so the config never loads and must not be linted. algo_list_value's
-        // odd-`"`-count guard (a lone `"` means a malformed quoted spec) returns None,
-        // so no W03 fires. Pins that guard's `count % 2 != 0`: a `% -> /` mutant would
-        // instead strip the `"`, yield `aes128-cbc`, and fire a false positive.
+        // literal-`"` guard (Step 3) returns None for any value containing a `"`, so no
+        // W03 fires. The even-count sibling (`\"aes128-cbc\",aes256-ctr`) and the
+        // guard mutant are pinned by `literal_quoted_cipher_does_not_fire_w03`.
         assert!(
             run("Ciphers \\\"aes128-cbc\n").is_empty(),
             "backslash-escaped-quote head (sshd rc255 Bad cipher spec) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn quoted_value_then_comma_run_does_not_fire_w03() {
+        // #376: a quoted value, whitespace, then a comma-prefixed run
+        // (`Ciphers "aes128-cbc" ,aes256-ctr`) tokenizes to TWO args
+        // `["aes128-cbc", ",aes256-ctr"]` (the tokenizer strips the quotes from the
+        // first arg; the space ends it before the comma-run). Real sshd REJECTS the
+        // line (rc 255 "keyword Ciphers extra arguments at end of line", OpenSSH
+        // 10.2p1), so the config never loads and must not be linted. algo_list_value's
+        // multi-arg arm returns None. Pins the fix for the pre-#377 comma-continuation
+        // concat arm, which glued the two args and fired a false W03 on the weak head.
+        assert!(
+            run("Ciphers \"aes128-cbc\" ,aes256-ctr\n").is_empty(),
+            "quoted value + space + comma-run (sshd rc255) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_hides_weak_cipher_still_fires_w03() {
+        // #388 (security false negative). sshd's keyword tokenizer (strdelim) strips
+        // a BALANCED double-quote span from the keyword, so the directive is
+        // recognized and LOADED. Real sshd -T (OpenSSH 10.2p1): `"Ciphers" aes128-cbc`
+        // -> rc 0, `ciphers aes128-cbc` (the weak CBC cipher is applied). Before the
+        // fix `read_keyword` kept the quotes, the keyword classified as unknown
+        // (sshd-E01), and W03 never fired -- the weak cipher was invisible to the
+        // operator. After the fix the keyword resolves to `Ciphers` and W03 fires.
+        let diags = run("\"Ciphers\" aes128-cbc\n");
+        assert_eq!(
+            diags.len(),
+            1,
+            "fully-quoted keyword must still surface the loaded weak cipher"
+        );
+        assert_eq!(diags[0].code, "sshd-W03");
+
+        // A mid-token balanced span also resolves and loads (real sshd -T: rc 0,
+        // `ciphers aes128-cbc`): `Cip"hers"` -> keyword `Ciphers`.
+        assert_eq!(
+            run("Cip\"hers\" aes128-cbc\n").len(),
+            1,
+            "mid-token balanced quote span resolves to Ciphers and fires W03"
+        );
+
+        // The GLUED form (no space after the close quote) also loads (real sshd -T:
+        // `"Ciphers"aes128-cbc` -> rc 0, `ciphers aes128-cbc`): read_keyword ends the
+        // token at the close quote and the arg loop reads `aes128-cbc` directly. This
+        // is a DISTINCT tokenizer path from the spaced form, pinning the same
+        // security-critical loading case.
+        assert_eq!(
+            run("\"Ciphers\"aes128-cbc\n").len(),
+            1,
+            "glued quoted keyword (no space) resolves to Ciphers and fires W03"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_negatives_do_not_fire_w03() {
+        // Grounded against real sshd -T (OpenSSH 10.2p1). Each line is one sshd
+        // REJECTS (rc 255) or SILENTLY IGNORES, so no weak cipher loads and W03 must
+        // stay silent -- matching sshd's keyword-quote (strdelim) semantics exactly.
+
+        // Single quotes are NOT stripped by strdelim: `'Ciphers'` is an unknown
+        // keyword -> rc 255 "Bad configuration option: 'Ciphers'" (E01's province).
+        assert!(
+            run("'Ciphers' aes128-cbc\n").is_empty(),
+            "single-quoted keyword (sshd rc255) must not fire W03"
+        );
+        // strdelim ENDS the keyword token at the closing quote: `Ci"ph"ers` -> keyword
+        // `Ciph` (unknown) + a separate token `ers` -> rc 255 "Bad configuration
+        // option: Ciph".
+        assert!(
+            run("Ci\"ph\"ers aes128-cbc\n").is_empty(),
+            "Ci\"ph\"ers resolves to keyword Ciph (sshd rc255) -- no W03"
+        );
+        // Trailing junk after the close quote becomes a separate token: `"Ciphers"x`
+        // -> keyword `Ciphers` + arg `x` + `aes128-cbc` = multi-arg, which sshd
+        // rejects (rc 255 "Bad SSH2 cipher spec 'x'"); algo_list_value returns None.
+        assert!(
+            run("\"Ciphers\"x aes128-cbc\n").is_empty(),
+            "junk after close quote makes a multi-arg value (sshd rc255) -- no W03"
+        );
+        // An UNTERMINATED keyword quote makes sshd silently IGNORE the whole line
+        // (rc 0, defaults applied), so no weak cipher is loaded.
+        assert!(
+            run("\"Ciphers aes128-cbc\n").is_empty(),
+            "unterminated keyword quote (sshd ignores the line) -- no W03"
+        );
+    }
+
+    #[test]
+    fn literal_quoted_cipher_does_not_fire_w03() {
+        // #389 Case A (even-count literal quotes). A backslash-escaped quote makes
+        // the tokenizer keep a LITERAL `"` in the value; sshd rejects any cipher spec
+        // containing a `"` (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad SSH2 cipher
+        // spec"), so the line never loads and must not be linted. The old odd-`"`-count
+        // guard only caught an ODD number of quotes; an even count (2) slipped through,
+        // step-3b stripped both, and W03 fired -- a false positive.
+        assert!(
+            run("Ciphers \\\"aes128-cbc\\\"\n").is_empty(),
+            "even-count literal quotes (sshd rc255) must not fire W03"
+        );
+        // The sharpest variant: a genuinely-weak token trails the quoted head, so
+        // stripping the quotes would fire on `aes256-cbc`. sshd rejects the whole
+        // spec (rc 255), so W03 must stay silent.
+        assert!(
+            run("Ciphers \\\"aes128-cbc\\\",aes256-cbc\n").is_empty(),
+            "literal quotes + a weak comma-tail (sshd rc255) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn non_ascii_whitespace_in_value_does_not_fire_w03() {
+        // #389 Case B. sshd's separator class is ASCII whitespace only; a vertical-tab
+        // (U+000B) or non-breaking space (U+00A0) is kept literal in the token and
+        // makes the cipher spec invalid (real sshd -T, OpenSSH 10.2p1: rc 255 "Bad
+        // SSH2 cipher spec"). The lint layer must not re-strip it: a Unicode `str::trim`
+        // treats VT/NBSP as whitespace and would recover `aes128-cbc`, a false positive
+        // on a line sshd rejects.
+        assert!(
+            run("Ciphers aes128-cbc\u{0b}\n").is_empty(),
+            "trailing vertical-tab (sshd rc255) must not fire W03"
+        );
+        assert!(
+            run("Ciphers aes128-cbc\u{a0}\n").is_empty(),
+            "trailing non-breaking-space (sshd rc255) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn ascii_whitespace_trailing_still_fires_w03() {
+        // #389 Case B positive control: FF (U+000C) and TAB are ASCII whitespace, which
+        // sshd DOES treat as separators, so the line LOADS the weak cipher (real
+        // sshd -T: rc 0, `ciphers aes128-cbc`). The tokenizer splits on them, leaving a
+        // clean `aes128-cbc` token, so W03 must still fire. Guards against an over-broad
+        // trim fix that also drops ASCII whitespace.
+        assert_eq!(
+            run("Ciphers aes128-cbc\u{0c}\n").len(),
+            1,
+            "trailing form-feed is an ASCII separator (sshd rc0) -- W03 still fires"
+        );
+        assert_eq!(
+            run("Ciphers aes128-cbc\t\n").len(),
+            1,
+            "trailing tab is an ASCII separator (sshd rc0) -- W03 still fires"
+        );
+    }
+
+    #[test]
+    fn quoted_keyword_then_equals_does_not_fire_w03() {
+        // #388 regression guard. sshd's strdelim consumes `=` as the keyword/value
+        // separator ONLY on the UNQUOTED path. After a keyword that ended at a closing
+        // quote, a following `=` is NOT a separator -- it becomes the first char of the
+        // value, an invalid spec sshd rejects (real sshd -T, OpenSSH 10.2p1:
+        // `"Ciphers"=aes128-cbc` -> rc 255 "Bad SSH2 cipher spec '=aes128-cbc'";
+        // `"MACs"=hmac-md5` -> rc 255 "Bad SSH2 mac spec '=hmac-md5'"). The config never
+        // loads, so W03 must not fire on any of these.
+        for line in [
+            "\"Ciphers\"=aes128-cbc\n",
+            "\"Ciphers\" = aes128-cbc\n",
+            "\"Ciphers\"= aes128-cbc\n",
+            "Cip\"hers\"=aes128-cbc\n",
+            "\"MACs\"=hmac-md5\n",
+            "\"KexAlgorithms\"=diffie-hellman-group1-sha1\n",
+            "\"HostKeyAlgorithms\"=ssh-rsa\n",
+        ] {
+            assert!(
+                run(line).is_empty(),
+                "quoted keyword + `=` (sshd rc255) must not fire W03: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unquoted_keyword_equals_separator_still_fires_w03() {
+        // Control for the above: an UNQUOTED keyword with a `=` separator DOES load
+        // (real sshd -T: `Ciphers=aes128-cbc` and `Ciphers = aes128-cbc` -> rc 0,
+        // `ciphers aes128-cbc`), so W03 must still fire. Guards against an over-broad
+        // fix that drops the `=` separator entirely.
+        assert_eq!(
+            run("Ciphers=aes128-cbc\n").len(),
+            1,
+            "unquoted `=` separator loads => W03 fires"
+        );
+        assert_eq!(
+            run("Ciphers = aes128-cbc\n").len(),
+            1,
+            "unquoted spaced `=` separator loads => W03 fires"
         );
     }
 
