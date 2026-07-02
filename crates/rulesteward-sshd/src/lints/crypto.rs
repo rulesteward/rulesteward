@@ -128,8 +128,9 @@ enum Weak03Kind {
 }
 
 /// The effective algorithm-list value for a directive's `args`, with any inline
-/// `#` comment stripped and embedded double-quotes removed, or `None` if the
-/// value is not a well-formed sshd-loading form.
+/// `#` comment stripped, or `None` if the value is not a well-formed sshd-loading
+/// form (a genuine multi-arg value, or a spec containing an embedded `#` or a
+/// literal `"`, all of which sshd rejects rc 255).
 ///
 /// # Inline `#` comment stripping
 ///
@@ -143,29 +144,32 @@ enum Weak03Kind {
 /// malformed cipher-spec sshd rejects (rc 255), so the value is NOT loaded and
 /// the helper yields `None`.
 ///
-/// # Embedded double-quote handling (issue #327, option b -- localized fix)
+/// # Double-quote handling (post-#374 tokenizer)
 ///
-/// sshd strips double-quotes anywhere in a token before re-parsing the comma
-/// list (verified OpenSSH 9.9p1/10.2p1 `sshd -T`). Two quote-induced arg
-/// shapes reach this helper:
+/// The argument tokenizer (`parser::tokenize_line`, a faithful `argv_split`) strips
+/// the quote chars from a genuine quoted span BEFORE this helper runs (verified
+/// OpenSSH 9.9p1/10.2p1 `sshd -T`): `Ciphers "aes128-cbc"` arrives as the arg
+/// `aes128-cbc`, `Ciphers +"aes128-cbc"` as `+aes128-cbc`, and the quote-glued
+/// `Ciphers "aes128-cbc",aes256-ctr` as the SINGLE arg `aes128-cbc,aes256-ctr` (the
+/// tokenizer continues past the close quote and glues the trailing run). A
+/// well-formed quoted value therefore reaches this helper with no `"` at all, takes
+/// the `[one]` arm, and is linted as its comma list.
 ///
-/// - **Embedded quotes in a single arg**: `Ciphers +"aes128-cbc"` -- the
-///   leading `+` causes `read_arg` to read a bareword, yielding `+"aes128-cbc"`
-///   (literal `"` chars) as a single arg. After stripping `"`, the effective
-///   value is `+aes128-cbc`, which W06 then processes normally.
+/// A literal `"` only survives into the value when the file used a BACKSLASH-ESCAPED
+/// quote (`\"`), which the tokenizer keeps literal and which sshd rejects (rc 255
+/// "Bad SSH2 cipher spec"). Step 3 suppresses any such value (`None`) rather than
+/// lint an unloadable line (#389 Case A).
 ///
-/// - **Quote-glued single arg**: `Ciphers "aes128-cbc",aes256-ctr` -- `read_arg`
-///   strips the outer quotes and glues the trailing `,aes256-ctr` onto the same
-///   token, so the parser yields a SINGLE arg `aes128-cbc,aes256-ctr` (#348),
-///   which sshd loads as that comma list; it takes the `[one]` arm. A SPACE
-///   before the comma (`aes128-cbc ,aes256-ctr`) instead splits into two args,
-///   but sshd REJECTS that line (rc 255, "extra arguments at end of line"), so
-///   the helper suppresses it (`None`) rather than lint an unloadable config.
+/// Multi-arg values are rejected: a SPACE before a comma (`aes128-cbc ,aes256-ctr`)
+/// or after an operator (`+ aes128-cbc`) splits into two args, which sshd REJECTS
+/// (rc 255 "extra arguments at end of line"), so the helper yields `None`. This also
+/// covers a quoted value followed by a comma-run (`"aes128-cbc" ,aes256-ctr`), which
+/// tokenizes to two args `["aes128-cbc", ",aes256-ctr"]` and is suppressed (#376).
 ///
-/// Counter-check: `Ciphers "aes128-cbc # x"` -- the parser strips outer quotes,
-/// yielding the single arg `aes128-cbc # x` (which contains `#`). The `#` check
-/// below suppresses it correctly, matching sshd's rejection (rc 255, verified
-/// OpenSSH 10.2p1). The `,`-prefix join does not affect this case.
+/// Counter-check: `Ciphers "aes128-cbc # x"` -- the tokenizer strips the outer
+/// quotes and keeps the inner space, yielding the single arg `aes128-cbc # x` (which
+/// contains `#`). The `#` check (Step 4) suppresses it, matching sshd's rejection
+/// (rc 255, verified OpenSSH 10.2p1).
 fn algo_list_value(args: &[String]) -> Option<String> {
     // Step 1: strip trailing inline `#` comment args.
     let effective = match args.iter().position(|a| a.starts_with('#')) {
@@ -1200,12 +1204,28 @@ mod w03_tests {
         // tokenizer emit a SINGLE arg with a LITERAL leading `"` (`"aes128-cbc`).
         // Real sshd REJECTS the line ("Bad SSH2 cipher spec '\"aes128-cbc'", OpenSSH
         // 10.2p1), so the config never loads and must not be linted. algo_list_value's
-        // odd-`"`-count guard (a lone `"` means a malformed quoted spec) returns None,
-        // so no W03 fires. Pins that guard's `count % 2 != 0`: a `% -> /` mutant would
-        // instead strip the `"`, yield `aes128-cbc`, and fire a false positive.
+        // literal-`"` guard (Step 3) returns None for any value containing a `"`, so no
+        // W03 fires. The even-count sibling (`\"aes128-cbc\",aes256-ctr`) and the
+        // guard mutant are pinned by `literal_quoted_cipher_does_not_fire_w03`.
         assert!(
             run("Ciphers \\\"aes128-cbc\n").is_empty(),
             "backslash-escaped-quote head (sshd rc255 Bad cipher spec) must not fire W03"
+        );
+    }
+
+    #[test]
+    fn quoted_value_then_comma_run_does_not_fire_w03() {
+        // #376: a quoted value, whitespace, then a comma-prefixed run
+        // (`Ciphers "aes128-cbc" ,aes256-ctr`) tokenizes to TWO args
+        // `["aes128-cbc", ",aes256-ctr"]` (the tokenizer strips the quotes from the
+        // first arg; the space ends it before the comma-run). Real sshd REJECTS the
+        // line (rc 255 "keyword Ciphers extra arguments at end of line", OpenSSH
+        // 10.2p1), so the config never loads and must not be linted. algo_list_value's
+        // multi-arg arm returns None. Pins the fix for the pre-#377 comma-continuation
+        // concat arm, which glued the two args and fired a false W03 on the weak head.
+        assert!(
+            run("Ciphers \"aes128-cbc\" ,aes256-ctr\n").is_empty(),
+            "quoted value + space + comma-run (sshd rc255) must not fire W03"
         );
     }
 
