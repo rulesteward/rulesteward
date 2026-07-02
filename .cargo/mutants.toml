@@ -411,33 +411,27 @@ exclude_re = [
     # the wave protocol, each wave removes its fn from this alternation when it
     # implements the pass; Wave C is the last, so no sshd empty-return exclusion
     # remains.
-    # sshd_config tokenizer (#149): three OOM mutants that surfaced as the nightly
-    # mutants runner-kills in runs #84/#85 (shards 12/17/18). `tokenize_line` walks a
-    # line with `while chars.peek().is_some() { tokens.push(read_arg(...)?);
-    # skip_whitespace(...); }`, delegating cursor advancement to the two helpers.
-    # cargo-mutants' body/return replacements make a helper STOP advancing the shared
-    # `chars` cursor:
-    #   * `skip_whitespace -> ()` and `read_arg -> Ok(String::new())` /
-    #     `Ok("xyzzy")` each leave the cursor pinned on a non-whitespace char, so the
-    #     outer `while` never reaches `None` and pushes an empty/constant token
-    #     forever -> unbounded Vec growth -> the test allocates until the 16GB CI
-    #     runner is OOM-killed ("memory allocation of N bytes failed" in the per-mutant
-    #     log; under a local memory cap it instead 180s-TIMEOUTs / SIGABRTs).
-    # These are structurally UNCATCHABLE: the only input that exposes the missing
-    # advancement is the same input that exhausts memory, so no assertion can run.
-    # Same uncatchable-by-construction class as the parse_audit_event TIMEOUT and the
-    # selinux Drop (PR #170) exclusions above. The sibling `read_arg` operator mutants
-    # (`== -> !=`) DO terminate (the inner `chars.next()` still runs) and ARE caught,
-    # so they stay gated -- only the non-advancing replacements are excluded.
-    # NB: `parse_criteria` had the same OOM shape via its manual `while i < len; i += 1`
-    # counter (`i *= 1` / `i -= 1`); that one was ELIMINATED by refactoring it to a
-    # slice iterator (no counter to stall), which is why no parse_criteria pattern
-    # appears here -- a real elimination beats an exclusion where the refactor is
-    # behavior-preserving; the tokenizer rewrite was judged too behavior-risky for a
-    # security-relevant parser, so these three are documented exclusions instead.
-    'replace skip_whitespace with \(\)',
-    'replace read_arg -> Result<String, String> with Ok\(String::new\(\)\)',
-    'replace read_arg -> Result<String, String> with Ok\("xyzzy"\.into\(\)\)',
+    # sshd_config tokenizer (#149/#374/#387): the argument tokenizer was historically
+    # `while chars.peek().is_some() { read_arg(...)?; skip_whitespace(...); }`, which
+    # delegated cursor advancement to helpers. A `cargo mutants` body/return
+    # replacement that made a helper STOP advancing (`skip_whitespace -> ()`,
+    # `read_arg -> Ok(String::new())` / `Ok("xyzzy")`) pinned the shared `chars`
+    # cursor, so the outer `while` spun and pushed tokens forever -> unbounded Vec ->
+    # OOM runner-kill (nightly runs #84/#85 shards 12/17/18, then again post-#377 as
+    # #387). Those three OOM mutants USED to be excluded here.
+    #
+    # In #374/#387 the arg loop was rewritten as a single
+    # `while let Some(c) = chars.next()` consuming state machine (faithful `argv_split`
+    # single+double quoting / escapes). `chars.next()` is in the loop HEADER, so every
+    # iteration advances by construction: no body/return mutant can create an infinite
+    # loop, ELIMINATING the OOM class rather than excluding it (the parse_criteria
+    # precedent). Consequently all three exclusions were REMOVED:
+    #   * `read_arg` was deleted -> its two mutants no longer exist.
+    #   * `skip_whitespace` now runs only at the keyword/`=` boundary (never in a
+    #     re-entrant loop), where `skip_whitespace -> ()` is CAUGHT by
+    #     `tokenize_line_consumes_equals_keyword_separator` (`MaxAuthTries = 4` no
+    #     longer consumes the spaced `=`). A real elimination + a real kill beat
+    #     exclusions.
     # sudoers `short_hostname` (#334): reads `/proc/sys/kernel/hostname` (or the
     # HOSTNAME env) for the `@include ... %h` escape. Its return is the live host's
     # name, which varies by machine, so no unit test can pin it; a mutant returning
