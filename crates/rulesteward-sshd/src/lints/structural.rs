@@ -3257,4 +3257,46 @@ mod w07_tests {
             "identical values across co-satisfiable blocks are redundant, not a shadow"
         );
     }
+
+    #[test]
+    fn negated_cidr_carveout_makes_blocks_disjoint_is_clean() {
+        // `ssh_config(5)` PATTERNS: a negated entry carves its range OUT of the
+        // match set. `192.168.0.0/16,!192.168.5.0/24` matches all of 192.168/16
+        // EXCEPT 192.168.5.0/24, so it is DISJOINT from a block matching exactly
+        // 192.168.5.0/24 - no source address satisfies both, so the second block is
+        // never shadowed even though the values differ (no vs yes). An impl that
+        // drops the negated entry models the wider /16 and false-fires here; the
+        // simplest correct fix is to treat any negated CIDR/port entry as
+        // conservatively non-overlapping.
+        assert!(
+            w07_diags(
+                "Match Address 192.168.0.0/16,!192.168.5.0/24\n    X11Forwarding no\n\
+                 Match Address 192.168.5.0/24\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a negated CIDR carve-out makes the two Address blocks disjoint"
+        );
+    }
+
+    #[test]
+    fn later_instance_compares_against_the_winning_value_not_any_earlier() {
+        // sshd applies ONLY the first satisfied block's value, so the shadow hazard
+        // is "a later instance whose value DIFFERS from the WINNER (block 0)". With
+        // three co-satisfiable `User alice` blocks yes / no / yes: the winner is
+        // line 2 (yes); line 4 (no) differs from the winner -> a real shadow; line 6
+        // (yes) EQUALS the winner -> redundant, NOT a differing shadow. So exactly
+        // ONE W07, on line 4. An impl that compares a later instance against ANY
+        // earlier value (not the winner) wrongly fires on line 6 too, since line 6's
+        // `yes` differs from line 4's `no`.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding yes\n\
+             Match User alice\n    X11Forwarding no\n\
+             Match User alice\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "only the winner-differing instance is a shadow");
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (no) differs from the winning line 2 (yes); line 6 (yes) equals it"
+        );
+    }
 }
