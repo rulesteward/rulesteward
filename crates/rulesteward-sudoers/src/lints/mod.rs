@@ -59,6 +59,7 @@ pub fn lint(files: &[SudoersFile], ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags.extend(tags::w02(files, ctx));
     diags.extend(aliases::w03(files, ctx));
     diags.extend(stig::w04(files, ctx));
+    diags.extend(tags::w05(files, ctx));
     diags
 }
 
@@ -339,6 +340,61 @@ mod tests {
             rulesteward_core::Severity::Fatal,
             "sudo-F02 must be Fatal; got {:?}",
             f02[0].severity
+        );
+    }
+
+    /// Dispatcher wiring guard for sudo-W05 (#370, the STIG-strict broad any-NOPASSWD
+    /// check): the public `lint()` must emit exactly one `sudo-W05` (Warning) for a
+    /// NOPASSWD-on-a-specific-command user-spec.
+    ///
+    /// RED until the implementer BOTH fills the `tags::w05` body AND wires
+    /// `diags.extend(tags::w05(files, ctx))` into `lint()`. A correct `w05` body that
+    /// is never called via `lint()` would make the per-module `tags::w05_tests` GREEN
+    /// but leave this test RED (the "wiring" guard, mirroring the F02 case).
+    ///
+    /// Fixture: `root ALL=(ALL:ALL) ALL` is a clean anchor line; `alice ALL=(root)
+    /// NOPASSWD: /usr/bin/systemctl` is the specific-command NOPASSWD hazard. Both
+    /// verified `visudo -c -f` rc 0 (sudo 1.9.17p2). Other passes (e.g. W04's merged
+    /// absence check) also fire on this minimal file, so the assertion filters to
+    /// `sudo-W05` specifically rather than the total count.
+    #[test]
+    fn lint_dispatcher_routes_w05_for_nopasswd_on_specific_command() {
+        let files =
+            parse_one("root ALL=(ALL:ALL) ALL\nalice ALL=(root) NOPASSWD: /usr/bin/systemctl\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        let w05: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W05").collect();
+        assert_eq!(
+            w05.len(),
+            1,
+            "the dispatcher must route exactly one sudo-W05 (Warning) via lint(); got \
+             {diags:?} -- RED until w05 is both filled AND wired into lint() with \
+             diags.extend(tags::w05(files, ctx))"
+        );
+        assert_eq!(
+            w05[0].severity,
+            rulesteward_core::Severity::Warning,
+            "sudo-W05 must be Warning; got {:?}",
+            w05[0].severity
+        );
+    }
+
+    /// End-to-end dedup guard (#370): a NOPASSWD-on-ALL user-spec routes to `sudo-W01`
+    /// through `lint()` and must NOT also raise `sudo-W05`. Complements the per-module
+    /// dedup test by pinning the boundary at the dispatcher level (both passes run).
+    /// Fixture `alice ALL = NOPASSWD: ALL` verified `visudo -c -f` rc 0 (sudo 1.9.17p2).
+    #[test]
+    fn lint_dispatcher_nopasswd_on_all_is_w01_only_not_w05() {
+        let files = parse_one("alice ALL = NOPASSWD: ALL\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "sudo-W01").count(),
+            1,
+            "the NOPASSWD-on-ALL line raises exactly one sudo-W01; got {diags:?}"
+        );
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "sudo-W05").count(),
+            0,
+            "the NOPASSWD-on-ALL line must NOT also raise sudo-W05 (dedup); got {diags:?}"
         );
     }
 }

@@ -64,6 +64,11 @@ pub const SUDO_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "Defaults setting weaker than, or required hardening absent from, the sudo security baseline",
     },
+    LintCode {
+        code: "sudo-W05",
+        severity: Severity::Warning,
+        description: "NOPASSWD grants passwordless sudo on a specific (non-ALL) command; STIG requires removing NOPASSWD entirely",
+    },
 ];
 
 #[cfg(test)]
@@ -76,6 +81,7 @@ mod tests {
     /// list ONLY when the taxonomy itself changes.
     const FROZEN_CODES: &[&str] = &[
         "sudo-E01", "sudo-F01", "sudo-F02", "sudo-W01", "sudo-W02", "sudo-W03", "sudo-W04",
+        "sudo-W05",
     ];
 
     #[test]
