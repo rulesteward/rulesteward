@@ -158,11 +158,12 @@ pub fn parse_config_str_located(
 /// `MaxAuthTries = 4` both yield `["MaxAuthTries", "4"]`), matching OpenSSH's
 /// `strdelim` with `split_equals`. A `=` INSIDE an argument value is literal
 /// (`SetEnv FOO=bar` yields `["SetEnv", "FOO=bar"]`), since the delimiter is only
-/// consumed at the keyword/value boundary. A `"` is only special at a token
-/// boundary (opens a quoted token to the closing `"`). A `#` glued inside a
-/// bareword is literal (`Banner x#y` => `["Banner", "x#y"]`); a whitespace-
-/// delimited `#` that starts its own token is kept literally (inline-comment
-/// stripping is deferred to the lint layer via `algo_list_value`).
+/// consumed at the keyword/value boundary. Argument values honor OpenSSH
+/// `argv_split` quoting (single- and double-quote spans, stripped, which may
+/// start mid-token) and backslash escapes; see the argument loop below. A `#`
+/// glued inside a bareword is literal (`Banner x#y` => `["Banner", "x#y"]`); a
+/// whitespace-delimited `#` that starts its own token is kept literally
+/// (inline-comment stripping is deferred to the lint layer via `algo_list_value`).
 ///
 /// # Errors
 /// Returns the error message for an unterminated quoted string.
@@ -185,17 +186,80 @@ fn tokenize_line(line: &str) -> Result<Vec<String>, String> {
         skip_whitespace(&mut chars);
     }
 
-    // Remaining arguments split on whitespace / quotes only (`=` is literal).
-    while chars.peek().is_some() {
-        tokens.push(read_arg(&mut chars)?);
-        skip_whitespace(&mut chars);
+    // Remaining arguments: split on unquoted ASCII whitespace (sshd's separator
+    // class is ASCII ` \t\r\n\x0c` only, NOT the Unicode `char::is_whitespace()`
+    // superset -- a VT/NBSP stays in the token), honoring OpenSSH `argv_split`
+    // quoting. This is a single `while let Some(c) = chars.next()`
+    // state machine: every iteration consumes at least one character via the loop
+    // header, so no body/return mutation can leave the shared cursor un-advanced
+    // and spin the loop forever (issue #387 -- the prior
+    // `while { read_arg(); skip_whitespace() }` delegation could stall into an
+    // unbounded token push if a helper stopped advancing; this structurally cannot).
+    //
+    // Quoting/escape rules, grounded against real `sshd -T` (OpenSSH 10.2p1):
+    //   * `"` and `'` each open/close a span; the quote char is stripped, and a
+    //     span may start mid-token (`x"a b"y` -> one arg `xa by`). The OTHER quote
+    //     char inside a span is literal (`"a'b"` -> `a'b`, `'a"b'` -> `a"b`).
+    //   * `\` escapes `"`, `'`, and `\` in any context, plus unquoted ASCII
+    //     whitespace (`a\ b` -> one arg `a b`); `\` before anything else (or EOL) is kept
+    //     literally (`a\b` -> `a\b`). Inside a span, `\ ` keeps the backslash
+    //     (`'a\ b'` -> `a\ b`) since whitespace is not escapable there.
+    //   * an unterminated span is an error (`'abc` -> Err), matching sshd rc 255.
+    // `=` and `#` are ordinary characters here; inline-comment stripping is a
+    // lint-layer concern (`algo_list_value`).
+    let mut cur = String::new();
+    let mut in_token = false;
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        if quote.is_none() && c.is_ascii_whitespace() {
+            if in_token {
+                tokens.push(std::mem::take(&mut cur));
+                in_token = false;
+            }
+            continue;
+        }
+        in_token = true;
+        match c {
+            '\\' => match chars.next() {
+                // Trailing backslash (EOL): kept literally.
+                None => cur.push('\\'),
+                Some(next) => {
+                    let escaped = next == '"'
+                        || next == '\''
+                        || next == '\\'
+                        || (quote.is_none() && next.is_ascii_whitespace());
+                    if escaped {
+                        cur.push(next);
+                    } else {
+                        // Not an escape: keep the backslash and the following
+                        // char literally (the char is never a quote toggle or an
+                        // unquoted-whitespace break here -- those are `escaped`).
+                        cur.push('\\');
+                        cur.push(next);
+                    }
+                }
+            },
+            '"' | '\'' => match quote {
+                None => quote = Some(c),
+                Some(q) if q == c => quote = None,
+                Some(_) => cur.push(c),
+            },
+            _ => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quoted string".to_string());
+    }
+    if in_token {
+        tokens.push(cur);
     }
     Ok(tokens)
 }
 
-/// Advance past any run of whitespace.
+/// Advance past any run of ASCII whitespace (sshd's separator class; matches the
+/// argument tokenizer, which uses ASCII whitespace rather than Unicode).
 fn skip_whitespace(chars: &mut Peekable<Chars>) {
-    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+    while chars.peek().is_some_and(char::is_ascii_whitespace) {
         chars.next();
     }
 }
@@ -207,91 +271,13 @@ fn skip_whitespace(chars: &mut Peekable<Chars>) {
 fn read_keyword(chars: &mut Peekable<Chars>) -> String {
     let mut s = String::new();
     while let Some(&c) = chars.peek() {
-        if c.is_whitespace() || c == '=' {
+        if c.is_ascii_whitespace() || c == '=' {
             break;
         }
         s.push(c);
         chars.next();
     }
     s
-}
-
-/// Read one argument token, modelling OpenSSH's real tokenization:
-///
-/// Note: Single-quote quoting, escaped-space, and `\'` are not yet handled (full `argv_split` fidelity is tracked in #374).
-///
-/// Scan the entire whitespace-delimited token tracking an `in_quote` flag.
-/// A `"` toggles the flag (the quote character itself is stripped, not pushed).
-/// Unquoted whitespace ends the token. Characters that appear while `in_quote`
-/// is set -- including whitespace -- are pushed literally. If the scan reaches
-/// EOL while still inside a quoted span, an unterminated-quote error is returned.
-///
-/// This means every `"` inside a single whitespace-delimited token is stripped
-/// and the surrounding runs are concatenated:
-///   - `"aes128-cbc"#x`  -> one arg `aes128-cbc#x`   (glued `#`, sshd rc 255)
-///   - `""aes128-cbc`    -> one arg `aes128-cbc`      (empty quoted prefix)
-///   - `"aes128""-cbc"`  -> one arg `aes128-cbc`      (adjacent quoted runs)
-///   - `"two words"`     -> one arg `two words`        (space literal inside quotes)
-///   - `"aes128-cbc" #x` -> arg `aes128-cbc`, then a separate `#x` token
-///     (the space ends the first token; `#x` is not consumed here)
-///
-/// Backslash escape sequences (grounded against sshd -T OpenSSH 10.2p1):
-///   - `\"` -> literal `"` (backslash consumed; quote does NOT toggle `in_quote`)
-///   - `\\` -> literal `\` (both backslashes consumed, one emitted)
-///   - `\` before any other char -> backslash kept literally (not an escape)
-///   - trailing `\` (at EOL) -> backslash kept literally
-///
-///   These rules hold both inside and outside quoted spans.
-///
-/// A `=` or `#` inside a bareword token is literal; inline-comment stripping
-/// (whitespace-delimited `#` tokens) is handled by lints, not by the tokenizer.
-///
-/// # Errors
-/// Returns an error message for an unterminated quoted string.
-fn read_arg(chars: &mut Peekable<Chars>) -> Result<String, String> {
-    let mut s = String::new();
-    let mut in_quote = false;
-    loop {
-        match chars.peek() {
-            None => {
-                if in_quote {
-                    return Err("unterminated quoted string".to_string());
-                }
-                break;
-            }
-            Some(&c) if c.is_whitespace() && !in_quote => break,
-            Some(&'\\') => {
-                chars.next(); // consume the backslash
-                match chars.peek() {
-                    Some(&'"') => {
-                        // `\"` -> literal `"` in value; does NOT toggle in_quote
-                        s.push('"');
-                        chars.next();
-                    }
-                    Some(&'\\') => {
-                        // `\\` -> literal `\` in value; both backslashes consumed
-                        s.push('\\');
-                        chars.next();
-                    }
-                    _ => {
-                        // `\` before anything else (including EOL): keep the backslash
-                        s.push('\\');
-                        // do NOT advance chars.next() here; the next char will be
-                        // processed on the next iteration
-                    }
-                }
-            }
-            Some(&'"') => {
-                in_quote = !in_quote;
-                chars.next(); // consume the `"`, do not push
-            }
-            Some(&c) => {
-                s.push(c);
-                chars.next();
-            }
-        }
-    }
-    Ok(s)
 }
 
 /// Parse the criteria tokens of a `Match` header into `(keyword, values)` pairs.
@@ -578,11 +564,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // argv_split fidelity gaps (issue #374)
+    // argv_split fidelity (issue #374, implemented)
     //
-    // These tests pin the grounded-correct (sshd-faithful) behavior for three
-    // tokenizer gaps scoped OUT of issue #348 and tracked as follow-up in #374.
-    // All are RED until #374 is implemented, hence #[ignore].
+    // These tests pin the grounded-correct (sshd-faithful) behavior for the
+    // tokenizer gaps scoped OUT of #348 and closed in #374 (single-quote
+    // quoting, escaped-space, `\'`), implemented by the consuming-state-machine
+    // tokenizer in `tokenize_line`. Kept as regression guards.
     //
     // Grounding: real `/usr/sbin/sshd -T` with OpenSSH 10.2p1 (the same binary
     // used for the #348 grounding table).
@@ -595,7 +582,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[ignore = "argv_split fidelity gap, tracked in #374"]
     fn tokenize_line_single_quoted_value_is_one_token() {
         // `Banner 'two words'` -- single quotes delimit a span with a literal space.
         // sshd rc 0, value `two words` (grounding: sshd -T OpenSSH 10.2p1).
@@ -609,7 +595,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "argv_split fidelity gap, tracked in #374"]
     fn tokenize_line_unterminated_single_quote_is_error() {
         // `Banner 'abc` -- unterminated single-quote; sshd rc 255 (error).
         // The correct behavior is to return Err, matching sshd's rejection.
@@ -620,7 +605,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "argv_split fidelity gap, tracked in #374"]
     fn tokenize_line_escaped_space_outside_quotes_is_literal_space() {
         // `Banner a\ b` (backslash then space) -- escaped space outside quotes.
         // sshd rc 0, value `a b` (grounding: sshd -T OpenSSH 10.2p1).
@@ -634,7 +618,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "argv_split fidelity gap, tracked in #374"]
     fn tokenize_line_backslash_single_quote_yields_literal_quote() {
         // `Banner a\'b` (backslash then single-quote) -- escape sequence.
         // sshd rc 0, value `a'b` (grounding: sshd -T OpenSSH 10.2p1).
@@ -645,6 +628,59 @@ mod tests {
             tokenize_line("Banner a\\'b").unwrap(),
             vec!["Banner", "a'b"],
             "backslash-single-quote: produces literal single-quote in value"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_single_quote_inside_double_span_is_literal() {
+        // `Banner "a'b"` -- a single quote inside a double-quoted span is a
+        // literal char, NOT a span toggle; sshd rc 0, value `a'b` (grounding:
+        // sshd -T OpenSSH 10.2p1). Pins that only the MATCHING quote closes a
+        // span (kills the `q == c -> true` close-guard mutant, which would let
+        // the `'` close the `"` span and leave the trailing `"` unterminated).
+        assert_eq!(
+            tokenize_line("Banner \"a'b\"").unwrap(),
+            vec!["Banner", "a'b"],
+            "single quote inside a double-quoted span is literal"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_double_quote_inside_single_span_is_literal() {
+        // `Banner 'a"b'` -- a double quote inside a single-quoted span is a
+        // literal char, NOT a span toggle; sshd rc 0, value `a"b` (grounding:
+        // sshd -T OpenSSH 10.2p1). The mirror of the case above.
+        assert_eq!(
+            tokenize_line("Banner 'a\"b'").unwrap(),
+            vec!["Banner", "a\"b"],
+            "double quote inside a single-quoted span is literal"
+        );
+    }
+
+    #[test]
+    fn tokenize_line_separator_class_is_ascii_whitespace_only() {
+        // sshd's token separators are ASCII whitespace only (space/tab/CR/LF/FF),
+        // NOT the broader Unicode `char::is_whitespace()` set. A trailing
+        // vertical-tab (U+000B) or NBSP (U+00A0) therefore stays IN the token, so
+        // `Ciphers aes128-cbc\u{0b}` is a single glued arg that sshd REJECTS (rc 255,
+        // "Bad SSH2 cipher spec"), not a clean `aes128-cbc`. Using Unicode
+        // `is_whitespace()` would wrongly split on VT/NBSP and over-report a weak
+        // cipher. Grounding: sshd -T OpenSSH 10.2p1 (VT/NBSP -> rc 255; FF/tab -> rc 0).
+        assert_eq!(
+            tokenize_line("Ciphers aes128-cbc\u{0b}").unwrap(),
+            vec!["Ciphers", "aes128-cbc\u{0b}"],
+            "vertical-tab is not an sshd separator; stays in the token"
+        );
+        assert_eq!(
+            tokenize_line("Ciphers aes128-cbc\u{a0}").unwrap(),
+            vec!["Ciphers", "aes128-cbc\u{a0}"],
+            "NBSP is not an sshd separator; stays in the token"
+        );
+        // Form-feed (U+000C) IS ASCII whitespace and DOES separate (sshd rc 0).
+        assert_eq!(
+            tokenize_line("Ciphers\u{0c}aes128-cbc").unwrap(),
+            vec!["Ciphers", "aes128-cbc"],
+            "form-feed is ASCII whitespace and separates tokens"
         );
     }
 }
