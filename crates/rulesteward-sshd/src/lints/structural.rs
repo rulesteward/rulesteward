@@ -1606,14 +1606,18 @@ mod e02_tests {
 
     #[test]
     fn cross_match_block_duplicate_is_not_flagged() {
-        // Deferred to #302: two NON-overlapping Match blocks setting the same
-        // keyword are the normal pattern and are not both-applied to one
-        // connection, so flagging them would be a false positive. Each Match body
-        // is its own first-value-wins scope.
+        // sshd-E02 stays scope-independent BY DESIGN: each Match body is its own
+        // first-value-wins namespace, so E02 never reaches across a Match boundary.
+        // The cross-Match OVERLAP shadow (the same first-value-wins keyword set in
+        // two simultaneously-satisfiable Match blocks) is now sshd-W07's job (#302),
+        // a separate advisory pass. This alice/bob fixture has DISJOINT criteria (no
+        // single connection is both alice and bob), so it is the normal
+        // non-overlapping pattern and stays clean under W07 too -- and E02 leaves it
+        // clean here regardless.
         let src = "Match User alice\n    X11Forwarding yes\nMatch User bob\n    X11Forwarding no\n";
         assert!(
             run(src).is_empty(),
-            "cross-Match-block duplicates are out of scope (#302)"
+            "cross-Match-block duplicates are not an E02 concern (W07 handles the overlapping case)"
         );
     }
 
@@ -2637,5 +2641,240 @@ mod e04_set_guard_tests {
                  target, which would defeat its rhel8-only restriction"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod w07_tests {
+    //! sshd-W07: a first-value-wins keyword set in TWO `Match` blocks whose
+    //! criteria can be simultaneously satisfied by one connection. sshd applies
+    //! only the FIRST satisfied block's value and silently drops the later one, so
+    //! the later (shadowed) instance is a real - if approximate - hardening hazard
+    //! (#302, deferred from #247). Severity Warning: criteria-overlap is a static
+    //! approximation, so the pass is advisory.
+    //!
+    //! # Grounding (`sshd_config(5)`; live rocky9 `OpenSSH_9.9p1` differential 2026-06-20)
+    //! - Under `Match`: "If a keyword appears in multiple Match blocks that are
+    //!   satisfied, only the first instance of the keyword is applied." So two
+    //!   simultaneously-satisfied blocks setting the same first-value-wins keyword
+    //!   to different values -> the later value is silently dropped (the shadow this
+    //!   pass reports; it flags the LATER instance, matching sshd-E02's convention).
+    //! - `Match` criteria: "The criteria ... are used only if all of the criteria on
+    //!   the line are satisfied." A single connection carries ONE user, its groups,
+    //!   one source/local address, and one local port, so it can satisfy two blocks
+    //!   at once whenever their criteria are not provably disjoint.
+    //! - Overlap is decided per criterion by `sshd_config(5)` pattern semantics:
+    //!   comma lists are OR within a criterion; `*`/`?` are wildcards; a leading `!`
+    //!   negates, and a pattern-list matches only if some POSITIVE pattern matches
+    //!   and no negated pattern matches (OpenSSH `match_pattern_list`), so `!bob,*`
+    //!   means "every user except bob"; `Address` accepts CIDR, so a supernet
+    //!   contains a host address. Two blocks are flagged only when their criteria
+    //!   CAN co-satisfy one connection; provably-disjoint criteria (`User alice` vs
+    //!   `User bob`) are the normal, intended pattern and are never flagged - the
+    //!   false positive the issue explicitly guards against.
+    //!
+    //! These tests drive the full dispatcher `lint()` and filter to `sshd-W07`, so
+    //! they pin the observable end-to-end contract regardless of which pass emits
+    //! it. Every fixture uses same-criterion-TYPE overlaps (or structural cases)
+    //! whose overlap/disjointness is decidable from the pattern text alone; the
+    //! separate question of CROSS-type overlap (e.g. `User` vs `Group`, which no
+    //! static linter can prove or disprove) is intentionally NOT pinned here (see
+    //! the lane's open QUESTION for #302).
+
+    use crate::lints::{SshdLintContext, lint};
+    use rulesteward_core::{Diagnostic, Severity};
+    use std::path::Path;
+
+    /// Parse `src`, run every single-file lint pass with the default (target=None)
+    /// context, and keep only the `sshd-W07` diagnostics. Other passes' codes
+    /// (e.g. sshd-W01 required-directive on this minimal fixture) are filtered out,
+    /// so each assertion pins W07 alone.
+    fn w07_diags(src: &str) -> Vec<Diagnostic> {
+        let blocks =
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses");
+        lint(
+            &blocks,
+            Path::new("/etc/ssh/sshd_config"),
+            &SshdLintContext::default(),
+        )
+        .into_iter()
+        .filter(|d| d.code == "sshd-W07")
+        .collect()
+    }
+
+    // ---- POSITIVE: overlapping same-type criteria + a shared first-value-wins keyword ----
+
+    #[test]
+    fn identical_match_criteria_shadow_flags_w07() {
+        // Two blocks with IDENTICAL criteria (`User alice`) are trivially
+        // co-satisfiable, so the same first-value-wins keyword set to two different
+        // values shadows the later line.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding yes\n\
+             Match User alice\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "exactly one cross-Match shadow");
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn identical_group_criteria_shadow_flags_w07() {
+        // Overlap is not User-specific: two identical `Group admins` blocks also
+        // co-satisfy (any connection whose user is in admins), so the pass must
+        // handle every criterion type uniformly, not just `User`.
+        let d = w07_diags(
+            "Match Group admins\n    X11Forwarding yes\n\
+             Match Group admins\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "identical Group criteria co-satisfy -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn same_type_lists_sharing_a_value_flags_w07() {
+        // Comma lists are OR within a criterion. `alice,carol` and `carol,dave`
+        // share `carol`, so a carol connection satisfies both blocks.
+        let d = w07_diags(
+            "Match User alice,carol\n    X11Forwarding yes\n\
+             Match User carol,dave\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "intersecting user lists co-satisfy -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn wildcard_user_overlaps_specific_user_flags_w07() {
+        // `*` matches any user, so `User *` and `User bob` co-satisfy for a bob
+        // connection. A correct impl must expand the wildcard, not compare the
+        // literal `*` against `bob`.
+        let d = w07_diags(
+            "Match User *\n    X11Forwarding yes\n\
+             Match User bob\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "wildcard overlaps the specific user -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn cidr_supernet_contains_host_address_flags_w07() {
+        // `Address` accepts CIDR. 10.1.2.3 is inside 10.0.0.0/8, so a connection
+        // from 10.1.2.3 satisfies both blocks.
+        let d = w07_diags(
+            "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match Address 10.1.2.3\n    X11Forwarding no\n",
+        );
+        assert_eq!(d.len(), 1, "host address inside the supernet -> one W07");
+        assert_eq!(d[0].line, 4);
+    }
+
+    // ---- NEGATIVE: provably-disjoint criteria, or nothing actually shadowed ----
+
+    #[test]
+    fn disjoint_users_do_not_flag_w07() {
+        // The canonical false positive to avoid: no single connection is both
+        // alice and bob, so the two blocks are never both applied. This is the
+        // normal, intended per-user pattern the issue calls out.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match User bob\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint same-type user literals never co-satisfy"
+        );
+    }
+
+    #[test]
+    fn disjoint_user_lists_do_not_flag_w07() {
+        // `alice,carol` and `bob,dave` share no value and use no wildcard, so no
+        // user matches both lists.
+        assert!(
+            w07_diags(
+                "Match User alice,carol\n    X11Forwarding yes\n\
+                 Match User bob,dave\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint user lists never co-satisfy"
+        );
+    }
+
+    #[test]
+    fn disjoint_cidrs_do_not_flag_w07() {
+        // 192.168.0.0/16 neither contains nor intersects 10.0.0.0/8, so no source
+        // address satisfies both blocks.
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match Address 192.168.0.0/16\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint CIDR ranges never co-satisfy"
+        );
+    }
+
+    #[test]
+    fn disjoint_localports_do_not_flag_w07() {
+        // A connection arrives on ONE local port, so `LocalPort 22` and
+        // `LocalPort 2222` are mutually exclusive.
+        assert!(
+            w07_diags(
+                "Match LocalPort 22\n    X11Forwarding yes\n\
+                 Match LocalPort 2222\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint local ports never co-satisfy"
+        );
+    }
+
+    #[test]
+    fn negated_pattern_excluding_the_user_is_clean() {
+        // `!bob,*` matches every user EXCEPT bob (OpenSSH `match_pattern_list`: the
+        // negated `!bob` excludes bob, and the positive `*` admits everyone else).
+        // It is therefore DISJOINT from `User bob`. A naive impl that reads `*` as
+        // "matches everything including bob" would raise a false positive here.
+        assert!(
+            w07_diags(
+                "Match User !bob,*\n    X11Forwarding yes\n\
+                 Match User bob\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a pattern-list that negates the other block's sole user is disjoint"
+        );
+    }
+
+    #[test]
+    fn global_then_single_match_override_is_clean() {
+        // A global directive overridden inside ONE Match block is the intended
+        // mechanism, not a cross-Match shadow: only one Match block sets the
+        // keyword, so there is no second satisfiable Match instance to drop.
+        assert!(
+            w07_diags(
+                "X11Forwarding yes\n\
+                 Match User bob\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "global + a single Match override is the intended pattern, not a shadow"
+        );
+    }
+
+    #[test]
+    fn different_keywords_in_overlapping_blocks_are_clean() {
+        // Even with IDENTICAL (fully overlapping) `User alice` criteria, the two
+        // blocks set DIFFERENT keywords, so neither value is shadowed. W07 must key
+        // on a shared first-value-wins keyword, not merely on two overlapping blocks.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match User alice\n    PasswordAuthentication no\n",
+            )
+            .is_empty(),
+            "no keyword is shared across the two blocks, so nothing is shadowed"
+        );
     }
 }
