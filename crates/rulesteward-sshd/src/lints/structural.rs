@@ -776,31 +776,38 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 }
 
 /// Whether some address satisfies BOTH `Address`/`LocalAddress` CIDR lists. CIDR
-/// blocks are power-of-two aligned, so any two are either disjoint or nested; the
-/// lists overlap iff some positive network from each intersects. Negated and
-/// unparseable entries are ignored (conservative: they never manufacture overlap).
+/// blocks are power-of-two aligned, so any two are either disjoint or nested.
 ///
-/// A negated (`!`) entry carves its range OUT of the match set, which the
-/// positive-only CIDR model cannot represent. Rather than model the wider range and
-/// risk a false positive (`192.168.0.0/16,!192.168.5.0/24` is DISJOINT from
-/// `192.168.5.0/24`), any negated entry in either list makes the type conservatively
-/// non-overlapping - mirroring the name-list decider's `!` handling, FN-leaning.
+/// For each pair of POSITIVE networks (one from each list) that intersect, the
+/// intersection is exactly the MORE SPECIFIC of the two (the longer-prefix net,
+/// since it nests entirely inside the shorter one). That intersection survives -
+/// and the pair overlaps - UNLESS some single negated entry (from either list)
+/// fully COVERS it: a negation `N` covers an intersection `I` iff `N`'s prefix is
+/// `<=` `I`'s (so `N` is a supernet of, or equal to, `I`) and `N` intersects `I`.
+/// A negation with a LONGER prefix than `I` only carves out part of it, leaving
+/// an overlapping remainder, so it does NOT disqualify the pair. This is the
+/// negation-AWARE remainder model (#403): an irrelevant negation (does not
+/// intersect the shared range) or a partial one (covers only part of it) both
+/// leave a real overlap; only a negation that fully covers the intersection makes
+/// the pair disjoint. Unparseable entries are ignored (conservative: they never
+/// manufacture overlap).
 fn cidr_lists_overlap(a: &[String], b: &[String]) -> bool {
-    if has_negated_entry(a) || has_negated_entry(b) {
-        return false;
-    }
-    let a_nets = parse_cidr_list(a);
-    let b_nets = parse_cidr_list(b);
-    a_nets
-        .iter()
-        .any(|a_net| b_nets.iter().any(|b_net| cidr_intersects(*a_net, *b_net)))
-}
-
-/// Whether any entry in the list is negated (`!`-prefixed). A negation carves a
-/// range out of a `match_pattern_list`, which the positive-only CIDR/port models
-/// cannot represent, so their deciders treat any negation as non-overlapping.
-fn has_negated_entry(values: &[String]) -> bool {
-    values.iter().any(|v| v.starts_with('!'))
+    let a_pos = parse_cidr_list(a);
+    let b_pos = parse_cidr_list(b);
+    let negations: Vec<(IpAddr, u8)> = parse_negated_cidr_list(a)
+        .into_iter()
+        .chain(parse_negated_cidr_list(b))
+        .collect();
+    a_pos.iter().any(|&a_net| {
+        b_pos.iter().any(|&b_net| {
+            cidr_intersects(a_net, b_net) && {
+                let intersection = if a_net.1 >= b_net.1 { a_net } else { b_net };
+                !negations
+                    .iter()
+                    .any(|&n| n.1 <= intersection.1 && cidr_intersects(n, intersection))
+            }
+        })
+    })
 }
 
 /// Parse the positive (non-negated) entries of an `Address` list into
@@ -810,6 +817,17 @@ fn parse_cidr_list(values: &[String]) -> Vec<(IpAddr, u8)> {
         .iter()
         .filter(|v| !v.starts_with('!'))
         .filter_map(|v| parse_cidr(v))
+        .collect()
+}
+
+/// Parse the NEGATED (`!`-prefixed) entries of an `Address` list into
+/// `(network, prefix_len)` pairs, dropping any that do not parse. Used by
+/// [`cidr_lists_overlap`] to compute the negation-aware remainder (#403).
+fn parse_negated_cidr_list(values: &[String]) -> Vec<(IpAddr, u8)> {
+    values
+        .iter()
+        .filter_map(|v| v.strip_prefix('!'))
+        .filter_map(parse_cidr)
         .collect()
 }
 
@@ -858,16 +876,21 @@ fn leading_bits_equal(x: u128, y: u128, prefix: u8, width: u8) -> bool {
 }
 
 /// Whether two `LocalPort` lists share a port. A connection arrives on exactly one
-/// local port, so disjoint numeric lists can never co-satisfy. A negated (`!`) entry
-/// carves a port out, which the positive-only model cannot represent, so any
-/// negation in either list makes the type conservatively non-overlapping;
-/// non-numeric entries are ignored (conservative).
+/// local port, so a shared port `p` between the two POSITIVE sets means the lists
+/// co-satisfy on `p` - UNLESS `p` is carved out by a negated (`!`) entry in EITHER
+/// list. This is the negation-AWARE remainder model (#403), the port analogue of
+/// [`cidr_lists_overlap`]: a negation that names an irrelevant port (not in the
+/// shared set) leaves the overlap untouched, and only a negation naming the
+/// shared port itself disqualifies it. Non-numeric entries are ignored
+/// (conservative).
 fn port_lists_overlap(a: &[String], b: &[String]) -> bool {
-    if has_negated_entry(a) || has_negated_entry(b) {
-        return false;
-    }
-    let b_ports = parse_port_list(b);
-    parse_port_list(a).iter().any(|port| b_ports.contains(port))
+    let a_pos = parse_port_list(a);
+    let b_pos = parse_port_list(b);
+    let a_neg = parse_negated_port_list(a);
+    let b_neg = parse_negated_port_list(b);
+    a_pos
+        .iter()
+        .any(|port| b_pos.contains(port) && !a_neg.contains(port) && !b_neg.contains(port))
 }
 
 /// Parse the positive (non-negated) numeric entries of a `LocalPort` list.
@@ -875,6 +898,16 @@ fn parse_port_list(values: &[String]) -> Vec<u32> {
     values
         .iter()
         .filter(|v| !v.starts_with('!'))
+        .filter_map(|v| v.parse::<u32>().ok())
+        .collect()
+}
+
+/// Parse the NEGATED (`!`-prefixed) numeric entries of a `LocalPort` list. Used
+/// by [`port_lists_overlap`] to compute the negation-aware remainder (#403).
+fn parse_negated_port_list(values: &[String]) -> Vec<u32> {
+    values
+        .iter()
+        .filter_map(|v| v.strip_prefix('!'))
         .filter_map(|v| v.parse::<u32>().ok())
         .collect()
 }
