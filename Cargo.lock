@@ -1056,7 +1056,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rulesteward-auditd"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rulesteward-core",
  "serde",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "serde",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-fapolicyd"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -1122,11 +1122,11 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-license"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "rulesteward-selinux"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rulesteward-core",
  "rulesteward-selinux-sys",
@@ -1140,14 +1140,14 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-selinux-sys"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "rulesteward-sink"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "insta",
  "proptest",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-sshd"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "glob",
  "proptest",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-sudoers"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rulesteward-core",
  "tempfile",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-sysctld"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rulesteward-core",
  "tempfile",
