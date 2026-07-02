@@ -3066,6 +3066,24 @@ mod w07_tests {
     //! it. Every positive fixture uses same-criterion-TYPE overlaps whose
     //! overlap/disjointness is decidable from the pattern text alone.
     //!
+    //! # `Match all` is a shadowER, never a shadowEE (owner-decided scope)
+    //! An unconditional `Match all` is a Match block whose criteria are ALWAYS
+    //! satisfied, so for W07's purposes it participates as the EARLIEST satisfied
+    //! setter of any first-value-wins keyword: a later conditional block that sets
+    //! the same keyword to a different value IS shadowed and flagged. This is
+    //! verified empirically - `sshd -T -C user=bob` on OpenSSH 9.9p1 applies a
+    //! leading `Match all X11Forwarding yes` and drops a later `Match User bob
+    //! X11Forwarding no`. (Contrast a BARE global directive, which a later Match
+    //! OVERRIDES rather than shadows; `global_then_single_match_override_is_clean`
+    //! pins that distinct case.) But the decided v0.3 scope is asymmetric: a
+    //! `Match all` block is never itself flagged as a shadowEE. A `Match all` that
+    //! appears AFTER a conditional stays the effective default for every connection
+    //! the earlier conditional does not cover, and being overridden for the covered
+    //! population is the intended default-plus-exception idiom, not a hazard.
+    //! `match_all_shadows_later_conditional_flags_w07`,
+    //! `match_all_same_value_as_later_conditional_is_clean`, and
+    //! `match_all_after_a_conditional_is_not_a_shadowee` lock this shape.
+    //!
     //! # Cross-type criteria are INTENTIONALLY clean (conservative contract, v0.3)
     //! Two blocks with DIFFERENT criterion types (e.g. `Match User alice` vs
     //! `Match Group admins`) can only co-satisfy if the user is a member of the
@@ -3648,22 +3666,110 @@ mod w07_tests {
         );
     }
 
+    // ---- POSITIVE + NEGATIVE: `Match all` is a shadowER, never a shadowEE (owner-locked) ----
+
     #[test]
-    fn match_all_is_global_context_not_a_shadow_participant() {
-        // An unconditional `Match all` resets to a global-like state (`sshd_config(5)`
-        // treats an empty/absent Match criteria as always-satisfied). It is treated
-        // as global context here, exactly like a bare top-level directive in
-        // `global_then_single_match_override_is_clean` above, not as one of two
-        // co-satisfiable per-connection Match blocks: only ONE conditional Match
-        // block (`User bob`) actually sets X11Forwarding, so there is no second
-        // satisfiable instance to shadow.
+    fn match_all_shadows_later_conditional_flags_w07() {
+        // GROUND TRUTH (`sshd -T -C user=bob` on OpenSSH 9.9p1): `Match all
+        // X11Forwarding yes` followed by `Match User bob X11Forwarding no` yields
+        // `x11forwarding yes` for bob - sshd applies the `Match all` value and DROPS
+        // the later `no`. An unconditional `Match all` is a Match block whose
+        // criteria are ALWAYS satisfied, so it is the FIRST satisfied setter and
+        // shadows any later conditional block that sets the same first-value-wins
+        // keyword to a different value. NOTE `Match all K` is NOT the same as a bare
+        // global `K`: a bare global is OVERRIDDEN by a later Match block, but a
+        // `Match all` block is applied FIRST and wins (contrast
+        // `global_then_single_match_override_is_clean`, which is a bare global). The
+        // later `Match User bob no` on line 4 is the dropped instance.
+        let d = w07_diags(
+            "Match all\n    X11Forwarding yes\n\
+             Match User bob\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "Match all is the earliest always-satisfied setter -> the later block is shadowed"
+        );
+        assert_eq!(d[0].line, 4, "the later (shadowed) conditional is flagged");
+    }
+
+    #[test]
+    fn match_all_same_value_as_later_conditional_is_clean() {
+        // `Match all` shadows a later conditional only when the DROPPED value
+        // differs from the winning one (same first-value-wins rule as everywhere
+        // else). Here both set `yes`, so nothing behaviorally changes for bob - the
+        // later instance is redundant, not a differing shadow.
         assert!(
             w07_diags(
                 "Match all\n    X11Forwarding yes\n\
-                 Match User bob\n    X11Forwarding no\n",
+                 Match User bob\n    X11Forwarding yes\n",
             )
             .is_empty(),
-            "Match all is global context, not a shadow participant"
+            "identical values across Match all + a later conditional are redundant, not a shadow"
         );
+    }
+
+    #[test]
+    fn match_all_after_a_conditional_is_not_a_shadowee() {
+        // OWNER-DECIDED conservative scope: a `Match all` block that appears AFTER a
+        // conditional is NEVER flagged (W07 treats `Match all` as a shadowER but
+        // never a shadowEE). Its value stays the effective default for every
+        // connection the earlier conditional does not cover - here every non-bob
+        // user gets `no` - and being overridden for the one covered user (bob, who
+        // takes the earlier `yes`) is the intended default-plus-exception idiom, not
+        // a shadow hazard. This pins the decision so the implementer cannot
+        // accidentally flag the trailing `Match all no` on line 4.
+        assert!(
+            w07_diags(
+                "Match User bob\n    X11Forwarding yes\n\
+                 Match all\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a Match all after a conditional stays the effective default; it is not a shadowee"
+        );
+    }
+
+    // ---- NEGATIVE: repeated same-type criteria in one header are AND-ed (match nobody) ----
+
+    #[test]
+    fn repeated_same_type_criteria_are_and_match_nobody_is_clean() {
+        // GROUND TRUTH (`sshd -T -C user=alice` and `-C user=bob` both yield the
+        // LATER block's value; the first block never wins for either): `sshd_config(5)`
+        // says a Match line's criteria are "used only if ALL of the criteria on the
+        // line are satisfied", so `Match User alice User bob` requires
+        // user==alice AND user==bob simultaneously - impossible, so the block matches
+        // NOBODY and can never shadow the later `Match User alice`. An impl that
+        // UNIONS the two repeated `User` criteria (user in {alice, bob}) wrongly
+        // treats the first block as overlapping and false-fires. (Currently RED: the
+        // impl false-fires 1 diag; GREEN after the AND fix.)
+        assert!(
+            w07_diags(
+                "Match User alice User bob\n    X11Forwarding yes\n\
+                 Match User alice\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "two User criteria in one header are AND-ed (no user is both), so the block matches nobody"
+        );
+    }
+
+    // ---- POSITIVE: glob trailing-`*` consumed at end-of-value (mutation-coverage lock) ----
+
+    #[test]
+    fn trailing_star_matches_at_end_of_value_flags_w07() {
+        // `dev-*` against the LITERAL `dev-`: the `*` matches an EMPTY suffix at the
+        // very end of the value, which exercises `glob_match`'s trailing-`*`
+        // consumption path (distinct from the earlier glob positives, where the `*`
+        // is consumed mid-string against a non-empty tail). The two blocks co-satisfy
+        // on a user literally named `dev-`.
+        let d = w07_diags(
+            "Match User dev-*\n    X11Forwarding yes\n\
+             Match User dev-\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "trailing `*` matches an empty end-of-value suffix -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
     }
 }
