@@ -1272,6 +1272,17 @@ mod w03_tests {
             1,
             "mid-token balanced quote span resolves to Ciphers and fires W03"
         );
+
+        // The GLUED form (no space after the close quote) also loads (real sshd -T:
+        // `"Ciphers"aes128-cbc` -> rc 0, `ciphers aes128-cbc`): read_keyword ends the
+        // token at the close quote and the arg loop reads `aes128-cbc` directly. This
+        // is a DISTINCT tokenizer path from the spaced form, pinning the same
+        // security-critical loading case.
+        assert_eq!(
+            run("\"Ciphers\"aes128-cbc\n").len(),
+            1,
+            "glued quoted keyword (no space) resolves to Ciphers and fires W03"
+        );
     }
 
     #[test]
