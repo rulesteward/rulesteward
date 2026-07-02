@@ -613,12 +613,16 @@ pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
                 // first (effective) value can be shadowed by an earlier block.
                 continue;
             }
-            let shadowed_by_earlier = match_blocks[..j].iter().any(|earlier| {
-                match_blocks_overlap(earlier, later)
-                    && first_value_for(earlier, &keyword)
-                        .is_some_and(|earlier_value| earlier_value != directive.args.as_slice())
-            });
-            if shadowed_by_earlier {
+            // sshd applies ONLY the first satisfied block's value, so the shadow
+            // hazard is measured against the WINNER: the earliest earlier block that
+            // both overlaps this one AND sets the keyword. A later value equal to the
+            // winner's is redundant (the winner would have applied the same value),
+            // not a differing shadow - so compare against the winner, not any earlier.
+            let winning_value = match_blocks[..j]
+                .iter()
+                .filter(|earlier| match_blocks_overlap(earlier, later))
+                .find_map(|earlier| first_value_for(earlier, &keyword));
+            if winning_value.is_some_and(|value| value != directive.args.as_slice()) {
                 diags.push(anchored(
                     Severity::Warning,
                     "sshd-W07",
@@ -775,12 +779,28 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 /// blocks are power-of-two aligned, so any two are either disjoint or nested; the
 /// lists overlap iff some positive network from each intersects. Negated and
 /// unparseable entries are ignored (conservative: they never manufacture overlap).
+///
+/// A negated (`!`) entry carves its range OUT of the match set, which the
+/// positive-only CIDR model cannot represent. Rather than model the wider range and
+/// risk a false positive (`192.168.0.0/16,!192.168.5.0/24` is DISJOINT from
+/// `192.168.5.0/24`), any negated entry in either list makes the type conservatively
+/// non-overlapping - mirroring the name-list decider's `!` handling, FN-leaning.
 fn cidr_lists_overlap(a: &[String], b: &[String]) -> bool {
+    if has_negated_entry(a) || has_negated_entry(b) {
+        return false;
+    }
     let a_nets = parse_cidr_list(a);
     let b_nets = parse_cidr_list(b);
     a_nets
         .iter()
         .any(|a_net| b_nets.iter().any(|b_net| cidr_intersects(*a_net, *b_net)))
+}
+
+/// Whether any entry in the list is negated (`!`-prefixed). A negation carves a
+/// range out of a `match_pattern_list`, which the positive-only CIDR/port models
+/// cannot represent, so their deciders treat any negation as non-overlapping.
+fn has_negated_entry(values: &[String]) -> bool {
+    values.iter().any(|v| v.starts_with('!'))
 }
 
 /// Parse the positive (non-negated) entries of an `Address` list into
@@ -838,9 +858,14 @@ fn leading_bits_equal(x: u128, y: u128, prefix: u8, width: u8) -> bool {
 }
 
 /// Whether two `LocalPort` lists share a port. A connection arrives on exactly one
-/// local port, so disjoint numeric lists can never co-satisfy. Negated and
+/// local port, so disjoint numeric lists can never co-satisfy. A negated (`!`) entry
+/// carves a port out, which the positive-only model cannot represent, so any
+/// negation in either list makes the type conservatively non-overlapping;
 /// non-numeric entries are ignored (conservative).
 fn port_lists_overlap(a: &[String], b: &[String]) -> bool {
+    if has_negated_entry(a) || has_negated_entry(b) {
+        return false;
+    }
     let b_ports = parse_port_list(b);
     parse_port_list(a).iter().any(|port| b_ports.contains(port))
 }
