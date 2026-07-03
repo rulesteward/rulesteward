@@ -95,6 +95,11 @@ pub const SSHD_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "algorithm-list prefix operator (+/-/^) may reintroduce a weak default algorithm",
     },
+    LintCode {
+        code: "sshd-W07",
+        severity: Severity::Warning,
+        description: "first-value-wins keyword set in two simultaneously-satisfiable Match blocks; sshd applies only the first, silently dropping the later value (cross-Match shadow)",
+    },
 ];
 
 #[cfg(test)]
@@ -107,7 +112,7 @@ mod tests {
     /// this shared file. Update this list ONLY when the taxonomy itself changes.
     const FROZEN_CODES: &[&str] = &[
         "sshd-E01", "sshd-E02", "sshd-E03", "sshd-E04", "sshd-F01", "sshd-F02", "sshd-W01",
-        "sshd-W02", "sshd-W03", "sshd-W04", "sshd-W05", "sshd-W06",
+        "sshd-W02", "sshd-W03", "sshd-W04", "sshd-W05", "sshd-W06", "sshd-W07",
     ];
 
     #[test]
