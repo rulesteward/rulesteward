@@ -161,11 +161,14 @@ fn real_marker_real_sandwich_renders_both_real_snippets() {
 }
 
 /// Regression guard: a broken `@include` with NO preceding real content on
-/// that path (the marker is the file's ONLY segment) has no real source to
-/// anchor to and correctly stays UNANCHORED, rendering the plain
-/// `file:line:col [sudo-F01] fatal: ...` fallback line (not a box). This
-/// pins that the fix (which now special-cases empty-source staging) does
-/// NOT start fabricating a snippet where no real source exists.
+/// that path (the marker is the file's ONLY segment) renders the plain
+/// `file:line:col [sudo-F01] fatal: ...` fallback line (not a box). The reason
+/// is that the missing-include marker's sudo-F01 is UNANCHORED - `lints::f01`
+/// leaves its `source_id` as `None` for a synthetic marker with an empty span
+/// (see `lints/mod.rs`), so `human::render` takes the plain fallback path
+/// regardless of what is (or is not) staged in the sources map. This pins that
+/// the source-staging fix does NOT start fabricating a snippet where the
+/// diagnostic was never anchored to begin with.
 #[test]
 fn broken_include_with_no_preceding_real_line_stays_plain() {
     let cfg = config_file("@include /does/not/exist\n");

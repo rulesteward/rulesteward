@@ -55,16 +55,13 @@ fn lint(args: &SudoersLintArgs) -> i32 {
     // segments can share one path (the file's own content plus zero or more
     // resolution markers, in either order), so a plain last-write-wins `insert`
     // can let a later empty marker overwrite an already-staged real source,
-    // blanking every anchored diagnostic for that path. Never let an empty
-    // source clobber an already-staged one; a non-empty source always wins,
-    // regardless of which segment is staged first.
+    // blanking every anchored diagnostic for that path. Skip empty sources
+    // entirely: an empty marker never clobbers a real source, and real-vs-real
+    // for the same path stays last-write-wins.
     let mut sources = std::collections::BTreeMap::new();
     for file in &files {
-        let key = file.path.display().to_string();
-        if file.source.is_empty() {
-            sources.entry(key).or_insert_with(String::new);
-        } else {
-            sources.insert(key, file.source.clone());
+        if !file.source.is_empty() {
+            sources.insert(file.path.display().to_string(), file.source.clone());
         }
     }
 
