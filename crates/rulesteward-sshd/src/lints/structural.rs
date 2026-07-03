@@ -673,11 +673,18 @@ fn first_value_for<'a>(block: &'a MatchBlock, keyword_lower: &str) -> Option<&'a
 /// never co-satisfy anything, so any pair involving one is disjoint. An
 /// unconditional `Match all` matches EVERY connection, so it overlaps any
 /// satisfiable block. Otherwise the blocks overlap only when they constrain the
-/// SAME set of criterion types and every shared type's patterns can co-apply.
-/// Requiring an identical type set is the conservative reading of the v0.3
-/// contract: any asymmetry in criterion types (including a pure CROSS-type pair
-/// like `User` vs `Group`) is left clean rather than guessing a membership relation
-/// a static linter cannot know (#400).
+/// SAME set of criterion types and every shared type can co-apply. Requiring an
+/// identical type set is the conservative reading of the v0.3 contract: any
+/// asymmetry in criterion types (including a pure CROSS-type pair like `User` vs
+/// `Group`) is left clean rather than guessing a membership relation a static linter
+/// cannot know (#400).
+///
+/// A criterion type is AND-ed across BOTH blocks: since a repeated type is an
+/// intersection, two blocks co-apply on a type iff ONE witness satisfies EVERY
+/// occurrence of it in `a` AND `b` combined. When each block states the type exactly
+/// once, that reduces to the negation-aware pairwise oracle
+/// ([`criterion_overlap`]); when either block repeats the type, the cross-block
+/// intersection is decided by [`criterion_instances_have_common_witness`].
 fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
     // A nobody-block co-satisfies nothing (checked first so a `Match all` does not
     // overlap an impossible block).
@@ -693,33 +700,35 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
     if a_types.len() != b_types.len() {
         return false;
     }
-    a_types.iter().all(|(kind, a_values)| {
-        b_types
-            .get(kind)
-            .is_some_and(|b_values| criterion_overlap(kind, a_values, b_values))
+    a_types.iter().all(|(kind, a_insts)| {
+        b_types.get(kind).is_some_and(|b_insts| {
+            if a_insts.len() == 1 && b_insts.len() == 1 {
+                // One occurrence on each side: the negation-aware pairwise oracle.
+                criterion_overlap(kind, a_insts[0], b_insts[0])
+            } else {
+                // A type repeated on either header is an AND across its occurrences,
+                // so the blocks co-apply on it only if one witness satisfies every
+                // occurrence in BOTH blocks (the cross-block intersection).
+                let combined: Vec<&[String]> = a_insts.iter().chain(b_insts).copied().collect();
+                criterion_instances_have_common_witness(kind, &combined)
+            }
+        })
     })
 }
 
 /// Whether a `Match` block can be satisfied by NO connection. `sshd_config(5)`
 /// AND-s all criteria on a header, so a criterion TYPE repeated on the same header
-/// requires ONE connection to satisfy every instance of that type at once (e.g.
+/// requires ONE connection to satisfy every occurrence of that type at once (e.g.
 /// `Match User alice User bob` needs user == alice AND user == bob - impossible).
 /// A block matches nobody iff some repeated type has no single common witness.
 ///
 /// Types appearing only once are assumed satisfiable (a single criterion normally
 /// admits someone). An unmodeled repeated type is also assumed satisfiable
-/// (conservative: `criterion_overlap` returns no-overlap for it anyway, so treating
-/// it as satisfiable never manufactures a finding). Reasoning per repeated type from
-/// the block's OWN criteria only makes this independent of the other block.
+/// (conservative: [`criterion_overlap`] returns no-overlap for it anyway, so
+/// treating it as satisfiable never manufactures a finding). Reasoning per repeated
+/// type from the block's OWN criteria only makes this independent of the other block.
 fn block_matches_nobody(block: &MatchBlock) -> bool {
-    let mut by_type: BTreeMap<String, Vec<&[String]>> = BTreeMap::new();
-    for criterion in &block.criteria {
-        by_type
-            .entry(criterion.keyword.to_ascii_lowercase())
-            .or_default()
-            .push(criterion.values.as_slice());
-    }
-    by_type
+    criteria_by_type(block)
         .iter()
         .filter(|(_, instances)| instances.len() >= 2)
         .any(|(kind, instances)| !criterion_instances_have_common_witness(kind, instances))
@@ -788,16 +797,20 @@ fn port_instances_have_common_port(instances: &[&[String]]) -> bool {
         .any(|p| per_instance.iter().all(|ports| ports.contains(p)))
 }
 
-/// Group a `Match` header's criteria by lowercased criterion keyword, unioning the
-/// values of any repeated type. The map's key set is the block's set of criterion
-/// TYPES, which [`match_blocks_overlap`] compares for the same-type-set rule.
-fn criteria_by_type(block: &MatchBlock) -> BTreeMap<String, Vec<String>> {
-    let mut by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// Group a `Match` header's criteria by lowercased criterion keyword, keeping ONE
+/// entry per criterion OCCURRENCE (the occurrences are NOT unioned). `sshd_config(5)`
+/// AND-s the criteria on a header, so a type that appears more than once is the
+/// INTERSECTION of its occurrences, not their union; callers fold the per-occurrence
+/// value lists rather than treating them as one OR-list. The map's key set is the
+/// block's set of criterion TYPES, which [`match_blocks_overlap`] compares for the
+/// same-type-set rule.
+fn criteria_by_type(block: &MatchBlock) -> BTreeMap<String, Vec<&[String]>> {
+    let mut by_type: BTreeMap<String, Vec<&[String]>> = BTreeMap::new();
     for criterion in &block.criteria {
         by_type
             .entry(criterion.keyword.to_ascii_lowercase())
             .or_default()
-            .extend(criterion.values.iter().cloned());
+            .push(criterion.values.as_slice());
     }
     by_type
 }
