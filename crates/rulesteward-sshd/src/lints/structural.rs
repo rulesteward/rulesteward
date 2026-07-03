@@ -3251,13 +3251,15 @@ mod w07_tests {
     //! locks this so the implementer cannot accidentally flag it.
     //!
     //! # Other documented v0.3 accepted false negatives
-    //! Besides the cross-type conservative reading above (#400), two further gaps are
-    //! intentionally accepted for v0.3 rather than implemented:
-    //! - WILDCARD-vs-WILDCARD glob overlap (e.g. `User dev-*` vs `User *-web`) is a
-    //!   deferred false negative: the overlap oracle only witnesses a wildcard
-    //!   pattern against a LITERAL value on the other side, not two wildcard
-    //!   patterns against each other, so a pair of only-wildcard criteria that could
-    //!   co-satisfy some literal user is not flagged.
+    //! Besides the cross-type conservative reading above (#400), three further gaps
+    //! are intentionally accepted for v0.3 rather than implemented:
+    //! - WILDCARD-vs-WILDCARD glob overlap (e.g. `User dev-*` vs `User *-web`, or
+    //!   `User a*` vs `User a*`) is a deferred false negative: the overlap oracle
+    //!   only witnesses a wildcard pattern against a LITERAL value on the other side
+    //!   (a listed literal or a fresh sentinel), not two wildcard patterns against
+    //!   each other, so a pair of only-wildcard criteria that could co-satisfy some
+    //!   literal user is not flagged. `wildcard_vs_wildcard_is_an_accepted_fn_is_clean`
+    //!   locks this.
     //! - Sub-population partitioning across MORE THAN TWO blocks (e.g. `Host alpha`
     //!   yes / `Host beta` no / `Host alpha,beta` yes) can leave a real
     //!   per-connection shadow undetected: the block-level rule only asks whether
@@ -3266,6 +3268,13 @@ mod w07_tests {
     //!   with. `partitioned_host_sets_are_an_accepted_fn_v0_3` locks this as an
     //!   accepted v0.3 false negative; per-sub-population detection is a tracked
     //!   post-v0.3 follow-up.
+    //! - REPEATED CIDR/LocalPort criteria carrying a negation (e.g. `Match Address
+    //!   10.0.0.0/8,!10.1.0.0/16 Address 10.0.0.0/8`) are treated conservatively as
+    //!   non-overlapping: computing the true negation-aware intersection ACROSS
+    //!   repeated occurrences of a type is beyond the negation-blind cross-occurrence
+    //!   witness, so W07 declines to flag rather than risk a false positive (an
+    //!   FN-leaning guard). `repeated_cidr_criteria_with_negation_conservative_no_shadow`
+    //!   locks this.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -3791,6 +3800,27 @@ mod w07_tests {
         );
     }
 
+    #[test]
+    fn wildcard_vs_wildcard_is_an_accepted_fn_is_clean() {
+        // Two wildcard-only `User a*` criteria obviously co-satisfy (any user named
+        // `aX` matches both), so ideally this would flag. But W07's overlap oracle
+        // only witnesses a wildcard pattern against a LITERAL value (a listed
+        // literal from the other block, or a fresh sentinel) - it never matches two
+        // wildcard PATTERNS against each other, so nothing witnesses `a*` vs `a*`.
+        // This is the documented v0.3 wildcard-vs-wildcard ACCEPTED false negative:
+        // kept clean, not flagged. Locks the FN AND pins that the candidate witness
+        // set admits only literals, not wildcard patterns (an impl that added `a*`
+        // itself to the candidate literals would wrongly flag this).
+        assert!(
+            w07_diags(
+                "Match User a*\n    X11Forwarding yes\n\
+                 Match User a*\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "wildcard-vs-wildcard is a documented v0.3 accepted false negative (no literal witness)"
+        );
+    }
+
     // ---- POSITIVE + NEGATIVE: `Match all` is a shadowER, never a shadowEE (owner-locked) ----
 
     #[test]
@@ -3851,6 +3881,25 @@ mod w07_tests {
             )
             .is_empty(),
             "a Match all after a conditional stays the effective default; it is not a shadowee"
+        );
+    }
+
+    #[test]
+    fn match_all_does_not_shadow_a_nobody_block_is_clean() {
+        // `Match all` shadows a LATER real block, but the later block here -
+        // `Match User alice User bob` - AND-s two disjoint single-value criteria and
+        // so matches NOBODY (no user is both alice and bob). No connection ever
+        // reaches that block, so there is nothing for `Match all` to drop. This pins
+        // that the nobody-check runs BEFORE the Match-all overlap short-circuit: a
+        // block that matches no one is never a shadowee, even under a leading
+        // always-satisfied `Match all`.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User alice User bob\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "Match all cannot shadow a later block that matches nobody"
         );
     }
 
@@ -4008,6 +4057,32 @@ mod w07_tests {
             )
             .is_empty(),
             "LocalPort 22 AND LocalPort 2222 is impossible -> block-0 matches nobody"
+        );
+    }
+
+    #[test]
+    fn repeated_cidr_criteria_with_negation_conservative_no_shadow() {
+        // Block-0 REPEATS the Address type where one occurrence carries a negation
+        // (`10.0.0.0/8,!10.1.0.0/16 Address 10.0.0.0/8`). Computing the true
+        // negation-aware intersection ACROSS repeated occurrences is beyond the
+        // negation-blind cross-occurrence witness, so W07 conservatively treats a
+        // repeated CIDR/LocalPort type that contains a negation as non-overlap - an
+        // ACCEPTED v0.3 false negative that matches W07's FN-leaning posture (never
+        // risk a false positive). Here it also happens to be a TRUE negative:
+        // block-0's effective set is (10.0.0.0/8 minus 10.1.0.0/16), which EXCLUDES
+        // the later block's 10.1.2.3, so no connection satisfies both. GROUND TRUTH
+        // (`sshd -T` on OpenSSH 10.2p1 with this exact fixture): addr 10.1.2.3 ->
+        // x11forwarding no (block-0 excluded, later applies), addr 10.2.2.2 -> yes
+        // (block-0 applies); the two never both apply. Currently RED: the impl's
+        // repeated-occurrence branch is negation-blind and false-fires; GREEN once
+        // the conservative guard lands.
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8,!10.1.0.0/16 Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match Address 10.1.2.3\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a repeated CIDR type carrying a negation is conservatively non-overlapping (accepted FN)"
         );
     }
 
