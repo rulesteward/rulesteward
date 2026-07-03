@@ -2049,4 +2049,24 @@ mod tests {
             "a mid-command `=(` after a real runas group must not swallow the `:` (#416)"
         );
     }
+
+    #[test]
+    fn host_region_comma_does_not_arm_the_runas_position() {
+        // Design-intent of the `,` arm's `depth == 0 && in_cmnd_list` guard (#416): a
+        // top-level `,` arms the runas position ONLY inside the Cmnd_Spec_List (past the
+        // structural `=`). A `,` in the Host_List region (before that `=`) must NOT arm it,
+        // so a following `(` there is a literal byte, stays at depth 0, and the later
+        // top-level `:` still splits into two host-groups. A Host_List never legitimately
+        // contains a `(` (host names have no parens), so this is a synthetic direct-splitter
+        // edge input in the style of `unbalanced_close_paren_clamps_depth_and_keeps_later_separator`.
+        // Kills the `&&` -> `||` mutant on the guard: under `||` the depth-0 Host_List comma
+        // arms the runas position, the `(` bumps `depth`, and the `:` is suppressed -> the
+        // two host-groups collapse into one (hiding the second's `NOPASSWD:` grant).
+        assert_eq!(
+            split_top_level_segments("h1, (x : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1, (x", "h2 = NOPASSWD: /bin/su"],
+            "a `(` in the Host_List region (after a top-level `,`, before the structural \
+             `=`) is not a runas opener, so it must not bump depth and swallow the `:` (#416)"
+        );
+    }
 }
