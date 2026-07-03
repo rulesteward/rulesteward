@@ -579,7 +579,7 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     the char after a backslash is skipped;
 ///   * when `skip_tag_colons` (user-specs only), the `NOPASSWD:` / `PASSWD:` tag
 ///     colon - recognised because the token immediately before it (back to the last
-///     `,` / `=` / `(` / `)` / consumed colon, with whitespace irrelevant) is a
+///     `,` / `=` / `)` / consumed colon, with whitespace irrelevant) is a
 ///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`.
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut segments = Vec::new();
@@ -601,7 +601,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // its `(` desyncs `depth` and swallows the next top-level `:` -- the #416 colon-splitter
     // miss (a `(` right after a command-arg `=` was read as a runas opener).
     let mut in_cmnd_list = false;
-    // `at_cmnd_start` is true from a `Cmnd_Spec` boundary (the structural `=`, or a
+    // `at_spec_start` is true from a `Cmnd_Spec` boundary (the structural `=`, or a
     // top-level `,` while in the command list) through leading whitespace until the first
     // non-whitespace char: a `(` there is a runas opener (bumps `depth`, so a `(u:g)`
     // runas colon is suppressed), any other char means the command word has begun so every
@@ -610,7 +610,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // visudo-REJECTED), and a tag cannot precede the runas group (`NOPASSWD: (root) ...` is
     // visudo-REJECTED), so the runas `(` is always the spec's first non-whitespace char
     // (grounded on sudo 1.9.17p2, #416).
-    let mut at_cmnd_start = false;
+    let mut at_spec_start = false;
 
     for (i, c) in s.char_indices() {
         if escaped {
@@ -621,19 +621,19 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
         }
         if c == '\\' {
             escaped = true;
-            at_cmnd_start = false;
+            at_spec_start = false;
             continue;
         }
         if c.is_whitespace() {
-            // Leading whitespace keeps `at_cmnd_start`; interior whitespace is a no-op
+            // Leading whitespace keeps `at_spec_start`; interior whitespace is a no-op
             // (it never resets `tok_start`, so a tag keyword spaced from its colon is
             // still recognised).
             continue;
         }
         match c {
-            '(' if at_cmnd_start => {
+            '(' if at_spec_start => {
                 depth += 1;
-                at_cmnd_start = false;
+                at_spec_start = false;
             }
             ')' => {
                 // `if depth > 0` only guards a malformed UNBALANCED `)` (which visudo
@@ -642,7 +642,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     depth -= 1;
                 }
                 tok_start = i + c.len_utf8();
-                at_cmnd_start = false;
+                at_spec_start = false;
             }
             ',' => {
                 tok_start = i + c.len_utf8();
@@ -651,7 +651,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // comma in the Host_List (`h1, h2 = cmd`) has no runas position, and a
                 // comma inside a runas group (depth > 0) is not a spec boundary.
                 if depth == 0 && in_cmnd_list {
-                    at_cmnd_start = true;
+                    at_spec_start = true;
                 }
             }
             '=' => {
@@ -659,33 +659,33 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // Only the FIRST top-level `=` of a host-group is the structural
                 // `Host_List = Cmnd_Spec_List` separator; it opens the command list and
                 // arms the first `Cmnd_Spec`'s runas position. A later `=` is a literal
-                // byte inside a command argument and must NOT re-arm `at_cmnd_start` (the
+                // byte inside a command argument and must NOT re-arm `at_spec_start` (the
                 // #416 colon-splitter fix). The `tok_start` reset stays UNCONDITIONAL so
                 // tag detection (e.g. `host=NOPASSWD:`) is unaffected.
                 if !in_cmnd_list {
                     in_cmnd_list = true;
-                    at_cmnd_start = true;
+                    at_spec_start = true;
                 }
             }
             ':' if depth == 0 => {
                 let preceding = s[tok_start..i].trim();
                 if skip_tag_colons && parse_tag(preceding).is_some() {
                     // A tag colon (`NOPASSWD:`): not a segment separator. The next token
-                    // starts just after it (still mid-spec, so `at_cmnd_start` stays false).
+                    // starts just after it (still mid-spec, so `at_spec_start` stays false).
                     tok_start = i + 1;
                 } else {
                     // A genuine top-level segment separator. `tok_start = i + 1` resets
                     // the preceding-token start for the next segment; the next segment
-                    // opens with a Host_List (not a `Cmnd_Spec`), so both `at_cmnd_start`
+                    // opens with a Host_List (not a `Cmnd_Spec`), so both `at_spec_start`
                     // and `in_cmnd_list` reset until that segment's structural `=`.
                     segments.push(s[seg_start..i].trim());
                     seg_start = i + 1;
                     tok_start = i + 1;
-                    at_cmnd_start = false;
+                    at_spec_start = false;
                     in_cmnd_list = false;
                 }
             }
-            _ => at_cmnd_start = false,
+            _ => at_spec_start = false,
         }
     }
     segments.push(s[seg_start..].trim());
@@ -2003,7 +2003,7 @@ mod tests {
     // ---- #416 (colon splitter, round 2): a `=` INSIDE a command argument must NOT
     //      re-arm the runas position. Only the FIRST top-level `=` of a host-group is the
     //      structural `Host_List = Cmnd_Spec_List` separator; a later `=(` in a command
-    //      arg was re-arming `at_cmnd_start`, so the `(` bumped `depth` and swallowed the
+    //      arg was re-arming `at_spec_start`, so the `(` bumped `depth` and swallowed the
     //      next top-level `:` -> two host-groups merged -> the 2nd group's `NOPASSWD:`
     //      grant was hidden (a sudo-W05 FALSE NEGATIVE). Every case is `visudo -c` rc 0
     //      and `cvtsudoers -f json` (sudo 1.9.17p2) yields TWO host-groups, the 2nd
