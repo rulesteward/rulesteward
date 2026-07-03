@@ -263,6 +263,16 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY to v2.x: cosign v3 defaults `sign-blob` to the
+          # new bundle format (`--new-bundle-format`) and DEPRECATED the
+          # `--output-signature` / `--output-certificate` detached-file flags this
+          # workflow uses, so v3 tries to write a bundle to an empty path (the
+          # installer, left unpinned, defaults to cosign v3 and silently broke the
+          # v0.3.0-rc1 dry-run with "create bundle file: open : no such file").
+          # v2's detached .sig/.pem is the artifact the README verify-blob
+          # command and the SHA256SUMS.sig/.pem assets below depend on.
+          cosign-release: 'v2.6.3'
 
       # Keyless sign the checksums file. The ambient GitHub OIDC token (granted by
       # id-token: write) is exchanged for a short-lived Sigstore certificate; the
