@@ -98,6 +98,68 @@ fn malformed_line_with_no_include_still_renders_real_snippet() {
     );
 }
 
+/// #401 order-symmetry: the MARKER-BEFORE-REAL (reverse) order. The broken
+/// `@include` sits on line 1 (its empty-source marker is staged for the path
+/// FIRST), then the genuine malformed "garbage line" follows on line 2 (its
+/// real, non-empty source is staged for the SAME path AFTERWARD). The fix must
+/// let the later non-empty source win over the already-staged empty one, so
+/// "garbage line" still renders its real anchored snippet. A naive fix that
+/// assumed the real segment always comes first would blank this case;
+/// asserting it proves order symmetry.
+#[test]
+fn marker_before_real_order_still_renders_the_real_snippet() {
+    let cfg = config_file("@include /does/not/exist\ngarbage line\n");
+    let out = run_lint(cfg.path());
+    assert_eq!(out.status.code(), Some(5), "sudo-F01 exits 5");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("sudo-F01"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("garbage line"),
+        "the real source text 'garbage line' (staged AFTER the empty marker \
+         for the same path) must still render its snippet; got: {stdout}"
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "expected an ariadne box-drawing snippet for the anchored line, \
+         got: {stdout}"
+    );
+}
+
+/// #401 order-symmetry: the REAL / MARKER / REAL sandwich. Two genuine
+/// malformed lines ("realgarbage1" on line 1, "realgarbage2" on line 3)
+/// bracket a broken `@include` on line 2. All three segments key on the same
+/// display path; the empty include marker is spliced BETWEEN the two real
+/// content segments. Neither real snippet may be blanked - BOTH real source
+/// lines must render. This is the strongest order proof: the empty marker is
+/// neither strictly-first nor strictly-last among the same-path segments.
+#[test]
+fn real_marker_real_sandwich_renders_both_real_snippets() {
+    let cfg = config_file("realgarbage1\n@include /does/not/exist\nrealgarbage2\n");
+    let out = run_lint(cfg.path());
+    assert_eq!(out.status.code(), Some(5), "sudo-F01 exits 5");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("sudo-F01"), "stdout: {stdout}");
+    // "realgarbage2" is on line 3, so it can appear ONLY in its own anchored
+    // snippet (it cannot leak in via a 0..0-spanned W04 box, which always
+    // points at line 1); asserting it appears proves the second real segment's
+    // source survived staging past the spliced empty marker.
+    assert!(
+        stdout.contains("realgarbage1"),
+        "the first real malformed line's snippet must render; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("realgarbage2"),
+        "the second real malformed line's snippet (staged after the empty \
+         marker was spliced between the two real segments) must render, not be \
+         blanked; got: {stdout}"
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "expected ariadne box-drawing snippets for the anchored lines, \
+         got: {stdout}"
+    );
+}
+
 /// Regression guard: a broken `@include` with NO preceding real content on
 /// that path (the marker is the file's ONLY segment) has no real source to
 /// anchor to and correctly stays UNANCHORED, rendering the plain
