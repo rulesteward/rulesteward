@@ -261,6 +261,31 @@ fn algo_list_value(args: &[String]) -> Option<String> {
     Some(raw)
 }
 
+/// Returns the leading algorithm-list operator (`+`, `-`, or `^`) carried by
+/// an algorithm-list value's FIRST comma-split token, or `None` if that token
+/// has no operator (a bare, full-replacement list).
+///
+/// Per `sshd_config(5)` (Rocky Linux 9 / OpenSSH 9.9p1, primary source,
+/// verified 2026-06-26; re-verified via `sshd -T`, OpenSSH 10.2p1,
+/// 2026-07-03), a leading `-`/`+`/`^` on an algorithm-list value's first
+/// token marks the WHOLE list as REMOVE-from (`-`), APPEND-to (`+`), or
+/// PREPEND-to (`^`) OpenSSH's built-in default set, rather than a full
+/// replacement. Only the first comma-split token carries the operator (the
+/// tokenizer joins a well-formed algorithm-list value into a single arg; see
+/// [`algo_list_value`]), so callers must pass that value's first comma-split
+/// token, not an arbitrary token.
+///
+/// Shared by [`w03_directive`] (which defers entirely on any operator-prefixed
+/// list -- `-` is hardening and never W03's domain; `+`/`^` reintroduction is
+/// W06's domain) and [`w06`] (which strips the operator to check the
+/// reintroduced algorithm), so the two lints agree on operator detection.
+fn leading_operator(first_token: &str) -> Option<char> {
+    match first_token.trim_ascii().chars().next() {
+        Some(op @ ('+' | '-' | '^')) => Some(op),
+        _ => None,
+    }
+}
+
 /// Return `true` when the lowercased token is a weak KEX algorithm.
 fn is_weak_kex(token: &str) -> bool {
     if WEAK_KEX_EXACT.contains(&token) {
@@ -292,6 +317,19 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
     let Some(value) = algo_list_value(&directive.args) else {
         return;
     };
+
+    // A `-`/`+`/`^`-prefixed list is not a full replacement: `-` REMOVES from
+    // the default (hardening, never flagged) and `+`/`^` REINTRODUCE to the
+    // default (W06's domain, not W03's). Only a bare (no-operator) list is a
+    // full replacement, which is W03's domain. Checked on the FIRST
+    // comma-split token only -- the operator is never repeated on later
+    // tokens (see `leading_operator`'s doc comment).
+    let Some(first_raw) = value.split(',').next() else {
+        return;
+    };
+    if leading_operator(first_raw).is_some() {
+        return;
+    }
 
     for raw_token in value.split(',') {
         // ASCII-only trim: sshd's separator class is ASCII whitespace, so a VT/NBSP
@@ -413,17 +451,18 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some(first_raw) = tokens.next() else {
                 continue;
             };
+            let Some(operator) = leading_operator(first_raw) else {
+                // No operator (bare value): W03's job, not W06's.
+                continue;
+            };
+            if operator == '-' {
+                // `-` is hardening; never reintroduces.
+                continue;
+            }
             // ASCII-only trim throughout: a VT/NBSP kept by the tokenizer must stay in
             // the token so an sshd-rejected spec is not recovered by a Unicode trim
             // (#389 Case B).
             let first_trimmed = first_raw.trim_ascii();
-            let Some(operator) = first_trimmed.chars().next() else {
-                continue;
-            };
-            if operator != '+' && operator != '^' {
-                // `-` is hardening; bare value (no operator) is W03's job.
-                continue;
-            }
             // Strip the leading operator char from the first token and check it,
             // then check all remaining tokens (they carry no operator).
             let first_algo = first_trimmed[operator.len_utf8()..].trim_ascii();
@@ -2612,6 +2651,110 @@ mod w03_tests {
             run("Ciphers \"aes128-cbc\"\n").len(),
             1,
             "clean single-quoted weak cipher (no internal whitespace) must still fire W03"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Operator-prefixed lists defer to W06 (issue #402 false positive fix)
+    // -----------------------------------------------------------------------
+    //
+    // Per `sshd_config(5)`, a `-`-prefixed algorithm-list value REMOVES from
+    // the built-in default (hardening) rather than replacing it; a `+`/`^`-
+    // prefixed value APPENDS/PREPENDS to the default (W06's domain). Only a
+    // BARE (no-operator) value is a full REPLACEMENT and W03's domain. The
+    // operator is carried on the FIRST comma-split token only (`algo_list_value`
+    // joins a well-formed value into one arg; see the parser-shape note in
+    // `w06_tests` above). Before this fix W03 iterated every comma-split token
+    // independent of the operator, so on a `-`-list like
+    // `Ciphers -aes128-cbc,aes256-cbc,3des-cbc` the operator-bearing first
+    // token (`-aes128-cbc`) correctly did not match the bare denylist, but the
+    // operator-less TAIL tokens (`aes256-cbc`, `3des-cbc`) DID match, firing a
+    // false positive on a hardening line that REMOVES those exact ciphers.
+    //
+    // Grounding: `sshd -T -f <fixture> -C user=x,host=x,addr=1.2.3.4` (OpenSSH
+    // 10.2p1, verified 2026-07-03 with an ephemeral ed25519 HostKey):
+    //   `Ciphers -aes128-cbc,aes256-cbc,3des-cbc` -> rc 0, effective `ciphers`
+    //   line = chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,
+    //   aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr (none of the
+    //   three removed CBC/3DES ciphers present -- confirms the removal took
+    //   effect and the line loaded cleanly, rc 0).
+    //   `Ciphers +aes128-cbc,aes256-cbc` -> rc 0, effective `ciphers` line
+    //   APPENDS both aes128-cbc and aes256-cbc to the default (both weak
+    //   ciphers genuinely reintroduced) -- W06's domain, not W03's.
+
+    #[test]
+    fn ciphers_minus_operator_list_fires_zero_w03() {
+        // The exact #402 false positive: a hardening line removing three CBC/
+        // 3DES ciphers must not flag any of them.
+        assert!(
+            run("Ciphers -aes128-cbc,aes256-cbc,3des-cbc\n").is_empty(),
+            "a `-`-prefixed (removal) algo list is hardening; W03 must not fire \
+             on any token, including operator-less tail tokens"
+        );
+    }
+
+    #[test]
+    fn macs_minus_operator_list_fires_zero_w03() {
+        // Same operator-defers rule for the MACs family (Weak03Kind::Exact,
+        // same code path as Ciphers/HostKeyAlgorithms).
+        assert!(
+            run("MACs -hmac-md5,hmac-sha1\n").is_empty(),
+            "a `-`-prefixed MACs list removes weak MACs; W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn kex_minus_operator_list_fires_zero_w03() {
+        // Same operator-defers rule for the KexAlgorithms family
+        // (Weak03Kind::Kex, a distinct match arm from Exact -- confirms the
+        // operator guard runs BEFORE the kind dispatch, not duplicated per-arm).
+        assert!(
+            run("KexAlgorithms -diffie-hellman-group1-sha1,diffie-hellman-group14-sha1\n")
+                .is_empty(),
+            "a `-`-prefixed KexAlgorithms list removes weak KEX; W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_caret_operator_list_fires_zero_w03() {
+        // `^` (prepend) is W06's domain too, mirroring `+`.
+        assert!(
+            run("Ciphers ^aes128-cbc,aes256-cbc\n").is_empty(),
+            "a `^`-prefixed algo list is W06's domain (reintroduction); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_plus_operator_list_fires_only_w06_not_w03() {
+        // Cross-check both lints on the same input: `Ciphers +aes128-cbc,aes256-cbc`
+        // genuinely reintroduces BOTH weak ciphers (grounded above, rc 0). Before
+        // this fix, W03 ALSO fired on the operator-less tail token (aes256-cbc),
+        // double-reporting the same reintroduction W06 already covers. W03 must
+        // defer entirely; W06 must fire (twice, once per reintroduced cipher).
+        let src = "Ciphers +aes128-cbc,aes256-cbc\n";
+        let w03_diags = run(src);
+        assert!(
+            w03_diags.is_empty(),
+            "a `+`-prefixed algo list is W06's domain; W03 must not fire, got: {w03_diags:?}"
+        );
+        let w06_diags = super::w06(&parse(src), Path::new(FILE), &SshdLintContext::default());
+        assert_eq!(
+            w06_diags.len(),
+            2,
+            "W06 fires once per reintroduced weak cipher, got: {w06_diags:?}"
+        );
+        assert!(w06_diags.iter().all(|d| d.code == "sshd-W06"));
+    }
+
+    #[test]
+    fn ciphers_bare_list_still_fires_w03_control() {
+        // Positive control: the operator guard must not over-suppress a bare
+        // (no-operator) full-replacement list, which is W03's actual domain.
+        // Regression guard alongside `bare_unquoted_weak_cipher_still_fires_w03_control`.
+        assert_eq!(
+            run("Ciphers aes128-cbc,aes256-ctr\n").len(),
+            1,
+            "bare (no-operator) list is a full replacement; W03 must still fire on the weak entry"
         );
     }
 }
