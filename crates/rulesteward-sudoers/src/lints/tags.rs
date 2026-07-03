@@ -1092,6 +1092,61 @@ mod w05_tests {
         );
     }
 
+    // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` used to MERGE two
+    //      Cmnd_Specs (comma splitter) or two host-groups (colon splitter) in the parser,
+    //      hiding the later `NOPASSWD:` grant -> a W05 FALSE NEGATIVE. After the parser
+    //      fix W05 must fire exactly once on the hidden grant. Each config is `visudo -c`
+    //      rc 0 and `cvtsudoers -f json` (sudo 1.9.17p2) yields TWO specs, the 2nd
+    //      (`/bin/su`) passwordless -- so exactly one W05 (the 1st spec is password-required).
+
+    #[test]
+    fn w05_fires_past_an_unterminated_quote_hiding_a_grant() {
+        // `alice ALL=(ALL) /bin/echo "x, NOPASSWD: /bin/su` (visudo -c rc 0). cvtsudoers
+        // -f json: TWO commands, the 2nd (`/bin/su`) passwordless. The lone `"` must not
+        // swallow the `,` and hide the NOPASSWD grant (#416).
+        assert_eq!(
+            w05_count("alice ALL=(ALL) /bin/echo \"x, NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the NOPASSWD grant hidden past an unterminated quote (#416)"
+        );
+    }
+
+    #[test]
+    fn w05_fires_past_a_mid_command_paren_hiding_a_grant() {
+        // `alice ALL=(ALL) /bin/echo a(b, NOPASSWD: /bin/su` (visudo -c rc 0). cvtsudoers
+        // -f json: TWO commands, the 2nd (`/bin/su`) passwordless. A mid-command `(` must
+        // not swallow the `,` and hide the NOPASSWD grant (#416).
+        assert_eq!(
+            w05_count("alice ALL=(ALL) /bin/echo a(b, NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the NOPASSWD grant hidden past a mid-command `(` (#416)"
+        );
+    }
+
+    #[test]
+    fn w05_fires_past_an_unterminated_quote_hiding_a_host_group_grant() {
+        // Colon-splitter analog: `alice localhost = /bin/echo "x : localhost = NOPASSWD:
+        // /bin/su` (visudo -c rc 0). cvtsudoers -f json: TWO host-groups, the 2nd
+        // (`/bin/su`) passwordless. The lone `"` must not swallow the top-level `:` (#416).
+        assert_eq!(
+            w05_count("alice localhost = /bin/echo \"x : localhost = NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the grant hidden past an unterminated quote across `:` (#416)"
+        );
+    }
+
+    #[test]
+    fn w05_fires_past_a_mid_command_paren_hiding_a_host_group_grant() {
+        // Colon-splitter analog: `alice localhost = /bin/echo a(b : localhost = NOPASSWD:
+        // /bin/su` (visudo -c rc 0). cvtsudoers -f json: TWO host-groups, the 2nd
+        // (`/bin/su`) passwordless. A mid-command `(` must not swallow the `:` (#416).
+        assert_eq!(
+            w05_count("alice localhost = /bin/echo a(b : localhost = NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the grant hidden past a mid-command `(` across `:` (#416)"
+        );
+    }
+
     // ---- DEDUP: a NOPASSWD-on-ALL line is W01's, never also W05 ----
 
     /// `alice ALL = NOPASSWD: ALL` (visudo -c -f rc 0): the literal reserved `ALL`
