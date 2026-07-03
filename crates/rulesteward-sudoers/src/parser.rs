@@ -675,8 +675,19 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 ///     char after a backslash is skipped;
 ///   * a `,` inside a runas group `(root, operator)` is at paren-depth > 0 and is part
 ///     of the runas user list, NOT a `Cmnd_Spec` separator - so `depth` tracks `(`/`)`;
-///   * a `,` inside a `"..."` quoted command argument is a literal byte (sudo groups
-///     the quoted token), so quote state suppresses splitting there too.
+///   * quote state (`"..."`) keeps a quoted `(` / `)` from desyncing `depth`: a quoted
+///     paren is a literal command byte, not a runas paren, so `cvtsudoers -f json` keeps
+///     `/bin/echo "a(", /bin/ls` as TWO commands (the quoted `(` must not make the
+///     following `,` look paren-nested; grounded on sudo 1.9.17p2, host + rocky9).
+///
+/// A `,` inside a BALANCED quote is suppressed as a side effect, which cannot happen in a
+/// valid config (sudo REJECTS an unescaped quoted comma: `visudo -c` / `cvtsudoers` reject
+/// `/bin/echo "a, b"`; a literal comma needs the backslash escape `\,`, per bullet 1). But
+/// an UNTERMINATED quote or a bare mid-command `(` is itself visudo-VALID yet makes this
+/// splitter merge two `Cmnd_Spec`s, which can hide a later grant -- a KNOWN
+/// classifier-not-validator limitation (#416), the same class as
+/// `split_top_level_segments`'s `unterminated_quote_swallows_the_separator`: rulesteward
+/// classifies token shapes rather than validating quote / paren balance.
 ///
 /// The backslash is kept VERBATIM in the value, matching the `\:` precedent (the
 /// lints do not inspect argument contents). Segments are trimmed, mirroring
@@ -1806,6 +1817,40 @@ mod tests {
             split_top_level_segments("a : NOPASSWD: b", true),
             vec!["a", "NOPASSWD: b"],
             "a tag keyword opening the segment after a `:` separator must not re-split"
+        );
+    }
+
+    // These two mirror the colon-splitter's `quoted_paren_in_command_does_not_desync_segment_split`
+    // and `unbalanced_close_paren_clamps_depth_and_keeps_later_separator` onto the COMMA splitter
+    // `split_cmnd_specs`, whose quote / depth-clamp contracts had no direct test (#406 mutation
+    // survivors). Direct private-fn calls: the public path folds both edge inputs into `Malformed`,
+    // so it cannot distinguish the mutated code.
+
+    #[test]
+    fn quoted_paren_in_cmnd_list_does_not_desync_comma_split() {
+        // An unbalanced `(` INSIDE a double-quoted command argument is a literal byte, not a
+        // runas open-paren, so it must not desync `depth` and swallow the later `,` separating
+        // the next `Cmnd_Spec`. Grounded: `cvtsudoers -f json` (sudo 1.9.17p2, host + rocky9)
+        // parses `/bin/echo "a(", /bin/ls` as TWO commands. Kills the quote-open / quote-close
+        // mutants (delete `'"' => in_quotes = true`; `c == '"'` -> `c != '"'`), which let the
+        // quoted `(` reach `depth += 1` so the `,` reads as paren-nested and never splits.
+        assert_eq!(
+            split_cmnd_specs("/bin/echo \"a(\", /bin/ls"),
+            vec!["/bin/echo \"a(\"", "/bin/ls"],
+            "an unbalanced `(` inside quotes must not swallow the `,` Cmnd_Spec separator"
+        );
+    }
+
+    #[test]
+    fn unbalanced_close_paren_in_cmnd_list_clamps_depth_and_keeps_later_comma_separator() {
+        // A stray unbalanced `)` at depth 0 (malformed; visudo rejects) must CLAMP depth at 0,
+        // not drive it negative -- otherwise a later top-level `,` at the now-negative depth is
+        // no longer a separator and the two `Cmnd_Spec`s collapse into one. Kills the
+        // `depth > 0` -> `depth >= 0` guard mutant (which lets `depth -= 1` reach -1).
+        assert_eq!(
+            split_cmnd_specs("a), b"),
+            vec!["a)", "b"],
+            "a stray `)` must not push depth below 0 and swallow the later `,` separator"
         );
     }
 }
