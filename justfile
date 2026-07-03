@@ -31,9 +31,11 @@ clippy:
 test:
     cargo test --workspace --locked
 
-# Run llvm-cov with the 80% floor.
+# Run llvm-cov: 80% workspace floor + >=90% parser/lint floor (mirrors ci.yml). (#395)
 cov:
-    cargo llvm-cov --workspace --locked --fail-under-lines 80
+    cargo llvm-cov --no-report --workspace --locked
+    cargo llvm-cov report --fail-under-lines 80
+    cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --fail-under-lines 90
 
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:

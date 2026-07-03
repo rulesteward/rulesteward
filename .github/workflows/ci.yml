@@ -369,17 +369,19 @@ jobs:
       # Collect coverage once (--no-report writes profdata but emits nothing),
       # then assert two floors from that same data via `report` (no re-run):
       #   1. an 80% workspace floor (unchanged from the prior single-command gate);
-      #   2. the spec section 11 promise of >=90% lines on the parser + lint engine
-      #      specifically -- rulesteward-core + rulesteward-fapolicyd. Incorrect lint
-      #      results destroy operator trust, so this engine carries a higher bar than
-      #      the workspace. Measured 2026-06-02 on the v0.1.0 tree: core 99.42%,
-      #      fapolicyd 96.49%, combined 96.55% -- ample headroom over 90%.
+      #   2. the spec section 11 promise of >=90% lines on every parser + lint
+      #      engine -- rulesteward-core plus the six backend lint crates
+      #      (fapolicyd, selinux, auditd, sshd, sudoers, sysctld). Incorrect lint
+      #      results destroy operator trust, so these carry a higher bar than the
+      #      workspace. Measured 2026-07-02: combined 96.82% lines, ample headroom
+      #      over 90% (newly added sshd 97.64%, sudoers 97.03%, sysctld 99.39%; the
+      #      other four were already gated). (#395)
       - name: Collect coverage (no report)
         run: cargo llvm-cov --no-report --workspace --locked
       - name: Assert workspace floor (>=80% lines)
         run: cargo llvm-cov report --fail-under-lines 80
       - name: Assert parser + lint floor (>=90% lines, spec section 11)
-        run: cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --fail-under-lines 90
+        run: cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --fail-under-lines 90
 
   musl-build:
     name: build static musl binary (ubuntu)
