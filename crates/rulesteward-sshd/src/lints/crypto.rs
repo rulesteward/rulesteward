@@ -183,6 +183,19 @@ enum Weak03Kind {
 /// directive never loads. Step 5 rejects the value (`None`) whenever it
 /// contains ASCII whitespace anywhere, matching sshd's whole-spec rejection.
 fn algo_list_value(args: &[String]) -> Option<String> {
+    // Cross-reference (#383): inline-`#` stripping exists in FOUR backends, each
+    // tuned to its own grammar and deliberately NOT unified (importing one grammar's
+    // quoting rule into another would be wrong for that file format). Peers:
+    //   - fapolicyd inline_comment_index (parser/inline.rs): `#` after any
+    //     non-whitespace token; no quote awareness.
+    //   - auditd    strip_comment        (parser.rs): first `#` outside a SINGLE-
+    //     quoted span (single quotes protect `-F 'auid>=1000'`).
+    //   - sudoers   strip_inline_comment (parser.rs): DOUBLE-quote aware, plus a
+    //     `#include` bypass and a `#<digits>` UID/GID-token exception.
+    //   - sshd      algo_list_value      (lints/crypto.rs): token-level; the first
+    //     `#`-prefixed arg ends an already-whitespace-split algorithm list.
+    // sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
+    // mid-value is literal). If you fix an edge case in one stripper, check the peers.
     // Step 1: strip trailing inline `#` comment args.
     let effective = match args.iter().position(|a| a.starts_with('#')) {
         Some(i) => &args[..i],

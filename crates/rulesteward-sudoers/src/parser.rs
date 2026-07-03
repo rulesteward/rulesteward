@@ -172,6 +172,19 @@ fn split_continuation(body: &str) -> Option<&str> {
     }
 }
 
+// Cross-reference (#383): inline-`#` stripping exists in FOUR backends, each
+// tuned to its own grammar and deliberately NOT unified (importing one grammar's
+// quoting rule into another would be wrong for that file format). Peers:
+//   - fapolicyd inline_comment_index (parser/inline.rs): `#` after any
+//     non-whitespace token; no quote awareness.
+//   - auditd    strip_comment        (parser.rs): first `#` outside a SINGLE-
+//     quoted span (single quotes protect `-F 'auid>=1000'`).
+//   - sudoers   strip_inline_comment (parser.rs): DOUBLE-quote aware, plus a
+//     `#include` bypass and a `#<digits>` UID/GID-token exception.
+//   - sshd      algo_list_value      (lints/crypto.rs): token-level; the first
+//     `#`-prefixed arg ends an already-whitespace-split algorithm list.
+// sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
+// mid-value is literal). If you fix an edge case in one stripper, check the peers.
 /// Strip an inline `#` comment (to end of the physical line) from `body`, honoring
 /// the sudoers exceptions. Returns the text with any comment removed (trailing
 /// whitespace before the comment is preserved; the caller trims as needed).
