@@ -3140,10 +3140,13 @@ mod w07_tests {
     //!   `User bob`) are the normal, intended pattern and are never flagged - the
     //!   false positive the issue explicitly guards against.
     //!
-    //! # Negation-aware CIDR/LocalPort overlap (#403)
-    //! A negated CIDR/port entry does not blanket-disable overlap for the whole
-    //! criterion; it narrows the criterion's positive match set by exactly the
-    //! negated range, and overlap is decided against what remains:
+    //! # Negation-aware CIDR overlap (#403)
+    //! `Address`/`LocalAddress` are pattern-list criteria: sshd accepts a
+    //! comma-separated list with negation (`Match Address 10.0.0.0/8,!192.168.0.0/16`
+    //! parses cleanly on OpenSSH 9.9p1 + 10.2p1). A negated CIDR entry does not
+    //! blanket-disable overlap for the whole criterion; it narrows the criterion's
+    //! positive match set by exactly the negated range, and overlap is decided
+    //! against what remains:
     //! - An IRRELEVANT negation (the negated range does not intersect the other
     //!   block's positive range) leaves the shared range untouched, so the two
     //!   blocks still co-satisfy on it.
@@ -3152,9 +3155,35 @@ mod w07_tests {
     //! - A carve-out that only PARTIALLY covers the positive intersection still
     //!   leaves an overlapping remainder, so the blocks still co-satisfy.
     //!
-    //! Treating any negated CIDR/port entry as blanket non-overlapping (rather than
+    //! Treating any negated CIDR entry as blanket non-overlapping (rather than
     //! computing the actual remainder) is a real false-negative source: it hides
     //! genuine shadows whenever the negation is irrelevant or only partial.
+    //!
+    //! `LocalPort` is NOT a pattern-list criterion: sshd parses it with `a2port`,
+    //! which accepts exactly ONE port and REJECTS both comma-lists and negation
+    //! (`Match LocalPort 22,2222` and `Match LocalPort ...,!443` both fail with an
+    //! `Invalid LocalPort ... on Match line` error, rc 255, verified on 9.9p1 +
+    //! 10.2p1). So on any sshd-VALID config, `LocalPort` overlap reduces to
+    //! single-port equality (`same_single_localport_flags_w07` /
+    //! `disjoint_localports_do_not_flag_w07`); any port-list-negation branch in the
+    //! impl is defensive-only and unreachable on valid input.
+    //!
+    //! # Repeated same-type criteria in one Match header are AND-ed (intersection)
+    //! `sshd_config(5)`: a Match line's criteria "are used only if ALL of the
+    //! criteria on the line are satisfied", so a header that repeats a criterion
+    //! type (`Match User alice,carol User bob,carol`, `Match Address 10.0.0.0/8
+    //! Address 10.0.0.0/16`) matches the INTERSECTION of its instances, NOT the
+    //! union. Consequences W07 must honor (each locked by a test):
+    //! - The intersection can be EMPTY (`User alice User bob`, `Address 10.0.0.0/8
+    //!   Address 192.168.0.0/16`, `LocalPort 22 LocalPort 2222`) - the block then
+    //!   matches nobody and can never shadow.
+    //! - A NON-empty intersection that is disjoint from the later block still does
+    //!   not shadow (`User alice,carol User bob,carol` ANDs to `carol`, disjoint
+    //!   from a later `alice`).
+    //! - A non-empty intersection that overlaps the later block DOES shadow.
+    //!
+    //! An impl that OR-unions the repeated criteria over-matches and false-fires;
+    //! `sshd -T -C` on OpenSSH 10.2p1 confirms the AND (intersection) reading.
     //!
     //! # W07 fires only on FIRST-VALUE-WINS keywords set to DIFFERENT values
     //! Two further restrictions the pass must honor (each locked by a negative test):
@@ -3591,18 +3620,21 @@ mod w07_tests {
     }
 
     #[test]
-    fn overlapping_localport_lists_flag_w07() {
-        // LocalPort is a numeric comma-list (OR within the criterion, same as
-        // User/Host name-lists). `22,2222` and `2222` share port 2222, so a
-        // connection arriving on local port 2222 satisfies both blocks.
+    fn same_single_localport_flags_w07() {
+        // A valid `Match LocalPort` value is a SINGLE port: sshd parses it with
+        // `a2port`, which accepts exactly one port and REJECTS comma-lists
+        // (`Match LocalPort 22,2222` -> "Invalid LocalPort '22,2222' on Match line",
+        // rc 255, verified on OpenSSH 9.9p1 + 10.2p1). So on valid configs LocalPort
+        // overlap is single-port equality: two `Match LocalPort 2222` blocks accept
+        // the same port and co-satisfy, shadowing the later value.
         let d = w07_diags(
-            "Match LocalPort 22,2222\n    X11Forwarding yes\n\
+            "Match LocalPort 2222\n    X11Forwarding yes\n\
              Match LocalPort 2222\n    X11Forwarding no\n",
         );
         assert_eq!(
             d.len(),
             1,
-            "intersecting LocalPort lists co-satisfy -> one W07"
+            "identical single LocalPort co-satisfies -> one W07"
         );
         assert_eq!(d[0].line, 4);
     }
@@ -3711,46 +3743,13 @@ mod w07_tests {
         assert_eq!(d[0].line, 4);
     }
 
-    // ---- POSITIVE + NEGATIVE: LocalPort negation is negation-aware, like CIDR ----
-
-    #[test]
-    fn irrelevant_localport_negation_still_overlaps_flags_w07() {
-        // Port lists are negation-aware exactly like CIDR lists. `!443` carves out
-        // a port that is NOT in the shared set, so it is IRRELEVANT to this pair's
-        // overlap: both lists still admit 2222, so the blocks co-satisfy on it. An
-        // impl that treats any negated port entry as blanket non-overlapping wrongly
-        // clears this pair (the LocalPort analogue of
-        // `irrelevant_negation_still_overlaps_flags_w07`).
-        let d = w07_diags(
-            "Match LocalPort 22,2222,!443\n    X11Forwarding yes\n\
-             Match LocalPort 2222\n    X11Forwarding no\n",
-        );
-        assert_eq!(
-            d.len(),
-            1,
-            "an irrelevant port negation does not prevent overlap"
-        );
-        assert_eq!(d[0].line, 4);
-    }
-
-    #[test]
-    fn full_localport_carveout_makes_blocks_disjoint_is_clean() {
-        // `!2222` fully carves out the ONLY port the two lists would otherwise
-        // share, so the effective sets ({22} vs {2222}) are disjoint - no
-        // connection arrives on a port that satisfies both blocks, so the second is
-        // never shadowed even though the values differ (yes vs no). The LocalPort
-        // analogue of `negated_cidr_carveout_makes_blocks_disjoint_is_clean`, and a
-        // regression lock that a negation which FULLY covers the intersection still
-        // yields disjoint (not overlap) for ports.
-        assert!(
-            w07_diags(
-                "Match LocalPort 22,2222,!2222\n    X11Forwarding yes\n\
-                 Match LocalPort 2222\n    X11Forwarding no\n",
-            )
-            .is_empty(),
-            "a full port carve-out makes the two LocalPort blocks disjoint"
-        );
-    }
+    // NOTE: LocalPort negation/comma-list tests were removed - sshd's `a2port`
+    // rejects both `Match LocalPort 22,2222` and any negated port with rc 255
+    // ("Invalid LocalPort ... on Match line", OpenSSH 9.9p1 + 10.2p1), so there is
+    // no VALID sshd config that exercises port-list negation. Valid LocalPort
+    // reasoning is single-port equality (see `same_single_localport_flags_w07` and
+    // `disjoint_localports_do_not_flag_w07`); any port-negation branch in the impl
+    // is defensive-only and unreachable on sshd-valid input.
 
     // ---- NEGATIVE: accepted v0.3 false negatives (documented, not implemented) ----
 
@@ -3862,6 +3861,140 @@ mod w07_tests {
             )
             .is_empty(),
             "two User criteria in one header are AND-ed (no user is both), so the block matches nobody"
+        );
+    }
+
+    // ---- NEGATIVE: a satisfiable-but-NARROWED repeated-criteria block whose
+    // ---- intersection is disjoint from the later block does not shadow (residual FP) ----
+
+    #[test]
+    fn narrowed_repeated_user_disjoint_from_later_is_clean() {
+        // Repeated same-type criteria AND, so a block's effective match set is the
+        // INTERSECTION of its instances. `User alice,carol User bob,carol` ANDs
+        // {alice,carol} with {bob,carol} = just `carol`. The later block is `alice`;
+        // carol != alice, so NO connection satisfies both -> no shadow. GROUND TRUTH
+        // (`sshd -T` on OpenSSH 10.2p1 with the exact fixture): user=alice ->
+        // x11forwarding no (later block applies; block-0 does NOT match alice),
+        // user=carol -> yes (block-0 applies), so the two never both apply. An impl
+        // that OR-unions the repeated criteria to {alice,carol,bob} wrongly overlaps
+        // on alice and false-fires. (Currently RED until the intersection fix lands.)
+        assert!(
+            w07_diags(
+                "Match User alice,carol User bob,carol\n    X11Forwarding yes\n\
+                 Match User alice\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "block-0's AND-intersection is carol only, disjoint from the later `alice`; no shadow"
+        );
+    }
+
+    #[test]
+    fn narrowed_repeated_address_disjoint_from_later_is_clean() {
+        // Address criteria AND the same way. `Address 10.0.0.0/8 Address 10.0.0.0/16`
+        // ANDs to the tighter `10.0.0.0/16` (in /8 AND in /16). The later block is
+        // 10.5.0.0/16, which is disjoint from 10.0.0.0/16, so no source address
+        // satisfies both. GROUND TRUTH (`sshd -T` on 10.2p1): addr 10.0.5.5 -> yes
+        // (block-0's /16 applies), addr 10.5.5.5 -> no (later applies); never both.
+        // An OR-union impl treats block-0 as the wider /8, wrongly overlaps 10.5.x,
+        // and false-fires. (Currently RED until the intersection fix lands.)
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8 Address 10.0.0.0/16\n    X11Forwarding yes\n\
+                 Match Address 10.5.0.0/16\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "block-0's AND-intersection is 10.0.0.0/16, disjoint from the later 10.5.0.0/16"
+        );
+    }
+
+    // ---- POSITIVE: a satisfiable narrowed repeated-criteria block that STILL
+    // ---- overlaps the later block shadows it (intersection is non-empty + shared) ----
+
+    #[test]
+    fn narrowed_repeated_user_overlapping_later_flags_w07() {
+        // `User alice,carol User carol` ANDs {alice,carol} with {carol} = `carol`
+        // (a non-empty match set). The later block is `carol`, so a carol connection
+        // satisfies BOTH -> the later value is shadowed. Confirms the intersection is
+        // computed correctly (block matches somebody) AND that the somebody overlaps
+        // the later block.
+        let d = w07_diags(
+            "Match User alice,carol User carol\n    X11Forwarding yes\n\
+             Match User carol\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block-0 ANDs to carol, which co-satisfies the later carol block -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn narrowed_repeated_address_overlapping_later_flags_w07() {
+        // `Address 10.0.0.0/8 Address 10.1.0.0/16` ANDs to the tighter `10.1.0.0/16`.
+        // 10.1.2.3 is inside 10.1.0.0/16 (block-0) AND is the later block, so a
+        // connection from 10.1.2.3 satisfies both -> shadow.
+        let d = w07_diags(
+            "Match Address 10.0.0.0/8 Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match Address 10.1.2.3\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block-0 ANDs to 10.1.0.0/16, which contains the later 10.1.2.3 -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn repeated_same_localport_criteria_overlapping_later_flags_w07() {
+        // Two `LocalPort 2222` criteria in one header AND to port 2222 (each is a
+        // single valid `a2port`; the intersection of {2222} with {2222} is {2222}).
+        // The later block is 2222, so a connection on port 2222 satisfies both ->
+        // shadow. Valid sshd form (space-separated repeated criteria, single ports).
+        let d = w07_diags(
+            "Match LocalPort 2222 LocalPort 2222\n    X11Forwarding yes\n\
+             Match LocalPort 2222\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "repeated LocalPort 2222 ANDs to 2222, co-satisfying the later block -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    // ---- NEGATIVE: a repeated-criteria block whose instances are mutually
+    // ---- exclusive matches NOBODY, so it can never shadow ----
+
+    #[test]
+    fn repeated_disjoint_address_criteria_match_nobody_is_clean() {
+        // `Address 10.0.0.0/8 Address 192.168.0.0/16` ANDs two disjoint ranges, whose
+        // intersection is EMPTY, so block-0 matches nobody and cannot shadow the
+        // later 10.1.2.3 block. Exercises the "block matches nobody" path for Address.
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8 Address 192.168.0.0/16\n    X11Forwarding yes\n\
+                 Match Address 10.1.2.3\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "10.0.0.0/8 AND 192.168.0.0/16 is empty -> block-0 matches nobody"
+        );
+    }
+
+    #[test]
+    fn repeated_disjoint_localport_criteria_match_nobody_is_clean() {
+        // A connection arrives on exactly ONE local port, so `LocalPort 22 LocalPort
+        // 2222` (AND-ed) is unsatisfiable: no port is both 22 and 2222. Block-0
+        // matches nobody and cannot shadow the later 2222 block. Exercises the
+        // "block matches nobody" path for LocalPort on a valid sshd form.
+        assert!(
+            w07_diags(
+                "Match LocalPort 22 LocalPort 2222\n    X11Forwarding yes\n\
+                 Match LocalPort 2222\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "LocalPort 22 AND LocalPort 2222 is impossible -> block-0 matches nobody"
         );
     }
 
