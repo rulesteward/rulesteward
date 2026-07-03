@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `+` or `^` and names a weak (sshd-W03 denylisted) algorithm, reintroducing it into
   the OpenSSH built-in default set. Conservative and target-independent; `-`
   (removal) is hardening and is never flagged. (#244)
+- `sshd lint` sshd-W07: flags a first-value-wins directive set to DIFFERENT values in
+  two simultaneously-satisfiable `Match` blocks - sshd applies only the first block's
+  value and silently drops the later (shadowed) one. Overlap is decided conservatively
+  from the criteria pattern text (no NSS/DNS): negation-aware for name and CIDR lists,
+  AND-aware (intersection) for a criterion type repeated in one header, and an
+  unconditional `Match all` participates as a shadower (never a shadowEE). Accepted
+  conservative false negatives (cross-type `User`/`Group`, wildcard-vs-wildcard,
+  sub-population partitions, and repeated CIDR/port criteria carrying a negation) are
+  documented in-code. (#302)
 - `sshd lint <dir>`: a directory target lints the standard `/etc/ssh` layout (main
   `sshd_config` plus a `sshd_config.d/*.conf` drop-in directory) and runs the new
   cross-file sshd-F02 (Fatal) check: a drop-in whose baseline-failing value wins by
