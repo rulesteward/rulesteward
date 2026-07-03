@@ -569,10 +569,11 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 /// told apart from three other colons (all grounded against `visudo`/`cvtsudoers`,
 /// sudo 1.9.17p2 - see #345):
 ///   * the runas-group colon inside `(runas_users:runas_groups)` - suppressed by paren
-///     `depth`. A `(` bumps `depth` ONLY at a `Cmnd_Spec` start (the runas position,
-///     after `=` or a top-level `,`); a bare mid-command `(` (e.g. `/bin/echo a(b`) is a
-///     literal byte and does NOT desync `depth` (#416). So only a depth-0 colon can
-///     separate;
+///     `depth`. A `(` bumps `depth` ONLY at a `Cmnd_Spec` start (the runas position: after
+///     the host-group's STRUCTURAL `Host_List = Cmnd_Spec_List` `=`, or after a top-level
+///     `,` in that command list). A bare mid-command `(` - including one right after a
+///     command-argument `=` (`/bin/echo a(b`, `/bin/echo X=(y`) - is a literal byte and
+///     does NOT desync `depth` (#416). So only a depth-0 colon can separate;
 ///   * a literal colon inside a command/argument - sudo REQUIRES it to be
 ///     backslash-escaped (`\:`; an unescaped `:` in a command is a syntax error), so
 ///     the char after a backslash is skipped;
@@ -590,16 +591,25 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut tok_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
-    // A `(` opens a runas group ONLY at a `Cmnd_Spec` START (the runas position). The
-    // command list begins after `=`; each later `Cmnd_Spec` starts after a top-level `,`.
-    // `at_cmnd_start` is true from such a boundary through leading whitespace until the
-    // first non-whitespace char: a `(` there is a runas opener (bumps `depth`, so a
-    // `(u:g)` runas colon is suppressed), any other char means the command word has begun
-    // so every later `(` in the spec is a literal byte. This REPLACES the old quote
-    // tracking: in valid sudoers a top-level `:` is never inside a balanced quote
-    // (`/bin/echo "a:b"` is visudo-REJECTED) and a mid-command `(` no longer desyncs
-    // `depth` (#416). A tag cannot precede the runas group (`NOPASSWD: (root) ...` is
-    // visudo-REJECTED), so the runas `(` is always the spec's first non-whitespace char.
+    // A `(` opens a runas group ONLY at a `Cmnd_Spec` START (the runas position), which
+    // exists ONLY inside the Cmnd_Spec_List - i.e. AFTER the host-group's structural
+    // `Host_List = Cmnd_Spec_List` `=`. `in_cmnd_list` tracks whether the cursor is past
+    // that structural `=` within the current host-group: it starts false and resets false
+    // at each top-level `:` (a `:` opens a new host-group whose Host_List comes first).
+    // Only the FIRST top-level `=` per host-group is structural; a later `=` is a literal
+    // byte inside a command argument (`X=(y`) and must NOT re-arm the runas position, else
+    // its `(` desyncs `depth` and swallows the next top-level `:` -- the #416 colon-splitter
+    // miss (a `(` right after a command-arg `=` was read as a runas opener).
+    let mut in_cmnd_list = false;
+    // `at_cmnd_start` is true from a `Cmnd_Spec` boundary (the structural `=`, or a
+    // top-level `,` while in the command list) through leading whitespace until the first
+    // non-whitespace char: a `(` there is a runas opener (bumps `depth`, so a `(u:g)`
+    // runas colon is suppressed), any other char means the command word has begun so every
+    // later `(` in the spec is a literal byte. This REPLACES the old quote tracking: in
+    // valid sudoers a top-level `:` is never inside a balanced quote (`/bin/echo "a:b"` is
+    // visudo-REJECTED), and a tag cannot precede the runas group (`NOPASSWD: (root) ...` is
+    // visudo-REJECTED), so the runas `(` is always the spec's first non-whitespace char
+    // (grounded on sudo 1.9.17p2, #416).
     let mut at_cmnd_start = false;
 
     for (i, c) in s.char_indices() {
@@ -636,16 +646,26 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
             }
             ',' => {
                 tok_start = i + c.len_utf8();
-                // A top-level (depth-0) comma starts the next `Cmnd_Spec`, whose runas
-                // `(` sits at the next non-whitespace char; a comma inside a runas group
-                // (depth > 0) is not a spec boundary.
-                if depth == 0 {
+                // A top-level (depth-0) comma starts the next `Cmnd_Spec` ONLY inside the
+                // command list, whose runas `(` sits at the next non-whitespace char. A
+                // comma in the Host_List (`h1, h2 = cmd`) has no runas position, and a
+                // comma inside a runas group (depth > 0) is not a spec boundary.
+                if depth == 0 && in_cmnd_list {
                     at_cmnd_start = true;
                 }
             }
             '=' => {
                 tok_start = i + c.len_utf8();
-                at_cmnd_start = true;
+                // Only the FIRST top-level `=` of a host-group is the structural
+                // `Host_List = Cmnd_Spec_List` separator; it opens the command list and
+                // arms the first `Cmnd_Spec`'s runas position. A later `=` is a literal
+                // byte inside a command argument and must NOT re-arm `at_cmnd_start` (the
+                // #416 colon-splitter fix). The `tok_start` reset stays UNCONDITIONAL so
+                // tag detection (e.g. `host=NOPASSWD:`) is unaffected.
+                if !in_cmnd_list {
+                    in_cmnd_list = true;
+                    at_cmnd_start = true;
+                }
             }
             ':' if depth == 0 => {
                 let preceding = s[tok_start..i].trim();
@@ -656,12 +676,13 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 } else {
                     // A genuine top-level segment separator. `tok_start = i + 1` resets
                     // the preceding-token start for the next segment; the next segment
-                    // opens with a Host_List (not a `Cmnd_Spec`), so `at_cmnd_start` stays
-                    // false until that segment's `=`.
+                    // opens with a Host_List (not a `Cmnd_Spec`), so both `at_cmnd_start`
+                    // and `in_cmnd_list` reset until that segment's structural `=`.
                     segments.push(s[seg_start..i].trim());
                     seg_start = i + 1;
                     tok_start = i + 1;
                     at_cmnd_start = false;
+                    in_cmnd_list = false;
                 }
             }
             _ => at_cmnd_start = false,
@@ -709,6 +730,13 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 /// `/bin/echo "x, /bin/su` into two commands). A `"` is thus a literal command byte, and a
 /// quoted `(` is mid-command so it never reaches `depth` anyway. This fixed the old quote
 /// tracker (#416) that merged two `Cmnd_Spec`s past an unbalanced quote, hiding a grant.
+///
+/// Unlike [`split_top_level_segments`], this splitter receives ONLY the `Cmnd_Spec_List`
+/// (the `rhs` after the structural `=`), so it has no `=` arm at all: a command-argument
+/// `=` (`X=(y`) is a plain literal byte here and never re-arms `at_spec_start`. The runas
+/// position is armed only at the string start and after a top-level `,`. (The colon
+/// splitter, which DOES see the structural `=`, must instead re-arm only on the FIRST `=`
+/// per host-group - see its `in_cmnd_list` - or the same `=(` would desync there; #416.)
 ///
 /// The backslash is kept VERBATIM in the value, matching the `\:` precedent (the
 /// lints do not inspect argument contents). Segments are trimmed, mirroring
@@ -1969,6 +1997,56 @@ mod tests {
                 "localhost = /bin/ls"
             ],
             "a runas-group colon after a top-level comma must not split (#416 regression)"
+        );
+    }
+
+    // ---- #416 (colon splitter, round 2): a `=` INSIDE a command argument must NOT
+    //      re-arm the runas position. Only the FIRST top-level `=` of a host-group is the
+    //      structural `Host_List = Cmnd_Spec_List` separator; a later `=(` in a command
+    //      arg was re-arming `at_cmnd_start`, so the `(` bumped `depth` and swallowed the
+    //      next top-level `:` -> two host-groups merged -> the 2nd group's `NOPASSWD:`
+    //      grant was hidden (a sudo-W05 FALSE NEGATIVE). Every case is `visudo -c` rc 0
+    //      and `cvtsudoers -f json` (sudo 1.9.17p2) yields TWO host-groups, the 2nd
+    //      (`/bin/su`) passwordless.
+
+    #[test]
+    fn mid_command_eq_paren_does_not_swallow_the_segment_colon() {
+        // `alice ALL = /bin/echo X=(y : ALL = NOPASSWD: /bin/su` (visudo -c rc 0):
+        // cvtsudoers -f json = TWO host-groups {ALL -> `/bin/echo X=(y`} and {ALL ->
+        // NOPASSWD /bin/su}. The `=` in the command arg `X=(y` must NOT re-arm the runas
+        // position, so the `(` stays a literal byte and the top-level `:` still splits.
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo X=(y : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1 = /bin/echo X=(y", "h2 = NOPASSWD: /bin/su"],
+            "a mid-command `=(` must not desync depth and swallow the `:` separator (#416)"
+        );
+    }
+
+    #[test]
+    fn quoted_mid_command_eq_paren_does_not_swallow_the_segment_colon() {
+        // Quoted twin: `alice ALL = /bin/echo "a=(b" : ALL = NOPASSWD: /bin/su` (visudo -c
+        // rc 0): cvtsudoers -f json = TWO host-groups, the 2nd passwordless. With no quote
+        // tracking, the `=` inside the quoted arg still must not re-arm the runas position
+        // (the reason a quoted `(` here is harmless is that the preceding `=` no longer
+        // re-arms, NOT that quotes are tracked).
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo \"a=(b\" : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1 = /bin/echo \"a=(b\"", "h2 = NOPASSWD: /bin/su"],
+            "a quoted mid-command `=(` must not swallow the `:` separator (#416)"
+        );
+    }
+
+    #[test]
+    fn real_runas_group_then_mid_command_eq_paren_still_splits() {
+        // Regression guard: a REAL runas group at the Cmnd_Spec start followed by a
+        // mid-command `=(` in the same command. `alice ALL = (root) /bin/echo X=(y : ALL =
+        // NOPASSWD: /bin/su` (visudo -c rc 0) is TWO host-groups (cvtsudoers -f json). The
+        // structural `=` arms the runas position, `(root)` is a real runas group (depth
+        // 1->0), and the later `=(` inside the command arg must not re-arm it.
+        assert_eq!(
+            split_top_level_segments("h1 = (root) /bin/echo X=(y : h2 = ALL", false),
+            vec!["h1 = (root) /bin/echo X=(y", "h2 = ALL"],
+            "a mid-command `=(` after a real runas group must not swallow the `:` (#416)"
         );
     }
 }

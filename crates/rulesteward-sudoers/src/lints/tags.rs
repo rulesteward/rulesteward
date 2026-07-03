@@ -1147,6 +1147,31 @@ mod w05_tests {
         );
     }
 
+    #[test]
+    fn w05_fires_past_a_mid_command_eq_paren_hiding_a_host_group_grant() {
+        // #416 round 2 (colon splitter): a command arg `X=(y` re-armed the runas position
+        // at the `=`, so the `(` desynced `depth` and swallowed the top-level `:`, hiding
+        // the second host-group's grant. `alice ALL = /bin/echo X=(y : ALL = NOPASSWD:
+        // /bin/su` (visudo -c rc 0). cvtsudoers -f json: TWO host-groups, 2nd (`/bin/su`)
+        // passwordless -> exactly one W05.
+        assert_eq!(
+            w05_count("alice ALL = /bin/echo X=(y : ALL = NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the grant hidden past a mid-command `=(` across `:` (#416)"
+        );
+    }
+
+    #[test]
+    fn w05_fires_past_a_quoted_eq_paren_hiding_a_host_group_grant() {
+        // Quoted twin of the above: `alice ALL = /bin/echo "a=(b" : ALL = NOPASSWD:
+        // /bin/su` (visudo -c rc 0). cvtsudoers -f json: TWO host-groups, 2nd passwordless.
+        assert_eq!(
+            w05_count("alice ALL = /bin/echo \"a=(b\" : ALL = NOPASSWD: /bin/su\n"),
+            1,
+            "W05 must fire on the grant hidden past a quoted `=(` across `:` (#416)"
+        );
+    }
+
     // ---- DEDUP: a NOPASSWD-on-ALL line is W01's, never also W05 ----
 
     /// `alice ALL = NOPASSWD: ALL` (visudo -c -f rc 0): the literal reserved `ALL`
