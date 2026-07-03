@@ -580,24 +580,35 @@ pub fn w05(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
 /// [`E02_ALLOW_REPEAT`] set sshd-E02 already maintains) union across blocks rather
 /// than shadow, so a repeat drops nothing. Same-value repeats are redundant, not a
 /// shadow. The LATER instance is flagged, matching sshd-E02's convention.
-/// Unconditional `Match all` is global context (see
-/// [`super::is_unconditional_match_all`]), not a per-connection block, so it never
-/// participates.
+///
+/// Unconditional `Match all` is ALWAYS satisfied, so it participates as an earliest
+/// SHADOWER: `Match all K=v` followed by a later conditional `Match ... K=w` (w != v)
+/// drops the later value for every connection (verified `sshd -T -C user=bob` on
+/// OpenSSH 9.9p1). But by the conservative v0.3 scope a `Match all` block is never
+/// itself flagged as a shadowEE - a `Match all` appearing after a conditional stays
+/// the effective default for the connections the conditional does not cover, the
+/// intended default-plus-exception idiom, not a hazard (owner-decided; #302, #403).
 #[must_use]
 pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
-    // The conditional Match blocks in source order. `Match all` is always active,
-    // so its body is global context, not a per-connection override; it cannot be
-    // one of two simultaneously-satisfiable Match instances.
+    // Every Match block in source order, INCLUDING `Match all`: it is always
+    // satisfied, so it can be the earliest block that sets (and thus keeps) a
+    // first-value-wins keyword a later conditional block then re-sets.
     let match_blocks: Vec<&MatchBlock> = blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Match(m) if !super::is_unconditional_match_all(m) => Some(m),
-            _ => None,
+            Block::Match(m) => Some(m),
+            Block::Global(_) => None,
         })
         .collect();
 
     let mut diags = Vec::new();
     for (j, later) in match_blocks.iter().enumerate() {
+        // A `Match all` block is a shadowER, never a shadowEE (owner-decided v0.3
+        // scope): being overridden for the users an earlier conditional covers is
+        // the intended default-plus-exception idiom, so it is never itself flagged.
+        if super::is_unconditional_match_all(later) {
+            continue;
+        }
         // The first occurrence of a keyword defines a block's effective value
         // (first-value-wins within the block), so only that first instance can be
         // the one an earlier block shadows.
@@ -657,12 +668,26 @@ fn first_value_for<'a>(block: &'a MatchBlock, keyword_lower: &str) -> Option<&'a
 /// Whether two `Match` blocks can be satisfied by ONE connection, decided
 /// conservatively from their criteria pattern text (no NSS / DNS resolution).
 ///
-/// The blocks overlap only when they constrain the SAME set of criterion types and
-/// every shared type's patterns can co-apply. Requiring an identical type set is
-/// the conservative reading of the v0.3 contract: any asymmetry in criterion types
-/// (including a pure CROSS-type pair like `User` vs `Group`) is left clean rather
-/// than guessing a membership relation a static linter cannot know (#400).
+/// A block that matches NOBODY (a criterion type repeated on its header with no
+/// common witness - `sshd_config(5)`: all criteria on the line are AND-ed) can
+/// never co-satisfy anything, so any pair involving one is disjoint. An
+/// unconditional `Match all` matches EVERY connection, so it overlaps any
+/// satisfiable block. Otherwise the blocks overlap only when they constrain the
+/// SAME set of criterion types and every shared type's patterns can co-apply.
+/// Requiring an identical type set is the conservative reading of the v0.3
+/// contract: any asymmetry in criterion types (including a pure CROSS-type pair
+/// like `User` vs `Group`) is left clean rather than guessing a membership relation
+/// a static linter cannot know (#400).
 fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
+    // A nobody-block co-satisfies nothing (checked first so a `Match all` does not
+    // overlap an impossible block).
+    if block_matches_nobody(a) || block_matches_nobody(b) {
+        return false;
+    }
+    // `Match all` is always satisfied, so it overlaps any satisfiable block.
+    if super::is_unconditional_match_all(a) || super::is_unconditional_match_all(b) {
+        return true;
+    }
     let a_types = criteria_by_type(a);
     let b_types = criteria_by_type(b);
     if a_types.len() != b_types.len() {
@@ -673,6 +698,94 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
             .get(kind)
             .is_some_and(|b_values| criterion_overlap(kind, a_values, b_values))
     })
+}
+
+/// Whether a `Match` block can be satisfied by NO connection. `sshd_config(5)`
+/// AND-s all criteria on a header, so a criterion TYPE repeated on the same header
+/// requires ONE connection to satisfy every instance of that type at once (e.g.
+/// `Match User alice User bob` needs user == alice AND user == bob - impossible).
+/// A block matches nobody iff some repeated type has no single common witness.
+///
+/// Types appearing only once are assumed satisfiable (a single criterion normally
+/// admits someone). An unmodeled repeated type is also assumed satisfiable
+/// (conservative: `criterion_overlap` returns no-overlap for it anyway, so treating
+/// it as satisfiable never manufactures a finding). Reasoning per repeated type from
+/// the block's OWN criteria only makes this independent of the other block.
+fn block_matches_nobody(block: &MatchBlock) -> bool {
+    let mut by_type: BTreeMap<String, Vec<&[String]>> = BTreeMap::new();
+    for criterion in &block.criteria {
+        by_type
+            .entry(criterion.keyword.to_ascii_lowercase())
+            .or_default()
+            .push(criterion.values.as_slice());
+    }
+    by_type
+        .iter()
+        .filter(|(_, instances)| instances.len() >= 2)
+        .any(|(kind, instances)| !criterion_instances_have_common_witness(kind, instances))
+}
+
+/// Whether ONE value satisfies EVERY instance of a repeated criterion type (i.e.
+/// the AND across the repeated instances is non-empty). Mirrors the per-type
+/// overlap machinery [`criterion_overlap`] uses, but folds the block's own repeated
+/// instances rather than two blocks' value lists.
+fn criterion_instances_have_common_witness(kind: &str, instances: &[&[String]]) -> bool {
+    match kind {
+        "user" | "group" | "host" => name_instances_have_common_witness(instances),
+        "address" | "localaddress" => cidr_instances_have_common_address(instances),
+        "localport" => port_instances_have_common_port(instances),
+        // Unmodeled type: assume satisfiable (never manufactures a finding).
+        _ => true,
+    }
+}
+
+/// Whether one name satisfies EVERY `match_pattern_list` instance at once. Reuses
+/// the literals-plus-FRESH witness set of [`pattern_lists_overlap`]: a name admitted
+/// by all instances is either a listed literal or some fresh name, so testing every
+/// literal plus one sentinel decides it. (A witness that only a wildcard-vs-wildcard
+/// pairing would admit is the documented v0.3 accepted false negative.)
+fn name_instances_have_common_witness(instances: &[&[String]]) -> bool {
+    const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
+    let mut candidates: Vec<&str> = Vec::new();
+    for values in instances {
+        for value in *values {
+            let literal = value.strip_prefix('!').unwrap_or(value);
+            if !literal.is_empty() && !literal.contains(['*', '?']) {
+                candidates.push(literal);
+            }
+        }
+    }
+    candidates.push(FRESH);
+    candidates.iter().any(|name| {
+        instances
+            .iter()
+            .all(|values| match_pattern_list(name, values))
+    })
+}
+
+/// Whether one address lies in a positive net of EVERY `Address`/`LocalAddress`
+/// instance at once. CIDR blocks nest or are disjoint, so a positive net `c` is
+/// shared by all instances iff every instance has a positive net that CONTAINS `c`
+/// (a supernet-or-equal). Negated entries are ignored (they only shrink the match
+/// set, so ignoring them is false-negative-leaning, never false-positive-leaning).
+fn cidr_instances_have_common_address(instances: &[&[String]]) -> bool {
+    let per_instance: Vec<Vec<(IpAddr, u8)>> =
+        instances.iter().map(|v| parse_cidr_list(v)).collect();
+    per_instance.iter().flatten().any(|&c| {
+        per_instance
+            .iter()
+            .all(|nets| nets.iter().any(|&n| n.1 <= c.1 && cidr_intersects(n, c)))
+    })
+}
+
+/// Whether one port is in the positive set of EVERY `LocalPort` instance at once.
+/// Negated entries are ignored (false-negative-leaning, never false-positive).
+fn port_instances_have_common_port(instances: &[&[String]]) -> bool {
+    let per_instance: Vec<Vec<u32>> = instances.iter().map(|v| parse_port_list(v)).collect();
+    per_instance
+        .iter()
+        .flatten()
+        .any(|p| per_instance.iter().all(|ports| ports.contains(p)))
 }
 
 /// Group a `Match` header's criteria by lowercased criterion keyword, unioning the
