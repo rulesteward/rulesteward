@@ -299,26 +299,28 @@ fn algo_list_value(args: &[String]) -> Option<String> {
     Some(raw)
 }
 
-/// Returns the leading algorithm-list operator (`+`, `-`, or `^`) carried by
-/// an algorithm-list value's FIRST comma-split token, or `None` if that token
-/// has no operator (a bare, full-replacement list).
+/// Returns the leading algorithm-list operator (`+`, `-`, or `^`) of the given
+/// token, or `None` if the token has no leading operator. Pure and correct for
+/// ANY token; the caller decides which token to pass and what to conclude.
 ///
 /// Per `sshd_config(5)` (Rocky Linux 9 / OpenSSH 9.9p1, primary source,
 /// verified 2026-06-26; re-verified via `sshd -T`, OpenSSH 10.2p1,
-/// 2026-07-03), a leading `-`/`+`/`^` on an algorithm-list value's first
-/// token marks the WHOLE list as REMOVE-from (`-`), APPEND-to (`+`), or
-/// PREPEND-to (`^`) OpenSSH's built-in default set, rather than a full
-/// replacement. Only the first comma-split token carries the operator (the
-/// tokenizer joins a well-formed algorithm-list value into a single arg; see
-/// [`algo_list_value`]), so callers must pass that value's first comma-split
-/// token, not an arbitrary token.
+/// 2026-07-03), a leading `-`/`+`/`^` is MEANINGFUL only on an algorithm-list
+/// value's FIRST comma-split token, where it marks the WHOLE list as REMOVE-from
+/// (`-`), APPEND-to (`+`), or PREPEND-to (`^`) OpenSSH's built-in default set
+/// rather than a full replacement; on any later token a leading operator is a
+/// malformed / inert token (see [`algo_list_value`] Step 6). This function does
+/// not encode that positional meaning -- it is a plain "does this token lead
+/// with an operator?" predicate.
 ///
-/// Shared by [`w03_directive`] (which defers entirely on any operator-prefixed
-/// list -- `-` is hardening and never W03's domain; `+`/`^` reintroduction is
-/// W06's domain) and [`w06`] (which strips the operator to check the
-/// reintroduced algorithm), so the two lints agree on operator detection.
-fn leading_operator(first_token: &str) -> Option<char> {
-    match first_token.trim_ascii().chars().next() {
+/// Callers decide which token to pass:
+/// - [`w03_directive`] and [`w06`] pass the value's FIRST comma-split token to
+///   classify the whole list's head (bare -> W03's domain; `-` -> hardening;
+///   `+`/`^` -> W06's reintroduction domain).
+/// - [`algo_list_value`]'s Step-6 guard passes each LATER comma token to detect
+///   a stray mid-list operator (which makes the value non-loadable or inert).
+fn leading_operator(token: &str) -> Option<char> {
+    match token.trim_ascii().chars().next() {
         Some(op @ ('+' | '-' | '^')) => Some(op),
         _ => None,
     }
@@ -1066,9 +1068,10 @@ mod w06_tests {
         // never loads, so W06 must not report a reintroduction. Before the
         // `algo_list_value` Step-6 guard, W06 fired once (on the valid head
         // `+aes128-cbc`). W06 must now stay silent on the non-loading line.
+        let diags = run("Ciphers +aes128-cbc,+aes192-cbc\n");
         assert!(
-            run("Ciphers +aes128-cbc,+aes192-cbc\n").is_empty(),
-            "double-operator list is sshd-invalid (rc 255); W06 must not fire"
+            diags.is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W06 must not fire, got: {diags:?}"
         );
     }
 
@@ -1093,9 +1096,11 @@ mod w06_tests {
     fn minus_head_inert_plus_tail_ciphers_does_not_fire_w06() {
         // `-`-head loadable line (rc 0), inert `+aes192-cbc` tail: W06 must be
         // silent (never fires on a `-` head; nothing reintroduced).
+        let diags = run("Ciphers -aes128-cbc,+aes192-cbc\n");
         assert!(
-            run("Ciphers -aes128-cbc,+aes192-cbc\n").is_empty(),
-            "a `-`-head list loads (rc 0) with the `+`-tail inert; W06 must not fire"
+            diags.is_empty(),
+            "a `-`-head list loads (rc 0) with the `+`-tail inert; W06 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -1103,9 +1108,11 @@ mod w06_tests {
     fn minus_head_inert_plus_tail_macs_does_not_fire_w06() {
         // MACs family: `-`-head loadable line (rc 0), inert `+hmac-md5` tail.
         // W06 must be silent.
+        let diags = run("MACs -hmac-sha2-256,+hmac-md5\n");
         assert!(
-            run("MACs -hmac-sha2-256,+hmac-md5\n").is_empty(),
-            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W06 must not fire"
+            diags.is_empty(),
+            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W06 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -2889,28 +2896,33 @@ mod w03_tests {
         // `+` on the 3rd token under a BARE head: sshd rejects the whole spec
         // (rc 255). The weak 2nd token `aes128-cbc` would otherwise fire; W03
         // must stay silent.
+        let diags = run("Ciphers aes128-ctr,aes128-cbc,+aes192-cbc\n");
         assert!(
-            run("Ciphers aes128-ctr,aes128-cbc,+aes192-cbc\n").is_empty(),
+            diags.is_empty(),
             "mid-list `+` under a bare head makes the whole line sshd-invalid (rc 255); \
-             W03 must not fire"
+             W03 must not fire, got: {diags:?}"
         );
     }
 
     #[test]
     fn ciphers_mid_list_minus_operator_does_not_fire_w03() {
         // `-` on the 3rd token: sshd rejects the whole spec (rc 255).
+        let diags = run("Ciphers aes256-ctr,aes128-cbc,-aes192-cbc\n");
         assert!(
-            run("Ciphers aes256-ctr,aes128-cbc,-aes192-cbc\n").is_empty(),
-            "mid-list `-` makes the whole line sshd-invalid (rc 255); W03 must not fire"
+            diags.is_empty(),
+            "mid-list `-` makes the whole line sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
         );
     }
 
     #[test]
     fn ciphers_mid_list_caret_operator_does_not_fire_w03() {
         // `^` on the 3rd token: sshd rejects the whole spec (rc 255, grounded).
+        let diags = run("Ciphers aes256-ctr,aes128-cbc,^aes192-cbc\n");
         assert!(
-            run("Ciphers aes256-ctr,aes128-cbc,^aes192-cbc\n").is_empty(),
-            "mid-list `^` makes the whole line sshd-invalid (rc 255); W03 must not fire"
+            diags.is_empty(),
+            "mid-list `^` makes the whole line sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -2918,9 +2930,11 @@ mod w03_tests {
     fn macs_mid_list_plus_operator_does_not_fire_w03() {
         // MACs family, `+` on a non-first token: rc 255 "Bad SSH2 mac spec".
         // The weak 2nd token `hmac-md5` would otherwise fire; W03 must stay silent.
+        let diags = run("MACs hmac-sha2-256,hmac-md5,+hmac-sha1\n");
         assert!(
-            run("MACs hmac-sha2-256,hmac-md5,+hmac-sha1\n").is_empty(),
-            "mid-list `+` on a MACs line makes it sshd-invalid (rc 255); W03 must not fire"
+            diags.is_empty(),
+            "mid-list `+` on a MACs line makes it sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -2931,9 +2945,10 @@ mod w03_tests {
         // already silent on the leading `+` (deferring to W06), but pin that the
         // Step-6 guard keeps it silent even though the head operator alone would
         // defer.
+        let diags = run("Ciphers +aes128-cbc,+aes192-cbc\n");
         assert!(
-            run("Ciphers +aes128-cbc,+aes192-cbc\n").is_empty(),
-            "double-operator list is sshd-invalid (rc 255); W03 must not fire"
+            diags.is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W03 must not fire, got: {diags:?}"
         );
     }
 
@@ -2965,9 +2980,11 @@ mod w03_tests {
     fn minus_head_inert_plus_tail_ciphers_does_not_fire_w03() {
         // `-`-head loadable line (rc 0), inert `+aes192-cbc` tail -- nothing
         // weak reintroduced. W03 must be silent (defers on the `-` head).
+        let diags = run("Ciphers -aes128-cbc,+aes192-cbc\n");
         assert!(
-            run("Ciphers -aes128-cbc,+aes192-cbc\n").is_empty(),
-            "a `-`-head list loads (rc 0) with the `+`-tail inert; W03 must not fire"
+            diags.is_empty(),
+            "a `-`-head list loads (rc 0) with the `+`-tail inert; W03 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -2975,9 +2992,11 @@ mod w03_tests {
     fn minus_head_inert_plus_tail_macs_does_not_fire_w03() {
         // MACs family: `-`-head loadable line (rc 0), inert `+hmac-md5` tail.
         // W03 must be silent.
+        let diags = run("MACs -hmac-sha2-256,+hmac-md5\n");
         assert!(
-            run("MACs -hmac-sha2-256,+hmac-md5\n").is_empty(),
-            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W03 must not fire"
+            diags.is_empty(),
+            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W03 must not fire, \
+             got: {diags:?}"
         );
     }
 }
