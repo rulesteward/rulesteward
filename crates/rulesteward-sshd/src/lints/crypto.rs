@@ -258,6 +258,26 @@ fn algo_list_value(args: &[String]) -> Option<String> {
         return None;
     }
 
+    // Step 6: reject a `+`/`-`/`^` operator on any NON-FIRST comma token. A
+    // leading operator is valid ONLY on the whole value's first token, where it
+    // marks the list as append/remove/prepend against the built-in default
+    // (`Ciphers +aes128-cbc,aes256-cbc` loads, rc 0). An operator that appears
+    // MID-LIST (`aes128-ctr,aes128-cbc,+aes192-cbc`, `...,-aes192-cbc`,
+    // `...,^aes192-cbc`) is not a valid algorithm name, and sshd rejects the
+    // ENTIRE spec (real `sshd -T`, OpenSSH 10.2p1: rc 255 "Bad SSH2
+    // cipher/mac/kex spec '<whole value>'"), so the directive never loads and
+    // must not be linted. This also covers the double-operator form
+    // (`+aes128-cbc,+aes192-cbc`), whose SECOND token carries the stray
+    // operator (rc 255). Only the first token's operator is checked+kept by
+    // `leading_operator` in `w03_directive`/`w06`; this guard removes the rest.
+    if raw
+        .split(',')
+        .skip(1)
+        .any(|tok| leading_operator(tok).is_some())
+    {
+        return None;
+    }
+
     Some(raw)
 }
 
@@ -1015,6 +1035,22 @@ mod w06_tests {
             diags[0].message.contains('+'),
             "message names the operator, got: {}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn double_operator_list_does_not_fire_w06() {
+        // `Ciphers +aes128-cbc,+aes192-cbc` (issue #402 sibling FP): the FIRST
+        // token's `+` is a valid append operator, but the SECOND token's stray
+        // `+aes192-cbc` is not a valid algorithm name, so sshd rejects the WHOLE
+        // spec (real `sshd -T`, OpenSSH 10.2p1, ephemeral HostKey, 2026-07-03:
+        // rc 255 "Bad SSH2 cipher spec '+aes128-cbc,+aes192-cbc'"). The line
+        // never loads, so W06 must not report a reintroduction. Before the
+        // `algo_list_value` Step-6 guard, W06 fired once (on the valid head
+        // `+aes128-cbc`). W06 must now stay silent on the non-loading line.
+        assert!(
+            run("Ciphers +aes128-cbc,+aes192-cbc\n").is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W06 must not fire"
         );
     }
 
@@ -2755,6 +2791,81 @@ mod w03_tests {
             run("Ciphers aes128-cbc,aes256-ctr\n").len(),
             1,
             "bare (no-operator) list is a full replacement; W03 must still fire on the weak entry"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mid-list operator makes the WHOLE line sshd-invalid (issue #402 sibling FP)
+    // -----------------------------------------------------------------------
+    //
+    // A `+`/`-`/`^` operator is valid ONLY on the value's FIRST comma token
+    // (marking the whole list as append/remove/prepend vs the default). A
+    // leading operator on any LATER comma token is not a valid algorithm name,
+    // so sshd rejects the ENTIRE spec (rc 255) and the directive never loads --
+    // it must not be linted, same invariant as the `"`/`#`/whitespace guards
+    // (#325/#377/#389/#392). Every #402 operator test above puts the operator on
+    // the FIRST token; these pin the non-first-token case that `algo_list_value`
+    // Step 6 rejects.
+    //
+    // Grounding: `sshd -T -f <fixture> -C user=x,host=x,addr=1.2.3.4` (OpenSSH
+    // 10.2p1, ephemeral ed25519 HostKey, verified 2026-07-03):
+    //   `Ciphers aes128-ctr,aes128-cbc,+aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes128-ctr,aes128-cbc,+aes192-cbc'"
+    //   `Ciphers aes256-ctr,aes128-cbc,-aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes256-ctr,aes128-cbc,-aes192-cbc'"
+    //   `Ciphers aes256-ctr,aes128-cbc,^aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes256-ctr,aes128-cbc,^aes192-cbc'"
+    //   `MACs hmac-sha2-256,hmac-md5,+hmac-sha1`
+    //     -> rc 255 "Bad SSH2 mac spec 'hmac-sha2-256,hmac-md5,+hmac-sha1'"
+
+    #[test]
+    fn ciphers_mid_list_plus_operator_does_not_fire_w03() {
+        // `+` on the 3rd token: sshd rejects the whole spec (rc 255). The weak
+        // 2nd token `aes128-cbc` would otherwise fire; W03 must stay silent.
+        assert!(
+            run("Ciphers aes128-ctr,aes128-cbc,+aes192-cbc\n").is_empty(),
+            "mid-list `+` makes the whole line sshd-invalid (rc 255); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_mid_list_minus_operator_does_not_fire_w03() {
+        // `-` on the 3rd token: sshd rejects the whole spec (rc 255).
+        assert!(
+            run("Ciphers aes256-ctr,aes128-cbc,-aes192-cbc\n").is_empty(),
+            "mid-list `-` makes the whole line sshd-invalid (rc 255); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_mid_list_caret_operator_does_not_fire_w03() {
+        // `^` on the 3rd token: sshd rejects the whole spec (rc 255, grounded).
+        assert!(
+            run("Ciphers aes256-ctr,aes128-cbc,^aes192-cbc\n").is_empty(),
+            "mid-list `^` makes the whole line sshd-invalid (rc 255); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn macs_mid_list_plus_operator_does_not_fire_w03() {
+        // MACs family, `+` on a non-first token: rc 255 "Bad SSH2 mac spec".
+        // The weak 2nd token `hmac-md5` would otherwise fire; W03 must stay silent.
+        assert!(
+            run("MACs hmac-sha2-256,hmac-md5,+hmac-sha1\n").is_empty(),
+            "mid-list `+` on a MACs line makes it sshd-invalid (rc 255); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_double_operator_does_not_fire_w03() {
+        // `+aes128-cbc,+aes192-cbc`: FIRST token's `+` is valid, but the SECOND
+        // token's stray `+` makes the whole spec sshd-invalid (rc 255). W03 was
+        // already silent on the leading `+` (deferring to W06), but pin that the
+        // Step-6 guard keeps it silent even though the head operator alone would
+        // defer.
+        assert!(
+            run("Ciphers +aes128-cbc,+aes192-cbc\n").is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W03 must not fire"
         );
     }
 }
