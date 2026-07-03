@@ -49,9 +49,23 @@ fn lint(args: &SudoersLintArgs) -> i32 {
     // (non-empty byte span, source_id set, ariadne renders a caret snippet); a
     // missing/cyclic @include marker has no real backing source, so it stays
     // unanchored and renders plainly (#382).
+    //
+    // A missing/cyclic @include marker (`resolve::malformed_marker`) carries the
+    // SAME path as the including file but an EMPTY `source` (#401). Several
+    // segments can share one path (the file's own content plus zero or more
+    // resolution markers, in either order), so a plain last-write-wins `insert`
+    // can let a later empty marker overwrite an already-staged real source,
+    // blanking every anchored diagnostic for that path. Never let an empty
+    // source clobber an already-staged one; a non-empty source always wins,
+    // regardless of which segment is staged first.
     let mut sources = std::collections::BTreeMap::new();
     for file in &files {
-        sources.insert(file.path.display().to_string(), file.source.clone());
+        let key = file.path.display().to_string();
+        if file.source.is_empty() {
+            sources.entry(key).or_insert_with(String::new);
+        } else {
+            sources.insert(key, file.source.clone());
+        }
     }
 
     crate::output::emit_lint(
