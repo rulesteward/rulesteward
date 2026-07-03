@@ -64,7 +64,9 @@ jobs:
       # cargo-audit / cargo-deny.
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
-          tool: cargo-binstall
+          # cargo-binstall itself is pinned too (it was the last floating tool):
+          # 1.20.1 is what the v0.3.0-rc1 release dry-run installed and validated.
+          tool: cargo-binstall@1.20.1
       # `--force` always (re)installs the binaries rather than trusting binstall's
       # "already installed" metadata. Harmless on GitHub-hosted runners (clean image
       # each run); it also kept the release independent of leftover state back when

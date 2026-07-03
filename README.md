@@ -1,6 +1,6 @@
 # RuleSteward
 
-**Modular RHEL hardening toolkit** - read-only, CI-friendly static analysis and live triage for `fapolicyd`, `sshd_config`, `SELinux`, and `auditd`.
+**Modular RHEL hardening toolkit** - read-only, CI-friendly static analysis and live triage for `fapolicyd`, `sshd_config`, `sudoers`, `sysctl.d`, `SELinux`, and `auditd`.
 
 > Compatible with **DISA STIG RHEL 8/9/10** and **ACSC Essential Eight** application control objectives.
 
@@ -39,7 +39,8 @@ Each release attaches the `rulesteward` binary, a `SHA256SUMS` file, and a cosig
 ```bash
 # Download rulesteward, SHA256SUMS, SHA256SUMS.sig, SHA256SUMS.pem from the release.
 sha256sum -c SHA256SUMS                       # integrity
-cosign verify-blob \                          # authenticity (Sigstore keyless, no key to manage)
+# authenticity (Sigstore keyless, no key to manage):
+cosign verify-blob \
   --certificate SHA256SUMS.pem \
   --signature SHA256SUMS.sig \
   --certificate-identity-regexp '^https://github.com/rulesteward/rulesteward' \
@@ -47,6 +48,11 @@ cosign verify-blob \                          # authenticity (Sigstore keyless, 
   SHA256SUMS
 chmod +x rulesteward && ./rulesteward --version
 ```
+
+> **cosign version:** the `verify-blob` command above uses detached-signature flags and
+> requires cosign **v2.x**. cosign v3 removed `--certificate` / `--signature` from
+> `verify-blob` (it verifies bundles only), so if you have cosign v3 installed, use a
+> v2.x cosign to verify these detached `.sig` / `.pem` assets.
 
 ### 2. RPM (RHEL / Rocky / AlmaLinux 8, 9, 10)
 
@@ -105,10 +111,10 @@ rulesteward sshd lint --format json /etc/ssh/sshd_config
 ```
 
 - **lint** - parse an `sshd_config` (whole-line `#` comments, case-insensitive keywords,
-  `Match` blocks, `Include` directives) and run the lint passes. All 12 `sshd-` codes
+  `Match` blocks, `Include` directives) and run the lint passes. All 13 `sshd-` codes
   are active: structural errors (`sshd-E01`..`sshd-E04`), the parse fatal (`sshd-F01`),
-  the drop-in override fatal (`sshd-F02`), and the STIG / crypto / deprecation warnings
-  (`sshd-W01`..`sshd-W06`).
+  the drop-in override fatal (`sshd-F02`), and the STIG / crypto / deprecation / Match-shadow
+  warnings (`sshd-W01`..`sshd-W07`).
 
 ### auditd
 
@@ -127,7 +133,7 @@ rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (
 ### sudoers
 
 ```bash
-rulesteward sudoers lint /etc/sudoers                  # lint the sudoers policy (6 sudo- codes)
+rulesteward sudoers lint /etc/sudoers                  # lint the sudoers policy (8 sudo- codes)
 rulesteward sudoers lint /etc/sudoers.d                # lint a sudoers.d/ drop-in directory
 rulesteward sudoers lint --format json /etc/sudoers
 ```
@@ -224,7 +230,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
 | `au-W04` | Warning | missing-ABI coverage: a syscall rule pins one ABI (`arch=b32`/`b64`) with no companion on the other ABI |
 
-### sshd_config (`sshd-`, 12 codes)
+### sshd_config (`sshd-`, 13 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
@@ -240,8 +246,9 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version |
 | `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction |
 | `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default |
+| `sshd-W07` | Warning | cross-`Match` shadow: a first-value-wins directive set to different values in two simultaneously-satisfiable `Match` blocks (sshd applies only the first; the later value is silently dropped) |
 
-### sudoers (`sudo-`, 7 codes)
+### sudoers (`sudo-`, 8 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
@@ -252,6 +259,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sudo-W02` | Warning | a `Cmnd_Alias` transitively expands to `ALL` under `NOPASSWD` |
 | `sudo-W03` | Warning | alias defined but never referenced (dead alias) |
 | `sudo-W04` | Warning | `Defaults` setting weaker than, or required hardening absent from, the sudo security baseline (covers weakening settings such as `!authenticate`, `targetpw`, `rootpw`, `visiblepw`, `!use_pty`, and negative `timestamp_timeout`; and missing-required checks for `use_pty`, I/O logging, and `timestamp_timeout` over the merged config - DISA STIG RHEL-08-010384/RHEL-09-432015 and CIS Benchmark 1.3.2/1.3.3) |
+| `sudo-W05` | Warning | `NOPASSWD` grants passwordless sudo on a specific (non-ALL) command; STIG requires removing `NOPASSWD` entirely (DISA STIG RHEL-08-010380/RHEL-09-611085) |
 
 ### sysctl.d (`sysctld-`, 3 codes)
 
