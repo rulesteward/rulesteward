@@ -710,7 +710,24 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
                 // so the blocks co-apply on it only if one witness satisfies every
                 // occurrence in BOTH blocks (the cross-block intersection).
                 let combined: Vec<&[String]> = a_insts.iter().chain(b_insts).copied().collect();
-                criterion_instances_have_common_witness(kind, &combined)
+                // CONSERVATIVE GUARD: the cross-occurrence CIDR/port witness
+                // ([`cidr_instances_have_common_address`] / [`port_instances_have_common_port`])
+                // is negation-BLIND - it drops `!` carve-outs - so a repeated
+                // CIDR/LocalPort type carrying a negation would be over-approximated
+                // into a possible false positive. Computing the true negation-aware
+                // intersection across repeated occurrences is out of v0.3 scope, so we
+                // treat such a type as non-overlapping: an FN-leaning accepted gap that
+                // never risks a false positive. Name lists stay negation-aware via
+                // [`match_pattern_list`], so the guard is CIDR/port only.
+                if matches!(kind.as_str(), "address" | "localaddress" | "localport")
+                    && combined
+                        .iter()
+                        .any(|occ| occ.iter().any(|value| value.starts_with('!')))
+                {
+                    false
+                } else {
+                    criterion_instances_have_common_witness(kind, &combined)
+                }
             }
         })
     })
@@ -917,6 +934,11 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 /// leave a real overlap; only a negation that fully covers the intersection makes
 /// the pair disjoint. Unparseable entries are ignored (conservative: they never
 /// manufacture overlap).
+///
+/// APPROXIMATION: coverage is tested against ONE negation at a time. An intersection
+/// left uncovered by every SINGLE negation but fully covered by the UNION of several
+/// negations is treated as overlapping - a rare potential false positive scoped to
+/// the single-negation model (multi-negation union coverage is out of v0.3 scope).
 fn cidr_lists_overlap(a: &[String], b: &[String]) -> bool {
     let a_pos = parse_cidr_list(a);
     let b_pos = parse_cidr_list(b);
