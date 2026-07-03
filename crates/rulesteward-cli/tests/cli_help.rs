@@ -160,3 +160,19 @@ fn completions_help_lists_supported_shells() {
         .stdout(predicate::str::contains("power-shell"))
         .stdout(predicate::str::contains("tcsh"));
 }
+
+#[test]
+fn sshd_lint_help_lists_all_codes_including_w07() {
+    // #414: sshd-W07 (#302) was added after this help block was written, which
+    // still claimed "All 12 sshd- codes" and omitted W07 from the enumeration.
+    // The help must state the real count and list every catalog code; W07 is the
+    // one that drifted. Guards against a new sshd- code landing without updating
+    // the operator-facing `sshd lint --help`.
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sshd", "lint", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("13 sshd-"))
+        .stdout(predicate::str::contains("sshd-W07"));
+}

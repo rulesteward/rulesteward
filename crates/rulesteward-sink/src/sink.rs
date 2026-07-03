@@ -1,4 +1,4 @@
-//! The `EventSink` trait (spec §9.3, Decision 10). `&self` + explicit `flush`
+//! The `EventSink` trait (spec §12.3, Decision 10). `&self` + explicit `flush`
 //! under `Send + Sync` - implementations use interior mutability. Call `flush()`
 //! to observe I/O errors; dropping a buffered sink flushes best-effort.
 use crate::{Event, SinkError};

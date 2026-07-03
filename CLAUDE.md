@@ -132,7 +132,7 @@ Make use of /superpowers skills whenever feasible.
 - **Spec + research lives in `.private-docs/`** - a gitignored symlink to `/home/runner/rulesteward-docs/`. Not in the GitHub repo. Start every session by reading `.private-docs/rulesteward-cli-tool-spec.md` (the v0.2 spec) and any `handoff-session-N.md` for the current milestone.
 - **Locked design decisions** are enumerated in spec §3 (19 of them). Do not re-litigate. If you find evidence contradicting one, surface it as `[QUESTION FOR USER]` and pause.
 - **Status:** `v0.1.0` shipped 2026-06-02; now targeting **v0.2** (the active spec). Implemented crates: `-core`, `-fapolicyd` (the only lint backend today), `-sink`, `-cli`. `-selinux` / `-auditd` / `-license` are placeholder stubs.
-- **Crate plan** (per spec §14.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`, MSRV `1.88` (workspace `rust-version`; dev/release stay on latest stable via `rust-toolchain.toml`).
+- **Crate plan** (per spec §17.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`, MSRV `1.88` (workspace `rust-version`; dev/release stay on latest stable via `rust-toolchain.toml`).
 - **Locked crates:** parser `chumsky = "0.13"` + `ariadne = "0.6"`; LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
 - **Distribution target:** `x86_64-unknown-linux-musl` static binary.
 - **License:** Engine Apache-2.0; rule templates BSD-3-Clause (separate repo).
