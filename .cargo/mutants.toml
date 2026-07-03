@@ -443,6 +443,33 @@ exclude_re = [
     # injected hostname end-to-end, so the substitution itself stays in the gate.
     'replace short_hostname -> String',
     'delete ! in short_hostname',
+    # sshd-W07 (#302/#403) overlap oracle: three genuine-equivalent / defensive-only
+    # survivors from the post-GREEN adversarial loop. The negation-aware + intersection
+    # overlap logic is otherwise fully killed by the w07 tests; these three cannot be
+    # killed by any valid-config test:
+    # - name_instances_have_common_witness candidate filter `&&`->`||`: with `||`,
+    #   wildcard/empty strings get ADDED as candidate names, but the {listed-literals +
+    #   FRESH-sentinel} witness set is COMPLETE (any real common witness is a listed
+    #   literal or the fresh sentinel), so the extra candidates only ever move the
+    #   already-accepted wildcard-vs-wildcard false negative, never a pinned result.
+    #   (The identical filter in pattern_lists_overlap IS killed by
+    #   wildcard_vs_wildcard_is_an_accepted_fn_is_clean; in name_instances the analogous
+    #   killer is entangled with the matches-nobody verdict, so it stays an exclusion.)
+    'structural\.rs:.*replace && with \|\| in name_instances_have_common_witness',
+    # - glob_match `star_p + 1` -> `star_p * 1` (== star_p): re-enters the `*` branch one
+    #   iteration later and reaches the IDENTICAL (p, v, star, star_v) state; divergence
+    #   would require value[v]=='*', but W07 candidate names never contain '*' (wildcard
+    #   literals are stripped from candidates; the FRESH sentinel has none). Equivalent
+    #   for every reachable input. (Path-anchored so it never masks a `+`->`*` in another
+    #   crate's glob_match.)
+    'structural\.rs:.*replace \+ with \* in glob_match',
+    # - parse_negated_port_list body replacements (vec![] / vec![0] / vec![1]): negated
+    #   (and comma-list) `Match LocalPort` is sshd-INVALID (`a2port` rejects it, rc 255),
+    #   so no sshd-loadable config ever yields a negated port. This parser is defensive
+    #   only for rulesteward's lenient parse of an invalid config and is unreachable on
+    #   any valid config, so no valid-config test can kill it (the invalid-config tests
+    #   were removed as mis-grounded).
+    'structural\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
