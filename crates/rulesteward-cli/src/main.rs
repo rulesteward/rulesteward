@@ -4,7 +4,7 @@
 //! `commands::<ns>::run`, convert any `anyhow::Error` to an exit code
 //! via `report()`, and use that as the process exit code.
 //!
-//! Clap's default exit code on parse errors is `2`. Spec §9.4
+//! Clap's default exit code on parse errors is `2`. Spec §12.4
 //! reserves `2` for "errors found in policy" (real lint findings),
 //! so we remap usage errors to `EXIT_TOOL_FAILURE` (3). Help and
 //! version requests still exit `0`.

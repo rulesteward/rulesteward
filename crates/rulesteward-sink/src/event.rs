@@ -1,5 +1,5 @@
 //! The `Event` wire schema emitted by event-producing commands (v0.2 `collect`).
-//! Stable from v0.1 (spec §9.3): a fleet collector aggregates by
+//! Stable from v0.1 (spec §12.3): a fleet collector aggregates by
 //! `(rule_id x ftype x exe)`. `#[non_exhaustive]` lets the schema gain fields in
 //! v0.2 without a breaking change; cross-crate callers must use [`Event::new`].
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ mod tests {
         assert!(json.contains(r#""ftype":"application/x-executable""#));
         assert!(json.contains(r#""exe":"/usr/bin/ssh""#));
         // `path` and `timestamp` are part of the stable v0.1 wire schema (spec
-        // §9.3); assert their JSON names too so a silent `#[serde(rename)]` of
+        // §12.3); assert their JSON names too so a silent `#[serde(rename)]` of
         // either field is caught (the round-trip test alone would not catch it).
         assert!(json.contains(r#""path":"/tmp/x""#));
         assert!(json.contains(r#""timestamp":"2026-05-28T00:00:00Z""#));

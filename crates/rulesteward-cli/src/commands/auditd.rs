@@ -124,7 +124,7 @@ fn cost(args: &CostArgs) -> i32 {
                 eprintln!("auditd cost: parse error (line {}): {}", e.line, e.message);
             }
             // EXIT_RULE_PARSE_ERROR (5): auditd cost parses a RULES file, so an
-            // unparseable file matches `lint`'s fapd-F01 -> 5 mapping (spec §9.4).
+            // unparseable file matches `lint`'s fapd-F01 -> 5 mapping (spec §12.4).
             // `explain` parses a denial RECORD (not a rule) and returns EXIT_ERRORS
             // (2) instead; the divergence is intentional (#114).
             return EXIT_RULE_PARSE_ERROR;

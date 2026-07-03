@@ -604,7 +604,7 @@ fn triage_policy_permissive_decline_suppresses_banner() {
 // the `.code(2)` assertion fails (observed code is 0) = the watched-it-fail RED
 // state.
 
-/// The project's error exit code (spec §9.4). Mirrors
+/// The project's error exit code (spec §12.4). Mirrors
 /// `rulesteward_cli::exit_code::EXIT_ERRORS`, which is crate-private to the cli
 /// binary and so cannot be imported into an integration test; the literal is
 /// pinned here with a citation so a drift in the constant is caught by review.

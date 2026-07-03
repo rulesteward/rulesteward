@@ -1,8 +1,8 @@
-//! Map a finished lint result onto an exit code per spec §9.4.
+//! Map a finished lint result onto an exit code per spec §12.4.
 
 use rulesteward_core::{Diagnostic, Severity};
 
-/// Exit codes per spec §9.4.
+/// Exit codes per spec §12.4.
 pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_WARNINGS: i32 = 1;
 pub const EXIT_ERRORS: i32 = 2;
@@ -11,7 +11,7 @@ pub const EXIT_TOOL_FAILURE: i32 = 3;
 pub const EXIT_LMDB_ERROR: i32 = 4;
 pub const EXIT_RULE_PARSE_ERROR: i32 = 5;
 /// Daemon IPC error. RESERVED: `RuleSteward` is a read-only linter with no daemon connection
-/// today; defined so the code space matches spec section 9.4 and a future daemon-query mode
+/// today; defined so the code space matches spec section 12.4 and a future daemon-query mode
 /// has a stable code. Not currently emitted.
 #[allow(dead_code)]
 pub const EXIT_DAEMON_IPC: i32 = 6;
@@ -36,7 +36,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     if tool_err {
         return EXIT_TOOL_FAILURE;
     }
-    // Each backend's parse-failure code maps to exit 5 (spec section 9.4 uses
+    // Each backend's parse-failure code maps to exit 5 (spec section 12.4 uses
     // one numbering across modules; D3, session 6a).
     if diags.iter().any(|d| {
         matches!(
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn au_f01_returns_five() {
         // D3 (session 6a): the auditd backend's parse-failure code au-F01 maps
-        // to the same EXIT_RULE_PARSE_ERROR as fapd-F01 (spec section 9.4:
+        // to the same EXIT_RULE_PARSE_ERROR as fapd-F01 (spec section 12.4:
         // "auditd uses the same numbering"). Without the mapping, au-F01 is
         // merely Fatal and would fall through to EXIT_ERRORS (2).
         assert_eq!(
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn sshd_f01_returns_five() {
         // The sshd backend's parse-failure code sshd-F01 maps to the same
-        // EXIT_RULE_PARSE_ERROR as fapd-F01 / au-F01 (spec section 9.4 uses one
+        // EXIT_RULE_PARSE_ERROR as fapd-F01 / au-F01 (spec section 12.4 uses one
         // numbering across modules). Without the mapping, sshd-F01 is merely Fatal
         // and would fall through to EXIT_ERRORS (2).
         assert_eq!(

@@ -1,7 +1,7 @@
 //! Body of the hidden `rulesteward mangen <OUTDIR>` subcommand: render the CLI's
 //! `clap` command tree to a roff man page (`rulesteward.1`) via `clap_mangen`. The
 //! release workflow runs this against the freshly-built binary to produce the
-//! packaged man page (spec section 11). Generating from `Cli::command()` at runtime
+//! packaged man page (spec section 14). Generating from `Cli::command()` at runtime
 //! (rather than a `build.rs`) avoids the cross-crate `include!` problem: the CLI
 //! depends on `rulesteward_fapolicyd` types a build script cannot resolve.
 

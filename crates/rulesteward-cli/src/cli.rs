@@ -842,13 +842,14 @@ pub enum SshdCommand {
     ///
     /// Parses an `sshd_config` file (whole-line `#` comments, case-insensitive
     /// keywords, `Match` blocks, `Include` directives) and runs the `sshd_config`
-    /// lint passes over it. All 12 sshd- codes are active: sshd-E01 (unknown
+    /// lint passes over it. All 13 sshd- codes are active: sshd-E01 (unknown
     /// directive), sshd-E02 (duplicate global), sshd-E03 (unresolved Include),
     /// sshd-E04 (Match-illegal directive), sshd-F01 (parse error), sshd-F02
-    /// (drop-in override of a required global), and the version-aware warnings
-    /// sshd-W01 (STIG-required missing), sshd-W02 (weaker than baseline),
-    /// sshd-W03 (weak algorithm), sshd-W04 (deprecated directive), sshd-W05
-    /// (permissive Match override), sshd-W06 (algorithm-prefix reintroduction).
+    /// (drop-in override of a required global), and the warnings sshd-W01
+    /// (STIG-required missing), sshd-W02 (weaker than baseline), sshd-W03 (weak
+    /// algorithm), sshd-W04 (deprecated directive), sshd-W05 (permissive Match
+    /// override), sshd-W06 (algorithm-prefix reintroduction), and sshd-W07
+    /// (cross-Match first-value-wins shadow).
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sshd-F01).

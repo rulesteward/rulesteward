@@ -1,5 +1,5 @@
 //! Event sinks for `RuleSteward`. Defines the stable [`Event`] wire schema and the
-//! [`EventSink`] trait (spec §9.3, Decision 10), with NDJSON stdout/file sinks.
+//! [`EventSink`] trait (spec §12.3, Decision 10), with NDJSON stdout/file sinks.
 //!
 //! v0.1 ships the abstraction and the NDJSON default only: [`NdjsonStdoutSink`]
 //! and [`NdjsonFileSink`]. Concrete production sinks (Syslog/CEF/OCSF/Splunk-HEC)

@@ -119,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Tier-1 RHEL-family distros (spec sections 5.3 / 14.2). Rocky uses the
+        # Tier-1 RHEL-family distros (spec sections 5.3 / 17.2). Rocky uses the
         # rockylinux/rockylinux namespace (the legacy `rockylinux:10` tag does
         # not exist on Docker Hub); AlmaLinux uses the official `almalinux`
         # image; Oracle Linux uses the official `oraclelinux` image. All are
@@ -369,7 +369,7 @@ jobs:
       # Collect coverage once (--no-report writes profdata but emits nothing),
       # then assert two floors from that same data via `report` (no re-run):
       #   1. an 80% workspace floor (unchanged from the prior single-command gate);
-      #   2. the spec section 11 promise of >=90% lines on every parser + lint
+      #   2. the spec section 14 promise of >=90% lines on every parser + lint
       #      engine -- rulesteward-core plus the six backend lint crates
       #      (fapolicyd, selinux, auditd, sshd, sudoers, sysctld). Incorrect lint
       #      results destroy operator trust, so these carry a higher bar than the
@@ -380,7 +380,7 @@ jobs:
         run: cargo llvm-cov --no-report --workspace --locked
       - name: Assert workspace floor (>=80% lines)
         run: cargo llvm-cov report --fail-under-lines 80
-      - name: Assert parser + lint floor (>=90% lines, spec section 11)
+      - name: Assert parser + lint floor (>=90% lines, spec section 14)
         run: cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --fail-under-lines 90
 
   musl-build:
@@ -605,7 +605,7 @@ jobs:
   # measure categorize.rs + the -sys FFI and hold the selinux >=90% floor with the
   # categorizer included. Non-gameable gate: turning the categorizer ON must not
   # drag the workspace below 80%, and rulesteward-selinux (now including
-  # categorize.rs) must hold the spec section 11 >=90% floor (measured 2026-06-04:
+  # categorize.rs) must hold the spec section 14 >=90% floor (measured 2026-06-04:
   # workspace 92.1%, rulesteward-selinux 94.1%). The FFI-heavy
   # rulesteward-selinux-sys (~78%) is reported but NOT hard-floored: it is an
   # unsafe C-binding shim whose many error guards (LoadError / ReplayError paths)
