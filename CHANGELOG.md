@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`rulesteward sudoers lint`**: new `sudoers(5)` backend (7 `sudo-` codes). Parses
+- **`rulesteward sudoers lint`**: new `sudoers(5)` backend (8 `sudo-` codes). Parses
   a policy file or a `sudoers.d/` drop-in directory (line-continuation joins, `#`
   comment disambiguation, alias definitions, `@include`/`@includedir`, user
   specifications). Detects: parse errors (`sudo-F01`), undefined / dead aliases
@@ -35,6 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names (`APPARMOR_DENIED` == `1503`, etc.) in the `au-W01`/`au-W02` lints. Off by
   default, since a RHEL/fapolicyd-target audit daemon does not recognize these
   names; enable it when linting rules for an AppArmor build (Debian/Ubuntu). (#230)
+- **`rulesteward sshd lint`**: new `sshd_config(5)` backend (13 `sshd-` codes). Lints a main
+  `sshd_config` file or an `/etc/ssh` directory layout (main config plus a `sshd_config.d/*.conf`
+  drop-in tree), honoring `Match` blocks, `Include` resolution, and sshd's first-value-wins
+  keyword semantics; version-aware passes select the OpenSSH keyword set from
+  `--target auto|rhel8|rhel9|rhel10` (rhel8 = 8.0p1, rhel9 / rhel10 = 9.9p1). Detects: parse
+  failure (`sshd-F01`); directive defects (`sshd-E01` unknown keyword, `sshd-E02` duplicate
+  directive silently overridden in the same scope, `sshd-E03` `Include` resolving to nothing,
+  `sshd-E04` directive ignored inside a `Match` block); STIG-baseline gaps (`sshd-W01` required
+  directive missing, `sshd-W02` value weaker than the baseline, `sshd-W04` deprecated or removed
+  directive); weak cryptography (`sshd-W03` CBC / MD5 / SHA1 / group1 / ssh-rsa in
+  `Ciphers` / `MACs` / `KexAlgorithms` / `HostKeyAlgorithms`, `sshd-W06` a `+` / `^`
+  algorithm-list prefix reintroducing a weak default); and cross-scope shadowing (`sshd-F02` a
+  drop-in overriding a required global, `sshd-W05` a `Match` block relaxing a required global,
+  `sshd-W07` a first-value-wins keyword set differently in two simultaneously-satisfiable `Match`
+  blocks). (#149 and children)
 - `sshd lint` sshd-W05: flags a `Match` block that sets a STIG-controlled directive
   to a baseline-failing value (a STIG escape hatch). Reuses the sshd-W01/W02
   required-set + baseline; does not fire for a directive sshd ignores inside a Match
