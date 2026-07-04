@@ -247,24 +247,45 @@ fn strip_inline_comment(body: &str) -> &str {
 
     let bytes = body.as_bytes();
     let mut in_quotes = false;
+    // Whether the scan is currently inside a runas paren `(...)` opened at a runas
+    // position (after `host =`, a `,` command-list separator, or line start).
+    // Inside such a paren visudo lexes a glued `#<tail>` as a UID/GID token in
+    // EVERY case -- a malformed tail (`(root:#abc)`, `(#abc)`, #424) is a syntax
+    // error, never a comment. A MID-command `(` (e.g. `/bin/echo a(#foo` or
+    // `/bin/echo (#foo`, both visudo rc=0 with `#foo` a real comment) is NOT a
+    // runas paren; `paren_opens_runas` draws that line so those comments still
+    // strip.
+    let mut in_runas_paren = false;
     let mut prev: Option<u8> = None;
     for (i, &c) in bytes.iter().enumerate() {
         match c {
             b'"' => in_quotes = !in_quotes,
+            b'(' if !in_quotes => {
+                if paren_opens_runas(bytes, i) {
+                    in_runas_paren = true;
+                }
+            }
+            b')' if !in_quotes => in_runas_paren = false,
             b'#' if !in_quotes => {
-                // Exception 2: a `#<digit>` preceded by start / whitespace / `,` /
-                // `%` / `:` / `(` / `>` / `@` is a UID/GID token, not a comment. The
-                // `:` and `(` arms are #407: the runas-group separator
-                // (`(root:#1000)`) and the runas open-paren (`(#1000)`) both precede
-                // valid `#<digits>` UID/GID references. The `>` and `@` arms are the
-                // #407 Defaults-scope sigils: `Defaults>#1000` (runas UID) and
-                // `Defaults@#1000` (a host literally named `#1000`) are both
-                // visudo-valid (rc=0); visudo lexes `#<digits>` uniformly in the
-                // user (`:`), runas (`>`) and host (`@`) scope positions. `!`
-                // (command scope) is deliberately NOT included: a `#<digits>`
-                // command target is visudo-invalid in every form, so leaving it to
-                // strip as a comment folds the line to Malformed / sudo-F01, which is
-                // the correct outcome.
+                // A `#` here is a UID/GID token (kept), not an inline comment
+                // (dropped), when EITHER:
+                //
+                //  * it is inside a runas paren (`in_runas_paren`): every `#<tail>`
+                //    there is a token regardless of the tail (#424 letter-first
+                //    `(root:#abc)` / `(#abc)`, which visudo rejects as tokens); OR
+                //  * a DIGIT immediately follows AND the preceding char introduces a
+                //    UID/GID token -- start / whitespace / `,` / `%` / `:` / `(` /
+                //    `>` / `@` / closing `"`. The `:` / `(` arms are #407 (the
+                //    runas-group separator `(root:#1000)` and open-paren `(#1000)`);
+                //    `>` / `@` are the #407 Defaults scope sigils (`Defaults>#1000`
+                //    runas userid, `Defaults@#1000` host named `#1000`, both visudo
+                //    rc=0). The `"` arm is #424: a `#<digits>` glued after a Defaults
+                //    value's CLOSING double quote (`passprompt="a"#5`) is an invalid
+                //    token OUTSIDE the quote (visudo rc=1), not a comment, so it must
+                //    survive the strip for the value check to flag it. `!` (command
+                //    scope) is deliberately absent: a `#<digits>` command target is
+                //    visudo-invalid in every form, so stripping it as a comment folds
+                //    the line to Malformed / sudo-F01, the correct outcome.
                 let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
                 let prev_allows_uid = match prev {
                     None => true,
@@ -275,14 +296,15 @@ fn strip_inline_comment(body: &str) -> &str {
                             || p == b'('
                             || p == b'>'
                             || p == b'@'
+                            || p == b'"'
                             || (p as char).is_whitespace()
                     }
                 };
-                if next_is_digit && prev_allows_uid {
-                    // A UID/GID token: NOT a comment. The digits that follow are
+                if in_runas_paren || (next_is_digit && prev_allows_uid) {
+                    // A UID/GID token: NOT a comment. The tail bytes that follow are
                     // ordinary bytes; the scan walks over them harmlessly (they
-                    // never re-trigger this arm), so no separate digit-skip loop is
-                    // needed (`for` over the bytes advances by exactly one each step).
+                    // never re-trigger this arm), so no separate skip loop is needed
+                    // (`for` over the bytes advances by exactly one each step).
                     prev = Some(c);
                     continue;
                 }
@@ -294,6 +316,26 @@ fn strip_inline_comment(body: &str) -> &str {
         prev = Some(c);
     }
     body
+}
+
+/// True when the `(` at `paren_idx` opens a runas spec rather than sitting inside
+/// a command token. A runas open-paren follows the `host =` separator, a `,`
+/// command-list separator, or the start of the line (skipping intervening
+/// whitespace); a MID-command `(` (e.g. the `(` in `/bin/echo a(#foo` or
+/// `/bin/echo (#foo`) is preceded by a command character. Used by
+/// [`strip_inline_comment`] to keep a letter-first `(#abc)` runas UID token (#424)
+/// as a token without misreading a mid-command `#foo` comment (visudo rc=0).
+fn paren_opens_runas(bytes: &[u8], paren_idx: usize) -> bool {
+    let mut k = paren_idx;
+    while let Some(j) = k.checked_sub(1) {
+        if (bytes[j] as char).is_whitespace() {
+            k = j;
+        } else {
+            return bytes[j] == b'=' || bytes[j] == b',';
+        }
+    }
+    // Only whitespace (or nothing) precedes the `(`: it is the line's first token.
+    true
 }
 
 /// Stage 2: classify one joined logical line into a [`LineKind`].
@@ -495,24 +537,72 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
             .or_else(|| name.strip_suffix('-'))
             .unwrap_or(name);
         let value = body[eq + 1..].trim();
-        // Strip surrounding double quotes from the value if present (common for
-        // paths: `secure_path="/usr/bin"`).
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .unwrap_or(value);
+        // Strip surrounding double quotes when the value is ONE clean quoted
+        // region (common for paths: `secure_path="/usr/bin"`). Record whether
+        // it was (`value_double_quoted`): a `#<digits>` inside such a fully
+        // quoted value is a literal that visudo accepts (rc=0), so sudo-F02
+        // (#423) must NOT flag it -- even though the stripped value is
+        // byte-identical to the visudo-rejected unquoted form. A value is one
+        // clean region only if the FIRST UNESCAPED `"` after the opening quote
+        // is its last byte (see `clean_double_quoted_interior`): `"hi" #5` and
+        // `"a" #5 "b"` (an unquoted `#5` after a closing quote) are NOT clean
+        // regions and stay verbatim + unquoted, so their unquoted `#5` fires.
+        let (value, value_double_quoted) = match clean_double_quoted_interior(value) {
+            Some(inner) => (inner, true),
+            None => (value, false),
+        };
         DefaultSetting {
             negated,
             name: name.trim().to_string(),
             value: Some(value.to_string()),
+            value_double_quoted,
         }
     } else {
         DefaultSetting {
             negated,
             name: body.trim().to_string(),
             value: None,
+            value_double_quoted: false,
         }
     }
+}
+
+/// If `value` is exactly ONE clean double-quoted string -- an opening `"`, an
+/// interior with no UNESCAPED `"`, and a closing `"` as the final byte -- return
+/// the interior with the surrounding quotes stripped. Otherwise return `None`
+/// (the value is left verbatim by the caller).
+///
+/// "Unescaped" uses the sudoers single-backslash escape model (the same one
+/// [`split_default_settings`] uses): a `\` escapes the next char, and `\\` is one
+/// literal backslash that does NOT escape a following `"`. So the FIRST unescaped
+/// `"` after the opening quote must be the LAST byte of the value; an unescaped
+/// `"` before the end means a second quoted region or unquoted trailing content
+/// follows -- e.g. `"a" #5 "b"` (the `#5` sits in an unquoted gap between two
+/// regions) -- which is NOT one clean region.
+///
+/// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
+/// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
+/// `"a\\" #5 "b"` rc=1 (`\\` is a literal backslash, so the `"` closes the first
+/// region), `"a\\\" #5 b"` rc=0 (three backslashes: literal `\` + escaped `"`,
+/// so the inner quote stays escaped and the value is one region).
+fn clean_double_quoted_interior(value: &str) -> Option<&str> {
+    let inner = value.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            // First unescaped `"` in the interior: a clean single region only
+            // when it is the closing quote at the very end (nothing follows).
+            '"' => return (i + 1 == inner.len()).then_some(&inner[..i]),
+            _ => {}
+        }
+    }
+    // No unescaped closing `"` (unterminated) -> not a clean region.
+    None
 }
 
 /// Classify an alias definition, if the line is one. Returns `None` when the first
@@ -1145,6 +1235,7 @@ mod tests {
                         negated: true,
                         name: "authenticate".to_string(),
                         value: None,
+                        value_double_quoted: false,
                     }
                 );
                 assert_eq!(
@@ -1153,6 +1244,9 @@ mod tests {
                         negated: false,
                         name: "secure_path".to_string(),
                         value: Some("/usr/bin".to_string()),
+                        // `secure_path="/usr/bin"` -- a clean surrounding
+                        // double-quote pair was stripped (#423).
+                        value_double_quoted: true,
                     }
                 );
             }
@@ -1653,6 +1747,81 @@ mod tests {
             strip_inline_comment("alice ALL=(root) /bin/su # comment"),
             "alice ALL=(root) /bin/su ",
             "a real trailing comment must still be stripped after a runas group"
+        );
+    }
+
+    // ---- #424 Round 2: mutation-survivor coverage for the `in_runas_paren`
+    // state machine (`paren_opens_runas` + the `(`/`)` quote guards) --------
+    //
+    // The letter-first `(#abc)` fix (#424) added an `in_runas_paren` flag toggled
+    // by `(` (via `paren_opens_runas`) and `)`, gating whether a `#`-token inside a
+    // runas paren is kept. Four mutants survived the pre-existing suite because no
+    // test exercised (a) a MID-command `(` that must NOT open runas state, or (b)
+    // a `(`/`)` INSIDE a quoted region that must NOT change runas state. Each test
+    // below is grounded so a specific mutant flips its expected strip output.
+
+    #[test]
+    fn strip_strips_mid_command_paren_comment() {
+        // Grounded: `alice localhost = /bin/echo (#foo` is `visudo -c` rc=0 -- the
+        // `(` is MID-COMMAND (preceded by the command char `o` of `echo`, not by
+        // `=`/`,`/line-start), so it does NOT open a runas group, and the `#foo`
+        // that follows IS a real trailing comment (no digit after `#`). The strip
+        // must drop `#foo`, leaving the command `/bin/echo (`.
+        //
+        // Kills `paren_opens_runas -> true` (whole-fn, parser.rs:329): that mutant
+        // classifies this mid-command `(` as a runas open, sets `in_runas_paren`,
+        // and KEEPS `#foo` -> returns the full string. ALSO kills the line-334
+        // `bytes[j] == b',' -> != ` mutant: for the preceding char `o`, clean
+        // returns false (correct: not runas) but the mutant returns `o != b','` =
+        // true, so it too wrongly opens runas state and keeps `#foo`.
+        assert_eq!(
+            strip_inline_comment("alice localhost = /bin/echo (#foo"),
+            "alice localhost = /bin/echo (",
+            "a mid-command `(` does not open runas state; the trailing `#foo` is a \
+             real comment and must be stripped (visudo rc=0)"
+        );
+    }
+
+    #[test]
+    fn strip_ignores_a_quoted_open_paren_for_runas_state() {
+        // Grounded: `Defaults passprompt="=(" #abc` is `visudo -c` rc=0 -- the `(`
+        // sits INSIDE the double-quoted value `"=("`, so it is a literal, NOT a
+        // runas open-paren, and the `#abc` after the closing quote + space is a
+        // real trailing comment. The strip must drop `#abc`.
+        //
+        // Kills the `b'(' if !in_quotes -> true` guard mutant (parser.rs:263):
+        // that mutant runs the `(`-arm even inside quotes, and because the quoted
+        // `(` is preceded by `=` (`paren_opens_runas` true), it wrongly sets
+        // `in_runas_paren`, which persists past the closing quote and KEEPS the
+        // `#abc` comment -> returns the full string.
+        assert_eq!(
+            strip_inline_comment("Defaults passprompt=\"=(\" #abc"),
+            "Defaults passprompt=\"=(\" ",
+            "a `(` inside double quotes is a literal, not a runas open; the later \
+             `#abc` is a real comment and must be stripped (visudo rc=0)"
+        );
+    }
+
+    #[test]
+    fn strip_ignores_a_quoted_close_paren_for_runas_state() {
+        // Grounded: `alice ALL=(root:"a)"#foo) /bin/su` is `visudo -c` rc=1 with the
+        // caret on `#foo` -- i.e. `#foo` is an invalid TOKEN inside the runas group,
+        // NOT a comment (a `#` inside a runas paren is always a token per #424). The
+        // `)` inside the quoted `"a)"` is a literal and must NOT close the runas
+        // group. The strip must therefore KEEP `#foo` (leave the whole line intact)
+        // so the downstream sudo-F02 runas check can see the malformed token.
+        //
+        // Kills the `b')' if !in_quotes -> true` guard mutant (parser.rs:268): that
+        // mutant lets the quoted `)` RESET `in_runas_paren` to false; then `#foo`
+        // (preceded by the closing `"`, not followed by a digit) is no longer kept
+        // and gets STRIPPED as a comment -> returns `alice ALL=(root:"a)"`, losing
+        // the real command and the malformed token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:\"a)\"#foo) /bin/su"),
+            "alice ALL=(root:\"a)\"#foo) /bin/su",
+            "a `)` inside double quotes does not close the runas group; the `#foo` \
+             inside the paren is a token, not a comment, and must be kept (visudo \
+             rc=1, caret on `#foo`)"
         );
     }
 
