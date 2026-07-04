@@ -59,6 +59,21 @@ fn symlink_99_sysctl_conf(root: &Path) {
     std::os::unix::fs::symlink("../sysctl.conf", &link).expect("create 99-sysctl.conf symlink");
 }
 
+/// Create an ARBITRARY-target symlink at `<root>/<link_rel>` (parent dirs made as
+/// needed). Used to build the "wrong symlink target" fixture: the distro slot only
+/// counts when it resolves to `<root>/etc/sysctl.conf` (design section 8), so a
+/// symlink pointing elsewhere must be treated as absent.
+fn symlink_at(root: &Path, link_rel: &str, target: &str) {
+    let link = root.join(link_rel);
+    std::fs::create_dir_all(link.parent().expect("has parent")).expect("mkdir -p");
+    std::os::unix::fs::symlink(target, &link).expect("create symlink");
+}
+
+/// All `sysctld-F01` diagnostics.
+fn f01s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags.iter().filter(|d| d.code == "sysctld-F01").collect()
+}
+
 /// All `sysctld-W01` diagnostics.
 fn w01s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags.iter().filter(|d| d.code == "sysctld-W01").collect()
@@ -554,5 +569,401 @@ fn w03c_fires_when_a_masked_dropin_sets_a_key_nothing_else_applies() {
         "kernel.sysrq must NOT fire W03-c: its canonical key is present in the \
          effective merged set (via the surviving /etc/sysctl.d/50-mask.conf), \
          even though B's specific value for it never applies"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. BUG 1 (impl-aware review): the /etc/sysctl.d/99-sysctl.conf symlink must
+//    take part in same-basename directory MASKING like any drop-in entry
+//    (design section 2 point 1 + section 5 W03-c). The symlink OWNS the basename
+//    "99-sysctl.conf" at the highest-precedence directory, so a real same-basename
+//    file in a LOWER directory is masked - its keys never apply.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_99_slot_symlink_masks_a_same_basename_file_in_a_lower_dir() {
+    // /etc/sysctl.d/99-sysctl.conf is the distro symlink -> ../sysctl.conf, so it
+    // OWNS the basename "99-sysctl.conf" at rank 0 (highest). A real
+    // /usr/lib/sysctl.d/99-sysctl.conf (rank 3, same basename) is therefore MASKED
+    // exactly like any lower same-basename drop-in (design section 2 point 1): its
+    // unique key kernel.sysrq = 999 never reaches the effective merged set, so it
+    // is silently dropped -> exactly one W03-c anchored at that masked file (design
+    // section 5 W03-c). The symlinked /etc/sysctl.conf sets an unrelated key so
+    // nothing else touches kernel.sysrq. 999 is distinctive (in no filename/path/
+    // line).
+    let root = tempdir().expect("temp root");
+    symlink_99_sysctl_conf(root.path());
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/99-sysctl.conf",
+        "kernel.sysrq = 999\n",
+    );
+    write_at(root.path(), "etc/sysctl.conf", "net.ipv4.ip_forward = 0\n");
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    // (a) Guard: the masked lower file must be invisible to the last-wins pass -
+    // NO W01 anchored in it.
+    assert!(
+        w01s(&diags).iter().all(|d| {
+            !d.file
+                .display()
+                .to_string()
+                .contains("usr/lib/sysctl.d/99-sysctl.conf")
+        }),
+        "the masked usr/lib 99-sysctl.conf must not anchor any W01; got: {diags:?}"
+    );
+    // (b) RED driver: kernel.sysrq is set ONLY in the masked lower file, so a
+    // correct masking impl drops it -> exactly one W03-c, anchored at the masked
+    // file. The current buggy impl skips the etc symlink WITHOUT registering its
+    // basename, so the lower 99-conf wrongly SURVIVES, kernel.sysrq IS in the
+    // merged set, and NO W03-c fires -> RED.
+    let sysrq_w03: Vec<&Diagnostic> = w03s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("kernel.sysrq") || d.message.contains("kernel/sysrq"))
+        .collect();
+    assert_eq!(
+        sysrq_w03.len(),
+        1,
+        "the masked lower 99-sysctl.conf's unique key kernel.sysrq must be \
+         silently dropped -> exactly one W03-c; got: {diags:?}"
+    );
+    assert!(
+        sysrq_w03[0]
+            .file
+            .display()
+            .to_string()
+            .ends_with("usr/lib/sysctl.d/99-sysctl.conf"),
+        "the W03-c must anchor at the MASKED lower file; got {:?}",
+        sysrq_w03[0].file
+    );
+    assert!(
+        sysrq_w03[0].message.contains("999"),
+        "the W03-c message must state the dropped value (999): {}",
+        sysrq_w03[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. BUG 2 (impl-aware review): the 99-sysctl.conf slot counts ONLY when the
+//    symlink resolves to <prefix>/etc/sysctl.conf ("not the expected symlink ->
+//    treat as absent", design section 8). A symlink to any OTHER resolvable
+//    target must NOT be treated as the slot.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w03b_fires_when_the_99_symlink_targets_something_other_than_sysctl_conf() {
+    // /etc/sysctl.d/99-sysctl.conf is a symlink to a RESOLVABLE decoy
+    // (../../other/decoy.conf, which exists) - NOT to ../sysctl.conf. Per design
+    // section 8 the slot is "the expected symlink" only when it resolves to
+    // <prefix>/etc/sysctl.conf, so this decoy link is treated as ABSENT: systemd
+    // never applies /etc/sysctl.conf. procps still reads /etc/sysctl.conf
+    // dead-last, so net.core.somaxconn = 777 (touched by no drop-in) diverges ->
+    // W03-b "systemd does not apply /etc/sysctl.conf" fires anchored at
+    // /etc/sysctl.conf. The current impl treats ANY resolvable symlink as the slot
+    // (is_symlink && exists), so it splices /etc/sysctl.conf at the 99-slot, the
+    // appliers agree, and NO W03-b fires -> RED. 777 is distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "other/decoy.conf",
+        "# unrelated decoy target\n",
+    );
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/99-sysctl.conf",
+        "../../other/decoy.conf",
+    );
+    write_at(root.path(), "etc/sysctl.conf", "net.core.somaxconn = 777\n");
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hit = w03s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W03-b divergence for net.core.somaxconn: the \
+                 99-sysctl.conf symlink targets a decoy (not ../sysctl.conf), so \
+                 per design section 8 systemd does not apply /etc/sysctl.conf while \
+                 procps applies 777 dead-last; diags: {diags:?}"
+            )
+        });
+    assert!(
+        hit.file.display().to_string().ends_with("sysctl.conf")
+            && !hit.file.display().to_string().ends_with("99-sysctl.conf"),
+        "W03-b anchors at the real /etc/sysctl.conf; got {:?}",
+        hit.file
+    );
+    assert!(
+        hit.message.contains("777"),
+        "the message must state the procps-resolved value (777): {}",
+        hit.message
+    );
+    assert!(
+        hit.message.to_lowercase().contains("systemd"),
+        "the message must name systemd as the diverging applier: {}",
+        hit.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 8. Enumerate robustness (design section 8): a MISSING search directory is
+//    skipped silently (a system need not have all of them) - no F01.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn missing_search_directories_are_skipped_silently_with_no_f01() {
+    // A root with NONE of the five search directories (only a comment-only
+    // /etc/sysctl.conf, which sets no key -> no W03-b). Every read_dir hits
+    // NotFound and is skipped; design section 8 says a missing dir is not an error.
+    // Pins the NotFound guard: a mutation routing NotFound to the generic error arm
+    // would emit a spurious F01 per missing dir.
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "etc/sysctl.conf", "# no keys here\n");
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    assert!(
+        f01s(&diags).is_empty(),
+        "missing search directories must not emit any sysctld-F01; got: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Enumerate robustness (design section 8): an UNREADABLE search directory
+//    yields a dir-level sysctld-F01, never a panic; the rest of the scan
+//    proceeds. Runs as a non-root uid, so mode 0o000 is genuinely unreadable.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unreadable_search_directory_emits_a_file_level_f01() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir().expect("temp root");
+    let blocked = root.path().join("etc/sysctl.d");
+    std::fs::create_dir_all(&blocked).expect("mkdir etc/sysctl.d");
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    // Restore perms BEFORE any assertion so the tempdir cleans up even on failure.
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755))
+        .expect("restore perms");
+
+    let dir_f01: Vec<&Diagnostic> = f01s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("cannot read sysctl.d directory"))
+        .collect();
+    assert_eq!(
+        dir_f01.len(),
+        1,
+        "an unreadable /etc/sysctl.d must emit exactly one dir-level sysctld-F01 \
+         (design section 8: unreadable dir -> F01, not a panic); got: {diags:?}"
+    );
+    assert!(
+        dir_f01[0]
+            .file
+            .display()
+            .to_string()
+            .ends_with("etc/sysctl.d"),
+        "the F01 must name the unreadable directory; got {:?}",
+        dir_f01[0].file
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10. Enumerate filters to real *.conf FILES only (parity with lint_dir): a
+//     non-.conf entry (README) and a .conf-NAMED subdirectory in a search dir are
+//     both ignored - never parsed, never an F01.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn non_conf_files_and_conf_named_subdirs_in_a_search_dir_are_ignored() {
+    // etc/sysctl.d holds: a valid drop-in (10-real.conf), a non-.conf file (README
+    // whose body would be a malformed F01 line if parsed), and a .conf-NAMED
+    // SUBDIRECTORY (would be an unreadable-file F01 if treated as a file). A correct
+    // enumerate (p.is_file() && ext == "conf") ignores the last two: is_file()->true
+    // would F01 on the subdir; ext=="conf"->true would parse README into an F01.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.d/10-real.conf",
+        "kernel.sysrq = 1\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/README",
+        "this line is not a sysctl assignment\n",
+    );
+    std::fs::create_dir_all(root.path().join("etc/sysctl.d/subdir.conf"))
+        .expect("mkdir subdir.conf");
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    assert!(
+        f01s(&diags).is_empty(),
+        "a README and a .conf-named subdirectory must be ignored, not parsed into \
+         an F01; got: {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| {
+            let f = d.file.display().to_string();
+            f.contains("README") || f.contains("subdir.conf")
+        }),
+        "no diagnostic may reference the ignored README or subdir.conf; got: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 11. W03-b value-equality branch (impl: `sw.value != procps_val`): symlink
+//     present AND a later drop-in sets the SAME value as /etc/sysctl.conf -> both
+//     appliers resolve the same value -> NO W03-b. Pins the equal-value branch (a
+//     `!=`->`==` mutation would wrongly fire here).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w03b_suppressed_when_a_later_dropin_sets_the_same_value_as_sysctl_conf() {
+    // Symlink present. /etc/sysctl.conf sets net.core.somaxconn = 1234, and
+    // etc/sysctl.d/zz-last.conf (sorts after the 99-slot) sets the SAME value 1234.
+    //   * procps: /etc/sysctl.conf dead-last = 1234.
+    //   * systemd: zz-last after the 99-slot = 1234.
+    // Both resolve 1234, so no divergence -> NO W03-b. Reaches the value-equality
+    // check with procps == systemd; a `!=`->`==` mutation would (wrongly) fire.
+    // 1234 is distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 1234\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-last.conf",
+        "net.core.somaxconn = 1234\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    assert!(
+        w03s(&diags)
+            .iter()
+            .all(|d| !d.message.contains("somaxconn")),
+        "both appliers resolve 1234, so no W03-b divergence may fire for \
+         net.core.somaxconn; got: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 12. W03-b dedup + dead-last procps value (impl: the earlier-duplicate skip):
+//     /etc/sysctl.conf sets the SAME key twice -> procps applies the LAST
+//     assignment (dead-last within the file) and W03-b fires exactly ONCE.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w03b_fires_once_per_key_using_the_dead_last_value_when_sysctl_conf_repeats_it() {
+    // No 99 symlink -> systemd never applies /etc/sysctl.conf, so a key it sets
+    // diverges (procps applies it, systemd does not). /etc/sysctl.conf sets
+    // net.core.somaxconn twice: = 4444 (line 1) then = 5555 (line 2). procps reads
+    // the file top-to-bottom and the LAST assignment wins, so the resolved value is
+    // 5555 and exactly ONE W03-b fires, anchored at the last assignment (line 2). A
+    // mutation of the earlier-duplicate skip would emit two W03-b (or pick 4444).
+    // 4444/5555 are distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 4444\nnet.core.somaxconn = 5555\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hits: Vec<&Diagnostic> = w03s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("somaxconn"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "a key set twice in /etc/sysctl.conf must fire W03-b exactly once; \
+         got: {diags:?}"
+    );
+    assert_eq!(
+        hits[0].line, 2,
+        "the single W03-b must anchor at the LAST (dead-last, procps-winning) \
+         assignment on line 2; got line {}",
+        hits[0].line
+    );
+    assert!(
+        hits[0].message.contains("5555") && !hits[0].message.contains("4444"),
+        "procps applies the dead-last value 5555 (not the earlier 4444): {}",
+        hits[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13. A REAL (non-symlink) 99-sysctl.conf in /etc/sysctl.d is a NORMAL
+//     highest-precedence drop-in - only the distro SYMLINK is special (impl:
+//     `path == link_99 && is_symlink(path)`). It masks a same-basename lower file
+//     and provides the key at rank 0.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_real_non_symlink_99_conf_is_a_normal_highest_precedence_dropin() {
+    // etc/sysctl.d/99-sysctl.conf is a REAL FILE (not the distro symlink) setting
+    // kernel.sysrq = 111. usr/lib/sysctl.d/99-sysctl.conf (same basename, lower
+    // dir) sets kernel.sysrq = 222 -> masked. usr/lib/sysctl.d/50-other.conf (a
+    // DIFFERENT basename, rank 3) sets kernel.sysrq = 333 and survives. In merge
+    // order "50-other.conf" < "99-sysctl.conf", so the real etc 99 (rank 0, value
+    // 111) applies last and wins over 50-other (333): a plain W01 anchored at
+    // 50-other naming the winning value 111 from the etc 99 file. A `&&`->`||`
+    // mutation at the symlink-skip would wrongly SKIP the real etc 99 (path ==
+    // link_99), letting the lower usr/lib 99 (222) survive and win instead - the
+    // W01 winner would then be 222 from the usr/lib path. 111/222/333 distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.d/99-sysctl.conf",
+        "kernel.sysrq = 111\n",
+    );
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/99-sysctl.conf",
+        "kernel.sysrq = 222\n",
+    );
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-other.conf",
+        "kernel.sysrq = 333\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let sysrq_w01: Vec<&Diagnostic> = w01s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("kernel.sysrq") || d.message.contains("kernel/sysrq"))
+        .collect();
+    assert_eq!(
+        sysrq_w01.len(),
+        1,
+        "exactly one W01 for kernel.sysrq (50-other dead, etc 99 wins); got: {diags:?}"
+    );
+    assert!(
+        sysrq_w01[0]
+            .file
+            .display()
+            .to_string()
+            .ends_with("50-other.conf"),
+        "the dead assignment is 50-other.conf's; got {:?}",
+        sysrq_w01[0].file
+    );
+    assert!(
+        sysrq_w01[0].message.contains("= 111)")
+            && sysrq_w01[0].message.contains("etc/sysctl.d/99-sysctl.conf"),
+        "the winner must be the REAL etc 99-sysctl.conf (value 111), proving a \
+         non-symlink 99 file is a normal highest-precedence drop-in (not skipped); \
+         got: {}",
+        sysrq_w01[0].message
     );
 }
