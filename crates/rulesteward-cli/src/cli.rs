@@ -890,20 +890,43 @@ pub enum SysctlCommand {
     /// error), sysctld-W01 (last-wins conflict: the same key assigned different
     /// effective values across the drop-in precedence order), and - when a
     /// `--target rhel8|rhel9|rhel10` baseline is selected - the version-aware
-    /// sysctld-W02 STIG kernel-hardening baseline check (#335). Cross-directory
-    /// system precedence is a deferred follow-up (issue #150).
+    /// sysctld-W02 STIG kernel-hardening baseline check (#335). `--system` opts in
+    /// to a cross-directory precedence scan (issue #420): it enumerates the full
+    /// standard search path (`/etc/sysctl.d`, `/run/sysctl.d`,
+    /// `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus `/etc/sysctl.conf`,
+    /// applies same-basename directory masking and the global lexicographic merge,
+    /// reruns F01/W01/W02 over the merged set, and adds sysctld-W03 (a key's
+    /// effective winner sits in a lower-precedence directory, a masked drop-in
+    /// silently drops a key, or the procps/systemd appliers disagree).
     ///
-    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
-    /// 2 errors, 3 tool failure, 5 unparseable config (sysctld-F01).
+    /// Read-only (nothing is written; `--root` makes the scan hermetic). Exit codes
+    /// follow the shared scheme: 0 clean, 1 warnings, 2 errors, 3 tool failure,
+    /// 5 unparseable config (sysctld-F01).
     Lint(SysctlLintArgs),
 }
 
-/// Arguments for `rulesteward sysctl lint` (#150, #335).
+/// Arguments for `rulesteward sysctl lint` (#150, #335, #420).
 #[derive(Debug, Parser)]
 pub struct SysctlLintArgs {
-    /// The `sysctl.d`/`sysctl.conf` file to lint (defaults to `/etc/sysctl.conf`)
+    /// The `sysctl.d`/`sysctl.conf` file to lint (defaults to `/etc/sysctl.conf`).
+    /// Mutually exclusive with `--system`.
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
+
+    /// Scan the standard `sysctl.d` search-path directories (`/etc/sysctl.d`,
+    /// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus
+    /// `/etc/sysctl.conf`, instead of a single `<path>` (issue #420). Models the
+    /// grounded same-basename directory masking + global lexicographic merge and
+    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02. Mutually
+    /// exclusive with the positional `<path>`.
+    #[arg(long, conflicts_with = "path")]
+    pub system: bool,
+
+    /// Prepend PREFIX to every standard search directory and to
+    /// `/etc/sysctl.conf` / the `99-sysctl.conf` symlink (hermetic testing, or
+    /// linting an image/chroot). Requires `--system`.
+    #[arg(long, value_name = "PREFIX", requires = "system")]
+    pub root: Option<PathBuf>,
 
     /// Output format (human | json; SARIF and CSV are not offered for this verb
     /// per the locked output contracts CC-3/CC-4).

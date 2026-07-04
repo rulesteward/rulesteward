@@ -160,7 +160,10 @@ pub(crate) struct ParsedAssignment {
 /// Parse `source` into its assignments and the F01 diagnostics for any malformed
 /// lines. F01 diagnostics are anchored to `path`; assignments carry `path` too so
 /// the caller can run W01 across one or many files uniformly.
-fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnostic>) {
+///
+/// `pub(crate)` so the cross-directory `--system` scan ([`crate::system`]) can parse
+/// each search-path file with identical semantics (issue #420).
+pub(crate) fn parse_file(source: &str, path: &Path) -> (Vec<ParsedAssignment>, Vec<Diagnostic>) {
     let mut assignments = Vec::new();
     let mut f01s = Vec::new();
     // Track a running byte offset so each finding carries the real byte range of its
@@ -226,7 +229,12 @@ pub(crate) fn effective_values(assignments: &[ParsedAssignment]) -> HashMap<&str
 /// key is dead -> one W01 anchored at the dead earlier line, naming the key and
 /// the winning value/location. Same key + same value, or an earlier entry that is
 /// itself the eventual winner, never fires.
-fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
+///
+/// `pub(crate)` so the cross-directory `--system` scan ([`crate::system`]) can run
+/// the identical last-wins pass over its precedence-merged assignment list (issue
+/// #420), keeping one W01 message format across single-file, single-dir, and
+/// system modes.
+pub(crate) fn w01_last_wins(assignments: &[ParsedAssignment]) -> Vec<Diagnostic> {
     // Key IDENTITY is the canonical /proc/sys path form; the winner for each key
     // is its LAST assignment (highest index).
     let winner = effective_values(assignments);

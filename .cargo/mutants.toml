@@ -130,6 +130,11 @@ examine_globs = [
     "crates/rulesteward-sysctld/src/parser.rs",
     "crates/rulesteward-sysctld/src/lints/**/*.rs",
     "crates/rulesteward-sysctld/src/catalog.rs",
+    # system.rs (#420): the cross-directory precedence + W03 (a/b/c) engine, the
+    # real logic of the --system scan. Added to the allowlist WITH the code so the
+    # mutation gate is non-vacuous (the 4a lesson: a new file outside examine_globs
+    # mutates zero times and false-passes).
+    "crates/rulesteward-sysctld/src/system.rs",
     # sudoers backend (#329 Phase 0): the hand-rolled two-stage parser (physical-
     # line join + line classification), the include/dir resolution seam, and the
     # lints dispatcher + leaf passes are the real Phase-0 logic and the mutation
