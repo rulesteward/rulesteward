@@ -498,7 +498,14 @@ fn parse_default_settings(s: &str) -> Vec<DefaultSetting> {
 /// Per the #370 precedent, this function only fixes the split BOUNDARY; it
 /// does not unescape the resulting value (the backslash before an unquoted
 /// escaped comma stays in the token verbatim, same as `cmnd_token`).
-fn split_default_settings(s: &str) -> Vec<&str> {
+///
+/// `pub(crate)` because it is the shared top-level-comma splitter: the lint
+/// pass reuses it to split a `Defaults` SCOPE-target comma list (#424 R2), which
+/// obeys the identical sudoers quote/escape lexing (a literal comma inside
+/// `"..."` or after a `\` is part of one member, not a separator), so a quoted
+/// (`Defaults:"a,,b"`) or escaped (`Defaults:alice\,`) scope token stays one
+/// member instead of producing a spurious empty split element.
+pub(crate) fn split_default_settings(s: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     let mut escaped = false;

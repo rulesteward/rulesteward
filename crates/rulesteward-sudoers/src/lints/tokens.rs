@@ -551,15 +551,23 @@ fn check_defaults(
     // userid 1000 + username alice). The parser stores the binding as one raw
     // string, so -- like `check_runas` iterates already-split runas tokens -- we
     // must split on `,` and validate PER ELEMENT: a non-`#` element (a plain
-    // user / host name) is IGNORED, a pure `#<digits>` element is valid, and a
+    // user / host name) is IGNORED, a pure `#<digits>` element is valid, an empty
+    // element is a visudo-rejected empty member (#424), and a
     // `#<digits><non-digits>` element fires one F02 naming THAT element (NOT the
-    // whole binding). A plain `,` split suffices (grounded, visudo/cvtsudoers
-    // 1.9.17p2, 2026-07-03): a valid `#<digits>` UID/GID token is `#` + pure
-    // digits (it can contain no comma / quote / space), and a quoted username
-    // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"` so it never trips the
-    // `#`-prefix gate; the only comma that can land inside a would-be `#`-token
-    // is one that makes it malformed anyway (`Defaults:#1000\,abc` is rc=1
-    // invalid, and the split's `#1000\` fragment correctly fires).
+    // whole binding).
+    //
+    // The split MUST be quote/escape-aware (#424 R2). visudo permits a LITERAL
+    // comma inside a single scope token two ways -- double-quoted
+    // (`Defaults:"a,,b"`, one `username` token) or backslash-escaped
+    // (`Defaults:alice\,`, one `username` token), both rc=0 valid (cvtsudoers
+    // 1.9.17p2, 2026-07-04). A naive `binding.split(',')` is blind to both and
+    // wrongly yields an empty element, firing a SPURIOUS Fatal on a valid file.
+    // So we reuse `crate::parser::split_default_settings` -- the shared
+    // top-level-comma splitter (a `,` neither inside `"..."` nor after `\`) --
+    // which keeps such a token as one member. The GID-tail check runs over the
+    // SAME split (a quoted username like `"#1000abc"` starts with `"`, so its
+    // member never trips the `#`-prefix gate; a genuinely empty UNQUOTED member
+    // `#1000,,alice` / `#1000,` still splits empty and fires).
     let scope_binding: Option<(&str, &str, bool)> = match &entry.scope {
         crate::ast::DefaultsScope::User(binding) => Some((binding.as_str(), "user", false)),
         crate::ast::DefaultsScope::Runas(binding) => Some((binding.as_str(), "runas", false)),
@@ -569,13 +577,16 @@ fn check_defaults(
     };
     if let Some((binding, scope_word, is_host)) = scope_binding {
         let before = diags.len();
-        for element in binding.split(',') {
+        for element in crate::parser::split_default_settings(binding) {
             // #424: an EMPTY comma-list member (`Defaults:#1000,,alice` middle,
             // `Defaults:#1000,` trailing) is a visudo syntax error (rc=1) in every
             // scope, but each non-empty neighbor is individually valid so the
-            // GID-tail check below finds nothing to flag. A single-member binding
-            // never splits to an empty element (an empty binding is caught earlier
-            // as `Malformed` / sudo-F01), so this fires only on a genuine
+            // GID-tail check below finds nothing to flag. The split above is
+            // quote/escape-aware (see the block comment), so a LITERAL comma
+            // inside a quoted (`"a,,b"`) or escaped (`alice\,`) token does NOT
+            // yield an empty member. A single-member binding never splits to an
+            // empty element (an empty binding is caught earlier as `Malformed` /
+            // sudo-F01), so this fires only on a genuine
             // empty-member list, not on a valid multi-member one (`#1000,alice`).
             if element.is_empty() {
                 diags.push(anchored(
