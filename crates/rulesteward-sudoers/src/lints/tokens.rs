@@ -1217,6 +1217,108 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // #407 round-3 (tests-only): pin the scope early-return guard
+    // `if diags.len() > before { return; }` and the parser's quote-retention.
+    // -----------------------------------------------------------------------
+    //
+    // The early-return means "a malformed scope target already flagged the line
+    // -> skip the setting/value check", faithful to visudo's first-error-wins.
+    // These tests pin its exact `>` semantics so the mutation gate cannot flip it
+    // to `<` / `==` / `>=` silently. The value-check setting used is
+    // `secure_path=/usr/bin #3`: visudo rejects the `#3` in the value (rc=1,
+    // grounded 1.9.17p2, 2026-07-03), and the Case-2 value check fires on it
+    // standalone (see `f02_hash_digits_in_defaults_assigned_value_fires`).
+
+    /// Malformed scope element AND a malformed setting value on ONE line
+    /// (`Defaults:#1000abc secure_path=/usr/bin #3`, visudo rc=1). The scope check
+    /// fires an F02 and the early-return skips the value check, so EXACTLY ONE F02
+    /// (the scope one) is emitted.
+    ///
+    /// Kills the `> -> <` and `> -> ==` mutants: both make `diags.len() > before`
+    /// false after one scope push (`before+1 < before` and `before+1 == before`
+    /// are both false), so the fn falls through to the value check and emits a
+    /// SECOND F02 -- this test's `== 1` assertion then fails.
+    #[test]
+    fn f02_defaults_scope_defect_early_returns_before_value_check() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults:#1000abc secure_path=/usr/bin #3\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a malformed scope target must early-return and emit EXACTLY ONE F02 \
+             (the scope one), not also run the value check; got {diags:?}"
+        );
+        assert!(
+            f02_diags[0].message.contains("user-scope")
+                && f02_diags[0].message.contains("#1000abc"),
+            "the single F02 must be the SCOPE diagnostic naming `#1000abc`; got {:?}",
+            f02_diags[0].message
+        );
+        assert!(
+            !f02_diags[0].message.contains("setting contains"),
+            "the value-check F02 must NOT have run (early-return); got {:?}",
+            f02_diags[0].message
+        );
+    }
+
+    /// VALID scope AND a malformed setting value on one line
+    /// (`Defaults:root secure_path=/usr/bin #3`, visudo rc=1). The valid `:root`
+    /// scope pushes no diagnostic, so `diags.len() > before` is false and the fn
+    /// MUST fall through to the value check, which fires its F02.
+    ///
+    /// Kills the `> -> >=` mutant: with no scope push, `before >= before` is true,
+    /// so the mutant returns early and SKIPS the value check -> zero diagnostics --
+    /// this test's `>= 1` (and the value-message) assertion then fails. (Also
+    /// reds under `==`, a free bonus.)
+    #[test]
+    fn f02_defaults_valid_scope_still_runs_value_check() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults:root secure_path=/usr/bin #3\n");
+        let value_f02: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == "sudo-F02" && d.message.contains("setting contains"))
+            .collect();
+        assert_eq!(
+            value_f02.len(),
+            1,
+            "a valid scope must NOT early-return -- the value check must still fire \
+             its F02 for the malformed `#3` value; got {diags:?}"
+        );
+        assert_eq!(value_f02[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `Defaults:"#1000abc" !lecture` -- a QUOTED literal username (visudo rc=0,
+    /// VALID). Guard test: correctness depends on the parser KEEPING the quotes in
+    /// the scope binding (`"#1000abc"`), so `strip_prefix('#')` returns `None` and
+    /// `is_malformed_gid_tail` never trips. A future parser change that strips the
+    /// surrounding quotes would silently turn this valid line into a false-positive
+    /// F02; lock the current behavior now.
+    #[test]
+    fn f02_defaults_user_scope_quoted_literal_name_no_f02() {
+        let src = "root ALL=(ALL:ALL) ALL\nDefaults:\"#1000abc\" !lecture\n";
+        let f02_diags: Vec<_> = lint(src)
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults:\"#1000abc\"` is a valid quoted literal username -- must NOT \
+             fire F02 (the quote must survive so the `#` gate is not tripped); got \
+             {f02_diags:?}"
+        );
+        // Pin the quote-retention that makes the above hold: the binding is kept
+        // verbatim WITH its surrounding quotes.
+        let f = files(src);
+        let crate::ast::LineKind::Defaults(entry) = &f[0].lines[1].kind else {
+            panic!("expected a Defaults entry; got {:?}", f[0].lines[1].kind);
+        };
+        assert_eq!(
+            entry.scope,
+            crate::ast::DefaultsScope::User("\"#1000abc\"".to_string()),
+            "the quoted scope binding must retain its surrounding quotes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Case 3: relative-path command
     // -----------------------------------------------------------------------
 
