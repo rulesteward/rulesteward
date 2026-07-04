@@ -69,6 +69,18 @@ fn symlink_at(root: &Path, link_rel: &str, target: &str) {
     std::os::unix::fs::symlink(target, &link).expect("create symlink");
 }
 
+/// Create a real `.conf`-NAMED DIRECTORY at `<root>/<rel>` (a direct non-regular,
+/// non-symlink entry). This is the type-agnostic basename masker case: a directory
+/// entry in a higher-precedence search dir must still claim its basename and mask a
+/// lower same-basename regular file (man sysctl.d(5) precedence; design section 2
+/// point 1). Uses `create_dir` (not `create_dir_all`) for the leaf so the entry is
+/// unambiguously a directory.
+fn mkdir_conf_named(root: &Path, rel: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir -p parent");
+    std::fs::create_dir(&path).expect("mkdir .conf-named directory");
+}
+
 /// All `sysctld-F01` diagnostics.
 fn f01s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags.iter().filter(|d| d.code == "sysctld-F01").collect()
@@ -773,18 +785,22 @@ fn unreadable_search_directory_emits_a_file_level_f01() {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Enumerate filters to real *.conf FILES only (parity with lint_dir): a
-//     non-.conf entry (README) and a .conf-NAMED subdirectory in a search dir are
-//     both ignored - never parsed, never an F01.
+// 10. A non-.conf entry (README) and a .conf-NAMED subdirectory in a search dir
+//     produce no F01 and no diagnostic. README is filtered out by NAME (no `.conf`
+//     extension). The subdir claims its basename type-agnostically (a directory is
+//     a valid basename masker, design section 2 point 1) but, with NO lower
+//     same-basename file beneath it, masks nothing and contributes no content - so
+//     no F01, no diagnostic references it.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn non_conf_files_and_conf_named_subdirs_in_a_search_dir_are_ignored() {
     // etc/sysctl.d holds: a valid drop-in (10-real.conf), a non-.conf file (README
     // whose body would be a malformed F01 line if parsed), and a .conf-NAMED
-    // SUBDIRECTORY (would be an unreadable-file F01 if treated as a file). A correct
-    // enumerate (p.is_file() && ext == "conf") ignores the last two: is_file()->true
-    // would F01 on the subdir; ext=="conf"->true would parse README into an F01.
+    // SUBDIRECTORY. README lacks a `.conf` extension so it is filtered out by name
+    // (never read). The subdir.conf directory claims its basename but is not a
+    // readable regular file, so it contributes no assignments and - having nothing
+    // same-basename beneath it - masks nothing: no F01, no diagnostic names it.
     let root = tempdir().expect("temp root");
     write_at(
         root.path(),
@@ -1146,5 +1162,94 @@ fn the_99_slot_symlink_is_recognized_as_the_systemd_slot() {
         "the divergence cause must be the recognized 99-sysctl.conf slot (the \
          symlink is present), not a missing symlink; got: {}",
         hit.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17. BUG (convergence impl-aware review): masking is TYPE-AGNOSTIC by basename.
+//     A DIRECT non-regular entry (a `.conf`-named DIRECTORY, or a fifo/socket/
+//     device - same code path) in a higher-precedence search dir must still CLAIM
+//     its basename and MASK a lower same-basename regular file. Grounded: both
+//     procps-ng 3.3.17 `sysctl --dry-run --system` AND systemd-sysctl 259
+//     `systemd-sysctl --cat-config` resolve to the LOWER file being masked
+//     (type-agnostic basename precedence); man sysctl.d(5) "CONFIGURATION
+//     DIRECTORIES AND PRECEDENCE" + design section 2 point 1. The impl's
+//     `if !ftype.is_file() && !ftype.is_symlink() { continue; }` guard drops the
+//     direct non-regular entry BEFORE it can claim its basename, so the lower
+//     vendor file wrongly SURVIVES and WINS (the OPPOSITE of both appliers).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_conf_named_directory_masks_a_lower_same_basename_vendor_file() {
+    // /etc/sysctl.d/50-foo.conf is a real DIRECTORY (rank 0). It claims the basename
+    // "50-foo.conf" and must MASK the lower vendor file /usr/lib/sysctl.d/50-foo.conf
+    // (net.core.somaxconn = 999). A separate /run/sysctl.d/10-base.conf sets the SAME
+    // key = 111 and survives. Correct (both real appliers agree): the vendor file is
+    // masked and invisible, only 111 applies - NO cross-directory surprise. The
+    // current impl drops the directory at the file-type guard, so the vendor file
+    // wrongly survives at rank 3 and, sorting after 10-base.conf, WINS - emitting a
+    // spurious W03-a that names 999 overriding 111. 999/111 distinctive.
+    let root = tempdir().expect("temp root");
+    mkdir_conf_named(root.path(), "etc/sysctl.d/50-foo.conf");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-foo.conf",
+        "net.core.somaxconn = 999\n",
+    );
+    write_at(
+        root.path(),
+        "run/sysctl.d/10-base.conf",
+        "net.core.somaxconn = 111\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    // The directory-masked vendor value 999 must never win/apply: it may appear in
+    // NO sysctld-W01 and NO sysctld-W03 message (only the surviving 111 applies).
+    // Here somaxconn is covered by 10-base's 111, so a correct impl fires no W03-c
+    // for the masked file either - hence the broad "no W03 names 999" holds.
+    for d in &diags {
+        if d.code == "sysctld-W01" || d.code == "sysctld-W03" {
+            assert!(
+                !d.message.contains("999"),
+                "a directory-masked vendor value 999 must never win/apply or be named \
+                 in a W01/W03 (only the surviving 111 applies): {}",
+                d.message
+            );
+        }
+    }
+}
+
+#[test]
+fn a_conf_named_directory_masks_a_vendor_hardening_file_reopening_the_stig_gap() {
+    // Sharper STIG variant (parallel to tests #14/#16): /etc/sysctl.d/50-foo.conf is
+    // a DIRECTORY (rank 0) that must mask the lower vendor hardening file
+    // /usr/lib/sysctl.d/50-foo.conf (kernel.dmesg_restrict = 1, STIG-compliant).
+    // Masking it drops the key from the effective set -> under --target rhel9 the W02
+    // baseline flags kernel.dmesg_restrict as UNSET (the reopened STIG gap is the
+    // direct grounded consequence that the masked value does not apply). The current
+    // impl drops the directory at the file-type guard, so the vendor file survives,
+    // dmesg_restrict = 1 stays compliant, and NO W02 fires -> RED.
+    let root = tempdir().expect("temp root");
+    mkdir_conf_named(root.path(), "etc/sysctl.d/50-foo.conf");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-foo.conf",
+        "kernel.dmesg_restrict = 1\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(
+        Some(root.path()),
+        Some(rulesteward_sysctld::TargetVersion::Rhel9),
+    );
+
+    assert!(
+        diags.iter().any(|d| {
+            d.code == "sysctld-W02"
+                && d.message.contains("kernel.dmesg_restrict")
+                && d.message.contains("unset")
+        }),
+        "a .conf-named directory must mask the lower vendor hardening file, so its \
+         STIG key becomes UNSET and W02 flags it; got: {diags:?}"
     );
 }
