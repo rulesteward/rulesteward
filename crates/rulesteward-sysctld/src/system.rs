@@ -123,9 +123,16 @@ fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
 /// masking. Returns the surviving drop-ins (one per basename, highest-precedence
 /// directory wins), the masked drop-ins (for W03-c), and a file-level F01 for any
 /// directory that exists but cannot be read. A MISSING directory is skipped
-/// silently (a system need not have all of them). The distro `99-sysctl.conf`
-/// symlink is skipped here - it is handled via `/etc/sysctl.conf` + the
-/// applier-divergence pass, not as a normal drop-in.
+/// silently (a system need not have all of them).
+///
+/// Masking is by directory ENTRY NAME (design section 2 point 1, man sysctl.d(5)),
+/// separate from the content decision. EVERY `.conf`-named regular file or symlink
+/// claims its basename at its directory's rank; a same-basename entry in a lower
+/// directory is masked. Content is then contributed only by an entry that resolves
+/// to a readable regular file. Two entries claim a basename WITHOUT contributing
+/// content: the distro `99-sysctl.conf -> ../sysctl.conf` slot (its content flows
+/// via the `/etc/sysctl.conf` applier model) and the man sysctl.d(5) `-> /dev/null`
+/// disable idiom (which masks a vendor file without applying anything).
 fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
     let mut surviving = Vec::new();
@@ -151,42 +158,60 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
                 continue;
             }
         };
-        // `*.conf` files only (a README or subdirectory is ignored), matching
-        // `lint_dir`. Sorted for deterministic masking within a directory.
+        // Collect every `.conf`-NAMED entry (by name only - do NOT pre-filter by
+        // `is_file()`, which would FOLLOW a `-> /dev/null` disable symlink to a char
+        // device and drop it before it can claim/mask its basename). Sorted for
+        // deterministic masking within a directory.
         let mut conf: Vec<PathBuf> = entries
             .filter_map(Result::ok)
             .map(|e| e.path())
-            .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "conf"))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "conf"))
             .collect();
         conf.sort();
         for path in conf {
+            // Classify WITHOUT following the link (symlink_metadata). Only a regular
+            // file or a symlink is a config unit that claims a basename; a
+            // `.conf`-named subdirectory (or device/fifo) is ignored entirely.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let ftype = meta.file_type();
+            if !ftype.is_file() && !ftype.is_symlink() {
+                continue;
+            }
             let Some(basename) = path.file_name().map(OsStr::to_os_string) else {
                 continue;
             };
-            // The `/etc/sysctl.d/99-sysctl.conf` symlink to `../sysctl.conf` is not a
-            // real drop-in - its content participates via the dead-last / 99-slot
-            // divergence logic, not as a normal parsed file. But it still OWNS its
-            // basename at rank 0, so it MUST claim `99-sysctl.conf` in `seen` to mask
-            // a same-basename file in a lower directory (design section 2 point 1);
-            // only then do we skip adding it as a surviving/parsed drop-in. (A
-            // dangling link already fails `is_file` above.)
-            if path == link_99 && is_symlink(&path) {
-                seen.entry(basename).or_insert_with(|| path.clone());
-                continue;
-            }
+            // First directory to hold a basename provides it; a same-basename entry in
+            // a lower directory is masked (recorded for the W03-c masked-key-drop check).
             if let Some(masker) = seen.get(&basename) {
                 masked.push(MaskedFile {
                     path,
                     masked_by: masker.clone(),
                 });
-            } else {
-                seen.insert(basename.clone(), path.clone());
+                continue;
+            }
+            seen.insert(basename.clone(), path.clone());
+            // Content contribution, decided AFTER the basename claim above.
+            if ftype.is_symlink() && path == link_99 {
+                // The distro `99-sysctl.conf -> ../sysctl.conf` slot: claims its
+                // basename, but its content flows via the `/etc/sysctl.conf` applier
+                // model (W03-b), not as a parsed drop-in.
+                continue;
+            }
+            if path.is_file() {
+                // A regular file, or a symlink to a readable regular file: a real
+                // drop-in whose assignments contribute to the merged set.
                 surviving.push(SurvivingFile {
                     path,
                     basename,
                     rank,
                 });
             }
+            // Otherwise (a `-> /dev/null` disable symlink, a dangling symlink, or a
+            // symlink to a non-regular target): the entry has CLAIMED (masks) its
+            // basename above but contributes NO assignments - the man sysctl.d(5)
+            // idiom for disabling a vendor drop-in without deleting it.
         }
     }
     (surviving, masked, f01)
