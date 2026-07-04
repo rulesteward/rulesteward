@@ -1,17 +1,18 @@
 //! Tag-state-machine lint passes: sudo-W01 (NOPASSWD applies to an ALL command -
-//! passwordless run-anything; #330) and sudo-W02 (a `Cmnd_Alias` transitively
-//! expands to ALL while under NOPASSWD; #332).
+//! passwordless run-anything; #330), sudo-W02 (a `Cmnd_Alias` transitively expands
+//! to ALL while under NOPASSWD; #332), and sudo-W05 (NOPASSWD in effect on any
+//! specific command; DISA STIG remove-all-NOPASSWD).
 //!
-//! # Phase 0: STUBS
-//! Both passes return `Vec::new()` today. They are filled by the #330 / #332
-//! pipelines,
-//! which walks each user-spec's [`Cmnd_Spec_List`](crate::ast::UserSpec::cmnd_specs)
+//! All three walk each user-spec's [`Cmnd_Spec_List`](crate::ast::UserSpec::cmnd_specs)
 //! left-to-right, applying the sudoers tag-inheritance rule (once a tag is set it
 //! inherits to subsequent commands until the opposite tag overrides it; PASSWD
-//! resets NOPASSWD). When NOPASSWD is in effect on a [`CmndItem::All`](crate::ast::CmndItem::All)
-//! command, W01 fires; W02 additionally walks `Cmnd_Alias` expansions to ALL. The
-//! AST records the EXPLICIT per-command tags (not inheritance-resolved), so the
-//! state machine lives here and the pass only EMITS - it never re-parses.
+//! resets NOPASSWD), with the running state reset per host-group. The shared
+//! forward-NOPASSWD walk + tag-fold is factored into `for_each_nopasswd_command`
+//! (#404); each pass supplies only its fire predicate + message. When NOPASSWD is in
+//! effect: W01 fires on a [`CmndItem::All`](crate::ast::CmndItem::All) command, W02
+//! on a `Cmnd_Alias` that expands to ALL, and W05 on any non-ALL command. The AST
+//! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
+//! machine lives here and the passes only EMIT - they never re-parse.
 
 use rulesteward_core::{Diagnostic, Severity};
 
