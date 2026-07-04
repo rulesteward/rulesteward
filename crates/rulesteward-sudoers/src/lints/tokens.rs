@@ -1389,6 +1389,25 @@ mod tests {
         );
     }
 
+    /// GUARD (Case 2 valid-multi-member, F01+F02 granularity): `Defaults:#1000,alice
+    /// env_reset` is a VALID two-member user-scope comma list -- `visudo -c -f`
+    /// rc=0. It must fire NO Fatal (F01 or F02). Pins the valid case at the SAME
+    /// F01+F02 granularity as the two positive empty-member tests above, so a
+    /// contrived over-broad fix ("mark any comma-list Defaults Malformed") that
+    /// makes those pass is caught here. GREEN before AND after the #424 fix.
+    #[test]
+    fn defaults_user_scope_valid_multi_member_no_fatal() {
+        // Fixture: visudo -c -f rc=0 (both `#1000` and `alice` are valid members).
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000,alice env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults:#1000,alice` is a valid two-member list (visudo rc=0) and \
+             must fire NO Fatal -- a #424 fix must not over-broadly flag comma-list \
+             Defaults; got {fatals:?}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // #407 round-3 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
