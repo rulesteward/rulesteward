@@ -42,11 +42,12 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
 
     // --system (issue #420): scan the full standard sysctl.d search path
     // (optionally rooted at --root for hermetic testing / chroot-linting)
-    // instead of a single <path>, adding the cross-directory sysctld-W03 pass.
-    // clap's `conflicts_with`/`requires` on SysctlLintArgs already reject
-    // --system + a positional path, and --root without --system. Today
-    // `lint_system` is a Phase-0 stub (always clean); the real precedence/mask/
-    // merge/W03 logic lands with the impl pipeline.
+    // instead of a single <path>, adding the cross-directory sysctld-W03 pass
+    // (lower-precedence-directory override, masked-drop-in key drop, and
+    // procps/systemd applier divergence). `lint_system` performs the real
+    // enumerate/mask/merge and reruns F01/W01/W02 over the merged set. clap's
+    // `conflicts_with`/`requires` on SysctlLintArgs already reject --system + a
+    // positional path, and --root without --system.
     if args.system {
         let (diags, sources) =
             rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);

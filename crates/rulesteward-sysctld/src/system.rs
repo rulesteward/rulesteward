@@ -65,6 +65,30 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// Whether the `/etc/sysctl.d/99-sysctl.conf` slot under `prefix` is the EXPECTED
+/// distro symlink - a symlink that resolves to `<prefix>/etc/sysctl.conf`.
+///
+/// This is the ONLY path by which systemd-sysctl applies `/etc/sysctl.conf` (design
+/// section 2 point 3). Per design section 8, anything that is "not the expected
+/// symlink" is treated as ABSENT (systemd does not apply `/etc/sysctl.conf`, so
+/// W03-b fires): a non-symlink, a dangling link (`canonicalize` fails, and a
+/// dangling link is never followed), or a symlink to any OTHER target. Both sides
+/// are canonicalized so the shipped relative `../sysctl.conf` target and any
+/// prefix-level symlinks resolve identically.
+fn slot_symlink_ok(prefix: &Path) -> bool {
+    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
+    if !is_symlink(&link_99) {
+        return false;
+    }
+    match (
+        std::fs::canonicalize(&link_99),
+        std::fs::canonicalize(prefix.join("etc/sysctl.conf")),
+    ) {
+        (Ok(target), Ok(etc_conf)) => target == etc_conf,
+        _ => false,
+    }
+}
+
 /// A drop-in that survived same-basename directory masking, tagged with its
 /// search-directory precedence rank (0 = `/etc/sysctl.d`, highest).
 struct SurvivingFile {
@@ -136,15 +160,20 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
             .collect();
         conf.sort();
         for path in conf {
-            // The `/etc/sysctl.d/99-sysctl.conf` symlink to `../sysctl.conf` is not a
-            // real drop-in; its content participates via the dead-last / 99-slot
-            // divergence logic. (A dangling link already fails `is_file` above.)
-            if path == link_99 && is_symlink(&path) {
-                continue;
-            }
             let Some(basename) = path.file_name().map(OsStr::to_os_string) else {
                 continue;
             };
+            // The `/etc/sysctl.d/99-sysctl.conf` symlink to `../sysctl.conf` is not a
+            // real drop-in - its content participates via the dead-last / 99-slot
+            // divergence logic, not as a normal parsed file. But it still OWNS its
+            // basename at rank 0, so it MUST claim `99-sysctl.conf` in `seen` to mask
+            // a same-basename file in a lower directory (design section 2 point 1);
+            // only then do we skip adding it as a surviving/parsed drop-in. (A
+            // dangling link already fails `is_file` above.)
+            if path == link_99 && is_symlink(&path) {
+                seen.entry(basename).or_insert_with(|| path.clone());
+                continue;
+            }
             if let Some(masker) = seen.get(&basename) {
                 masked.push(MaskedFile {
                     path,
@@ -447,8 +476,7 @@ pub fn lint_system(
     let (surviving_asgns, surviving_ranks) = parse_surviving(&surviving, &mut diags, &mut sources);
     let etc_conf_asgns = parse_etc_conf(prefix, &mut diags, &mut sources);
 
-    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
-    let symlink_ok = is_symlink(&link_99) && link_99.exists();
+    let symlink_ok = slot_symlink_ok(prefix);
     // W03-b needs the pre-merge handles, so compute it before the two are moved.
     let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok);
 

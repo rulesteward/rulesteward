@@ -890,12 +890,18 @@ pub enum SysctlCommand {
     /// error), sysctld-W01 (last-wins conflict: the same key assigned different
     /// effective values across the drop-in precedence order), and - when a
     /// `--target rhel8|rhel9|rhel10` baseline is selected - the version-aware
-    /// sysctld-W02 STIG kernel-hardening baseline check (#335). `--system` scans
-    /// the full standard search path (cross-directory precedence, issue #420) and
-    /// adds sysctld-W03; that scan is a Phase-0 stub today (always clean).
+    /// sysctld-W02 STIG kernel-hardening baseline check (#335). `--system` opts in
+    /// to a cross-directory precedence scan (issue #420): it enumerates the full
+    /// standard search path (`/etc/sysctl.d`, `/run/sysctl.d`,
+    /// `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus `/etc/sysctl.conf`,
+    /// applies same-basename directory masking and the global lexicographic merge,
+    /// reruns F01/W01/W02 over the merged set, and adds sysctld-W03 (a key's
+    /// effective winner sits in a lower-precedence directory, a masked drop-in
+    /// silently drops a key, or the procps/systemd appliers disagree).
     ///
-    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
-    /// 2 errors, 3 tool failure, 5 unparseable config (sysctld-F01).
+    /// Read-only (nothing is written; `--root` makes the scan hermetic). Exit codes
+    /// follow the shared scheme: 0 clean, 1 warnings, 2 errors, 3 tool failure,
+    /// 5 unparseable config (sysctld-F01).
     Lint(SysctlLintArgs),
 }
 
