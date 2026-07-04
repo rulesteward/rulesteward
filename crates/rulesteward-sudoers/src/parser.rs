@@ -1750,6 +1750,81 @@ mod tests {
         );
     }
 
+    // ---- #424 Round 2: mutation-survivor coverage for the `in_runas_paren`
+    // state machine (`paren_opens_runas` + the `(`/`)` quote guards) --------
+    //
+    // The letter-first `(#abc)` fix (#424) added an `in_runas_paren` flag toggled
+    // by `(` (via `paren_opens_runas`) and `)`, gating whether a `#`-token inside a
+    // runas paren is kept. Four mutants survived the pre-existing suite because no
+    // test exercised (a) a MID-command `(` that must NOT open runas state, or (b)
+    // a `(`/`)` INSIDE a quoted region that must NOT change runas state. Each test
+    // below is grounded so a specific mutant flips its expected strip output.
+
+    #[test]
+    fn strip_strips_mid_command_paren_comment() {
+        // Grounded: `alice localhost = /bin/echo (#foo` is `visudo -c` rc=0 -- the
+        // `(` is MID-COMMAND (preceded by the command char `o` of `echo`, not by
+        // `=`/`,`/line-start), so it does NOT open a runas group, and the `#foo`
+        // that follows IS a real trailing comment (no digit after `#`). The strip
+        // must drop `#foo`, leaving the command `/bin/echo (`.
+        //
+        // Kills `paren_opens_runas -> true` (whole-fn, parser.rs:329): that mutant
+        // classifies this mid-command `(` as a runas open, sets `in_runas_paren`,
+        // and KEEPS `#foo` -> returns the full string. ALSO kills the line-334
+        // `bytes[j] == b',' -> != ` mutant: for the preceding char `o`, clean
+        // returns false (correct: not runas) but the mutant returns `o != b','` =
+        // true, so it too wrongly opens runas state and keeps `#foo`.
+        assert_eq!(
+            strip_inline_comment("alice localhost = /bin/echo (#foo"),
+            "alice localhost = /bin/echo (",
+            "a mid-command `(` does not open runas state; the trailing `#foo` is a \
+             real comment and must be stripped (visudo rc=0)"
+        );
+    }
+
+    #[test]
+    fn strip_ignores_a_quoted_open_paren_for_runas_state() {
+        // Grounded: `Defaults passprompt="=(" #abc` is `visudo -c` rc=0 -- the `(`
+        // sits INSIDE the double-quoted value `"=("`, so it is a literal, NOT a
+        // runas open-paren, and the `#abc` after the closing quote + space is a
+        // real trailing comment. The strip must drop `#abc`.
+        //
+        // Kills the `b'(' if !in_quotes -> true` guard mutant (parser.rs:263):
+        // that mutant runs the `(`-arm even inside quotes, and because the quoted
+        // `(` is preceded by `=` (`paren_opens_runas` true), it wrongly sets
+        // `in_runas_paren`, which persists past the closing quote and KEEPS the
+        // `#abc` comment -> returns the full string.
+        assert_eq!(
+            strip_inline_comment("Defaults passprompt=\"=(\" #abc"),
+            "Defaults passprompt=\"=(\" ",
+            "a `(` inside double quotes is a literal, not a runas open; the later \
+             `#abc` is a real comment and must be stripped (visudo rc=0)"
+        );
+    }
+
+    #[test]
+    fn strip_ignores_a_quoted_close_paren_for_runas_state() {
+        // Grounded: `alice ALL=(root:"a)"#foo) /bin/su` is `visudo -c` rc=1 with the
+        // caret on `#foo` -- i.e. `#foo` is an invalid TOKEN inside the runas group,
+        // NOT a comment (a `#` inside a runas paren is always a token per #424). The
+        // `)` inside the quoted `"a)"` is a literal and must NOT close the runas
+        // group. The strip must therefore KEEP `#foo` (leave the whole line intact)
+        // so the downstream sudo-F02 runas check can see the malformed token.
+        //
+        // Kills the `b')' if !in_quotes -> true` guard mutant (parser.rs:268): that
+        // mutant lets the quoted `)` RESET `in_runas_paren` to false; then `#foo`
+        // (preceded by the closing `"`, not followed by a digit) is no longer kept
+        // and gets STRIPPED as a comment -> returns `alice ALL=(root:"a)"`, losing
+        // the real command and the malformed token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:\"a)\"#foo) /bin/su"),
+            "alice ALL=(root:\"a)\"#foo) /bin/su",
+            "a `)` inside double quotes does not close the runas group; the `#foo` \
+             inside the paren is a token, not a comment, and must be kept (visudo \
+             rc=1, caret on `#foo`)"
+        );
+    }
+
     // ---- continuation edges (#329 part B) ----
 
     #[test]

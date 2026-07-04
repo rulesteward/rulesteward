@@ -1464,6 +1464,136 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // #424 Round 2 (post-GREEN impl-aware review): the empty-member check runs
+    // on a quote/escape-BLIND `binding.split(',')`, so a LITERAL comma inside a
+    // double-quoted or backslash-escaped `Defaults` scope token wrongly produces
+    // an empty split element and fires a SPURIOUS Fatal sudo-F02 on a VALID
+    // config -- a highest-severity false positive on a `visudo -c`-ACCEPTED file.
+    //
+    // visudo permits a literal comma inside a scope-target token two ways, both a
+    // SINGLE token (never a two-member list): double-quoted (`"a,,b"`) or
+    // backslash-escaped (`alice\,`). The empty-member split must become QUOTE +
+    // ESCAPE aware (skip a `,` inside `"..."` and a `,` immediately after a `\`),
+    // mirroring `split_default_settings` in parser.rs, so these stay silent while
+    // the genuinely-empty unquoted members (`#1000,,alice` / `#1000,`) still fire.
+    //
+    // Oracle grounding (`visudo -c -f` + `cvtsudoers -f json`, sudo 1.9.17p2,
+    // reconfirmed 2026-07-04; every file is `root ALL=(ALL:ALL) ALL` + the line):
+    //   Defaults:"a,,b" env_reset    -> rc=0; Binding one token `a,,b`   (username)
+    //   Defaults@"h,,h" env_reset    -> rc=0; Binding one token `h,,h`   (hostname)
+    //   Defaults>"a,,b" env_reset    -> rc=0; Binding one token `a,,b`   (username)
+    //   Defaults:"%grp,,x" env_reset -> rc=0; Binding one token `grp,,x` (usergroup)
+    //   Defaults:alice\, env_reset   -> rc=0; Binding one token `alice,` (username)
+    //   Defaults>root\, env_reset    -> rc=0; Binding one token `root,`  (username)
+    // These fire NO Fatal on correct code; each is RED now (spurious sudo-F02).
+    // -----------------------------------------------------------------------
+
+    /// FP GUARD (#424 R2): `Defaults:"a,,b" env_reset` -- the double commas sit
+    /// INSIDE a double-quoted user-scope token, so `visudo -c` rc=0 and
+    /// `cvtsudoers -f json` shows ONE `username` token `a,,b`. RED now: the
+    /// quote-blind `binding.split(',')` sees `["a`, an empty element, then `b"]`,
+    /// and that empty middle element fires a spurious Fatal F02. Must fire NO Fatal.
+    #[test]
+    fn f02_defaults_user_scope_quoted_literal_commas_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `a,,b`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:\"a,,b\" env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults:\"a,,b\"` is one quoted user token with literal commas \
+             (visudo rc=0) -- the empty-member split must be quote-aware and fire \
+             NO Fatal; got {fatals:?}"
+        );
+    }
+
+    /// FP GUARD (#424 R2, Host scope): `Defaults@"h,,h" env_reset` -- literal
+    /// commas inside a double-quoted HOST-scope token. `visudo -c` rc=0;
+    /// `cvtsudoers` one `hostname` token `h,,h`. RED now (spurious Fatal). Must
+    /// fire NO Fatal. Distinct scope arm from the user case so a fix that only
+    /// quote-guards the user scope is caught.
+    #[test]
+    fn f02_defaults_host_scope_quoted_literal_commas_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `hostname` `h,,h`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults@\"h,,h\" env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults@\"h,,h\"` is one quoted host token with literal commas \
+             (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
+        );
+    }
+
+    /// FP GUARD (#424 R2, Runas scope): `Defaults>"a,,b" env_reset` -- literal
+    /// commas inside a double-quoted RUNAS-scope token. `visudo -c` rc=0;
+    /// `cvtsudoers` one `username` token `a,,b`. RED now (spurious Fatal). Must
+    /// fire NO Fatal. The third scope arm (`>`), so a per-scope quote fix must
+    /// cover all three.
+    #[test]
+    fn f02_defaults_runas_scope_quoted_literal_commas_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `a,,b`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults>\"a,,b\" env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults>\"a,,b\"` is one quoted runas token with literal commas \
+             (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
+        );
+    }
+
+    /// FP GUARD (#424 R2, `%group` inside quotes): `Defaults:"%grp,,x" env_reset`
+    /// -- a quoted user-scope token whose content is a `%group` reference with
+    /// literal commas. `visudo -c` rc=0; `cvtsudoers` one `usergroup` token
+    /// `grp,,x`. RED now (spurious Fatal). Must fire NO Fatal. Guards that the
+    /// quote-awareness applies even when the quoted content starts with `%`.
+    #[test]
+    fn f02_defaults_user_scope_quoted_pct_group_literal_commas_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `usergroup` `grp,,x`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:\"%grp,,x\" env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults:\"%grp,,x\"` is one quoted usergroup token with literal \
+             commas (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
+        );
+    }
+
+    /// FP GUARD (#424 R2, backslash-escaped comma): `Defaults:alice\, env_reset`
+    /// -- an UNQUOTED user-scope token ending in a backslash-escaped literal
+    /// comma. `visudo -c` rc=0; `cvtsudoers` one `username` token `alice,`. RED
+    /// now: `binding.split(',')` is ALSO escape-blind, so `alice\,` splits to
+    /// `["alice\", ""]` and the trailing empty element fires a spurious Fatal.
+    /// Must fire NO Fatal. Distinct mechanism from the quoted cases (escape, not
+    /// quote), so the fix must handle BOTH.
+    #[test]
+    fn f02_defaults_user_scope_escaped_comma_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `alice,`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:alice\\, env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults:alice\\,` is one escaped-comma user token (visudo rc=0) -- \
+             the empty-member split must be escape-aware and fire NO Fatal; got \
+             {fatals:?}"
+        );
+    }
+
+    /// FP GUARD (#424 R2, escaped comma in Runas scope): `Defaults>root\,
+    /// env_reset`. `visudo -c` rc=0; `cvtsudoers` one `username` token `root,`.
+    /// RED now (spurious Fatal). Must fire NO Fatal. The runas-scope twin of the
+    /// escaped-comma user case, so an escape fix scoped to one arm is caught.
+    #[test]
+    fn f02_defaults_runas_scope_escaped_comma_no_fatal() {
+        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `root,`.
+        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults>root\\, env_reset\n");
+        assert!(
+            fatals.is_empty(),
+            "`Defaults>root\\,` is one escaped-comma runas token (visudo rc=0) -- \
+             must fire NO Fatal; got {fatals:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // #407 round-3 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
     // -----------------------------------------------------------------------
@@ -2744,6 +2874,36 @@ mod tests {
             "digit-first `(root:#1000abc)` (#407) must still fire exactly one F02 \
              after any letter-first (#424) fix; got {diags:?}"
         );
+    }
+
+    /// #424 Round 2 (mutation-survivor coverage, F02-observable): a letter-first
+    /// `(root:#abc)` runas group as the SECOND spec of a comma-separated
+    /// `Cmnd_Spec_List` -- `alice ALL = /bin/ls, (root:#abc) /bin/su`. The runas
+    /// `(` here is preceded by the `,` command-list separator (not `=`), so its
+    /// `#abc` token survives the strip only because `paren_opens_runas` classifies
+    /// a `,`-preceded `(` as a runas open. `visudo -c` rc=1 (caret on `#abc`), and
+    /// F02 must fire exactly once on the malformed runas group.
+    ///
+    /// Kills the line-334 `bytes[j] == b',' -> !=` mutant in `paren_opens_runas`:
+    /// under that mutant a `,`-preceded `(` returns false (`,` != `,` is false, `,`
+    /// != `=`... clean returns true), so `in_runas_paren` is never set here, the
+    /// `#abc` is stripped as a comment, the malformed token vanishes, and F02 goes
+    /// silent (count 0). The `,`-preceded runas open is the arm no earlier test
+    /// (all `=`-preceded) exercised.
+    #[test]
+    fn f02_runas_group_after_comma_letter_first_hash_fires() {
+        // Oracle: visudo -c -f rc=1, "syntax error" caret on `#abc` (col 24).
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls, (root:#abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(root:#abc)` as the 2nd (comma-separated) spec has a letter-first \
+             malformed runas group (visudo rc=1) and must fire exactly one F02; the \
+             `,`-preceded runas open must be recognized; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
     }
 
     // --- Shape 2: lone `!` command with no path -----------------------------
