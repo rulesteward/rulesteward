@@ -2761,6 +2761,24 @@ mod tests {
         );
     }
 
+    /// FP CORE (issue #423, symmetric `%`-arm case): `Defaults passprompt="x %#2"`
+    /// -- a `#2` preceded by `%` INSIDE a double-quoted string value. `visudo -c`
+    /// rc=0 (VALID). The quote-blind `has_hash_digits` `%`-arm sees the stored
+    /// value `x %#2` (quotes stripped) and fires a FALSE POSITIVE. After the fix
+    /// F02 must be SILENT. RED now (fires 1), GREEN after. Mirrors the
+    /// whitespace-preceded FP cores across the independently-load-bearing `%` arm.
+    #[test]
+    fn f02_issue423_quoted_pct_hash_digits_no_f02() {
+        // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"x %#2\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`%#2` inside a double-quoted Defaults value is visudo-valid (rc=0) -- \
+             F02 must NOT fire (issue #423, `%` preceding-char arm); got {f02_diags:?}"
+        );
+    }
+
     // --- Regression guards (GREEN before AND after: the fix must not weaken) ---
 
     /// REGRESSION GUARD (#423, the sharp pairing): the UNQUOTED sibling
