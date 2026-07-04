@@ -551,23 +551,24 @@ fn check_defaults(
     // userid 1000 + username alice). The parser stores the binding as one raw
     // string, so -- like `check_runas` iterates already-split runas tokens -- we
     // must split on `,` and validate PER ELEMENT: a non-`#` element (a plain
-    // user / host name) is IGNORED, a pure `#<digits>` element is valid, an empty
-    // element is a visudo-rejected empty member (#424), and a
+    // user / host name) is IGNORED, a pure `#<digits>` element is valid, and a
     // `#<digits><non-digits>` element fires one F02 naming THAT element (NOT the
-    // whole binding).
+    // whole binding). A plain `,` split suffices (grounded, visudo/cvtsudoers
+    // 1.9.17p2, 2026-07-03): a valid `#<digits>` UID/GID token is `#` + pure
+    // digits (it can contain no comma / quote / space), and a quoted username
+    // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"` so it never trips the
+    // `#`-prefix gate; the only comma that can land inside a would-be `#`-token
+    // is one that makes it malformed anyway (`Defaults:#1000\,abc` is rc=1
+    // invalid, and the split's `#1000\` fragment correctly fires).
     //
-    // The split MUST be quote/escape-aware (#424 R2). visudo permits a LITERAL
-    // comma inside a single scope token two ways -- double-quoted
-    // (`Defaults:"a,,b"`, one `username` token) or backslash-escaped
-    // (`Defaults:alice\,`, one `username` token), both rc=0 valid (cvtsudoers
-    // 1.9.17p2, 2026-07-04). A naive `binding.split(',')` is blind to both and
-    // wrongly yields an empty element, firing a SPURIOUS Fatal on a valid file.
-    // So we reuse `crate::parser::split_default_settings` -- the shared
-    // top-level-comma splitter (a `,` neither inside `"..."` nor after `\`) --
-    // which keeps such a token as one member. The GID-tail check runs over the
-    // SAME split (a quoted username like `"#1000abc"` starts with `"`, so its
-    // member never trips the `#`-prefix gate; a genuinely empty UNQUOTED member
-    // `#1000,,alice` / `#1000,` still splits empty and fires).
+    // NOTE (#424 / #426): empty-comma-member detection (`Defaults:#1000,,alice`,
+    // `Defaults:#1000,`) was attempted and REVERTED -- `split_first_word`
+    // truncates the scope binding at the first whitespace upstream of here, so a
+    // valid `Defaults:root, root` arrives as binding `root,` and a naive
+    // empty-member check false-POSITIVES a Fatal on it. A correct fix needs the
+    // shared scope-boundary extraction reworked; tracked as the blocking #426. So
+    // an empty member is left UNFLAGGED (a documented false-negative), matching
+    // the safe pre-#424 classifier-not-validator behavior.
     let scope_binding: Option<(&str, &str, bool)> = match &entry.scope {
         crate::ast::DefaultsScope::User(binding) => Some((binding.as_str(), "user", false)),
         crate::ast::DefaultsScope::Runas(binding) => Some((binding.as_str(), "runas", false)),
@@ -577,31 +578,7 @@ fn check_defaults(
     };
     if let Some((binding, scope_word, is_host)) = scope_binding {
         let before = diags.len();
-        for element in crate::parser::split_default_settings(binding) {
-            // #424: an EMPTY comma-list member (`Defaults:#1000,,alice` middle,
-            // `Defaults:#1000,` trailing) is a visudo syntax error (rc=1) in every
-            // scope, but each non-empty neighbor is individually valid so the
-            // GID-tail check below finds nothing to flag. The split above is
-            // quote/escape-aware (see the block comment), so a LITERAL comma
-            // inside a quoted (`"a,,b"`) or escaped (`alice\,`) token does NOT
-            // yield an empty member. A single-member binding never splits to an
-            // empty element (an empty binding is caught earlier as `Malformed` /
-            // sudo-F01), so this fires only on a genuine
-            // empty-member list, not on a valid multi-member one (`#1000,alice`).
-            if element.is_empty() {
-                diags.push(anchored(
-                    Severity::Fatal,
-                    "sudo-F02",
-                    logical.span.clone(),
-                    format!(
-                        "Defaults {scope_word}-scope target has an empty comma-list \
-                         member, which visudo rejects"
-                    ),
-                    file.path.clone(),
-                    logical.line,
-                ));
-                continue;
-            }
+        for element in binding.split(',') {
             if is_malformed_gid_tail(element) {
                 // Host targets are host names, not GIDs -- omit the word "GID".
                 let tail_phrase = if is_host {
@@ -1384,223 +1361,6 @@ mod tests {
             !f02_diags[0].message.contains("GID"),
             "a host-scope target is not a GID -- the message must not say GID; got {:?}",
             f02_diags[0].message
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // #424 (parked from the comma-list per-element split above): an EMPTY list
-    // member in a `Defaults` scope binding (`Defaults:#1000,,alice` /
-    // `Defaults:#1000,`). Distinct false-negative from the per-element checks
-    // above: `is_malformed_gid_tail("")` returns `false` (an empty string has no
-    // `#` prefix to strip), so an empty element is silently treated as an
-    // ordinary (if vacuous) name -- but `visudo` rejects a genuinely empty
-    // comma-list member outright (rc=1). None of the existing per-element checks
-    // (GID-tail, plain-name pass-through) validate emptiness at all.
-    //
-    // Oracle grounding (`visudo -c -f`, sudo 1.9.17p2, verified 2026-07-04; every
-    // file is `root ALL=(ALL:ALL) ALL` + the probed line):
-    //   Defaults:#1000,,alice env_reset -> rc=1 (syntax error at the double comma)
-    //   Defaults:#1000, env_reset       -> rc=1 (syntax error, trailing comma)
-    //
-    // Which code (sudo-F01 or sudo-F02) is the implementer's call -- both are
-    // Fatal-severity "the file will not load / contains a rejected token" codes,
-    // and this is a classifier-not-validator residual either way. These tests
-    // assert on Fatal severity generically rather than presupposing one code.
-    // -----------------------------------------------------------------------
-
-    /// Run BOTH the F01 and F02 passes over `src` and return every Fatal-severity
-    /// diagnostic they produce combined.
-    fn fatal_diags(src: &str) -> Vec<rulesteward_core::Diagnostic> {
-        let mut diags = lint(src);
-        diags.extend(lint_f01(src));
-        diags
-            .into_iter()
-            .filter(|d| d.severity == rulesteward_core::Severity::Fatal)
-            .collect()
-    }
-
-    /// `Defaults:#1000,,alice env_reset` -- an EMPTY member BETWEEN two valid
-    /// elements in a `Defaults:` user-scope comma list. `visudo -c -f` rc=1
-    /// (syntax error at the double comma). RED today: `#1000` and `alice` are
-    /// each individually valid, so the per-element split's GID-tail check finds
-    /// nothing to flag on any of the three split elements (`#1000`, the empty
-    /// element, `alice`) -- ZERO diagnostics for a visudo-rejected file.
-    #[test]
-    fn f02_defaults_user_scope_list_empty_middle_member_should_fire_fatal() {
-        // Fixture: visudo -c -f rc=1, syntax error at the second `,`.
-        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000,,alice env_reset\n");
-        assert!(
-            !fatals.is_empty(),
-            "`Defaults:#1000,,alice` has an empty comma-list member (visudo rc=1) \
-             and must fire a Fatal diagnostic (sudo-F01 or sudo-F02); currently \
-             silent"
-        );
-    }
-
-    /// `Defaults:#1000, env_reset` -- a TRAILING empty member (trailing comma) in
-    /// a `Defaults:` user-scope comma list. `visudo -c -f` rc=1 (syntax error at
-    /// EOL). RED today for the same reason: the trailing empty split element
-    /// (`#1000` then an empty element) has no GID-tail defect on either side.
-    #[test]
-    fn f02_defaults_user_scope_list_trailing_empty_member_should_fire_fatal() {
-        // Fixture: visudo -c -f rc=1, syntax error at end of line.
-        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000, env_reset\n");
-        assert!(
-            !fatals.is_empty(),
-            "`Defaults:#1000,` has a trailing empty comma-list member (visudo \
-             rc=1) and must fire a Fatal diagnostic (sudo-F01 or sudo-F02); \
-             currently silent"
-        );
-    }
-
-    /// GUARD (Case 2 valid-multi-member, F01+F02 granularity): `Defaults:#1000,alice
-    /// env_reset` is a VALID two-member user-scope comma list -- `visudo -c -f`
-    /// rc=0. It must fire NO Fatal (F01 or F02). Pins the valid case at the SAME
-    /// F01+F02 granularity as the two positive empty-member tests above, so a
-    /// contrived over-broad fix ("mark any comma-list Defaults Malformed") that
-    /// makes those pass is caught here. GREEN before AND after the #424 fix.
-    #[test]
-    fn defaults_user_scope_valid_multi_member_no_fatal() {
-        // Fixture: visudo -c -f rc=0 (both `#1000` and `alice` are valid members).
-        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000,alice env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults:#1000,alice` is a valid two-member list (visudo rc=0) and \
-             must fire NO Fatal -- a #424 fix must not over-broadly flag comma-list \
-             Defaults; got {fatals:?}"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // #424 Round 2 (post-GREEN impl-aware review): the empty-member check runs
-    // on a quote/escape-BLIND `binding.split(',')`, so a LITERAL comma inside a
-    // double-quoted or backslash-escaped `Defaults` scope token wrongly produces
-    // an empty split element and fires a SPURIOUS Fatal sudo-F02 on a VALID
-    // config -- a highest-severity false positive on a `visudo -c`-ACCEPTED file.
-    //
-    // visudo permits a literal comma inside a scope-target token two ways, both a
-    // SINGLE token (never a two-member list): double-quoted (`"a,,b"`) or
-    // backslash-escaped (`alice\,`). The empty-member split must become QUOTE +
-    // ESCAPE aware (skip a `,` inside `"..."` and a `,` immediately after a `\`),
-    // mirroring `split_default_settings` in parser.rs, so these stay silent while
-    // the genuinely-empty unquoted members (`#1000,,alice` / `#1000,`) still fire.
-    //
-    // Oracle grounding (`visudo -c -f` + `cvtsudoers -f json`, sudo 1.9.17p2,
-    // reconfirmed 2026-07-04; every file is `root ALL=(ALL:ALL) ALL` + the line):
-    //   Defaults:"a,,b" env_reset    -> rc=0; Binding one token `a,,b`   (username)
-    //   Defaults@"h,,h" env_reset    -> rc=0; Binding one token `h,,h`   (hostname)
-    //   Defaults>"a,,b" env_reset    -> rc=0; Binding one token `a,,b`   (username)
-    //   Defaults:"%grp,,x" env_reset -> rc=0; Binding one token `grp,,x` (usergroup)
-    //   Defaults:alice\, env_reset   -> rc=0; Binding one token `alice,` (username)
-    //   Defaults>root\, env_reset    -> rc=0; Binding one token `root,`  (username)
-    // These fire NO Fatal on correct code; each is RED now (spurious sudo-F02).
-    // -----------------------------------------------------------------------
-
-    /// FP GUARD (#424 R2): `Defaults:"a,,b" env_reset` -- the double commas sit
-    /// INSIDE a double-quoted user-scope token, so `visudo -c` rc=0 and
-    /// `cvtsudoers -f json` shows ONE `username` token `a,,b`. RED now: the
-    /// quote-blind `binding.split(',')` sees `["a`, an empty element, then `b"]`,
-    /// and that empty middle element fires a spurious Fatal F02. Must fire NO Fatal.
-    #[test]
-    fn f02_defaults_user_scope_quoted_literal_commas_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `a,,b`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:\"a,,b\" env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults:\"a,,b\"` is one quoted user token with literal commas \
-             (visudo rc=0) -- the empty-member split must be quote-aware and fire \
-             NO Fatal; got {fatals:?}"
-        );
-    }
-
-    /// FP GUARD (#424 R2, Host scope): `Defaults@"h,,h" env_reset` -- literal
-    /// commas inside a double-quoted HOST-scope token. `visudo -c` rc=0;
-    /// `cvtsudoers` one `hostname` token `h,,h`. RED now (spurious Fatal). Must
-    /// fire NO Fatal. Distinct scope arm from the user case so a fix that only
-    /// quote-guards the user scope is caught.
-    #[test]
-    fn f02_defaults_host_scope_quoted_literal_commas_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `hostname` `h,,h`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults@\"h,,h\" env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults@\"h,,h\"` is one quoted host token with literal commas \
-             (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
-        );
-    }
-
-    /// FP GUARD (#424 R2, Runas scope): `Defaults>"a,,b" env_reset` -- literal
-    /// commas inside a double-quoted RUNAS-scope token. `visudo -c` rc=0;
-    /// `cvtsudoers` one `username` token `a,,b`. RED now (spurious Fatal). Must
-    /// fire NO Fatal. The third scope arm (`>`), so a per-scope quote fix must
-    /// cover all three.
-    #[test]
-    fn f02_defaults_runas_scope_quoted_literal_commas_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `a,,b`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults>\"a,,b\" env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults>\"a,,b\"` is one quoted runas token with literal commas \
-             (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
-        );
-    }
-
-    /// FP GUARD (#424 R2, `%group` inside quotes): `Defaults:"%grp,,x" env_reset`
-    /// -- a quoted user-scope token whose content is a `%group` reference with
-    /// literal commas. `visudo -c` rc=0; `cvtsudoers` one `usergroup` token
-    /// `grp,,x`. RED now (spurious Fatal). Must fire NO Fatal. Guards that the
-    /// quote-awareness applies even when the quoted content starts with `%`.
-    #[test]
-    fn f02_defaults_user_scope_quoted_pct_group_literal_commas_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `usergroup` `grp,,x`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:\"%grp,,x\" env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults:\"%grp,,x\"` is one quoted usergroup token with literal \
-             commas (visudo rc=0) -- must fire NO Fatal; got {fatals:?}"
-        );
-    }
-
-    /// FP GUARD (#424 R2, backslash-escaped comma): `Defaults:alice\, env_reset`
-    /// -- an UNQUOTED user-scope token ending in a backslash-escaped literal
-    /// comma. `visudo -c` rc=0; `cvtsudoers` one `username` token `alice,`. RED
-    /// now: `binding.split(',')` is ALSO escape-blind, so `alice\,` splits to
-    /// `["alice\", ""]` and the trailing empty element fires a spurious Fatal.
-    /// Must fire NO Fatal. Distinct mechanism from the quoted cases (escape, not
-    /// quote), so the fix must handle BOTH.
-    #[test]
-    fn f02_defaults_user_scope_escaped_comma_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `alice,`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:alice\\, env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults:alice\\,` is one escaped-comma user token (visudo rc=0) -- \
-             the empty-member split must be escape-aware and fire NO Fatal; got \
-             {fatals:?}"
-        );
-    }
-
-    /// FP GUARD (#424 R2, escaped comma in Runas scope): `Defaults>root\,
-    /// env_reset`. `visudo -c` rc=0; `cvtsudoers` one `username` token `root,`.
-    /// RED now (spurious Fatal). Must fire NO Fatal. The runas-scope twin of the
-    /// escaped-comma user case, so an escape fix scoped to one arm is caught.
-    #[test]
-    fn f02_defaults_runas_scope_escaped_comma_no_fatal() {
-        // Oracle: visudo -c -f rc=0; cvtsudoers Binding one `username` `root,`.
-        // Verified locally: sudo/visudo/cvtsudoers 1.9.17p2, 2026-07-04.
-        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults>root\\, env_reset\n");
-        assert!(
-            fatals.is_empty(),
-            "`Defaults>root\\,` is one escaped-comma runas token (visudo rc=0) -- \
-             must fire NO Fatal; got {fatals:?}"
         );
     }
 
