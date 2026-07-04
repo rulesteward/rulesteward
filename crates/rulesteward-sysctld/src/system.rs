@@ -58,7 +58,6 @@ fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
     ]
 }
 
-/// Whether `path` is itself a symlink (does NOT follow it). Used to recognise the
 /// Whether the `/etc/sysctl.d/99-sysctl.conf` slot under `prefix` is the EXPECTED
 /// distro symlink - a symlink that resolves to `<prefix>/etc/sysctl.conf`.
 ///
@@ -253,16 +252,17 @@ fn w03b_divergence(
     }
     entries.sort_by(|x, y| x.0.cmp(&y.0));
     let mut systemd: HashMap<&str, &ParsedAssignment> = HashMap::new();
-    for (_, a) in &entries {
+    for &(_, a) in &entries {
         systemd.insert(a.canonical.as_str(), a);
     }
 
+    // procps applies `/etc/sysctl.conf` dead-last, so each key's procps value is its
+    // LAST assignment in the file. `effective_values` already maps each canonical key
+    // to that last index; gating on `== i` fires each key exactly once at its winner.
+    let procps_last = effective_values(etc_conf);
     let mut out = Vec::new();
     for (i, a) in etc_conf.iter().enumerate() {
-        // procps applies `/etc/sysctl.conf` dead-last, so this key's procps value is
-        // its LAST assignment in the file; skip earlier duplicates so each key fires
-        // at most once.
-        if etc_conf[i + 1..].iter().any(|b| b.canonical == a.canonical) {
+        if procps_last[a.canonical.as_str()] != i {
             continue;
         }
         let procps_val = &a.value;
@@ -316,20 +316,6 @@ fn w03b_divergence(
     out
 }
 
-/// Scan the standard `sysctl.d` search-path directories (`/etc/sysctl.d`,
-/// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, plus the
-/// `/lib/sysctl.d` alias) and `/etc/sysctl.conf`, optionally rooted at `root` (the
-/// `--root PREFIX` hermetic-testing / chroot surface), and run the full `sysctld-`
-/// pass set over the precedence-merged result: `sysctld-F01`/`sysctld-W01`, the
-/// version-aware `sysctld-W02` when `target` is `Some`, and the cross-directory
-/// `sysctld-W03` (a/b/c).
-///
-/// Returns the diagnostics plus every read file's staged source (keyed by display
-/// path, the `source_id` convention `anchored` sets), so the human renderer can show
-/// an ariadne snippet (issue #337), matching
-/// [`crate::parser::lint_dir_with_target`]'s return shape. A nonexistent `--root`
-/// (no directories enumerate, no `/etc/sysctl.conf`) yields an empty result, not an
-/// error (read-only tolerance).
 /// Parse each surviving drop-in in merge order, returning its assignments and a
 /// parallel per-assignment search-directory rank vector, extending `diags` with any
 /// F01 and staging every read source under its display path.
@@ -485,6 +471,20 @@ fn w03c_masked_key_drops(
     out
 }
 
+/// Scan the standard `sysctl.d` search-path directories (`/etc/sysctl.d`,
+/// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, plus the
+/// `/lib/sysctl.d` alias) and `/etc/sysctl.conf`, optionally rooted at `root` (the
+/// `--root PREFIX` hermetic-testing / chroot surface), and run the full `sysctld-`
+/// pass set over the precedence-merged result: `sysctld-F01`/`sysctld-W01`, the
+/// version-aware `sysctld-W02` when `target` is `Some`, and the cross-directory
+/// `sysctld-W03` (a/b/c).
+///
+/// Returns the diagnostics plus every read file's staged source (keyed by display
+/// path, the `source_id` convention `anchored` sets), so the human renderer can show
+/// an ariadne snippet (issue #337), matching
+/// [`crate::parser::lint_dir_with_target`]'s return shape. A nonexistent `--root`
+/// (no directories enumerate, no `/etc/sysctl.conf`) yields an empty result, not an
+/// error (read-only tolerance).
 #[must_use]
 pub fn lint_system(
     root: Option<&Path>,
