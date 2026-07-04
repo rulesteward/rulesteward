@@ -2,50 +2,469 @@
 //!
 //! Real systems apply `sysctl.d` drop-ins across a search path of four-plus
 //! directories plus `/etc/sysctl.conf`; the effective value of a key can be
-//! silently decided by a file the operator would not expect to win. This module
-//! is meant to enumerate that search path (optionally rooted at a `--root`
-//! prefix for hermetic testing), apply the grounded same-basename directory
-//! masking + global lexicographic merge, and run the existing `sysctld-F01`/
-//! `sysctld-W01`/`sysctld-W02` passes over the merged, precedence-ordered
-//! assignment list plus the new cross-directory `sysctld-W03` pass (three
-//! sub-cases: lower-precedence-directory override, procps/systemd applier
-//! divergence, and a masked drop-in that silently drops a key). See
+//! silently decided by a file the operator would not expect to win. [`lint_system`]
+//! enumerates that search path (optionally rooted at a `--root` prefix for hermetic
+//! testing / chroot-linting), applies the grounded same-basename directory masking
+//! and global lexicographic merge, and runs the existing
+//! `sysctld-F01`/`sysctld-W01`/`sysctld-W02` passes over the merged,
+//! precedence-ordered assignment list plus the new cross-directory `sysctld-W03`
+//! pass. See the design doc
 //! `rulesteward-docs/2026-07-04-sysctld-cross-directory-precedence-420-design.md`
-//! for the full grounded model.
+//! for the full grounded model (verified against a Rocky Linux 9.7 container,
+//! sysctl.d(5), and systemd 259).
 //!
-//! # Phase 0 (this file, today)
-//! [`lint_system`] is a STUB: it always returns an empty result. It exists only
-//! so the `--system`/`--root` CLI surface and the crate's public API compile;
-//! the real enumeration/mask/merge/W03 logic lands with the impl pipeline. The
-//! existing [`crate::parser::lint_str`] / [`crate::parser::lint_dir`] entry
-//! points are untouched and never emit `sysctld-W03`.
+//! # Grounded precedence model
+//! 1. **Same-basename directory masking.** Search order highest to lowest
+//!    precedence: `/etc/sysctl.d` > `/run/sysctl.d` > `/usr/local/lib/sysctl.d` >
+//!    `/usr/lib/sysctl.d` (with `/lib/sysctl.d` a merged-usr alias of `/usr/lib`).
+//!    The FIRST directory to contain a basename provides that file; the same
+//!    basename in a lower directory is masked.
+//! 2. **Global lexicographic merge.** Every surviving file is merged in bytewise
+//!    basename order REGARDLESS of directory (`9-` beats `10-`), last-wins per key.
+//! 3. **`/etc/sysctl.conf` applier divergence.** procps `sysctl --system` reads it
+//!    dead-last (always wins); systemd-sysctl applies it only at the
+//!    `99-sysctl.conf` symlink slot (or not at all if the symlink is absent).
+//!
+//! # `sysctld-W03` (system-only)
+//! * **W03-a** lower-precedence-directory override: the winner sits in a
+//!   lower-precedence directory than a dead assignment (won on a later basename).
+//!   Suppresses the redundant plain W01 for that dead line.
+//! * **W03-b** procps/systemd applier divergence for a `/etc/sysctl.conf` key.
+//! * **W03-c** a masked same-basename drop-in sets a key no surviving file applies.
+//!
+//! The single-file [`crate::parser::lint_str`] and single-directory
+//! [`crate::parser::lint_dir`] entry points are UNCHANGED and never emit
+//! `sysctld-W03`; W03 is inherently a system-scan finding.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity, anchored};
 
-use crate::lints::baseline::TargetVersion;
+use crate::lints::baseline::{TargetVersion, w02_baseline};
+use crate::parser::{ParsedAssignment, effective_values, parse_file, w01_last_wins};
+
+/// The standard `sysctl.d` search directories, highest precedence first. `/lib` is
+/// the merged-usr alias of `/usr/lib`, so it shares rank 3. Each is joined under the
+/// `--root` prefix (or `/` for a live scan).
+fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
+    [
+        (prefix.join("etc/sysctl.d"), 0),
+        (prefix.join("run/sysctl.d"), 1),
+        (prefix.join("usr/local/lib/sysctl.d"), 2),
+        (prefix.join("usr/lib/sysctl.d"), 3),
+        (prefix.join("lib/sysctl.d"), 3),
+    ]
+}
+
+/// Whether `path` is itself a symlink (does NOT follow it). Used to recognise the
+/// distro `99-sysctl.conf -> ../sysctl.conf` link and to decide, with
+/// [`Path::exists`], whether it resolves (a dangling link is treated as absent).
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// A drop-in that survived same-basename directory masking, tagged with its
+/// search-directory precedence rank (0 = `/etc/sysctl.d`, highest).
+struct SurvivingFile {
+    path: PathBuf,
+    basename: OsString,
+    rank: usize,
+}
+
+/// A drop-in masked by a same-basename file in a higher-precedence directory. Kept
+/// only for the W03-c "masked drop-in drops a key" check; it contributes no
+/// assignment to the merged set and no F01.
+struct MaskedFile {
+    path: PathBuf,
+    masked_by: PathBuf,
+}
+
+/// Build a file-level `sysctld-F01` for a search-path file that exists but cannot be
+/// read (unanchored: no source line), mirroring `lint_dir`'s tolerance.
+fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Fatal,
+        "sysctld-F01",
+        0..0,
+        format!("cannot read {}: {err}", path.display()),
+        path.to_path_buf(),
+        0,
+        0,
+    )
+}
+
+/// Enumerate the search path under `prefix`, applying same-basename directory
+/// masking. Returns the surviving drop-ins (one per basename, highest-precedence
+/// directory wins), the masked drop-ins (for W03-c), and a file-level F01 for any
+/// directory that exists but cannot be read. A MISSING directory is skipped
+/// silently (a system need not have all of them). The distro `99-sysctl.conf`
+/// symlink is skipped here - it is handled via `/etc/sysctl.conf` + the
+/// applier-divergence pass, not as a normal drop-in.
+fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
+    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
+    let mut surviving = Vec::new();
+    let mut masked = Vec::new();
+    let mut f01 = Vec::new();
+    // basename -> the surviving (highest-precedence) file that provides it.
+    let mut seen: HashMap<OsString, PathBuf> = HashMap::new();
+
+    for (dir, rank) in search_dirs(prefix) {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                f01.push(Diagnostic::new(
+                    Severity::Fatal,
+                    "sysctld-F01",
+                    0..0,
+                    format!("cannot read sysctl.d directory {}: {e}", dir.display()),
+                    dir.clone(),
+                    0,
+                    0,
+                ));
+                continue;
+            }
+        };
+        // `*.conf` files only (a README or subdirectory is ignored), matching
+        // `lint_dir`. Sorted for deterministic masking within a directory.
+        let mut conf: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "conf"))
+            .collect();
+        conf.sort();
+        for path in conf {
+            // The `/etc/sysctl.d/99-sysctl.conf` symlink to `../sysctl.conf` is not a
+            // real drop-in; its content participates via the dead-last / 99-slot
+            // divergence logic. (A dangling link already fails `is_file` above.)
+            if path == link_99 && is_symlink(&path) {
+                continue;
+            }
+            let Some(basename) = path.file_name().map(OsStr::to_os_string) else {
+                continue;
+            };
+            if let Some(masker) = seen.get(&basename) {
+                masked.push(MaskedFile {
+                    path,
+                    masked_by: masker.clone(),
+                });
+            } else {
+                seen.insert(basename.clone(), path.clone());
+                surviving.push(SurvivingFile {
+                    path,
+                    basename,
+                    rank,
+                });
+            }
+        }
+    }
+    (surviving, masked, f01)
+}
+
+/// The procps/systemd applier-divergence pass (`sysctld-W03-b`).
+///
+/// procps `sysctl --system` reads `/etc/sysctl.conf` dead-last (always winning);
+/// systemd-sysctl applies it only at the `99-sysctl.conf` symlink slot (or not at
+/// all if the symlink is absent/dangling). For each key set in `/etc/sysctl.conf`,
+/// if the two appliers resolve DIFFERENT effective values, one W03 is emitted
+/// anchored at the `/etc/sysctl.conf` assignment, stating both values and the cause.
+/// When both appliers agree the key is suppressed.
+fn w03b_divergence(
+    dropins: &[ParsedAssignment],
+    etc_conf: &[ParsedAssignment],
+    symlink_ok: bool,
+) -> Vec<Diagnostic> {
+    if etc_conf.is_empty() {
+        return Vec::new();
+    }
+
+    // The systemd effective value of each key: drop-ins at their own basenames, plus
+    // `/etc/sysctl.conf` spliced at the `99-sysctl.conf` slot when the symlink
+    // resolves, merged in lexicographic basename order, last-wins.
+    let ninety_nine = OsString::from("99-sysctl.conf");
+    let mut entries: Vec<(OsString, &ParsedAssignment)> = dropins
+        .iter()
+        .map(|a| {
+            let basename = a
+                .file
+                .file_name()
+                .map_or_else(OsString::new, OsStr::to_os_string);
+            (basename, a)
+        })
+        .collect();
+    if symlink_ok {
+        entries.extend(etc_conf.iter().map(|a| (ninety_nine.clone(), a)));
+    }
+    entries.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut systemd: HashMap<&str, &ParsedAssignment> = HashMap::new();
+    for (_, a) in &entries {
+        systemd.insert(a.canonical.as_str(), a);
+    }
+
+    let mut out = Vec::new();
+    for (i, a) in etc_conf.iter().enumerate() {
+        // procps applies `/etc/sysctl.conf` dead-last, so this key's procps value is
+        // its LAST assignment in the file; skip earlier duplicates so each key fires
+        // at most once.
+        if etc_conf[i + 1..].iter().any(|b| b.canonical == a.canonical) {
+            continue;
+        }
+        let procps_val = &a.value;
+        let systemd_win = systemd.get(a.canonical.as_str()).copied();
+        let diverges = match systemd_win {
+            None => true,
+            Some(sw) => &sw.value != procps_val,
+        };
+        if !diverges {
+            continue;
+        }
+        let (systemd_verb, systemd_reason) = match systemd_win {
+            None => (
+                format!("leaves `{}` unset", a.display),
+                "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                 /etc/sysctl.d/99-sysctl.conf symlink)"
+                    .to_string(),
+            ),
+            Some(sw) => {
+                let verb = format!("applies `{}`", sw.value);
+                let reason = if symlink_ok {
+                    format!(
+                        "systemd-sysctl applies /etc/sysctl.conf at the 99-sysctl.conf \
+                         slot, but {} sorts after it and wins",
+                        sw.file.display()
+                    )
+                } else {
+                    format!(
+                        "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                         99-sysctl.conf symlink); {} applies instead",
+                        sw.file.display()
+                    )
+                };
+                (verb, reason)
+            }
+        };
+        let message = format!(
+            "cross-directory applier divergence for `{}`: procps `sysctl --system` \
+             applies `{}` (/etc/sysctl.conf read dead-last), but systemd-sysctl {} - {}",
+            a.display, procps_val, systemd_verb, systemd_reason,
+        );
+        out.push(anchored(
+            Severity::Warning,
+            "sysctld-W03",
+            a.span.clone(),
+            message,
+            a.file.clone(),
+            a.line,
+        ));
+    }
+    out
+}
 
 /// Scan the standard `sysctl.d` search-path directories (`/etc/sysctl.d`,
-/// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus
-/// `/etc/sysctl.conf`, optionally rooted at `root` (the `--root PREFIX`
-/// hermetic-testing / chroot-linting surface), and run the full `sysctld-`
-/// pass set over the precedence-merged result: `sysctld-F01`/`sysctld-W01`,
-/// the version-aware `sysctld-W02` when `target` is `Some`, and the
-/// cross-directory `sysctld-W03`.
+/// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, plus the
+/// `/lib/sysctl.d` alias) and `/etc/sysctl.conf`, optionally rooted at `root` (the
+/// `--root PREFIX` hermetic-testing / chroot surface), and run the full `sysctld-`
+/// pass set over the precedence-merged result: `sysctld-F01`/`sysctld-W01`, the
+/// version-aware `sysctld-W02` when `target` is `Some`, and the cross-directory
+/// `sysctld-W03` (a/b/c).
 ///
-/// Returns the diagnostics plus every read file's staged source (keyed by
-/// display path, the `source_id` convention `anchored` sets), so the human
-/// renderer can show an ariadne snippet (issue #337 convention), matching
-/// [`crate::parser::lint_dir_with_target`]'s return shape.
+/// Returns the diagnostics plus every read file's staged source (keyed by display
+/// path, the `source_id` convention `anchored` sets), so the human renderer can show
+/// an ariadne snippet (issue #337), matching
+/// [`crate::parser::lint_dir_with_target`]'s return shape. A nonexistent `--root`
+/// (no directories enumerate, no `/etc/sysctl.conf`) yields an empty result, not an
+/// error (read-only tolerance).
+/// Parse each surviving drop-in in merge order, returning its assignments and a
+/// parallel per-assignment search-directory rank vector, extending `diags` with any
+/// F01 and staging every read source under its display path.
+fn parse_surviving(
+    surviving: &[SurvivingFile],
+    diags: &mut Vec<Diagnostic>,
+    sources: &mut BTreeMap<String, String>,
+) -> (Vec<ParsedAssignment>, Vec<usize>) {
+    let mut asgns: Vec<ParsedAssignment> = Vec::new();
+    let mut ranks: Vec<usize> = Vec::new();
+    for sf in surviving {
+        match std::fs::read_to_string(&sf.path) {
+            Ok(src) => {
+                let (parsed, f01) = parse_file(&src, &sf.path);
+                diags.extend(f01);
+                asgns.extend(parsed);
+                // Pad the parallel rank vector for every assignment just added.
+                ranks.resize(asgns.len(), sf.rank);
+                sources.insert(sf.path.display().to_string(), src);
+            }
+            Err(e) => diags.push(unreadable_file_f01(&sf.path, &e)),
+        }
+    }
+    (asgns, ranks)
+}
+
+/// Parse `/etc/sysctl.conf` under `prefix` (read dead-last by procps). A missing
+/// file yields no assignments; an unreadable one yields a file-level F01.
+fn parse_etc_conf(
+    prefix: &Path,
+    diags: &mut Vec<Diagnostic>,
+    sources: &mut BTreeMap<String, String>,
+) -> Vec<ParsedAssignment> {
+    let etc_conf = prefix.join("etc/sysctl.conf");
+    if !etc_conf.is_file() {
+        return Vec::new();
+    }
+    match std::fs::read_to_string(&etc_conf) {
+        Ok(src) => {
+            let (asgns, f01) = parse_file(&src, &etc_conf);
+            diags.extend(f01);
+            sources.insert(etc_conf.display().to_string(), src);
+            asgns
+        }
+        Err(e) => {
+            diags.push(unreadable_file_f01(&etc_conf, &e));
+            Vec::new()
+        }
+    }
+}
+
+/// The W03-a lower-precedence-directory-override pass, together with the reused W01
+/// last-wins pass minus the dead lines W03-a claims (design section 3 point 4).
 ///
-/// STUB (issue #420 Phase 0): always returns `(vec![], BTreeMap::new())`. No
-/// enumeration, masking, merge, or `sysctld-W03` detection happens yet.
+/// `ranks[i]` is `merged[i]`'s search-directory rank (0 highest), or `None` for the
+/// dead-last `/etc/sysctl.conf` (not a directory tier: its winning is the applier
+/// question W03-b handles, never a directory-precedence surprise).
+fn w03a_and_w01(merged: &[ParsedAssignment], ranks: &[Option<usize>]) -> Vec<Diagnostic> {
+    let effective = effective_values(merged);
+    let mut w03a = Vec::new();
+    let mut suppressed: HashSet<(PathBuf, usize)> = HashSet::new();
+    for (idx, a) in merged.iter().enumerate() {
+        let win_idx = effective[a.canonical.as_str()];
+        if win_idx == idx {
+            continue;
+        }
+        let win = &merged[win_idx];
+        if win.value == a.value {
+            continue;
+        }
+        // Both must be drop-ins; the winner must sit in a LOWER-precedence directory
+        // (a strictly higher rank) than this dead assignment.
+        let (Some(dead_rank), Some(win_rank)) = (ranks[idx], ranks[win_idx]) else {
+            continue;
+        };
+        if win_rank > dead_rank {
+            let message = format!(
+                "cross-directory precedence surprise: `{}` (= {}) here in a \
+                 higher-precedence directory is overridden by the assignment (= {}) \
+                 at {}:{}, which sits in a lower-precedence search directory but has \
+                 a lexicographically-later filename",
+                a.display,
+                a.value,
+                win.value,
+                win.file.display(),
+                win.line,
+            );
+            w03a.push(anchored(
+                Severity::Warning,
+                "sysctld-W03",
+                a.span.clone(),
+                message,
+                a.file.clone(),
+                a.line,
+            ));
+            suppressed.insert((a.file.clone(), a.line));
+        }
+    }
+
+    let mut out: Vec<Diagnostic> = w01_last_wins(merged)
+        .into_iter()
+        .filter(|d| !suppressed.contains(&(d.file.clone(), d.line)))
+        .collect();
+    out.extend(w03a);
+    out
+}
+
+/// The W03-c pass: a masked drop-in sets a key whose canonical form is absent from
+/// the effective merged set (no surviving file applies it), so it is silently
+/// dropped relative to that file's intent. Masked files are otherwise invisible -
+/// their F01s are discarded - and each read source is staged for the ariadne
+/// snippet at the dropped key's line.
+fn w03c_masked_key_drops(
+    masked: &[MaskedFile],
+    merged: &[ParsedAssignment],
+    sources: &mut BTreeMap<String, String>,
+) -> Vec<Diagnostic> {
+    let effective = effective_values(merged);
+    let mut out = Vec::new();
+    let mut emitted: HashSet<(PathBuf, String)> = HashSet::new();
+    for mf in masked {
+        let Ok(src) = std::fs::read_to_string(&mf.path) else {
+            continue;
+        };
+        let (asgns, _f01) = parse_file(&src, &mf.path);
+        for a in &asgns {
+            if effective.contains_key(a.canonical.as_str()) {
+                continue;
+            }
+            if !emitted.insert((mf.path.clone(), a.canonical.clone())) {
+                continue;
+            }
+            let message = format!(
+                "masked drop-in drops a key: `{}` (= {}) set here is silently \
+                 unapplied - a same-basename file in a higher-precedence directory \
+                 ({}) masks this file, and no surviving file sets `{}`",
+                a.display,
+                a.value,
+                mf.masked_by.display(),
+                a.display,
+            );
+            out.push(anchored(
+                Severity::Warning,
+                "sysctld-W03",
+                a.span.clone(),
+                message,
+                a.file.clone(),
+                a.line,
+            ));
+        }
+        sources.insert(mf.path.display().to_string(), src);
+    }
+    out
+}
+
 #[must_use]
 pub fn lint_system(
-    _root: Option<&Path>,
-    _target: Option<TargetVersion>,
+    root: Option<&Path>,
+    target: Option<TargetVersion>,
 ) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
-    (Vec::new(), BTreeMap::new())
+    let prefix = root.unwrap_or_else(|| Path::new("/"));
+
+    let (mut surviving, mut masked, mut diags) = enumerate(prefix);
+    // Global merge order is BYTEWISE by basename across all directories.
+    surviving.sort_by(|a, b| a.basename.cmp(&b.basename));
+    masked.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    let (surviving_asgns, surviving_ranks) = parse_surviving(&surviving, &mut diags, &mut sources);
+    let etc_conf_asgns = parse_etc_conf(prefix, &mut diags, &mut sources);
+
+    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
+    let symlink_ok = is_symlink(&link_99) && link_99.exists();
+    // W03-b needs the pre-merge handles, so compute it before the two are moved.
+    let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok);
+
+    // The procps merged, precedence-ordered assignment list: drop-ins in basename
+    // order, then /etc/sysctl.conf dead-last. Ranks run parallel (None = the
+    // dead-last /etc/sysctl.conf, which is not a search-directory tier).
+    let mut merged = surviving_asgns;
+    let mut ranks: Vec<Option<usize>> = surviving_ranks.into_iter().map(Some).collect();
+    merged.extend(etc_conf_asgns);
+    ranks.resize(merged.len(), None);
+
+    diags.extend(w03a_and_w01(&merged, &ranks));
+    if let Some(t) = target {
+        diags.extend(w02_baseline(&merged, t, &prefix.join("etc/sysctl.d")));
+    }
+    diags.extend(w03c_masked_key_drops(&masked, &merged, &mut sources));
+    diags.extend(applier);
+    (diags, sources)
 }
