@@ -195,18 +195,21 @@ fn split_continuation(body: &str) -> Option<&str> {
 ///      non-whitespace run is `#include[dir]`): the WHOLE line is a directive, not
 ///      a comment, so nothing is stripped.
 ///   2. `#<digits>` UID/GID token: a `#` immediately followed by an ASCII digit and
-///      preceded by start-of-line / whitespace / `,` / `%` / `:` / `(` is a user-ID
-///      or group-ID token, not a comment (`#1000`, `root,#1000`, `%#1000`). Grounded:
-///      `visudo -x -` reports these as `userid` / `usergid` in user-list, runas-list
-///      AND alias-member positions (which appear both BEFORE and AFTER the `=`, e.g.
-///      `User_Alias FOO = #1000` -> userid 1000), so this exception is NOT gated on
-///      the `=`. The `:` (runas-group separator) and `(` (runas open-paren) cases
-///      are #407: `visudo -c` accepts `(root:#1000)` (a runas GID-group reference,
-///      `cvtsudoers -f json` -> `usergroup #1000`) and bare `(#1000)` (a runas UID
-///      reference, `-> userid 1000`) -- rc=0 for both. Before this exception covered
-///      `:` / `(`, the `#` in either shape was misread as a real comment, silently
-///      swallowing the REST OF THE LINE (including the command) rather than just the
-///      one token.
+///      preceded by start-of-line / whitespace / `,` / `%` / `:` / `(` / `>` / `@`
+///      is a user-ID or group-ID (or host) token, not a comment (`#1000`,
+///      `root,#1000`, `%#1000`). Grounded: `visudo -x -` reports these as `userid` /
+///      `usergid` in user-list, runas-list AND alias-member positions (which appear
+///      both BEFORE and AFTER the `=`, e.g. `User_Alias FOO = #1000` -> userid 1000),
+///      so this exception is NOT gated on the `=`. The `:` (runas-group separator)
+///      and `(` (runas open-paren) cases are #407: `visudo -c` accepts `(root:#1000)`
+///      (a runas GID-group reference, `cvtsudoers -f json` -> `usergroup #1000`) and
+///      bare `(#1000)` (a runas UID reference, `-> userid 1000`) -- rc=0 for both.
+///      The `>` and `@` cases are the #407 Defaults-scope sigils: `Defaults>#1000`
+///      (runas UID, `-> userid 1000`) and `Defaults@#1000` (a host literally named
+///      `#1000`, `-> hostname "#1000"`) are both visudo rc=0. Before these arms were
+///      added, the `#` in any of these shapes was misread as a real comment, silently
+///      swallowing the REST OF THE LINE (including the command / scope target) rather
+///      than just the one token.
 ///   3. A `#` INSIDE a double-quoted region is literal: a `"` toggles in/out of a
 ///      quoted region and a `#` seen while inside it is NOT a comment
 ///      (`Defaults passprompt="a # b"` -> value `a # b`). Single quotes do NOT
@@ -250,10 +253,18 @@ fn strip_inline_comment(body: &str) -> &str {
             b'"' => in_quotes = !in_quotes,
             b'#' if !in_quotes => {
                 // Exception 2: a `#<digit>` preceded by start / whitespace / `,` /
-                // `%` / `:` / `(` is a UID/GID token, not a comment. The `:` and `(`
-                // arms are #407: the runas-group separator (`(root:#1000)`) and the
-                // runas open-paren (`(#1000)`) both precede valid `#<digits>`
-                // UID/GID references.
+                // `%` / `:` / `(` / `>` / `@` is a UID/GID token, not a comment. The
+                // `:` and `(` arms are #407: the runas-group separator
+                // (`(root:#1000)`) and the runas open-paren (`(#1000)`) both precede
+                // valid `#<digits>` UID/GID references. The `>` and `@` arms are the
+                // #407 Defaults-scope sigils: `Defaults>#1000` (runas UID) and
+                // `Defaults@#1000` (a host literally named `#1000`) are both
+                // visudo-valid (rc=0); visudo lexes `#<digits>` uniformly in the
+                // user (`:`), runas (`>`) and host (`@`) scope positions. `!`
+                // (command scope) is deliberately NOT included: a `#<digits>`
+                // command target is visudo-invalid in every form, so leaving it to
+                // strip as a comment folds the line to Malformed / sudo-F01, which is
+                // the correct outcome.
                 let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
                 let prev_allows_uid = match prev {
                     None => true,
@@ -262,6 +273,8 @@ fn strip_inline_comment(body: &str) -> &str {
                             || p == b'%'
                             || p == b':'
                             || p == b'('
+                            || p == b'>'
+                            || p == b'@'
                             || (p as char).is_whitespace()
                     }
                 };

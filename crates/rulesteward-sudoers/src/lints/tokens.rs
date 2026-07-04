@@ -58,17 +58,28 @@
 //!    non-digit>` name (e.g. `%#1000abc`, `%#abc`) is not a pure GID and has
 //!    no denylist char, but is still visudo-rejected.
 //!
-//! ## Issue #407 (runas-GID false negative, parser-level root cause)
+//! ## Issue #407 (runas / Defaults `#`-GID false negatives, parser-level root cause)
 //!
 //! `(root:#1000abc)` and bare `(#1000abc)` used to reach `RuleSteward` as
 //! `CmndSpec { runas: None, cmnd: Cmnd("(root:") }` / `Cmnd("(")` -- the
 //! `strip_inline_comment` classifier (parser.rs) misread the `#` after `:` /
 //! `(` as a real comment and swallowed the rest of the line (including the
 //! command), so `check_runas` below never even saw the malformed token: ZERO
-//! diagnostics for a `visudo -c`-rejected file. Fixed by widening
-//! `strip_inline_comment`'s `prev_allows_uid` predicate to allow `:` / `(`,
-//! plus extending the GID-tail check (Rule 3 in `check_runas`) to the bare
-//! (non-`%`) form in BOTH `runas.users` and `runas.groups`.
+//! diagnostics for a `visudo -c`-rejected file. The same root cause hit the
+//! `Defaults` scope sigils: `Defaults:#1000` / `Defaults>#1000` / `Defaults@#1000`
+//! (all visudo rc=0) folded to a FALSE-POSITIVE `Malformed` / sudo-F01 because
+//! their `#<digits>` scope target was stripped as a comment, while the invalid
+//! `Defaults:#1000abc` / `Defaults>#1000abc` / `Defaults@#1000abc` (visudo rc=1)
+//! either stayed silent or mis-reported. Fixed by widening
+//! `strip_inline_comment`'s `prev_allows_uid` predicate to allow `:` / `(` / `>` /
+//! `@`, extending the GID-tail check (Rule 3 in `check_runas`) to the bare (non-`%`)
+//! form in BOTH `runas.users` and `runas.groups`, and adding the same
+//! `is_malformed_gid_tail` structural check to the User (`:`), Runas (`>`) and Host
+//! (`@`) `Defaults` scopes in `check_defaults`. visudo lexes `#<digits>` uniformly
+//! in all three scope positions (pure digit run valid; digit-run + non-digit tail
+//! a syntax error); the `!` command scope is left to fold to F01 (every `#`-command
+//! target is invalid). MISS 2 -- the letter-first `(root:#abc)` runas FN on the
+//! delicate `next_is_digit` gate -- is a tracked follow-up, out of scope here.
 //!
 //! # Must-NOT-regress (valid, no F02)
 //!
@@ -509,27 +520,57 @@ fn check_defaults(
     entry: &crate::ast::DefaultsEntry,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // #407: a `Defaults:` user-scope target that is a `#`-GID with a non-digit tail
-    // (`Defaults:#1000abc`) is visudo-rejected (rc=1) but reaches the AST as a
-    // clean `DefaultsEntry { scope: User("#1000abc") }` -- the #407 predicate
-    // widening (`:` now precedes a preserved `#<digits>` token) is what lets this
-    // scope target survive the comment strip. Mirror the runas `is_malformed_gid_tail`
-    // structural check (same `sudo-F02` code) so the malformed form fires while the
-    // valid pure-GID form (`Defaults:#1000`) stays clean. Only the `:` (User) scope
-    // is reachable here with a `#`-prefixed binding -- `:` is the sole `Defaults`
-    // sigil in `prev_allows_uid`; a `#<digits>` after `@` / `!` / `>` is still
-    // stripped as a comment, so no other scope reaches this with a `#` target.
-    if let crate::ast::DefaultsScope::User(binding) = &entry.scope
-        && is_malformed_gid_tail(binding)
-    {
+    // #407: a `Defaults` scope target that is a `#<digits>`-shaped token with a
+    // non-digit tail (`Defaults:#1000abc`, `Defaults>#1000abc`, `Defaults@#1000abc`)
+    // is visudo-rejected (rc=1) but reaches the AST as a clean `DefaultsEntry` with a
+    // `#`-prefixed binding -- the #407 predicate widening (`:` / `>` / `@` now precede
+    // a preserved `#<digits>` token) is what lets these scope targets survive the
+    // comment strip. visudo lexes `#<digits>` UNIFORMLY in all three scope positions:
+    // a pure digit run is valid (`:#1000` userid, `>#1000` runas userid, `@#1000`
+    // host literally named `#1000`), and a digit run followed by a non-digit tail is
+    // a syntax error. So all three scopes get the same `is_malformed_gid_tail`
+    // structural check and the same `sudo-F02` code (a clean-spec-that-visudo-rejects
+    // defect, consistent with the Case-2 setting check and the runas checks); the
+    // valid pure-digit forms stay clean.
+    //
+    // The `!` (command) scope is intentionally NOT handled here: `!` is not in
+    // `prev_allows_uid`, so a `#<digits>` command target (`Defaults!#1000` and
+    // `Defaults!#1000abc`, BOTH visudo rc=1) still strips as a comment, folding the
+    // line to `Malformed` / sudo-F01 -- the correct outcome, since every `#`-command
+    // form is invalid (there is nothing valid to preserve).
+    //
+    // Message note: for the host (`@`) scope the token is a host name, not a GID, so
+    // its message says "not a pure digit run" (no "GID") even though the shared
+    // `is_malformed_gid_tail` shape-check is reused. (MISS 2, a letter-first
+    // `(root:#abc)` runas FN, is a tracked follow-up on the delicate `next_is_digit`
+    // gate and is out of scope here.)
+    let scope_defect: Option<String> = match &entry.scope {
+        crate::ast::DefaultsScope::User(binding) if is_malformed_gid_tail(binding) => {
+            Some(format!(
+                "Defaults user-scope target {binding:?} has a `#`-prefixed name that is \
+                 not a pure GID digit run, which visudo rejects"
+            ))
+        }
+        crate::ast::DefaultsScope::Runas(binding) if is_malformed_gid_tail(binding) => {
+            Some(format!(
+                "Defaults runas-scope target {binding:?} has a `#`-prefixed name that is \
+                 not a pure GID digit run, which visudo rejects"
+            ))
+        }
+        crate::ast::DefaultsScope::Host(binding) if is_malformed_gid_tail(binding) => {
+            Some(format!(
+                "Defaults host-scope target {binding:?} has a `#`-prefixed name that is \
+                 not a pure digit run, which visudo rejects"
+            ))
+        }
+        _ => None,
+    };
+    if let Some(message) = scope_defect {
         diags.push(anchored(
             Severity::Fatal,
             "sudo-F02",
             logical.span.clone(),
-            format!(
-                "Defaults user-scope target {binding:?} has a `#`-prefixed name that is \
-                 not a pure GID digit run, which visudo rejects"
-            ),
+            message,
             file.path.clone(),
             logical.line,
         ));
@@ -770,29 +811,30 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #407 follow-up: `#`-GID tail in a `Defaults:` scope TARGET (user binding)
+    // #407 follow-up: `#`-token tail in a `Defaults` scope TARGET (`:`/`>`/`@`)
     // -----------------------------------------------------------------------
     //
     // The #407 parser fix widened `strip_inline_comment`'s `prev_allows_uid`
-    // predicate to allow `:` before a `#<digits>` token. That is required for the
-    // valid `Defaults:#1000` scope target (a UID user binding) to survive the
-    // comment strip -- previously the whole `:#1000 !lecture` was swallowed as a
-    // comment and the line folded to `Malformed("Defaults: scope is missing its
-    // target")`, a false positive. But the SAME widening let the INVALID
-    // `Defaults:#1000abc` (a `#`-GID with a non-digit tail) reach the AST as a
-    // clean `DefaultsEntry { scope: User("#1000abc"), .. }` with ZERO diagnostics,
-    // even though `visudo -c` rejects it (rc=1). The scope binding is `#`-GID-shaped
-    // exactly like a runas `#`-GID token, so `check_defaults` gets the same
-    // `is_malformed_gid_tail` structural check `check_runas` uses -- and emits the
-    // same `sudo-F02` code (a clean-spec-that-visudo-rejects defect, consistent
-    // with both the existing Case-2 Defaults-value check and the runas checks).
+    // predicate to allow `:` / `>` / `@` before a `#<digits>` token. That is
+    // required for the VALID scope targets `Defaults:#1000` (user UID),
+    // `Defaults>#1000` (runas UID) and `Defaults@#1000` (a host literally named
+    // `#1000`) -- all visudo rc=0 -- to survive the comment strip; previously the
+    // whole `<sigil>#1000 !lecture` was swallowed as a comment and the line folded
+    // to `Malformed("Defaults<sigil> scope is missing its target")`, a FALSE
+    // POSITIVE. But the SAME widening lets the INVALID `Defaults:#1000abc` /
+    // `Defaults>#1000abc` / `Defaults@#1000abc` (a `#<digits>` token with a
+    // non-digit tail, visudo rc=1) reach the AST as a clean `DefaultsEntry` with a
+    // `#`-prefixed binding. visudo lexes `#<digits>` UNIFORMLY in all three scope
+    // positions (grounded, visudo/cvtsudoers 1.9.17p2, 2026-07-03), so all three
+    // get the same `is_malformed_gid_tail` structural check `check_runas` uses and
+    // the same `sudo-F02` code (a clean-spec-that-visudo-rejects defect). The host
+    // (`@`) message avoids the word "GID" since the token is a host name.
     //
-    // Only the `:` (User) scope is reachable here with a `#`-prefixed binding: `:`
-    // is the ONLY `Defaults` scope sigil in the widened predicate. The other sigils
-    // (`@`, `!`, `>`) are NOT in `prev_allows_uid`, so a `#<digits>` after them is
-    // still stripped as a comment before parsing -- those forms never reach
-    // `check_defaults` with a `#`-prefixed scope, so no check for them is added
-    // (it would be untestable dead code).
+    // The `!` (command) scope is NOT in `prev_allows_uid`: both `Defaults!#1000`
+    // and `Defaults!#1000abc` are visudo rc=1, so leaving the `#<digits>` target to
+    // strip as a comment folds the line to `Malformed` / sudo-F01 -- the correct
+    // outcome (every `#`-command target is invalid, nothing valid to preserve).
+    // The `!`-scope no-regression is pinned by `f02_defaults_cmnd_scope_hash_*`.
 
     /// `Defaults:#1000abc !lecture` -- a `Defaults:` user-scope target that is a
     /// `#`-GID whose digit run is followed by a non-digit tail.
@@ -851,6 +893,164 @@ mod tests {
             crate::ast::DefaultsScope::User("#1000".to_string()),
             "the pure-GID user-scope target must survive as `User(\"#1000\")`"
         );
+    }
+
+    /// `Defaults>#1000abc !lecture` -- a `Defaults>` RUNAS-scope target that is a
+    /// `#`-GID whose digit run is followed by a non-digit tail.
+    ///
+    /// Oracle: `visudo -c` rc=1, "syntax error" at col 15 (the `abc` tail).
+    /// Verified locally: visudo 1.9.17p2, 2026-07-03. RED before the `>` was added
+    /// to `prev_allows_uid` + the Runas-scope check: previously `>#1000abc`
+    /// stripped as a comment, folding the line to `Malformed` / sudo-F01 -- so this
+    /// asserts the code is now `sudo-F02` (not F01) with the runas-scope message.
+    #[test]
+    fn f02_defaults_runas_scope_gid_form_digits_then_letters_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults>#1000abc !lecture\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`Defaults>#1000abc` runas-scope target (digit run followed by letters) \
+             is visudo-rejected and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            f02_diags[0].message.contains("runas-scope"),
+            "the runas-scope message must name the runas scope; got {:?}",
+            f02_diags[0].message
+        );
+    }
+
+    /// `Defaults>#1000 !lecture` -- the VALID pure-UID `Defaults>` runas-scope
+    /// target. Non-regression control (was a false-positive sudo-F01 before the
+    /// `>` predicate widening). Asserts the AST scope survives as `Runas("#1000")`
+    /// so the fix can't hide behind empty-diagnostics vacuity.
+    ///
+    /// Oracle: `visudo -c` rc=0, "parsed OK"; `cvtsudoers -f json` binding
+    /// `{"userid": 1000}`. Verified locally: visudo/cvtsudoers 1.9.17p2,
+    /// 2026-07-03.
+    #[test]
+    fn f02_defaults_runas_scope_pure_gid_no_f02_and_parses_correctly() {
+        let src = "root ALL=(ALL:ALL) ALL\nDefaults>#1000 !lecture\n";
+        let diags = lint(src);
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults>#1000` is a valid pure-UID runas-scope target -- must NOT \
+             fire F02; got {f02_diags:?}"
+        );
+        let f = files(src);
+        let crate::ast::LineKind::Defaults(entry) = &f[0].lines[1].kind else {
+            panic!(
+                "expected a Defaults entry, not a comment-swallowed Malformed; got {:?}",
+                f[0].lines[1].kind
+            );
+        };
+        assert_eq!(
+            entry.scope,
+            crate::ast::DefaultsScope::Runas("#1000".to_string()),
+            "the pure-UID runas-scope target must survive as `Runas(\"#1000\")`"
+        );
+    }
+
+    /// `Defaults@#1000abc !lecture` -- a `Defaults@` HOST-scope target that is a
+    /// `#`-token whose digit run is followed by a non-digit tail. GROUNDED (this
+    /// contradicted the initial "host is an arbitrary string literal" assumption):
+    /// visudo lexes `#<digits>` in the host position the same as `:`/`>`, so
+    /// `#1000abc` is a syntax error even though `#1000` alone is a valid host.
+    ///
+    /// Oracle: `visudo -c` rc=1, "syntax error" at col 15 (the `abc` tail).
+    /// Verified locally: visudo 1.9.17p2, 2026-07-03. RED before the `@` predicate
+    /// widening + Host-scope check: previously stripped to `Malformed` / sudo-F01.
+    /// Asserts the code is now `sudo-F02` with a HOST-appropriate message that does
+    /// NOT call the token a GID.
+    #[test]
+    fn f02_defaults_host_scope_hash_tail_digits_then_letters_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults@#1000abc !lecture\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`Defaults@#1000abc` host-scope target (digit run followed by letters) \
+             is visudo-rejected and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            f02_diags[0].message.contains("host-scope"),
+            "the host-scope message must name the host scope; got {:?}",
+            f02_diags[0].message
+        );
+        assert!(
+            !f02_diags[0].message.contains("GID"),
+            "the host-scope target is a host name, not a GID -- the message must not \
+             call it a GID; got {:?}",
+            f02_diags[0].message
+        );
+    }
+
+    /// `Defaults@#1000 !lecture` -- the VALID host-scope target: a host literally
+    /// named `#1000` (visudo rc=0, `cvtsudoers` binding `{"hostname": "#1000"}`).
+    /// Non-regression control (was a false-positive sudo-F01 before the `@`
+    /// predicate widening). Asserts the AST scope survives as `Host("#1000")`.
+    ///
+    /// Verified locally: visudo/cvtsudoers 1.9.17p2, 2026-07-03.
+    #[test]
+    fn f02_defaults_host_scope_pure_digit_hash_no_f02_and_parses_correctly() {
+        let src = "root ALL=(ALL:ALL) ALL\nDefaults@#1000 !lecture\n";
+        let diags = lint(src);
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults@#1000` is a valid host literally named `#1000` -- must NOT \
+             fire F02; got {f02_diags:?}"
+        );
+        let f = files(src);
+        let crate::ast::LineKind::Defaults(entry) = &f[0].lines[1].kind else {
+            panic!(
+                "expected a Defaults entry, not a comment-swallowed Malformed; got {:?}",
+                f[0].lines[1].kind
+            );
+        };
+        assert_eq!(
+            entry.scope,
+            crate::ast::DefaultsScope::Host("#1000".to_string()),
+            "the valid `#1000` host-scope target must survive as `Host(\"#1000\")`"
+        );
+    }
+
+    /// `!` (command) scope non-regression: BOTH `Defaults!#1000` and
+    /// `Defaults!#1000abc` are visudo rc=1 ("expected a fully-qualified path
+    /// name"). `!` is NOT in `prev_allows_uid`, so the `#<digits>` target strips as
+    /// a comment and the line folds to `Malformed` / sudo-F01 -- the correct
+    /// outcome (there is no valid `#`-command target to preserve). Pins that the
+    /// `:`/`>`/`@` widening did NOT accidentally start emitting a Defaults-scope
+    /// F02 for the command scope, and that F01 still fires.
+    #[test]
+    fn f02_defaults_cmnd_scope_hash_targets_stay_f01_no_f02() {
+        for src in [
+            "root ALL=(ALL:ALL) ALL\nDefaults!#1000 !lecture\n",
+            "root ALL=(ALL:ALL) ALL\nDefaults!#1000abc !lecture\n",
+        ] {
+            let f02_diags: Vec<_> = lint(src)
+                .into_iter()
+                .filter(|d| d.code == "sudo-F02")
+                .collect();
+            assert!(
+                f02_diags.is_empty(),
+                "the `!` command scope must not emit a Defaults-scope F02 ({src:?}); \
+                 got {f02_diags:?}"
+            );
+            let f01_diags: Vec<_> = lint_f01(src)
+                .into_iter()
+                .filter(|d| d.code == "sudo-F01")
+                .collect();
+            assert_eq!(
+                f01_diags.len(),
+                1,
+                "the invalid `#`-command Defaults scope must fold to exactly one \
+                 sudo-F01 ({src:?}); got {f01_diags:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
