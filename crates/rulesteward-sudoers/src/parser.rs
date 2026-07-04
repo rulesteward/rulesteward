@@ -195,12 +195,18 @@ fn split_continuation(body: &str) -> Option<&str> {
 ///      non-whitespace run is `#include[dir]`): the WHOLE line is a directive, not
 ///      a comment, so nothing is stripped.
 ///   2. `#<digits>` UID/GID token: a `#` immediately followed by an ASCII digit and
-///      preceded by start-of-line / whitespace / `,` / `%` is a user-ID or group-ID
-///      token, not a comment (`#1000`, `root,#1000`, `%#1000`). Grounded:
+///      preceded by start-of-line / whitespace / `,` / `%` / `:` / `(` is a user-ID
+///      or group-ID token, not a comment (`#1000`, `root,#1000`, `%#1000`). Grounded:
 ///      `visudo -x -` reports these as `userid` / `usergid` in user-list, runas-list
 ///      AND alias-member positions (which appear both BEFORE and AFTER the `=`, e.g.
 ///      `User_Alias FOO = #1000` -> userid 1000), so this exception is NOT gated on
-///      the `=`.
+///      the `=`. The `:` (runas-group separator) and `(` (runas open-paren) cases
+///      are #407: `visudo -c` accepts `(root:#1000)` (a runas GID-group reference,
+///      `cvtsudoers -f json` -> `usergroup #1000`) and bare `(#1000)` (a runas UID
+///      reference, `-> userid 1000`) -- rc=0 for both. Before this exception covered
+///      `:` / `(`, the `#` in either shape was misread as a real comment, silently
+///      swallowing the REST OF THE LINE (including the command) rather than just the
+///      one token.
 ///   3. A `#` INSIDE a double-quoted region is literal: a `"` toggles in/out of a
 ///      quoted region and a `#` seen while inside it is NOT a comment
 ///      (`Defaults passprompt="a # b"` -> value `a # b`). Single quotes do NOT
@@ -244,11 +250,20 @@ fn strip_inline_comment(body: &str) -> &str {
             b'"' => in_quotes = !in_quotes,
             b'#' if !in_quotes => {
                 // Exception 2: a `#<digit>` preceded by start / whitespace / `,` /
-                // `%` is a UID/GID token, not a comment.
+                // `%` / `:` / `(` is a UID/GID token, not a comment. The `:` and `(`
+                // arms are #407: the runas-group separator (`(root:#1000)`) and the
+                // runas open-paren (`(#1000)`) both precede valid `#<digits>`
+                // UID/GID references.
                 let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
                 let prev_allows_uid = match prev {
                     None => true,
-                    Some(p) => p == b',' || p == b'%' || (p as char).is_whitespace(),
+                    Some(p) => {
+                        p == b','
+                            || p == b'%'
+                            || p == b':'
+                            || p == b'('
+                            || (p as char).is_whitespace()
+                    }
                 };
                 if next_is_digit && prev_allows_uid {
                     // A UID/GID token: NOT a comment. The digits that follow are
@@ -1424,6 +1439,65 @@ mod tests {
             LineKind::Alias(a) => assert_eq!(a.specs[0].members, vec!["#1000".to_string()]),
             other => panic!("expected an alias def, got {other:?}"),
         }
+    }
+
+    // ---- #407: runas-position `#<digits>` after `:` and `(` -----------------
+
+    #[test]
+    fn strip_keeps_hash_digit_token_after_runas_colon_and_open_paren() {
+        // #407: `visudo -c` accepts both `(root:#1000)` (rc=0, `usergroup #1000`)
+        // and bare `(#1000)` (rc=0, `runasusers: userid 1000`) -- verified via
+        // `cvtsudoers -f json` locally, sudo 1.9.17p2, 2026-07-03. Before this
+        // fix, `prev_allows_uid` did not allow `:` (the runas-group separator)
+        // or `(` (the runas open-paren) to precede a `#<digits>` token, so the
+        // WHOLE REST of the line -- including the real command -- was swallowed
+        // as an inline comment (`strip_inline_comment("alice ALL=(root:#1000) \
+        // /bin/su")` used to return only `"alice ALL=(root:"`). Pins that both
+        // positions now preserve the token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:#1000) /bin/su"),
+            "alice ALL=(root:#1000) /bin/su",
+            "a `#<digits>` immediately after the runas `:` separator is a GID \
+             token, not a comment"
+        );
+        assert_eq!(
+            strip_inline_comment("alice ALL=(#1000) /bin/su"),
+            "alice ALL=(#1000) /bin/su",
+            "a `#<digits>` immediately after the runas open-paren `(` is a UID \
+             token, not a comment"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_malformed_gid_tail_token_after_runas_colon_and_open_paren() {
+        // #407: the stripper's job is to classify `#<digit>`-SHAPED tokens, not
+        // to validate their content (see the Phase-0 contract note on
+        // `strip_inline_comment`) -- an INVALID GID-tail token (`#1000abc`,
+        // `visudo -c` rc=1) must ALSO survive the strip after `:` / `(` so the
+        // downstream sudo-F02 GID-tail check (lints/tokens.rs) can see and flag
+        // it, exactly as it already does for a `%#1000abc` subject/runas-user
+        // token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:#1000abc) /bin/su"),
+            "alice ALL=(root:#1000abc) /bin/su"
+        );
+        assert_eq!(
+            strip_inline_comment("alice ALL=(#1000abc) /bin/su"),
+            "alice ALL=(#1000abc) /bin/su"
+        );
+    }
+
+    #[test]
+    fn strip_still_strips_a_real_trailing_comment_after_a_runas_group() {
+        // Non-regression: a genuine trailing `#` comment (its `#` is preceded by
+        // whitespace and NOT followed by a digit) must still be stripped even
+        // when it follows a closed runas group -- the `:`/`(` widening must not
+        // over-preserve unrelated comments.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root) /bin/su # comment"),
+            "alice ALL=(root) /bin/su ",
+            "a real trailing comment must still be stripped after a runas group"
+        );
     }
 
     // ---- continuation edges (#329 part B) ----

@@ -58,6 +58,18 @@
 //!    non-digit>` name (e.g. `%#1000abc`, `%#abc`) is not a pure GID and has
 //!    no denylist char, but is still visudo-rejected.
 //!
+//! ## Issue #407 (runas-GID false negative, parser-level root cause)
+//!
+//! `(root:#1000abc)` and bare `(#1000abc)` used to reach `RuleSteward` as
+//! `CmndSpec { runas: None, cmnd: Cmnd("(root:") }` / `Cmnd("(")` -- the
+//! `strip_inline_comment` classifier (parser.rs) misread the `#` after `:` /
+//! `(` as a real comment and swallowed the rest of the line (including the
+//! command), so `check_runas` below never even saw the malformed token: ZERO
+//! diagnostics for a `visudo -c`-rejected file. Fixed by widening
+//! `strip_inline_comment`'s `prev_allows_uid` predicate to allow `:` / `(`,
+//! plus extending the GID-tail check (Rule 3 in `check_runas`) to the bare
+//! (non-`%`) form in BOTH `runas.users` and `runas.groups`.
+//!
 //! # Must-NOT-regress (valid, no F02)
 //!
 //! - `User_Alias FOO = #1000`: the `#1000` follows `=` in an alias DEFINITION
@@ -386,6 +398,15 @@ fn is_malformed_gid_tail(name: &str) -> bool {
 ///     though `grp` alone contains no denylist char. This does NOT apply to
 ///     `runas.users`, where `%group` is the normal, valid way to reference a
 ///     group (`(%wheel)` is valid).
+///
+/// #407 addendum: the GID-tail check (Rule 3 below) now ALSO applies to
+/// `runas.groups` (a bare, non-`%` `#`-GID token, e.g. `(root:#1000abc)`) and
+/// to a BARE (non-`%`) `runas.users` token (e.g. `(#1000abc)`, no colon at
+/// all). Both shapes previously never reached this function with the
+/// malformed token intact: `strip_inline_comment`'s `prev_allows_uid`
+/// predicate (parser.rs) did not allow `:` or `(` to precede a `#<digits>`
+/// token, so the whole rest of the line (including the command) was
+/// swallowed as an inline comment before parsing ever produced a `RunasSpec`.
 fn check_runas(
     file: &SudoersFile,
     logical: &crate::ast::LogicalLine,
@@ -408,15 +429,15 @@ fn check_runas(
             ));
             continue; // one diag per token; denylist takes priority over Rule 3
         }
-        // Rule 3 (mirrors `check_group_subject`): a `%`-prefixed runas-user
-        // whose name is a `#`-GID with a non-digit tail (`%#1000abc`, `%#0z`)
-        // is visudo-rejected even with no denylist char. `is_malformed_gid_tail`
-        // preserves the pure-GID exemption (`%#1000` stays clean). This applies
-        // ONLY to `runas.users`: a `#`-prefixed runas.GROUP token is a separate
-        // pre-existing parser-gap case, out of scope here.
-        if let Some(name) = user.strip_prefix('%')
-            && is_malformed_gid_tail(name)
-        {
+        // Rule 3 (mirrors `check_group_subject`): a `#`-GID token whose digit run
+        // is followed by a non-digit tail is visudo-rejected even with no
+        // denylist char. Covers BOTH the `%`-prefixed group-of-GID form
+        // (`%#1000abc`, `%#0z`) and the BARE (non-`%`) UID form (`#1000abc`,
+        // #407: `(#1000abc)` with no colon at all is a bare `runas.users` UID
+        // reference). `is_malformed_gid_tail` preserves the pure-GID exemption
+        // (`%#1000` / bare `#1000` both stay clean).
+        let gid_check_target = user.strip_prefix('%').unwrap_or(user);
+        if is_malformed_gid_tail(gid_check_target) {
             diags.push(anchored(
                 Severity::Fatal,
                 "sudo-F02",
@@ -453,6 +474,25 @@ fn check_runas(
                 format!(
                     "runas-group token {group:?} contains an invalid character `{bad}` \
                      that visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
+            continue;
+        }
+        // #407: a bare (non-`%`) `#`-GID runas-GROUP token whose digit run is
+        // followed by a non-digit tail (`#1000abc`) is visudo-rejected even
+        // with no denylist char, mirroring Rule 3 above for `runas.users`.
+        // `is_malformed_gid_tail` preserves the pure-GID exemption (`#1000`
+        // stays clean, per `f02_runas_group_position_gid_form_no_f02`).
+        if is_malformed_gid_tail(group) {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "runas-group token {group:?} has a `#`-prefixed name that is not a \
+                     pure GID digit run, which visudo rejects"
                 ),
                 file.path.clone(),
                 logical.line,
@@ -1661,6 +1701,137 @@ mod tests {
             f02_diags.is_empty(),
             "`(%#1000)` is the valid pure-GID runas-user form -- must NOT fire F02 after \
              the GID-tail check is applied to the runas-user position; got {f02_diags:?}"
+        );
+    }
+
+    // --- #407: runas-GROUP `#`-GID token + bare (non-`%`) runas-USER `#`-GID
+    // token, both false-negatives via `strip_inline_comment` -----------------
+    //
+    // Root cause distinct from the `%#1000abc` cases above: `strip_inline_comment`'s
+    // `prev_allows_uid` predicate (parser.rs) did not allow `:` (the runas-group
+    // separator) or `(` (the runas open-paren) to precede a `#<digits>` token, so
+    // for `(root:#1000abc)` / `(#1000abc)` the ENTIRE REST OF THE LINE -- including
+    // the real command -- was swallowed as an inline comment. The line reached the
+    // AST as `CmndSpec { runas: None, cmnd: Cmnd("(root:") }` / `Cmnd("(")`, so
+    // `check_runas` was never even invoked with the malformed token: RuleSteward
+    // emitted ZERO diagnostics for a file `visudo -c` rejects outright (rc=1).
+    // Fixed by widening `prev_allows_uid` (parser.rs) plus a GID-tail check on the
+    // `runas.groups` loop and broadening the `runas.users` GID-tail check to the
+    // bare (non-`%`) form (both in `check_runas` below).
+
+    /// `alice ALL = (root:#1000abc) /bin/su` -- a runas-GROUP (post-colon) `#`-GID
+    /// token whose digit run is followed by a non-digit tail.
+    ///
+    /// Oracle: `visudo -c` rc=1, "syntax error" at the `abc` tail (col 22).
+    /// Verified locally: sudo/visudo 1.9.17p2, 2026-07-03.
+    #[test]
+    fn f02_runas_group_gid_form_digits_then_letters_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(root:#1000abc)` runas-group (digit run followed by letters, no \
+             denylist char) is visudo-rejected and must fire exactly one F02; \
+             got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (#1000abc) /bin/su` -- the BARE (no `%`) runas-USER form
+    /// (no colon at all, so the whole `(...)` is `runas.users`) with the same
+    /// malformed GID/UID tail. Distinct from the already-covered `%#1000abc`
+    /// case: no `%` prefix, so the OLD `user.strip_prefix('%')`-gated GID-tail
+    /// check in `check_runas` would not have applied even if the token had
+    /// reached it.
+    ///
+    /// Oracle: `visudo -c` rc=1, "syntax error" at the `abc` tail (col 17).
+    /// Verified locally: sudo/visudo 1.9.17p2, 2026-07-03.
+    #[test]
+    fn f02_runas_user_bare_hash_gid_form_digits_then_letters_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (#1000abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(#1000abc)` bare runas-user GID/UID form (digit run then letters, \
+             no `%`, no denylist char) is visudo-rejected and must fire exactly \
+             one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (root:#1000) /bin/su` -- the VALID pure-GID runas-GROUP form
+    /// (#407's critical non-regression control).
+    ///
+    /// A bare `f02_diags.is_empty()` assertion alone is satisfiable by the OLD,
+    /// BROKEN parse too: the comment-swallowing bug truncates the line to
+    /// `CmndSpec { runas: None, cmnd: Cmnd("(root:") }` before `check_runas` (or
+    /// any command-position check) ever runs, so F02 trivially finds nothing --
+    /// a false pass masking real data loss (the command `/bin/su` vanishes
+    /// silently). This test additionally asserts the AST shape so the
+    /// regression can't hide behind an empty-diagnostics vacuity.
+    ///
+    /// Oracle: `visudo -c` rc=0, "parsed OK"; `cvtsudoers -f json` shows
+    /// `"runasgroups": [{"usergroup": "#1000"}]`. Verified locally: sudo/visudo
+    /// 1.9.17p2, 2026-07-03.
+    #[test]
+    fn f02_runas_group_gid_form_no_f02_and_parses_correctly() {
+        let src = "root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000) /bin/su\n";
+        let diags = lint(src);
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(root:#1000)` is a valid runas GID-group entry -- must NOT fire \
+             F02; got {f02_diags:?}"
+        );
+        let f = files(src);
+        let crate::ast::LineKind::UserSpec(spec) = &f[0].lines[1].kind else {
+            panic!("expected the second logical line to classify as a UserSpec");
+        };
+        let runas = spec.host_groups[0].cmnd_specs[0]
+            .runas
+            .as_ref()
+            .expect("runas group must be populated -- not swallowed by the comment strip");
+        assert_eq!(runas.users, vec!["root".to_string()]);
+        assert_eq!(runas.groups, vec!["#1000".to_string()]);
+        assert_eq!(
+            spec.host_groups[0].cmnd_specs[0].cmnd,
+            crate::ast::CmndItem::Cmnd("/bin/su".to_string()),
+            "the real command must survive -- not be truncated into the runas group"
+        );
+    }
+
+    /// `alice ALL = (#1000) /bin/su` -- the VALID bare pure-GID/UID runas-USER
+    /// form (no colon). Sibling non-regression control to the group-position
+    /// test above.
+    ///
+    /// Oracle: `visudo -c` rc=0, "parsed OK"; `cvtsudoers -f json` shows
+    /// `"runasusers": [{"userid": 1000}]`. Verified locally: sudo/visudo
+    /// 1.9.17p2, 2026-07-03.
+    #[test]
+    fn f02_runas_user_bare_hash_pure_gid_no_f02_and_parses_correctly() {
+        let src = "root ALL=(ALL:ALL) ALL\nalice ALL = (#1000) /bin/su\n";
+        let diags = lint(src);
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`(#1000)` is a valid bare runas-user GID/UID entry -- must NOT fire \
+             F02; got {f02_diags:?}"
+        );
+        let f = files(src);
+        let crate::ast::LineKind::UserSpec(spec) = &f[0].lines[1].kind else {
+            panic!("expected the second logical line to classify as a UserSpec");
+        };
+        let runas = spec.host_groups[0].cmnd_specs[0]
+            .runas
+            .as_ref()
+            .expect("runas group must be populated -- not swallowed by the comment strip");
+        assert_eq!(runas.users, vec!["#1000".to_string()]);
+        assert_eq!(
+            spec.host_groups[0].cmnd_specs[0].cmnd,
+            crate::ast::CmndItem::Cmnd("/bin/su".to_string()),
+            "the real command must survive -- not be truncated into the runas group"
         );
     }
 
