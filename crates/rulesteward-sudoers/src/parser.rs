@@ -195,12 +195,21 @@ fn split_continuation(body: &str) -> Option<&str> {
 ///      non-whitespace run is `#include[dir]`): the WHOLE line is a directive, not
 ///      a comment, so nothing is stripped.
 ///   2. `#<digits>` UID/GID token: a `#` immediately followed by an ASCII digit and
-///      preceded by start-of-line / whitespace / `,` / `%` is a user-ID or group-ID
-///      token, not a comment (`#1000`, `root,#1000`, `%#1000`). Grounded:
-///      `visudo -x -` reports these as `userid` / `usergid` in user-list, runas-list
-///      AND alias-member positions (which appear both BEFORE and AFTER the `=`, e.g.
-///      `User_Alias FOO = #1000` -> userid 1000), so this exception is NOT gated on
-///      the `=`.
+///      preceded by start-of-line / whitespace / `,` / `%` / `:` / `(` / `>` / `@`
+///      is a user-ID or group-ID (or host) token, not a comment (`#1000`,
+///      `root,#1000`, `%#1000`). Grounded: `visudo -x -` reports these as `userid` /
+///      `usergid` in user-list, runas-list AND alias-member positions (which appear
+///      both BEFORE and AFTER the `=`, e.g. `User_Alias FOO = #1000` -> userid 1000),
+///      so this exception is NOT gated on the `=`. The `:` (runas-group separator)
+///      and `(` (runas open-paren) cases are #407: `visudo -c` accepts `(root:#1000)`
+///      (a runas GID-group reference, `cvtsudoers -f json` -> `usergroup #1000`) and
+///      bare `(#1000)` (a runas UID reference, `-> userid 1000`) -- rc=0 for both.
+///      The `>` and `@` cases are the #407 Defaults-scope sigils: `Defaults>#1000`
+///      (runas UID, `-> userid 1000`) and `Defaults@#1000` (a host literally named
+///      `#1000`, `-> hostname "#1000"`) are both visudo rc=0. Before these arms were
+///      added, the `#` in any of these shapes was misread as a real comment, silently
+///      swallowing the REST OF THE LINE (including the command / scope target) rather
+///      than just the one token.
 ///   3. A `#` INSIDE a double-quoted region is literal: a `"` toggles in/out of a
 ///      quoted region and a `#` seen while inside it is NOT a comment
 ///      (`Defaults passprompt="a # b"` -> value `a # b`). Single quotes do NOT
@@ -244,11 +253,30 @@ fn strip_inline_comment(body: &str) -> &str {
             b'"' => in_quotes = !in_quotes,
             b'#' if !in_quotes => {
                 // Exception 2: a `#<digit>` preceded by start / whitespace / `,` /
-                // `%` is a UID/GID token, not a comment.
+                // `%` / `:` / `(` / `>` / `@` is a UID/GID token, not a comment. The
+                // `:` and `(` arms are #407: the runas-group separator
+                // (`(root:#1000)`) and the runas open-paren (`(#1000)`) both precede
+                // valid `#<digits>` UID/GID references. The `>` and `@` arms are the
+                // #407 Defaults-scope sigils: `Defaults>#1000` (runas UID) and
+                // `Defaults@#1000` (a host literally named `#1000`) are both
+                // visudo-valid (rc=0); visudo lexes `#<digits>` uniformly in the
+                // user (`:`), runas (`>`) and host (`@`) scope positions. `!`
+                // (command scope) is deliberately NOT included: a `#<digits>`
+                // command target is visudo-invalid in every form, so leaving it to
+                // strip as a comment folds the line to Malformed / sudo-F01, which is
+                // the correct outcome.
                 let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
                 let prev_allows_uid = match prev {
                     None => true,
-                    Some(p) => p == b',' || p == b'%' || (p as char).is_whitespace(),
+                    Some(p) => {
+                        p == b','
+                            || p == b'%'
+                            || p == b':'
+                            || p == b'('
+                            || p == b'>'
+                            || p == b'@'
+                            || (p as char).is_whitespace()
+                    }
                 };
                 if next_is_digit && prev_allows_uid {
                     // A UID/GID token: NOT a comment. The digits that follow are
@@ -392,15 +420,64 @@ fn classify_defaults(trimmed: &str) -> Option<LineKind> {
     Some(LineKind::Defaults(DefaultsEntry { scope, settings }))
 }
 
-/// Split a `Defaults` settings list (comma-separated) into [`DefaultSetting`]s.
-/// Returns an empty vec when there is nothing parseable (the caller treats that as
-/// Malformed).
+/// Split a `Defaults` settings list into [`DefaultSetting`]s on top-level `,`
+/// boundaries (escape/quote-aware; #405). Returns an empty vec when there is
+/// nothing parseable (the caller treats that as Malformed).
 fn parse_default_settings(s: &str) -> Vec<DefaultSetting> {
-    s.split(',')
+    split_default_settings(s)
+        .into_iter()
         .map(str::trim)
         .filter(|tok| !tok.is_empty())
         .map(parse_one_default_setting)
         .collect()
+}
+
+/// Split a `Defaults` settings list on top-level `,` -- i.e. a `,` that is
+/// neither backslash-escaped nor inside a double-quoted value.
+///
+/// Grounded against visudo/cvtsudoers 1.9.17p2 (2026-07-03): a Defaults value
+/// may contain a literal comma either by escaping it (`Wrong\,ok`, unquoted) or
+/// simply by quoting (`"Wrong, try again"` -- the comma need not even be
+/// escaped there); BOTH forms parse as ONE setting, never two. A naive
+/// `s.split(',')` mis-parses both into extra bogus settings (#405).
+///
+/// Mirrors the escape-awareness `split_cmnd_specs` (#370) already has for the
+/// `Cmnd_Spec_List`, plus quote-awareness that list never needed (commands are
+/// not quoted). Unlike `split_cmnd_specs`, this has no paren-depth tracking --
+/// Defaults values never contain a `(runas)` group.
+///
+/// Escape pairing matches `split_cmnd_specs`: a `\` toggles `escaped`, which
+/// consumes exactly the next char literally (so `\\` is one literal backslash
+/// and does NOT re-arm escaping -- grounded via visudo: an escaped comma after
+/// an EVEN run of backslashes is a real separator, after an ODD run it stays
+/// literal). An escaped `"` (`\"`) inside a quoted value does not end the
+/// quote (grounded: `"a \" b, c"` is ONE setting).
+///
+/// Per the #370 precedent, this function only fixes the split BOUNDARY; it
+/// does not unescape the resulting value (the backslash before an unquoted
+/// escaped comma stays in the token verbatim, same as `cmnd_token`).
+fn split_default_settings(s: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut seg_start = 0usize;
+    let mut escaped = false;
+    let mut in_quotes = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                segments.push(s[seg_start..i].trim());
+                seg_start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(s[seg_start..].trim());
+    segments
 }
 
 /// Parse one `Defaults` setting token: `name`, `!name`, or `name[+-]?=value`.
@@ -568,57 +645,73 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 /// (`Host_List = Cmnd_Spec_List`) and alias-def specs (`NAME = members`). It must be
 /// told apart from three other colons (all grounded against `visudo`/`cvtsudoers`,
 /// sudo 1.9.17p2 - see #345):
-///   * the runas-group colon inside `(runas_users:runas_groups)` - tracked by paren
-///     `depth`, so only a depth-0 colon can separate;
+///   * the runas-group colon inside `(runas_users:runas_groups)` - suppressed by paren
+///     `depth`. A `(` bumps `depth` ONLY at a `Cmnd_Spec` start (the runas position: after
+///     the host-group's STRUCTURAL `Host_List = Cmnd_Spec_List` `=`, or after a top-level
+///     `,` in that command list). A bare mid-command `(` - including one right after a
+///     command-argument `=` (`/bin/echo a(b`, `/bin/echo X=(y`) - is a literal byte and
+///     does NOT desync `depth` (#416). So only a depth-0 colon can separate;
 ///   * a literal colon inside a command/argument - sudo REQUIRES it to be
 ///     backslash-escaped (`\:`; an unescaped `:` in a command is a syntax error), so
 ///     the char after a backslash is skipped;
 ///   * when `skip_tag_colons` (user-specs only), the `NOPASSWD:` / `PASSWD:` tag
 ///     colon - recognised because the token immediately before it (back to the last
-///     `,` / `=` / `(` / `)` / consumed colon, with whitespace irrelevant) is a
+///     `,` / `=` / `)` / consumed colon, with whitespace irrelevant) is a
 ///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`.
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
-    // boundary (`,` / `=` / `(` / `)` / a consumed colon - NOT whitespace, so a tag
-    // keyword spaced away from its colon is still recognised). Used only to spot a
-    // tag keyword sitting just before a colon.
+    // boundary (`,` / `=` / `)` / a consumed colon - NOT whitespace, so a tag keyword
+    // spaced away from its colon is still recognised). Used only to spot a tag keyword
+    // sitting just before a colon.
     let mut tok_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
-    // Inside a `"..."` quoted command token nothing is structural: sudo groups the
-    // token, so a `(` / `:` / `,` there is a literal command byte, not a runas paren /
-    // segment colon / list comma (cvtsudoers keeps `/bin/sh -c "a(b"` as ONE command,
-    // splitting only on the LATER unquoted `:`). Mirrors stage-1 `strip_inline_comment`'s
-    // quote tracking; without it an unbalanced `(` in a quoted arg desyncs `depth` and a
-    // real segment `:` is swallowed (#345 adversarial-review fix).
-    let mut in_quotes = false;
+    // A `(` opens a runas group ONLY at a `Cmnd_Spec` START (the runas position), which
+    // exists ONLY inside the Cmnd_Spec_List - i.e. AFTER the host-group's structural
+    // `Host_List = Cmnd_Spec_List` `=`. `in_cmnd_list` tracks whether the cursor is past
+    // that structural `=` within the current host-group: it starts false and resets false
+    // at each top-level `:` (a `:` opens a new host-group whose Host_List comes first).
+    // Only the FIRST top-level `=` per host-group is structural; a later `=` is a literal
+    // byte inside a command argument (`X=(y`) and must NOT re-arm the runas position, else
+    // its `(` desyncs `depth` and swallows the next top-level `:` -- the #416 colon-splitter
+    // miss (a `(` right after a command-arg `=` was read as a runas opener).
+    let mut in_cmnd_list = false;
+    // `at_spec_start` is true from a `Cmnd_Spec` boundary (the structural `=`, or a
+    // top-level `,` while in the command list) through leading whitespace until the first
+    // non-whitespace char: a `(` there is a runas opener (bumps `depth`, so a `(u:g)`
+    // runas colon is suppressed), any other char means the command word has begun so every
+    // later `(` in the spec is a literal byte. This REPLACES the old quote tracking: in
+    // valid sudoers a top-level `:` is never inside a balanced quote (`/bin/echo "a:b"` is
+    // visudo-REJECTED), and a tag cannot precede the runas group (`NOPASSWD: (root) ...` is
+    // visudo-REJECTED), so the runas `(` is always the spec's first non-whitespace char
+    // (grounded on sudo 1.9.17p2, #416).
+    let mut at_spec_start = false;
 
     for (i, c) in s.char_indices() {
         if escaped {
             // The previous char was a backslash; this char is a literal part of the
-            // current token (`\:`, `\,`, `\"`, ...). Never a separator or a boundary.
+            // current token (`\:`, `\,`, ...). Never a separator or a boundary.
             escaped = false;
             continue;
         }
         if c == '\\' {
             escaped = true;
+            at_spec_start = false;
             continue;
         }
-        if in_quotes {
-            // Literal token content; only the closing quote is structural.
-            if c == '"' {
-                in_quotes = false;
-            }
+        if c.is_whitespace() {
+            // Leading whitespace keeps `at_spec_start`; interior whitespace is a no-op
+            // (it never resets `tok_start`, so a tag keyword spaced from its colon is
+            // still recognised).
             continue;
         }
         match c {
-            '"' => in_quotes = true,
-            // No `tok_start` reset here: while `depth > 0` every colon is skipped, and
-            // `tok_start` is overwritten at the matching `)` before any depth-0 colon
-            // reads it, so resetting it on `(` would be dead.
-            '(' => depth += 1,
+            '(' if at_spec_start => {
+                depth += 1;
+                at_spec_start = false;
+            }
             ')' => {
                 // `if depth > 0` only guards a malformed UNBALANCED `)` (which visudo
                 // rejects); for valid input depth is always >= 1 here.
@@ -626,24 +719,50 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     depth -= 1;
                 }
                 tok_start = i + c.len_utf8();
+                at_spec_start = false;
             }
-            ',' | '=' => tok_start = i + c.len_utf8(),
+            ',' => {
+                tok_start = i + c.len_utf8();
+                // A top-level (depth-0) comma starts the next `Cmnd_Spec` ONLY inside the
+                // command list, whose runas `(` sits at the next non-whitespace char. A
+                // comma in the Host_List (`h1, h2 = cmd`) has no runas position, and a
+                // comma inside a runas group (depth > 0) is not a spec boundary.
+                if depth == 0 && in_cmnd_list {
+                    at_spec_start = true;
+                }
+            }
+            '=' => {
+                tok_start = i + c.len_utf8();
+                // Only the FIRST top-level `=` of a host-group is the structural
+                // `Host_List = Cmnd_Spec_List` separator; it opens the command list and
+                // arms the first `Cmnd_Spec`'s runas position. A later `=` is a literal
+                // byte inside a command argument and must NOT re-arm `at_spec_start` (the
+                // #416 colon-splitter fix). The `tok_start` reset stays UNCONDITIONAL so
+                // tag detection (e.g. `host=NOPASSWD:`) is unaffected.
+                if !in_cmnd_list {
+                    in_cmnd_list = true;
+                    at_spec_start = true;
+                }
+            }
             ':' if depth == 0 => {
                 let preceding = s[tok_start..i].trim();
                 if skip_tag_colons && parse_tag(preceding).is_some() {
-                    // A tag colon (`NOPASSWD:`): not a segment separator. The next
-                    // token starts just after it.
+                    // A tag colon (`NOPASSWD:`): not a segment separator. The next token
+                    // starts just after it (still mid-spec, so `at_spec_start` stays false).
                     tok_start = i + 1;
                 } else {
                     // A genuine top-level segment separator. `tok_start = i + 1` resets
-                    // the preceding-token start for the next segment; valid input always
-                    // overwrites it at that segment's `=` before the next colon is seen.
+                    // the preceding-token start for the next segment; the next segment
+                    // opens with a Host_List (not a `Cmnd_Spec`), so both `at_spec_start`
+                    // and `in_cmnd_list` reset until that segment's structural `=`.
                     segments.push(s[seg_start..i].trim());
                     seg_start = i + 1;
                     tok_start = i + 1;
+                    at_spec_start = false;
+                    in_cmnd_list = false;
                 }
             }
-            _ => {}
+            _ => at_spec_start = false,
         }
     }
     segments.push(s[seg_start..].trim());
@@ -663,31 +782,38 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
         .collect()
 }
 
-/// Split a `Cmnd_Spec_List` on TOP-LEVEL commas, honoring backslash escapes, runas
-/// parens, and quoted arguments.
+/// Split a `Cmnd_Spec_List` on TOP-LEVEL commas, honoring backslash escapes and runas
+/// parens.
 ///
-/// A `,` separates two `Cmnd_Spec`s ONLY when it is (1) not backslash-escaped, (2) at
-/// paren-depth 0, and (3) outside a `"..."` quoted argument. This mirrors the
-/// depth + quote + escape scanning in [`split_top_level_segments`] (which splits on
-/// `:`), minus its tag-keyword / `:` logic, and is grounded against `cvtsudoers -f
-/// json` (sudo 1.9.17p2, #370):
+/// A `,` separates two `Cmnd_Spec`s ONLY when it is (1) not backslash-escaped and (2) at
+/// paren-depth 0. This mirrors the depth + escape + positional-paren scanning in
+/// [`split_top_level_segments`] (which splits on `:`), minus its tag-keyword / `:` logic,
+/// and is grounded against `cvtsudoers -f json` (sudo 1.9.17p2, #370 / #416):
 ///   * a `\,` is an ESCAPED literal comma inside one command token (like `\:`), so the
 ///     char after a backslash is skipped;
 ///   * a `,` inside a runas group `(root, operator)` is at paren-depth > 0 and is part
 ///     of the runas user list, NOT a `Cmnd_Spec` separator - so `depth` tracks `(`/`)`;
-///   * quote state (`"..."`) keeps a quoted `(` / `)` from desyncing `depth`: a quoted
-///     paren is a literal command byte, not a runas paren, so `cvtsudoers -f json` keeps
-///     `/bin/echo "a(", /bin/ls` as TWO commands (the quoted `(` must not make the
-///     following `,` look paren-nested; grounded on sudo 1.9.17p2, host + rocky9).
+///   * a `(` bumps `depth` ONLY at a `Cmnd_Spec` START (the runas position, `at_spec_start`
+///     below). A bare mid-command `(` (e.g. `/bin/echo a(b`) is a literal byte and must
+///     NOT desync `depth`, so `cvtsudoers -f json` keeps `/bin/echo a(b, /bin/su` as TWO
+///     commands (#416). A GLOBAL paren-balance pre-scan would be WRONG: a valid
+///     `(ALL) /bin/echo a(b` is globally unbalanced (2 `(`, 1 `)`) yet `(ALL)` is a real
+///     runas group, so a leading/runas-position `(` must be told apart from a mid-token `(`.
 ///
-/// A `,` inside a BALANCED quote is suppressed as a side effect, which cannot happen in a
-/// valid config (sudo REJECTS an unescaped quoted comma: `visudo -c` / `cvtsudoers` reject
-/// `/bin/echo "a, b"`; a literal comma needs the backslash escape `\,`, per bullet 1). But
-/// an UNTERMINATED quote or a bare mid-command `(` is itself visudo-VALID yet makes this
-/// splitter merge two `Cmnd_Spec`s, which can hide a later grant -- a KNOWN
-/// classifier-not-validator limitation (#416), the same class as
-/// `split_top_level_segments`'s `unterminated_quote_swallows_the_separator`: rulesteward
-/// classifies token shapes rather than validating quote / paren balance.
+/// There is NO quote tracking. In a VALID config a top-level `,` is never inside a
+/// balanced quote - sudo REJECTS an unescaped quoted comma (`visudo -c` / `cvtsudoers`
+/// reject `/bin/echo "a, b"`; a literal comma needs `\,`, per bullet 1) - and an
+/// UNTERMINATED quote does not suppress the split either (`cvtsudoers` still splits
+/// `/bin/echo "x, /bin/su` into two commands). A `"` is thus a literal command byte, and a
+/// quoted `(` is mid-command so it never reaches `depth` anyway. This fixed the old quote
+/// tracker (#416) that merged two `Cmnd_Spec`s past an unbalanced quote, hiding a grant.
+///
+/// Unlike [`split_top_level_segments`], this splitter receives ONLY the `Cmnd_Spec_List`
+/// (the `rhs` after the structural `=`), so it has no `=` arm at all: a command-argument
+/// `=` (`X=(y`) is a plain literal byte here and never re-arms `at_spec_start`. The runas
+/// position is armed only at the string start and after a top-level `,`. (The colon
+/// splitter, which DOES see the structural `=`, must instead re-arm only on the FIRST `=`
+/// per host-group - see its `in_cmnd_list` - or the same `=(` would desync there; #416.)
 ///
 /// The backslash is kept VERBATIM in the value, matching the `\:` precedent (the
 /// lints do not inspect argument contents). Segments are trimmed, mirroring
@@ -697,7 +823,12 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     let mut seg_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
-    let mut in_quotes = false;
+    // A `(` opens a runas group ONLY at a `Cmnd_Spec` START (the runas position, before
+    // the command word); a `(` anywhere else is a literal command byte. `at_spec_start`
+    // is true from each segment start through leading whitespace, until the first
+    // non-whitespace char: a `(` there is a runas opener (bumps `depth`), any other char
+    // means the command word has begun so every later `(` in this spec is literal (#416).
+    let mut at_spec_start = true;
     for (i, c) in s.char_indices() {
         if escaped {
             // The previous char was a backslash; this char (`\,`, ...) is a literal
@@ -707,30 +838,32 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
         }
         if c == '\\' {
             escaped = true;
+            at_spec_start = false;
             continue;
         }
-        if in_quotes {
-            // Literal token content; only the closing quote is structural.
-            if c == '"' {
-                in_quotes = false;
-            }
+        if c.is_whitespace() {
+            // Leading whitespace keeps `at_spec_start`; interior whitespace is a no-op.
             continue;
         }
         match c {
-            '"' => in_quotes = true,
-            '(' => depth += 1,
+            '(' if at_spec_start => {
+                depth += 1;
+                at_spec_start = false;
+            }
             ')' => {
                 // `if depth > 0` only guards a malformed UNBALANCED `)` (visudo
                 // rejects it); for valid input depth is always >= 1 here.
                 if depth > 0 {
                     depth -= 1;
                 }
+                at_spec_start = false;
             }
             ',' if depth == 0 => {
                 segments.push(s[seg_start..i].trim());
                 seg_start = i + c.len_utf8();
+                at_spec_start = true;
             }
-            _ => {}
+            _ => at_spec_start = false,
         }
     }
     segments.push(s[seg_start..].trim());
@@ -1066,6 +1199,100 @@ mod tests {
         ));
     }
 
+    // ---- #405: Defaults settings-list comma split is escape/quote-aware ----
+    //
+    // Grounded against visudo/cvtsudoers 1.9.17p2 (2026-07-03): a `,` inside a
+    // Defaults value is NOT always a setting separator. It stays part of the
+    // SAME setting's value when it is either (a) backslash-escaped in an
+    // unquoted value (`Wrong\,ok` -> cvtsudoers `"Wrong,ok"`, ONE setting), or
+    // (b) inside a double-quoted value, escaped or not (`"Wrong, try again"` ->
+    // ONE setting, comma retained verbatim -- quoting alone protects it, no
+    // backslash needed). A naive `s.split(',')` mis-parses both into extra
+    // bogus settings. `split_cmnd_specs` (#370) already got escape-awareness
+    // for the Cmnd_Spec_List; this is the Defaults-list analog, plus
+    // quote-awareness that list never needed (commands are not quoted).
+    //
+    // Per the #370 precedent (`cmnd_token` is kept VERBATIM, no unescaping),
+    // this fix corrects only the SPLIT BOUNDARY: an unquoted escaped comma's
+    // backslash is retained verbatim in the parsed value (KISS, no new
+    // unescaping semantics); a quoted comma's value already round-trips
+    // exactly since the existing quote-strip only touches the outer pair.
+
+    #[test]
+    fn defaults_unquoted_escaped_comma_stays_in_one_setting_value() {
+        // cvtsudoers: badpass_message="Wrong\,ok,logfile=/var/log/sudo" ->
+        // 2 settings, NOT 3. The naive split.split(',') would wrongly cut this
+        // into "badpass_message=Wrong\", "ok", "logfile=/var/log/sudo".
+        let k = kinds("Defaults badpass_message=Wrong\\,ok,logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                // Verbatim retention (matches the #370 cmnd_token precedent): the
+                // escape backslash stays in the value; only the split boundary is
+                // fixed, not full escape-sequence decoding.
+                assert_eq!(d.settings[0].value.as_deref(), Some("Wrong\\,ok"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_quoted_comma_stays_in_one_setting_value() {
+        // cvtsudoers: badpass_message="Wrong, try again" -> ONE setting, the
+        // comma retained in the value -- quoting alone protects it, no
+        // backslash needed. Followed by a real comma-separated second setting.
+        let k = kinds("Defaults badpass_message=\"Wrong, try again\",logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                assert_eq!(d.settings[0].value.as_deref(), Some("Wrong, try again"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_escaped_quote_inside_quoted_value_does_not_end_the_quote() {
+        // cvtsudoers: badpass_message="a \" b, c" -> ONE setting (value keeps
+        // the escaped quote and the comma both), followed by logfile=... . A
+        // quote-blind splitter would end the quoted region at the escaped `\"`
+        // and mis-split on the comma that follows.
+        let k = kinds("Defaults badpass_message=\"a \\\" b, c\",logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                assert_eq!(d.settings[0].value.as_deref(), Some("a \\\" b, c"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_baseline_two_settings_still_split_on_plain_comma() {
+        // No-regression baseline (cvtsudoers ground truth): a plain comma with
+        // no escaping/quoting still separates two settings.
+        let k = kinds("Defaults syslog=auth, logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "syslog");
+                assert_eq!(d.settings[0].value.as_deref(), Some("auth"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
     // ---- user-specs + tag-state-machine surface (#330) ----
 
     #[test]
@@ -1368,6 +1595,65 @@ mod tests {
             LineKind::Alias(a) => assert_eq!(a.specs[0].members, vec!["#1000".to_string()]),
             other => panic!("expected an alias def, got {other:?}"),
         }
+    }
+
+    // ---- #407: runas-position `#<digits>` after `:` and `(` -----------------
+
+    #[test]
+    fn strip_keeps_hash_digit_token_after_runas_colon_and_open_paren() {
+        // #407: `visudo -c` accepts both `(root:#1000)` (rc=0, `usergroup #1000`)
+        // and bare `(#1000)` (rc=0, `runasusers: userid 1000`) -- verified via
+        // `cvtsudoers -f json` locally, sudo 1.9.17p2, 2026-07-03. Before this
+        // fix, `prev_allows_uid` did not allow `:` (the runas-group separator)
+        // or `(` (the runas open-paren) to precede a `#<digits>` token, so the
+        // WHOLE REST of the line -- including the real command -- was swallowed
+        // as an inline comment (`strip_inline_comment("alice ALL=(root:#1000) \
+        // /bin/su")` used to return only `"alice ALL=(root:"`). Pins that both
+        // positions now preserve the token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:#1000) /bin/su"),
+            "alice ALL=(root:#1000) /bin/su",
+            "a `#<digits>` immediately after the runas `:` separator is a GID \
+             token, not a comment"
+        );
+        assert_eq!(
+            strip_inline_comment("alice ALL=(#1000) /bin/su"),
+            "alice ALL=(#1000) /bin/su",
+            "a `#<digits>` immediately after the runas open-paren `(` is a UID \
+             token, not a comment"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_malformed_gid_tail_token_after_runas_colon_and_open_paren() {
+        // #407: the stripper's job is to classify `#<digit>`-SHAPED tokens, not
+        // to validate their content (see the Phase-0 contract note on
+        // `strip_inline_comment`) -- an INVALID GID-tail token (`#1000abc`,
+        // `visudo -c` rc=1) must ALSO survive the strip after `:` / `(` so the
+        // downstream sudo-F02 GID-tail check (lints/tokens.rs) can see and flag
+        // it, exactly as it already does for a `%#1000abc` subject/runas-user
+        // token.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root:#1000abc) /bin/su"),
+            "alice ALL=(root:#1000abc) /bin/su"
+        );
+        assert_eq!(
+            strip_inline_comment("alice ALL=(#1000abc) /bin/su"),
+            "alice ALL=(#1000abc) /bin/su"
+        );
+    }
+
+    #[test]
+    fn strip_still_strips_a_real_trailing_comment_after_a_runas_group() {
+        // Non-regression: a genuine trailing `#` comment (its `#` is preceded by
+        // whitespace and NOT followed by a digit) must still be stripped even
+        // when it follows a closed runas group -- the `:`/`(` widening must not
+        // over-preserve unrelated comments.
+        assert_eq!(
+            strip_inline_comment("alice ALL=(root) /bin/su # comment"),
+            "alice ALL=(root) /bin/su ",
+            "a real trailing comment must still be stripped after a runas group"
+        );
     }
 
     // ---- continuation edges (#329 part B) ----
@@ -1678,11 +1964,13 @@ mod tests {
 
     #[test]
     fn quoted_paren_in_command_does_not_desync_segment_split() {
-        // #345 adversarial-review fix: an unbalanced `(` INSIDE a double-quoted command
-        // argument is a literal command byte, not a runas open-paren, so it must not
-        // desync `depth` and swallow the later real segment `:`. visudo -c rc 0 +
-        // cvtsudoers -f json (sudo 1.9.17p2): `alice h1 = /bin/sh -c "a(b" : h2 = /bin/id`
-        // parses as TWO host-groups {h1 -> /bin/sh -c "a(b"} and {h2 -> /bin/id}.
+        // #345 adversarial-review fix (now via the #416 positional-paren rule): a `(` in
+        // the MIDDLE of a command (here inside a quoted argument) is a literal command
+        // byte, not a runas open-paren, so it must not desync `depth` and swallow the
+        // later real segment `:`. Because the `(` is past the runas position it never
+        // bumps `depth` regardless of quotes. visudo -c rc 0 + cvtsudoers -f json (sudo
+        // 1.9.17p2): `alice h1 = /bin/sh -c "a(b" : h2 = /bin/id` parses as TWO
+        // host-groups {h1 -> /bin/sh -c "a(b"} and {h2 -> /bin/id}.
         let s = only_spec("alice h1 = /bin/sh -c \"a(b\" : h2 = /bin/id\n");
         assert_eq!(
             s.host_groups.len(),
@@ -1764,24 +2052,29 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_quote_swallows_the_separator_documented_limitation() {
-        // DOCUMENTED LIMITATION (classifier-not-validator class, #346): an UNTERMINATED
-        // double-quote desyncs the quote tracker so the later `:` is treated as quoted
-        // and not split. Real sudo is surprising here - `cvtsudoers` ACCEPTS
+    fn unterminated_quote_does_not_swallow_the_segment_colon() {
+        // #416 fix (was a documented #346-class limitation): an UNTERMINATED double-quote
+        // is a literal command byte, not a quote that swallows the later top-level `:`.
+        // Real sudo agrees - `cvtsudoers -f json` ACCEPTS (visudo -c rc 0)
         //   `alice h1 = /bin/sh -c "oops : h2 = ALL`
-        // and STILL splits it into two host-groups {h1 -> `/bin/sh -c "oops`} and
-        // {h2 -> ALL}. We instead keep it as ONE group (the unbalanced quote is an
-        // unvalidated token shape, like the other #346 cases). This pins the current
-        // behavior; a future quote-balance validator (#346) would reject or split it.
-        // A BALANCED quote with parens - the realistic case - is handled correctly (see
-        // `quoted_paren_in_command_does_not_desync_segment_split`); a literal `:` inside
-        // a balanced quote is rejected by sudo, so valid configs never hit this path.
+        // and splits it into TWO host-groups {h1 -> `/bin/sh -c "oops`} and {h2 -> ALL}.
+        // Merging them (the old behavior) hid the second grant -- a sudo-W05 FALSE
+        // NEGATIVE. A literal `:` inside a BALANCED quote (`/bin/echo "a:b"`) is
+        // visudo-REJECTED, so valid configs never carry a separator inside a balanced
+        // quote; the fix therefore drops quote-based separator suppression entirely.
         let s = only_spec("alice h1 = /bin/sh -c \"oops : h2 = ALL\n");
         assert_eq!(
             s.host_groups.len(),
-            1,
-            "unterminated quote swallows the `:` (documented #346-class limitation)"
+            2,
+            "an unterminated quote must not swallow the `:` host-group separator (#416)"
         );
+        assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+        assert_eq!(
+            s.host_groups[0].cmnd_specs[0].cmnd,
+            CmndItem::Cmnd("/bin/sh -c \"oops".to_string())
+        );
+        assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+        assert_eq!(s.host_groups[1].cmnd_specs[0].cmnd, CmndItem::All);
     }
 
     // These two assert the splitter's two DEFENSIVE internal contracts directly (the
@@ -1822,22 +2115,22 @@ mod tests {
 
     // These two mirror the colon-splitter's `quoted_paren_in_command_does_not_desync_segment_split`
     // and `unbalanced_close_paren_clamps_depth_and_keeps_later_separator` onto the COMMA splitter
-    // `split_cmnd_specs`, whose quote / depth-clamp contracts had no direct test (#406 mutation
+    // `split_cmnd_specs`, whose paren / depth-clamp contracts had no direct test (#406 mutation
     // survivors). Direct private-fn calls: the public path folds both edge inputs into `Malformed`,
     // so it cannot distinguish the mutated code.
 
     #[test]
     fn quoted_paren_in_cmnd_list_does_not_desync_comma_split() {
-        // An unbalanced `(` INSIDE a double-quoted command argument is a literal byte, not a
-        // runas open-paren, so it must not desync `depth` and swallow the later `,` separating
+        // A `(` in the MIDDLE of a command (here inside a quoted argument) is a literal byte, not
+        // a runas open-paren, so it must not desync `depth` and swallow the later `,` separating
         // the next `Cmnd_Spec`. Grounded: `cvtsudoers -f json` (sudo 1.9.17p2, host + rocky9)
-        // parses `/bin/echo "a(", /bin/ls` as TWO commands. Kills the quote-open / quote-close
-        // mutants (delete `'"' => in_quotes = true`; `c == '"'` -> `c != '"'`), which let the
-        // quoted `(` reach `depth += 1` so the `,` reads as paren-nested and never splits.
+        // parses `/bin/echo "a(", /bin/ls` as TWO commands. Since the `(` is past the runas
+        // position it never reaches `depth += 1` (the #416 positional-paren rule), so the `,`
+        // stays at depth 0 and splits.
         assert_eq!(
             split_cmnd_specs("/bin/echo \"a(\", /bin/ls"),
             vec!["/bin/echo \"a(\"", "/bin/ls"],
-            "an unbalanced `(` inside quotes must not swallow the `,` Cmnd_Spec separator"
+            "a mid-command `(` inside quotes must not swallow the `,` Cmnd_Spec separator"
         );
     }
 
@@ -1851,6 +2144,159 @@ mod tests {
             split_cmnd_specs("a), b"),
             vec!["a)", "b"],
             "a stray `)` must not push depth below 0 and swallow the later `,` separator"
+        );
+    }
+
+    // ---- #416: a visudo-VALID unbalanced quote or a bare MID-COMMAND `(` must NOT merge
+    //      two `Cmnd_Spec`s (comma splitter) or two host-groups (colon splitter). Merging
+    //      hides a later `NOPASSWD:` grant -- a sudo-W05 FALSE NEGATIVE. Every case below
+    //      is `visudo -c` rc 0 and `cvtsudoers -f json` (sudo 1.9.17p2) splits it into the
+    //      asserted number of segments (the 2nd spec passwordless). The fix makes a `(` a
+    //      runas opener ONLY at a Cmnd_Spec start and drops the quote-based separator
+    //      suppression (a valid top-level separator is never inside a balanced quote:
+    //      `/bin/echo "a, b"` and `/bin/echo "a:b"` are visudo-REJECTED).
+
+    #[test]
+    fn unterminated_quote_does_not_swallow_comma_separator() {
+        // `cvtsudoers -f json` on `alice ALL=(ALL) /bin/echo "x, NOPASSWD: /bin/su`
+        // (visudo -c rc 0) yields TWO commands: `/bin/echo "x` and `/bin/su`. A lone
+        // unbalanced `"` is a literal command byte, NOT a quote that swallows the
+        // top-level `,` (#416). The `"` stays verbatim in the first spec.
+        assert_eq!(
+            split_cmnd_specs("(ALL) /bin/echo \"x, NOPASSWD: /bin/su"),
+            vec!["(ALL) /bin/echo \"x", "NOPASSWD: /bin/su"],
+            "an unterminated quote must not swallow the `,` Cmnd_Spec separator (#416)"
+        );
+    }
+
+    #[test]
+    fn bare_mid_command_paren_does_not_swallow_comma_separator() {
+        // `cvtsudoers -f json` on `alice ALL=(ALL) /bin/echo a(b, NOPASSWD: /bin/su`
+        // (visudo -c rc 0) yields TWO commands: `/bin/echo a(b` and `/bin/su`. A `(` in
+        // the MIDDLE of a command (not the leading runas position) is a literal byte and
+        // must NOT bump paren depth, so the top-level `,` still splits (#416).
+        assert_eq!(
+            split_cmnd_specs("(ALL) /bin/echo a(b, NOPASSWD: /bin/su"),
+            vec!["(ALL) /bin/echo a(b", "NOPASSWD: /bin/su"],
+            "a mid-command `(` must not swallow the `,` Cmnd_Spec separator (#416)"
+        );
+    }
+
+    #[test]
+    fn runas_user_list_comma_is_not_a_spec_separator() {
+        // Regression guard for the positional-paren fix (#416): a `(` at a Cmnd_Spec START
+        // (the runas position) still opens a runas group, so the comma inside
+        // `(root, operator)` is paren-nested and does NOT split. `cvtsudoers -f json`
+        // (sudo 1.9.17p2): `(root, operator) /bin/su, /bin/ls` is TWO commands sharing the
+        // runas user list root+operator. Also guards a runas group opening a spec AFTER a
+        // top-level comma (the trailing `/bin/ls` has none, so only the leading group).
+        assert_eq!(
+            split_cmnd_specs("(root, operator) /bin/su, /bin/ls"),
+            vec!["(root, operator) /bin/su", "/bin/ls"],
+            "a comma inside a leading runas group must stay paren-nested (#416 regression)"
+        );
+    }
+
+    #[test]
+    fn bare_mid_command_paren_does_not_swallow_the_segment_colon() {
+        // Colon-splitter twin of `bare_mid_command_paren_does_not_swallow_comma_separator`.
+        // `cvtsudoers -f json` on `alice h1 = /bin/echo a(b : h2 = ALL` (visudo -c rc 0)
+        // yields TWO host-groups {h1 -> `/bin/echo a(b`} and {h2 -> ALL}. A mid-command
+        // `(` must not bump `depth` and swallow the top-level `:` (#416).
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo a(b : h2 = ALL", false),
+            vec!["h1 = /bin/echo a(b", "h2 = ALL"],
+            "a mid-command `(` must not swallow the `:` host-group separator (#416)"
+        );
+    }
+
+    #[test]
+    fn runas_group_colon_after_top_level_comma_is_not_a_segment_separator() {
+        // Regression guard for the positional-paren fix (#416): a `(` opening a runas
+        // group at a Cmnd_Spec start AFTER a top-level comma still bumps `depth`, so the
+        // `:` inside `(root:wheel)` is the runas-group colon and does NOT split. Grounded:
+        // `alice ALL = /bin/echo x, (root:wheel) /bin/su : localhost = /bin/ls` (visudo -c
+        // rc 0) is TWO host-groups (cvtsudoers -f json, sudo 1.9.17p2).
+        assert_eq!(
+            split_top_level_segments(
+                "ALL = /bin/echo x, (root:wheel) /bin/su : localhost = /bin/ls",
+                false
+            ),
+            vec![
+                "ALL = /bin/echo x, (root:wheel) /bin/su",
+                "localhost = /bin/ls"
+            ],
+            "a runas-group colon after a top-level comma must not split (#416 regression)"
+        );
+    }
+
+    // ---- #416 (colon splitter, round 2): a `=` INSIDE a command argument must NOT
+    //      re-arm the runas position. Only the FIRST top-level `=` of a host-group is the
+    //      structural `Host_List = Cmnd_Spec_List` separator; a later `=(` in a command
+    //      arg was re-arming `at_spec_start`, so the `(` bumped `depth` and swallowed the
+    //      next top-level `:` -> two host-groups merged -> the 2nd group's `NOPASSWD:`
+    //      grant was hidden (a sudo-W05 FALSE NEGATIVE). Every case is `visudo -c` rc 0
+    //      and `cvtsudoers -f json` (sudo 1.9.17p2) yields TWO host-groups, the 2nd
+    //      (`/bin/su`) passwordless.
+
+    #[test]
+    fn mid_command_eq_paren_does_not_swallow_the_segment_colon() {
+        // `alice ALL = /bin/echo X=(y : ALL = NOPASSWD: /bin/su` (visudo -c rc 0):
+        // cvtsudoers -f json = TWO host-groups {ALL -> `/bin/echo X=(y`} and {ALL ->
+        // NOPASSWD /bin/su}. The `=` in the command arg `X=(y` must NOT re-arm the runas
+        // position, so the `(` stays a literal byte and the top-level `:` still splits.
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo X=(y : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1 = /bin/echo X=(y", "h2 = NOPASSWD: /bin/su"],
+            "a mid-command `=(` must not desync depth and swallow the `:` separator (#416)"
+        );
+    }
+
+    #[test]
+    fn quoted_mid_command_eq_paren_does_not_swallow_the_segment_colon() {
+        // Quoted twin: `alice ALL = /bin/echo "a=(b" : ALL = NOPASSWD: /bin/su` (visudo -c
+        // rc 0): cvtsudoers -f json = TWO host-groups, the 2nd passwordless. With no quote
+        // tracking, the `=` inside the quoted arg still must not re-arm the runas position
+        // (the reason a quoted `(` here is harmless is that the preceding `=` no longer
+        // re-arms, NOT that quotes are tracked).
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo \"a=(b\" : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1 = /bin/echo \"a=(b\"", "h2 = NOPASSWD: /bin/su"],
+            "a quoted mid-command `=(` must not swallow the `:` separator (#416)"
+        );
+    }
+
+    #[test]
+    fn real_runas_group_then_mid_command_eq_paren_still_splits() {
+        // Regression guard: a REAL runas group at the Cmnd_Spec start followed by a
+        // mid-command `=(` in the same command. `alice ALL = (root) /bin/echo X=(y : ALL =
+        // NOPASSWD: /bin/su` (visudo -c rc 0) is TWO host-groups (cvtsudoers -f json). The
+        // structural `=` arms the runas position, `(root)` is a real runas group (depth
+        // 1->0), and the later `=(` inside the command arg must not re-arm it.
+        assert_eq!(
+            split_top_level_segments("h1 = (root) /bin/echo X=(y : h2 = ALL", false),
+            vec!["h1 = (root) /bin/echo X=(y", "h2 = ALL"],
+            "a mid-command `=(` after a real runas group must not swallow the `:` (#416)"
+        );
+    }
+
+    #[test]
+    fn host_region_comma_does_not_arm_the_runas_position() {
+        // Design-intent of the `,` arm's `depth == 0 && in_cmnd_list` guard (#416): a
+        // top-level `,` arms the runas position ONLY inside the Cmnd_Spec_List (past the
+        // structural `=`). A `,` in the Host_List region (before that `=`) must NOT arm it,
+        // so a following `(` there is a literal byte, stays at depth 0, and the later
+        // top-level `:` still splits into two host-groups. A Host_List never legitimately
+        // contains a `(` (host names have no parens), so this is a synthetic direct-splitter
+        // edge input in the style of `unbalanced_close_paren_clamps_depth_and_keeps_later_separator`.
+        // Kills the `&&` -> `||` mutant on the guard: under `||` the depth-0 Host_List comma
+        // arms the runas position, the `(` bumps `depth`, and the `:` is suppressed -> the
+        // two host-groups collapse into one (hiding the second's `NOPASSWD:` grant).
+        assert_eq!(
+            split_top_level_segments("h1, (x : h2 = NOPASSWD: /bin/su", true),
+            vec!["h1, (x", "h2 = NOPASSWD: /bin/su"],
+            "a `(` in the Host_List region (after a top-level `,`, before the structural \
+             `=`) is not a runas opener, so it must not bump depth and swallow the `:` (#416)"
         );
     }
 }

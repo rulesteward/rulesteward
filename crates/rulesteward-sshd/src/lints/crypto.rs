@@ -258,7 +258,72 @@ fn algo_list_value(args: &[String]) -> Option<String> {
         return None;
     }
 
+    // Step 6: return None whenever a `+`/`-`/`^` operator appears on any
+    // NON-FIRST comma token. A leading operator is meaningful ONLY on the whole
+    // value's first token, where it marks the list as append/remove/prepend
+    // against the built-in default (`Ciphers +aes128-cbc,aes256-cbc` loads,
+    // rc 0). A mid-list operator token has TWO possible fates, both of which
+    // make silence the correct lint output (real `sshd -T`, OpenSSH 10.2p1,
+    // ephemeral HostKey, verified 2026-07-03):
+    //
+    //   1. Under a BARE / `+` / `^` head, sshd rejects the ENTIRE spec (rc 255
+    //      "Bad SSH2 cipher/mac/kex spec '<whole value>'"):
+    //        `aes128-ctr,aes128-cbc,+aes192-cbc` -> rc 255
+    //        `+aes128-cbc,+aes192-cbc`           -> rc 255 (double-operator)
+    //        `^aes256-ctr,+aes192-cbc`           -> rc 255
+    //      The directive never loads, so it must not be linted.
+    //
+    //   2. Under a `-` (removal) head, sshd LOADS the line (rc 0) and treats the
+    //      stray mid-list `+`/`^`/`-` token as an INERT removal PATTERN that
+    //      matches no real algorithm name, introducing nothing:
+    //        `Ciphers -aes128-cbc,+aes192-cbc` -> rc 0, effective ciphers has NO
+    //          aes192-cbc (the `+aes192-cbc` removal pattern is inert)
+    //        `MACs -hmac-sha2-256,+hmac-md5`   -> rc 0, effective macs has NO
+    //          hmac-md5
+    //      The line loads but reintroduces no weak algorithm, so W03 (which
+    //      already defers on the `-` head) and W06 (which never fires on `-`)
+    //      must BOTH stay silent -- returning None gives exactly that.
+    //
+    // So returning None is correct for the reject case (don't lint a non-loading
+    // line) AND for the `-`-head load-but-inert case (nothing weak to report).
+    // Only the first token's operator is checked+kept by `leading_operator` in
+    // `w03_directive`/`w06`; this guard drops any value carrying a later one.
+    if raw
+        .split(',')
+        .skip(1)
+        .any(|tok| leading_operator(tok).is_some())
+    {
+        return None;
+    }
+
     Some(raw)
+}
+
+/// Returns the leading algorithm-list operator (`+`, `-`, or `^`) of the given
+/// token, or `None` if the token has no leading operator. Pure and correct for
+/// ANY token; the caller decides which token to pass and what to conclude.
+///
+/// Per `sshd_config(5)` (Rocky Linux 9 / OpenSSH 9.9p1, primary source,
+/// verified 2026-06-26; re-verified via `sshd -T`, OpenSSH 10.2p1,
+/// 2026-07-03), a leading `-`/`+`/`^` is MEANINGFUL only on an algorithm-list
+/// value's FIRST comma-split token, where it marks the WHOLE list as REMOVE-from
+/// (`-`), APPEND-to (`+`), or PREPEND-to (`^`) OpenSSH's built-in default set
+/// rather than a full replacement; on any later token a leading operator is a
+/// malformed / inert token (see [`algo_list_value`] Step 6). This function does
+/// not encode that positional meaning -- it is a plain "does this token lead
+/// with an operator?" predicate.
+///
+/// Callers decide which token to pass:
+/// - [`w03_directive`] and [`w06`] pass the value's FIRST comma-split token to
+///   classify the whole list's head (bare -> W03's domain; `-` -> hardening;
+///   `+`/`^` -> W06's reintroduction domain).
+/// - [`algo_list_value`]'s Step-6 guard passes each LATER comma token to detect
+///   a stray mid-list operator (which makes the value non-loadable or inert).
+fn leading_operator(token: &str) -> Option<char> {
+    match token.trim_ascii().chars().next() {
+        Some(op @ ('+' | '-' | '^')) => Some(op),
+        _ => None,
+    }
 }
 
 /// Return `true` when the lowercased token is a weak KEX algorithm.
@@ -292,6 +357,19 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
     let Some(value) = algo_list_value(&directive.args) else {
         return;
     };
+
+    // A `-`/`+`/`^`-prefixed list is not a full replacement: `-` REMOVES from
+    // the default (hardening, never flagged) and `+`/`^` REINTRODUCE to the
+    // default (W06's domain, not W03's). Only a bare (no-operator) list is a
+    // full replacement, which is W03's domain. Checked on the FIRST
+    // comma-split token only -- the operator is never repeated on later
+    // tokens (see `leading_operator`'s doc comment).
+    let Some(first_raw) = value.split(',').next() else {
+        return;
+    };
+    if leading_operator(first_raw).is_some() {
+        return;
+    }
 
     for raw_token in value.split(',') {
         // ASCII-only trim: sshd's separator class is ASCII whitespace, so a VT/NBSP
@@ -413,17 +491,18 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             let Some(first_raw) = tokens.next() else {
                 continue;
             };
+            let Some(operator) = leading_operator(first_raw) else {
+                // No operator (bare value): W03's job, not W06's.
+                continue;
+            };
+            if operator == '-' {
+                // `-` is hardening; never reintroduces.
+                continue;
+            }
             // ASCII-only trim throughout: a VT/NBSP kept by the tokenizer must stay in
             // the token so an sshd-rejected spec is not recovered by a Unicode trim
             // (#389 Case B).
             let first_trimmed = first_raw.trim_ascii();
-            let Some(operator) = first_trimmed.chars().next() else {
-                continue;
-            };
-            if operator != '+' && operator != '^' {
-                // `-` is hardening; bare value (no operator) is W03's job.
-                continue;
-            }
             // Strip the leading operator char from the first token and check it,
             // then check all remaining tokens (they carry no operator).
             let first_algo = first_trimmed[operator.len_utf8()..].trim_ascii();
@@ -976,6 +1055,64 @@ mod w06_tests {
             diags[0].message.contains('+'),
             "message names the operator, got: {}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn double_operator_list_does_not_fire_w06() {
+        // `Ciphers +aes128-cbc,+aes192-cbc` (issue #402 sibling FP): the FIRST
+        // token's `+` is a valid append operator, but the SECOND token's stray
+        // `+aes192-cbc` is not a valid algorithm name, so sshd rejects the WHOLE
+        // spec (real `sshd -T`, OpenSSH 10.2p1, ephemeral HostKey, 2026-07-03:
+        // rc 255 "Bad SSH2 cipher spec '+aes128-cbc,+aes192-cbc'"). The line
+        // never loads, so W06 must not report a reintroduction. Before the
+        // `algo_list_value` Step-6 guard, W06 fired once (on the valid head
+        // `+aes128-cbc`). W06 must now stay silent on the non-loading line.
+        let diags = run("Ciphers +aes128-cbc,+aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W06 must not fire, got: {diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // `-`-head with an inert mid-list operator LOADS (rc 0) but is silent
+    // (issue #402 grounding-accuracy hardening; W06 side of the w03_tests pair)
+    // -----------------------------------------------------------------------
+    //
+    // Under a `-` (removal) head, sshd LOADS the line (rc 0) and treats the
+    // stray mid-list `+` token as an INERT removal pattern that reintroduces
+    // nothing. W06 never fires on a `-` head (removal is hardening), so it must
+    // be silent -- and the `algo_list_value` Step-6 guard returns None here
+    // anyway (the `+` on a non-first token). This pins that a future guard
+    // refactor cannot start firing a W06 reintroduction FP on these loadable
+    // hardening lines.
+    //
+    // Grounding: `sshd -T` (OpenSSH 10.2p1, ephemeral HostKey, 2026-07-03):
+    //   `Ciphers -aes128-cbc,+aes192-cbc` -> rc 0, effective ciphers NO aes192-cbc
+    //   `MACs -hmac-sha2-256,+hmac-md5`   -> rc 0, effective macs NO hmac-md5
+
+    #[test]
+    fn minus_head_inert_plus_tail_ciphers_does_not_fire_w06() {
+        // `-`-head loadable line (rc 0), inert `+aes192-cbc` tail: W06 must be
+        // silent (never fires on a `-` head; nothing reintroduced).
+        let diags = run("Ciphers -aes128-cbc,+aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "a `-`-head list loads (rc 0) with the `+`-tail inert; W06 must not fire, \
+             got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn minus_head_inert_plus_tail_macs_does_not_fire_w06() {
+        // MACs family: `-`-head loadable line (rc 0), inert `+hmac-md5` tail.
+        // W06 must be silent.
+        let diags = run("MACs -hmac-sha2-256,+hmac-md5\n");
+        assert!(
+            diags.is_empty(),
+            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W06 must not fire, \
+             got: {diags:?}"
         );
     }
 
@@ -2612,6 +2749,254 @@ mod w03_tests {
             run("Ciphers \"aes128-cbc\"\n").len(),
             1,
             "clean single-quoted weak cipher (no internal whitespace) must still fire W03"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Operator-prefixed lists defer to W06 (issue #402 false positive fix)
+    // -----------------------------------------------------------------------
+    //
+    // Per `sshd_config(5)`, a `-`-prefixed algorithm-list value REMOVES from
+    // the built-in default (hardening) rather than replacing it; a `+`/`^`-
+    // prefixed value APPENDS/PREPENDS to the default (W06's domain). Only a
+    // BARE (no-operator) value is a full REPLACEMENT and W03's domain. The
+    // operator is carried on the FIRST comma-split token only (`algo_list_value`
+    // joins a well-formed value into one arg; see the parser-shape note in
+    // `w06_tests` above). Before this fix W03 iterated every comma-split token
+    // independent of the operator, so on a `-`-list like
+    // `Ciphers -aes128-cbc,aes256-cbc,3des-cbc` the operator-bearing first
+    // token (`-aes128-cbc`) correctly did not match the bare denylist, but the
+    // operator-less TAIL tokens (`aes256-cbc`, `3des-cbc`) DID match, firing a
+    // false positive on a hardening line that REMOVES those exact ciphers.
+    //
+    // Grounding: `sshd -T -f <fixture> -C user=x,host=x,addr=1.2.3.4` (OpenSSH
+    // 10.2p1, verified 2026-07-03 with an ephemeral ed25519 HostKey):
+    //   `Ciphers -aes128-cbc,aes256-cbc,3des-cbc` -> rc 0, effective `ciphers`
+    //   line = chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,
+    //   aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr (none of the
+    //   three removed CBC/3DES ciphers present -- confirms the removal took
+    //   effect and the line loaded cleanly, rc 0).
+    //   `Ciphers +aes128-cbc,aes256-cbc` -> rc 0, effective `ciphers` line
+    //   APPENDS both aes128-cbc and aes256-cbc to the default (both weak
+    //   ciphers genuinely reintroduced) -- W06's domain, not W03's.
+
+    #[test]
+    fn ciphers_minus_operator_list_fires_zero_w03() {
+        // The exact #402 false positive: a hardening line removing three CBC/
+        // 3DES ciphers must not flag any of them.
+        assert!(
+            run("Ciphers -aes128-cbc,aes256-cbc,3des-cbc\n").is_empty(),
+            "a `-`-prefixed (removal) algo list is hardening; W03 must not fire \
+             on any token, including operator-less tail tokens"
+        );
+    }
+
+    #[test]
+    fn macs_minus_operator_list_fires_zero_w03() {
+        // Same operator-defers rule for the MACs family (Weak03Kind::Exact,
+        // same code path as Ciphers/HostKeyAlgorithms).
+        assert!(
+            run("MACs -hmac-md5,hmac-sha1\n").is_empty(),
+            "a `-`-prefixed MACs list removes weak MACs; W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn kex_minus_operator_list_fires_zero_w03() {
+        // Same operator-defers rule for the KexAlgorithms family
+        // (Weak03Kind::Kex, a distinct match arm from Exact -- confirms the
+        // operator guard runs BEFORE the kind dispatch, not duplicated per-arm).
+        assert!(
+            run("KexAlgorithms -diffie-hellman-group1-sha1,diffie-hellman-group14-sha1\n")
+                .is_empty(),
+            "a `-`-prefixed KexAlgorithms list removes weak KEX; W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_caret_operator_list_fires_zero_w03() {
+        // `^` (prepend) is W06's domain too, mirroring `+`.
+        assert!(
+            run("Ciphers ^aes128-cbc,aes256-cbc\n").is_empty(),
+            "a `^`-prefixed algo list is W06's domain (reintroduction); W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn ciphers_plus_operator_list_fires_only_w06_not_w03() {
+        // Cross-check both lints on the same input: `Ciphers +aes128-cbc,aes256-cbc`
+        // genuinely reintroduces BOTH weak ciphers (grounded above, rc 0). Before
+        // this fix, W03 ALSO fired on the operator-less tail token (aes256-cbc),
+        // double-reporting the same reintroduction W06 already covers. W03 must
+        // defer entirely; W06 must fire (twice, once per reintroduced cipher).
+        let src = "Ciphers +aes128-cbc,aes256-cbc\n";
+        let w03_diags = run(src);
+        assert!(
+            w03_diags.is_empty(),
+            "a `+`-prefixed algo list is W06's domain; W03 must not fire, got: {w03_diags:?}"
+        );
+        let w06_diags = super::w06(&parse(src), Path::new(FILE), &SshdLintContext::default());
+        assert_eq!(
+            w06_diags.len(),
+            2,
+            "W06 fires once per reintroduced weak cipher, got: {w06_diags:?}"
+        );
+        assert!(w06_diags.iter().all(|d| d.code == "sshd-W06"));
+    }
+
+    #[test]
+    fn ciphers_bare_list_still_fires_w03_control() {
+        // Positive control: the operator guard must not over-suppress a bare
+        // (no-operator) full-replacement list, which is W03's actual domain.
+        // Regression guard alongside `bare_unquoted_weak_cipher_still_fires_w03_control`.
+        assert_eq!(
+            run("Ciphers aes128-cbc,aes256-ctr\n").len(),
+            1,
+            "bare (no-operator) list is a full replacement; W03 must still fire on the weak entry"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mid-list operator: silent lint output is correct (issue #402 sibling FP)
+    // -----------------------------------------------------------------------
+    //
+    // A `+`/`-`/`^` operator is meaningful ONLY on the value's FIRST comma token
+    // (marking the whole list as append/remove/prepend vs the default). A
+    // leading operator on any LATER comma token has TWO possible fates,
+    // depending on the HEAD operator -- and W03 must stay silent in BOTH:
+    //
+    //   * Under a BARE / `+` / `^` head, the mid-list operator is not a valid
+    //     algorithm name and sshd rejects the ENTIRE spec (rc 255), so the
+    //     directive never loads and must not be linted (same "only-lint-loadable"
+    //     invariant as the `"`/`#`/whitespace guards, #325/#377/#389/#392).
+    //   * Under a `-` (removal) head, sshd LOADS the line (rc 0) but treats the
+    //     stray operator token as an inert removal pattern that introduces
+    //     nothing weak -- see `minus_head_inert_*` tests below. Silence is right
+    //     because nothing weak is reintroduced, not because the line is invalid.
+    //
+    // Either way `algo_list_value` Step 6 returns None. The tests here pin the
+    // rc-255 (bare/`+`/`^` head) branch; every #402 operator test above puts the
+    // operator on the FIRST token, so none covers the non-first-token case.
+    //
+    // Grounding: `sshd -T -f <fixture> -C user=x,host=x,addr=1.2.3.4` (OpenSSH
+    // 10.2p1, ephemeral ed25519 HostKey, verified 2026-07-03). Bare/`+`/`^`
+    // head, mid-list operator -> rc 255:
+    //   `Ciphers aes128-ctr,aes128-cbc,+aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes128-ctr,aes128-cbc,+aes192-cbc'"
+    //   `Ciphers aes256-ctr,aes128-cbc,-aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes256-ctr,aes128-cbc,-aes192-cbc'"
+    //   `Ciphers aes256-ctr,aes128-cbc,^aes192-cbc`
+    //     -> rc 255 "Bad SSH2 cipher spec 'aes256-ctr,aes128-cbc,^aes192-cbc'"
+    //   `MACs hmac-sha2-256,hmac-md5,+hmac-sha1`
+    //     -> rc 255 "Bad SSH2 mac spec 'hmac-sha2-256,hmac-md5,+hmac-sha1'"
+    // (The `-`-head LOADS-rc-0 branch is grounded on its own tests below.)
+
+    #[test]
+    fn ciphers_mid_list_plus_operator_does_not_fire_w03() {
+        // `+` on the 3rd token under a BARE head: sshd rejects the whole spec
+        // (rc 255). The weak 2nd token `aes128-cbc` would otherwise fire; W03
+        // must stay silent.
+        let diags = run("Ciphers aes128-ctr,aes128-cbc,+aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "mid-list `+` under a bare head makes the whole line sshd-invalid (rc 255); \
+             W03 must not fire, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ciphers_mid_list_minus_operator_does_not_fire_w03() {
+        // `-` on the 3rd token: sshd rejects the whole spec (rc 255).
+        let diags = run("Ciphers aes256-ctr,aes128-cbc,-aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "mid-list `-` makes the whole line sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ciphers_mid_list_caret_operator_does_not_fire_w03() {
+        // `^` on the 3rd token: sshd rejects the whole spec (rc 255, grounded).
+        let diags = run("Ciphers aes256-ctr,aes128-cbc,^aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "mid-list `^` makes the whole line sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn macs_mid_list_plus_operator_does_not_fire_w03() {
+        // MACs family, `+` on a non-first token: rc 255 "Bad SSH2 mac spec".
+        // The weak 2nd token `hmac-md5` would otherwise fire; W03 must stay silent.
+        let diags = run("MACs hmac-sha2-256,hmac-md5,+hmac-sha1\n");
+        assert!(
+            diags.is_empty(),
+            "mid-list `+` on a MACs line makes it sshd-invalid (rc 255); W03 must not fire, \
+             got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ciphers_double_operator_does_not_fire_w03() {
+        // `+aes128-cbc,+aes192-cbc`: FIRST token's `+` is valid, but the SECOND
+        // token's stray `+` makes the whole spec sshd-invalid (rc 255). W03 was
+        // already silent on the leading `+` (deferring to W06), but pin that the
+        // Step-6 guard keeps it silent even though the head operator alone would
+        // defer.
+        let diags = run("Ciphers +aes128-cbc,+aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "double-operator list is sshd-invalid (rc 255); W03 must not fire, got: {diags:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // `-`-head with an inert mid-list operator LOADS (rc 0) but is silent
+    // (issue #402 grounding-accuracy hardening)
+    // -----------------------------------------------------------------------
+    //
+    // Distinct from the bare/`+`/`^`-head rc-255 cases above: under a `-`
+    // (removal) head, sshd LOADS the line (rc 0) and treats the stray mid-list
+    // `+`/`^` token as an INERT removal pattern matching no real algorithm, so
+    // NOTHING weak is reintroduced. W03 already defers on the `-` head (its
+    // domain is bare full-replacement lists only) and W06 never fires on `-`
+    // (removal is hardening), so both lints must be silent -- silence here is
+    // correct because nothing weak is introduced, NOT because the line is
+    // invalid. Pinning this locks the correct grounding and guards against a
+    // future "smarter" Step-6 refactor that starts linting these loadable lines.
+    //
+    // Grounding: `sshd -T -f <fixture> -C user=x,host=x,addr=1.2.3.4` (OpenSSH
+    // 10.2p1, ephemeral ed25519 HostKey, verified 2026-07-03):
+    //   `Ciphers -aes128-cbc,+aes192-cbc` -> rc 0; effective `ciphers` line =
+    //     chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,
+    //     aes256-gcm@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr (NO aes192-cbc
+    //     -- the `+aes192-cbc` removal pattern is inert).
+    //   `MACs -hmac-sha2-256,+hmac-md5` -> rc 0; effective `macs` line contains
+    //     NO hmac-md5 (the `+hmac-md5` removal pattern is inert).
+
+    #[test]
+    fn minus_head_inert_plus_tail_ciphers_does_not_fire_w03() {
+        // `-`-head loadable line (rc 0), inert `+aes192-cbc` tail -- nothing
+        // weak reintroduced. W03 must be silent (defers on the `-` head).
+        let diags = run("Ciphers -aes128-cbc,+aes192-cbc\n");
+        assert!(
+            diags.is_empty(),
+            "a `-`-head list loads (rc 0) with the `+`-tail inert; W03 must not fire, \
+             got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn minus_head_inert_plus_tail_macs_does_not_fire_w03() {
+        // MACs family: `-`-head loadable line (rc 0), inert `+hmac-md5` tail.
+        // W03 must be silent.
+        let diags = run("MACs -hmac-sha2-256,+hmac-md5\n");
+        assert!(
+            diags.is_empty(),
+            "a `-`-head MACs list loads (rc 0) with the `+`-tail inert; W03 must not fire, \
+             got: {diags:?}"
         );
     }
 }
