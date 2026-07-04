@@ -305,8 +305,9 @@ pub fn lint_str_with_target(
 /// last-wins pass then runs over the concatenated, order-preserved assignment
 /// list, so a dead assignment is anchored to its real file + line.
 ///
-/// Cross-DIRECTORY masking (the `/etc` vs `/run` vs `/usr/lib` search path) is out
-/// of v1 scope (deferred, issue #150); this reasons within one directory only.
+/// Cross-DIRECTORY masking (the `/etc` vs `/run` vs `/usr/lib` search path) is
+/// handled by the `--system` scan ([`crate::system::lint_system`], issue #420);
+/// this single-directory path reasons within one directory only.
 ///
 /// On a directory it cannot enumerate (e.g. an unreadable dir), returns a single
 /// file-level `sysctld-F01` rather than panicking.

@@ -6,14 +6,13 @@
 //! there is no SARIF for sysctld (locked CC-4: SARIF is `fapolicyd lint` only).
 //!
 //! # Frozen taxonomy
-//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Three passes
+//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Four passes
 //! are implemented - `sysctld-F01` (parse failure), `sysctld-W01` (last-wins
-//! conflict), and the version-aware `sysctld-W02` (STIG hardening baseline,
-//! issue #335) - and the catalog was frozen up front so the passes emit only
-//! already-catalogued codes and never edit this shared file. `sysctld-W03`
-//! (cross-directory precedence surprise, issue #420) is catalogued here as
-//! Phase 0 of that follow-up; the scan itself ([`crate::system::lint_system`])
-//! is a stub pending the impl pipeline.
+//! conflict), the version-aware `sysctld-W02` (STIG hardening baseline,
+//! issue #335), and `sysctld-W03` (cross-directory precedence surprise, issue
+//! #420, emitted by the `--system` scan [`crate::system::lint_system`]) - and
+//! the catalog was frozen up front so the passes emit only already-catalogued
+//! codes and never edit this shared file.
 
 use rulesteward_core::Severity;
 

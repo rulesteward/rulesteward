@@ -42,8 +42,8 @@ OpenSSH 10.2p1, procps-ng 3.3.17 + systemd-sysctl 259 + `sysctl.d(5)`).
   immediately after a closing quote (`Defaults passprompt="a"#5`), and a `NOPASSWD:`
   with an empty command no longer firing a spurious `sudo-W05`. (#424)
 - **sudoers: a mid-command `(` or an unbalanced quote no longer hides a later
-  passwordless grant** on the same line; the top-level colon splitter arms
-  runas-paren tracking only at the structural `=`. (#416)
+  passwordless grant** on the same line (the top-level `:` host-group splitter no
+  longer mis-tracks runas parens). (#416)
 - **sudoers: runas-position `#`-GID validation is now uniform** across the `:`, `>`,
   and `@` `Defaults` scopes and is applied per comma-list element rather than to the
   whole binding, fixing false negatives on malformed GIDs. (#407)

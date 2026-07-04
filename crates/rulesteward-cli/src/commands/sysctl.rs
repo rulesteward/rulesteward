@@ -70,7 +70,8 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // `*.conf` files in lexicographic order and run the cross-file last-wins W01
     // pass (issue #150), plus the version-aware W02 STIG baseline when a target is
     // selected (#335). The full cross-DIRECTORY search-path precedence (/etc vs
-    // /run vs /usr/lib) is a deferred follow-up; this reasons within one directory.
+    // /run vs /usr/lib) is handled by the `--system` branch above (#420); this
+    // single-directory mode reasons within one directory only.
     // Each finding is anchored to the real drop-in file it came from, and
     // `lint_dir_with_target` returns the staged source of every drop-in it read
     // (keyed by display path) so the human renderer shows an ariadne snippet for a
