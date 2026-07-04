@@ -570,6 +570,27 @@ fn check_defaults(
     if let Some((binding, scope_word, is_host)) = scope_binding {
         let before = diags.len();
         for element in binding.split(',') {
+            // #424: an EMPTY comma-list member (`Defaults:#1000,,alice` middle,
+            // `Defaults:#1000,` trailing) is a visudo syntax error (rc=1) in every
+            // scope, but each non-empty neighbor is individually valid so the
+            // GID-tail check below finds nothing to flag. A single-member binding
+            // never splits to an empty element (an empty binding is caught earlier
+            // as `Malformed` / sudo-F01), so this fires only on a genuine
+            // empty-member list, not on a valid multi-member one (`#1000,alice`).
+            if element.is_empty() {
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "Defaults {scope_word}-scope target has an empty comma-list \
+                         member, which visudo rejects"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+                continue;
+            }
             if is_malformed_gid_tail(element) {
                 // Host targets are host names, not GIDs -- omit the word "GID".
                 let tail_phrase = if is_host {
@@ -611,8 +632,19 @@ fn check_defaults(
         // rc=1) both have `value_double_quoted == false` and still fire.
         // `has_hash_digits` itself stays quote-blind -- it is also called on
         // command tokens and setting names, which are never quote-stripped.
-        let in_value =
-            !setting.value_double_quoted && setting.value.as_deref().is_some_and(has_hash_digits);
+        // The base scan (`has_hash_digits`) catches a `#<digits>` preceded by
+        // whitespace/start/`%`. #424 adds the `"`-glued case
+        // (`passprompt="a"#5`): the value is NOT one clean quoted region
+        // (`value_double_quoted == false`, so we are already past the #423 gate),
+        // the `"` is a region boundary, and a `#<digits>` right after it is a
+        // genuinely unquoted, visudo-rejected token. Kept value-path-local (not
+        // folded into the shared quote-blind `has_hash_digits`, which also scans
+        // command tokens / setting names).
+        let in_value = !setting.value_double_quoted
+            && setting
+                .value
+                .as_deref()
+                .is_some_and(|v| has_hash_digits(v) || hash_digits_glued_after_quote(v));
         if in_name || in_value {
             let offending = if in_name {
                 setting.name.as_str()
@@ -721,6 +753,29 @@ fn has_hash_digits(s: &str) -> bool {
             if prev_ok {
                 return true;
             }
+        }
+    }
+    false
+}
+
+/// #424 value-path addendum to [`has_hash_digits`]: `true` when `s` contains a
+/// `#<digits>` token glued immediately after a double quote (`"a"#5`). Used ONLY
+/// by `check_defaults`'s value scan, and only for a value that is NOT one clean
+/// double-quoted region (`value_double_quoted == false`) -- there the `"` is a
+/// region boundary, so a `#<digits>` right after it is a genuinely unquoted token
+/// that visudo rejects (`Defaults passprompt="a"#5`, rc=1). Deliberately kept OUT
+/// of the shared `has_hash_digits`: that predicate also scans command tokens and
+/// setting names and stays quote-blind, so it does not begin flagging the
+/// quoted-`#`-in-command cases the `strip_inline_comment` KNOWN DIVERGENCE
+/// intentionally leaves to a Phase-1 position-aware lexer.
+fn hash_digits_glued_after_quote(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    for i in 1..bytes.len() {
+        if bytes[i] == b'#'
+            && bytes[i - 1] == b'"'
+            && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+        {
+            return true;
         }
     }
     false

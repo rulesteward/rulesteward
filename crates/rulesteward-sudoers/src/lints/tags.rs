@@ -209,10 +209,15 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
+        // #424: a tag with NO command (`alice ALL = NOPASSWD:`) is visudo-rejected
+        // (rc=1); RuleSteward's parser still folds it to a `CmndSpec` with an EMPTY
+        // command token, so a spurious W05 would fire on a nonexistent grant.
+        // Suppress it -- there is no real passwordless grant to warn about.
+        let is_empty_command = matches!(&cmnd_spec.cmnd, CmndItem::Cmnd(token) if token.is_empty());
         // Exclude the reserved literal ALL: that is W01's domain, and excluding it
         // here IS the dedup-against-W01. Every other NOPASSWD-effective command
         // (including alias references) fires.
-        if cmnd_spec.cmnd != CmndItem::All {
+        if cmnd_spec.cmnd != CmndItem::All && !is_empty_command {
             diags.push(anchored(
                 Severity::Warning,
                 "sudo-W05",

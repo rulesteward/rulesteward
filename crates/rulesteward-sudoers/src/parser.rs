@@ -247,24 +247,45 @@ fn strip_inline_comment(body: &str) -> &str {
 
     let bytes = body.as_bytes();
     let mut in_quotes = false;
+    // Whether the scan is currently inside a runas paren `(...)` opened at a runas
+    // position (after `host =`, a `,` command-list separator, or line start).
+    // Inside such a paren visudo lexes a glued `#<tail>` as a UID/GID token in
+    // EVERY case -- a malformed tail (`(root:#abc)`, `(#abc)`, #424) is a syntax
+    // error, never a comment. A MID-command `(` (e.g. `/bin/echo a(#foo` or
+    // `/bin/echo (#foo`, both visudo rc=0 with `#foo` a real comment) is NOT a
+    // runas paren; `paren_opens_runas` draws that line so those comments still
+    // strip.
+    let mut in_runas_paren = false;
     let mut prev: Option<u8> = None;
     for (i, &c) in bytes.iter().enumerate() {
         match c {
             b'"' => in_quotes = !in_quotes,
+            b'(' if !in_quotes => {
+                if paren_opens_runas(bytes, i) {
+                    in_runas_paren = true;
+                }
+            }
+            b')' if !in_quotes => in_runas_paren = false,
             b'#' if !in_quotes => {
-                // Exception 2: a `#<digit>` preceded by start / whitespace / `,` /
-                // `%` / `:` / `(` / `>` / `@` is a UID/GID token, not a comment. The
-                // `:` and `(` arms are #407: the runas-group separator
-                // (`(root:#1000)`) and the runas open-paren (`(#1000)`) both precede
-                // valid `#<digits>` UID/GID references. The `>` and `@` arms are the
-                // #407 Defaults-scope sigils: `Defaults>#1000` (runas UID) and
-                // `Defaults@#1000` (a host literally named `#1000`) are both
-                // visudo-valid (rc=0); visudo lexes `#<digits>` uniformly in the
-                // user (`:`), runas (`>`) and host (`@`) scope positions. `!`
-                // (command scope) is deliberately NOT included: a `#<digits>`
-                // command target is visudo-invalid in every form, so leaving it to
-                // strip as a comment folds the line to Malformed / sudo-F01, which is
-                // the correct outcome.
+                // A `#` here is a UID/GID token (kept), not an inline comment
+                // (dropped), when EITHER:
+                //
+                //  * it is inside a runas paren (`in_runas_paren`): every `#<tail>`
+                //    there is a token regardless of the tail (#424 letter-first
+                //    `(root:#abc)` / `(#abc)`, which visudo rejects as tokens); OR
+                //  * a DIGIT immediately follows AND the preceding char introduces a
+                //    UID/GID token -- start / whitespace / `,` / `%` / `:` / `(` /
+                //    `>` / `@` / closing `"`. The `:` / `(` arms are #407 (the
+                //    runas-group separator `(root:#1000)` and open-paren `(#1000)`);
+                //    `>` / `@` are the #407 Defaults scope sigils (`Defaults>#1000`
+                //    runas userid, `Defaults@#1000` host named `#1000`, both visudo
+                //    rc=0). The `"` arm is #424: a `#<digits>` glued after a Defaults
+                //    value's CLOSING double quote (`passprompt="a"#5`) is an invalid
+                //    token OUTSIDE the quote (visudo rc=1), not a comment, so it must
+                //    survive the strip for the value check to flag it. `!` (command
+                //    scope) is deliberately absent: a `#<digits>` command target is
+                //    visudo-invalid in every form, so stripping it as a comment folds
+                //    the line to Malformed / sudo-F01, the correct outcome.
                 let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
                 let prev_allows_uid = match prev {
                     None => true,
@@ -275,14 +296,15 @@ fn strip_inline_comment(body: &str) -> &str {
                             || p == b'('
                             || p == b'>'
                             || p == b'@'
+                            || p == b'"'
                             || (p as char).is_whitespace()
                     }
                 };
-                if next_is_digit && prev_allows_uid {
-                    // A UID/GID token: NOT a comment. The digits that follow are
+                if in_runas_paren || (next_is_digit && prev_allows_uid) {
+                    // A UID/GID token: NOT a comment. The tail bytes that follow are
                     // ordinary bytes; the scan walks over them harmlessly (they
-                    // never re-trigger this arm), so no separate digit-skip loop is
-                    // needed (`for` over the bytes advances by exactly one each step).
+                    // never re-trigger this arm), so no separate skip loop is needed
+                    // (`for` over the bytes advances by exactly one each step).
                     prev = Some(c);
                     continue;
                 }
@@ -294,6 +316,26 @@ fn strip_inline_comment(body: &str) -> &str {
         prev = Some(c);
     }
     body
+}
+
+/// True when the `(` at `paren_idx` opens a runas spec rather than sitting inside
+/// a command token. A runas open-paren follows the `host =` separator, a `,`
+/// command-list separator, or the start of the line (skipping intervening
+/// whitespace); a MID-command `(` (e.g. the `(` in `/bin/echo a(#foo` or
+/// `/bin/echo (#foo`) is preceded by a command character. Used by
+/// [`strip_inline_comment`] to keep a letter-first `(#abc)` runas UID token (#424)
+/// as a token without misreading a mid-command `#foo` comment (visudo rc=0).
+fn paren_opens_runas(bytes: &[u8], paren_idx: usize) -> bool {
+    let mut k = paren_idx;
+    while let Some(j) = k.checked_sub(1) {
+        if (bytes[j] as char).is_whitespace() {
+            k = j;
+        } else {
+            return bytes[j] == b'=' || bytes[j] == b',';
+        }
+    }
+    // Only whitespace (or nothing) precedes the `(`: it is the line's first token.
+    true
 }
 
 /// Stage 2: classify one joined logical line into a [`LineKind`].
