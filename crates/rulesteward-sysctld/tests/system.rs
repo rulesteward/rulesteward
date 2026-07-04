@@ -48,6 +48,17 @@ fn write_at(root: &Path, rel: &str, body: &str) {
     std::fs::write(&path, body).expect("write fixture file");
 }
 
+/// Create the real distro symlink `<root>/etc/sysctl.d/99-sysctl.conf ->
+/// ../sysctl.conf` (a RELATIVE target, exactly as shipped: it resolves to
+/// `<root>/etc/sysctl.conf`). This is the only path by which systemd-sysctl
+/// applies `/etc/sysctl.conf` content (design section 2 point 3), so its
+/// presence/absence and slot position are what drive the W03-b divergence.
+fn symlink_99_sysctl_conf(root: &Path) {
+    let link = root.join("etc/sysctl.d/99-sysctl.conf");
+    std::fs::create_dir_all(link.parent().expect("has parent")).expect("mkdir -p");
+    std::os::unix::fs::symlink("../sysctl.conf", &link).expect("create 99-sysctl.conf symlink");
+}
+
 /// All `sysctld-W01` diagnostics.
 fn w01s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags.iter().filter(|d| d.code == "sysctld-W01").collect()
@@ -241,16 +252,22 @@ fn w03a_fires_when_a_lower_precedence_directory_wins_on_a_later_basename() {
     // EXACTLY the surprise sysctld-W03-a exists to flag, and per design section
     // 3 point 4 the redundant plain W01 for this same dead line must be
     // SUPPRESSED (W03 fires instead, not both).
+    // Values are distinctive MULTI-digit numbers whose digit strings appear in
+    // NO fixture filename ("10-early.conf" / "90-late.conf"), directory path, or
+    // 1-based line number, so a `contains` on them is non-vacuous (CONCERN A: a
+    // plain `contains('0') && contains('1')` was satisfied by the FILENAMES
+    // alone and could not tell a value-swapped message apart). kernel.sysrq is a
+    // bitmask so 438/176 are valid values.
     let root = tempdir().expect("temp root");
     write_at(
         root.path(),
         "etc/sysctl.d/10-early.conf",
-        "kernel.sysrq = 1\n",
+        "kernel.sysrq = 438\n",
     );
     write_at(
         root.path(),
         "usr/lib/sysctl.d/90-late.conf",
-        "kernel.sysrq = 0\n",
+        "kernel.sysrq = 176\n",
     );
 
     let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
@@ -271,6 +288,16 @@ fn w03a_fires_when_a_lower_precedence_directory_wins_on_a_later_basename() {
         "a lower-precedence directory winning on a later basename is W03-a, \
          not plain W01"
     );
+    // Direction is pinned STRUCTURALLY, not by a value-symmetric `contains`:
+    // (1) the finding is ANCHORED at the dead high-precedence file (10-early.conf),
+    // (2) the message NAMES the winning low-precedence file (90-late.conf), and
+    // (3) the message states the DEAD value (438) - design section 5 W03-a: the
+    // message "names the dead key/value/file and the winning file". A value/role
+    // swap that put 176 in the dead slot would drop "438" from the message and
+    // fail here; a wrong anchor (winner file) fails the ends_with. (The winning
+    // VALUE is deliberately NOT asserted: design section 5 mandates only the
+    // winning FILE, so pinning the winning value would over-constrain a correct
+    // impl.)
     assert!(
         hit.file.display().to_string().ends_with("10-early.conf"),
         "W03-a anchors at the DEAD higher-precedence-directory assignment \
@@ -284,9 +311,9 @@ fn w03a_fires_when_a_lower_precedence_directory_wins_on_a_later_basename() {
         hit.message
     );
     assert!(
-        hit.message.contains('0') && hit.message.contains('1'),
-        "the message must state both the dead value (1) and the winning \
-         value (0): {}",
+        hit.message.contains("438"),
+        "the message must state the DEAD value (438) - not the winning value - \
+         so a value/role swap is caught: {}",
         hit.message
     );
 
@@ -298,37 +325,42 @@ fn w03a_fires_when_a_lower_precedence_directory_wins_on_a_later_basename() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. W03-b: procps/systemd applier divergence via a missing 99-sysctl.conf
-//    symlink (design section 2 point 3, section 5).
+// 4. W03-b: procps/systemd applier divergence (design section 2 point 3,
+//    section 5 case b). Three fixtures pin the two grounded triggers PLUS the
+//    suppression path the two triggers share:
+//    (4a) missing symlink -> systemd never applies /etc/sysctl.conf (RED);
+//    (4b) symlink present + a drop-in sorting AFTER 99-sysctl.conf -> the two
+//         appliers resolve DIFFERENT values (RED, the central oracle scenario);
+//    (4c) symlink present + NO later drop-in -> both appliers agree, NO W03-b
+//         fires (GREEN regression guard against an impl that fires for every
+//         key in /etc/sysctl.conf, ignoring the symlink slot).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn w03b_fires_when_the_missing_symlink_makes_systemd_skip_sysctl_conf() {
-    // Grounded in design section 2 point 3: procps `sysctl --system` reads
-    // /etc/sysctl.conf DEAD LAST unconditionally, so it always wins (here:
-    // net.ipv4.tcp_syncookies = 1). systemd-sysctl does NOT read
+    // Trigger 1 (design section 5 case b, "...or absent [symlink]"). procps
+    // `sysctl --system` reads /etc/sysctl.conf DEAD LAST unconditionally, so it
+    // always wins (here: net.core.somaxconn = 512). systemd-sysctl does NOT read
     // /etc/sysctl.conf natively; it participates ONLY via the distro symlink
-    // /etc/sysctl.d/99-sysctl.conf -> ../sysctl.conf. With NO such symlink and
-    // no other file touching this key, systemd simply never applies this
-    // setting at all - a real, observable procps/systemd divergence (one
-    // applier sets the key, the other doesn't touch it).
+    // /etc/sysctl.d/99-sysctl.conf -> ../sysctl.conf. With NO such symlink and no
+    // other file touching this key, systemd never applies this setting at all - a
+    // real, observable procps/systemd divergence (one applier sets 512, the other
+    // leaves the key unset). 512 is a distinctive value present in no filename,
+    // path, or line number, so `contains("512")` is non-vacuous (CONCERN B: the
+    // prior `contains('1')` collided with the line-1 anchor).
     let root = tempdir().expect("temp root");
-    write_at(
-        root.path(),
-        "etc/sysctl.conf",
-        "net.ipv4.tcp_syncookies = 1\n",
-    );
+    write_at(root.path(), "etc/sysctl.conf", "net.core.somaxconn = 512\n");
     // Deliberately NO /etc/sysctl.d/99-sysctl.conf symlink.
 
     let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
 
     let hit = diags
         .iter()
-        .find(|d| d.code == "sysctld-W03" && d.message.contains("tcp_syncookies"))
+        .find(|d| d.code == "sysctld-W03" && d.message.contains("somaxconn"))
         .unwrap_or_else(|| {
             panic!(
                 "expected a sysctld-W03 applier-divergence finding for \
-                 tcp_syncookies (procps applies /etc/sysctl.conf dead-last; \
+                 net.core.somaxconn (procps applies /etc/sysctl.conf dead-last; \
                  systemd never applies it without the 99-sysctl.conf symlink); \
                  diags: {diags:?}"
             )
@@ -344,9 +376,118 @@ fn w03b_fires_when_the_missing_symlink_makes_systemd_skip_sysctl_conf() {
         hit.message
     );
     assert!(
-        hit.message.contains('1'),
-        "the message must state the procps-resolved value (1): {}",
+        hit.message.contains("512"),
+        "the message must state the procps-resolved value (512): {}",
         hit.message
+    );
+}
+
+#[test]
+fn w03b_fires_when_symlink_present_but_a_later_dropin_diverges_the_appliers() {
+    // Trigger 2 (design section 5 case b, the CENTRAL scenario the container
+    // oracle proved in section 2 point 3): the symlink /etc/sysctl.d/
+    // 99-sysctl.conf -> ../sysctl.conf IS present, /etc/sysctl.conf sets
+    // net.core.somaxconn = 4096, and a drop-in whose basename sorts AFTER
+    // "99-sysctl.conf" ("zz-last.conf": 'z'=0x7a > '9'=0x39, matching the
+    // container experiment's zz-last.conf appearing dead-last among drop-ins)
+    // sets the SAME key = 8192. The two appliers now diverge:
+    //   * procps: /etc/sysctl.conf is read DEAD LAST -> 4096 wins.
+    //   * systemd: /etc/sysctl.conf participates only at the 99-sysctl.conf slot,
+    //     and zz-last.conf sorts AFTER that slot -> 8192 wins.
+    // W03-b fires anchored at /etc/sysctl.conf, naming BOTH resolved values
+    // (4096 and 8192, distinctive multi-digit values in no filename/path/line)
+    // and the cause file (zz-last.conf). RED against the empty stub.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 4096\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-last.conf",
+        "net.core.somaxconn = 8192\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hit = diags
+        .iter()
+        .find(|d| d.code == "sysctld-W03" && d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a sysctld-W03 applier-divergence finding for \
+                 net.core.somaxconn (symlink present + zz-last.conf sorts after \
+                 the 99-sysctl.conf slot: procps resolves 4096, systemd resolves \
+                 8192); diags: {diags:?}"
+            )
+        });
+    assert!(
+        hit.file.display().to_string().ends_with("sysctl.conf")
+            && !hit.file.display().to_string().ends_with("99-sysctl.conf"),
+        "W03-b anchors at the real /etc/sysctl.conf assignment (not the \
+         99-sysctl.conf symlink); got {:?}",
+        hit.file
+    );
+    // Pin BOTH resolved values precisely (not a weak single-char contains): the
+    // procps winner 4096 AND the systemd winner 8192 must both be stated.
+    assert!(
+        hit.message.contains("4096"),
+        "the message must state the procps-resolved value (4096, /etc/sysctl.conf \
+         dead-last): {}",
+        hit.message
+    );
+    assert!(
+        hit.message.contains("8192"),
+        "the message must state the systemd-resolved value (8192, zz-last.conf \
+         after the 99-slot): {}",
+        hit.message
+    );
+    assert!(
+        hit.message.to_lowercase().contains("systemd"),
+        "the message must name systemd as the diverging applier: {}",
+        hit.message
+    );
+    assert!(
+        hit.message.contains("zz-last.conf"),
+        "the message must name the cause (the drop-in sorting after the \
+         99-sysctl.conf slot): {}",
+        hit.message
+    );
+}
+
+#[test]
+fn w03b_suppressed_when_symlink_present_and_no_later_dropin() {
+    // The suppression path both triggers above share (design section 2 point 3 +
+    // section 5 case b, read as an IFF): with the symlink PRESENT and NO drop-in
+    // sorting after "99-sysctl.conf", the two appliers AGREE on the key -
+    //   * procps: reads /etc/sysctl.d/99-sysctl.conf (= the symlinked
+    //     /etc/sysctl.conf, value 1) then /etc/sysctl.conf dead-last (value 1);
+    //   * systemd: applies /etc/sysctl.conf at the 99-slot (value 1), with
+    //     nothing after it to override;
+    // both resolve 1, so NO W03-b divergence exists for this key. This stays
+    // GREEN against the empty stub and is the regression guard the barrier
+    // reviewer flagged: it EXCLUDES an over-firing impl that fires W03-b for
+    // every key set in /etc/sysctl.conf while ignoring the 99-sysctl.conf slot.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.ipv4.tcp_syncookies = 1\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+    // Deliberately NO drop-in whose basename sorts after "99-sysctl.conf".
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    assert!(
+        w03s(&diags)
+            .iter()
+            .all(|d| !d.message.contains("tcp_syncookies")),
+        "no W03-b may fire for a key whose /etc/sysctl.conf value is applied \
+         identically by both appliers (symlink present at the 99-slot, nothing \
+         sorts after it); got: {diags:?}"
     );
 }
 
