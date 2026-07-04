@@ -1744,7 +1744,7 @@ mod tests {
     // Exhaustive visudo -cf probe of every printable-ASCII char CH in the middle of
     // a `%bad<CH>group` SUBJECT token (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
     //   REJECTED (rc=1): `!  "  #  (  )  :  =  >`  (8 chars)
-    //   ACCEPTED (rc=0): the other 86 printable-ASCII chars AND non-ASCII (e.g. `é`).
+    //   ACCEPTED (rc=0): the other 86 printable-ASCII chars AND non-ASCII (accented letters).
     // Of the 8 rejected, the parser marks `#`, `:`, `=` as Malformed -> caught by
     // sudo-F01, so they never reach F02. The 5 that reach F02 as a clean UserSpec
     // are exactly `! ( ) > "`. Round-2 caught only `! ( )`; `>` and `"` were missed.
