@@ -745,7 +745,9 @@ fn missing_search_directories_are_skipped_silently_with_no_f01() {
 // ---------------------------------------------------------------------------
 // 9. Enumerate robustness (design section 8): an UNREADABLE search directory
 //    yields a dir-level sysctld-F01, never a panic; the rest of the scan
-//    proceeds. Runs as a non-root uid, so mode 0o000 is genuinely unreadable.
+//    proceeds. mode 0o000 is only unreadable to a process WITHOUT DAC-override;
+//    the test probes that precondition and skips under root (RHEL-family distro
+//    CI runs as root and bypasses DAC), asserting fully on every non-root run.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -756,6 +758,23 @@ fn unreadable_search_directory_emits_a_file_level_f01() {
     let blocked = root.path().join("etc/sysctl.d");
     std::fs::create_dir_all(&blocked).expect("mkdir etc/sysctl.d");
     std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+    // Precondition: mode 0o000 only blocks reads for a process without DAC-override.
+    // The RHEL-family distro CI runs the suite as ROOT, which bypasses DAC, so
+    // `read_dir` still succeeds there and the F01 branch is structurally unreachable.
+    // Probe the actual precondition and skip (rather than false-fail) when this
+    // environment cannot produce an unreadable directory. The F01 path stays fully
+    // asserted on every non-root run (local dev, the ubuntu llvm-cov gate, mutation CI).
+    if std::fs::read_dir(&blocked).is_ok() {
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755))
+            .expect("restore perms");
+        eprintln!(
+            "SKIP unreadable_search_directory_emits_a_file_level_f01: mode 0o000 is \
+             readable here (running as root / with CAP_DAC_OVERRIDE); cannot exercise \
+             the unreadable-dir F01 path"
+        );
+        return;
+    }
 
     let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
 
