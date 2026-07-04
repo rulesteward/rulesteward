@@ -420,15 +420,64 @@ fn classify_defaults(trimmed: &str) -> Option<LineKind> {
     Some(LineKind::Defaults(DefaultsEntry { scope, settings }))
 }
 
-/// Split a `Defaults` settings list (comma-separated) into [`DefaultSetting`]s.
-/// Returns an empty vec when there is nothing parseable (the caller treats that as
-/// Malformed).
+/// Split a `Defaults` settings list into [`DefaultSetting`]s on top-level `,`
+/// boundaries (escape/quote-aware; #405). Returns an empty vec when there is
+/// nothing parseable (the caller treats that as Malformed).
 fn parse_default_settings(s: &str) -> Vec<DefaultSetting> {
-    s.split(',')
+    split_default_settings(s)
+        .into_iter()
         .map(str::trim)
         .filter(|tok| !tok.is_empty())
         .map(parse_one_default_setting)
         .collect()
+}
+
+/// Split a `Defaults` settings list on top-level `,` -- i.e. a `,` that is
+/// neither backslash-escaped nor inside a double-quoted value.
+///
+/// Grounded against visudo/cvtsudoers 1.9.17p2 (2026-07-03): a Defaults value
+/// may contain a literal comma either by escaping it (`Wrong\,ok`, unquoted) or
+/// simply by quoting (`"Wrong, try again"` -- the comma need not even be
+/// escaped there); BOTH forms parse as ONE setting, never two. A naive
+/// `s.split(',')` mis-parses both into extra bogus settings (#405).
+///
+/// Mirrors the escape-awareness `split_cmnd_specs` (#370) already has for the
+/// `Cmnd_Spec_List`, plus quote-awareness that list never needed (commands are
+/// not quoted). Unlike `split_cmnd_specs`, this has no paren-depth tracking --
+/// Defaults values never contain a `(runas)` group.
+///
+/// Escape pairing matches `split_cmnd_specs`: a `\` toggles `escaped`, which
+/// consumes exactly the next char literally (so `\\` is one literal backslash
+/// and does NOT re-arm escaping -- grounded via visudo: an escaped comma after
+/// an EVEN run of backslashes is a real separator, after an ODD run it stays
+/// literal). An escaped `"` (`\"`) inside a quoted value does not end the
+/// quote (grounded: `"a \" b, c"` is ONE setting).
+///
+/// Per the #370 precedent, this function only fixes the split BOUNDARY; it
+/// does not unescape the resulting value (the backslash before an unquoted
+/// escaped comma stays in the token verbatim, same as `cmnd_token`).
+fn split_default_settings(s: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut seg_start = 0usize;
+    let mut escaped = false;
+    let mut in_quotes = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                segments.push(s[seg_start..i].trim());
+                seg_start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(s[seg_start..].trim());
+    segments
 }
 
 /// Parse one `Defaults` setting token: `name`, `!name`, or `name[+-]?=value`.
@@ -1148,6 +1197,100 @@ mod tests {
             kinds("Defaultsfoo bar\n")[0],
             LineKind::Malformed(_)
         ));
+    }
+
+    // ---- #405: Defaults settings-list comma split is escape/quote-aware ----
+    //
+    // Grounded against visudo/cvtsudoers 1.9.17p2 (2026-07-03): a `,` inside a
+    // Defaults value is NOT always a setting separator. It stays part of the
+    // SAME setting's value when it is either (a) backslash-escaped in an
+    // unquoted value (`Wrong\,ok` -> cvtsudoers `"Wrong,ok"`, ONE setting), or
+    // (b) inside a double-quoted value, escaped or not (`"Wrong, try again"` ->
+    // ONE setting, comma retained verbatim -- quoting alone protects it, no
+    // backslash needed). A naive `s.split(',')` mis-parses both into extra
+    // bogus settings. `split_cmnd_specs` (#370) already got escape-awareness
+    // for the Cmnd_Spec_List; this is the Defaults-list analog, plus
+    // quote-awareness that list never needed (commands are not quoted).
+    //
+    // Per the #370 precedent (`cmnd_token` is kept VERBATIM, no unescaping),
+    // this fix corrects only the SPLIT BOUNDARY: an unquoted escaped comma's
+    // backslash is retained verbatim in the parsed value (KISS, no new
+    // unescaping semantics); a quoted comma's value already round-trips
+    // exactly since the existing quote-strip only touches the outer pair.
+
+    #[test]
+    fn defaults_unquoted_escaped_comma_stays_in_one_setting_value() {
+        // cvtsudoers: badpass_message="Wrong\,ok,logfile=/var/log/sudo" ->
+        // 2 settings, NOT 3. The naive split.split(',') would wrongly cut this
+        // into "badpass_message=Wrong\", "ok", "logfile=/var/log/sudo".
+        let k = kinds("Defaults badpass_message=Wrong\\,ok,logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                // Verbatim retention (matches the #370 cmnd_token precedent): the
+                // escape backslash stays in the value; only the split boundary is
+                // fixed, not full escape-sequence decoding.
+                assert_eq!(d.settings[0].value.as_deref(), Some("Wrong\\,ok"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_quoted_comma_stays_in_one_setting_value() {
+        // cvtsudoers: badpass_message="Wrong, try again" -> ONE setting, the
+        // comma retained in the value -- quoting alone protects it, no
+        // backslash needed. Followed by a real comma-separated second setting.
+        let k = kinds("Defaults badpass_message=\"Wrong, try again\",logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                assert_eq!(d.settings[0].value.as_deref(), Some("Wrong, try again"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_escaped_quote_inside_quoted_value_does_not_end_the_quote() {
+        // cvtsudoers: badpass_message="a \" b, c" -> ONE setting (value keeps
+        // the escaped quote and the comma both), followed by logfile=... . A
+        // quote-blind splitter would end the quoted region at the escaped `\"`
+        // and mis-split on the comma that follows.
+        let k = kinds("Defaults badpass_message=\"a \\\" b, c\",logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "badpass_message");
+                assert_eq!(d.settings[0].value.as_deref(), Some("a \\\" b, c"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_baseline_two_settings_still_split_on_plain_comma() {
+        // No-regression baseline (cvtsudoers ground truth): a plain comma with
+        // no escaping/quoting still separates two settings.
+        let k = kinds("Defaults syslog=auth, logfile=/var/log/sudo\n");
+        match &k[0] {
+            LineKind::Defaults(d) => {
+                assert_eq!(d.settings.len(), 2, "settings: {:?}", d.settings);
+                assert_eq!(d.settings[0].name, "syslog");
+                assert_eq!(d.settings[0].value.as_deref(), Some("auth"));
+                assert_eq!(d.settings[1].name, "logfile");
+                assert_eq!(d.settings[1].value.as_deref(), Some("/var/log/sudo"));
+            }
+            other => panic!("expected a Defaults entry, got {other:?}"),
+        }
     }
 
     // ---- user-specs + tag-state-machine surface (#330) ----

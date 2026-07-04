@@ -647,12 +647,40 @@ fn check_defaults(
 ///   sudo 1.9.17p2, 2026-06-30). (Round-2 wrongly dropped this arm on the claim the
 ///   whitespace arm covered it; it does not -- restored in round-3.)
 ///
-/// The `,` preceding char is deliberately NOT checked: it is dead. Both call sites
-/// (`parse_cmnd_spec_list` and `parse_default_settings`) split on `,` -- an
-/// unescaped `\,` is also consumed by that naive split -- before producing the
-/// tokens passed here, so no literal `,` can appear before a `#` in any string that
-/// reaches this function. Omitting it removes a mutation survivor with no behaviour
-/// change.
+/// The `,` preceding char is deliberately NOT checked, but -- unlike the other
+/// three arms -- this is no longer because it is unreachable. Before #405,
+/// `parse_default_settings` split on a naive `s.split(',')`, so no literal `,`
+/// could ever survive into a produced setting name/value (every `,`, escaped or
+/// not, was consumed as a separator); the claim held for `split_cmnd_specs`
+/// (#370) too, for the same reason at the time it was written.
+///
+/// #405 made `parse_default_settings` escape/quote-aware (grounded via
+/// visudo/cvtsudoers 1.9.17p2, 2026-07-03), so a literal `,` CAN now survive
+/// into a value in two ways, and they are NOT distinguishable from the final
+/// string alone:
+///
+/// - **Quoted** (`Defaults badpass_message="Wrong\,#5"`): visudo ACCEPTS this
+///   (rc=0) -- quoting alone protects the comma and defangs the trailing
+///   `#<digits>` too (no comment/UID heuristic applies inside quotes). Must
+///   NOT be flagged.
+/// - **Unquoted, escaped** (`Defaults badpass_message=Wrong\,#5`, no quotes):
+///   visudo REJECTS this (rc=1, "Success" quirk position, matching Case 2's
+///   note above). SHOULD be flagged, but currently is not.
+///
+/// Per the #370 precedent, `parse_default_settings` keeps a value VERBATIM (no
+/// unescaping), so both cases above store the IDENTICAL value string
+/// `"Wrong\,#5"` (backslash retained either way) -- `DefaultSetting` does not
+/// track whether the original was quote-delimited. A `,`-preceding check here
+/// therefore cannot tell the accept case from the reject case without either a
+/// false positive on the valid quoted form or leaving the invalid unquoted form
+/// unflagged. This is a known, narrow gap (a bare `,` immediately -- no
+/// whitespace -- before `#<digits>` in an unquoted, backslash-escaped Defaults
+/// value): fixing it correctly needs the AST to carry the quoted/unquoted
+/// distinction, which is out of scope for a byte-scan predicate. Left
+/// unchecked here rather than guessing; a real regression test
+/// (`f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value`, in the
+/// tests module below) pins the "don't false-positive on the quoted case"
+/// requirement so a future fix attempt trips it if it regresses.
 fn has_hash_digits(s: &str) -> bool {
     let bytes = s.as_bytes();
     for i in 0..bytes.len() {
@@ -828,6 +856,53 @@ mod tests {
             "exactly one F02 for `#digits` in Defaults assigned value; got {diags:?}"
         );
         assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    // -----------------------------------------------------------------------
+    // #405 follow-up: a literal `,` CAN now precede `#<digits>` in a Defaults
+    // value (the #405 escape/quote-aware split lets it survive), and the two
+    // ways it gets there are NOT distinguishable from the final value string --
+    // see the `has_hash_digits` doc comment above for the full grounding.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value() {
+        // Oracle: `Defaults badpass_message="Wrong\,#5"` -- visudo -c rc=0
+        // (accepts). Quoting alone protects the comma AND defangs the trailing
+        // `#<digits>` (no comment/UID heuristic applies inside quotes).
+        // `has_hash_digits` must NOT flag this -- pins the "no false positive on
+        // the quoted case" side of the #405 follow-up tradeoff.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults badpass_message=\"Wrong\\,#5\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            0,
+            "quoted `,#5` is visudo-valid; must not fire F02: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn f02_known_gap_does_not_flag_hash_after_escaped_comma_in_unquoted_defaults_value() {
+        // Oracle: `Defaults badpass_message=Wrong\,#5` (UNQUOTED) -- visudo -c
+        // rc=1 ("Success" quirk position, same quirk as
+        // `f02_hash_digits_in_defaults_value_fires`). This SHOULD fire F02 but
+        // currently does not: `DefaultSetting` stores the value verbatim
+        // (`"Wrong\,#5"`, backslash retained per the #370 precedent), which is
+        // byte-for-byte IDENTICAL to the quoted-valid case above -- there is no
+        // way to tell them apart without the AST tracking whether the source was
+        // quote-delimited. This test PINS the known gap (documents it as a
+        // named, tracked test) rather than leaving it silently unflagged; if a
+        // future change fixes this without regressing the quoted case above,
+        // update this assertion to expect 1 diagnostic.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults badpass_message=Wrong\\,#5\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            0,
+            "known gap: unquoted escaped `,#5` is visudo-invalid but not yet \
+             flagged (see the has_hash_digits doc comment); update this test if \
+             that gap gets closed: {diags:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
