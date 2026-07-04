@@ -30,11 +30,6 @@ fn lint(args: &SysctlLintArgs) -> i32 {
 /// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
 /// the real [`LiveTargetProbe`]; tests supply a fake.
 fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
-    let path = args
-        .path
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
-
     // Resolve --target in the command layer (epic #251): explicit value as-is,
     // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
     // `auto` degrades to version-agnostic with a warning, never an error (read-only
@@ -44,6 +39,31 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         eprintln!("sysctl lint: {warning}");
     }
     let target: Option<rulesteward_sysctld::TargetVersion> = resolved.target.map(Into::into);
+
+    // --system (issue #420): scan the full standard sysctl.d search path
+    // (optionally rooted at --root for hermetic testing / chroot-linting)
+    // instead of a single <path>, adding the cross-directory sysctld-W03 pass.
+    // clap's `conflicts_with`/`requires` on SysctlLintArgs already reject
+    // --system + a positional path, and --root without --system. Today
+    // `lint_system` is a Phase-0 stub (always clean); the real precedence/mask/
+    // merge/W03 logic lands with the impl pipeline.
+    if args.system {
+        let (diags, sources) =
+            rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);
+        crate::output::emit_lint(
+            args.format,
+            "sysctl-lint",
+            SYSCTL_LINT_SCHEMA_VERSION,
+            &diags,
+            &sources,
+        );
+        return exit_code::compute(&diags, false);
+    }
+
+    let path = args
+        .path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
 
     // A directory target is a `sysctl.d/` drop-in directory: enumerate its
     // `*.conf` files in lexicographic order and run the cross-file last-wins W01

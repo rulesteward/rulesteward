@@ -17,11 +17,15 @@
 //! and never edit that shared file.
 //!
 //! Cross-directory system precedence (the full `/etc` vs `/run` vs `/usr/lib`
-//! override ordering across the standard sysctl.d search path) remains a deferred
-//! follow-up (issue #150); W01/W02 reason within a single supplied set of files.
+//! override ordering across the standard sysctl.d search path, issue #420) is a
+//! Phase-0 stub in [`system`]: `sysctld-W03` is catalogued but the scan itself
+//! returns no findings until the impl pipeline lands. `lint_str`/`lint_dir`
+//! (below) are UNCHANGED and never emit `sysctld-W03`; W01/W02 there still
+//! reason within a single supplied file or directory only.
 
 pub mod catalog;
 pub mod lints;
 pub mod parser;
+pub mod system;
 
 pub use lints::baseline::{StigEntry, TargetVersion, stig_baseline};
