@@ -15,8 +15,62 @@
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::{CmndItem, LineKind, SudoersFile, Tag};
+use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
+
+/// Shared forward NOPASSWD/PASSWD tag-state walker for the W01/W02/W05 family
+/// (#404 DRY extraction of the rule-of-three-identical nested walk).
+///
+/// Walks every file's user-specs; each `:`-separated host-group is an
+/// INDEPENDENT `Cmnd_Spec_List` (#345), so the forward NOPASSWD/PASSWD state
+/// starts fresh per group and never crosses the `:`. Within a group, each
+/// command's EXPLICIT tags (the AST records what was WRITTEN, not
+/// inheritance-resolved) fold into the running state BEFORE the command is
+/// evaluated -- an explicit `PASSWD` on the very command being checked cancels
+/// inheritance for it, and when two tags are written on ONE command the
+/// last-written one wins (both folded in source order).
+///
+/// `on_command` runs once per command ONLY while NOPASSWD is currently
+/// effective: W01, W02, and W05 are each a `nopasswd && <predicate>` gate, so
+/// a nopasswd-false command is dead weight for all three callers and the
+/// walker skips invoking the callback for it entirely.
+fn for_each_nopasswd_command(
+    files: &[SudoersFile],
+    mut on_command: impl FnMut(&SudoersFile, &LogicalLine, &CmndSpec),
+) {
+    for file in files {
+        for logical in &file.lines {
+            let LineKind::UserSpec(spec) = &logical.kind else {
+                continue;
+            };
+            // Each `:`-separated host-group is an INDEPENDENT Cmnd_Spec_List: the
+            // forward NOPASSWD/PASSWD tag-state starts fresh per group and does NOT
+            // cross the `:` (#345; grounded against cvtsudoers -f json, sudo 1.9.17p2).
+            for host_group in &spec.host_groups {
+                // Forward tag-state: NOPASSWD effective until an explicit PASSWD
+                // resets it. Inherits across this group's Cmnd_Spec_List in source
+                // order.
+                let mut nopasswd = false;
+                for cmnd_spec in &host_group.cmnd_specs {
+                    // Fold THIS command's explicit tags into the state BEFORE
+                    // evaluating it: an explicit PASSWD on the very command being
+                    // checked cancels inheritance for it (e.g.
+                    // `NOPASSWD: /bin/ls, PASSWD: ALL` -> the ALL is password-gated).
+                    for tag in &cmnd_spec.tags {
+                        match tag {
+                            Tag::NoPasswd => nopasswd = true,
+                            Tag::Passwd => nopasswd = false,
+                            _ => {}
+                        }
+                    }
+                    if nopasswd {
+                        on_command(file, logical, cmnd_spec);
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// sudo-W01: NOPASSWD (after tag inheritance) applies to an `ALL` command.
 ///
@@ -53,48 +107,21 @@ use crate::lints::{SudoersLintContext, anchored};
 #[must_use]
 pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for file in files {
-        for logical in &file.lines {
-            let LineKind::UserSpec(spec) = &logical.kind else {
-                continue;
-            };
-            // Each `:`-separated host-group is an INDEPENDENT Cmnd_Spec_List: the
-            // forward NOPASSWD/PASSWD tag-state starts fresh per group and does NOT
-            // cross the `:` (#345; grounded against cvtsudoers -f json, sudo 1.9.17p2).
-            for host_group in &spec.host_groups {
-                // Forward tag-state: NOPASSWD effective until an explicit PASSWD
-                // resets it. Inherits across this group's Cmnd_Spec_List in source
-                // order.
-                let mut nopasswd = false;
-                for cmnd_spec in &host_group.cmnd_specs {
-                    // Fold THIS command's explicit tags into the state BEFORE
-                    // evaluating it: an explicit PASSWD on the very command being
-                    // checked cancels inheritance for it (e.g.
-                    // `NOPASSWD: /bin/ls, PASSWD: ALL` -> the ALL is password-gated).
-                    for tag in &cmnd_spec.tags {
-                        match tag {
-                            Tag::NoPasswd => nopasswd = true,
-                            Tag::Passwd => nopasswd = false,
-                            _ => {}
-                        }
-                    }
-                    if nopasswd && cmnd_spec.cmnd == CmndItem::All {
-                        diags.push(anchored(
-                            Severity::Warning,
-                            "sudo-W01",
-                            logical.span.clone(),
-                            "NOPASSWD applies to the reserved ALL command: this grants \
-                             passwordless authority to run any command \
-                             (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                                .to_string(),
-                            file.path.clone(),
-                            logical.line,
-                        ));
-                    }
-                }
-            }
+    for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
+        if cmnd_spec.cmnd == CmndItem::All {
+            diags.push(anchored(
+                Severity::Warning,
+                "sudo-W01",
+                logical.span.clone(),
+                "NOPASSWD applies to the reserved ALL command: this grants \
+                 passwordless authority to run any command \
+                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                    .to_string(),
+                file.path.clone(),
+                logical.line,
+            ));
         }
-    }
+    });
     diags
 }
 
@@ -124,51 +151,28 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let expands_to_all = crate::lints::aliases::cmnd_aliases_expanding_to_all(files);
     let mut diags = Vec::new();
-    for file in files {
-        for logical in &file.lines {
-            let LineKind::UserSpec(spec) = &logical.kind else {
-                continue;
-            };
-            // Per-host-group, same as W01: the NOPASSWD/PASSWD tag-state is fresh per
-            // `:`-separated host-group and does not cross the `:` (#345).
-            for host_group in &spec.host_groups {
-                let mut nopasswd = false;
-                for cmnd_spec in &host_group.cmnd_specs {
-                    // Fold THIS command's explicit tags into the state BEFORE
-                    // evaluating it (last-written tag wins; an explicit PASSWD on the
-                    // very command being checked cancels inheritance for it).
-                    for tag in &cmnd_spec.tags {
-                        match tag {
-                            Tag::NoPasswd => nopasswd = true,
-                            Tag::Passwd => nopasswd = false,
-                            _ => {}
-                        }
-                    }
-                    // The command must be a POSITIVE named alias (no leading `!`)
-                    // whose name transitively expands to ALL. `CmndItem::All` is the
-                    // literal reserved ALL (W01's case) and is excluded here.
-                    if nopasswd
-                        && let CmndItem::Cmnd(token) = &cmnd_spec.cmnd
-                        && !token.starts_with('!')
-                        && expands_to_all.contains(token)
-                    {
-                        diags.push(anchored(
-                            Severity::Warning,
-                            "sudo-W02",
-                            logical.span.clone(),
-                            format!(
-                                "NOPASSWD applies to Cmnd_Alias \"{token}\", which expands to \
-                                 the reserved ALL command: this grants passwordless authority \
-                                 to run any command"
-                            ),
-                            file.path.clone(),
-                            logical.line,
-                        ));
-                    }
-                }
-            }
+    for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
+        // The command must be a POSITIVE named alias (no leading `!`) whose name
+        // transitively expands to ALL. `CmndItem::All` is the literal reserved ALL
+        // (W01's case) and is excluded here.
+        if let CmndItem::Cmnd(token) = &cmnd_spec.cmnd
+            && !token.starts_with('!')
+            && expands_to_all.contains(token)
+        {
+            diags.push(anchored(
+                Severity::Warning,
+                "sudo-W02",
+                logical.span.clone(),
+                format!(
+                    "NOPASSWD applies to Cmnd_Alias \"{token}\", which expands to \
+                     the reserved ALL command: this grants passwordless authority \
+                     to run any command"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
         }
-    }
+    });
     diags
 }
 
@@ -203,46 +207,24 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 #[must_use]
 pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for file in files {
-        for logical in &file.lines {
-            let LineKind::UserSpec(spec) = &logical.kind else {
-                continue;
-            };
-            // Each `:`-separated host-group is an INDEPENDENT Cmnd_Spec_List: the
-            // forward NOPASSWD/PASSWD tag-state starts fresh per group and does NOT
-            // cross the `:` (#345), matching W01/W02.
-            for host_group in &spec.host_groups {
-                let mut nopasswd = false;
-                for cmnd_spec in &host_group.cmnd_specs {
-                    // Fold THIS command's explicit tags into the state BEFORE
-                    // evaluating it (last-written tag wins), same as W01/W02.
-                    for tag in &cmnd_spec.tags {
-                        match tag {
-                            Tag::NoPasswd => nopasswd = true,
-                            Tag::Passwd => nopasswd = false,
-                            _ => {}
-                        }
-                    }
-                    // Exclude the reserved literal ALL: that is W01's domain, and
-                    // excluding it here IS the dedup-against-W01. Every other
-                    // NOPASSWD-effective command (including alias references) fires.
-                    if nopasswd && cmnd_spec.cmnd != CmndItem::All {
-                        diags.push(anchored(
-                            Severity::Warning,
-                            "sudo-W05",
-                            logical.span.clone(),
-                            "NOPASSWD is in effect on this command: DISA STIG requires \
-                             removing all NOPASSWD usage from sudoers \
-                             (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                                .to_string(),
-                            file.path.clone(),
-                            logical.line,
-                        ));
-                    }
-                }
-            }
+    for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
+        // Exclude the reserved literal ALL: that is W01's domain, and excluding it
+        // here IS the dedup-against-W01. Every other NOPASSWD-effective command
+        // (including alias references) fires.
+        if cmnd_spec.cmnd != CmndItem::All {
+            diags.push(anchored(
+                Severity::Warning,
+                "sudo-W05",
+                logical.span.clone(),
+                "NOPASSWD is in effect on this command: DISA STIG requires \
+                 removing all NOPASSWD usage from sudoers \
+                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                    .to_string(),
+                file.path.clone(),
+                logical.line,
+            ));
         }
-    }
+    });
     diags
 }
 
