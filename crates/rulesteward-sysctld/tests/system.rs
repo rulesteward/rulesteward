@@ -967,3 +967,184 @@ fn a_real_non_symlink_99_conf_is_a_normal_highest_precedence_dropin() {
         sysrq_w01[0].message
     );
 }
+
+// ---------------------------------------------------------------------------
+// 14. BUG (impl-aware review): the /dev/null disable idiom. man sysctl.d(5)
+//     ("CONFIGURATION DIRECTORIES AND PRECEDENCE"): the recommended way to disable
+//     a vendor file is a symlink /etc/sysctl.d/<name> -> /dev/null with the SAME
+//     basename. That symlink is a directory entry that CLAIMS its basename at rank
+//     0 and MASKS the same-basename vendor file in a lower directory (design
+//     section 2 point 1: first dir to hold a basename provides it; the lower
+//     same-basename file is masked). The impl's is_file() filter FOLLOWS the
+//     /dev/null symlink to a char device -> false -> the entry is dropped before it
+//     can claim its basename, so the disabled vendor file wrongly SURVIVES.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dev_null_disabled_vendor_file_does_not_apply_reopening_the_stig_gap() {
+    // /etc/sysctl.d/50-foo.conf -> /dev/null disables the same-basename vendor file
+    // /usr/lib/sysctl.d/50-foo.conf, which hardens kernel.dmesg_restrict = 1
+    // (STIG-required, compliant). Disabling it must MASK the vendor file so the key
+    // no longer applies -> under --target rhel9 the W02 baseline flags
+    // kernel.dmesg_restrict as UNSET (the reopened STIG gap is the direct grounded
+    // consequence that the disabled value does not apply). The current impl drops
+    // the /dev/null symlink at the is_file() filter, so the vendor file survives,
+    // dmesg_restrict = 1 stays compliant, and NO W02 fires -> RED.
+    let root = tempdir().expect("temp root");
+    symlink_at(root.path(), "etc/sysctl.d/50-foo.conf", "/dev/null");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-foo.conf",
+        "kernel.dmesg_restrict = 1\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(
+        Some(root.path()),
+        Some(rulesteward_sysctld::TargetVersion::Rhel9),
+    );
+
+    assert!(
+        diags.iter().any(|d| {
+            d.code == "sysctld-W02"
+                && d.message.contains("kernel.dmesg_restrict")
+                && d.message.contains("unset")
+        }),
+        "a /dev/null-disabled vendor file must be masked, so its STIG key becomes \
+         UNSET and W02 flags it; got: {diags:?}"
+    );
+}
+
+#[test]
+fn dev_null_disabled_vendor_file_never_wins_a_cross_directory_surprise() {
+    // Sharper variant (man sysctl.d(5) /dev/null disable + design section 2 point 1
+    // + section 5 W03-a): /etc/sysctl.d/50-foo.conf -> /dev/null disables the vendor
+    // file /usr/lib/sysctl.d/50-foo.conf (net.core.somaxconn = 999). A separate
+    // /run/sysctl.d/10-base.conf sets the SAME key = 111. Correct: the disabled
+    // vendor file is masked and invisible, so only 111 survives - NO cross-directory
+    // surprise. The current impl drops the /dev/null symlink at is_file(), so the
+    // vendor file wrongly survives at rank 3 and, sorting after 10-base.conf, WINS -
+    // emitting a spurious W03-a that names 999 overriding 111. 999/111 distinctive.
+    let root = tempdir().expect("temp root");
+    symlink_at(root.path(), "etc/sysctl.d/50-foo.conf", "/dev/null");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-foo.conf",
+        "net.core.somaxconn = 999\n",
+    );
+    write_at(
+        root.path(),
+        "run/sysctl.d/10-base.conf",
+        "net.core.somaxconn = 111\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    // The disabled value 999 must never apply/win: not named in any W01, and not in
+    // any W03-a (cross-directory precedence surprise). W03-c (masked-key-drop) is
+    // EXCLUDED from this check - whether a /dev/null-disabled key fires W03-c is the
+    // implementer's design call (do not assert either way).
+    for d in &diags {
+        let is_w01 = d.code == "sysctld-W01";
+        let is_w03a =
+            d.code == "sysctld-W03" && d.message.contains("cross-directory precedence surprise");
+        if is_w01 || is_w03a {
+            assert!(
+                !d.message.contains("999"),
+                "the /dev/null-disabled vendor value 999 must never win/apply or be \
+                 named in a W01 or W03-a (only the surviving 111 applies): {}",
+                d.message
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 15. A symlinked NON-99 drop-in pointing at a regular .conf file is a NORMAL
+//     drop-in and IS parsed (man sysctl.d(5): drop-ins may be symlinks; only the
+//     distro 99-sysctl.conf symlink is special). Pins the 99-slot guard
+//     `path == link_99`: a `==`->`!=` mutation would treat every OTHER symlink as
+//     the special slot and skip it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_symlinked_non_99_dropin_pointing_at_a_regular_file_is_parsed_normally() {
+    // /etc/sysctl.d/50-link.conf -> ../../other/hardening.conf (a real regular file
+    // that hardens kernel.dmesg_restrict = 1, STIG-compliant). Under --target rhel9
+    // the key is satisfied -> NO W02 for kernel.dmesg_restrict. A `path == link_99`
+    // -> `!=` mutation would wrongly treat this non-99 symlink as the special slot
+    // and skip it, dropping the key -> W02 "unset" -> caught. GREEN now.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "other/hardening.conf",
+        "kernel.dmesg_restrict = 1\n",
+    );
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/50-link.conf",
+        "../../other/hardening.conf",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(
+        Some(root.path()),
+        Some(rulesteward_sysctld::TargetVersion::Rhel9),
+    );
+
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == "sysctld-W02" && d.message.contains("kernel.dmesg_restrict")),
+        "a symlinked non-99 drop-in to a regular file must be parsed, so its \
+         compliant kernel.dmesg_restrict = 1 satisfies the baseline (no W02); \
+         got: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16. The distro 99-sysctl.conf symlink is RECOGNIZED as the systemd 99-slot
+//     (design section 2 pt3 / section 5 case b), not treated as absent. Pins the
+//     `is_symlink` helper: an `is_symlink -> false` mutation would make the real
+//     symlink look absent and report the wrong divergence cause.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_99_slot_symlink_is_recognized_as_the_systemd_slot() {
+    // /etc/sysctl.conf sets net.core.somaxconn = 2048; the distro
+    // /etc/sysctl.d/99-sysctl.conf -> ../sysctl.conf symlink is present;
+    // /etc/sysctl.d/zz-after.conf (sorts after "99-sysctl.conf") sets it = 4096. The
+    // resulting W03-b must state the cause as "the 99-sysctl.conf slot" - per design
+    // section 5 the two causes are "a drop-in after 99-sysctl.conf" (this case, the
+    // symlink IS recognized) vs "a missing symlink". A mutation making is_symlink
+    // always return false would treat the real symlink as absent and (wrongly)
+    // report the missing-symlink cause -> caught. 2048/4096 distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 2048\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-after.conf",
+        "net.core.somaxconn = 4096\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hit = w03s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W03-b divergence for net.core.somaxconn (symlink present \
+                 + zz-after sorts past the 99-slot); got: {diags:?}"
+            )
+        });
+    assert!(
+        hit.message.contains("99-sysctl.conf slot"),
+        "the divergence cause must be the recognized 99-sysctl.conf slot (the \
+         symlink is present), not a missing symlink; got: {}",
+        hit.message
+    );
+}
