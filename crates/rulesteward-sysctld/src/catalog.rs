@@ -6,12 +6,13 @@
 //! there is no SARIF for sysctld (locked CC-4: SARIF is `fapolicyd lint` only).
 //!
 //! # Frozen taxonomy
-//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. All three
-//! passes are implemented - `sysctld-F01` (parse failure), `sysctld-W01`
-//! (last-wins conflict), and the version-aware `sysctld-W02` (STIG hardening
-//! baseline, issue #335) - and the catalog was frozen up front so the passes emit
-//! only already-catalogued codes and never edit this shared file. Cross-directory
-//! system precedence remains a deferred follow-up (issue #150).
+//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Four passes
+//! are implemented - `sysctld-F01` (parse failure), `sysctld-W01` (last-wins
+//! conflict), the version-aware `sysctld-W02` (STIG hardening baseline,
+//! issue #335), and `sysctld-W03` (cross-directory precedence surprise, issue
+//! #420, emitted by the `--system` scan [`crate::system::lint_system`]) - and
+//! the catalog was frozen up front so the passes emit only already-catalogued
+//! codes and never edit this shared file.
 
 use rulesteward_core::Severity;
 
@@ -40,6 +41,11 @@ pub const SYSCTLD_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "STIG-required kernel-hardening key is unset or set to an insecure value (version-aware; requires --target)",
     },
+    LintCode {
+        code: "sysctld-W03",
+        severity: Severity::Warning,
+        description: "cross-directory precedence surprise: a key's effective winner sits in a lower-precedence search directory, a same-basename drop-in silently masks another that drops a key, or the procps/systemd appliers disagree (requires --system)",
+    },
 ];
 
 #[cfg(test)]
@@ -50,7 +56,7 @@ mod tests {
     /// in v1 is listed here in sorted order; the lint pipelines start emitting an
     /// already-catalogued code rather than editing this shared file. Update this
     /// list ONLY when the taxonomy itself changes.
-    const FROZEN_CODES: &[&str] = &["sysctld-F01", "sysctld-W01", "sysctld-W02"];
+    const FROZEN_CODES: &[&str] = &["sysctld-F01", "sysctld-W01", "sysctld-W02", "sysctld-W03"];
 
     #[test]
     fn catalog_is_the_frozen_taxonomy() {

@@ -30,11 +30,6 @@ fn lint(args: &SysctlLintArgs) -> i32 {
 /// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
 /// the real [`LiveTargetProbe`]; tests supply a fake.
 fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
-    let path = args
-        .path
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
-
     // Resolve --target in the command layer (epic #251): explicit value as-is,
     // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
     // `auto` degrades to version-agnostic with a warning, never an error (read-only
@@ -45,11 +40,38 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     }
     let target: Option<rulesteward_sysctld::TargetVersion> = resolved.target.map(Into::into);
 
+    // --system (issue #420): scan the full standard sysctl.d search path
+    // (optionally rooted at --root for hermetic testing / chroot-linting)
+    // instead of a single <path>, adding the cross-directory sysctld-W03 pass
+    // (lower-precedence-directory override, masked-drop-in key drop, and
+    // procps/systemd applier divergence). `lint_system` performs the real
+    // enumerate/mask/merge and reruns F01/W01/W02 over the merged set. clap's
+    // `conflicts_with`/`requires` on SysctlLintArgs already reject --system + a
+    // positional path, and --root without --system.
+    if args.system {
+        let (diags, sources) =
+            rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);
+        crate::output::emit_lint(
+            args.format,
+            "sysctl-lint",
+            SYSCTL_LINT_SCHEMA_VERSION,
+            &diags,
+            &sources,
+        );
+        return exit_code::compute(&diags, false);
+    }
+
+    let path = args
+        .path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_SYSCTL_CONF));
+
     // A directory target is a `sysctl.d/` drop-in directory: enumerate its
     // `*.conf` files in lexicographic order and run the cross-file last-wins W01
     // pass (issue #150), plus the version-aware W02 STIG baseline when a target is
     // selected (#335). The full cross-DIRECTORY search-path precedence (/etc vs
-    // /run vs /usr/lib) is a deferred follow-up; this reasons within one directory.
+    // /run vs /usr/lib) is handled by the `--system` branch above (#420); this
+    // single-directory mode reasons within one directory only.
     // Each finding is anchored to the real drop-in file it came from, and
     // `lint_dir_with_target` returns the staged source of every drop-in it read
     // (keyed by display path) so the human renderer shows an ariadne snippet for a

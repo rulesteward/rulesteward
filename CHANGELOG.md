@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-04
+
+Correctness and fidelity hardening of the three backends first shipped in v0.3.0
+(`sshd`, `sudoers`, `sysctl`). One new lint code (`sysctld-W03`) and a new opt-in
+system-wide sysctl scan; every other change is a false-positive or false-negative
+fix grounded against the real oracle (`visudo`/`cvtsudoers` 1.9.17p2, `sshd -T`
+OpenSSH 10.2p1, procps-ng 3.3.17 + systemd-sysctl 259 + `sysctl.d(5)`).
+
+### Added
+
+- **`rulesteward sysctl lint --system [--root <PREFIX>]`**: new opt-in scan of the
+  full `sysctl.d` search-path precedence chain (`/etc/sysctl.d` > `/run/sysctl.d` >
+  `/usr/local/lib/sysctl.d` > `/usr/lib/sysctl.d` (= `/lib/sysctl.d`), plus
+  `/etc/sysctl.conf`) instead of a single file. `--root <PREFIX>` reroots the scan
+  under a prefix for offline / container inspection. Read-only. (#420)
+- **`sysctld-W03`** (Warning, `--system` only): cross-directory precedence surprises
+  a single-file lint cannot see. Three grounded sub-cases: a live assignment that
+  wins from a lower-precedence directory over a dead one (W03-a); a
+  `/etc/sysctl.conf` key whose winner differs between the procps and systemd
+  appliers (W03-b); and a same-basename drop-in masked by a higher-precedence file
+  that silently drops a key no surviving file re-asserts (W03-c). Masking is
+  type-agnostic by basename, matching procps-ng 3.3.17 + systemd-sysctl 259.
+  `sysctld` is now **4 codes**. (#420)
+
+### Fixed
+
+- **sudoers `sudo-F02` no longer false-positives on a `#<digits>` inside a quoted
+  `Defaults` value** (e.g. `Defaults passprompt="Enter #5"`, which `visudo` accepts):
+  the `Defaults` value now records whether it was cleanly double-quoted, and the F02
+  glued-hash scan skips a quoted value. (#423)
+- **sudoers: several `visudo`-invalid configs that previously emitted no diagnostic
+  now do** - a letter-first runas `#`-GID (`(root:#abc)`), a glued `#<digits>`
+  immediately after a closing quote (`Defaults passprompt="a"#5`), and a `NOPASSWD:`
+  with an empty command no longer firing a spurious `sudo-W05`. (#424)
+- **sudoers: a mid-command `(` or an unbalanced quote no longer hides a later
+  passwordless grant** on the same line (the top-level `:` host-group splitter no
+  longer mis-tracks runas parens). (#416)
+- **sudoers: runas-position `#`-GID validation is now uniform** across the `:`, `>`,
+  and `@` `Defaults` scopes and is applied per comma-list element rather than to the
+  whole binding, fixing false negatives on malformed GIDs. (#407)
+- **sudoers: the `Defaults` settings-list comma split is now escape- and
+  quote-aware**, so a comma inside a quoted or escaped setting value no longer
+  mis-splits. (#405)
+- **sshd `sshd-W03` / `sshd-W06`: an operator-prefixed algorithm list no longer
+  double-reports.** A `-`-prefixed list (removal, hardening) is deferred entirely and
+  a `+` / `^` list is left to `sshd-W06`; a mid-list operator (which sshd rejects,
+  rc 255) is handled distinctly. Grounded via `sshd -T` (OpenSSH 10.2p1). (#402)
+- **`rulesteward sudoers lint`: a broken `@include` marker no longer blanks the
+  ariadne source snippet** for real diagnostics sharing that path (an empty marker
+  source could clobber the real staged source regardless of segment order). (#401)
+
+### Changed
+
+- Internal: a shared forward-`NOPASSWD` walker now backs `sudo-W01` / `W02` / `W05`;
+  a non-ASCII character was removed from a sudoers source comment (ASCII-only source
+  is a project invariant). (#404, #425)
+
+### Known issues
+
+- An empty comma-list member in a `Defaults:` user scope (`Defaults:root,,alice`,
+  which `visudo` rejects) is not yet flagged; detection requires a parser
+  scope-boundary rework and is tracked for a later release. (#426)
+
 ## [0.3.0] - 2026-07-02
 
 ### Added

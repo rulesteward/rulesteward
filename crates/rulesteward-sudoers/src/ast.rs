@@ -151,6 +151,16 @@ pub struct DefaultSetting {
     pub name: String,
     /// The assigned value when the form is `name=value`, else `None`.
     pub value: Option<String>,
+    /// `true` when the `name=value` value was a clean surrounding double-quoted
+    /// string (`"..."`) whose delimiting quotes `parse_one_default_setting`
+    /// stripped -- so the stored `value` is a fully-quoted (literal) region.
+    /// Lets quote-region-aware lints (sudo-F02, #423) know a `#<digits>` in the
+    /// value sat inside double quotes (a literal, visudo-valid) rather than
+    /// being an unquoted UID-like token (visudo-rejected). `false` for an
+    /// unquoted value, a value with no clean surrounding pair (`"hi" #5`), a
+    /// single-quoted value (`'...'` -- sudoers treats only `"` as a delimiter),
+    /// or `value: None`.
+    pub value_double_quoted: bool,
 }
 
 /// A `Defaults` entry: an optional scope plus one or more settings.
