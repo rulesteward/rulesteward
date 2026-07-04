@@ -675,12 +675,14 @@ fn check_defaults(
 ///   `Defaults passprompt="Enter #5 now"` is visudo rc=0 (VALID) yet the stored
 ///   value `Enter #5 now` is byte-identical to the rejected unquoted form. #423
 ///   fixed that false positive at the CALLER, not here: `parse_one_default_setting`
-///   now records `DefaultSetting::value_double_quoted` when it strips a clean
-///   surrounding `"..."` pair, and `check_defaults` skips the value scan for such
-///   fully-quoted values before ever calling `has_hash_digits`. So a clean
-///   double-quoted Defaults value never reaches this function; this predicate
-///   stays a pure byte scanner (it is also used on command tokens and setting
-///   names, which are never quote-stripped).
+///   now records `DefaultSetting::value_double_quoted` when the value is ONE
+///   clean double-quoted region (an opening `"` whose first UNESCAPED closing
+///   `"` is the final byte -- so `"a" #5 "b"`, an unquoted `#5` between two
+///   regions, is NOT clean and still fires), and `check_defaults` skips the
+///   value scan for such fully-quoted values before ever calling
+///   `has_hash_digits`. So a clean double-quoted Defaults value never reaches
+///   this function; this predicate stays a pure byte scanner (it is also used on
+///   command tokens and setting names, which are never quote-stripped).
 /// - **Unquoted, escaped** (`Defaults badpass_message=Wrong\,#5`, no quotes):
 ///   visudo REJECTS this (rc=1, "Success" quirk position, matching Case 2's
 ///   note above). SHOULD be flagged, but currently is not -- again because the

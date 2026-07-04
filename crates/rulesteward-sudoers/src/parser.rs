@@ -495,18 +495,20 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
             .or_else(|| name.strip_suffix('-'))
             .unwrap_or(name);
         let value = body[eq + 1..].trim();
-        // Strip surrounding double quotes from the value if present (common for
-        // paths: `secure_path="/usr/bin"`). Record whether a CLEAN surrounding
-        // pair was stripped (`value_double_quoted`): a `#<digits>` inside such a
-        // fully-quoted value is a literal that visudo accepts (rc=0), so
-        // sudo-F02 (#423) must NOT flag it -- even though the stripped value is
-        // byte-identical to the visudo-rejected unquoted form. Only a clean
-        // surrounding `"..."` pair counts; `"hi" #5` (no matching closing quote)
-        // stays verbatim and unquoted, so its unquoted `#5` still fires.
-        let (value, value_double_quoted) = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .map_or((value, false), |inner| (inner, true));
+        // Strip surrounding double quotes when the value is ONE clean quoted
+        // region (common for paths: `secure_path="/usr/bin"`). Record whether
+        // it was (`value_double_quoted`): a `#<digits>` inside such a fully
+        // quoted value is a literal that visudo accepts (rc=0), so sudo-F02
+        // (#423) must NOT flag it -- even though the stripped value is
+        // byte-identical to the visudo-rejected unquoted form. A value is one
+        // clean region only if the FIRST UNESCAPED `"` after the opening quote
+        // is its last byte (see `clean_double_quoted_interior`): `"hi" #5` and
+        // `"a" #5 "b"` (an unquoted `#5` after a closing quote) are NOT clean
+        // regions and stay verbatim + unquoted, so their unquoted `#5` fires.
+        let (value, value_double_quoted) = match clean_double_quoted_interior(value) {
+            Some(inner) => (inner, true),
+            None => (value, false),
+        };
         DefaultSetting {
             negated,
             name: name.trim().to_string(),
@@ -521,6 +523,44 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
             value_double_quoted: false,
         }
     }
+}
+
+/// If `value` is exactly ONE clean double-quoted string -- an opening `"`, an
+/// interior with no UNESCAPED `"`, and a closing `"` as the final byte -- return
+/// the interior with the surrounding quotes stripped. Otherwise return `None`
+/// (the value is left verbatim by the caller).
+///
+/// "Unescaped" uses the sudoers single-backslash escape model (the same one
+/// [`split_default_settings`] uses): a `\` escapes the next char, and `\\` is one
+/// literal backslash that does NOT escape a following `"`. So the FIRST unescaped
+/// `"` after the opening quote must be the LAST byte of the value; an unescaped
+/// `"` before the end means a second quoted region or unquoted trailing content
+/// follows -- e.g. `"a" #5 "b"` (the `#5` sits in an unquoted gap between two
+/// regions) -- which is NOT one clean region.
+///
+/// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
+/// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
+/// `"a\\" #5 "b"` rc=1 (`\\` is a literal backslash, so the `"` closes the first
+/// region), `"a\\\" #5 b"` rc=0 (three backslashes: literal `\` + escaped `"`,
+/// so the inner quote stays escaped and the value is one region).
+fn clean_double_quoted_interior(value: &str) -> Option<&str> {
+    let inner = value.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            // First unescaped `"` in the interior: a clean single region only
+            // when it is the closing quote at the very end (nothing follows).
+            '"' => return (i + 1 == inner.len()).then_some(&inner[..i]),
+            _ => {}
+        }
+    }
+    // No unescaped closing `"` (unterminated) -> not a clean region.
+    None
 }
 
 /// Classify an alias definition, if the line is one. Returns `None` when the first
