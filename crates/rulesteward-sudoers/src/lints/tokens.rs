@@ -660,12 +660,20 @@ fn check_defaults(
 /// string alone:
 ///
 /// - **Quoted** (`Defaults badpass_message="Wrong\,#5"`): visudo ACCEPTS this
-///   (rc=0) -- quoting alone protects the comma and defangs the trailing
-///   `#<digits>` too (no comment/UID heuristic applies inside quotes). Must
-///   NOT be flagged.
+///   (rc=0). It is NOT flagged, but ONLY because the surviving `,` immediately
+///   precedes the `#` and the `,` arm is unchecked (dead -- see below); the
+///   quoting itself does NOT protect it. `has_hash_digits` is quote-BLIND, so a
+///   `#<digits>` preceded by whitespace/start/`%` INSIDE a quoted value still
+///   fires -- e.g. `Defaults passprompt="Enter #5 now"` is visudo rc=0 (VALID)
+///   yet `has_hash_digits` reports a `#<digits>` and F02 fires a FALSE POSITIVE.
+///   That quote-blindness false positive is a KNOWN pre-existing defect (it
+///   predates #405 and is not specific to the `,` predecessor); fixing it needs
+///   the AST to carry the quoted/unquoted distinction, tracked as a
+///   high-priority follow-up and deliberately NOT changed in this lane.
 /// - **Unquoted, escaped** (`Defaults badpass_message=Wrong\,#5`, no quotes):
 ///   visudo REJECTS this (rc=1, "Success" quirk position, matching Case 2's
-///   note above). SHOULD be flagged, but currently is not.
+///   note above). SHOULD be flagged, but currently is not -- again because the
+///   `,` predecessor is the unchecked arm, not because of any quoting logic.
 ///
 /// Per the #370 precedent, `parse_default_settings` keeps a value VERBATIM (no
 /// unescaping), so both cases above store the IDENTICAL value string
@@ -679,8 +687,13 @@ fn check_defaults(
 /// distinction, which is out of scope for a byte-scan predicate. Left
 /// unchecked here rather than guessing; a real regression test
 /// (`f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value`, in the
-/// tests module below) pins the "don't false-positive on the quoted case"
-/// requirement so a future fix attempt trips it if it regresses.
+/// tests module below) pins the current no-flag behavior for the `,`-glued
+/// `#<digits>` case (the value there is quoted incidentally; the no-flag comes
+/// from the dead `,` arm, not from quoting) so a future fix of the `,` gap
+/// trips it if it regresses. That test does NOT assert the broader
+/// quote-blindness false positive is acceptable -- that separate defect (a
+/// whitespace/`%`-preceded `#<digits>` inside quotes) is the tracked
+/// high-priority follow-up.
 fn has_hash_digits(s: &str) -> bool {
     let bytes = s.as_bytes();
     for i in 0..bytes.len() {
@@ -868,16 +881,21 @@ mod tests {
     #[test]
     fn f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value() {
         // Oracle: `Defaults badpass_message="Wrong\,#5"` -- visudo -c rc=0
-        // (accepts). Quoting alone protects the comma AND defangs the trailing
-        // `#<digits>` (no comment/UID heuristic applies inside quotes).
-        // `has_hash_digits` must NOT flag this -- pins the "no false positive on
-        // the quoted case" side of the #405 follow-up tradeoff.
+        // (accepts). `has_hash_digits` does NOT flag this, but the reason is the
+        // `,` immediately before the `#` and the `,` arm being the unchecked
+        // (dead) branch -- NOT the quoting. `has_hash_digits` is quote-blind, so
+        // this is only a no-flag because the `,` predecessor is not in the
+        // checked set. (A whitespace/`%`-preceded `#<digits>` inside the SAME
+        // quotes -- e.g. `passprompt="Enter #5 now"` -- would STILL false-fire;
+        // that quote-blindness defect is the tracked high-priority follow-up and
+        // is intentionally NOT covered by this test.) Pins the current no-flag
+        // for the `,`-glued case so closing the `,` gap does not regress it.
         let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults badpass_message=\"Wrong\\,#5\"\n");
         let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
         assert_eq!(
             f02_diags.len(),
             0,
-            "quoted `,#5` is visudo-valid; must not fire F02: {diags:?}"
+            "`,`-glued `#5` is on the unchecked comma arm; must not fire F02: {diags:?}"
         );
     }
 
