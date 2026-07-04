@@ -544,37 +544,56 @@ fn check_defaults(
     // `is_malformed_gid_tail` shape-check is reused. (MISS 2, a letter-first
     // `(root:#abc)` runas FN, is a tracked follow-up on the delicate `next_is_digit`
     // gate and is out of scope here.)
-    let scope_defect: Option<String> = match &entry.scope {
-        crate::ast::DefaultsScope::User(binding) if is_malformed_gid_tail(binding) => {
-            Some(format!(
-                "Defaults user-scope target {binding:?} has a `#`-prefixed name that is \
-                 not a pure GID digit run, which visudo rejects"
-            ))
-        }
-        crate::ast::DefaultsScope::Runas(binding) if is_malformed_gid_tail(binding) => {
-            Some(format!(
-                "Defaults runas-scope target {binding:?} has a `#`-prefixed name that is \
-                 not a pure GID digit run, which visudo rejects"
-            ))
-        }
-        crate::ast::DefaultsScope::Host(binding) if is_malformed_gid_tail(binding) => {
-            Some(format!(
-                "Defaults host-scope target {binding:?} has a `#`-prefixed name that is \
-                 not a pure digit run, which visudo rejects"
-            ))
-        }
+    //
+    // A `Defaults` scope target may be a COMMA LIST (bind settings to multiple
+    // users / runas-users / hosts), e.g. `Defaults:#1000,alice` (rc=0 valid:
+    // userid 1000 + username alice). The parser stores the binding as one raw
+    // string, so -- like `check_runas` iterates already-split runas tokens -- we
+    // must split on `,` and validate PER ELEMENT: a non-`#` element (a plain
+    // user / host name) is IGNORED, a pure `#<digits>` element is valid, and a
+    // `#<digits><non-digits>` element fires one F02 naming THAT element (NOT the
+    // whole binding). A plain `,` split suffices (grounded, visudo/cvtsudoers
+    // 1.9.17p2, 2026-07-03): a valid `#<digits>` UID/GID token is `#` + pure
+    // digits (it can contain no comma / quote / space), and a quoted username
+    // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"` so it never trips the
+    // `#`-prefix gate; the only comma that can land inside a would-be `#`-token
+    // is one that makes it malformed anyway (`Defaults:#1000\,abc` is rc=1
+    // invalid, and the split's `#1000\` fragment correctly fires).
+    let scope_binding: Option<(&str, &str, bool)> = match &entry.scope {
+        crate::ast::DefaultsScope::User(binding) => Some((binding.as_str(), "user", false)),
+        crate::ast::DefaultsScope::Runas(binding) => Some((binding.as_str(), "runas", false)),
+        crate::ast::DefaultsScope::Host(binding) => Some((binding.as_str(), "host", true)),
+        // Global (no scope) and Cmnd (`!`, handled via strip->F01) are not checked.
         _ => None,
     };
-    if let Some(message) = scope_defect {
-        diags.push(anchored(
-            Severity::Fatal,
-            "sudo-F02",
-            logical.span.clone(),
-            message,
-            file.path.clone(),
-            logical.line,
-        ));
-        return; // one diagnostic per Defaults line
+    if let Some((binding, scope_word, is_host)) = scope_binding {
+        let before = diags.len();
+        for element in binding.split(',') {
+            if is_malformed_gid_tail(element) {
+                // Host targets are host names, not GIDs -- omit the word "GID".
+                let tail_phrase = if is_host {
+                    "not a pure digit run"
+                } else {
+                    "not a pure GID digit run"
+                };
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "Defaults {scope_word}-scope target has a `#`-prefixed name \
+                         {element:?} that is {tail_phrase}, which visudo rejects"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+            }
+        }
+        // If any scope element was flagged, the line is already reported; skip the
+        // setting check (a clean-scope line still falls through to it).
+        if diags.len() > before {
+            return;
+        }
     }
 
     // The inline-comment stripper keeps `#<digits>` preceded by whitespace as a UID
@@ -1051,6 +1070,150 @@ mod tests {
                  sudo-F01 ({src:?}); got {f01_diags:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #407 round-2: `Defaults` scope target is a COMMA LIST -- validate per
+    // element, not the whole raw binding string.
+    // -----------------------------------------------------------------------
+    //
+    // A `Defaults` scope target can bind to multiple users / runas-users / hosts
+    // via a comma list. The parser stores the binding as ONE raw string, so a
+    // naive `is_malformed_gid_tail(whole_binding)` mis-fires: `"#1000,alice"`
+    // starts with `#` and has a non-digit tail (`,alice`) -> a FALSE POSITIVE on
+    // a visudo rc=0 line; and `"alice,#1000abc"` does NOT start with `#` -> a
+    // FALSE NEGATIVE on a visudo rc=1 line. The fix splits on `,` and validates
+    // each element. Grounded (visudo/cvtsudoers 1.9.17p2, 2026-07-03).
+
+    /// `Defaults:#1000,alice !lecture` -- a valid two-element user list (a UID
+    /// plus a plain username). visudo rc=0 (`cvtsudoers` Binding: `userid 1000`
+    /// then `username alice`). RED before the per-element split: the whole
+    /// binding `"#1000,alice"` was validated as one string (starts `#`, non-digit
+    /// tail) and wrongly fired F02. Must be CLEAN.
+    #[test]
+    fn f02_defaults_user_scope_list_uid_then_name_no_f02() {
+        let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults:#1000,alice !lecture\n")
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults:#1000,alice` is a valid UID+name user list -- must NOT fire \
+             F02; got {f02_diags:?}"
+        );
+    }
+
+    /// `Defaults:#1000,#1001 !lecture` -- two pure-UID elements. visudo rc=0.
+    /// Control: both elements are valid GIDs, so the per-element split must leave
+    /// the line clean (a whole-string check would fire on `"#1000,#1001"`).
+    #[test]
+    fn f02_defaults_user_scope_list_two_uids_no_f02() {
+        let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults:#1000,#1001 !lecture\n")
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults:#1000,#1001` is two valid UIDs -- must NOT fire F02; got \
+             {f02_diags:?}"
+        );
+    }
+
+    /// `Defaults>#1000,root !lecture` -- valid runas list (UID + name). rc=0.
+    /// RED before the per-element split (whole binding `"#1000,root"` mis-fired).
+    #[test]
+    fn f02_defaults_runas_scope_list_uid_then_name_no_f02() {
+        let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults>#1000,root !lecture\n")
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults>#1000,root` is a valid runas list -- must NOT fire F02; got \
+             {f02_diags:?}"
+        );
+    }
+
+    /// `Defaults@#1000,localhost !lecture` -- valid host list (`#1000` a host
+    /// literally named `#1000`, plus `localhost`). rc=0. RED before the split.
+    #[test]
+    fn f02_defaults_host_scope_list_hash_then_name_no_f02() {
+        let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults@#1000,localhost !lecture\n")
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`Defaults@#1000,localhost` is a valid host list -- must NOT fire F02; \
+             got {f02_diags:?}"
+        );
+    }
+
+    /// `Defaults:alice,#1000abc !lecture` -- companion FALSE-NEGATIVE case: the
+    /// SECOND element `#1000abc` is a malformed GID tail (visudo rc=1, "syntax
+    /// error" at col 21). RED before the per-element split: the raw binding
+    /// `"alice,#1000abc"` does not start with `#`, so the whole-string check was
+    /// silent. After: exactly one F02 that NAMES the specific bad element
+    /// `#1000abc` (NOT the whole binding, and NOT the valid `alice`).
+    #[test]
+    fn f02_defaults_user_scope_list_second_element_bad_gid_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults:alice,#1000abc !lecture\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`Defaults:alice,#1000abc` has a malformed 2nd GID element and must fire \
+             exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            f02_diags[0].message.contains("#1000abc"),
+            "the F02 must name the specific bad element `#1000abc`; got {:?}",
+            f02_diags[0].message
+        );
+        assert!(
+            !f02_diags[0].message.contains("alice"),
+            "the F02 must NOT name the valid element or the whole raw binding; got {:?}",
+            f02_diags[0].message
+        );
+    }
+
+    /// `Defaults@#1000abc,localhost !lecture` -- host list whose FIRST element is
+    /// a malformed `#`-tail (visudo rc=1). Fires one F02 naming `#1000abc` with a
+    /// HOST-appropriate message (no "GID"); the valid `localhost` element does
+    /// not fire.
+    ///
+    /// The `!message.contains("localhost")` assertion is the discriminator that
+    /// makes this a genuine fail-before witness: under the OLD whole-string check
+    /// the message interpolated the entire binding `#1000abc,localhost` (which
+    /// contains `localhost`); the per-element split names ONLY the bad element.
+    #[test]
+    fn f02_defaults_host_scope_list_first_element_bad_fires() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults@#1000abc,localhost !lecture\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`Defaults@#1000abc,localhost` has a malformed 1st host element and must \
+             fire exactly one F02; got {diags:?}"
+        );
+        assert!(
+            f02_diags[0].message.contains("#1000abc")
+                && f02_diags[0].message.contains("host-scope"),
+            "the host-scope F02 must name `#1000abc` and the host scope; got {:?}",
+            f02_diags[0].message
+        );
+        assert!(
+            !f02_diags[0].message.contains("localhost"),
+            "the F02 must name ONLY the bad element, not the whole raw binding \
+             (which contains the valid `localhost`); got {:?}",
+            f02_diags[0].message
+        );
+        assert!(
+            !f02_diags[0].message.contains("GID"),
+            "a host-scope target is not a GID -- the message must not say GID; got {:?}",
+            f02_diags[0].message
+        );
     }
 
     // -----------------------------------------------------------------------
