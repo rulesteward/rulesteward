@@ -496,21 +496,29 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
             .unwrap_or(name);
         let value = body[eq + 1..].trim();
         // Strip surrounding double quotes from the value if present (common for
-        // paths: `secure_path="/usr/bin"`).
-        let value = value
+        // paths: `secure_path="/usr/bin"`). Record whether a CLEAN surrounding
+        // pair was stripped (`value_double_quoted`): a `#<digits>` inside such a
+        // fully-quoted value is a literal that visudo accepts (rc=0), so
+        // sudo-F02 (#423) must NOT flag it -- even though the stripped value is
+        // byte-identical to the visudo-rejected unquoted form. Only a clean
+        // surrounding `"..."` pair counts; `"hi" #5` (no matching closing quote)
+        // stays verbatim and unquoted, so its unquoted `#5` still fires.
+        let (value, value_double_quoted) = value
             .strip_prefix('"')
             .and_then(|v| v.strip_suffix('"'))
-            .unwrap_or(value);
+            .map_or((value, false), |inner| (inner, true));
         DefaultSetting {
             negated,
             name: name.trim().to_string(),
             value: Some(value.to_string()),
+            value_double_quoted,
         }
     } else {
         DefaultSetting {
             negated,
             name: body.trim().to_string(),
             value: None,
+            value_double_quoted: false,
         }
     }
 }
@@ -1145,6 +1153,7 @@ mod tests {
                         negated: true,
                         name: "authenticate".to_string(),
                         value: None,
+                        value_double_quoted: false,
                     }
                 );
                 assert_eq!(
@@ -1153,6 +1162,9 @@ mod tests {
                         negated: false,
                         name: "secure_path".to_string(),
                         value: Some("/usr/bin".to_string()),
+                        // `secure_path="/usr/bin"` -- a clean surrounding
+                        // double-quote pair was stripped (#423).
+                        value_double_quoted: true,
                     }
                 );
             }

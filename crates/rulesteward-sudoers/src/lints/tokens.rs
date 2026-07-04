@@ -602,7 +602,17 @@ fn check_defaults(
     // visudo rejects this as a syntax error (rc=1).
     for setting in &entry.settings {
         let in_name = has_hash_digits(&setting.name);
-        let in_value = setting.value.as_deref().is_some_and(has_hash_digits);
+        // #423 quote-region gate: a `#<digits>` inside a CLEAN double-quoted
+        // value (`passprompt="Enter #5 now"`, visudo rc=0) is a literal, not a
+        // UID-like token, so skip the value scan when the value was a
+        // fully-quoted region (`DefaultSetting::value_double_quoted`). The
+        // byte-identical UNQUOTED form (`passprompt=Enter #5 now`, rc=1) and a
+        // value with an unquoted `#5` tail outside a quoted span (`"hi" #5`,
+        // rc=1) both have `value_double_quoted == false` and still fire.
+        // `has_hash_digits` itself stays quote-blind -- it is also called on
+        // command tokens and setting names, which are never quote-stripped.
+        let in_value =
+            !setting.value_double_quoted && setting.value.as_deref().is_some_and(has_hash_digits);
         if in_name || in_value {
             let offending = if in_name {
                 setting.name.as_str()
@@ -660,16 +670,17 @@ fn check_defaults(
 /// string alone:
 ///
 /// - **Quoted** (`Defaults badpass_message="Wrong\,#5"`): visudo ACCEPTS this
-///   (rc=0). It is NOT flagged, but ONLY because the surviving `,` immediately
-///   precedes the `#` and the `,` arm is unchecked (dead -- see below); the
-///   quoting itself does NOT protect it. `has_hash_digits` is quote-BLIND, so a
-///   `#<digits>` preceded by whitespace/start/`%` INSIDE a quoted value still
-///   fires -- e.g. `Defaults passprompt="Enter #5 now"` is visudo rc=0 (VALID)
-///   yet `has_hash_digits` reports a `#<digits>` and F02 fires a FALSE POSITIVE.
-///   That quote-blindness false positive is a KNOWN pre-existing defect (it
-///   predates #405 and is not specific to the `,` predecessor); fixing it needs
-///   the AST to carry the quoted/unquoted distinction, tracked as a
-///   high-priority follow-up and deliberately NOT changed in this lane.
+///   (rc=0). `has_hash_digits` is itself quote-BLIND, so a `#<digits>` preceded
+///   by whitespace/start/`%` INSIDE a quoted value WOULD fire here -- e.g.
+///   `Defaults passprompt="Enter #5 now"` is visudo rc=0 (VALID) yet the stored
+///   value `Enter #5 now` is byte-identical to the rejected unquoted form. #423
+///   fixed that false positive at the CALLER, not here: `parse_one_default_setting`
+///   now records `DefaultSetting::value_double_quoted` when it strips a clean
+///   surrounding `"..."` pair, and `check_defaults` skips the value scan for such
+///   fully-quoted values before ever calling `has_hash_digits`. So a clean
+///   double-quoted Defaults value never reaches this function; this predicate
+///   stays a pure byte scanner (it is also used on command tokens and setting
+///   names, which are never quote-stripped).
 /// - **Unquoted, escaped** (`Defaults badpass_message=Wrong\,#5`, no quotes):
 ///   visudo REJECTS this (rc=1, "Success" quirk position, matching Case 2's
 ///   note above). SHOULD be flagged, but currently is not -- again because the
@@ -677,23 +688,21 @@ fn check_defaults(
 ///
 /// Per the #370 precedent, `parse_default_settings` keeps a value VERBATIM (no
 /// unescaping), so both cases above store the IDENTICAL value string
-/// `"Wrong\,#5"` (backslash retained either way) -- `DefaultSetting` does not
-/// track whether the original was quote-delimited. A `,`-preceding check here
-/// therefore cannot tell the accept case from the reject case without either a
-/// false positive on the valid quoted form or leaving the invalid unquoted form
-/// unflagged. This is a known, narrow gap (a bare `,` immediately -- no
-/// whitespace -- before `#<digits>` in an unquoted, backslash-escaped Defaults
-/// value): fixing it correctly needs the AST to carry the quoted/unquoted
-/// distinction, which is out of scope for a byte-scan predicate. Left
-/// unchecked here rather than guessing; a real regression test
-/// (`f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value`, in the
-/// tests module below) pins the current no-flag behavior for the `,`-glued
-/// `#<digits>` case (the value there is quoted incidentally; the no-flag comes
-/// from the dead `,` arm, not from quoting) so a future fix of the `,` gap
-/// trips it if it regresses. That test does NOT assert the broader
-/// quote-blindness false positive is acceptable -- that separate defect (a
-/// whitespace/`%`-preceded `#<digits>` inside quotes) is the tracked
-/// high-priority follow-up.
+/// `"Wrong\,#5"` (backslash retained either way). The #423 `value_double_quoted`
+/// flag distinguishes the quoted case at the CALLER (`check_defaults` skips the
+/// value scan for the clean-quoted form), but it does NOT help THIS `,`-glued
+/// escaped-comma pair: the flag is caller-side, whereas a `,`-preceding check
+/// inside this byte scanner still cannot tell the accept case from the reject
+/// case (both land on the same VERBATIM string). So the `,` arm stays a known,
+/// narrow gap: a bare `,` immediately -- no whitespace -- before `#<digits>` in
+/// an UNQUOTED, backslash-escaped Defaults value is visudo-rejected but not
+/// flagged. Left unchecked here rather than guessing. Two regression tests in
+/// the module below pin the current no-flag for the `,`-glued `#<digits>` case:
+/// `f02_does_not_flag_hash_after_comma_in_a_quoted_defaults_value` (quoted --
+/// now double-protected: the caller gate AND the dead `,` arm) and
+/// `f02_known_gap_does_not_flag_hash_after_escaped_comma_in_unquoted_defaults_value`
+/// (unquoted -- the dead `,` arm only); a future fix of the `,` gap trips the
+/// unquoted one if it regresses.
 fn has_hash_digits(s: &str) -> bool {
     let bytes = s.as_bytes();
     for i in 0..bytes.len() {
