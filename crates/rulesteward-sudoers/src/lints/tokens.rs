@@ -1322,6 +1322,74 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // #424 (parked from the comma-list per-element split above): an EMPTY list
+    // member in a `Defaults` scope binding (`Defaults:#1000,,alice` /
+    // `Defaults:#1000,`). Distinct false-negative from the per-element checks
+    // above: `is_malformed_gid_tail("")` returns `false` (an empty string has no
+    // `#` prefix to strip), so an empty element is silently treated as an
+    // ordinary (if vacuous) name -- but `visudo` rejects a genuinely empty
+    // comma-list member outright (rc=1). None of the existing per-element checks
+    // (GID-tail, plain-name pass-through) validate emptiness at all.
+    //
+    // Oracle grounding (`visudo -c -f`, sudo 1.9.17p2, verified 2026-07-04; every
+    // file is `root ALL=(ALL:ALL) ALL` + the probed line):
+    //   Defaults:#1000,,alice env_reset -> rc=1 (syntax error at the double comma)
+    //   Defaults:#1000, env_reset       -> rc=1 (syntax error, trailing comma)
+    //
+    // Which code (sudo-F01 or sudo-F02) is the implementer's call -- both are
+    // Fatal-severity "the file will not load / contains a rejected token" codes,
+    // and this is a classifier-not-validator residual either way. These tests
+    // assert on Fatal severity generically rather than presupposing one code.
+    // -----------------------------------------------------------------------
+
+    /// Run BOTH the F01 and F02 passes over `src` and return every Fatal-severity
+    /// diagnostic they produce combined.
+    fn fatal_diags(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        let mut diags = lint(src);
+        diags.extend(lint_f01(src));
+        diags
+            .into_iter()
+            .filter(|d| d.severity == rulesteward_core::Severity::Fatal)
+            .collect()
+    }
+
+    /// `Defaults:#1000,,alice env_reset` -- an EMPTY member BETWEEN two valid
+    /// elements in a `Defaults:` user-scope comma list. `visudo -c -f` rc=1
+    /// (syntax error at the double comma). RED today: `#1000` and `alice` are
+    /// each individually valid, so the per-element split's GID-tail check finds
+    /// nothing to flag on any of the three split elements (`#1000`, the empty
+    /// element, `alice`) -- ZERO diagnostics for a visudo-rejected file.
+    #[test]
+    fn f02_defaults_user_scope_list_empty_middle_member_should_fire_fatal() {
+        // Fixture: visudo -c -f rc=1, syntax error at the second `,`.
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000,,alice env_reset\n");
+        assert!(
+            !fatals.is_empty(),
+            "`Defaults:#1000,,alice` has an empty comma-list member (visudo rc=1) \
+             and must fire a Fatal diagnostic (sudo-F01 or sudo-F02); currently \
+             silent"
+        );
+    }
+
+    /// `Defaults:#1000, env_reset` -- a TRAILING empty member (trailing comma) in
+    /// a `Defaults:` user-scope comma list. `visudo -c -f` rc=1 (syntax error at
+    /// EOL). RED today for the same reason: the trailing empty split element
+    /// (`#1000` then an empty element) has no GID-tail defect on either side.
+    #[test]
+    fn f02_defaults_user_scope_list_trailing_empty_member_should_fire_fatal() {
+        // Fixture: visudo -c -f rc=1, syntax error at end of line.
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let fatals = fatal_diags("root ALL=(ALL:ALL) ALL\nDefaults:#1000, env_reset\n");
+        assert!(
+            !fatals.is_empty(),
+            "`Defaults:#1000,` has a trailing empty comma-list member (visudo \
+             rc=1) and must fire a Fatal diagnostic (sudo-F01 or sudo-F02); \
+             currently silent"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // #407 round-3 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
     // -----------------------------------------------------------------------
@@ -2517,6 +2585,93 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // #424 (MISS 2 from #407's module doc, "letter-first" runas `#`-GID):
+    // `strip_inline_comment`'s Exception-2 gate requires BOTH `prev_allows_uid`
+    // AND `next_is_digit` before it treats a `#` as a UID/GID token rather than a
+    // real comment. The #407 fix above widened `prev_allows_uid` to include `:` /
+    // `(` (so the DIGIT-first `(root:#1000abc)` / `(#1000abc)` shapes survive the
+    // strip and reach `check_runas`'s GID-tail check). But a LETTER-first shape --
+    // `#abc`, no digits at all after the `#` -- still fails `next_is_digit`
+    // regardless of that widening, so the `#` is STILL misread as a real comment
+    // and swallows the rest of the physical line (the closing paren AND the real
+    // command). `check_runas` never even runs on the malformed token: RuleSteward's
+    // own line/user-spec parser is lenient about the resulting unbalanced `(root:`
+    // remainder (unlike visudo, which correctly reports a syntax error for it), so
+    // it silently folds to a clean-looking `CmndSpec` -- ZERO diagnostics for a
+    // file `visudo -c` rejects (rc=1). Distinct root cause from the digit-first
+    // case: there the `#` DOES survive the strip and `is_malformed_gid_tail`
+    // catches the non-digit tail; here the `#` never survives the strip at all,
+    // so `check_runas` has nothing to inspect.
+    //
+    // Oracle grounding (`visudo -c -f`, sudo 1.9.17p2, verified 2026-07-04; every
+    // file is `root ALL=(ALL:ALL) ALL` + the probed line):
+    //   alice ALL = (root:#abc) /bin/su -> rc=1 (syntax error, caret on `#abc`)
+    //   alice ALL = (#abc) /bin/su      -> rc=1 (syntax error, caret on `#abc`)
+    // -----------------------------------------------------------------------
+
+    /// `alice ALL = (root:#abc) /bin/su` -- runas-GROUP (post-colon) letter-first
+    /// `#`-GID token: NO digits at all after the `#`.
+    ///
+    /// RED today: `strip_inline_comment` fails `next_is_digit` for `#abc`
+    /// (`a` is not a digit) and swallows `#abc) /bin/su` as a comment, leaving
+    /// `alice ALL = (root:` -- an unbalanced-paren remainder `RuleSteward`'s own
+    /// parser folds into a clean spec, never invoking `check_runas` on the
+    /// malformed token. Zero diagnostics for a `visudo -c`-rejected file.
+    #[test]
+    fn f02_runas_group_letter_first_hash_fires() {
+        // Fixture: visudo -c -f rc=1, syntax error at `#abc` (col 17).
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(root:#abc)` runas-group (letter-first `#`, no digits at all) is \
+             visudo-rejected and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `alice ALL = (#abc) /bin/su` -- the BARE (no `%`, no colon) runas-USER
+    /// letter-first form. Same root cause as the runas-GROUP case above, applied
+    /// to the bare (non-`%`) `runas.users` position (#407's other widened arm).
+    #[test]
+    fn f02_runas_user_bare_letter_first_hash_fires() {
+        // Fixture: visudo -c -f rc=1, syntax error at `#abc` (col 12).
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (#abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`(#abc)` bare runas-user (letter-first `#`, no digits at all) is \
+             visudo-rejected and must fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// REGRESSION GUARD (#424 must not break #407): the DIGIT-first
+    /// `(root:#1000abc)` form (already fixed by #407, see
+    /// `f02_runas_group_gid_form_digits_then_letters_fires` above) must STILL
+    /// fire exactly one F02 after any fix for the letter-first shape. A fix that
+    /// replaces (rather than extends) the digit-gated exception -- e.g. widening
+    /// `next_is_digit` into "any non-whitespace char" globally -- would also
+    /// misread ordinary inline comments as UID/GID tokens; re-asserting this
+    /// specific #407 case here keeps the #424 section self-contained regression
+    /// evidence. GREEN now, must stay GREEN.
+    #[test]
+    fn f02_runas_group_digit_first_hash_still_fires_after_424() {
+        let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000abc) /bin/su\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "digit-first `(root:#1000abc)` (#407) must still fire exactly one F02 \
+             after any letter-first (#424) fix; got {diags:?}"
+        );
+    }
+
     // --- Shape 2: lone `!` command with no path -----------------------------
 
     /// `alice ALL = !` -- issue #375's literal example: a bare negation with no
@@ -2967,6 +3122,98 @@ mod tests {
             "an ESCAPED inner quote keeps the value one clean quoted region \
              (visudo rc=0) -- F02 must NOT fire (do not over-correct on interior \
              escaped quotes)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #424 (parked from #423's impl-aware review): a `#<digits>` GLUED (no
+    // whitespace) immediately after a Defaults value's CLOSING double quote.
+    //
+    // Distinct root cause from every #423 case above: those are all downstream of
+    // `parse_one_default_setting` / `value_double_quoted` (the value already
+    // reached the parser with the `#` intact, and #423's fix decides whether to
+    // scan it). Here the defect is EARLIER, in `strip_inline_comment` itself
+    // (parser.rs): its Exception-2 `prev_allows_uid` set allows `,` / `%` / `:` /
+    // `(` / `>` / `@` / whitespace / start before a `#<digits>` token, but NOT `"`
+    // (a closing double quote). So `Defaults passprompt="a"#5` never reaches
+    // `parse_one_default_setting` with the `#5` intact at all -- the `#`
+    // (preceded by `"`, not in the allowed set) is misread as a REAL comment and
+    // the whole `#5` is stripped before parsing, leaving a clean
+    // `Defaults passprompt="a"` (`value_double_quoted=true`, value `"a"`). Zero
+    // diagnostics for a file `visudo -c` rejects (rc=1): the `#5` is a genuinely
+    // invalid token OUTSIDE the quote, not a comment.
+    //
+    // Contrast (must stay silent): `Defaults passprompt="a"#foo` (visudo rc=0) IS
+    // a real trailing comment -- `strip_inline_comment`'s `next_is_digit` gate
+    // already excludes it (no digit immediately after `#`), so this shape never
+    // reaches the digit-token exception at all, regardless of any `"` fix.
+    //
+    // Oracle grounding (`visudo -c -f`, sudo 1.9.17p2, verified 2026-07-04; every
+    // file is `root ALL=(ALL:ALL) ALL` + the probed line):
+    //   Defaults passprompt="a"#5   -> rc=1 (INVALID; caret on `#5`, "Success" quirk)
+    //   Defaults passprompt="a"#5x  -> rc=1 (INVALID; same caret position)
+    //   Defaults passprompt="a"#foo -> rc=0 (VALID; a real trailing comment)
+    // -----------------------------------------------------------------------
+
+    /// `Defaults passprompt="a"#5` -- a `#<digits>` glued directly to a closing
+    /// double quote, no whitespace. RED today: `strip_inline_comment` misreads
+    /// the `#5` as a real comment (its `prev_allows_uid` set omits `"`) and drops
+    /// it before the value ever reaches `has_hash_digits`, so F02 stays silent.
+    #[test]
+    fn f02_issue424_hash_digits_glued_after_closing_quote_fires() {
+        // Fixture: visudo -c -f rc=1, caret on `#5` ("Success" quirk position).
+        // Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a\"#5\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`passprompt=\"a\"#5` (a `#<digits>` glued directly after the closing \
+             quote, no whitespace) is visudo-rejected (rc=1) and must fire exactly \
+             one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `Defaults passprompt="a"#5x` -- same glued shape, digit run followed by a
+    /// letter. `visudo -c -f` rc=1 (INVALID), same as the pure-digit form above:
+    /// visudo's lexer treats the glued `#5x` as one invalid token regardless of
+    /// what follows the leading digit. Must ALSO fire F02 -- a fix scoped to
+    /// "exactly `#<digits>` with nothing after" would wrongly leave this one
+    /// silent.
+    #[test]
+    fn f02_issue424_hash_digits_then_letters_glued_after_closing_quote_fires() {
+        // Fixture: visudo -c -f rc=1, caret on `#5x`. Verified locally:
+        // sudo/visudo 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a\"#5x\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "`passprompt=\"a\"#5x` (glued digit-then-letter tail after the closing \
+             quote) is visudo-rejected (rc=1) and must fire exactly one F02; got \
+             {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// GUARD (must stay silent): `Defaults passprompt="a"#foo` -- a REAL trailing
+    /// comment glued to the closing quote (no digit immediately after `#`).
+    /// `visudo -c -f` rc=0 (VALID). Blocks an over-fix that treats ANY `#` glued
+    /// after a closing quote as invalid: the `next_is_digit` gate must still
+    /// distinguish a real comment (`#foo`) from an invalid glued token (`#5`).
+    /// GREEN now, must stay GREEN.
+    #[test]
+    fn f02_issue424_hash_comment_glued_after_closing_quote_stays_silent() {
+        // Fixture: visudo -c -f rc=0 "parsed OK". Verified locally: sudo/visudo
+        // 1.9.17p2, 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a\"#foo\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`passprompt=\"a\"#foo` is a real trailing comment glued to the closing \
+             quote (visudo rc=0, no digit after `#`) -- must NOT fire F02; got \
+             {f02_diags:?}"
         );
     }
 }

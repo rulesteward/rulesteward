@@ -1188,6 +1188,36 @@ mod w05_tests {
         );
     }
 
+    // ---- #424 (classifier-not-validator FALSE POSITIVE, opposite direction from
+    // every other case in this module): an invalid EMPTY-COMMAND tag with no
+    // command at all must not raise a spurious W05 ----
+
+    /// `alice ALL = NOPASSWD:` -- a tag with NO command following it at all.
+    /// `visudo -c -f` rc=1 (syntax error at EOL; the grammar requires a command
+    /// token after the tag list). `RuleSteward`'s parser still folds this into a
+    /// clean `UserSpec` with ONE `CmndSpec { tags: [NoPasswd], cmnd: Cmnd("") }`
+    /// (`parse_cmnd_spec`'s remainder-is-the-command rule keeps the empty
+    /// remainder verbatim), so `for_each_nopasswd_command` sees NOPASSWD in
+    /// effect on a command that is NOT the reserved `ALL` and W05 fires a
+    /// SPURIOUS warning -- there is no real NOPASSWD grant on this already-
+    /// invalid line to warn about. RED today: W05 currently fires once here.
+    ///
+    /// In scope here is ONLY suppressing the spurious W05; whether `RuleSteward`
+    /// should ALSO raise a Fatal for the empty command itself is a separate
+    /// positive-detection decision (tracked alongside the sudo-F02 classifier-
+    /// not-validator residuals in tokens.rs), not asserted by this test.
+    #[test]
+    fn w05_does_not_fire_on_invalid_empty_command_nopasswd_tag() {
+        // Fixture: visudo -c -f rc=1, syntax error at end of line (no command
+        // after `NOPASSWD:`). Verified locally: sudo/visudo 1.9.17p2, 2026-07-04.
+        assert_eq!(
+            w05_count("alice ALL = NOPASSWD:\n"),
+            0,
+            "`alice ALL = NOPASSWD:` has NO command at all (visudo rc=1) -- W05 \
+             must NOT fire a spurious warning about a nonexistent grant"
+        );
+    }
+
     // ---- tag-state machine: forward inheritance, per-command emission ----
 
     /// `alice ALL = NOPASSWD: /bin/ls, /bin/cat` (visudo -c -f rc 0). `cvtsudoers -f
