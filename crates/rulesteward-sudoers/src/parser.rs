@@ -260,11 +260,7 @@ fn strip_inline_comment(body: &str) -> &str {
     for (i, &c) in bytes.iter().enumerate() {
         match c {
             b'"' => in_quotes = !in_quotes,
-            b'(' if !in_quotes => {
-                if paren_opens_runas(bytes, i) {
-                    in_runas_paren = true;
-                }
-            }
+            b'(' if !in_quotes => in_runas_paren |= paren_opens_runas(bytes, i),
             b')' if !in_quotes => in_runas_paren = false,
             b'#' if !in_quotes => {
                 // A `#` here is a UID/GID token (kept), not an inline comment
@@ -290,13 +286,13 @@ fn strip_inline_comment(body: &str) -> &str {
                 let prev_allows_uid = match prev {
                     None => true,
                     Some(p) => {
-                        p == b','
-                            || p == b'%'
-                            || p == b':'
-                            || p == b'('
-                            || p == b'>'
-                            || p == b'@'
-                            || p == b'"'
+                        // `char::is_whitespace` (NOT `is_ascii_whitespace`): a
+                        // `#<digits>` after a non-ASCII whitespace byte (0x0B / 0x85
+                        // / 0xA0) is still a token visudo rejects, exactly like the
+                        // ASCII-space case, so it must be KEPT (not stripped as a
+                        // comment). Narrowing to ASCII here is a false-negative
+                        // regression (#426 adversarial review).
+                        matches!(p, b',' | b'%' | b':' | b'(' | b'>' | b'@' | b'"')
                             || (p as char).is_whitespace()
                     }
                 };
@@ -427,10 +423,12 @@ fn classify_defaults(trimmed: &str) -> Option<LineKind> {
         None => (DefaultsScope::Global, ""),
         Some(c) if c.is_whitespace() => (DefaultsScope::Global, rest.trim_start()),
         Some(sigil @ ('@' | ':' | '!' | '>')) => {
-            // The scope binding runs from after the sigil to the first whitespace;
-            // the rest is the settings list. Each sigil is a single-byte ASCII char.
+            // The scope binding is a comma-separated list (User/Host/Runas/Cmnd);
+            // `split_scope_binding` captures the WHOLE list -- honoring whitespace
+            // around separator commas, quotes, and escapes -- and returns the rest
+            // as the settings list. Each sigil is a single-byte ASCII char.
             let after = &rest[sigil.len_utf8()..];
-            let (binding, settings) = split_first_word(after);
+            let (binding, settings) = split_scope_binding(after);
             if binding.is_empty() {
                 return Some(LineKind::Malformed(format!(
                     "Defaults{sigil} scope is missing its target"
@@ -498,7 +496,7 @@ fn parse_default_settings(s: &str) -> Vec<DefaultSetting> {
 /// Per the #370 precedent, this function only fixes the split BOUNDARY; it
 /// does not unescape the resulting value (the backslash before an unquoted
 /// escaped comma stays in the token verbatim, same as `cmnd_token`).
-fn split_default_settings(s: &str) -> Vec<&str> {
+pub(crate) fn split_default_settings(s: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     let mut escaped = false;
@@ -520,6 +518,71 @@ fn split_default_settings(s: &str) -> Vec<&str> {
     }
     segments.push(s[seg_start..].trim());
     segments
+}
+
+/// Split the text after a `Defaults` scope sigil (`:` / `@` / `>` / `!`) into
+/// `(scope_list, settings)`, honoring sudo's list grammar: a scope target is a
+/// comma-separated list `elem (WS* ',' WS* elem)*`, so a whitespace run ENDS the
+/// list only when no top-level comma is adjacent -- whitespace may sit on either
+/// side of a separating comma and the list continues. Double quotes and backslash
+/// escapes protect a comma AND any internal whitespace (the escape/quote
+/// conventions mirror [`split_default_settings`]). Both returned slices borrow
+/// from `after`; the scope list is trimmed and the settings are left-trimmed.
+///
+/// Replaces a bare first-whitespace split at the Defaults scope site (issue #426):
+/// a valid multi-member list such as `root, root env_reset` is captured whole
+/// (`root, root` + `env_reset`) instead of truncated to `root,`, which previously
+/// leaked the second member into the settings scan (a false positive).
+fn split_scope_binding(after: &str) -> (&str, &str) {
+    let mut escaped = false;
+    let mut in_quotes = false;
+    // True at the start and right after a separator comma: the next token is a
+    // pending list element, so a whitespace run here is inter-element padding and
+    // does not end the list.
+    let mut expecting_element = true;
+    let mut chars = after.char_indices();
+    while let Some((idx, c)) = chars.next() {
+        if escaped {
+            escaped = false;
+            expecting_element = false;
+            continue;
+        }
+        if in_quotes {
+            match c {
+                '\\' => escaped = true,
+                '"' => in_quotes = false,
+                _ => {}
+            }
+            expecting_element = false;
+            continue;
+        }
+        match c {
+            '\\' => {
+                escaped = true;
+                expecting_element = false;
+            }
+            '"' => {
+                in_quotes = true;
+                expecting_element = false;
+            }
+            ',' => expecting_element = true,
+            c if c.is_whitespace() => {
+                // A whitespace run only ends the list when an element just closed
+                // AND no separator comma follows across the whitespace.
+                if !expecting_element {
+                    let resumes = chars
+                        .clone()
+                        .find(|&(_, nc)| !nc.is_whitespace())
+                        .is_some_and(|(_, nc)| nc == ',');
+                    if !resumes {
+                        return (after[..idx].trim(), after[idx..].trim_start());
+                    }
+                }
+            }
+            _ => expecting_element = false,
+        }
+    }
+    (after.trim(), "")
 }
 
 /// Parse one `Defaults` setting token: `name`, `!name`, or `name[+-]?=value`.

@@ -549,36 +549,41 @@ fn check_defaults(
     // A `Defaults` scope target may be a COMMA LIST (bind settings to multiple
     // users / runas-users / hosts), e.g. `Defaults:#1000,alice` (rc=0 valid:
     // userid 1000 + username alice). The parser stores the binding as one raw
-    // string, so -- like `check_runas` iterates already-split runas tokens -- we
-    // must split on `,` and validate PER ELEMENT: a non-`#` element (a plain
-    // user / host name) is IGNORED, a pure `#<digits>` element is valid, and a
-    // `#<digits><non-digits>` element fires one F02 naming THAT element (NOT the
-    // whole binding). A plain `,` split suffices (grounded, visudo/cvtsudoers
-    // 1.9.17p2, 2026-07-03): a valid `#<digits>` UID/GID token is `#` + pure
-    // digits (it can contain no comma / quote / space), and a quoted username
-    // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"` so it never trips the
-    // `#`-prefix gate; the only comma that can land inside a would-be `#`-token
-    // is one that makes it malformed anyway (`Defaults:#1000\,abc` is rc=1
-    // invalid, and the split's `#1000\` fragment correctly fires).
+    // string. `split_scope_binding` (parser.rs, #426) captured the WHOLE scope
+    // comma-list, and -- like `check_runas` iterates already-split runas tokens --
+    // we split it into members with the quote/escape-aware `split_default_settings`
+    // (which trims each member) and validate PER MEMBER: a non-`#` member (a plain
+    // user / host name) is IGNORED, a pure `#<digits>` member is valid, and a
+    // `#<digits><non-digits>` member fires one F02 naming THAT member (NOT the whole
+    // binding). Grounded visudo/cvtsudoers 1.9.17p2: a quoted username
+    // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"`, so it never trips the
+    // `#`-prefix gate.
     //
-    // NOTE (#424 / #426): empty-comma-member detection (`Defaults:#1000,,alice`,
-    // `Defaults:#1000,`) was attempted and REVERTED -- `split_first_word`
-    // truncates the scope binding at the first whitespace upstream of here, so a
-    // valid `Defaults:root, root` arrives as binding `root,` and a naive
-    // empty-member check false-POSITIVES a Fatal on it. A correct fix needs the
-    // shared scope-boundary extraction reworked; tracked as the blocking #426. So
-    // an empty member is left UNFLAGGED (a documented false-negative), matching
-    // the safe pre-#424 classifier-not-validator behavior.
+    // #426: capturing the full list (rather than the old first-whitespace
+    // truncation) both (a) exposes an EMPTY member -- a leading/interior empty or an
+    // exact `""` -- which visudo rejects and which now fires F02 (see below), and
+    // (b) stops a later `#<digits>` member of a space-separated list (the valid
+    // `Defaults:#1000, #1001`) from leaking into the settings scan as a false
+    // positive.
     let scope_binding: Option<(&str, &str, bool)> = match &entry.scope {
         crate::ast::DefaultsScope::User(binding) => Some((binding.as_str(), "user", false)),
         crate::ast::DefaultsScope::Runas(binding) => Some((binding.as_str(), "runas", false)),
         crate::ast::DefaultsScope::Host(binding) => Some((binding.as_str(), "host", true)),
-        // Global (no scope) and Cmnd (`!`, handled via strip->F01) are not checked.
+        // Global (no scope) is not a list. Cmnd (`!`) is intentionally out of the
+        // #426 empty-member scope (owner decision: User/Runas/Host only); a
+        // `#`-command form still routes to F01 via the comment strip. A `!`-scope
+        // empty member (`Defaults!/bin/ls,,/bin/cat`) is thus a documented
+        // false-negative, not detected here.
         _ => None,
     };
     if let Some((binding, scope_word, is_host)) = scope_binding {
         let before = diags.len();
-        for element in binding.split(',') {
+        // The scope binding is now the full comma list (issue #426); split it into
+        // members with the quote/escape-aware splitter (which trims each member) so
+        // a quoted/escaped comma stays inside one member and any whitespace padding
+        // around a member is stripped before the per-member checks.
+        let members = crate::parser::split_default_settings(binding);
+        for &element in &members {
             if is_malformed_gid_tail(element) {
                 // Host targets are host names, not GIDs -- omit the word "GID".
                 let tail_phrase = if is_host {
@@ -598,6 +603,25 @@ fn check_defaults(
                     logical.line,
                 ));
             }
+        }
+        // #426: an EMPTY comma-list member -- a leading/interior empty, or an exact
+        // empty-quoted `""` member -- is a token visudo rejects. Run only when the
+        // GID-tail check above did not already flag this line (one F02 per line). A
+        // lone TRAILING empty never reaches here: `split_scope_binding` lets a
+        // dangling comma absorb the next token (routing the line to the F01
+        // "no settings" Fatal), so any empty member seen here is genuine.
+        if diags.len() == before && members.iter().any(|&e| e.is_empty() || e == "\"\"") {
+            diags.push(anchored(
+                Severity::Fatal,
+                "sudo-F02",
+                logical.span.clone(),
+                format!(
+                    "Defaults {scope_word}-scope target has an empty \
+                     comma-list member, which visudo rejects"
+                ),
+                file.path.clone(),
+                logical.line,
+            ));
         }
         // If any scope element was flagged, the line is already reported; skip the
         // setting check (a clean-scope line still falls through to it).
@@ -1361,6 +1385,488 @@ mod tests {
             !f02_diags[0].message.contains("GID"),
             "a host-scope target is not a GID -- the message must not say GID; got {:?}",
             f02_diags[0].message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #426: empty comma-list member in a `Defaults:` scope target.
+    //
+    // visudo/cvtsudoers 1.9.17p2 rejects (rc=1) an empty member in a Defaults
+    // scope User/Runas/Host list -- a leading `,`, an interior `,,` / `, ,`, or an
+    // empty quoted `""` member. Previously a silent false-negative. Approach A
+    // (#426): a new `split_scope_binding` captures the FULL comma list (honoring
+    // sudo's `elem (WS* ',' WS* elem)*` grammar -- whitespace around a comma
+    // continues the list; quotes/backslash protect commas and internal space), so
+    // `Defaults:#1000, #1001` is one two-member list instead of a truncated
+    // `#1000,` that leaked `#1001` into the settings `#<digits>` scan (the
+    // pre-existing FALSE-POSITIVE this also fixes). Each member is then split with
+    // the quote/escape-aware `split_default_settings` (which trims), the `#`-GID
+    // tail check runs over every member, and sudo-F02 fires on any leading/interior
+    // empty member or any exactly-`""` member (one diagnostic per line). A trailing
+    // double comma / dangling comma greedily absorbs the next token, leaving no
+    // settings, so it routes to the F01 "no settings" Fatal. Grounded 2026-07-04.
+    // -----------------------------------------------------------------------
+
+    /// #426 helper: the sudo-F02 diagnostics for a single Defaults `line`, run
+    /// under a valid user-spec header so the file otherwise parses cleanly.
+    fn f02s(line: &str) -> Vec<rulesteward_core::Diagnostic> {
+        lint(&format!("root ALL=(ALL:ALL) ALL\n{line}\n"))
+            .into_iter()
+            .filter(|d| d.code == "sudo-F02")
+            .collect()
+    }
+
+    /// #426 helper: all Fatal diagnostics (sudo-F01 OR sudo-F02) for a Defaults
+    /// `line`. An empty scope member surfaces as F02 when a real setting survives
+    /// (interior/leading empty), but greedy list absorption can route a TRAILING
+    /// empty (`alice,,`) or a dangling comma (`#1000,`) to F01 "no settings" -- both
+    /// are Fatal and both match visudo rc=1, so those cases assert on Fatal-ness.
+    fn fatals(line: &str) -> Vec<rulesteward_core::Diagnostic> {
+        let f = files(&format!("root ALL=(ALL:ALL) ALL\n{line}\n"));
+        let ctx = SudoersLintContext::default();
+        f01(&f, &ctx)
+            .into_iter()
+            .chain(f02(&f, &ctx))
+            .filter(|d| d.severity == rulesteward_core::Severity::Fatal)
+            .collect()
+    }
+
+    /// `Defaults:#1000,,alice` -- interior empty member (visudo rc=1, caret at the
+    /// second `,`). Must fire exactly one Fatal sudo-F02 naming the emptiness.
+    #[test]
+    fn f02_defaults_user_scope_interior_empty_member_fires() {
+        let d = f02s("Defaults:#1000,,alice env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:#1000,,alice` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            d[0].message.contains("empty") && d[0].message.contains("user"),
+            "the F02 must name the empty user-scope member; got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults:,alice` -- leading empty member (visudo rc=1). Must fire one F02.
+    #[test]
+    fn f02_defaults_user_scope_leading_empty_member_fires() {
+        let d = f02s("Defaults:,alice env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:,alice` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults:alice,, env_reset` -- a TRAILING double comma (visudo rc=1, caret
+    /// at the `,,`). Under the boundary rework the list greedily absorbs `env_reset`
+    /// to fill the pending member, leaving no settings, so this routes to the F01
+    /// "no settings" Fatal rather than the F02 empty-member Fatal -- either way the
+    /// invalid line is flagged.
+    #[test]
+    fn defaults_user_scope_trailing_double_comma_fires_fatal() {
+        let d = fatals("Defaults:alice,, env_reset");
+        assert!(
+            !d.is_empty(),
+            "`Defaults:alice,,` (rc=1) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    /// `Defaults:#1000, env_reset` -- a dangling comma. sudo absorbs `env_reset` as
+    /// the second list member, leaving the Defaults entry with no settings (visudo
+    /// rc=1). The boundary rework surfaces it as the F01 "no settings" Fatal.
+    #[test]
+    fn defaults_user_scope_dangling_comma_no_settings_fires_fatal() {
+        let d = fatals("Defaults:#1000, env_reset");
+        assert!(
+            !d.is_empty(),
+            "`Defaults:#1000, env_reset` (rc=1) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    /// `Defaults:""` -- a sole empty QUOTED member (visudo rc=1). An empty quoted
+    /// member cannot be produced by whitespace truncation, so it fires at any
+    /// position.
+    #[test]
+    fn f02_defaults_user_scope_empty_quoted_sole_member_fires() {
+        let d = f02s("Defaults:\"\" env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:\"\"` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults:"",alice` -- empty quoted member in LEADING position (rc=1).
+    #[test]
+    fn f02_defaults_user_scope_empty_quoted_leading_member_fires() {
+        let d = f02s("Defaults:\"\",alice env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:\"\",alice` (rc=1) must fire one F02; got {d:?}"
+        );
+    }
+
+    /// `Defaults:alice,""` -- empty quoted member in TRAILING position (rc=1). The
+    /// quoted-empty check is position-independent (unlike the plain trailing-empty
+    /// exclusion), because `""` can never come from truncation.
+    #[test]
+    fn f02_defaults_user_scope_empty_quoted_trailing_member_fires() {
+        let d = f02s("Defaults:alice,\"\" env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:alice,\"\"` (rc=1) must fire one F02; got {d:?}"
+        );
+    }
+
+    /// `Defaults>,root` -- leading empty member in a RUNAS scope list (rc=1).
+    #[test]
+    fn f02_defaults_runas_scope_leading_empty_member_fires() {
+        let d = f02s("Defaults>,root env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults>,root` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("empty") && d[0].message.contains("runas"),
+            "got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults@,localhost` -- leading empty member in a HOST scope list (rc=1).
+    #[test]
+    fn f02_defaults_host_scope_leading_empty_member_fires() {
+        let d = f02s("Defaults@,localhost env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults@,localhost` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("empty") && d[0].message.contains("host"),
+            "got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults:alice, , bob` -- an interior member that is WHITESPACE-ONLY (a
+    /// comma, a space, a comma). visudo rc=1 (caret at the 2nd comma); its twin
+    /// `Defaults:root , root` is rc=0, so the defect is specifically the empty
+    /// middle member. Pins that a member is treated as empty AFTER trimming (a
+    /// `split_scope_binding` that skipped the trim would see `" "` and wrongly stay
+    /// silent -- a false-negative that would otherwise survive the whole suite).
+    #[test]
+    fn f02_defaults_user_scope_interior_whitespace_only_member_fires() {
+        let d = f02s("Defaults:alice, , bob env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:alice, , bob` (rc=1, whitespace-only middle member) must fire one F02; got {d:?}"
+        );
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults>#1000,,root` -- interior empty member in a RUNAS list (rc=1).
+    /// Non-user-scope coverage of the interior-empty path.
+    #[test]
+    fn f02_defaults_runas_scope_interior_empty_member_fires() {
+        let d = f02s("Defaults>#1000,,root env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults>#1000,,root` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("empty") && d[0].message.contains("runas"),
+            "got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults@"",localhost` -- empty quoted member in a HOST list (rc=1).
+    /// Non-user-scope coverage of the quoted-empty path.
+    #[test]
+    fn f02_defaults_host_scope_empty_quoted_member_fires() {
+        let d = f02s("Defaults@\"\",localhost env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults@\"\",localhost` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("empty") && d[0].message.contains("host"),
+            "got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults:"a b"` -- a quoted scope member with INTERNAL whitespace and no
+    /// settings (visudo rc=1: no parameters). The quote-aware `split_scope_binding`
+    /// keeps `"a b"` as the whole (settingless) list, so the entry has no settings
+    /// -> F01. Pins the in-boundary quote handling: a quote-BLIND boundary split
+    /// would stop at the interior space, leak `b"` as spurious settings, and wrongly
+    /// stay silent on a visudo-rejected line.
+    #[test]
+    fn defaults_user_scope_quoted_internal_ws_no_settings_fires_fatal() {
+        let d = fatals("Defaults:\"a b\"");
+        assert!(
+            !d.is_empty(),
+            "`Defaults:\"a b\"` (rc=1, no settings) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    /// `Defaults:a\ b` -- an ESCAPED space in a scope member with no settings
+    /// (visudo rc=1). The escape-aware boundary keeps `a\ b` as the whole list ->
+    /// F01. An escape-blind boundary split would stop at the escaped space and leak
+    /// `b` as spurious settings.
+    #[test]
+    fn defaults_user_scope_escaped_ws_no_settings_fires_fatal() {
+        let d = fatals("Defaults:a\\ b");
+        assert!(
+            !d.is_empty(),
+            "`Defaults:a\\ b` (rc=1, no settings) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    /// `Defaults:"a\" b"` -- an ESCAPED QUOTE inside a quoted member, an internal
+    /// space, and no settings (visudo rc=1). The in-quote escape keeps the quote
+    /// open across the space so `"a\" b"` is the whole list -> F01. Dropping the
+    /// in-quote escape handling would close the quote at `\"`, stop at the space,
+    /// and leak spurious settings.
+    #[test]
+    fn defaults_user_scope_escaped_quote_in_quotes_no_settings_fires_fatal() {
+        let d = fatals("Defaults:\"a\\\" b\"");
+        assert!(
+            !d.is_empty(),
+            "`Defaults:\"a\\\" b\"` (rc=1, no settings) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    /// `Defaults:#1000 ,#1001` -- valid two-UID list with the space BEFORE the comma
+    /// (visudo rc=0). Pins the forward-peek that continues the list across a space
+    /// preceding a separator comma: a peek that searched for the first WHITESPACE
+    /// (instead of the first NON-whitespace) would truncate to `#1000`, leak
+    /// `,#1001` into the settings `#<digits>` scan, and false-positive.
+    #[test]
+    fn f02_defaults_user_scope_space_before_comma_uid_list_no_fp() {
+        let d = f02s("Defaults:#1000 ,#1001 env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:#1000 ,#1001` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// A `#<digits>` token in a Defaults value preceded by a NON-ASCII whitespace
+    /// byte (vertical tab 0x0B here; NEL 0x85 / NBSP 0xA0 behave the same) is still
+    /// a token visudo rejects (rc=1), exactly like its ASCII-space twin
+    /// `Defaults env_reset #2`, so it must fire sudo-F02. Pins
+    /// `strip_inline_comment`'s `prev_allows_uid` on `char::is_whitespace`; a
+    /// narrowing to `u8::is_ascii_whitespace` would silently strip the `#2` as a
+    /// comment (a false-negative regression -- caught by the #426 adversarial loop).
+    #[test]
+    fn f02_defaults_value_hash_digits_after_non_ascii_whitespace_fires() {
+        let d = f02s("Defaults env_reset\u{0B}#2 reasons");
+        assert!(
+            !d.is_empty(),
+            "a `#<digits>` after a 0x0B whitespace byte must fire F02 like its ASCII \
+             twin; got {d:?}"
+        );
+    }
+
+    // --- must-NOT-fire regression guards (the R1/R2 false-positives) ---
+
+    /// `Defaults:root, root` -- a VALID two-member user list with a space after
+    /// the comma (visudo rc=0). The boundary rework captures the whole list
+    /// (`root, root`), so both members are seen and neither is empty. (Under the
+    /// old first-whitespace split this truncated to `root,`.)
+    #[test]
+    fn f02_defaults_user_scope_space_after_comma_two_members_no_f02() {
+        let d = f02s("Defaults:root, root env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:root, root` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:#1000, #1001` -- valid two-UID list, space after comma (visudo
+    /// rc=0). THE PRE-EXISTING FALSE-POSITIVE the boundary rework fixes: the old
+    /// first-whitespace split truncated the binding to `#1000,` and leaked `#1001`
+    /// into the settings string, where the `#<digits>` value scan fired a spurious
+    /// Fatal. The rework keeps `#1000, #1001` as one two-member list -> nothing
+    /// leaks -> no F02.
+    #[test]
+    fn f02_defaults_user_scope_space_after_comma_two_uids_no_fp() {
+        let d = f02s("Defaults:#1000, #1001 env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:#1000, #1001` is valid (rc=0) -- the 2nd UID must NOT leak \
+             into the settings scan; got {d:?}"
+        );
+    }
+
+    /// `Defaults@a, b` -- valid two-member HOST list, space after comma (rc=0).
+    #[test]
+    fn f02_defaults_host_scope_space_after_comma_no_f02() {
+        let d = f02s("Defaults@a, b env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults@a, b` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:"a,,b"` -- ONE quoted user token with literal commas (visudo
+    /// rc=0). THE R1 regression: a quote-blind `split(',')` sees an empty middle
+    /// member and false-POSITIVES. The quote-aware `split_default_settings` keeps
+    /// it as one non-empty member.
+    #[test]
+    fn f02_defaults_user_scope_quoted_literal_commas_no_f02() {
+        let d = f02s("Defaults:\"a,,b\" env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:\"a,,b\"` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:alice\,` -- ONE escaped-comma user token (visudo rc=0). The
+    /// escape-aware splitter keeps it as one non-empty member (no phantom empty).
+    #[test]
+    fn f02_defaults_user_scope_escaped_comma_no_f02() {
+        let d = f02s("Defaults:alice\\, env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:alice\\,` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:alice," "` -- valid (visudo rc=0); the `" "` member is quoted
+    /// whitespace, NOT empty. The quote-aware boundary rework captures the whole
+    /// list intact (`alice," "`) -- the quoted interior space does not end the list
+    /// -- and the exact `== "\"\""` match ensures a quoted `" "` is never treated
+    /// as an empty member.
+    #[test]
+    fn f02_defaults_user_scope_quoted_whitespace_member_no_f02() {
+        let d = f02s("Defaults:alice,\" \" env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:alice,\" \"` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:alice, #1001` -- valid name+UID list, space after comma (rc=0).
+    /// Companion FP-fix witness: the old truncation leaked `#1001` into the
+    /// settings scan; the rework keeps it a scope member so nothing fires.
+    #[test]
+    fn f02_defaults_user_scope_space_list_name_then_uid_no_fp() {
+        let d = f02s("Defaults:alice, #1001 env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:alice, #1001` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults>#1000, #1001` -- valid two-UID RUNAS list, space after comma
+    /// (rc=0). FP-fix witness in the runas scope.
+    #[test]
+    fn f02_defaults_runas_scope_space_list_two_uids_no_fp() {
+        let d = f02s("Defaults>#1000, #1001 env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults>#1000, #1001` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults@host1, #1001` -- valid HOST list, space after comma (rc=0). A host
+    /// literally named `#1001` is fine; the rework must not leak it into settings.
+    #[test]
+    fn f02_defaults_host_scope_space_list_name_then_hashname_no_fp() {
+        let d = f02s("Defaults@host1, #1001 env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults@host1, #1001` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:root ,root` / `Defaults:root , root` -- whitespace BEFORE the
+    /// comma (and on both sides) still continues the list (visudo rc=0). Pins the
+    /// state machine's "a whitespace run ends the list only if no comma is adjacent"
+    /// rule against a mutant that ends the list at the first space.
+    #[test]
+    fn f02_defaults_user_scope_space_before_comma_no_f02() {
+        assert!(
+            f02s("Defaults:root ,root env_reset").is_empty(),
+            "`Defaults:root ,root` is valid (rc=0) -- must NOT fire"
+        );
+        assert!(
+            f02s("Defaults:root , root env_reset").is_empty(),
+            "`Defaults:root , root` is valid (rc=0) -- must NOT fire"
+        );
+    }
+
+    /// `Defaults:#1000, %grp` -- valid UID + `%group` list, space after comma
+    /// (rc=0). A `%group` member must not be misread as empty or leaked.
+    #[test]
+    fn f02_defaults_user_scope_space_list_uid_then_group_no_f02() {
+        let d = f02s("Defaults:#1000, %grp env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults:#1000, %grp` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults:alice, env_reset setenv` -- valid (visudo rc=0): `env_reset` is
+    /// greedily absorbed as the second USER (the comma demands another member), and
+    /// `setenv` is the (surviving) setting. Must NOT fire -- pins that greedy
+    /// absorption does not spuriously flag a valid line as no-settings/empty.
+    #[test]
+    fn f02_defaults_user_scope_comma_absorbs_word_but_settings_survive_no_fatal() {
+        assert!(
+            fatals("Defaults:alice, env_reset setenv").is_empty(),
+            "`Defaults:alice, env_reset setenv` is valid (rc=0) -- must NOT fire any Fatal"
+        );
+    }
+
+    /// `Defaults:#1000, #1001abc` -- valid list boundary but the SECOND member is a
+    /// malformed `#`-GID tail (visudo rc=1). Exposing every member of the correctly
+    /// bounded list to the GID-tail check catches it; the F02 names `#1001abc`.
+    #[test]
+    fn f02_defaults_user_scope_space_list_second_member_bad_gid_fires() {
+        let d = f02s("Defaults:#1000, #1001abc env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults:#1000, #1001abc` has a malformed 2nd GID member -- must fire one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("#1001abc"),
+            "the F02 must name the specific bad member `#1001abc`; got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults:#1000abc,,alice` -- BOTH a malformed `#`-GID first member AND an
+    /// interior empty. The empty scan is gated behind `diags.len() == before`, so
+    /// the line fires EXACTLY ONE F02 (the GID one), not two. Pins the one-per-line
+    /// gate so a future change can't double-report.
+    #[test]
+    fn f02_defaults_user_scope_gid_defect_and_empty_member_single_f02() {
+        let d = f02s("Defaults:#1000abc,,alice env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "a line with a bad GID AND an empty member must fire exactly one F02; got {d:?}"
+        );
+        assert!(
+            d[0].message.contains("#1000abc") && !d[0].message.contains("empty"),
+            "the single F02 must be the GID one (the gate suppresses the empty scan); got {:?}",
+            d[0].message
         );
     }
 
