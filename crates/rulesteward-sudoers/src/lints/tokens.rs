@@ -2928,4 +2928,43 @@ mod tests {
             "#407 valid pure-GID Defaults user-scope `#1000` must NOT fire F02"
         );
     }
+
+    /// STRENGTHENING (issue #423, impl-aware adversarial review): a `#<digits>`
+    /// in an UNQUOTED GAP between TWO separate double-quoted regions. The value
+    /// `"a" #5 "b"` starts AND ends with `"`, so a naive clean-pair strip
+    /// (`strip_prefix('"').and_then(strip_suffix('"'))`) wrongly treats it as one
+    /// quoted region and silences F02 -- but `visudo -c` rc=1 (INVALID): a
+    /// Defaults value is a single token, so anything after the first closing
+    /// quote breaks the grammar. The `#5` is genuinely unquoted -> F02 must fire.
+    /// Forces true region-tracking (interior must have no UNESCAPED `"`), not a
+    /// start+end-quote check. RED against the first #423 fix; GREEN after narrowing.
+    #[test]
+    fn f02_issue423_unquoted_hash_between_two_quoted_regions_still_fires() {
+        // Oracle: `visudo -c -f` rc=1 (INVALID). Verified 2026-07-04, sudo 1.9.17p2.
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a\" #5 \"b\"\n"),
+            1,
+            "`#5` in an unquoted gap between two quoted regions (visudo rc=1) must \
+             STILL fire F02 -- the value is not one clean quoted region"
+        );
+    }
+
+    /// REGRESSION GUARD (issue #423, bounds the region-tracking fix): a value with
+    /// an ESCAPED inner quote (`"a\" #5 b"`) IS one clean quoted region --
+    /// `visudo -c` rc=0 (VALID), the `#5` is a literal inside the string. F02 must
+    /// STAY SILENT. Excludes a lazy over-correction that fires on ANY interior `"`
+    /// (which would wrongly flag this valid escaped-quote value). GREEN before AND
+    /// after the fix.
+    #[test]
+    fn f02_issue423_escaped_inner_quote_one_region_stays_silent() {
+        // Oracle: `visudo -c -f` rc=0 (VALID; escaped inner quote). Verified
+        // 2026-07-04, sudo 1.9.17p2.
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"a\\\" #5 b\"\n"),
+            0,
+            "an ESCAPED inner quote keeps the value one clean quoted region \
+             (visudo rc=0) -- F02 must NOT fire (do not over-correct on interior \
+             escaped quotes)"
+        );
+    }
 }
