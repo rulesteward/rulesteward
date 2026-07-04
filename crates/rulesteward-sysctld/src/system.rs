@@ -59,12 +59,6 @@ fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
 }
 
 /// Whether `path` is itself a symlink (does NOT follow it). Used to recognise the
-/// distro `99-sysctl.conf -> ../sysctl.conf` link and to decide, with
-/// [`Path::exists`], whether it resolves (a dangling link is treated as absent).
-fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-}
-
 /// Whether the `/etc/sysctl.d/99-sysctl.conf` slot under `prefix` is the EXPECTED
 /// distro symlink - a symlink that resolves to `<prefix>/etc/sysctl.conf`.
 ///
@@ -72,14 +66,17 @@ fn is_symlink(path: &Path) -> bool {
 /// section 2 point 3). Per design section 8, anything that is "not the expected
 /// symlink" is treated as ABSENT (systemd does not apply `/etc/sysctl.conf`, so
 /// W03-b fires): a non-symlink, a dangling link (`canonicalize` fails, and a
-/// dangling link is never followed), or a symlink to any OTHER target. Both sides
-/// are canonicalized so the shipped relative `../sysctl.conf` target and any
-/// prefix-level symlinks resolve identically.
+/// dangling link is never followed), or a symlink to any OTHER target.
+///
+/// The canonicalize-equality below IS the "expected distro symlink" check: only a
+/// symlink (chain) can make `99-sysctl.conf` resolve to `etc/sysctl.conf`'s real
+/// path (a regular file / hardlink at that name canonicalizes to itself, `!=`
+/// `etc/sysctl.conf`; a missing / dangling link yields `Err -> false`), so no
+/// separate `is_symlink` guard is needed. Both sides are canonicalized so the
+/// shipped relative `../sysctl.conf` target and any prefix-level symlinks resolve
+/// identically.
 fn slot_symlink_ok(prefix: &Path) -> bool {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
-    if !is_symlink(&link_99) {
-        return false;
-    }
     match (
         std::fs::canonicalize(&link_99),
         std::fs::canonicalize(prefix.join("etc/sysctl.conf")),
@@ -169,16 +166,16 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
             .collect();
         conf.sort();
         for path in conf {
-            // Classify WITHOUT following the link (symlink_metadata). Only a regular
-            // file or a symlink is a config unit that claims a basename; a
-            // `.conf`-named subdirectory (or device/fifo) is ignored entirely.
+            // Masking is TYPE-AGNOSTIC by basename: EVERY `.conf`-named directory
+            // entry claims its basename - a regular file, a symlink (to anything), OR
+            // a direct non-regular entry (a `.conf`-named subdirectory, fifo, socket,
+            // or device). Both procps-ng 3.3.17 and systemd-sysctl 259 mask this way.
+            // Classify WITHOUT following the link (symlink_metadata) so the 99-slot
+            // symlink is recognised below; the content decision follows the link.
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
             let ftype = meta.file_type();
-            if !ftype.is_file() && !ftype.is_symlink() {
-                continue;
-            }
             let Some(basename) = path.file_name().map(OsStr::to_os_string) else {
                 continue;
             };
@@ -208,10 +205,13 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
                     rank,
                 });
             }
-            // Otherwise (a `-> /dev/null` disable symlink, a dangling symlink, or a
-            // symlink to a non-regular target): the entry has CLAIMED (masks) its
-            // basename above but contributes NO assignments - the man sysctl.d(5)
-            // idiom for disabling a vendor drop-in without deleting it.
+            // Otherwise (a `-> /dev/null` disable symlink, a dangling symlink, a
+            // symlink to a non-regular target, or a direct non-regular entry such as
+            // a `.conf`-named directory / fifo / device): the entry has CLAIMED
+            // (masks) its basename above but contributes NO assignments and is never
+            // parsed or recursed into (sysctl.d does not descend into subdirectories,
+            // so no F01). This is the man sysctl.d(5) `-> /dev/null` disable idiom and
+            // the type-agnostic-masking behavior of both real appliers.
         }
     }
     (surviving, masked, f01)
