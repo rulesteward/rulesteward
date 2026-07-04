@@ -382,8 +382,9 @@ fn first_invalid_char(token: &str) -> Option<char> {
 /// form (`#1000`) and the empty `#` (`""` after strip -- `all` is vacuously
 /// true) both return `false`, preserving the pure-GID exemption. A name that
 /// does NOT start with `#` (`1000abc`, `wheel`) returns `false` (it is an
-/// ordinary group name). Shared by `check_group_subject` (subject position) and
-/// `check_runas` (runas-user position) so the two stay consistent.
+/// ordinary group name). Shared by `check_group_subject`, both `check_runas`
+/// token loops (runas-user and runas-group), and the `check_defaults` scope
+/// targets (User/Runas/Host) so all `#`-GID validations stay consistent.
 fn is_malformed_gid_tail(name: &str) -> bool {
     name.strip_prefix('#')
         .is_some_and(|rest| !rest.bytes().all(|b| b.is_ascii_digit()))
