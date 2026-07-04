@@ -2653,4 +2653,252 @@ mod tests {
              stay silent to avoid double-reporting; got {f02_diags:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Issue #423 (HIGH FALSE POSITIVE): `has_hash_digits` is QUOTE-BLIND.
+    //
+    // A `#<digits>` preceded by whitespace / start-of-string / `%` that falls
+    // INSIDE a DOUBLE-QUOTED Defaults value is a literal string character
+    // (`visudo -c` rc=0, VALID) -- NOT a UID/GID token -- yet the quote-blind
+    // `has_hash_digits` reports it and F02 fires a user-facing FALSE POSITIVE on
+    // a config `visudo -c` accepts. The `has_hash_digits` doc comment already
+    // flags this as the tracked high-priority follow-up (see its rustdoc above).
+    //
+    // Root cause confirmed against the parser (parse_one_default_setting,
+    // parser.rs): for `passprompt="Enter #5 now"` the surrounding double quotes
+    // are stripped and the value is stored as `Enter #5 now` -- BYTE-IDENTICAL
+    // to the UNQUOTED `passprompt=Enter #5 now`. So the current AST cannot tell
+    // the visudo-VALID quoted form from the visudo-INVALID unquoted form; the
+    // fix must carry the quoted/unquoted distinction through the AST. That HOW
+    // is the implementer's decision; these tests only pin the observable
+    // behavior.
+    //
+    // The fix must NOT weaken any of:
+    //   - the UNQUOTED `#<digits>` Defaults-value defect (still visudo rc=1);
+    //   - the SINGLE-quoted form -- sudoers treats ONLY `"` as a value
+    //     delimiter, so a `'` is a literal char and a `#<digits>` after a space
+    //     inside `'...'` is still a comment-start -> visudo rc=1
+    //     (strip_inline_comment, parser.rs, only toggles on `"`);
+    //   - a `#<digits>` OUTSIDE the quoted region on a value that DOES contain a
+    //     quoted span (forces quote-REGION awareness, not "value contains a
+    //     quote -> skip");
+    //   - the command-position `has_hash_digits` check (same fn, other caller);
+    //   - the #407 GID-position validation (runas / Defaults scope `#`-GID
+    //     tails), which flows through `is_malformed_gid_tail`, a DISTINCT code
+    //     path from `has_hash_digits`.
+    //
+    // Oracle grounding (`visudo -c -f <file>`, sudo 1.9.17p2, verified
+    // 2026-07-04; every file is a valid `root ALL=(ALL:ALL) ALL` line + the
+    // probed line):
+    //   Defaults passprompt="Enter #5 now"       -> rc=0  (VALID; issue repro)
+    //   Defaults badpass_message="try #5, again" -> rc=0  (VALID; issue repro,
+    //                                                      comma is inside quotes)
+    //   Defaults passprompt="#5"                  -> rc=0  (VALID; bare, quoted)
+    //   Defaults passprompt=Enter #5 now          -> rc=1  (INVALID; unquoted)
+    //   Defaults passprompt='Enter #5 now'        -> rc=1  (INVALID; single quote
+    //                                                      is NOT a delimiter)
+    //   Defaults passprompt=x #1000abc            -> rc=1  (INVALID; unquoted,
+    //                                                      digit run + letters)
+    //   Defaults passprompt="hi" #5               -> rc=1  (INVALID; the `#5` is
+    //                                                      OUTSIDE the closing
+    //                                                      quote -> unquoted tail)
+    //   alice ALL = /bin/ls #2                     -> rc=1 (INVALID; command pos)
+    //   alice ALL = (root:#1000abc) /bin/ls        -> rc=1 (INVALID; #407 tail)
+    //   alice ALL = (root:#1000) /bin/ls           -> rc=0 (VALID;   #407 pure)
+    //   Defaults:#1000abc !lecture                 -> rc=1 (INVALID; #407 tail)
+    //   Defaults:#1000 !lecture                    -> rc=0 (VALID;   #407 pure)
+    // -----------------------------------------------------------------------
+
+    // --- FP core (RED against current code: currently fire, must go silent) ---
+
+    /// FP CORE (issue #423, issue repro 1): `Defaults passprompt="Enter #5 now"`
+    /// -- a `#5` inside a DOUBLE-QUOTED string value. `visudo -c` rc=0 (VALID).
+    /// The quote-blind `has_hash_digits` sees the stored value `Enter #5 now`
+    /// (quotes stripped by `parse_one_default_setting`) and fires a FALSE
+    /// POSITIVE. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    #[test]
+    fn f02_issue423_quoted_hash_digits_in_passprompt_no_f02() {
+        // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"Enter #5 now\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`#5` inside a double-quoted Defaults value is visudo-valid (rc=0) -- F02 \
+             must NOT fire (issue #423 quote-blind false positive); got {f02_diags:?}"
+        );
+    }
+
+    /// FP CORE (issue #423, issue repro 2): `Defaults badpass_message="try #5,
+    /// again"` -- the `#5` and the comma both sit inside the double quotes.
+    /// `visudo -c` rc=0 (VALID; the quoted comma does not split the value). The
+    /// quote-blind `has_hash_digits` sees `try #5, again` and fires a FALSE
+    /// POSITIVE. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    #[test]
+    fn f02_issue423_quoted_hash_digits_in_badpass_message_no_f02() {
+        // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults badpass_message=\"try #5, again\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "`#5` inside a double-quoted Defaults value (with a quoted comma) is \
+             visudo-valid (rc=0) -- F02 must NOT fire (issue #423); got {f02_diags:?}"
+        );
+    }
+
+    /// FP CORE (issue #423): `Defaults passprompt="#5"` -- a bare `#5` as the
+    /// whole double-quoted value. `visudo -c` rc=0 (VALID). The value is stored
+    /// as `#5` (quotes stripped); `has_hash_digits` fires on the start-of-string
+    /// `#5`. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    #[test]
+    fn f02_issue423_bare_quoted_hash_digits_no_f02() {
+        // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"#5\"\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert!(
+            f02_diags.is_empty(),
+            "a bare `#5` as a whole double-quoted Defaults value is visudo-valid \
+             (rc=0) -- F02 must NOT fire (issue #423); got {f02_diags:?}"
+        );
+    }
+
+    // --- Regression guards (GREEN before AND after: the fix must not weaken) ---
+
+    /// REGRESSION GUARD (#423, the sharp pairing): the UNQUOTED sibling
+    /// `Defaults passprompt=Enter #5 now` is `visudo -c` rc=1 (INVALID) -- F02
+    /// must STILL fire. This value is stored BYTE-IDENTICALLY to the quoted FP
+    /// core above (`Enter #5 now`), so making the quoted form silent WITHOUT
+    /// silencing this one is exactly what forces the AST to carry the quote
+    /// distinction. A naive "skip all `#` in Defaults values" fix breaks this.
+    /// GREEN now (fires 1), must stay GREEN.
+    #[test]
+    fn f02_issue423_unquoted_hash_digits_in_defaults_value_still_fires() {
+        // Oracle: `visudo -c -f` rc=1 ("Success" quirk position). Verified 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=Enter #5 now\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "an UNQUOTED `#5` in a Defaults value is visudo-rejected (rc=1) and must \
+             STILL fire exactly one F02 -- the #423 fix must be quote-REGION-aware, \
+             not skip all `#`; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// REGRESSION GUARD (#423, sharp adversarial): `Defaults passprompt='Enter #5
+    /// now'` -- sudoers treats ONLY `"` as a value delimiter; a single quote is a
+    /// LITERAL char, so `#5` after a space is still a comment-start and `visudo
+    /// -c` REJECTS the line (rc=1). F02 must STILL fire. A fix that treats `'` (or
+    /// "any quote") as a protecting delimiter would WRONGLY silence this. The
+    /// value is stored WITH the single quotes (`parse_one_default_setting` only
+    /// strips a surrounding `"` pair). GREEN now (fires 1), must stay GREEN.
+    #[test]
+    fn f02_issue423_single_quoted_hash_digits_still_fires() {
+        // Oracle: `visudo -c -f` rc=1 (single quote is not a delimiter). Verified 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt='Enter #5 now'\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a SINGLE-quoted `#5` is visudo-rejected (rc=1; sudoers only treats `\"` as \
+             a delimiter) and must STILL fire F02 -- the fix must not treat `'` as a \
+             protecting quote; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// REGRESSION GUARD (#423, the task's naive-fix example): an UNQUOTED
+    /// `#1000abc` in a Defaults value (`Defaults passprompt=x #1000abc`) is
+    /// `visudo -c` rc=1 (INVALID). The value reaches `has_hash_digits` as
+    /// `x #1000abc`; `#1000` (a `#` + a digit run after the space) matches
+    /// regardless of the `abc` tail. F02 must STILL fire. A "skip all `#` in
+    /// Defaults" fix would silence this. GREEN now (fires 1), must stay GREEN.
+    #[test]
+    fn f02_issue423_unquoted_hash_digits_then_letters_still_fires() {
+        // Oracle: `visudo -c -f` rc=1. Verified 2026-07-04, sudo 1.9.17p2.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=x #1000abc\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "an UNQUOTED `#1000abc` in a Defaults value is visudo-rejected (rc=1) and \
+             must STILL fire exactly one F02; got {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// REGRESSION GUARD (#423, forces quote-REGION awareness): `Defaults
+    /// passprompt="hi" #5` -- the `#5` sits OUTSIDE the closing double quote (it
+    /// is in the unquoted tail), so `visudo -c` REJECTS the line (rc=1). Because
+    /// `"hi" #5` is not a clean surrounding-quote pair, `parse_one_default_setting`
+    /// keeps the value verbatim (`"hi" #5`) and `has_hash_digits` fires on the
+    /// whitespace-preceded `#5`. F02 must STILL fire. A coarse "the value contains
+    /// a `\"` -> skip `has_hash_digits`" fix would WRONGLY silence this; only a fix
+    /// that tracks WHICH region the `#5` falls in keeps it firing. GREEN now
+    /// (fires 1), must stay GREEN.
+    #[test]
+    fn f02_issue423_hash_digits_after_closing_quote_still_fires() {
+        // Oracle: `visudo -c -f` rc=1 (the `#5` is outside the quoted span). Verified 2026-07-04.
+        let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults passprompt=\"hi\" #5\n");
+        let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
+        assert_eq!(
+            f02_diags.len(),
+            1,
+            "a `#5` OUTSIDE the closing quote (unquoted tail) on a value that also has \
+             a quoted span is visudo-rejected (rc=1) and must STILL fire F02 -- the fix \
+             must be quote-REGION-aware, not skip any value containing a quote; got \
+             {diags:?}"
+        );
+        assert_eq!(f02_diags[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// REGRESSION GUARD (#423): `has_hash_digits` is ALSO called on COMMAND
+    /// tokens. A quote-awareness change to the Defaults-value path must not weaken
+    /// the command-position check: `alice ALL = /bin/ls #2` is `visudo -c` rc=1
+    /// and must STILL fire F02. GREEN now (fires 1), must stay GREEN.
+    #[test]
+    fn f02_issue423_command_position_hash_digits_still_fires() {
+        // Oracle: `visudo -c -f` rc=1 (syntax error at `#2`). Verified 2026-06-30 / 2026-07-04.
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = /bin/ls #2\n"),
+            1,
+            "the command-position `#2` check (a separate `has_hash_digits` caller) must \
+             still fire F02 after the #423 Defaults-value fix"
+        );
+    }
+
+    /// REGRESSION GUARD (#423 must not touch #407): the `#`-GID position checks
+    /// flow through `is_malformed_gid_tail`, a DISTINCT code path from
+    /// `has_hash_digits`, so a quote-awareness fix to `has_hash_digits` must leave
+    /// them exactly as-is. Malformed `#`-GID tails still fire; valid pure
+    /// `#<digits>` GIDs stay clean. All four grounded (`visudo -c -f`, sudo
+    /// 1.9.17p2, 2026-07-04): runas group `(root:#1000abc)` rc=1 /
+    /// `(root:#1000)` rc=0; Defaults user-scope `:#1000abc` rc=1 / `:#1000` rc=0.
+    /// GREEN now, must stay GREEN.
+    #[test]
+    fn f02_issue423_407_gid_validation_unchanged() {
+        // Malformed `#`-GID tails must still fire (visudo rc=1).
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000abc) /bin/ls\n"),
+            1,
+            "#407 runas-group `#1000abc` tail (is_malformed_gid_tail path) must still \
+             fire F02"
+        );
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nDefaults:#1000abc !lecture\n"),
+            1,
+            "#407 Defaults user-scope `#1000abc` tail must still fire F02"
+        );
+        // Valid pure `#<digits>` GIDs must stay clean (visudo rc=0).
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000) /bin/ls\n"),
+            0,
+            "#407 valid pure-GID runas group `#1000` must NOT fire F02"
+        );
+        assert_eq!(
+            f02_count("root ALL=(ALL:ALL) ALL\nDefaults:#1000 !lecture\n"),
+            0,
+            "#407 valid pure-GID Defaults user-scope `#1000` must NOT fire F02"
+        );
+    }
 }
