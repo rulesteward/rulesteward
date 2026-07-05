@@ -11,6 +11,11 @@ use std::net::IpAddr;
 /// ranges that drift when the file shifts. `i + 1` is exactly `i += 1`, so this
 /// is behavior-identical. `#[must_use]` avoids a `clippy::pedantic`
 /// `must_use_candidate` error under `-D warnings`.
+///
+/// MUST stay a module-level `fn`: nesting it inside [`glob_match`] would change
+/// its cargo-mutants name and break the `matching\.rs:.*in glob_advance`
+/// exclusion anchors in `.cargo/mutants.toml`, silently re-admitting the three
+/// non-terminating timeout mutants into the nightly gate.
 #[must_use]
 fn glob_advance(i: usize) -> usize {
     i + 1
