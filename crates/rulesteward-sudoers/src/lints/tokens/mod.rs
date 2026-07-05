@@ -1265,6 +1265,30 @@ mod tests {
         assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
     }
 
+    /// `Defaults!/bin/ls, ,/bin/cat env_reset` -- an interior member that is
+    /// WHITESPACE-ONLY (a comma, a space, a comma) in the Cmnd scope list. visudo
+    /// rc=1 (syntax error, caret at the 2nd comma). Mirrors the User-scope
+    /// precedent `f02_defaults_user_scope_interior_whitespace_only_member_fires`
+    /// (~L927): pins that a member is treated as empty AFTER trimming, so the
+    /// impl MUST split into members via `split_default_settings` (whose middle
+    /// token trims to `""`). A naive substring-scan impl
+    /// (`binding.contains(",,") || binding.starts_with(',') ||
+    /// binding.contains("\"\"")`) passes the plain `,,`/leading/quoted cases yet
+    /// is WRONG -- it misses `", ,"`, which only member-splitting detects. RED
+    /// today because the Cmnd scope is still a no-op in `check_defaults_scope`.
+    #[test]
+    fn f02_defaults_cmnd_scope_interior_whitespace_only_member_fires() {
+        let d = f02s("Defaults!/bin/ls, ,/bin/cat env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!/bin/ls, ,/bin/cat` (rc=1, whitespace-only middle member) \
+             must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
     /// `Defaults!,/bin/ls env_reset` -- leading empty member in the Cmnd scope
     /// list (visudo rc=1, syntax error at the `,`). Must fire one F02.
     #[test]
@@ -1275,6 +1299,7 @@ mod tests {
             1,
             "`Defaults!,/bin/ls` (rc=1) must fire one F02; got {d:?}"
         );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
         assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
     }
 
@@ -1288,6 +1313,7 @@ mod tests {
             1,
             "`Defaults!\"\",/bin/ls` (rc=1) must fire one F02; got {d:?}"
         );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
         assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
     }
 
