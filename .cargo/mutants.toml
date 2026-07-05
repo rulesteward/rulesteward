@@ -448,45 +448,56 @@ exclude_re = [
     # injected hostname end-to-end, so the substitution itself stays in the gate.
     'replace short_hostname -> String',
     'delete ! in short_hostname',
-    # sshd-W07 (#302/#403) overlap oracle: three genuine-equivalent / defensive-only
-    # survivors from the post-GREEN adversarial loop. The negation-aware + intersection
-    # overlap logic is otherwise fully killed by the w07 tests; these three cannot be
-    # killed by any valid-config test:
-    # - name_instances_have_common_witness candidate filter `&&`->`||`: with `||`,
-    #   wildcard/empty strings get ADDED as candidate names, but the {listed-literals +
-    #   FRESH-sentinel} witness set is COMPLETE (any real common witness is a listed
-    #   literal or the fresh sentinel), so the extra candidates only ever move the
-    #   already-accepted wildcard-vs-wildcard false negative, never a pinned result.
-    #   (The identical filter in pattern_lists_overlap IS killed by
+    # sshd-W07 (#302/#403) overlap oracle: genuine-equivalent / defensive-only /
+    # non-terminating survivors from the post-GREEN adversarial loop. The
+    # negation-aware + intersection overlap logic is otherwise fully killed by the w07
+    # tests. After the #432 split, the passes and the shared glob/CIDR toolkit live
+    # under lints/structural/ (w07.rs + matching.rs), so these anchors name the NEW
+    # files (function-anchored, not line-anchored).
+    # - name_instances_have_common_witness candidate filter `&&`->`||` (now w07.rs):
+    #   with `||`, wildcard/empty strings get ADDED as candidate names, but the
+    #   {listed-literals + FRESH-sentinel} witness set is COMPLETE (any real common
+    #   witness is a listed literal or the fresh sentinel), so the extra candidates
+    #   only ever move the already-accepted wildcard-vs-wildcard false negative, never
+    #   a pinned result. (The identical filter in pattern_lists_overlap IS killed by
     #   wildcard_vs_wildcard_is_an_accepted_fn_is_clean; in name_instances the analogous
     #   killer is entangled with the matches-nobody verdict, so it stays an exclusion.)
-    'structural\.rs:.*replace && with \|\| in name_instances_have_common_witness',
-    # - glob_match `star_p + 1` -> `star_p * 1` (== star_p): re-enters the `*` branch one
-    #   iteration later and reaches the IDENTICAL (p, v, star, star_v) state; divergence
-    #   would require value[v]=='*', but W07 candidate names never contain '*' (wildcard
-    #   literals are stripped from candidates; the FRESH sentinel has none). Equivalent
-    #   for every reachable input. (Path-anchored so it never masks a `+`->`*` in another
-    #   crate's glob_match.)
-    'structural\.rs:.*replace \+ with \* in glob_match',
-    # - glob_match STAR-branch / trailing-`*` increment mutants at structural.rs:907/910/917
-    #   (`p += 1` in the `*`-open branch, `star_v += 1` in the backtrack branch, `p += 1` in the
-    #   trailing-`*` skip). Mutated to `*= 1` each no-ops a cursor that has NO other advance in
-    #   its branch, so the enclosing `while` never terminates -- a NON-TERMINATING mutant that
-    #   hits the per-mutant timeout floor rather than producing a wrong answer, and a hang cannot
-    #   be killed by an assertion. LINE-ANCHORED: the OTHER `+= with *=` mutants in glob_match
-    #   (902 `p += 1`, 903 `v += 1`, in the char-match branch) DO terminate -- the sibling counter
-    #   still advances -- and are caught by the W07 witness tests, so they MUST stay in the gate;
-    #   a broad fn-anchored regex would wrongly drop them. Same non-terminating class as the
-    #   `+`->`*` glob_match exclusion above; W07 (#302) added these. (If structural.rs shifts, a
-    #   moved timeout mutant escapes the anchor and the nightly gate reds -- update the lines then.)
-    'structural\.rs:(907|910|917):.*replace \+= with \*= in glob_match',
-    # - parse_negated_port_list body replacements (vec![] / vec![0] / vec![1]): negated
-    #   (and comma-list) `Match LocalPort` is sshd-INVALID (`a2port` rejects it, rc 255),
-    #   so no sshd-loadable config ever yields a negated port. This parser is defensive
-    #   only for rulesteward's lenient parse of an invalid config and is unreachable on
-    #   any valid config, so no valid-config test can kill it (the invalid-config tests
-    #   were removed as mis-grounded).
-    'structural\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
+    'w07\.rs:.*replace && with \|\| in name_instances_have_common_witness',
+    # - glob_match `star_p + 1` -> `star_p * 1` (== star_p), now matching.rs: re-enters
+    #   the `*` branch one iteration later and reaches the IDENTICAL (p, v, star,
+    #   star_v) state; divergence would require value[v]=='*', but W07 candidate names
+    #   never contain '*' (wildcard literals are stripped from candidates; the FRESH
+    #   sentinel has none). Equivalent for every reachable input. Operator-specific so
+    #   it never masks the KILLABLE `+`->`-` at the same site, nor a `+`->`*` in
+    #   another crate's glob_match.
+    'matching\.rs:.*replace \+ with \* in glob_match',
+    # - glob_advance (matching.rs): the extracted one-line cursor bump `i + 1` that the
+    #   three NON-TERMINATING glob_match advances (the `*`-open, backtrack, and
+    #   trailing-`*` sites) now call. Function-anchoring RETIRES the old line-anchored
+    #   907/910/917 exclusion class, which drifted whenever structural.rs shifted (the
+    #   #431 churn). Three of glob_advance's mutants no-op the cursor, so the enclosing
+    #   `while`/backtrack never terminates -- a hang that hits the per-mutant timeout
+    #   floor rather than producing a wrong answer, and a hang cannot be killed by an
+    #   assertion:
+    #     `+`->`*` (i*1 == i); `-> usize with 0`; `-> usize with 1` (both constant, so
+    #     the cursor never moves -- e.g. pattern `a*` vs `ab` loops forever).
+    #   The OPERATOR/VALUE-SPECIFIC anchors below exclude ONLY those three. The fourth
+    #   glob_advance mutant, `+`->`-` (i-1), is KILLABLE (usize underflow panic / a
+    #   cursor that walks backward yields a wrong verdict) and MUST stay in the gate,
+    #   so a broad `.*in glob_advance` is deliberately NOT used. The char-match-branch
+    #   `+= with *=` mutants (the literal `p += 1` / `v += 1` still inline in glob_match,
+    #   NOT moved into glob_advance) terminate -- the sibling counter advances -- and
+    #   are caught by the W07 witness tests, so they stay in the gate untouched.
+    'matching\.rs:.*replace \+ with \* in glob_advance',
+    'matching\.rs:.*replace glob_advance -> usize with 0',
+    'matching\.rs:.*replace glob_advance -> usize with 1',
+    # - parse_negated_port_list body replacements (vec![] / vec![0] / vec![1]), now
+    #   matching.rs: negated (and comma-list) `Match LocalPort` is sshd-INVALID
+    #   (`a2port` rejects it, rc 255), so no sshd-loadable config ever yields a negated
+    #   port. This parser is defensive only for rulesteward's lenient parse of an
+    #   invalid config and is unreachable on any valid config, so no valid-config test
+    #   can kill it (the invalid-config tests were removed as mis-grounded).
+    'matching\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
