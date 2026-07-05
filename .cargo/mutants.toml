@@ -468,18 +468,18 @@ exclude_re = [
     #   for every reachable input. (Path-anchored so it never masks a `+`->`*` in another
     #   crate's glob_match.)
     'structural\.rs:.*replace \+ with \* in glob_match',
-    # - glob_match STAR-branch / trailing-`*` increment mutants at structural.rs:906/909/916
+    # - glob_match STAR-branch / trailing-`*` increment mutants at structural.rs:907/910/917
     #   (`p += 1` in the `*`-open branch, `star_v += 1` in the backtrack branch, `p += 1` in the
     #   trailing-`*` skip). Mutated to `*= 1` each no-ops a cursor that has NO other advance in
     #   its branch, so the enclosing `while` never terminates -- a NON-TERMINATING mutant that
     #   hits the per-mutant timeout floor rather than producing a wrong answer, and a hang cannot
     #   be killed by an assertion. LINE-ANCHORED: the OTHER `+= with *=` mutants in glob_match
-    #   (901 `p += 1`, 902 `v += 1`, in the char-match branch) DO terminate -- the sibling counter
+    #   (902 `p += 1`, 903 `v += 1`, in the char-match branch) DO terminate -- the sibling counter
     #   still advances -- and are caught by the W07 witness tests, so they MUST stay in the gate;
     #   a broad fn-anchored regex would wrongly drop them. Same non-terminating class as the
     #   `+`->`*` glob_match exclusion above; W07 (#302) added these. (If structural.rs shifts, a
     #   moved timeout mutant escapes the anchor and the nightly gate reds -- update the lines then.)
-    'structural\.rs:(906|909|916):.*replace \+= with \*= in glob_match',
+    'structural\.rs:(907|910|917):.*replace \+= with \*= in glob_match',
     # - parse_negated_port_list body replacements (vec![] / vec![0] / vec![1]): negated
     #   (and comma-list) `Match LocalPort` is sshd-INVALID (`a2port` rejects it, rc 255),
     #   so no sshd-loadable config ever yields a negated port. This parser is defensive
