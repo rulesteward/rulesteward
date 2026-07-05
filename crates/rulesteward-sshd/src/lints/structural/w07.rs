@@ -1473,6 +1473,42 @@ mod w07_tests {
     }
 
     #[test]
+    fn middle_block_winning_region_outside_block2_does_not_overflag_w07() {
+        // #409 over-flag guard for PARTIAL coverage: the middle differing block wins a
+        // non-empty region that lies OUTSIDE block 2's population, so it must not cause
+        // block 2 to be flagged. `Host alpha,beta` yes / `Host beta,gamma` no /
+        // `Host alpha,beta` yes. Block 0 covers block 2's WHOLE population (alpha AND
+        // beta) with the same value (yes) and wins it first; the middle block only wins
+        // gamma, which is NOT in block 2. GROUND TRUTH (`sshd -T -C` on OpenSSH 10.2p1):
+        // host=alpha -> yes AND host=beta -> yes (block 0 wins ALL of block 2's
+        // population), host=gamma -> no (middle block wins gamma, OUTSIDE block 2). So
+        // block 2 / line 6 is NEVER shadowed and must stay clean; a wrong impl that
+        // flags block 2 merely because a differing earlier block overlaps it and wins
+        // SOME region (here just gamma) - rather than a region that INTERSECTS block 2's
+        // population - would over-flag line 6.
+        //
+        // As with `agreeing_...`, the fixture is NOT diagnostic-free: block 0
+        // (alpha,beta yes) wins the middle block's beta with a different value, so the
+        // middle `Host beta,gamma no` (line 4) is itself a genuine shadow and IS
+        // flagged. The assertion pins the EXACT diag set {line 4}: block 2 / line 6 is
+        // not over-flagged.
+        let d = w07_diags(
+            "Match Host alpha,beta\n    X11Forwarding yes\n\
+             Match Host beta,gamma\n    X11Forwarding no\n\
+             Match Host alpha,beta\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the middle block's winning region gamma lies outside block 2; block 2 not over-flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (Host beta,gamma no) is shadowed by block 0 for beta; block 2 / line 6 is NOT flagged"
+        );
+    }
+
+    #[test]
     fn partition_all_same_value_is_clean() {
         // #409 guard: three partition blocks that all set the SAME value shadow
         // nothing. `Host alpha` yes / `Host beta` yes / `Host alpha,beta` yes. Every
