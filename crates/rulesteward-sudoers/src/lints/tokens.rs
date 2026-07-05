@@ -759,6 +759,12 @@ fn has_hash_digits(s: &str) -> bool {
                     let p = bytes[j];
                     // whitespace-preceded (`/bin/ls #2`) OR `%`-preceded (`%#2`);
                     // `,` is not checked (dead -- see the doc comment).
+                    // `char::is_whitespace` (NOT `is_ascii_whitespace`) is
+                    // deliberate, mirroring `parser.rs`'s `prev_allows_uid`: a
+                    // `#<digits>` after a whitespace byte that ASCII checks miss
+                    // (0x0B / 0x85 / 0xA0) is still a visudo-rejected token, so
+                    // narrowing to ASCII here would be a false-negative regression
+                    // (#426 review).
                     p == b'%' || (p as char).is_whitespace()
                 }
             };
