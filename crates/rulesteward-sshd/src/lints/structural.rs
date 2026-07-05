@@ -339,8 +339,9 @@ fn e02_dedup_key(keyword: &str, directive: &Directive) -> Option<String> {
 
 /// sshd-E03: `Include` references a path or glob that resolves to nothing.
 ///
-/// TODO(#149, Wave A): resolves the literal `Include` argument against
-/// `/etc/ssh/` (or the config's directory) and checks the glob matches.
+/// Resolves each literal `Include` argument against the config's directory (the
+/// `/etc/ssh/` rule for the real `sshd_config`; see `include_base_dir`) and flags
+/// any pattern that matches no existing file (see `include_pattern_resolves`).
 #[must_use]
 pub fn e03(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
     // Relative includes resolve against the directory of the file being linted,
