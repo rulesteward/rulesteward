@@ -30,11 +30,18 @@ pub(super) fn check_defaults(
     // defect, consistent with the Case-2 setting check and the runas checks); the
     // valid pure-digit forms stay clean.
     //
-    // The `!` (command) scope is intentionally NOT handled here: `!` is not in
-    // `prev_allows_uid`, so a `#<digits>` command target (`Defaults!#1000` and
-    // `Defaults!#1000abc`, BOTH visudo rc=1) still strips as a comment, folding the
-    // line to `Malformed` / sudo-F01 -- the correct outcome, since every `#`-command
-    // form is invalid (there is nothing valid to preserve).
+    // The `!` (command) scope runs the #426 empty-member check (see the Cmnd arm
+    // below) but intentionally SKIPS this #407 GID-tail loop (`check_gid_tail:
+    // false`). Two reasons: (a) a bare `#<digits>` command target (`Defaults!#1000`,
+    // `Defaults!#1000abc`, both visudo rc=1) is not in `prev_allows_uid`, so it
+    // strips as a comment upstream and folds to `Malformed` / sudo-F01. (b) A
+    // `#<digits>` member that DOES survive (non-leading, e.g.
+    // `Defaults!/bin/ls,#1000abc`) still must not go through this loop: unlike the
+    // user/runas/host scopes where a pure digit run is a VALID id, visudo rejects
+    // `#<digits>` outright in command position ("expected a fully-qualified path
+    // name"), so the loop's "pure digits = valid" assumption is wrong for commands
+    // and it would emit a nonsensical "GID" message. Validating command-target
+    // paths is a separate, broader defect class (out of #429's empty-member scope).
     //
     // Message note: for the host (`@`) scope the token is a host name, not a GID, so
     // its message says "not a pure digit run" (no "GID") even though the shared
@@ -61,16 +68,37 @@ pub(super) fn check_defaults(
     // (b) stops a later `#<digits>` member of a space-separated list (the valid
     // `Defaults:#1000, #1001`) from leaking into the settings scan as a false
     // positive.
-    let scope_binding: Option<(&str, &str, bool)> = match &entry.scope {
-        crate::ast::DefaultsScope::User(binding) => Some((binding.as_str(), "user", false)),
-        crate::ast::DefaultsScope::Runas(binding) => Some((binding.as_str(), "runas", false)),
-        crate::ast::DefaultsScope::Host(binding) => Some((binding.as_str(), "host", true)),
-        // Global (no scope) is not a list. Cmnd (`!`) is intentionally out of the
-        // #426 empty-member scope (owner decision: User/Runas/Host only); a
-        // `#`-command form still routes to F01 via the comment strip. A `!`-scope
-        // empty member (`Defaults!/bin/ls,,/bin/cat`) is thus a documented
-        // false-negative, not detected here.
-        _ => None,
+    let scope_binding: Option<ScopeCheck<'_>> = match &entry.scope {
+        crate::ast::DefaultsScope::User(binding) => Some(ScopeCheck {
+            binding: binding.as_str(),
+            scope_word: "user",
+            is_host: false,
+            check_gid_tail: true,
+        }),
+        crate::ast::DefaultsScope::Runas(binding) => Some(ScopeCheck {
+            binding: binding.as_str(),
+            scope_word: "runas",
+            is_host: false,
+            check_gid_tail: true,
+        }),
+        crate::ast::DefaultsScope::Host(binding) => Some(ScopeCheck {
+            binding: binding.as_str(),
+            scope_word: "host",
+            is_host: true,
+            check_gid_tail: true,
+        }),
+        // #429: the Cmnd (`!`) scope runs the #426 empty-member check, but NOT the
+        // #407 GID-tail loop (`check_gid_tail: false`; see the long comment above
+        // for why command-position `#<digits>` must not use that loop). `scope_word`
+        // is "command" per the frozen tests' scope-word-agnostic message.
+        crate::ast::DefaultsScope::Cmnd(binding) => Some(ScopeCheck {
+            binding: binding.as_str(),
+            scope_word: "command",
+            is_host: false,
+            check_gid_tail: false,
+        }),
+        // Global (no scope) is not a list.
+        crate::ast::DefaultsScope::Global => None,
     };
     if check_defaults_scope(scope_binding, file, logical, diags) {
         // If any scope element was flagged, the line is already reported; skip the
@@ -126,21 +154,41 @@ pub(super) fn check_defaults(
     }
 }
 
+/// The per-scope inputs to [`check_defaults_scope`]. `check_gid_tail` is the
+/// #429 decoupling signal: User/Runas/Host run the #407 GID-tail loop AND the
+/// #426 empty-member check; Cmnd (`!`) runs only the empty-member check (a
+/// `#`-prefixed command target never survives to the AST -- see the long
+/// comment in `check_defaults`).
+#[derive(Clone, Copy)]
+struct ScopeCheck<'a> {
+    binding: &'a str,
+    scope_word: &'a str,
+    is_host: bool,
+    check_gid_tail: bool,
+}
+
 /// Extracted from `check_defaults` (#433) to flatten its nesting: validates a
-/// `Defaults` scope-target binding (the User/Runas/Host comma-list) for a
-/// `#`-prefixed member with a non-digit tail, or an empty comma-list member.
-/// `scope_binding` is `None` for a Global or Cmnd (`!`) scope, in which case
-/// this is a no-op (`false`). Returns `true` when a diagnostic was pushed, so
-/// the caller can skip the setting scan for a line that already reported (one
-/// F02 per line) -- mirroring the early `return` the inline `if let` block
-/// used to perform itself.
+/// `Defaults` scope-target binding (the User/Runas/Host/Cmnd comma-list) for a
+/// `#`-prefixed member with a non-digit tail (User/Runas/Host only, per
+/// `check_gid_tail`), or an empty comma-list member (all four scopes).
+/// `scope_binding` is `None` for a Global scope, in which case this is a
+/// no-op (`false`). Returns `true` when a diagnostic was pushed, so the
+/// caller can skip the setting scan for a line that already reported (one F02
+/// per line) -- mirroring the early `return` the inline `if let` block used
+/// to perform itself.
 fn check_defaults_scope(
-    scope_binding: Option<(&str, &str, bool)>,
+    scope_binding: Option<ScopeCheck<'_>>,
     file: &SudoersFile,
     logical: &crate::ast::LogicalLine,
     diags: &mut Vec<Diagnostic>,
 ) -> bool {
-    let Some((binding, scope_word, is_host)) = scope_binding else {
+    let Some(ScopeCheck {
+        binding,
+        scope_word,
+        is_host,
+        check_gid_tail,
+    }) = scope_binding
+    else {
         return false;
     };
     let before = diags.len();
@@ -149,25 +197,27 @@ fn check_defaults_scope(
     // a quoted/escaped comma stays inside one member and any whitespace padding
     // around a member is stripped before the per-member checks.
     let members = crate::parser::split_default_settings(binding);
-    for &element in &members {
-        if is_malformed_gid_tail(element) {
-            // Host targets are host names, not GIDs -- omit the word "GID".
-            let tail_phrase = if is_host {
-                "not a pure digit run"
-            } else {
-                "not a pure GID digit run"
-            };
-            diags.push(anchored(
-                Severity::Fatal,
-                "sudo-F02",
-                logical.span.clone(),
-                format!(
-                    "Defaults {scope_word}-scope target has a `#`-prefixed name \
-                     {element:?} that is {tail_phrase}, which visudo rejects"
-                ),
-                file.path.clone(),
-                logical.line,
-            ));
+    if check_gid_tail {
+        for &element in &members {
+            if is_malformed_gid_tail(element) {
+                // Host targets are host names, not GIDs -- omit the word "GID".
+                let tail_phrase = if is_host {
+                    "not a pure digit run"
+                } else {
+                    "not a pure GID digit run"
+                };
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "Defaults {scope_word}-scope target has a `#`-prefixed name \
+                         {element:?} that is {tail_phrase}, which visudo rejects"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+            }
         }
     }
     // #426: an EMPTY comma-list member -- a leading/interior empty, or an exact

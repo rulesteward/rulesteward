@@ -1231,6 +1231,123 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // #429: empty comma-list member in the `Defaults!` (Cmnd) scope.
+    //
+    // visudo/cvtsudoers 1.9.17p2 rejects (rc=1) an empty member in a Defaults
+    // Cmnd scope command list -- a leading `,`, an interior `,,`, or an empty
+    // quoted `""` member -- exactly like the User/Runas/Host scopes #426 already
+    // covers. Today `check_defaults_scope` (tokens/defaults.rs) matches only
+    // `DefaultsScope::{User,Runas,Host}` and falls through to `_ => None` for
+    // `Cmnd`, so the Cmnd scope never runs the empty-member check: a documented
+    // false-negative. The `#<digits>` command-target non-regression
+    // (`f02_defaults_cmnd_scope_hash_targets_stay_f01_no_f02`, ~L580) is
+    // UNAFFECTED and must stay green: an invalid `#`-command target still
+    // strips as a comment and folds to Malformed/sudo-F01, not F02. Grounded
+    // visudo 1.9.17p2, 2026-07-05.
+    // -----------------------------------------------------------------------
+
+    /// `Defaults!/bin/ls,,/bin/cat env_reset` -- interior empty member in the
+    /// Cmnd scope list (visudo rc=1, syntax error at the second `,`). Must fire
+    /// exactly one Fatal sudo-F02. The message-word assertion is deliberately
+    /// scope-word-agnostic (asserts only `"empty"`): the recommended impl uses
+    /// `scope_word = "command"`, but that wording is the implementer's choice,
+    /// not yet locked, so this test does not couple to it (tighten to also
+    /// assert the scope word once the wording is decided).
+    #[test]
+    fn f02_defaults_cmnd_scope_interior_empty_member_fires() {
+        let d = f02s("Defaults!/bin/ls,,/bin/cat env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!/bin/ls,,/bin/cat` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults!/bin/ls, ,/bin/cat env_reset` -- an interior member that is
+    /// WHITESPACE-ONLY (a comma, a space, a comma) in the Cmnd scope list. visudo
+    /// rc=1 (syntax error, caret at the 2nd comma). Mirrors the User-scope
+    /// precedent `f02_defaults_user_scope_interior_whitespace_only_member_fires`
+    /// (~L927): pins that a member is treated as empty AFTER trimming, so the
+    /// impl MUST split into members via `split_default_settings` (whose middle
+    /// token trims to `""`). A naive substring-scan impl
+    /// (`binding.contains(",,") || binding.starts_with(',') ||
+    /// binding.contains("\"\"")`) passes the plain `,,`/leading/quoted cases yet
+    /// is WRONG -- it misses `", ,"`, which only member-splitting detects. RED
+    /// today because the Cmnd scope is still a no-op in `check_defaults_scope`.
+    #[test]
+    fn f02_defaults_cmnd_scope_interior_whitespace_only_member_fires() {
+        let d = f02s("Defaults!/bin/ls, ,/bin/cat env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!/bin/ls, ,/bin/cat` (rc=1, whitespace-only middle member) \
+             must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults!,/bin/ls env_reset` -- leading empty member in the Cmnd scope
+    /// list (visudo rc=1, syntax error at the `,`). Must fire one F02.
+    #[test]
+    fn f02_defaults_cmnd_scope_leading_empty_member_fires() {
+        let d = f02s("Defaults!,/bin/ls env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!,/bin/ls` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults!"",/bin/ls env_reset` -- empty QUOTED member in LEADING position
+    /// in the Cmnd scope list (visudo rc=1, "empty string"). Must fire one F02.
+    #[test]
+    fn f02_defaults_cmnd_scope_empty_quoted_member_fires() {
+        let d = f02s("Defaults!\"\",/bin/ls env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!\"\",/bin/ls` (rc=1) must fire one F02; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(d[0].message.contains("empty"), "got {:?}", d[0].message);
+    }
+
+    /// `Defaults!/bin/ls,/bin/cat env_reset` -- a VALID two-member Cmnd list, no
+    /// empty member (visudo rc=0, "parsed OK"). Regression guard: must stay
+    /// clean both before and after the #429 fix lands.
+    #[test]
+    fn f02_defaults_cmnd_scope_valid_list_no_f02() {
+        let d = f02s("Defaults!/bin/ls,/bin/cat env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,/bin/cat` is valid (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls, env_reset` -- a dangling trailing comma in the Cmnd
+    /// scope (visudo rc=1, "expected a fully-qualified path name" -- sudo
+    /// greedily absorbs `env_reset` as the second Cmnd list member, leaving the
+    /// Defaults entry with no settings). Mirrors
+    /// `defaults_user_scope_dangling_comma_no_settings_fires_fatal` (~L842):
+    /// `split_scope_binding` is sigil-agnostic, so the dangling comma already
+    /// absorbs the pending element today, routing this to the F01 "no settings"
+    /// Fatal independent of the #429 Cmnd-scope empty-member fix. Regression
+    /// guard: must stay a Fatal both before and after the fix.
+    #[test]
+    fn defaults_cmnd_scope_dangling_comma_no_settings_fires_fatal() {
+        let d = fatals("Defaults!/bin/ls, env_reset");
+        assert!(
+            !d.is_empty(),
+            "`Defaults!/bin/ls, env_reset` (rc=1) must fire a Fatal; got {d:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // #407 round-3 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
     // -----------------------------------------------------------------------
