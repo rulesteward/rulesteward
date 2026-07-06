@@ -1,7 +1,7 @@
 //! sshd-W07: cross-`Match` first-value-wins shadow. See [`w07`]. The
 //! CIDR/port/glob geometry primitives live in [`super::matching`].
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::path::Path;
 
@@ -12,8 +12,9 @@ use crate::lints::{SshdLintContext, anchored, is_unconditional_match_all};
 
 use super::E02_ALLOW_REPEAT;
 use super::matching::{
-    cidr_intersects, cidr_lists_overlap, glob_match, parse_cidr_list, parse_port_list,
-    port_lists_overlap,
+    Cidr, cidr_intersects, cidr_list_set, cidr_lists_overlap, cidr_set_difference,
+    cidr_set_intersection, cidr_set_is_empty, glob_match, parse_cidr_list, parse_port_list,
+    port_lists_overlap, port_set,
 };
 
 /// sshd-W07: the same first-value-wins keyword set to DIFFERENT values in two
@@ -93,16 +94,27 @@ pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
                 // first (effective) value can be shadowed by an earlier block.
                 continue;
             }
-            // sshd applies ONLY the first satisfied block's value, so the shadow
-            // hazard is measured against the WINNER: the earliest earlier block that
-            // both overlaps this one AND sets the keyword. A later value equal to the
-            // winner's is redundant (the winner would have applied the same value),
-            // not a differing shadow - so compare against the winner, not any earlier.
-            let winning_value = match_blocks[..j]
+            // sshd applies ONLY the first satisfied block's value. The earlier blocks
+            // that both overlap this one AND set the keyword are the candidate winners,
+            // in SOURCE ORDER (the first one a given connection satisfies wins it).
+            let value = directive.args.as_slice();
+            let earlier_setters: Vec<&MatchBlock> = match_blocks[..j]
                 .iter()
-                .filter(|earlier| match_blocks_overlap(earlier, later))
-                .find_map(|earlier| first_value_for(earlier, &keyword));
-            if winning_value.is_some_and(|value| value != directive.args.as_slice()) {
+                .copied()
+                .filter(|earlier| {
+                    match_blocks_overlap(earlier, later)
+                        && first_value_for(earlier, &keyword).is_some()
+                })
+                .collect();
+            // When this block constrains a SINGLE criterion type, decide the shadow
+            // PER SUB-POPULATION (#409): flag iff some non-empty region of this block's
+            // connections is won by an earlier block with a DIFFERING value. Otherwise
+            // fall back to the block-level winner comparison.
+            let shadowed = match single_region_type(later) {
+                Some(kind) => region_shadow(later, &kind, &keyword, value, &earlier_setters),
+                None => block_level_shadow(&keyword, value, &earlier_setters),
+            };
+            if shadowed {
                 diags.push(anchored(
                     Severity::Warning,
                     "sshd-W07",
@@ -132,6 +144,256 @@ fn first_value_for<'a>(block: &'a MatchBlock, keyword_lower: &str) -> Option<&'a
         .iter()
         .find(|d| d.keyword_lower() == keyword_lower)
         .map(|d| d.args.as_slice())
+}
+
+/// The kind of a block's SINGLE region-modeled criterion type, or `None` when the block
+/// is not eligible for per-sub-population (#409) reasoning and must use the block-level
+/// fallback.
+///
+/// Region reasoning is exact only inside ONE criterion-type domain. `Some(T)` requires
+/// the block to constrain EXACTLY one criterion type, that type be region-modeled
+/// (`user`/`group`/`host` name lists, `address`/`localaddress` CIDR, `localport`), and
+/// the block NOT trip the preserved repeated-CIDR/port-with-negation guard (a repeated
+/// address/port type carrying a `!`, whose exact cross-occurrence remainder is beyond
+/// v0.3 scope - routed to the conservative block-level path instead). Because
+/// [`match_blocks_overlap`] only pairs blocks with IDENTICAL criterion-type sets (or a
+/// `Match all`), a single-type block's every earlier overlapping setter is itself
+/// single-type-`T` or `Match all`, so region reasoning never crosses types (preserving
+/// the #400 conservative contract).
+fn single_region_type(block: &MatchBlock) -> Option<String> {
+    let by_type = criteria_by_type(block);
+    if by_type.len() != 1 {
+        return None;
+    }
+    let (kind, instances) = by_type.iter().next()?;
+    if !matches!(
+        kind.as_str(),
+        "user" | "group" | "host" | "address" | "localaddress" | "localport"
+    ) {
+        return None;
+    }
+    // Preserved conservative guard (mirrors [`match_blocks_overlap`]): a repeated
+    // CIDR/port type carrying a negation has no exact cross-occurrence remainder here,
+    // so decline region reasoning and let the block-level fallback stay FN-leaning.
+    if matches!(kind.as_str(), "address" | "localaddress" | "localport")
+        && instances.len() >= 2
+        && instances
+            .iter()
+            .any(|occ| occ.iter().any(|value| value.starts_with('!')))
+    {
+        return None;
+    }
+    Some(kind.clone())
+}
+
+/// Dispatch per-sub-population (#409) shadow detection by criterion-type domain. Names
+/// use a witness-candidate search; CIDR and port use exact set algebra. Only invoked
+/// with a region-modeled `kind` from [`single_region_type`].
+fn region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    match kind {
+        "user" | "group" | "host" => {
+            names_region_shadow(block, kind, keyword_lower, value, earlier_setters)
+        }
+        "address" | "localaddress" => {
+            cidr_region_shadow(block, kind, keyword_lower, value, earlier_setters)
+        }
+        "localport" => port_region_shadow(block, kind, keyword_lower, value, earlier_setters),
+        // Unreachable: `single_region_type` only returns the arms above.
+        _ => block_level_shadow(keyword_lower, value, earlier_setters),
+    }
+}
+
+/// The block-level fallback (the pre-#409 rule, extracted verbatim): the winner is the
+/// FIRST earlier setter in source order, and the later value is a shadow iff it DIFFERS
+/// from the winner's. Used for blocks that constrain 2+ criterion types (region
+/// reasoning is single-type only). `earlier_setters` is already filtered to overlapping
+/// blocks that set the keyword, so its first element's value is the winner.
+fn block_level_shadow(
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    earlier_setters
+        .iter()
+        .find_map(|earlier| first_value_for(earlier, keyword_lower))
+        .is_some_and(|winning| winning != value)
+}
+
+/// Per-sub-population shadow for NAME criteria (`User`/`Group`/`Host`). A sub-population
+/// is witnessed by a concrete literal name: any user/group/host admitted by both this
+/// block and an earlier setter must be a listed literal from one of them (a
+/// wildcard-only overlap has no literal witness - the documented v0.3 accepted FN). For
+/// each candidate literal that is a member of THIS block, the winner is the first
+/// earlier setter it also satisfies; a differing winner value is a real shadow.
+fn names_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    // A name matching none of the listed literals, to stand in for "some fresh name"
+    // (shared spelling with [`pattern_lists_overlap`]'s sentinel).
+    const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
+    let mut candidates: Vec<String> = Vec::new();
+    collect_name_literals(block, kind, &mut candidates);
+    for earlier in earlier_setters {
+        collect_name_literals(earlier, kind, &mut candidates);
+    }
+    candidates.push(FRESH.to_string());
+    candidates.iter().any(|name| {
+        member_of_type(block, kind, name)
+            && earlier_setters
+                .iter()
+                .find(|earlier| member_of_type(earlier, kind, name))
+                .and_then(|winner| first_value_for(winner, keyword_lower))
+                .is_some_and(|winning| winning != value)
+    })
+}
+
+/// Collect the literal (non-glob, non-negated, non-empty) names a block's `kind`
+/// criteria list, for the [`names_region_shadow`] witness search. A `Match all` (whose
+/// only criterion is the valueless `all`) contributes nothing.
+fn collect_name_literals(block: &MatchBlock, kind: &str, out: &mut Vec<String>) {
+    if let Some(instances) = criteria_by_type(block).get(kind) {
+        for values in instances {
+            for value in *values {
+                let literal = value.strip_prefix('!').unwrap_or(value);
+                if !literal.is_empty() && !literal.contains(['*', '?']) {
+                    out.push(literal.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Whether the name `x` satisfies EVERY `kind` instance of `block` at once (the
+/// AND-across-occurrences membership sshd applies). A `Match all` block admits every
+/// connection, so it is a member trivially.
+fn member_of_type(block: &MatchBlock, kind: &str, x: &str) -> bool {
+    if is_unconditional_match_all(block) {
+        return true;
+    }
+    criteria_by_type(block)
+        .get(kind)
+        .is_some_and(|instances| instances.iter().all(|values| match_pattern_list(x, values)))
+}
+
+/// Per-sub-population shadow for CIDR criteria (`Address`/`LocalAddress`). Walk the
+/// earlier setters in source order, carving each one's address set out of the remaining
+/// (not-yet-won) part of this block's population: the first setter whose carved region
+/// is NON-EMPTY and whose value DIFFERS wins a genuinely-shadowed sub-population. An
+/// agreeing setter CONSUMES its region (removing it from `remaining`) so it can never
+/// over-flag a later differing block outside its coverage.
+fn cidr_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = cidr_region_set(block, kind);
+    for earlier in earlier_setters {
+        let (region, rest) = if is_unconditional_match_all(earlier) {
+            // `Match all` wins every remaining connection (always satisfied, earliest).
+            (remaining.clone(), Vec::new())
+        } else {
+            let earlier_set = cidr_region_set(earlier, kind);
+            (
+                cidr_set_intersection(&remaining, &earlier_set),
+                cidr_set_difference(&remaining, &earlier_set),
+            )
+        };
+        if !cidr_set_is_empty(&region)
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if cidr_set_is_empty(&remaining) {
+            break;
+        }
+    }
+    false
+}
+
+/// The exact address set of a block's `kind` criterion: the INTERSECTION (AND) across
+/// its type-`kind` instances of each instance's [`cidr_list_set`]. A single instance
+/// (the common case) is just its own set.
+fn cidr_region_set(block: &MatchBlock, kind: &str) -> Vec<Cidr> {
+    let by_type = criteria_by_type(block);
+    let Some(instances) = by_type.get(kind) else {
+        return Vec::new();
+    };
+    let mut iter = instances.iter();
+    let Some(first) = iter.next() else {
+        return Vec::new();
+    };
+    let mut acc = cidr_list_set(first);
+    for values in iter {
+        acc = cidr_set_intersection(&acc, &cidr_list_set(values));
+    }
+    acc
+}
+
+/// Per-sub-population shadow for `LocalPort` (the exact-set analogue of
+/// [`cidr_region_shadow`]). On sshd-valid input a `LocalPort` block is a singleton, so
+/// this reduces to single-port equality; the set machinery keeps it uniform with CIDR.
+fn port_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = port_region_set(block, kind);
+    for earlier in earlier_setters {
+        let (region, rest): (BTreeSet<u32>, BTreeSet<u32>) = if is_unconditional_match_all(earlier)
+        {
+            (remaining.clone(), BTreeSet::new())
+        } else {
+            let earlier_set = port_region_set(earlier, kind);
+            (
+                remaining.intersection(&earlier_set).copied().collect(),
+                remaining.difference(&earlier_set).copied().collect(),
+            )
+        };
+        if !region.is_empty()
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
+/// The exact port set of a block's `kind` criterion: the INTERSECTION (AND) across its
+/// type-`kind` instances of each instance's [`port_set`].
+fn port_region_set(block: &MatchBlock, kind: &str) -> BTreeSet<u32> {
+    let by_type = criteria_by_type(block);
+    let Some(instances) = by_type.get(kind) else {
+        return BTreeSet::new();
+    };
+    let mut iter = instances.iter();
+    let Some(first) = iter.next() else {
+        return BTreeSet::new();
+    };
+    let mut acc = port_set(first);
+    for values in iter {
+        let next = port_set(values);
+        acc = acc.intersection(&next).copied().collect();
+    }
+    acc
 }
 
 /// Whether two `Match` blocks can be satisfied by ONE connection, decided

@@ -2,7 +2,8 @@
 //! OpenSSH `match_pattern` globbing plus the CIDR / port set-overlap primitives.
 //! Every item here is used only by [`super::w07`].
 
-use std::net::IpAddr;
+use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Advance a glob cursor by one position. Extracted so the three NON-TERMINATING
 /// `+= 1` advances in [`glob_match`] (the `*`-open, backtrack, and trailing-`*`
@@ -191,4 +192,149 @@ fn parse_negated_port_list(values: &[String]) -> Vec<u32> {
         .filter_map(|v| v.strip_prefix('!'))
         .filter_map(|v| v.parse::<u32>().ok())
         .collect()
+}
+
+// ---- EXACT CIDR / port set algebra for the #409 per-sub-population region path ----
+//
+// The bool oracles above (`cidr_lists_overlap`, `port_lists_overlap`) decide only
+// "do these two criteria share ANY address/port?". Per-sub-population shadow detection
+// (#409) needs the actual SETS so an agreeing earlier block can CONSUME its covered
+// sub-population (leaving only the genuinely-shadowed remainder to flag). These
+// primitives compute those sets EXACTLY - `cidr_set_difference` splits multi-net
+// carve-outs precisely rather than the single-negation approximation `cidr_lists_overlap`
+// documents - so a region flag is always backed by a real remaining address/port.
+
+/// A CIDR network as `(network address, prefix length)`. The network address's host
+/// bits below `prefix` are assumed zero (as produced by [`parse_cidr_list`]).
+pub(super) type Cidr = (IpAddr, u8);
+
+/// The EXACT positive address set a single `Address`/`LocalAddress` value LIST denotes
+/// under `match_pattern_list`: the union of its positive nets MINUS the union of its
+/// negated (`!`) nets, normalized to pairwise-disjoint CIDR nets. Unlike the
+/// single-negation approximation in [`cidr_lists_overlap`], multi-net carve-outs are
+/// split precisely, so the #409 region path flags only against a real remaining
+/// sub-population (FP-free). Unparseable entries are ignored (conservative).
+pub(super) fn cidr_list_set(values: &[String]) -> Vec<Cidr> {
+    let positives = normalize_disjoint(parse_cidr_list(values));
+    let negatives = parse_negated_cidr_list(values);
+    cidr_set_difference(&positives, &negatives)
+}
+
+/// The intersection of two disjoint-normalized CIDR sets: every address in BOTH. CIDR
+/// nets nest-or-are-disjoint, so two intersecting nets meet in the MORE specific
+/// (longer-prefix) one. The result is disjoint-normalized.
+pub(super) fn cidr_set_intersection(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
+    let mut out = Vec::new();
+    for &x in a {
+        for &y in b {
+            if cidr_intersects(x, y) {
+                out.push(if x.1 >= y.1 { x } else { y });
+            }
+        }
+    }
+    normalize_disjoint(out)
+}
+
+/// The set difference `a \ b`: every address in `a` but in no net of `b`. Each net of
+/// `a` is split around every net of `b` via [`cidr_minus_one`], yielding a union of
+/// disjoint CIDR nets. This EXACT carve-out is what the #409 region path consumes so an
+/// agreeing earlier block removes its covered sub-population and cannot over-flag.
+pub(super) fn cidr_set_difference(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
+    let mut current = a.to_vec();
+    for &hole in b {
+        let mut next = Vec::new();
+        for net in current {
+            next.extend(cidr_minus_one(net, hole));
+        }
+        current = next;
+    }
+    current
+}
+
+/// Whether a CIDR set denotes no address at all.
+pub(super) fn cidr_set_is_empty(set: &[Cidr]) -> bool {
+    set.is_empty()
+}
+
+/// The positive port set a `LocalPort` value list denotes: its positive numeric entries
+/// minus its negated (`!`) ones. On sshd-valid input a `LocalPort` block is a SINGLETON
+/// (a2port rejects comma-lists and negation), so this is normally one element; the set
+/// form keeps the #409 region path uniform with CIDR without ever over-claiming.
+pub(super) fn port_set(values: &[String]) -> BTreeSet<u32> {
+    let positives: BTreeSet<u32> = parse_port_list(values).into_iter().collect();
+    let negations: BTreeSet<u32> = parse_negated_port_list(values).into_iter().collect();
+    positives.difference(&negations).copied().collect()
+}
+
+/// Whether `outer` fully contains `inner`: a shorter-or-equal prefix that intersects.
+/// (CIDR nets nest-or-are-disjoint, so an intersecting net with a `<=` prefix is a
+/// supernet-or-equal of the other.)
+fn cidr_contains(outer: Cidr, inner: Cidr) -> bool {
+    outer.1 <= inner.1 && cidr_intersects(outer, inner)
+}
+
+/// Drop any net contained in another so the result is pairwise disjoint (and
+/// deduplicated). Order-independent: a wider net subsumes every narrower net it covers.
+fn normalize_disjoint(nets: Vec<Cidr>) -> Vec<Cidr> {
+    let mut out: Vec<Cidr> = Vec::new();
+    for net in nets {
+        if out.iter().any(|&kept| cidr_contains(kept, net)) {
+            continue;
+        }
+        out.retain(|&kept| !cidr_contains(net, kept));
+        out.push(net);
+    }
+    out
+}
+
+/// `outer` minus the single net `hole`, as a union of disjoint CIDR nets. If `hole` is
+/// disjoint from `outer`, `outer` is returned unchanged; if `hole` covers `outer`, the
+/// result is empty; otherwise `outer` is bisected repeatedly, keeping the half that does
+/// not contain `hole` and recursing into the half that does (standard CIDR range
+/// subtraction on power-of-two boundaries). Recursion depth is bounded by the address
+/// width (<=32 / <=128 splits), so it always terminates.
+fn cidr_minus_one(outer: Cidr, hole: Cidr) -> Vec<Cidr> {
+    if !cidr_intersects(outer, hole) {
+        return vec![outer];
+    }
+    if cidr_contains(hole, outer) {
+        return Vec::new();
+    }
+    // `outer` strictly contains `hole` (shorter prefix, intersecting), so it can split.
+    let Some((low, high)) = cidr_split(outer) else {
+        return vec![outer];
+    };
+    let mut out = Vec::new();
+    for half in [low, high] {
+        if cidr_contains(half, hole) {
+            out.extend(cidr_minus_one(half, hole));
+        } else {
+            out.push(half);
+        }
+    }
+    out
+}
+
+/// Bisect a CIDR net into its two `prefix + 1` halves, or `None` for a host route
+/// (`/32` v4, `/128` v6) that cannot split. The low half keeps the network address; the
+/// high half sets the top host bit. Split per family so no truncating cast is needed.
+fn cidr_split(net: Cidr) -> Option<(Cidr, Cidr)> {
+    match net.0 {
+        IpAddr::V4(addr) => {
+            if net.1 >= 32 {
+                return None;
+            }
+            let child = net.1 + 1;
+            let high = u32::from(addr) | (1u32 << (32 - child));
+            Some(((net.0, child), (IpAddr::V4(Ipv4Addr::from(high)), child)))
+        }
+        IpAddr::V6(addr) => {
+            if net.1 >= 128 {
+                return None;
+            }
+            let child = net.1 + 1;
+            let high = u128::from(addr) | (1u128 << (128 - child));
+            Some(((net.0, child), (IpAddr::V6(Ipv6Addr::from(high)), child)))
+        }
+    }
 }
