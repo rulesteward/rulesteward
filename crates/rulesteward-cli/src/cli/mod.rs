@@ -4,7 +4,13 @@
 //! (rewritten in Task 11). Subcommand tree matches spec §6.1.
 
 use clap::{Parser, Subcommand, ValueEnum};
+// Only used by the inline test module below (via its glob `use super::*;`);
+// every production use of `PathBuf` moved into `cli::args::*` with the structs.
+#[allow(unused_imports)]
 use std::path::PathBuf;
+
+mod args;
+pub use args::*;
 
 // ---- Trust-DB subcommand format and filter enums ----
 // ---- Shared format enum for explain / cost / triage (human|json only; no SARIF) ----
@@ -157,13 +163,6 @@ pub enum TopCommand {
     Mangen(MangenArgs),
 }
 
-#[derive(Debug, Parser)]
-pub struct MangenArgs {
-    /// Directory to write `rulesteward.1` into (created if absent).
-    #[arg(value_name = "OUTDIR")]
-    pub outdir: PathBuf,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum FapolicydCommand {
     /// Lint fapolicyd rule files (unprivileged, no daemon)
@@ -244,58 +243,6 @@ pub enum FapolicydCommand {
     Doctor(DoctorArgs),
 }
 
-#[derive(Debug, Parser)]
-pub struct LintArgs {
-    /// Path to the rules.d/ directory to lint (defaults to /etc/fapolicyd/rules.d/)
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Single-file mode - lint exactly this file
-    #[arg(long, value_name = "FILE", conflicts_with = "path")]
-    pub file: Option<PathBuf>,
-
-    /// Output format (human | json | sarif). SARIF is findings-only (SARIF 2.1.0).
-    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
-    pub format: OutputFormat,
-
-    /// Cross-check path=/exe= literals against this fapolicyd trust DB
-    /// (read-only); enables fapd-W06 (path in neither trust DB nor on disk)
-    #[arg(long, value_name = "PATH")]
-    pub against_trustdb: Option<PathBuf>,
-
-    /// Report trust-DB entries not referenced by any rule (fapd-X01). Requires
-    /// `--against-trustdb`; off by default (a real trust DB lists ~every system file).
-    #[arg(long)]
-    pub report_orphans: bool,
-
-    /// Target RHEL release for version-aware checks (auto|rhel8|rhel9|rhel10).
-    /// `auto` detects the baseline from the host's /etc/os-release, falling back
-    /// (with a warning) to the version-agnostic dialect when detection fails. Omit
-    /// `--target` to lint the version-agnostic dialect (no version-divergent
-    /// diagnostics).
-    #[arg(long, value_enum)]
-    pub target: Option<TargetSelector>,
-
-    /// Validate `uid=`/`gid=` literals against the host identity database via
-    /// `getent` (read-only); enables fapd-W05. Off by default (the check spawns a
-    /// `getent` subprocess that may query SSSD/LDAP/AD).
-    #[arg(long)]
-    pub check_identities: bool,
-
-    /// Additionally emit SARIF `kind:"pass"` results attesting per-check
-    /// coverage: one pass per `fapd-` check that ran and was clean, plus a
-    /// `tool.driver.rules[]` catalog of the checks that ran. Only meaningful
-    /// with `--format sarif` (ignored for human/json).
-    ///
-    /// "Ran" respects the run's gates: a conditional check (e.g. fapd-W05 needs
-    /// `--check-identities`, fapd-W06 needs `--against-trustdb`, fapd-E06 needs
-    /// `--target`) is only attested when its gate is on, so coverage is never
-    /// claimed for a check that did not execute. Off by default; SARIF output is
-    /// unchanged unless this flag is set (#137).
-    #[arg(long)]
-    pub sarif_include_pass: bool,
-}
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
     Human,
@@ -367,290 +314,6 @@ pub enum TargetSelector {
     Rhel10,
 }
 
-/// Arguments for `rulesteward fapolicyd explain` (#72/#73/#74).
-///
-/// Explains a FANOTIFY denial record in the context of a rule set and
-/// optional trust DB.
-#[derive(Debug, Parser)]
-pub struct ExplainArgs {
-    /// The kernel FANOTIFY denial record or ausearch block to explain.
-    #[arg(long, value_name = "FILE")]
-    pub record: PathBuf,
-
-    /// The rules.d/ directory the denial references.
-    #[arg(long, value_name = "DIR")]
-    pub ruleset: PathBuf,
-
-    /// Read-only trust DB for replaying trust facts (optional).
-    #[arg(long, value_name = "PATH")]
-    pub trustdb: Option<PathBuf>,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-}
-
-/// Arguments for `rulesteward fapolicyd migrate` (#187, spec §6.1).
-///
-/// Migrates a legacy single-file `fapolicyd.rules` into the modern `rules.d/`
-/// layout. Read-only by default: prints the migration plan and writes nothing
-/// unless `--apply` is given. `--from`/`--to` are the upgrade context and are
-/// validated (`from <= to`); the rule grammar is stable across rhel8/9/10, so
-/// the transforms today are the file-layout move + the `sha256hash=` ->
-/// `filehash=` deprecation.
-#[derive(Debug, Parser)]
-pub struct MigrateArgs {
-    /// Source RHEL release the ruleset is migrating FROM (rhel8/rhel9/rhel10).
-    #[arg(long, value_enum)]
-    pub from: TargetVersionArg,
-
-    /// Target RHEL release the ruleset is migrating TO (rhel8/rhel9/rhel10).
-    #[arg(long, value_enum)]
-    pub to: TargetVersionArg,
-
-    /// The fapolicyd config root holding `fapolicyd.rules` and/or `rules.d/`.
-    #[arg(long, value_name = "DIR")]
-    pub rules_dir: PathBuf,
-
-    /// Write the migrated `rules.d/` file to disk. Without it, migrate is a
-    /// read-only dry-run that prints the plan and changes nothing.
-    #[arg(long)]
-    pub apply: bool,
-
-    /// Authorize migrating a directory that ALREADY has both `fapolicyd.rules`
-    /// and `rules.d/*.rules` (the pre-existing coexistence trap that stops the
-    /// daemon starting): required to proceed in that case. The legacy file is
-    /// removed as part of the move on `--apply` regardless of this flag -- the
-    /// flag only gates acting on a dir that already has rules.d/ content.
-    #[arg(long)]
-    pub delete_legacy: bool,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Also write a standalone markdown migration report (audit trail of every
-    /// rewrite, the file moved, rules unchanged, and the resulting layout) to
-    /// this path. Opt-in (#212): without the flag no report is written. Works
-    /// in both dry-run and --apply modes; a dry-run report documents the PLAN.
-    #[arg(long, value_name = "PATH")]
-    pub report: Option<PathBuf>,
-}
-
-/// Arguments for `rulesteward fapolicyd simulate` (spec §6.1).
-///
-/// Replays a workload of access attempts against a rule set (optionally with a
-/// trust DB) and reports which rule decides each access. The body is
-/// implemented in the `feat-simulate` pipeline; this struct is the frozen
-/// Phase-0 arg contract.
-#[derive(Debug, Parser)]
-pub struct SimulateArgs {
-    /// The rules.d/ directory to replay the workload against.
-    #[arg(long, value_name = "DIR")]
-    pub rules: PathBuf,
-
-    /// Workload of access attempts to replay (`-` reads from stdin).
-    #[arg(long, value_name = "FILE")]
-    pub workload: PathBuf,
-
-    /// Read-only fapolicyd trust DB consulted to resolve trust the workload
-    /// omits (#127).
-    ///
-    /// Opened read-only: locked when the trust-DB directory is writable (to
-    /// prevent torn reads under a live daemon), with a `NO_LOCK` fallback
-    /// otherwise (#317). For any side whose trust the workload left unset, a
-    /// path PRESENT in the DB resolves to trusted and an ABSENT
-    /// path to untrusted; workload-supplied `trust`/`subjTrust`/`objTrust` always
-    /// takes priority. When a `filehash=`/`sha256hash=` rule needs the object's
-    /// hash and the workload omits it, the object file is hashed on demand.
-    #[arg(long, value_name = "PATH")]
-    pub trustdb: Option<PathBuf>,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-}
-
-/// Arguments for `rulesteward fapolicyd report` (spec §6.1 + f2 §6).
-///
-/// Builds the exception register (every effective allow grant) and optionally
-/// computes drift against a prior snapshot. The body is implemented in the
-/// `feat-report` pipeline; this struct is the frozen Phase-0 arg contract.
-/// Mirrors `LintArgs`' positional-`[PATH]` + `--file` target convention.
-#[derive(Debug, Parser)]
-pub struct ReportArgs {
-    /// Path to the rules.d/ directory to report on (defaults to /etc/fapolicyd/rules.d/)
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Single-file mode - report on exactly this file
-    #[arg(long, value_name = "FILE", conflicts_with = "path")]
-    pub file: Option<PathBuf>,
-
-    /// Output format (human | json | csv).
-    #[arg(long, value_enum, default_value_t = HumanJsonCsvFormat::Human)]
-    pub format: HumanJsonCsvFormat,
-
-    /// Cross-check grants against this read-only fapolicyd trust DB.
-    #[arg(long, value_name = "DIR")]
-    pub against_trustdb: Option<PathBuf>,
-
-    /// Compute drift against a previously-written register snapshot (JSON).
-    #[arg(long, value_name = "FILE")]
-    pub diff_against: Option<PathBuf>,
-
-    /// Exit non-zero when drift is detected (for CI gating).
-    #[arg(long)]
-    pub fail_on_drift: bool,
-
-    /// Enumerate trust-DB entries referenced by grants in the report.
-    #[arg(long)]
-    pub enumerate_trust: bool,
-}
-
-/// Arguments for `rulesteward auditd cost` (#85).
-///
-/// Calculates the estimated cost and volume of auditd event traffic.
-#[derive(Debug, Parser)]
-pub struct CostArgs {
-    /// auditd rules file or directory to analyze.
-    #[arg(long, value_name = "DIR")]
-    pub rules: PathBuf,
-
-    /// Measure real per-key event rate AND per-event size from a captured audit
-    /// log (optional).
-    ///
-    /// Both the per-key event RATE and the per-event SIZE are measured from the
-    /// log (issue #307): each event's on-disk bytes -- the SYSCALL record plus its
-    /// companion PATH/CWD/EOE records sharing one serial -- are summed and
-    /// attributed to that event's key, so execve-heavy logs are sized by their
-    /// real bytes instead of the flat ~1200 B ENRICHED assumption. Supply this to
-    /// replace the assumed rates and byte size with this host's measured values.
-    #[arg(long, value_name = "FILE")]
-    pub from_log: Option<PathBuf>,
-
-    /// USD per decimal GB (10^9 bytes), printed with currency in output.
-    #[arg(long, value_name = "USD", default_value_t = 5.00)]
-    pub price_per_gb: f64,
-
-    /// (not yet implemented) emit noise-reduction recommendations.
-    ///
-    /// Currently a no-op: prints a `[NOT YET IMPLEMENTED]` notice to stderr and
-    /// exits 0 with unchanged stdout (no recommendations are produced).
-    #[arg(long)]
-    pub recommend: bool,
-
-    /// Output format (human | json | csv).
-    ///
-    /// `csv` emits the flat per-rule table only; the aggregate totals and the
-    /// confidence note stay on the human and JSON surfaces (#64 / CC-3).
-    #[arg(long, value_enum, default_value_t = HumanJsonCsvFormat::Human)]
-    pub format: HumanJsonCsvFormat,
-}
-
-/// Arguments for `rulesteward fapolicyd doctor` (#76/#77/#78).
-///
-/// Runs 13 read-only deployment health checks and reports a scorecard.
-#[derive(Debug, Parser)]
-pub struct DoctorArgs {
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Rules directory to lint as part of the health check
-    /// (defaults to /etc/fapolicyd/rules.d/).
-    #[arg(long, value_name = "DIR", hide = true)]
-    pub rules_dir: Option<std::path::PathBuf>,
-}
-
-/// Arguments for `rulesteward fapolicyd container-check` (#175).
-///
-/// Detects container runtimes and reports fapolicyd namespace-limitation risk.
-/// The default run is unprivileged and uses only cheap probes; `--deep` (root)
-/// additionally reads `fapolicyd-cli --dump-db` and `ausearch` for evidence
-/// (which annotates findings but never changes their severity).
-#[derive(Debug, Parser)]
-pub struct ContainerCheckArgs {
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Gather extra evidence from the running daemon (requires root): trust-DB
-    /// coverage of runtime binaries and recent denial counts. Evidence-only:
-    /// it enriches findings but does not change the verdict or exit code.
-    #[arg(long)]
-    pub deep: bool,
-
-    /// Rules directory to scan for an `allow exe=/usr/bin/crun` rule
-    /// (defaults to /etc/fapolicyd/rules.d/).
-    #[arg(long, value_name = "DIR", hide = true)]
-    pub rules_dir: Option<std::path::PathBuf>,
-}
-
-/// Arguments for `rulesteward selinux triage` (#94).
-///
-/// Triages `SELinux` AVC denials. The `--emit-te` flag activates te-emit mode
-/// (emits a self-contained base-module `.te`) instead of a triage report.
-/// te-emit is NOT a separate verb; it is a mode flag on triage.
-///
-/// At least one of `--audit-log` or `--record` must be supplied; this is
-/// validated by the triage command at run time, not by clap, so neither
-/// field is `required`.
-#[derive(Debug, Parser)]
-pub struct TriageArgs {
-    /// Scan a full audit log for AVCs.
-    #[arg(long, value_name = "FILE")]
-    pub audit_log: Option<PathBuf>,
-
-    /// A single AVC record file (mutually exclusive with --audit-log).
-    ///
-    /// At least one of --record or --audit-log must be supplied (validated at
-    /// run time, not by clap; the command errors if neither is present).
-    #[arg(long, value_name = "FILE", conflicts_with = "audit_log")]
-    pub record: Option<PathBuf>,
-
-    /// Time window to scan (e.g. 1h, 2d).
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Emit a self-contained base-module .te instead of a triage report.
-    #[arg(long)]
-    pub emit_te: bool,
-
-    /// Module name for the emitted .te (used with --emit-te).
-    #[arg(long, value_name = "NAME")]
-    pub module_name: Option<String>,
-
-    /// Write output to FILE instead of stdout.
-    #[arg(short = 'o', long = "output", value_name = "FILE")]
-    pub output: Option<PathBuf>,
-
-    /// Binary `SELinux` policy file to replay denials against (read-only).
-    ///
-    /// When supplied, each AVC denial is authoritatively categorized by
-    /// replaying it against this policy via libsepol
-    /// (`sepol_compute_av_reason_buffer`). The authoritative verdict overrides
-    /// the record-only floor classifier when present; the floor is the fallback
-    /// when `--policy` is not supplied or when a context in the denial is not
-    /// defined in the supplied policy (cross-host / cross-version mismatch).
-    ///
-    /// A `--policy` that cannot be LOADED is a hard error (exit 2): the run does
-    /// NOT silently fall back to the floor, since the operator explicitly asked
-    /// for authoritative analysis.
-    ///
-    /// Gated on the `authoritative-categorizer` feature (default-ON, #124): the
-    /// flag only exists in the libsepol-backed default build. In the clean
-    /// Apache-2.0-only `--no-default-features` build there is no authoritative
-    /// path, so the flag is absent and `triage` runs floor-only.
-    #[cfg(feature = "authoritative-categorizer")]
-    #[arg(long, value_name = "FILE")]
-    pub policy: Option<PathBuf>,
-}
-
 /// Trust-DB subcommands.
 #[derive(Debug, Subcommand)]
 pub enum TrustdbCommand {
@@ -662,100 +325,6 @@ pub enum TrustdbCommand {
     Diff(TrustdbDiffArgs),
     /// Report trust-DB entries whose paths no longer exist on disk
     Stale(TrustdbStaleArgs),
-}
-
-/// Arguments for `rulesteward fapolicyd trustdb list`.
-#[derive(Debug, Parser)]
-pub struct TrustdbListArgs {
-    /// Path to the fapolicyd trust-DB directory (defaults to /var/lib/fapolicyd/)
-    #[arg(value_name = "DIR")]
-    pub db: Option<PathBuf>,
-
-    /// Output format (human | json | csv).
-    #[arg(long, value_enum, default_value_t = TrustdbListFormat::Human)]
-    pub format: TrustdbListFormat,
-
-    /// Filter entries by source database
-    #[arg(long, value_enum)]
-    pub source: Option<TrustSourceFilter>,
-}
-
-/// Arguments for `rulesteward fapolicyd trustdb check`.
-#[derive(Debug, Parser)]
-pub struct TrustdbCheckArgs {
-    /// Path to the fapolicyd trust-DB directory
-    #[arg(long, value_name = "DIR")]
-    pub db: Option<PathBuf>,
-
-    /// Paths to check against the trust DB
-    #[arg(value_name = "PATH", required = true, num_args = 1..)]
-    pub paths: Vec<PathBuf>,
-
-    /// Output format
-    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
-    pub format: TrustdbFormat,
-
-    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
-    /// `integrity` key controls which verdicts raise the exit code. When the
-    /// file is not found, STRICT mode (sha256) is assumed.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
-
-    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
-    /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL", value_enum)]
-    pub integrity: Option<IntegrityLevelArg>,
-}
-
-/// Arguments for `rulesteward fapolicyd trustdb diff`.
-#[derive(Debug, Parser)]
-pub struct TrustdbDiffArgs {
-    /// Path to the fapolicyd trust-DB directory
-    #[arg(long, value_name = "DIR")]
-    pub db: Option<PathBuf>,
-
-    /// Compare against a second trust DB instead of on-disk reality
-    #[arg(long, value_name = "DIR")]
-    pub against: Option<PathBuf>,
-
-    /// Output format
-    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
-    pub format: TrustdbFormat,
-
-    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
-    /// `integrity` key controls which verdicts raise the exit code (vs-disk mode
-    /// only; DB-vs-DB mode ignores integrity gating). When the file is not found,
-    /// STRICT mode (sha256) is assumed.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
-
-    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
-    /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL", value_enum)]
-    pub integrity: Option<IntegrityLevelArg>,
-}
-
-/// Arguments for `rulesteward fapolicyd trustdb stale`.
-#[derive(Debug, Parser)]
-pub struct TrustdbStaleArgs {
-    /// Path to the fapolicyd trust-DB directory
-    #[arg(long, value_name = "DIR")]
-    pub db: Option<PathBuf>,
-
-    /// Output format
-    #[arg(long, value_enum, default_value_t = TrustdbFormat::Human)]
-    pub format: TrustdbFormat,
-
-    /// Path to fapolicyd.conf (default: /etc/fapolicyd/fapolicyd.conf). The
-    /// `integrity` key controls which verdicts raise the exit code. When the
-    /// file is not found, STRICT mode (sha256) is assumed.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
-
-    /// Override the integrity enforcement level (none|size|ima|sha256). Takes
-    /// precedence over --config (and the daemon default).
-    #[arg(long, value_name = "LEVEL", value_enum)]
-    pub integrity: Option<IntegrityLevelArg>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -815,27 +384,6 @@ pub enum AuditdCommand {
     Lint(AuditdLintArgs),
 }
 
-/// Arguments for `rulesteward auditd lint` (#193, session 6a).
-#[derive(Debug, Parser)]
-pub struct AuditdLintArgs {
-    /// The audit rules to lint: a rules.d/ directory (analyzed in augenrules
-    /// load order) or a single .rules file (defaults to /etc/audit/rules.d/)
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Output format (human | json; SARIF and CSV are not offered for this
-    /// verb per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Also fold `AppArmor` msgtype record names (`APPARMOR_DENIED`, etc.).
-    /// Enable when linting rules for an AppArmor-enabled audit build
-    /// (Debian/Ubuntu); off by default (RHEL/fapolicyd targets do not
-    /// recognize these names).
-    #[arg(long)]
-    pub apparmor: bool,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum SshdCommand {
     /// Lint an `sshd_config` file (#149)
@@ -854,30 +402,6 @@ pub enum SshdCommand {
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sshd-F01).
     Lint(SshdLintArgs),
-}
-
-/// Arguments for `rulesteward sshd lint` (#149).
-#[derive(Debug, Parser)]
-pub struct SshdLintArgs {
-    /// The `sshd_config` file to lint (defaults to `/etc/ssh/sshd_config`)
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Output format (human | json; SARIF and CSV are not offered for this verb
-    /// per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Target OS baseline (auto|rhel8|rhel9|rhel10) for the version-aware lints.
-    /// Selects which OpenSSH keyword set the version-aware passes (sshd-E01,
-    /// sshd-E04, sshd-W01..W04) validate against (rhel8 = 8.0p1, rhel9 / rhel10 =
-    /// 9.9p1). `auto` detects the baseline from the host's /etc/os-release, falling
-    /// back (with a warning) to the version-agnostic dialect when detection fails.
-    /// With no --target, the most-permissive (newest) dialect is used, so sshd-E01
-    /// flags only keywords unknown to every supported version and sshd-E04 leans
-    /// false-negative.
-    #[arg(long, value_enum)]
-    pub target: Option<TargetSelector>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -903,45 +427,6 @@ pub enum SysctlCommand {
     /// follow the shared scheme: 0 clean, 1 warnings, 2 errors, 3 tool failure,
     /// 5 unparseable config (sysctld-F01).
     Lint(SysctlLintArgs),
-}
-
-/// Arguments for `rulesteward sysctl lint` (#150, #335, #420).
-#[derive(Debug, Parser)]
-pub struct SysctlLintArgs {
-    /// The `sysctl.d`/`sysctl.conf` file to lint (defaults to `/etc/sysctl.conf`).
-    /// Mutually exclusive with `--system`.
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Scan the standard `sysctl.d` search-path directories (`/etc/sysctl.d`,
-    /// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus
-    /// `/etc/sysctl.conf`, instead of a single `<path>` (issue #420). Models the
-    /// grounded same-basename directory masking + global lexicographic merge and
-    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02. Mutually
-    /// exclusive with the positional `<path>`.
-    #[arg(long, conflicts_with = "path")]
-    pub system: bool,
-
-    /// Prepend PREFIX to every standard search directory and to
-    /// `/etc/sysctl.conf` / the `99-sysctl.conf` symlink (hermetic testing, or
-    /// linting an image/chroot). Requires `--system`.
-    #[arg(long, value_name = "PREFIX", requires = "system")]
-    pub root: Option<PathBuf>,
-
-    /// Output format (human | json; SARIF and CSV are not offered for this verb
-    /// per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-
-    /// Target RHEL release for the STIG hardening baseline (auto|rhel8|rhel9|rhel10).
-    /// Enables the version-aware `sysctld-W02` check: a STIG-required kernel-hardening
-    /// key that is unset across the effective config, or set to an insecure value, is
-    /// flagged against the selected release's baseline. `auto` detects the release from
-    /// the host's /etc/os-release, falling back (with a warning) to version-agnostic
-    /// when detection fails. With no `--target`, W02 does not run (version-agnostic:
-    /// only sysctld-F01 / sysctld-W01).
-    #[arg(long, value_enum)]
-    pub target: Option<TargetSelector>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -970,27 +455,6 @@ pub enum SudoersCommand {
     /// page). Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable config (sudo-F01).
     Lint(SudoersLintArgs),
-}
-
-/// Arguments for `rulesteward sudoers lint` (#329).
-#[derive(Debug, Parser)]
-pub struct SudoersLintArgs {
-    /// The `sudoers` file or `sudoers.d` directory to lint (defaults to
-    /// `/etc/sudoers`)
-    #[arg(value_name = "PATH")]
-    pub path: Option<PathBuf>,
-
-    /// Output format (human | json; SARIF and CSV are not offered for this verb
-    /// per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
-}
-
-#[derive(Debug, Parser)]
-pub struct CompletionsArgs {
-    /// Shell to generate completions for
-    #[arg(value_enum)]
-    pub shell: CompletionShell,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
