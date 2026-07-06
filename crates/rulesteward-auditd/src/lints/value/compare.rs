@@ -1,0 +1,189 @@
+//! Predicate comparison over `-F` values: `implies` (au-W02 subsumption, #219),
+//! `disjoint` (au-W03 suppression, #219/#228), and the interval/bitmask/exact
+//! helpers both rest on. Split out of `value.rs` (#438); see the parent
+//! `value` module doc for the overall design.
+
+use crate::ast::{CompareOp, FieldFilter};
+use crate::lints::field_type::{FieldType, field_type};
+
+use super::LintOptions;
+use super::canonical::canonical_value;
+use super::classify::{FieldValue, classify};
+
+/// True when the later predicate `pl` IMPLIES the earlier predicate `pe`: every
+/// value matching `pl` also matches `pe` (so `pl`'s matched set is a subset of
+/// `pe`'s, i.e. `pe` is at least as broad). Both predicates must be on the same
+/// field. Used by au-W02 subsumption (#219): the earlier rule subsumes the
+/// later one when every earlier predicate is implied by a later predicate.
+///
+/// Conservative: returns true only for provable implication; any unsupported
+/// operator pairing returns false (a false negative, never a false positive).
+#[must_use]
+pub fn implies(pe: &FieldFilter, pl: &FieldFilter, opts: LintOptions) -> bool {
+    if pe.field != pl.field {
+        return false;
+    }
+    let ft = field_type(&pe.field);
+    // I0: identical operator and folded-equal value. Covers Eq, Ne, the bitmask
+    // ops, and exact relational, and folds the uid/gid sentinel spellings, so
+    // au-W02 agrees with au-W01 on value identity.
+    if pe.op == pl.op
+        && canonical_value(ft, &pe.value, opts) == canonical_value(ft, &pl.value, opts)
+    {
+        return true;
+    }
+    // Otherwise pl implies pe iff pl's matched interval is contained in pe's.
+    // interval() yields None for Ne/bitmask/opaque/sentinel operands, so those
+    // reach implication ONLY through the exact I0 case above (conservative).
+    match (interval(ft, pe), interval(ft, pl)) {
+        (Some((elo, ehi)), Some((llo, lhi))) => elo <= llo && lhi <= ehi,
+        _ => false,
+    }
+}
+
+/// True when two same-field predicates are PROVABLY non-co-matching: no single
+/// event value can satisfy both. Used by au-W03 (#219, #228) to prove two rules
+/// cannot overlap. Conservative: returns true only when provable; on any doubt
+/// returns false (the rules are then treated as overlapping, keeping the
+/// suppression warning).
+///
+/// Provable cases:
+/// * Eq vs Eq: contradict iff [`eq_values_provably_differ`].
+/// * Eq vs Ne (#228): `f=k` and `f!=k'` contradict iff k provably equals k'
+///   ([`eq_values_provably_equal`]); the Eq value is exactly what Ne excludes.
+/// * Eq vs bitmask (#228): the Eq value pins the field, so the mask test is
+///   decidable - `=k` vs `&m` iff `k & m == 0`; `=k` vs `&=m` iff `k & m != m`
+///   (both operands must be concrete unsigned numbers).
+/// * Relational/Eq pairs: non-overlapping concrete intervals.
+///
+/// Cases that are NEVER provably disjoint (theorems, kept conservative -> false):
+/// two bitmask predicates (always co-satisfiable by `m1 | m2`), Ne vs Ne (each
+/// excludes one point, so they always intersect), and Ne/bitmask vs a relational
+/// (the Ne/bitmask set has no interval). These fall through to the interval arm,
+/// where Ne/bitmask yield `None`.
+///
+/// NOTE: for `msgtype`, [`canonical_decides_value_identity`] returns `false`
+/// (alias-bearing field), so this function is conservative for `msgtype` regardless
+/// of `opts` -- threading `opts` through is for signature uniformity only (#230).
+#[must_use]
+pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter, opts: LintOptions) -> bool {
+    if pa.field != pb.field {
+        return false;
+    }
+    let ft = field_type(&pa.field);
+    match (&pa.op, &pb.op) {
+        // Eq vs Eq: one event carries one value per field, so two equalities
+        // contradict iff their values are PROVABLY different kernel values.
+        (CompareOp::Eq, CompareOp::Eq) => eq_values_provably_differ(ft, &pa.value, &pb.value, opts),
+        // Eq vs Ne (either order, #228): contradict iff the Eq value provably
+        // equals the value Ne excludes.
+        (CompareOp::Eq, CompareOp::Ne) | (CompareOp::Ne, CompareOp::Eq) => {
+            eq_values_provably_equal(ft, &pa.value, &pb.value, opts)
+        }
+        // Eq vs bitmask (either order, #228): `&` matches iff (value & mask) != 0,
+        // `&=` matches iff (value & mask) == mask. With the value pinned by Eq the
+        // test is decidable; helpers take (eq, mask) so the order is normalized.
+        (CompareOp::Eq, CompareOp::BitAnd) => eq_bitand_disjoint(ft, &pa.value, &pb.value),
+        (CompareOp::BitAnd, CompareOp::Eq) => eq_bitand_disjoint(ft, &pb.value, &pa.value),
+        (CompareOp::Eq, CompareOp::BitAndEq) => eq_bitandeq_disjoint(ft, &pa.value, &pb.value),
+        (CompareOp::BitAndEq, CompareOp::Eq) => eq_bitandeq_disjoint(ft, &pb.value, &pa.value),
+        // Otherwise prove disjointness only via non-overlapping concrete
+        // intervals. Ne/bitmask/opaque/sentinel yield None -> not provably
+        // disjoint -> overlap (this is where the conservative theorems land).
+        _ => match (interval(ft, pa), interval(ft, pb)) {
+            (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
+            _ => false,
+        },
+    }
+}
+
+/// The concrete unsigned value of `raw` under `ft`, or `None` if it is not a
+/// concrete unsigned number (so the bitmask relations decline -> conservative).
+fn as_u64(ft: FieldType, raw: &str) -> Option<u64> {
+    match classify(ft, raw) {
+        FieldValue::Unsigned(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// True when `=k` and `&m` cannot co-match (#228): the single value `k` fails the
+/// bit-mask test `(k & m) != 0`, i.e. `k & m == 0`. Both must be concrete
+/// unsigned; otherwise conservative (false).
+fn eq_bitand_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
+    match (as_u64(ft, eq), as_u64(ft, mask)) {
+        (Some(k), Some(m)) => k & m == 0,
+        _ => false,
+    }
+}
+
+/// True when `=k` and `&=m` cannot co-match (#228): the single value `k` fails
+/// the bit-test `(k & m) == m`, i.e. `k & m != m`. Both must be concrete
+/// unsigned; otherwise conservative (false).
+fn eq_bitandeq_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
+    match (as_u64(ft, eq), as_u64(ft, mask)) {
+        (Some(k), Some(m)) => k & m != m,
+        _ => false,
+    }
+}
+
+/// Whether two `=`/`!=` values on field `ft` can be decided same-vs-different
+/// from their canonical spelling alone: both concrete-comparable (a numeric value
+/// or the uid/gid sentinel) OR a free-form exact-match string field
+/// ([`FieldType::String`]/[`FieldType::StringEqNe`]/[`FieldType::Key`]: path, dir,
+/// exe, subj_*, obj_*, key). Alias-bearing fields where one spelling can denote
+/// the same value as another (uid/gid NAMES like `uid=root` == `uid=0`;
+/// `arch=b64` == `arch=x86_64`; msgtype; filetype/fstype symbolic names) are NOT
+/// decidable from a spelling, so this returns false and the caller stays
+/// conservative (never DROPS a real au-W03 suppression warning).
+fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str) -> bool {
+    let comparable = |v: FieldValue| {
+        matches!(
+            v,
+            FieldValue::Unsigned(_) | FieldValue::Signed(_) | FieldValue::UidGidUnset
+        )
+    };
+    let both_concrete = comparable(classify(ft, a)) && comparable(classify(ft, b));
+    let free_form = matches!(
+        ft,
+        FieldType::String | FieldType::StringEqNe | FieldType::Key
+    );
+    both_concrete || free_form
+}
+
+/// True when two values on the same field are PROVABLY DIFFERENT kernel values
+/// (e.g. `uid=0` vs `uid=1000`, `path=/a` vs `path=/b`). Decidable only when
+/// [`canonical_decides_value_identity`] holds; otherwise false (conservative).
+fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
+    canonical_decides_value_identity(ft, a, b)
+        && canonical_value(ft, a, opts) != canonical_value(ft, b, opts)
+}
+
+/// True when two values on the same field are PROVABLY the SAME kernel value (the
+/// mirror of [`eq_values_provably_differ`]); used by au-W03 Eq-vs-Ne
+/// disjointness (#228). Decidable only when [`canonical_decides_value_identity`]
+/// holds; otherwise false (conservative).
+///
+/// `pub(super)`: only called internally by `disjoint` above, but also read
+/// directly by `mod tests` in the parent `value::mod` via a `#[cfg(test)]`
+/// import.
+pub(super) fn eq_values_provably_equal(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
+    canonical_decides_value_identity(ft, a, b)
+        && canonical_value(ft, a, opts) == canonical_value(ft, b, opts)
+}
+
+/// The closed `i128` interval `[lo, hi]` of event values a predicate matches,
+/// or `None` when the operand is not a concrete orderable number (`Ne`, the
+/// bitmask ops, opaque values, and the uid/gid sentinel have no interval). The
+/// half-line infinities use `i128::MIN`/`MAX`; real `u64`/`i64` values plus the
+/// `+/-1` boundary adjustments stay well inside `i128`.
+fn interval(ft: FieldType, p: &FieldFilter) -> Option<(i128, i128)> {
+    let c = classify(ft, &p.value).position()?;
+    match p.op {
+        CompareOp::Eq => Some((c, c)),
+        CompareOp::Ge => Some((c, i128::MAX)),
+        CompareOp::Gt => Some((c + 1, i128::MAX)),
+        CompareOp::Le => Some((i128::MIN, c)),
+        CompareOp::Lt => Some((i128::MIN, c - 1)),
+        CompareOp::Ne | CompareOp::BitAnd | CompareOp::BitAndEq => None,
+    }
+}
