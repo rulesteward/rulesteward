@@ -2059,5 +2059,189 @@ mod w07_tests {
             "Match User alice User bob\n    X11Forwarding yes\n",
             "Match User carol\n    X11Forwarding yes\n",
         ));
+        // A nobody-block co-satisfies nothing, even against an always-satisfied
+        // `Match all` (the nobody-check must run BEFORE the Match-all short-circuit).
+        assert!(!overlap(
+            "Match Address 10.0.0.0/8 Address 192.168.0.0/16\n    X11Forwarding yes\n",
+            "Match all\n    X11Forwarding yes\n",
+        ));
+        // `Match all` is always satisfied, so it overlaps any satisfiable block.
+        assert!(overlap(
+            "Match all\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Repeated criteria are AND-ed across ALL occurrences, not just the first:
+        // `alice,carol` AND `bob,carol` = `carol`, which is DISJOINT from a later
+        // `alice`, so the blocks do NOT overlap (comparing only the first occurrence
+        // `alice,carol` vs `alice` would wrongly report overlap).
+        assert!(!overlap(
+            "Match User alice,carol User bob,carol\n    X11Forwarding yes\n",
+            "Match User alice\n    X11Forwarding yes\n",
+        ));
+    }
+
+    #[test]
+    fn single_region_type_pinned_directly() {
+        // Region reasoning is single-type only. A block with exactly one modeled
+        // criterion type yields that type; 2+ types or an unmodeled type yields None
+        // (routing to the block-level fallback).
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let kind = |src: &str| super::single_region_type(&mb(src));
+        assert_eq!(
+            kind("Match User alice\n    X11Forwarding yes\n"),
+            Some("user".to_string()),
+        );
+        assert_eq!(
+            kind("Match Address 10.0.0.0/8\n    X11Forwarding yes\n"),
+            Some("address".to_string()),
+        );
+        // Two criterion types -> None (block-level fallback).
+        assert_eq!(
+            kind("Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n"),
+            None,
+        );
+        // A SINGLE Address instance carrying a negation is NOT the repeated-with-negation
+        // guard (that needs >= 2 instances), so it stays a region type.
+        assert_eq!(
+            kind("Match Address 10.0.0.0/8,!10.5.0.0/16\n    X11Forwarding yes\n"),
+            Some("address".to_string()),
+        );
+        // A REPEATED Address type carrying a negation trips the conservative guard -> None.
+        assert_eq!(
+            kind(
+                "Match Address 10.0.0.0/8,!10.5.0.0/16 Address 10.0.0.0/8\n    X11Forwarding yes\n"
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn block_matches_nobody_pinned_directly() {
+        // A criterion TYPE repeated on one header is AND-ed, so a repeat with an empty
+        // intersection matches nobody; a single (or satisfiable-repeated) criterion does
+        // not. Pins the address / localport arms of the common-witness dispatch.
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let nobody = |src: &str| super::block_matches_nobody(&mb(src));
+        // Disjoint repeated Address / LocalPort -> nobody.
+        assert!(nobody(
+            "Match Address 10.0.0.0/8 Address 192.168.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(nobody(
+            "Match Address 10.0.0.0/16 Address 10.5.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(nobody(
+            "Match LocalPort 22 LocalPort 2222\n    X11Forwarding yes\n"
+        ));
+        // A single criterion, or a satisfiable repeated (nested) one, is somebody.
+        assert!(!nobody("Match Address 10.0.0.0/8\n    X11Forwarding yes\n"));
+        assert!(!nobody(
+            "Match Address 10.0.0.0/8 Address 10.5.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(!nobody(
+            "Match LocalPort 2222 LocalPort 2222\n    X11Forwarding yes\n"
+        ));
+    }
+
+    #[test]
+    fn port_region_set_pinned_directly() {
+        // A LocalPort block's region set is its ports; repeated LocalPort criteria are
+        // AND-ed (intersection). Pins port_region_set against a constant-set mutation.
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        assert_eq!(
+            super::port_region_set(
+                &mb("Match LocalPort 2202\n    X11Forwarding yes\n"),
+                "localport"
+            ),
+            std::collections::BTreeSet::from([2202u32]),
+        );
+        // Repeated same port ANDs to itself.
+        assert_eq!(
+            super::port_region_set(
+                &mb("Match LocalPort 2202 LocalPort 2202\n    X11Forwarding yes\n"),
+                "localport",
+            ),
+            std::collections::BTreeSet::from([2202u32]),
+        );
+        // Disjoint repeated ports AND to the empty set.
+        assert!(
+            super::port_region_set(
+                &mb("Match LocalPort 22 LocalPort 2222\n    X11Forwarding yes\n"),
+                "localport",
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn same_value_localport_across_overlapping_blocks_is_clean() {
+        // Two identical single-LocalPort blocks setting the SAME value have no
+        // behavioral effect (the first wins, the second would apply the same value), so
+        // there is no differing shadow. Pins the port region path's non-empty-region AND
+        // differing-value conjunction (an OR would flag this redundant repeat).
+        assert!(
+            w07_diags(
+                "Match LocalPort 2202\n    X11Forwarding yes\n\
+                 Match LocalPort 2202\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "identical value across two co-satisfiable LocalPort blocks is redundant, not a shadow"
+        );
+    }
+
+    #[test]
+    fn multi_type_block_level_fallback_flags_and_disjoint_is_clean() {
+        // A block constraining 2+ criterion types routes through the block-level
+        // fallback (region reasoning is single-type only). Two IDENTICAL multi-type
+        // blocks co-satisfy, so a differing first-value-wins value shadows the later
+        // line. Pins block_level_shadow's positive path.
+        let d = w07_diags(
+            "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "identical multi-type blocks co-satisfy -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+        // Two multi-type blocks that do NOT overlap (disjoint on the User type) never
+        // co-satisfy, so nothing is shadowed. Pins the block-level filter's
+        // overlap-AND-sets-keyword conjunction (an OR would treat the disjoint earlier
+        // block as a spurious winner and false-fire).
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User bob Address 192.168.0.0/16\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint multi-type blocks never co-satisfy, so nothing is shadowed"
+        );
     }
 }

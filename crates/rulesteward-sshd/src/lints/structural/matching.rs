@@ -337,3 +337,181 @@ fn cidr_split(net: Cidr) -> Option<(Cidr, Cidr)> {
         }
     }
 }
+
+#[cfg(test)]
+mod matching_tests {
+    //! Direct known-answer unit tests pinning the #409 CIDR/port set algebra and the
+    //! negation-aware overlap oracles. The sshd-W07 end-to-end fixtures in
+    //! [`super::super::w07`] exercise these internals, but several branches (exact
+    //! bisection, disjoint-normalization, negation removal, the more-specific-net
+    //! intersection) only affect the SIZE of an intermediate set, not any observable
+    //! diagnostic, so behavioral tests cannot pin them for mutation adequacy. Each
+    //! assertion below states the OBJECTIVELY CORRECT value from CIDR math or sshd
+    //! `LocalPort`/`match_pattern_list` semantics, independent of the current impl.
+    use super::{
+        Cidr, cidr_contains, cidr_lists_overlap, cidr_set_difference, cidr_set_intersection,
+        cidr_split, normalize_disjoint, port_lists_overlap, port_set,
+    };
+    use std::net::IpAddr;
+
+    fn net(addr: &str, prefix: u8) -> Cidr {
+        (addr.parse::<IpAddr>().expect("valid IP"), prefix)
+    }
+    fn s(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_string()).collect()
+    }
+
+    #[test]
+    fn cidr_split_v4_bisects_on_the_top_host_bit() {
+        // 10.0.0.0/8 halves into 10.0.0.0/9 and 10.128.0.0/9 (the /9 bit is the top
+        // host bit of the /8). Deeper and byte-boundary splits pin the child prefix
+        // and bit position exactly.
+        assert_eq!(
+            cidr_split(net("10.0.0.0", 8)),
+            Some((net("10.0.0.0", 9), net("10.128.0.0", 9))),
+        );
+        assert_eq!(
+            cidr_split(net("10.128.0.0", 9)),
+            Some((net("10.128.0.0", 10), net("10.192.0.0", 10))),
+        );
+        assert_eq!(
+            cidr_split(net("192.168.1.0", 24)),
+            Some((net("192.168.1.0", 25), net("192.168.1.128", 25))),
+        );
+        // A /32 host route has no host bits to split.
+        assert_eq!(cidr_split(net("10.1.2.3", 32)), None);
+    }
+
+    #[test]
+    fn cidr_split_v6_bisects_on_the_top_host_bit() {
+        assert_eq!(
+            cidr_split(net("2001:db8::", 32)),
+            Some((net("2001:db8::", 33), net("2001:db8:8000::", 33))),
+        );
+        assert_eq!(
+            cidr_split(net("::", 0)),
+            Some((net("::", 1), net("8000::", 1))),
+        );
+        // A /128 host route has no host bits to split.
+        assert_eq!(cidr_split(net("2001:db8::1", 128)), None);
+    }
+
+    #[test]
+    fn cidr_contains_is_supernet_or_equal() {
+        // A shorter-or-equal prefix that intersects is a supernet-or-equal.
+        assert!(cidr_contains(net("10.0.0.0", 8), net("10.5.0.0", 16)));
+        assert!(cidr_contains(net("10.5.0.0", 16), net("10.5.0.0", 16)));
+        // A longer prefix never contains its enclosing supernet.
+        assert!(!cidr_contains(net("10.5.0.0", 16), net("10.0.0.0", 8)));
+        // Disjoint nets never contain each other.
+        assert!(!cidr_contains(net("10.0.0.0", 8), net("192.168.0.0", 16)));
+    }
+
+    #[test]
+    fn normalize_disjoint_collapses_a_net_into_its_supernet() {
+        // A wider net subsumes every narrower net it covers, regardless of input order.
+        assert_eq!(
+            normalize_disjoint(vec![net("10.0.0.0", 16), net("10.0.0.0", 8)]),
+            vec![net("10.0.0.0", 8)],
+        );
+        assert_eq!(
+            normalize_disjoint(vec![net("10.0.0.0", 8), net("10.0.0.0", 16)]),
+            vec![net("10.0.0.0", 8)],
+        );
+        // Disjoint nets are both kept; an exact duplicate is deduplicated.
+        assert_eq!(
+            normalize_disjoint(vec![net("10.0.0.0", 8), net("192.168.0.0", 16)]),
+            vec![net("10.0.0.0", 8), net("192.168.0.0", 16)],
+        );
+        assert_eq!(
+            normalize_disjoint(vec![net("10.0.0.0", 8), net("10.0.0.0", 8)]),
+            vec![net("10.0.0.0", 8)],
+        );
+    }
+
+    #[test]
+    fn cidr_set_intersection_meets_in_the_more_specific_net() {
+        // Nested nets meet in the longer-prefix (more specific) one, order-independent.
+        assert_eq!(
+            cidr_set_intersection(&[net("10.0.0.0", 8)], &[net("10.5.0.0", 16)]),
+            vec![net("10.5.0.0", 16)],
+        );
+        assert_eq!(
+            cidr_set_intersection(&[net("10.5.0.0", 16)], &[net("10.0.0.0", 8)]),
+            vec![net("10.5.0.0", 16)],
+        );
+        // Disjoint and cross-family intersections are empty.
+        assert!(cidr_set_intersection(&[net("10.0.0.0", 8)], &[net("192.168.0.0", 16)]).is_empty());
+        assert!(cidr_set_intersection(&[net("10.0.0.0", 8)], &[net("2001:db8::", 32)]).is_empty());
+    }
+
+    #[test]
+    fn cidr_set_difference_carves_the_exact_disjoint_cover() {
+        // 10.0.0.0/8 MINUS 10.5.0.0/16 is the canonical CIDR range subtraction: the
+        // union of the disjoint sibling prefixes covering 10.0.0.0/8 except 10.5.0.0/16
+        // (low-then-high recursion order). Pins cidr_split's callers exactly.
+        assert_eq!(
+            cidr_set_difference(&[net("10.0.0.0", 8)], &[net("10.5.0.0", 16)]),
+            vec![
+                net("10.0.0.0", 14),
+                net("10.4.0.0", 16),
+                net("10.6.0.0", 15),
+                net("10.8.0.0", 13),
+                net("10.16.0.0", 12),
+                net("10.32.0.0", 11),
+                net("10.64.0.0", 10),
+                net("10.128.0.0", 9),
+            ],
+        );
+        // Subtracting a disjoint hole leaves the net unchanged; subtracting a covering
+        // supernet empties it.
+        assert_eq!(
+            cidr_set_difference(&[net("10.0.0.0", 16)], &[net("192.168.0.0", 16)]),
+            vec![net("10.0.0.0", 16)],
+        );
+        assert!(cidr_set_difference(&[net("10.5.0.0", 16)], &[net("10.0.0.0", 8)]).is_empty());
+    }
+
+    #[test]
+    fn port_set_is_positives_minus_negations() {
+        use std::collections::BTreeSet;
+        assert_eq!(port_set(&s(&["22", "2222"])), BTreeSet::from([22u32, 2222]),);
+        // A negated port is removed from the set.
+        assert_eq!(port_set(&s(&["22", "!22"])), BTreeSet::new());
+        // Duplicates collapse.
+        assert_eq!(port_set(&s(&["22", "22"])), BTreeSet::from([22u32]));
+    }
+
+    #[test]
+    fn cidr_lists_overlap_is_negation_aware() {
+        // Disjoint ranges never overlap; a nested pair does.
+        assert!(!cidr_lists_overlap(
+            &s(&["10.0.0.0/8"]),
+            &s(&["192.168.0.0/16"])
+        ));
+        assert!(cidr_lists_overlap(
+            &s(&["10.0.0.0/8"]),
+            &s(&["10.5.0.0/16"])
+        ));
+        // A negation fully covering the positive intersection makes the pair disjoint
+        // (pins the more-specific-net choice: the /24 intersection, not the /16).
+        assert!(!cidr_lists_overlap(
+            &s(&["192.168.0.0/16", "!192.168.5.0/24"]),
+            &s(&["192.168.5.0/24"]),
+        ));
+        // An irrelevant negation leaves the overlap intact.
+        assert!(cidr_lists_overlap(
+            &s(&["10.0.0.0/8", "!192.168.0.0/16"]),
+            &s(&["10.0.0.0/8"]),
+        ));
+    }
+
+    #[test]
+    fn port_lists_overlap_is_negation_aware() {
+        // Disjoint single ports never co-satisfy; a shared port does.
+        assert!(!port_lists_overlap(&s(&["22"]), &s(&["2222"])));
+        assert!(port_lists_overlap(&s(&["2222"]), &s(&["2222"])));
+        // A negation of the shared port (in either list) removes the overlap.
+        assert!(!port_lists_overlap(&s(&["22"]), &s(&["22", "!22"])));
+    }
+}
