@@ -63,7 +63,7 @@ examine_globs = [
     # sha256hash->filehash rewrite), detect_layout, render, and the run
     # orchestration (dry-run/apply/delete-legacy on an injectable --rules-dir,
     # tempdir-tested). New file: list explicitly or the gate passes vacuously.
-    "crates/rulesteward-cli/src/commands/migrate.rs",
+    "crates/rulesteward-cli/src/commands/migrate/**/*.rs",
     # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69;
     # split into simulate/{workload,evaluate,render}.rs + mod.rs in #146): the
     # parsers, load_ruleset, evaluate_query, resolve_trust, and renderer are real
