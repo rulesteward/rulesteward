@@ -13,8 +13,8 @@ use crate::lints::{SshdLintContext, anchored, is_unconditional_match_all};
 use super::E02_ALLOW_REPEAT;
 use super::matching::{
     Cidr, cidr_intersects, cidr_list_set, cidr_lists_overlap, cidr_set_difference,
-    cidr_set_intersection, cidr_set_is_empty, glob_match, parse_cidr_list, parse_port_list,
-    port_lists_overlap, port_set,
+    cidr_set_intersection, glob_match, parse_cidr_list, parse_port_list, port_lists_overlap,
+    port_set,
 };
 
 /// sshd-W07: the same first-value-wins keyword set to DIFFERENT values in two
@@ -98,21 +98,24 @@ pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
             // that both overlap this one AND set the keyword are the candidate winners,
             // in SOURCE ORDER (the first one a given connection satisfies wins it).
             let value = directive.args.as_slice();
-            let earlier_setters: Vec<&MatchBlock> = match_blocks[..j]
-                .iter()
-                .copied()
-                .filter(|earlier| {
-                    match_blocks_overlap(earlier, later)
-                        && first_value_for(earlier, &keyword).is_some()
-                })
-                .collect();
-            // When this block constrains a SINGLE criterion type, decide the shadow
-            // PER SUB-POPULATION (#409): flag iff some non-empty region of this block's
+            // When this block constrains a SINGLE criterion type, decide the shadow PER
+            // SUB-POPULATION (#409): flag iff some non-empty region of this block's
             // connections is won by an earlier block with a DIFFERING value. Otherwise
             // fall back to the block-level winner comparison.
-            let shadowed = match single_region_type(later) {
-                Some(kind) => region_shadow(later, &kind, &keyword, value, &earlier_setters),
-                None => block_level_shadow(&keyword, value, &earlier_setters),
+            let shadowed = if let Some(kind) = single_region_type(later) {
+                let earlier_setters =
+                    region_earlier_setters(&match_blocks[..j], later, &keyword, &kind);
+                region_shadow(later, &kind, &keyword, value, &earlier_setters)
+            } else {
+                let earlier_setters: Vec<&MatchBlock> = match_blocks[..j]
+                    .iter()
+                    .copied()
+                    .filter(|earlier| {
+                        match_blocks_overlap(earlier, later)
+                            && first_value_for(earlier, &keyword).is_some()
+                    })
+                    .collect();
+                block_level_shadow(&keyword, value, &earlier_setters)
             };
             if shadowed {
                 diags.push(anchored(
@@ -184,6 +187,42 @@ fn single_region_type(block: &MatchBlock) -> Option<String> {
         return None;
     }
     Some(kind.clone())
+}
+
+/// The earlier blocks that set `keyword_lower` and are candidate winners for the
+/// per-sub-population (#409) region path of a block whose single criterion type is
+/// `kind`, in source order.
+///
+/// NAME criteria (`user`/`group`/`host`) are selected STRUCTURALLY - an earlier block
+/// qualifies iff it is `Match all` or itself single-criterion-type `kind` - NOT via the
+/// FN-leaning [`match_blocks_overlap`]. Its name oracle ([`pattern_lists_overlap`])
+/// cannot witness a wildcard-vs-wildcard overlap, so it would DROP an agreeing wildcard
+/// block (e.g. an earlier `Host *.corp` that AGREES with a later `Host *.corp`) and let
+/// the later block be over-flagged against a differing MIDDLE block (#409). The names
+/// region path's exact per-witness membership ([`member_of_type`]) then decides real
+/// co-satisfaction, so a structurally-included but non-overlapping block simply yields
+/// no witness (still FP-free). CIDR/port criteria keep [`match_blocks_overlap`] (no
+/// wildcard FN there); their exact set intersection re-tests overlap regardless.
+fn region_earlier_setters<'a>(
+    earlier_blocks: &[&'a MatchBlock],
+    later: &MatchBlock,
+    keyword_lower: &str,
+    kind: &str,
+) -> Vec<&'a MatchBlock> {
+    let is_name = matches!(kind, "user" | "group" | "host");
+    earlier_blocks
+        .iter()
+        .copied()
+        .filter(|earlier| {
+            first_value_for(earlier, keyword_lower).is_some()
+                && if is_name {
+                    is_unconditional_match_all(earlier)
+                        || single_region_type(earlier).as_deref() == Some(kind)
+                } else {
+                    match_blocks_overlap(earlier, later)
+                }
+        })
+        .collect()
 }
 
 /// Dispatch per-sub-population (#409) shadow detection by criterion-type domain. Names
@@ -310,13 +349,13 @@ fn cidr_region_shadow(
                 cidr_set_difference(&remaining, &earlier_set),
             )
         };
-        if !cidr_set_is_empty(&region)
+        if !region.is_empty()
             && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
         {
             return true;
         }
         remaining = rest;
-        if cidr_set_is_empty(&remaining) {
+        if remaining.is_empty() {
             break;
         }
     }
@@ -1898,5 +1937,67 @@ mod w07_tests {
         );
         assert_eq!(d.len(), 1, "single-port equality still shadows -> one W07");
         assert_eq!(d[0].line, 6);
+    }
+
+    // ---- Direct unit test for the NAME-overlap oracle (white-box) ----
+    // #409 routed the single-type NAME region path OFF `match_blocks_overlap` (its
+    // pattern oracle cannot witness a wildcard-vs-wildcard overlap, so it would drop
+    // an agreeing wildcard block and over-flag; see
+    // `wildcard_agreeing_block0_covering_whole_population_does_not_overflag_block2_w07`).
+    // That leaves the NAME branches of `match_blocks_overlap` /`criterion_overlap` /
+    // `criterion_instances_have_common_witness` / `pattern_lists_overlap` /
+    // `name_instances_have_common_witness` reachable end-to-end only through the
+    // out-of-scope multi-type block-level fallback (an accepted-FN path with no
+    // lint()-level fixture). They remain LIVE production code, so pin their contract
+    // directly here. Grounded in OpenSSH `match_pattern_list` (a POSITIVE pattern must
+    // match and NO negated pattern may match) and the AND-across-repeated-criteria rule.
+
+    #[test]
+    fn match_blocks_overlap_name_oracle_pinned_directly() {
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let overlap = |a: &str, b: &str| super::match_blocks_overlap(&mb(a), &mb(b));
+        // Single-instance name overlap (pattern_lists_overlap): a shared literal
+        // `carol` co-satisfies both lists.
+        assert!(overlap(
+            "Match User alice,carol\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
+        // Disjoint literals never co-satisfy.
+        assert!(!overlap(
+            "Match User alice\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Wildcard vs literal: `*.corp` glob-matches the literal `db.corp`.
+        assert!(overlap(
+            "Match Host *.corp\n    X11Forwarding yes\n",
+            "Match Host db.corp\n    X11Forwarding yes\n",
+        ));
+        // A negation excluding the peer's sole user is disjoint (`!bob,*` admits every
+        // user EXCEPT bob, so it cannot co-satisfy `User bob`).
+        assert!(!overlap(
+            "Match User !bob,*\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Repeated same-type criteria are AND-ed: `alice,carol` AND `carol` = `carol`,
+        // which co-satisfies a later `carol` (name_instances_have_common_witness).
+        assert!(overlap(
+            "Match User alice,carol User carol\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
+        // Repeated same-type with an EMPTY intersection matches nobody (User alice AND
+        // User bob is impossible), so it overlaps nothing (block_matches_nobody).
+        assert!(!overlap(
+            "Match User alice User bob\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
     }
 }

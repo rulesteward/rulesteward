@@ -214,6 +214,7 @@ pub(super) type Cidr = (IpAddr, u8);
 /// single-negation approximation in [`cidr_lists_overlap`], multi-net carve-outs are
 /// split precisely, so the #409 region path flags only against a real remaining
 /// sub-population (FP-free). Unparseable entries are ignored (conservative).
+#[must_use]
 pub(super) fn cidr_list_set(values: &[String]) -> Vec<Cidr> {
     let positives = normalize_disjoint(parse_cidr_list(values));
     let negatives = parse_negated_cidr_list(values);
@@ -223,6 +224,7 @@ pub(super) fn cidr_list_set(values: &[String]) -> Vec<Cidr> {
 /// The intersection of two disjoint-normalized CIDR sets: every address in BOTH. CIDR
 /// nets nest-or-are-disjoint, so two intersecting nets meet in the MORE specific
 /// (longer-prefix) one. The result is disjoint-normalized.
+#[must_use]
 pub(super) fn cidr_set_intersection(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
     let mut out = Vec::new();
     for &x in a {
@@ -239,6 +241,7 @@ pub(super) fn cidr_set_intersection(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
 /// `a` is split around every net of `b` via [`cidr_minus_one`], yielding a union of
 /// disjoint CIDR nets. This EXACT carve-out is what the #409 region path consumes so an
 /// agreeing earlier block removes its covered sub-population and cannot over-flag.
+#[must_use]
 pub(super) fn cidr_set_difference(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
     let mut current = a.to_vec();
     for &hole in b {
@@ -251,15 +254,11 @@ pub(super) fn cidr_set_difference(a: &[Cidr], b: &[Cidr]) -> Vec<Cidr> {
     current
 }
 
-/// Whether a CIDR set denotes no address at all.
-pub(super) fn cidr_set_is_empty(set: &[Cidr]) -> bool {
-    set.is_empty()
-}
-
 /// The positive port set a `LocalPort` value list denotes: its positive numeric entries
 /// minus its negated (`!`) ones. On sshd-valid input a `LocalPort` block is a SINGLETON
 /// (a2port rejects comma-lists and negation), so this is normally one element; the set
 /// form keeps the #409 region path uniform with CIDR without ever over-claiming.
+#[must_use]
 pub(super) fn port_set(values: &[String]) -> BTreeSet<u32> {
     let positives: BTreeSet<u32> = parse_port_list(values).into_iter().collect();
     let negations: BTreeSet<u32> = parse_negated_port_list(values).into_iter().collect();
