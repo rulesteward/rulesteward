@@ -40,7 +40,7 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
-    "crates/rulesteward-fapolicyd/src/trustdb.rs",
+    "crates/rulesteward-fapolicyd/src/trustdb/**/*.rs",
     # pure rule-evaluator core (P0.4 #67): explain replay + future simulate engine.
     "crates/rulesteward-fapolicyd/src/evaluate.rs",
     "crates/rulesteward-fapolicyd/src/facts.rs",
