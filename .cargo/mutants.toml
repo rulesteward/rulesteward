@@ -518,6 +518,16 @@ exclude_re = [
     #   verdict on every sshd-valid config (pinned by
     #   `single_localport_region_reduces_to_block_level_w07`). Genuine equivalent (#409).
     'w07\.rs:.*delete match arm "localport" in region_shadow',
+    # - cidr_contains `<= -> >` (matching.rs): inverting the prefix-length comparison
+    #   makes `cidr_minus_one`'s sibling-split recursion never reach its "hole is
+    #   contained" base case, so the mutant does NOT terminate -> cargo-mutants TIMEOUT
+    #   (the hang in a `cidr_set_difference` test races ahead of the direct
+    #   `cidr_contains` known-answer test in the same binary, so it cannot be converted
+    #   to a CAUGHT assertion). Detection-by-non-termination, not a silent survivor;
+    #   analogous to the `glob_advance` non-terminating exclusions above. The KILLABLE
+    #   `cidr_contains` mutants (the `&&`, and returning a constant) stay in-gate, killed
+    #   by the `cidr_contains` known-answer test.
+    'matching\.rs:.*replace <= with > in cidr_contains',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is

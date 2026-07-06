@@ -2078,6 +2078,16 @@ mod w07_tests {
             "Match User alice,carol User bob,carol\n    X11Forwarding yes\n",
             "Match User alice\n    X11Forwarding yes\n",
         ));
+        // The candidate filter admits ONLY literals + the FRESH sentinel; wildcards are
+        // excluded (`!is_empty() && !contains(*/?)`). So two pure wildcards are the
+        // accepted wildcard-vs-wildcard FN and do NOT overlap. If that filter's `&&`
+        // weakened to `||`, a wildcard would leak in as a literal candidate and `a*`
+        // vs `a*` would falsely overlap (the wildcard STRING `a*` glob-matches its own
+        // pattern) -- this pins the filter conjunction that the region path bypasses.
+        assert!(!overlap(
+            "Match Host a*\n    X11Forwarding yes\n",
+            "Match Host a*\n    X11Forwarding yes\n",
+        ));
     }
 
     #[test]
