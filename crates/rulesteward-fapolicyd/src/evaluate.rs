@@ -822,6 +822,66 @@ fn path_obj_trust_coupling_fires(rule: &Rule, sets: &SetTable, facts: &AccessFac
 // Internal: evaluate one rule
 // ---------------------------------------------------------------------------
 
+/// Outcome of AND'ing every attribute on one side (subject or object) of a
+/// rule against the facts. Mirrors the two possibilities `eval_rule` cares
+/// about: a hard non-match, or a match that may carry a "not statically
+/// evaluable" reason accumulated along the way.
+enum SideOutcome {
+    NoMatch,
+    Matched(Option<String>),
+}
+
+/// Signature shared by `eval_subject_field` and `eval_object_field`: evaluate
+/// one attribute keyword against the facts, returning `(FieldEval,
+/// Option<reason_string>)` where the reason is non-`None` only for
+/// `NotEvaluable` cases.
+type FieldSideEval = fn(&str, &AttrValue, &SetTable, &AccessFacts) -> (FieldEval, Option<String>);
+
+/// Factor of the shared body of the daemon's `check_subject`/`check_object`
+/// AND'd-attr loop (rules.c:1381-1517 and rules.c:1577-1664 (fapolicyd
+/// 1.4.5)): walk every attr on one side, short-circuiting on the first hard
+/// `NoMatch`, and otherwise threading through the first `NotEvaluable`
+/// reason encountered. `eval_field` is the side-specific per-attribute
+/// evaluator (`eval_subject_field` or `eval_object_field`); both share the
+/// signature required here, so one shared walk serves both sides.
+fn eval_attr_side(
+    attrs: &[Attr],
+    sets: &SetTable,
+    facts: &AccessFacts,
+    eval_field: FieldSideEval,
+) -> SideOutcome {
+    let mut reason: Option<String> = None;
+    for attr in attrs {
+        match attr {
+            Attr::All => {
+                // `all` always matches.
+            }
+            Attr::Kv { key, value, .. } => {
+                let (fe, r) = eval_field(key, value, sets, facts);
+                match fe {
+                    FieldEval::Match => {}
+                    FieldEval::NoMatch => return SideOutcome::NoMatch,
+                    FieldEval::NotEvaluable => {
+                        if reason.is_none() {
+                            // Harden: synthesise a reason when the field evaluator
+                            // returned None. A NotEvaluable with a None reason would
+                            // otherwise slip through to Decisive(decision) in eval_rule,
+                            // masking the unevaluable constraint. After the object-side
+                            // dir= fix the (NotEvaluable, None) path is unreachable for
+                            // the dir= arm, but this guard prevents future regressions.
+                            reason =
+                                Some(r.unwrap_or_else(|| {
+                                    format!("{key} is not statically evaluable")
+                                }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    SideOutcome::Matched(reason)
+}
+
 /// Evaluate one rule against the facts. Returns `RuleOutcome` and, when the
 /// outcome is `PossibleMatch`, a string describing the unevaluable construct.
 fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome, Option<String>) {
@@ -833,57 +893,21 @@ fn eval_rule(rule: &Rule, sets: &SetTable, facts: &AccessFacts) -> (RuleOutcome,
     let mut possible_reason: Option<String> = None;
 
     // check_subject: all subject attrs AND'ed (rules.c:1381-1517 (fapolicyd 1.4.5)).
-    for attr in &rule.subject {
-        match attr {
-            Attr::All => {
-                // `all` on subject side always matches.
-            }
-            Attr::Kv { key, value, .. } => {
-                let (fe, reason) = eval_subject_field(key, value, sets, facts);
-                match fe {
-                    FieldEval::Match => {}
-                    FieldEval::NoMatch => return (RuleOutcome::NoMatch, None),
-                    FieldEval::NotEvaluable => {
-                        if possible_reason.is_none() {
-                            // Harden: synthesise a reason when the field evaluator
-                            // returned None. A NotEvaluable with a None reason would
-                            // otherwise slip through to Decisive(decision) below,
-                            // masking the unevaluable constraint. After the object-side
-                            // dir= fix the (NotEvaluable, None) path is unreachable for
-                            // the dir= arm, but this guard prevents future regressions.
-                            possible_reason =
-                                Some(reason.unwrap_or_else(|| {
-                                    format!("{key} is not statically evaluable")
-                                }));
-                        }
-                    }
-                }
+    match eval_attr_side(&rule.subject, sets, facts, eval_subject_field) {
+        SideOutcome::NoMatch => return (RuleOutcome::NoMatch, None),
+        SideOutcome::Matched(r) => {
+            if possible_reason.is_none() {
+                possible_reason = r;
             }
         }
     }
 
     // check_object: all object attrs AND'ed (rules.c:1577-1664 (fapolicyd 1.4.5)).
-    for attr in &rule.object {
-        match attr {
-            Attr::All => {
-                // `all` on object side always matches.
-            }
-            Attr::Kv { key, value, .. } => {
-                let (fe, reason) = eval_object_field(key, value, sets, facts);
-                match fe {
-                    FieldEval::Match => {}
-                    FieldEval::NoMatch => return (RuleOutcome::NoMatch, None),
-                    FieldEval::NotEvaluable => {
-                        if possible_reason.is_none() {
-                            // Harden: synthesise a reason when the field evaluator
-                            // returned None (same defence as the subject loop above).
-                            possible_reason =
-                                Some(reason.unwrap_or_else(|| {
-                                    format!("{key} is not statically evaluable")
-                                }));
-                        }
-                    }
-                }
+    match eval_attr_side(&rule.object, sets, facts, eval_object_field) {
+        SideOutcome::NoMatch => return (RuleOutcome::NoMatch, None),
+        SideOutcome::Matched(r) => {
+            if possible_reason.is_none() {
+                possible_reason = r;
             }
         }
     }
