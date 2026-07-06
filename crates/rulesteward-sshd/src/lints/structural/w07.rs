@@ -777,8 +777,8 @@ mod w07_tests {
     //! 2 (line 6) is not OVER-flagged, so they pin the exact diag set `{line 4}`.
     //!
     //! # Other documented v0.3 accepted false negatives
-    //! Besides the cross-type conservative reading above (#400), two further gaps
-    //! are intentionally accepted for v0.3 rather than implemented:
+    //! Besides the cross-type conservative reading above (#400), three further gaps
+    //! are intentionally accepted rather than implemented:
     //! - WILDCARD-vs-WILDCARD glob overlap (e.g. `User dev-*` vs `User *-web`, or
     //!   `User a*` vs `User a*`) is a deferred false negative: the overlap oracle
     //!   only witnesses a wildcard pattern against a LITERAL value on the other side
@@ -793,6 +793,16 @@ mod w07_tests {
     //!   witness, so W07 declines to flag rather than risk a false positive (an
     //!   FN-leaning guard). `repeated_cidr_criteria_with_negation_conservative_no_shadow`
     //!   locks this.
+    //! - MULTI-TYPE-PRODUCT partitioned shadows: a block constraining 2+ criterion
+    //!   TYPES (e.g. `Match User alice Address 10.1.0.0/16` yes / `...Address
+    //!   10.2.0.0/16` no / `...Address 10.0.0.0/8` yes) routes cross-block overlap
+    //!   through the block-level fallback rather than per-type sub-population regions,
+    //!   so a partitioned shadow spanning the type PRODUCT (here the
+    //!   alice-and-10.2.0.0/16 sub-population, GROUND TRUTH `sshd -T -C
+    //!   user=alice,addr=10.2.0.5` -> `x11forwarding no` on OpenSSH 10.2p1) goes
+    //!   undetected. Per-sub-population detection (#409) covers single criterion-type
+    //!   partitions only; the multi-type product is a tracked follow-up (no locking
+    //!   test - it is an accepted FN, never a false positive).
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -1767,6 +1777,28 @@ mod w07_tests {
         assert_eq!(
             d[0].line, 4,
             "line 4 (Host beta,gamma no) is shadowed by block 0 for beta; block 2 / line 6 is NOT flagged"
+        );
+    }
+
+    #[test]
+    fn wildcard_agreeing_block0_covering_whole_population_does_not_overflag_block2_w07() {
+        // sshd -T (OpenSSH 10.2p1): host=db.corp -> yes, host=web.corp -> yes.
+        // block0 (`Host *.corp` yes) wins ALL of block2's *.corp population; block2's
+        // yes equals the winner -> block2 (line 6) is NOT a differing shadow. Only
+        // block1 (`Host db.corp` no, line 4) is genuinely shadowed by block0.
+        let d = w07_diags(
+            "Match Host *.corp\n    X11Forwarding yes\n\
+             Match Host db.corp\n    X11Forwarding no\n\
+             Match Host *.corp\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block2/line6 must NOT be over-flagged (winner value == block2 value)"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "only block1 (Host db.corp no) is a differing shadow of block0"
         );
     }
 
