@@ -30,11 +30,18 @@ pub(super) fn check_defaults(
     // defect, consistent with the Case-2 setting check and the runas checks); the
     // valid pure-digit forms stay clean.
     //
-    // The `!` (command) scope is intentionally NOT handled here: `!` is not in
-    // `prev_allows_uid`, so a `#<digits>` command target (`Defaults!#1000` and
-    // `Defaults!#1000abc`, BOTH visudo rc=1) still strips as a comment, folding the
-    // line to `Malformed` / sudo-F01 -- the correct outcome, since every `#`-command
-    // form is invalid (there is nothing valid to preserve).
+    // The `!` (command) scope runs the #426 empty-member check (see the Cmnd arm
+    // below) but intentionally SKIPS this #407 GID-tail loop (`check_gid_tail:
+    // false`). Two reasons: (a) a bare `#<digits>` command target (`Defaults!#1000`,
+    // `Defaults!#1000abc`, both visudo rc=1) is not in `prev_allows_uid`, so it
+    // strips as a comment upstream and folds to `Malformed` / sudo-F01. (b) A
+    // `#<digits>` member that DOES survive (non-leading, e.g.
+    // `Defaults!/bin/ls,#1000abc`) still must not go through this loop: unlike the
+    // user/runas/host scopes where a pure digit run is a VALID id, visudo rejects
+    // `#<digits>` outright in command position ("expected a fully-qualified path
+    // name"), so the loop's "pure digits = valid" assumption is wrong for commands
+    // and it would emit a nonsensical "GID" message. Validating command-target
+    // paths is a separate, broader defect class (out of #429's empty-member scope).
     //
     // Message note: for the host (`@`) scope the token is a host name, not a GID, so
     // its message says "not a pure digit run" (no "GID") even though the shared
@@ -80,13 +87,10 @@ pub(super) fn check_defaults(
             is_host: true,
             check_gid_tail: true,
         }),
-        // #429: the Cmnd (`!`) scope now runs the #426 empty-member check, but
-        // NOT the #407 GID-tail loop -- `!` is not in `prev_allows_uid`, so a
-        // `#<digits>` command target (`Defaults!#1000`, `Defaults!#1000abc`)
-        // still strips as a comment upstream and folds to Malformed/sudo-F01
-        // (see the long comment above); there is no `#`-prefixed command form
-        // that survives to the AST for this loop to validate. `scope_word` is
-        // "command" per the frozen tests' scope-word-agnostic message.
+        // #429: the Cmnd (`!`) scope runs the #426 empty-member check, but NOT the
+        // #407 GID-tail loop (`check_gid_tail: false`; see the long comment above
+        // for why command-position `#<digits>` must not use that loop). `scope_word`
+        // is "command" per the frozen tests' scope-word-agnostic message.
         crate::ast::DefaultsScope::Cmnd(binding) => Some(ScopeCheck {
             binding: binding.as_str(),
             scope_word: "command",
