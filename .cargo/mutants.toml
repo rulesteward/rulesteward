@@ -498,6 +498,36 @@ exclude_re = [
     #   invalid config and is unreachable on any valid config, so no valid-config test
     #   can kill it (the invalid-config tests were removed as mis-grounded).
     'matching\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
+    # - cidr_split `| -> ^` (v4 line ~327 + v6 line ~335, both "in cidr_split"): the
+    #   high half SETS the top host bit of a NETWORK address, whose host bits are 0 by
+    #   construction, so `addr | bit` == `addr ^ bit` (setting a 0 bit equals toggling
+    #   it) for every value the helper receives from a proper CIDR. They differ only on
+    #   a malformed host-bits-set address, where the bisection is ill-defined AND every
+    #   downstream consumer (`cidr_contains` / `cidr_intersects`) masks to the prefix and
+    #   discards the low host bits entirely -- so the choice can never change a lint
+    #   verdict. Genuine equivalent (#409). The KILLABLE `|`->`&`, `<<`->`>>`, and
+    #   `128-child` arithmetic mutants at the SAME sites ARE in the gate (killed by the
+    #   exact-halves `cidr_split` known-answer tests), so this operator-specific anchor
+    #   never masks them.
+    'matching\.rs:.*replace \| with \^ in cidr_split',
+    # - region_shadow `delete match arm "localport"`: routes LocalPort to the block-level
+    #   fallback instead of `port_region_shadow`. A VALID `Match LocalPort` is a SINGLETON
+    #   (`a2port` rejects comma-lists and negation, rc 255), so a single-port block's
+    #   "region" is one port and per-region reasoning reduces to block-level first-setter
+    #   equality: `port_region_shadow` and `block_level_shadow` return the IDENTICAL
+    #   verdict on every sshd-valid config (pinned by
+    #   `single_localport_region_reduces_to_block_level_w07`). Genuine equivalent (#409).
+    'w07\.rs:.*delete match arm "localport" in region_shadow',
+    # - cidr_contains `<= -> >` (matching.rs): inverting the prefix-length comparison
+    #   makes `cidr_minus_one`'s sibling-split recursion never reach its "hole is
+    #   contained" base case, so the mutant does NOT terminate -> cargo-mutants TIMEOUT
+    #   (the hang in a `cidr_set_difference` test races ahead of the direct
+    #   `cidr_contains` known-answer test in the same binary, so it cannot be converted
+    #   to a CAUGHT assertion). Detection-by-non-termination, not a silent survivor;
+    #   analogous to the `glob_advance` non-terminating exclusions above. The KILLABLE
+    #   `cidr_contains` mutants (the `&&`, and returning a constant) stay in-gate, killed
+    #   by the `cidr_contains` known-answer test.
+    'matching\.rs:.*replace <= with > in cidr_contains',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is

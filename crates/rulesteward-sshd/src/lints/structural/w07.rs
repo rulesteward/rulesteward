@@ -1,7 +1,7 @@
 //! sshd-W07: cross-`Match` first-value-wins shadow. See [`w07`]. The
 //! CIDR/port/glob geometry primitives live in [`super::matching`].
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::path::Path;
 
@@ -12,8 +12,9 @@ use crate::lints::{SshdLintContext, anchored, is_unconditional_match_all};
 
 use super::E02_ALLOW_REPEAT;
 use super::matching::{
-    cidr_intersects, cidr_lists_overlap, glob_match, parse_cidr_list, parse_port_list,
-    port_lists_overlap,
+    Cidr, cidr_intersects, cidr_list_set, cidr_lists_overlap, cidr_set_difference,
+    cidr_set_intersection, glob_match, parse_cidr_list, parse_port_list, port_lists_overlap,
+    port_set,
 };
 
 /// sshd-W07: the same first-value-wins keyword set to DIFFERENT values in two
@@ -46,6 +47,17 @@ use super::matching::{
 /// itself flagged as a shadowEE - a `Match all` appearing after a conditional stays
 /// the effective default for the connections the conditional does not cover, the
 /// intended default-plus-exception idiom, not a hazard (owner-decided; #302, #403).
+///
+/// A later block is flagged not only when an earlier overlapping block wins ALL of
+/// its connections with a different value, but also when only a NON-EMPTY
+/// SUB-POPULATION of them is won by an earlier DIFFERING block (a partition across
+/// three or more blocks, e.g. `Host alpha`=v / `Host beta`=w / `Host alpha,beta`=v:
+/// the beta sub-population is shadowed by the middle block even though the first
+/// block agrees with the later value for the alpha sub-population). Detection stays
+/// FALSE-POSITIVE-FREE: an earlier block covering the later block's WHOLE population
+/// with the SAME value suppresses the flag, and region reasoning never crosses
+/// criterion types (preserving #400). It may still MISS hard cases but never
+/// over-flags (#409).
 #[must_use]
 pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnostic> {
     // Every Match block in source order, INCLUDING `Match all`: it is always
@@ -82,16 +94,30 @@ pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
                 // first (effective) value can be shadowed by an earlier block.
                 continue;
             }
-            // sshd applies ONLY the first satisfied block's value, so the shadow
-            // hazard is measured against the WINNER: the earliest earlier block that
-            // both overlaps this one AND sets the keyword. A later value equal to the
-            // winner's is redundant (the winner would have applied the same value),
-            // not a differing shadow - so compare against the winner, not any earlier.
-            let winning_value = match_blocks[..j]
-                .iter()
-                .filter(|earlier| match_blocks_overlap(earlier, later))
-                .find_map(|earlier| first_value_for(earlier, &keyword));
-            if winning_value.is_some_and(|value| value != directive.args.as_slice()) {
+            // sshd applies ONLY the first satisfied block's value. The earlier blocks
+            // that both overlap this one AND set the keyword are the candidate winners,
+            // in SOURCE ORDER (the first one a given connection satisfies wins it).
+            let value = directive.args.as_slice();
+            // When this block constrains a SINGLE criterion type, decide the shadow PER
+            // SUB-POPULATION (#409): flag iff some non-empty region of this block's
+            // connections is won by an earlier block with a DIFFERING value. Otherwise
+            // fall back to the block-level winner comparison.
+            let shadowed = if let Some(kind) = single_region_type(later) {
+                let earlier_setters =
+                    region_earlier_setters(&match_blocks[..j], later, &keyword, &kind);
+                region_shadow(later, &kind, &keyword, value, &earlier_setters)
+            } else {
+                let earlier_setters: Vec<&MatchBlock> = match_blocks[..j]
+                    .iter()
+                    .copied()
+                    .filter(|earlier| {
+                        match_blocks_overlap(earlier, later)
+                            && first_value_for(earlier, &keyword).is_some()
+                    })
+                    .collect();
+                block_level_shadow(&keyword, value, &earlier_setters)
+            };
+            if shadowed {
                 diags.push(anchored(
                     Severity::Warning,
                     "sshd-W07",
@@ -121,6 +147,292 @@ fn first_value_for<'a>(block: &'a MatchBlock, keyword_lower: &str) -> Option<&'a
         .iter()
         .find(|d| d.keyword_lower() == keyword_lower)
         .map(|d| d.args.as_slice())
+}
+
+/// The kind of a block's SINGLE region-modeled criterion type, or `None` when the block
+/// is not eligible for per-sub-population (#409) reasoning and must use the block-level
+/// fallback.
+///
+/// Region reasoning is exact only inside ONE criterion-type domain. `Some(T)` requires
+/// the block to constrain EXACTLY one criterion type, that type be region-modeled
+/// (`user`/`group`/`host` name lists, `address`/`localaddress` CIDR, `localport`), and
+/// the block NOT trip the preserved repeated-CIDR/port-with-negation guard (a repeated
+/// address/port type carrying a `!`, whose exact cross-occurrence remainder is beyond
+/// v0.3 scope - routed to the conservative block-level path instead). Because
+/// [`match_blocks_overlap`] only pairs blocks with IDENTICAL criterion-type sets (or a
+/// `Match all`), a single-type block's every earlier overlapping setter is itself
+/// single-type-`T` or `Match all`, so region reasoning never crosses types (preserving
+/// the #400 conservative contract).
+fn single_region_type(block: &MatchBlock) -> Option<String> {
+    let by_type = criteria_by_type(block);
+    if by_type.len() != 1 {
+        return None;
+    }
+    let (kind, instances) = by_type.iter().next()?;
+    if !matches!(
+        kind.as_str(),
+        "user" | "group" | "host" | "address" | "localaddress" | "localport"
+    ) {
+        return None;
+    }
+    // Preserved conservative guard (mirrors [`match_blocks_overlap`]): a repeated
+    // CIDR/port type carrying a negation has no exact cross-occurrence remainder here,
+    // so decline region reasoning and let the block-level fallback stay FN-leaning.
+    if matches!(kind.as_str(), "address" | "localaddress" | "localport")
+        && instances.len() >= 2
+        && instances
+            .iter()
+            .any(|occ| occ.iter().any(|value| value.starts_with('!')))
+    {
+        return None;
+    }
+    Some(kind.clone())
+}
+
+/// The earlier blocks that set `keyword_lower` and are candidate winners for the
+/// per-sub-population (#409) region path of a block whose single criterion type is
+/// `kind`, in source order.
+///
+/// NAME criteria (`user`/`group`/`host`) are selected STRUCTURALLY - an earlier block
+/// qualifies iff it is `Match all` or itself single-criterion-type `kind` - NOT via the
+/// FN-leaning [`match_blocks_overlap`]. Its name oracle ([`pattern_lists_overlap`])
+/// cannot witness a wildcard-vs-wildcard overlap, so it would DROP an agreeing wildcard
+/// block (e.g. an earlier `Host *.corp` that AGREES with a later `Host *.corp`) and let
+/// the later block be over-flagged against a differing MIDDLE block (#409). The names
+/// region path's exact per-witness membership ([`member_of_type`]) then decides real
+/// co-satisfaction, so a structurally-included but non-overlapping block simply yields
+/// no witness (still FP-free). CIDR/port criteria keep [`match_blocks_overlap`] (no
+/// wildcard FN there); their exact set intersection re-tests overlap regardless.
+fn region_earlier_setters<'a>(
+    earlier_blocks: &[&'a MatchBlock],
+    later: &MatchBlock,
+    keyword_lower: &str,
+    kind: &str,
+) -> Vec<&'a MatchBlock> {
+    let is_name = matches!(kind, "user" | "group" | "host");
+    earlier_blocks
+        .iter()
+        .copied()
+        .filter(|earlier| {
+            first_value_for(earlier, keyword_lower).is_some()
+                && if is_name {
+                    is_unconditional_match_all(earlier)
+                        || single_region_type(earlier).as_deref() == Some(kind)
+                } else {
+                    match_blocks_overlap(earlier, later)
+                }
+        })
+        .collect()
+}
+
+/// Dispatch per-sub-population (#409) shadow detection by criterion-type domain. Names
+/// use a witness-candidate search; CIDR and port use exact set algebra. Only invoked
+/// with a region-modeled `kind` from [`single_region_type`].
+fn region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    match kind {
+        "user" | "group" | "host" => {
+            names_region_shadow(block, kind, keyword_lower, value, earlier_setters)
+        }
+        "address" | "localaddress" => {
+            cidr_region_shadow(block, kind, keyword_lower, value, earlier_setters)
+        }
+        "localport" => port_region_shadow(block, kind, keyword_lower, value, earlier_setters),
+        // Unreachable: `single_region_type` only returns the arms above.
+        _ => block_level_shadow(keyword_lower, value, earlier_setters),
+    }
+}
+
+/// The block-level fallback (the pre-#409 rule, extracted verbatim): the winner is the
+/// FIRST earlier setter in source order, and the later value is a shadow iff it DIFFERS
+/// from the winner's. Used for blocks that constrain 2+ criterion types (region
+/// reasoning is single-type only). `earlier_setters` is already filtered to overlapping
+/// blocks that set the keyword, so its first element's value is the winner.
+fn block_level_shadow(
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    earlier_setters
+        .iter()
+        .find_map(|earlier| first_value_for(earlier, keyword_lower))
+        .is_some_and(|winning| winning != value)
+}
+
+/// Per-sub-population shadow for NAME criteria (`User`/`Group`/`Host`). A sub-population
+/// is witnessed by a concrete literal name: any user/group/host admitted by both this
+/// block and an earlier setter must be a listed literal from one of them (a
+/// wildcard-only overlap has no literal witness - the documented v0.3 accepted FN). For
+/// each candidate literal that is a member of THIS block, the winner is the first
+/// earlier setter it also satisfies; a differing winner value is a real shadow.
+fn names_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    // A name matching none of the listed literals, to stand in for "some fresh name"
+    // (shared spelling with [`pattern_lists_overlap`]'s sentinel).
+    const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
+    let mut candidates: Vec<String> = Vec::new();
+    collect_name_literals(block, kind, &mut candidates);
+    for earlier in earlier_setters {
+        collect_name_literals(earlier, kind, &mut candidates);
+    }
+    candidates.push(FRESH.to_string());
+    candidates.iter().any(|name| {
+        member_of_type(block, kind, name)
+            && earlier_setters
+                .iter()
+                .find(|earlier| member_of_type(earlier, kind, name))
+                .and_then(|winner| first_value_for(winner, keyword_lower))
+                .is_some_and(|winning| winning != value)
+    })
+}
+
+/// Collect the literal (non-glob, non-negated, non-empty) names a block's `kind`
+/// criteria list, for the [`names_region_shadow`] witness search. A `Match all` (whose
+/// only criterion is the valueless `all`) contributes nothing.
+fn collect_name_literals(block: &MatchBlock, kind: &str, out: &mut Vec<String>) {
+    if let Some(instances) = criteria_by_type(block).get(kind) {
+        for values in instances {
+            for value in *values {
+                let literal = value.strip_prefix('!').unwrap_or(value);
+                if !literal.is_empty() && !literal.contains(['*', '?']) {
+                    out.push(literal.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Whether the name `x` satisfies EVERY `kind` instance of `block` at once (the
+/// AND-across-occurrences membership sshd applies). A `Match all` block admits every
+/// connection, so it is a member trivially.
+fn member_of_type(block: &MatchBlock, kind: &str, x: &str) -> bool {
+    if is_unconditional_match_all(block) {
+        return true;
+    }
+    criteria_by_type(block)
+        .get(kind)
+        .is_some_and(|instances| instances.iter().all(|values| match_pattern_list(x, values)))
+}
+
+/// Per-sub-population shadow for CIDR criteria (`Address`/`LocalAddress`). Walk the
+/// earlier setters in source order, carving each one's address set out of the remaining
+/// (not-yet-won) part of this block's population: the first setter whose carved region
+/// is NON-EMPTY and whose value DIFFERS wins a genuinely-shadowed sub-population. An
+/// agreeing setter CONSUMES its region (removing it from `remaining`) so it can never
+/// over-flag a later differing block outside its coverage.
+fn cidr_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = cidr_region_set(block, kind);
+    for earlier in earlier_setters {
+        let (region, rest) = if is_unconditional_match_all(earlier) {
+            // `Match all` wins every remaining connection (always satisfied, earliest).
+            (remaining.clone(), Vec::new())
+        } else {
+            let earlier_set = cidr_region_set(earlier, kind);
+            (
+                cidr_set_intersection(&remaining, &earlier_set),
+                cidr_set_difference(&remaining, &earlier_set),
+            )
+        };
+        if !region.is_empty()
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
+/// The exact address set of a block's `kind` criterion: the INTERSECTION (AND) across
+/// its type-`kind` instances of each instance's [`cidr_list_set`]. A single instance
+/// (the common case) is just its own set.
+fn cidr_region_set(block: &MatchBlock, kind: &str) -> Vec<Cidr> {
+    let by_type = criteria_by_type(block);
+    let Some(instances) = by_type.get(kind) else {
+        return Vec::new();
+    };
+    let mut iter = instances.iter();
+    let Some(first) = iter.next() else {
+        return Vec::new();
+    };
+    let mut acc = cidr_list_set(first);
+    for values in iter {
+        acc = cidr_set_intersection(&acc, &cidr_list_set(values));
+    }
+    acc
+}
+
+/// Per-sub-population shadow for `LocalPort` (the exact-set analogue of
+/// [`cidr_region_shadow`]). On sshd-valid input a `LocalPort` block is a singleton, so
+/// this reduces to single-port equality; the set machinery keeps it uniform with CIDR.
+fn port_region_shadow(
+    block: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = port_region_set(block, kind);
+    for earlier in earlier_setters {
+        let (region, rest): (BTreeSet<u32>, BTreeSet<u32>) = if is_unconditional_match_all(earlier)
+        {
+            (remaining.clone(), BTreeSet::new())
+        } else {
+            let earlier_set = port_region_set(earlier, kind);
+            (
+                remaining.intersection(&earlier_set).copied().collect(),
+                remaining.difference(&earlier_set).copied().collect(),
+            )
+        };
+        if !region.is_empty()
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
+/// The exact port set of a block's `kind` criterion: the INTERSECTION (AND) across its
+/// type-`kind` instances of each instance's [`port_set`].
+fn port_region_set(block: &MatchBlock, kind: &str) -> BTreeSet<u32> {
+    let by_type = criteria_by_type(block);
+    let Some(instances) = by_type.get(kind) else {
+        return BTreeSet::new();
+    };
+    let mut iter = instances.iter();
+    let Some(first) = iter.next() else {
+        return BTreeSet::new();
+    };
+    let mut acc = port_set(first);
+    for values in iter {
+        let next = port_set(values);
+        acc = acc.intersection(&next).copied().collect();
+    }
+    acc
 }
 
 /// Whether two `Match` blocks can be satisfied by ONE connection, decided
@@ -472,9 +784,40 @@ mod w07_tests {
     //! post-v0.3 follow-up tracked as #400. `cross_type_user_and_group_do_not_flag_w07`
     //! locks this so the implementer cannot accidentally flag it.
     //!
+    //! # Per-sub-population cross-Match shadow (#409)
+    //! W07 flags a later block when some NON-EMPTY SUB-POPULATION of the connections
+    //! it matches is won by an EARLIER block with a DIFFERENT value - even when a
+    //! different earlier block agrees with the later value for a DIFFERENT
+    //! sub-population. The v0.3 block-level rule missed this: it asked only whether
+    //! SOME earlier overlapping block agreed with the later value ANYWHERE, so an
+    //! agreeing block covering one sub-population masked a differing block colliding
+    //! with another. `Host alpha` yes / `Host beta` no / `Host alpha,beta` yes now
+    //! flags line 6 for the beta sub-population (GROUND TRUTH `sshd -T -C host=beta`
+    //! -> `x11forwarding no` on OpenSSH 10.2p1: the middle block wins over block 2),
+    //! locked by `partitioned_host_sets_flag_beta_subpopulation_w07`,
+    //! `partitioned_user_sets_flag_bob_subpopulation_w07`,
+    //! `partitioned_cidr_flags_middle_subnet_w07`, and
+    //! `partitioned_multiregion_only_part_shadowed_w07` (the last proves a clean
+    //! remainder sub-population is NOT over-flagged).
+    //!
+    //! Detection stays provably FALSE-POSITIVE-FREE (it may still MISS hard cases but
+    //! never over-flags): an earlier block that covers the later block's WHOLE
+    //! population with the SAME value wins those connections first and SUPPRESSES the
+    //! flag, and region reasoning never crosses criterion TYPES (preserving the #400
+    //! conservative contract). The over-flag guards are
+    //! `agreeing_earlier_block_covering_whole_population_suppresses_flag_w07`,
+    //! `partition_all_same_value_is_clean`,
+    //! `partition_cross_type_middle_block_is_invisible_clean`,
+    //! `partitioned_cidr_carveout_region_empty_does_not_overflag_block2_w07`, and
+    //! `single_localport_region_reduces_to_block_level_w07` (single-port equality
+    //! must not regress). NOTE the first and fourth guards are NOT diagnostic-free:
+    //! their covering block 0 genuinely shadows the MIDDLE block (a true cross-Match
+    //! shadow, flagged on line 4 both before and after #409); the guard is that block
+    //! 2 (line 6) is not OVER-flagged, so they pin the exact diag set `{line 4}`.
+    //!
     //! # Other documented v0.3 accepted false negatives
     //! Besides the cross-type conservative reading above (#400), three further gaps
-    //! are intentionally accepted for v0.3 rather than implemented:
+    //! are intentionally accepted rather than implemented:
     //! - WILDCARD-vs-WILDCARD glob overlap (e.g. `User dev-*` vs `User *-web`, or
     //!   `User a*` vs `User a*`) is a deferred false negative: the overlap oracle
     //!   only witnesses a wildcard pattern against a LITERAL value on the other side
@@ -482,14 +825,6 @@ mod w07_tests {
     //!   each other, so a pair of only-wildcard criteria that could co-satisfy some
     //!   literal user is not flagged. `wildcard_vs_wildcard_is_an_accepted_fn_is_clean`
     //!   locks this.
-    //! - Sub-population partitioning across MORE THAN TWO blocks (e.g. `Host alpha`
-    //!   yes / `Host beta` no / `Host alpha,beta` yes) can leave a real
-    //!   per-connection shadow undetected: the block-level rule only asks whether
-    //!   SOME earlier overlapping block already agrees with the later value, not
-    //!   whether it agrees for the SAME sub-population a middle block disagrees
-    //!   with. `partitioned_host_sets_are_an_accepted_fn_v0_3` locks this as an
-    //!   accepted v0.3 false negative; per-sub-population detection is a tracked
-    //!   post-v0.3 follow-up.
     //! - REPEATED CIDR/LocalPort criteria carrying a negation (e.g. `Match Address
     //!   10.0.0.0/8,!10.1.0.0/16 Address 10.0.0.0/8`) are treated conservatively as
     //!   non-overlapping: computing the true negation-aware intersection ACROSS
@@ -497,6 +832,16 @@ mod w07_tests {
     //!   witness, so W07 declines to flag rather than risk a false positive (an
     //!   FN-leaning guard). `repeated_cidr_criteria_with_negation_conservative_no_shadow`
     //!   locks this.
+    //! - MULTI-TYPE-PRODUCT partitioned shadows: a block constraining 2+ criterion
+    //!   TYPES (e.g. `Match User alice Address 10.1.0.0/16` yes / `...Address
+    //!   10.2.0.0/16` no / `...Address 10.0.0.0/8` yes) routes cross-block overlap
+    //!   through the block-level fallback rather than per-type sub-population regions,
+    //!   so a partitioned shadow spanning the type PRODUCT (here the
+    //!   alice-and-10.2.0.0/16 sub-population, GROUND TRUTH `sshd -T -C
+    //!   user=alice,addr=10.2.0.5` -> `x11forwarding no` on OpenSSH 10.2p1) goes
+    //!   undetected. Per-sub-population detection (#409) covers single criterion-type
+    //!   partitions only; the multi-type product is a tracked follow-up (no locking
+    //!   test - it is an accepted FN, never a false positive).
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -998,31 +1343,6 @@ mod w07_tests {
     // ---- NEGATIVE: accepted v0.3 false negatives (documented, not implemented) ----
 
     #[test]
-    fn partitioned_host_sets_are_an_accepted_fn_v0_3() {
-        // The MISS-A shape (#403): `Host alpha` yes / `Host beta` no / `Host
-        // alpha,beta` yes. For a BETA connection, block 1 (no) wins over block 2's
-        // yes - a real per-connection shadow. But the block-level rule only asks
-        // "does SOME earlier overlapping block already agree with block 2's value
-        // (yes) anywhere in its overlap?" - and block 0 (`Host alpha`, yes) does
-        // overlap block 2 (alpha is in `alpha,beta`) with the SAME value, so the
-        // rule's "not exists an agreeing earlier overlap" condition is false and
-        // line 6 is NOT flagged. This is an ACCEPTED v0.3 false negative (the rule
-        // cannot see that block 0's agreement covers only the alpha sub-population,
-        // not the beta one that actually collides with block 1); per-
-        // sub-population detection is a tracked post-v0.3 follow-up. Do NOT
-        // "fix" this by making the rule flag here - see the module doc-comment.
-        assert!(
-            w07_diags(
-                "Match Host alpha\n    X11Forwarding yes\n\
-                 Match Host beta\n    X11Forwarding no\n\
-                 Match Host alpha,beta\n    X11Forwarding yes\n",
-            )
-            .is_empty(),
-            "block-level overlap cannot see the beta-only sub-population collision (accepted v0.3 FN)"
-        );
-    }
-
-    #[test]
     fn wildcard_vs_wildcard_is_an_accepted_fn_is_clean() {
         // Two wildcard-only `User a*` criteria obviously co-satisfy (any user named
         // `aX` matches both), so ideally this would flag. But W07's overlap oracle
@@ -1327,5 +1647,611 @@ mod w07_tests {
             "trailing `*` matches an empty end-of-value suffix -> one W07"
         );
         assert_eq!(d[0].line, 4);
+    }
+
+    // ---- POSITIVE: per-sub-population cross-Match shadow (#409, per-region) ----
+    // Each fixture is GROUND-TRUTHED against live `sshd -T -C` on OpenSSH 10.2p1.
+    // These are RED against the v0.3 block-level rule (which finds an agreeing earlier
+    // block and stays clean); they pass once per-sub-population detection lands.
+
+    #[test]
+    fn partitioned_host_sets_flag_beta_subpopulation_w07() {
+        // #409, per-sub-population detection (this is the FLIP of the former v0.3
+        // accepted-FN test `partitioned_host_sets_are_an_accepted_fn_v0_3`):
+        // `Host alpha` yes / `Host beta` no / `Host alpha,beta` yes. For a BETA
+        // connection the middle block (line 4, no) wins and block 2's `yes` (line 6)
+        // is silently dropped - a real per-connection shadow. GROUND TRUTH
+        // (`sshd -T -C` on OpenSSH 10.2p1): host=beta -> `x11forwarding no` (middle
+        // block wins over block 2); host=alpha -> yes (block 0 wins, block 2 agrees).
+        // The v0.3 block-level rule MISSED this: block 0 (`Host alpha`, yes) overlaps
+        // block 2 with the SAME value, so "some earlier overlapping block agrees" held
+        // and line 6 stayed clean. The per-region rule sees block 0's agreement covers
+        // only the alpha sub-population, NOT the beta one that collides with the middle
+        // block, so the beta sub-population is an uncovered differing shadow.
+        let d = w07_diags(
+            "Match Host alpha\n    X11Forwarding yes\n\
+             Match Host beta\n    X11Forwarding no\n\
+             Match Host alpha,beta\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "the beta sub-population shadow flags block 2");
+        assert_eq!(
+            d[0].line, 6,
+            "line 6 (Host alpha,beta yes) is shadowed for the beta sub-population by line 4 (no)"
+        );
+    }
+
+    #[test]
+    fn partitioned_user_sets_flag_bob_subpopulation_w07() {
+        // #409 on the `User` criterion: `User alice` yes / `User bob` no /
+        // `User alice,bob` yes. For a BOB connection the middle block (line 4, no)
+        // wins and block 2's `yes` (line 6) is dropped. GROUND TRUTH (`sshd -T -C
+        // user=bob,host=h,addr=1.2.3.4` on OpenSSH 10.2p1): `x11forwarding no`;
+        // user=alice -> yes (block 0 wins, block 2 agrees). Only the bob
+        // sub-population is a differing shadow -> exactly one flag on line 6.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding yes\n\
+             Match User bob\n    X11Forwarding no\n\
+             Match User alice,bob\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "the bob sub-population shadow flags block 2");
+        assert_eq!(d[0].line, 6);
+    }
+
+    #[test]
+    fn partitioned_cidr_flags_middle_subnet_w07() {
+        // #409 on CIDR: `Address 10.1.0.0/16` yes / `Address 10.2.0.0/16` no /
+        // `Address 10.0.0.0/8` yes. Block 2's /8 supernet contains BOTH earlier /16
+        // subnets. For a 10.2.x connection the middle block (line 4, no) wins and
+        // block 2's `yes` (line 6) is dropped. GROUND TRUTH (`sshd -T -C` on OpenSSH
+        // 10.2p1): addr=10.2.0.5 -> no (middle wins), addr=10.1.0.5 -> yes (block 0
+        // wins, block 2 agrees), addr=10.3.0.5 -> yes (block 2 still wins the /8
+        // remainder no earlier block covers). Only the 10.2.0.0/16 sub-population is a
+        // differing shadow -> one flag on line 6.
+        let d = w07_diags(
+            "Match Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the 10.2.0.0/16 sub-population shadow flags block 2"
+        );
+        assert_eq!(d[0].line, 6);
+    }
+
+    #[test]
+    fn partitioned_multiregion_only_part_shadowed_w07() {
+        // #409 with a THREE-name later block: `Host alpha` yes / `Host beta` no /
+        // `Host alpha,beta,gamma` yes. Block 2 covers alpha (block 0 agrees, yes),
+        // beta (middle block wins, no -> shadow), and gamma (no earlier block, block 2
+        // wins). GROUND TRUTH (`sshd -T -C` on OpenSSH 10.2p1): host=beta -> no
+        // (shadow), host=gamma -> yes (block 2 wins), host=alpha -> yes (block 0
+        // agrees). Only the beta sub-population differs -> EXACTLY one flag on line 6,
+        // proving per-region detection isolates the shadowed sub-population without
+        // over-flagging the clean gamma remainder.
+        let d = w07_diags(
+            "Match Host alpha\n    X11Forwarding yes\n\
+             Match Host beta\n    X11Forwarding no\n\
+             Match Host alpha,beta,gamma\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "only the beta sub-population shadows; the gamma remainder is clean"
+        );
+        assert_eq!(d[0].line, 6);
+    }
+
+    // ---- NEGATIVE (#409 over-flag guards): per-region detection must stay FP-free.
+    // ---- These PASS today (block-level rule) and must STAY correct after #409. Two
+    // ---- of them are NOT diagnostic-free: the covering block 0 genuinely shadows the
+    // ---- MIDDLE block (line 4), so they pin the exact diag set {line 4} - the guard
+    // ---- is that block 2 / line 6 is not OVER-flagged (see the barrier report). ----
+
+    #[test]
+    fn agreeing_earlier_block_covering_whole_population_suppresses_flag_w07() {
+        // THE core #409 over-flag guard. `Host alpha,beta` yes / `Host beta` no /
+        // `Host alpha,beta` yes. Block 0 covers block 2's ENTIRE population (alpha AND
+        // beta) with the SAME value (yes) and, being earliest, wins every connection
+        // block 2 could match BEFORE the middle `Host beta no` can apply. GROUND TRUTH
+        // (`sshd -T -C` on OpenSSH 10.2p1): host=alpha -> yes AND host=beta -> yes
+        // (block 0 wins both; the middle `no` NEVER applies). So block 2 (line 6) has
+        // NO differing sub-population and must NOT be flagged - a naive per-region impl
+        // that picked the middle block as beta's shadower would over-flag here.
+        //
+        // The fixture is NOT diagnostic-free: because block 0 (`alpha,beta` yes) wins
+        // every beta connection, the middle `Host beta no` (line 4) is itself a genuine
+        // cross-Match shadow of block 0 and IS flagged (the block-level rule TODAY and
+        // the per-region rule after #409 agree on line 4). So this pins the EXACT diag
+        // set {line 4}: block 2 / line 6 stays UN-flagged (the over-flag guard) while
+        // block 1 / line 4 is the real shadow. `.is_empty()` would be WRONG here - line
+        // 4 is a true shadow, confirmed by the oracle above.
+        let d = w07_diags(
+            "Match Host alpha,beta\n    X11Forwarding yes\n\
+             Match Host beta\n    X11Forwarding no\n\
+             Match Host alpha,beta\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "only the middle block (line 4) is shadowed by block 0; block 2 is not over-flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (Host beta no) is shadowed by block 0 (alpha,beta yes); block 2 / line 6 is NOT flagged"
+        );
+    }
+
+    #[test]
+    fn middle_block_winning_region_outside_block2_does_not_overflag_w07() {
+        // #409 over-flag guard for PARTIAL coverage: the middle differing block wins a
+        // non-empty region that lies OUTSIDE block 2's population, so it must not cause
+        // block 2 to be flagged. `Host alpha,beta` yes / `Host beta,gamma` no /
+        // `Host alpha,beta` yes. Block 0 covers block 2's WHOLE population (alpha AND
+        // beta) with the same value (yes) and wins it first; the middle block only wins
+        // gamma, which is NOT in block 2. GROUND TRUTH (`sshd -T -C` on OpenSSH 10.2p1):
+        // host=alpha -> yes AND host=beta -> yes (block 0 wins ALL of block 2's
+        // population), host=gamma -> no (middle block wins gamma, OUTSIDE block 2). So
+        // block 2 / line 6 is NEVER shadowed and must stay clean; a wrong impl that
+        // flags block 2 merely because a differing earlier block overlaps it and wins
+        // SOME region (here just gamma) - rather than a region that INTERSECTS block 2's
+        // population - would over-flag line 6.
+        //
+        // As with `agreeing_...`, the fixture is NOT diagnostic-free: block 0
+        // (alpha,beta yes) wins the middle block's beta with a different value, so the
+        // middle `Host beta,gamma no` (line 4) is itself a genuine shadow and IS
+        // flagged. The assertion pins the EXACT diag set {line 4}: block 2 / line 6 is
+        // not over-flagged.
+        let d = w07_diags(
+            "Match Host alpha,beta\n    X11Forwarding yes\n\
+             Match Host beta,gamma\n    X11Forwarding no\n\
+             Match Host alpha,beta\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the middle block's winning region gamma lies outside block 2; block 2 not over-flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (Host beta,gamma no) is shadowed by block 0 for beta; block 2 / line 6 is NOT flagged"
+        );
+    }
+
+    #[test]
+    fn wildcard_agreeing_block0_covering_whole_population_does_not_overflag_block2_w07() {
+        // sshd -T (OpenSSH 10.2p1): host=db.corp -> yes, host=web.corp -> yes.
+        // block0 (`Host *.corp` yes) wins ALL of block2's *.corp population; block2's
+        // yes equals the winner -> block2 (line 6) is NOT a differing shadow. Only
+        // block1 (`Host db.corp` no, line 4) is genuinely shadowed by block0.
+        let d = w07_diags(
+            "Match Host *.corp\n    X11Forwarding yes\n\
+             Match Host db.corp\n    X11Forwarding no\n\
+             Match Host *.corp\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block2/line6 must NOT be over-flagged (winner value == block2 value)"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "only block1 (Host db.corp no) is a differing shadow of block0"
+        );
+    }
+
+    #[test]
+    fn multi_type_earlier_cover_does_not_suppress_single_type_block2_w07() {
+        // #409 locks the fix's structural filter (exact same-type membership): a
+        // MULTI-TYPE earlier block does NOT count as a single-type earlier setter, so
+        // it cannot suppress a single-type block's shadow. `Match User carol Host *`
+        // yes / `Match User carol` no / `Match User carol` yes. block0 is 2-type
+        // ({user,host}), so it is excluded from block2's single-type-user region
+        // reasoning; block1 (`User carol` no) wins the witness -> block2 (line 6, yes)
+        // IS a differing shadow and is flagged. GROUND TRUTH (`sshd -T -C` on OpenSSH
+        // 10.2p1): user=carol with host ABSENT -> `x11forwarding no` (block0's `Host *`
+        // fails with no host, so block1 `no` wins and block2 `yes` is shadowed there);
+        // user=carol,host=bar -> yes (block0 wins). The linter conservatively treats
+        // block0 (different type set) as not covering block2, so it correctly flags
+        // block2. Exact W07 set confirmed via the CLI: only line 6.
+        let d = w07_diags(
+            "Match User carol Host *\n    X11Forwarding yes\n\
+             Match User carol\n    X11Forwarding no\n\
+             Match User carol\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block2 (single-type) is a genuine shadow of block1"
+        );
+        assert_eq!(
+            d[0].line, 6,
+            "block2's X11Forwarding yes on line 6 is flagged"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+    }
+
+    #[test]
+    fn multi_type_later_block_shadow_flags_via_block_level_fallback_w07() {
+        // #409: a MULTI-TYPE (2-type) LATER block has no single region type, so
+        // single_region_type returns None and it routes through the block-level
+        // fallback, which still flags a genuine shadow. `Match User alice Host web.corp`
+        // yes / `Match User alice Host web.corp` no: both blocks constrain the same
+        // {user,host} type set and overlap (literal alice + literal web.corp), so
+        // block0 (yes) shadows the later block's `no` (line 4). GROUND TRUTH (`sshd -T
+        // -C user=alice,host=web.corp` on OpenSSH 10.2p1): `x11forwarding yes` (block0
+        // wins), so the later `no` is a real dropped value; exact W07 line via the CLI:
+        // line 4. NOTE the host MUST be literal here: a WILDCARD host (`Host *.corp`)
+        // would be the accepted wildcard-vs-wildcard FN (no overlap witness) and emit
+        // nothing, so it would not exercise this block-level-fallback path.
+        let d = w07_diags(
+            "Match User alice Host web.corp\n    X11Forwarding yes\n\
+             Match User alice Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the multi-type later block routes through the block-level fallback and is flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "block1's X11Forwarding no on line 4 is shadowed by block0"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+    }
+
+    #[test]
+    fn partition_all_same_value_is_clean() {
+        // #409 guard: three partition blocks that all set the SAME value shadow
+        // nothing. `Host alpha` yes / `Host beta` yes / `Host alpha,beta` yes. Every
+        // connection sees `yes` regardless of which block wins, so there is no
+        // differing value to drop. GROUND TRUTH (`sshd -T -C` on 10.2p1): host=alpha
+        // -> yes, host=beta -> yes. Guards against a per-region impl that flags on
+        // partition STRUCTURE alone without comparing values.
+        assert!(
+            w07_diags(
+                "Match Host alpha\n    X11Forwarding yes\n\
+                 Match Host beta\n    X11Forwarding yes\n\
+                 Match Host alpha,beta\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "all-same-value partition blocks drop nothing"
+        );
+    }
+
+    #[test]
+    fn partition_cross_type_middle_block_is_invisible_clean() {
+        // #409 guard that per-region reasoning never leaks across criterion TYPES
+        // (preserving the #400 conservative contract). `User alice` yes /
+        // `Group admins` no / `User alice` yes. The middle `Group admins` block is
+        // CROSS-TYPE to the User blocks, so it is excluded from overlap entirely (a
+        // static linter cannot resolve NSS membership; #400). Block 0 (User alice,
+        // yes) covers block 2's whole population with the same value, and the
+        // cross-type middle block partitions nothing, so nothing is flagged. An impl
+        // whose region reasoning counted the cross-type block as shadowing part of
+        // block 2 would violate #400 and false-fire. (Fully clean: block 0 does NOT
+        // overlap the cross-type middle block either, so there is no line-4 shadow.)
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match Group admins\n    X11Forwarding no\n\
+                 Match User alice\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a cross-type middle block is invisible to region reasoning (#400 contract)"
+        );
+    }
+
+    #[test]
+    fn partitioned_cidr_carveout_region_empty_does_not_overflag_block2_w07() {
+        // #409 guard requiring EXACT CIDR carve-out geometry. `Address 10.0.0.0/8`
+        // yes / `Address 10.0.0.0/8,!10.5.0.0/16` no / `Address 10.5.0.0/16` yes. The
+        // middle block's `!10.5.0.0/16` carve-out makes its positive region DISJOINT
+        // from block 2 (10.5.0.0/16), so the middle block shadows NO part of block 2's
+        // population; block 0 (/8) covers all of block 2's 10.5.x with the same value
+        // (yes). GROUND TRUTH (`sshd -T -C` on 10.2p1): addr=10.5.1.1 -> yes (block 0
+        // wins), addr=10.2.2.2 -> yes (block 0 wins; the middle `no` NEVER applies
+        // anywhere). A naive per-region impl that ignored the `!` would think the
+        // middle block covers block 2's 10.5.x with `no` and over-flag line 6.
+        //
+        // As with `agreeing_...`: block 0 (/8, yes) wins EVERY 10.x, so the middle
+        // block (line 4, no) is itself a genuine shadow of block 0 and IS flagged. The
+        // assertion pins the EXACT diag set {line 4}: block 2 / line 6 is NOT
+        // over-flagged. `.is_empty()` would be WRONG (line 4 is a true shadow).
+        let d = w07_diags(
+            "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match Address 10.0.0.0/8,!10.5.0.0/16\n    X11Forwarding no\n\
+             Match Address 10.5.0.0/16\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the carve-out empties the middle block's overlap with block 2; block 2 not over-flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (the /8-minus-/16 no block) is shadowed by block 0 (/8 yes); block 2 / line 6 is NOT flagged"
+        );
+    }
+
+    #[test]
+    fn single_localport_region_reduces_to_block_level_w07() {
+        // #409 guard: region reasoning must not regress single-port equality.
+        // `LocalPort 2201` yes / `LocalPort 2202` no / `LocalPort 2202` yes. On a VALID
+        // sshd config `LocalPort` is a SINGLETON (a2port rejects comma-lists AND
+        // negation with "Invalid LocalPort ... on Match line" / "Bad Match condition",
+        // verified OpenSSH 10.2p1), so the "region" of a LocalPort block is a single
+        // port and reduces to equality. Block 0 (2201) is disjoint from block 2 (2202);
+        // block 1 (2202, no) overlaps block 2 (2202, yes) with a DIFFERING value ->
+        // shadow on line 6. GROUND TRUTH (`sshd -T -C` on 10.2p1): lport=2202 ->
+        // x11forwarding no (block 1 wins over block 2); lport=2201 -> yes.
+        //
+        // NOTE this is ALREADY a block-level flag TODAY (block 1 directly shadows block
+        // 2; no partition is involved), NOT a #409-new case. It guards that the
+        // per-region path preserves single-port equality rather than regressing it.
+        let d = w07_diags(
+            "Match LocalPort 2201\n    X11Forwarding yes\n\
+             Match LocalPort 2202\n    X11Forwarding no\n\
+             Match LocalPort 2202\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "single-port equality still shadows -> one W07");
+        assert_eq!(d[0].line, 6);
+    }
+
+    // ---- Direct unit test for the NAME-overlap oracle (white-box) ----
+    // #409 routed the single-type NAME region path OFF `match_blocks_overlap` (its
+    // pattern oracle cannot witness a wildcard-vs-wildcard overlap, so it would drop
+    // an agreeing wildcard block and over-flag; see
+    // `wildcard_agreeing_block0_covering_whole_population_does_not_overflag_block2_w07`).
+    // That leaves the NAME branches of `match_blocks_overlap` /`criterion_overlap` /
+    // `criterion_instances_have_common_witness` / `pattern_lists_overlap` /
+    // `name_instances_have_common_witness` reachable end-to-end only through the
+    // out-of-scope multi-type block-level fallback (an accepted-FN path with no
+    // lint()-level fixture). They remain LIVE production code, so pin their contract
+    // directly here. Grounded in OpenSSH `match_pattern_list` (a POSITIVE pattern must
+    // match and NO negated pattern may match) and the AND-across-repeated-criteria rule.
+
+    #[test]
+    fn match_blocks_overlap_name_oracle_pinned_directly() {
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let overlap = |a: &str, b: &str| super::match_blocks_overlap(&mb(a), &mb(b));
+        // Single-instance name overlap (pattern_lists_overlap): a shared literal
+        // `carol` co-satisfies both lists.
+        assert!(overlap(
+            "Match User alice,carol\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
+        // Disjoint literals never co-satisfy.
+        assert!(!overlap(
+            "Match User alice\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Wildcard vs literal: `*.corp` glob-matches the literal `db.corp`.
+        assert!(overlap(
+            "Match Host *.corp\n    X11Forwarding yes\n",
+            "Match Host db.corp\n    X11Forwarding yes\n",
+        ));
+        // A negation excluding the peer's sole user is disjoint (`!bob,*` admits every
+        // user EXCEPT bob, so it cannot co-satisfy `User bob`).
+        assert!(!overlap(
+            "Match User !bob,*\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Repeated same-type criteria are AND-ed: `alice,carol` AND `carol` = `carol`,
+        // which co-satisfies a later `carol` (name_instances_have_common_witness).
+        assert!(overlap(
+            "Match User alice,carol User carol\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
+        // Repeated same-type with an EMPTY intersection matches nobody (User alice AND
+        // User bob is impossible), so it overlaps nothing (block_matches_nobody).
+        assert!(!overlap(
+            "Match User alice User bob\n    X11Forwarding yes\n",
+            "Match User carol\n    X11Forwarding yes\n",
+        ));
+        // A nobody-block co-satisfies nothing, even against an always-satisfied
+        // `Match all` (the nobody-check must run BEFORE the Match-all short-circuit).
+        assert!(!overlap(
+            "Match Address 10.0.0.0/8 Address 192.168.0.0/16\n    X11Forwarding yes\n",
+            "Match all\n    X11Forwarding yes\n",
+        ));
+        // `Match all` is always satisfied, so it overlaps any satisfiable block.
+        assert!(overlap(
+            "Match all\n    X11Forwarding yes\n",
+            "Match User bob\n    X11Forwarding yes\n",
+        ));
+        // Repeated criteria are AND-ed across ALL occurrences, not just the first:
+        // `alice,carol` AND `bob,carol` = `carol`, which is DISJOINT from a later
+        // `alice`, so the blocks do NOT overlap (comparing only the first occurrence
+        // `alice,carol` vs `alice` would wrongly report overlap).
+        assert!(!overlap(
+            "Match User alice,carol User bob,carol\n    X11Forwarding yes\n",
+            "Match User alice\n    X11Forwarding yes\n",
+        ));
+        // The candidate filter admits ONLY literals + the FRESH sentinel; wildcards are
+        // excluded (`!is_empty() && !contains(*/?)`). So two pure wildcards are the
+        // accepted wildcard-vs-wildcard FN and do NOT overlap. If that filter's `&&`
+        // weakened to `||`, a wildcard would leak in as a literal candidate and `a*`
+        // vs `a*` would falsely overlap (the wildcard STRING `a*` glob-matches its own
+        // pattern) -- this pins the filter conjunction that the region path bypasses.
+        assert!(!overlap(
+            "Match Host a*\n    X11Forwarding yes\n",
+            "Match Host a*\n    X11Forwarding yes\n",
+        ));
+    }
+
+    #[test]
+    fn single_region_type_pinned_directly() {
+        // Region reasoning is single-type only. A block with exactly one modeled
+        // criterion type yields that type; 2+ types or an unmodeled type yields None
+        // (routing to the block-level fallback).
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let kind = |src: &str| super::single_region_type(&mb(src));
+        assert_eq!(
+            kind("Match User alice\n    X11Forwarding yes\n"),
+            Some("user".to_string()),
+        );
+        assert_eq!(
+            kind("Match Address 10.0.0.0/8\n    X11Forwarding yes\n"),
+            Some("address".to_string()),
+        );
+        // Two criterion types -> None (block-level fallback).
+        assert_eq!(
+            kind("Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n"),
+            None,
+        );
+        // A SINGLE Address instance carrying a negation is NOT the repeated-with-negation
+        // guard (that needs >= 2 instances), so it stays a region type.
+        assert_eq!(
+            kind("Match Address 10.0.0.0/8,!10.5.0.0/16\n    X11Forwarding yes\n"),
+            Some("address".to_string()),
+        );
+        // A REPEATED Address type carrying a negation trips the conservative guard -> None.
+        assert_eq!(
+            kind(
+                "Match Address 10.0.0.0/8,!10.5.0.0/16 Address 10.0.0.0/8\n    X11Forwarding yes\n"
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn block_matches_nobody_pinned_directly() {
+        // A criterion TYPE repeated on one header is AND-ed, so a repeat with an empty
+        // intersection matches nobody; a single (or satisfiable-repeated) criterion does
+        // not. Pins the address / localport arms of the common-witness dispatch.
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        let nobody = |src: &str| super::block_matches_nobody(&mb(src));
+        // Disjoint repeated Address / LocalPort -> nobody.
+        assert!(nobody(
+            "Match Address 10.0.0.0/8 Address 192.168.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(nobody(
+            "Match Address 10.0.0.0/16 Address 10.5.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(nobody(
+            "Match LocalPort 22 LocalPort 2222\n    X11Forwarding yes\n"
+        ));
+        // A single criterion, or a satisfiable repeated (nested) one, is somebody.
+        assert!(!nobody("Match Address 10.0.0.0/8\n    X11Forwarding yes\n"));
+        assert!(!nobody(
+            "Match Address 10.0.0.0/8 Address 10.5.0.0/16\n    X11Forwarding yes\n"
+        ));
+        assert!(!nobody(
+            "Match LocalPort 2222 LocalPort 2222\n    X11Forwarding yes\n"
+        ));
+    }
+
+    #[test]
+    fn port_region_set_pinned_directly() {
+        // A LocalPort block's region set is its ports; repeated LocalPort criteria are
+        // AND-ed (intersection). Pins port_region_set against a constant-set mutation.
+        let mb = |src: &str| -> crate::ast::MatchBlock {
+            crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
+                .expect("fixture parses")
+                .into_iter()
+                .find_map(|b| match b {
+                    crate::ast::Block::Match(m) => Some(m),
+                    crate::ast::Block::Global(_) => None,
+                })
+                .expect("fixture has a Match block")
+        };
+        assert_eq!(
+            super::port_region_set(
+                &mb("Match LocalPort 2202\n    X11Forwarding yes\n"),
+                "localport"
+            ),
+            std::collections::BTreeSet::from([2202u32]),
+        );
+        // Repeated same port ANDs to itself.
+        assert_eq!(
+            super::port_region_set(
+                &mb("Match LocalPort 2202 LocalPort 2202\n    X11Forwarding yes\n"),
+                "localport",
+            ),
+            std::collections::BTreeSet::from([2202u32]),
+        );
+        // Disjoint repeated ports AND to the empty set.
+        assert!(
+            super::port_region_set(
+                &mb("Match LocalPort 22 LocalPort 2222\n    X11Forwarding yes\n"),
+                "localport",
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn same_value_localport_across_overlapping_blocks_is_clean() {
+        // Two identical single-LocalPort blocks setting the SAME value have no
+        // behavioral effect (the first wins, the second would apply the same value), so
+        // there is no differing shadow. Pins the port region path's non-empty-region AND
+        // differing-value conjunction (an OR would flag this redundant repeat).
+        assert!(
+            w07_diags(
+                "Match LocalPort 2202\n    X11Forwarding yes\n\
+                 Match LocalPort 2202\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "identical value across two co-satisfiable LocalPort blocks is redundant, not a shadow"
+        );
+    }
+
+    #[test]
+    fn multi_type_block_level_fallback_flags_and_disjoint_is_clean() {
+        // A block constraining 2+ criterion types routes through the block-level
+        // fallback (region reasoning is single-type only). Two IDENTICAL multi-type
+        // blocks co-satisfy, so a differing first-value-wins value shadows the later
+        // line. Pins block_level_shadow's positive path.
+        let d = w07_diags(
+            "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "identical multi-type blocks co-satisfy -> one W07"
+        );
+        assert_eq!(d[0].line, 4);
+        // Two multi-type blocks that do NOT overlap (disjoint on the User type) never
+        // co-satisfy, so nothing is shadowed. Pins the block-level filter's
+        // overlap-AND-sets-keyword conjunction (an OR would treat the disjoint earlier
+        // block as a spurious winner and false-fire).
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User bob Address 192.168.0.0/16\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint multi-type blocks never co-satisfy, so nothing is shadowed"
+        );
     }
 }
