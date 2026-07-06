@@ -1842,6 +1842,66 @@ mod w07_tests {
     }
 
     #[test]
+    fn multi_type_earlier_cover_does_not_suppress_single_type_block2_w07() {
+        // #409 locks the fix's structural filter (exact same-type membership): a
+        // MULTI-TYPE earlier block does NOT count as a single-type earlier setter, so
+        // it cannot suppress a single-type block's shadow. `Match User carol Host *`
+        // yes / `Match User carol` no / `Match User carol` yes. block0 is 2-type
+        // ({user,host}), so it is excluded from block2's single-type-user region
+        // reasoning; block1 (`User carol` no) wins the witness -> block2 (line 6, yes)
+        // IS a differing shadow and is flagged. GROUND TRUTH (`sshd -T -C` on OpenSSH
+        // 10.2p1): user=carol with host ABSENT -> `x11forwarding no` (block0's `Host *`
+        // fails with no host, so block1 `no` wins and block2 `yes` is shadowed there);
+        // user=carol,host=bar -> yes (block0 wins). The linter conservatively treats
+        // block0 (different type set) as not covering block2, so it correctly flags
+        // block2. Exact W07 set confirmed via the CLI: only line 6.
+        let d = w07_diags(
+            "Match User carol Host *\n    X11Forwarding yes\n\
+             Match User carol\n    X11Forwarding no\n\
+             Match User carol\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "block2 (single-type) is a genuine shadow of block1"
+        );
+        assert_eq!(
+            d[0].line, 6,
+            "block2's X11Forwarding yes on line 6 is flagged"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+    }
+
+    #[test]
+    fn multi_type_later_block_shadow_flags_via_block_level_fallback_w07() {
+        // #409: a MULTI-TYPE (2-type) LATER block has no single region type, so
+        // single_region_type returns None and it routes through the block-level
+        // fallback, which still flags a genuine shadow. `Match User alice Host web.corp`
+        // yes / `Match User alice Host web.corp` no: both blocks constrain the same
+        // {user,host} type set and overlap (literal alice + literal web.corp), so
+        // block0 (yes) shadows the later block's `no` (line 4). GROUND TRUTH (`sshd -T
+        // -C user=alice,host=web.corp` on OpenSSH 10.2p1): `x11forwarding yes` (block0
+        // wins), so the later `no` is a real dropped value; exact W07 line via the CLI:
+        // line 4. NOTE the host MUST be literal here: a WILDCARD host (`Host *.corp`)
+        // would be the accepted wildcard-vs-wildcard FN (no overlap witness) and emit
+        // nothing, so it would not exercise this block-level-fallback path.
+        let d = w07_diags(
+            "Match User alice Host web.corp\n    X11Forwarding yes\n\
+             Match User alice Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the multi-type later block routes through the block-level fallback and is flagged"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "block1's X11Forwarding no on line 4 is shadowed by block0"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+    }
+
+    #[test]
     fn partition_all_same_value_is_clean() {
         // #409 guard: three partition blocks that all set the SAME value shadow
         // nothing. `Host alpha` yes / `Host beta` yes / `Host alpha,beta` yes. Every
