@@ -418,6 +418,71 @@ fn test_mixed_enforcing_and_permissive_only_enforcing_has_allow() {
 }
 
 // ---------------------------------------------------------------------------
+// Anchor 3b: Mixed emittable + declined groups. The declined-comment loop that
+// runs BEFORE the module header (f4 §3.1: comments appear at the top) only
+// executes when `require_groups` (emittable + permissive) is non-empty AND
+// `declined` is also non-empty - a scenario the all-declined-input tests in
+// `is_te_representable_guard.rs` never reach (their inputs are declined-only,
+// so `require_groups` is empty and the EARLIER "nothing to emit" comment-only
+// branch fires instead).
+// ---------------------------------------------------------------------------
+
+/// One emittable (`TeAllowable`) group + one declined (`MlsSuspected`, non-empty
+/// alpha perms, no SID token) group in the SAME `emit_te` call. The emittable
+/// group must still produce a full module + allow rule; the declined group
+/// must produce a per-group decline comment naming it (not just any comment),
+/// and must never appear on an `allow` line.
+#[test]
+fn test_mixed_emittable_and_declined_emits_decline_comment_before_header() {
+    let groups = [
+        group("logrotate_t", "shadow_t", "file", &["read"]),
+        group_with_kind(
+            "dom_a",
+            "target_a",
+            "process",
+            &["transition"],
+            DenialKind::MlsSuspected,
+        ),
+    ];
+    let te = emit_te(&groups, Some("mixed_mod"));
+
+    // The emittable group still gets a full module + allow rule. The decline
+    // comment is emitted BEFORE the module header (f4 §3.1: comments appear at
+    // the top), so assert presence/ordering rather than `starts_with`.
+    let module_pos = te.find("module mixed_mod 1.0;").unwrap_or_else(|| {
+        panic!("a mixed emittable+declined input must still emit a module header\n\ngot:\n{te}")
+    });
+    let decline_pos = te
+        .find("# rulesteward: declined")
+        .expect("mixed input must emit a decline comment before the module header");
+    assert!(
+        decline_pos < module_pos,
+        "the decline comment must appear BEFORE the module header (f4 §3.1)\n\ngot:\n{te}"
+    );
+    assert!(
+        te.contains("allow logrotate_t shadow_t:file read;"),
+        "the emittable group must still produce its allow rule\n\ngot:\n{te}"
+    );
+
+    // The declined group must be named in a decline comment.
+    let names_declined_group = te.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with('#') && t.contains("dom_a") && t.contains("target_a")
+    });
+    assert!(
+        names_declined_group,
+        "the declined MlsSuspected group must be named in a decline comment \
+         (not just any '#' line)\n\ngot:\n{te}"
+    );
+
+    // The declined group must never appear on an allow line.
+    assert!(
+        !te.contains("allow dom_a"),
+        "the declined group must NOT produce an allow rule\n\ngot:\n{te}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Anchor 4: Module name validation (f4 §3.1, audit2allow:114 `is_valid_name`)
 //
 // Valid name regex: ^[A-Za-z][A-Za-z0-9._-]*$
