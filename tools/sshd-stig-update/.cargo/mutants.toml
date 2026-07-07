@@ -1,0 +1,5 @@
+# source.rs is the live curl+unzip network/filesystem seam: it is exercised only by
+# the live `check`/`derive` runs, not by offline unit tests (by design, mirroring
+# tools/stig-update/src/source.rs). Excluded from the mutation gate so a "survivor"
+# there does not mask a real gap in the tested derivation core.
+exclude_globs = ["src/source.rs"]

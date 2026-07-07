@@ -1,0 +1,100 @@
+name: sshd-stig-drift
+
+# Weekly nudge for the sshd W01/W02 STIG baseline (issue #444): fetch the pinned DISA
+# XCCDF zips LIVE and compare against the shipped tables. On drift, open/update a
+# tracking issue (it never edits code). The on-demand path is `just sshd-stig-check`.
+#
+# Unlike ComplianceAsCode, DISA has no releases/latest API - each RHEL STIG is
+# versioned by FILENAME - so there is no `--latest` mode. This run derives at the
+# PINNED zips (tools/sshd-stig-update/stig-refs.toml). It therefore catches:
+#   - a DISA in-place re-publish of a pinned filename (rare but real),
+#   - a DISA XCCDF reformat that breaks the parser (fail-closed -> the job fails),
+#   - the committed fixtures having themselves drifted from live DISA.
+# It CANNOT auto-detect a brand-new DISA revision (new filename); the issue body
+# reminds a human to periodically check dl.dod.cyber.mil for a newer RHEL STIG.
+on:
+  schedule:
+    - cron: "0 7 * * 2" # Tuesdays 07:00 UTC (offset from the Monday sysctld stig-drift run)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: sshd STIG baseline drift vs live pinned DISA XCCDF
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/sshd-stig-update
+      - name: Live check vs the pinned DISA zips
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- check \
+            > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/CDN
+          # error, 101 = a `cargo run` compile failure if this out-of-workspace tool
+          # drifts from the rulesteward-sshd public API, etc.) = fail the job loudly.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "sshd-stig-update did not exit cleanly (rc=$RC; see logs above): the DISA CDN" \
+               "may be unreachable, DISA may have reformatted the XCCDF and the parser failed" \
+               "closed, or the tool may no longer compile against the rulesteward-sshd API." \
+               "The tool needs a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create sshd-stig-drift --color FBCA04 \
+            --description "DISA sshd STIG baseline drift" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`sshd-stig-update check\` found the shipped sshd W01/W02 STIG tables"
+            echo "no longer match the official DISA XCCDF at the pinned zips in"
+            echo "\`tools/sshd-stig-update/stig-refs.toml\`."
+            echo
+            echo "To update: run \`just sshd-stig-derive <product>\`, review the diff, reconcile"
+            echo "\`crates/rulesteward-sshd/src/lints/stig.rs\` (the required arrays + the"
+            echo "\`RHEL*_VNUM\` provenance maps + any \`w02_rule\` change), refresh the committed"
+            echo "\`tools/sshd-stig-update/tests/fixtures/\` if the DISA Groups changed, re-gate"
+            echo "(adversarial + mutation), and confirm \`just sshd-stig-check\` reports 0 drift."
+            echo
+            echo "NOTE: this run derives at the PINNED filenames. If DISA published a NEW revision"
+            echo "(new filename), bump the \`zip\` values in \`stig-refs.toml\` first. Check"
+            echo "dl.dod.cyber.mil for the current RHEL 8 / 9 / 10 STIG revisions."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label sshd-stig-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "sshd STIG baseline drift: DISA XCCDF has changes" \
+              --label sshd-stig-drift --body-file issue-body.md
+          fi

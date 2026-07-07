@@ -1,0 +1,319 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL9_STIG_V2R7_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel9 V2R7 sshd_config directive Groups (20) plus 2 non-directive decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant).</title>
+<Group id="V-257981"><Rule severity="medium"><version>RHEL-09-255025</version><title>SRG-OS-000023-GPOS-00006</title><check system="C-x"><check-content><check-content>Verify any SSH connection to RHEL 9 displays the Standard Mandatory DOD Notice and Consent Banner before granting access to the system.
+
+Check for the location of the banner file being used with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*banner'
+/etc/ssh/sshd_config.d/80-bannerPointer.conf:Banner /etc/issue
+
+This command will return the banner keyword and the name of the file that contains the SSH banner (in this case "/etc/issue").
+
+If the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to display the Standard Mandatory DOD Notice and Consent Banner before granting access to the system via ssh.
+
+Edit the "etc/ssh/sshd_config" file or a file in "/etc/ssh/sshd_config.d" to uncomment the banner keyword and configure it to point to a file that will contain the logon banner (this file may be named differently or be in a different location if using a version of SSH that is provided by a third-party vendor).
+
+An example configuration line is:
+
+Banner /etc/issue</fixtext></Rule></Group><Group id="V-257982"><Rule severity="medium"><version>RHEL-09-255030</version><title>SRG-OS-000032-GPOS-00013</title><check system="C-x"><check-content><check-content>Verify that RHEL 9 logs SSH connection attempts and failures to the server.
+
+Check what the SSH daemon's "LogLevel" option is set to with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*loglevel'
+
+LogLevel VERBOSE
+
+If a value of "VERBOSE" is not returned or the line is commented out or missing, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to log connection attempts add or modify the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+LogLevel VERBOSE
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257983"><Rule severity="medium"><version>RHEL-09-255035</version><title>SRG-OS-000105-GPOS-00052</title><check system="C-x"><check-content><check-content>Note: If the system administrator demonstrates the use of an approved alternate multifactor authentication method, this requirement is Not Applicable.
+
+Verify that RHEL 9 SSH daemon accepts public key encryption with the following command:
+ 
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*pubkeyauthentication'
+
+PubkeyAuthentication yes
+ 
+If "PubkeyAuthentication" is set to no, the line is commented out, or the line is missing, this is a finding.</check-content></check><fixtext fixref="F-x">To configure the system, add or modify the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+PubkeyAuthentication yes
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257984"><Rule severity="medium"><version>RHEL-09-255040</version><title>SRG-OS-000106-GPOS-00053</title><check system="C-x"><check-content><check-content>Verify that RHEL 9 remote access using SSH prevents logging on with a blank password with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permitemptypasswords'
+
+PermitEmptyPasswords no
+
+If the "PermitEmptyPasswords" keyword is set to "yes", is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">To configure the system to prevent SSH users from logging on with blank passwords edit the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+PermitEmptyPasswords no
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257985"><Rule severity="medium"><version>RHEL-09-255045</version><title>SRG-OS-000109-GPOS-00056</title><check system="C-x"><check-content><check-content>Verify RHEL 9 remote access using SSH prevents users from logging on directly as "root" with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permitrootlogin'
+
+PermitRootLogin no
+
+If the "PermitRootLogin" keyword is set to any value other than "no", is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">To configure the system to prevent SSH users from logging on directly as root add or modify the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+PermitRootLogin no
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257986"><Rule severity="medium"><version>RHEL-09-255050</version><title>SRG-OS-000125-GPOS-00065</title><check system="C-x"><check-content><check-content>Verify the RHEL 9 SSHD is configured to allow for the UsePAM interface with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*usepam'
+
+UsePAM yes
+
+If the "UsePAM" keyword is set to "no", is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the RHEL 9 SSHD to use the UsePAM interface by adding or modifying the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+UsePAM yes
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257992"><Rule severity="medium"><version>RHEL-09-255080</version><title>SRG-OS-000480-GPOS-00229</title><check system="C-x"><check-content><check-content>Verify the operating system does not allow a noncertificate trusted host SSH logon to the system with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*hostbasedauthentication'
+
+HostbasedAuthentication no
+
+If the "HostbasedAuthentication" keyword is not set to "no", is missing, or is commented out, this is a finding.
+
+If the required value is not set, this is a finding.</check-content></check><fixtext fixref="F-x">To configure RHEL 9 to not allow a noncertificate trusted host SSH logon to the system, add or modify the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+HostbasedAuthentication no
+
+Restart the SSH daemon for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257993"><Rule severity="medium"><version>RHEL-09-255085</version><title>SRG-OS-000480-GPOS-00229</title><check system="C-x"><check-content><check-content>Verify that unattended or automatic logon via SSH is disabled with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permituserenvironment'
+
+PermitUserEnvironment no
+
+If "PermitUserEnvironment" is set to "yes", is missing completely, or is commented out, this is a finding.
+
+If the required value is not set, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the RHEL 9 SSH daemon to not allow unattended or automatic logon to the system by editing the following line in the "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+PermitUserEnvironment no
+
+Restart the SSH daemon  for the setting to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257994"><Rule severity="medium"><version>RHEL-09-255090</version><title>SRG-OS-000423-GPOS-00187</title><check system="C-x"><check-content><check-content>Verify the SSH server is configured to force frequent session key renegotiation with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*rekeylimit'
+
+RekeyLimit 1G 1h
+
+If "RekeyLimit" does not have a maximum data amount and maximum time defined, is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to force a frequent session key renegotiation for SSH connections to the server by adding or modifying the following line in the "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+RekeyLimit 1G 1h
+
+Restart the SSH daemon for the settings to take effect.
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257995"><Rule severity="medium"><version>RHEL-09-255095</version><title>SRG-OS-000163-GPOS-00072</title><check system="C-x"><check-content><check-content>Verify the "ClientAliveCountMax" is set to "1" by performing the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*clientalivecountmax'
+
+ClientAliveCountMax 1
+
+If "ClientAliveCountMax" does not exist, is not set to a value of "1" in "/etc/ssh/sshd_config", or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Note: This setting must be applied in conjunction with RHEL-09-255100 to function correctly.
+
+Configure the SSH server to terminate a user session automatically after the SSH client has become unresponsive.
+
+Modify or append the following lines in the "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+ClientAliveCountMax 1
+
+For the changes to take effect, the SSH daemon must be restarted.
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257996"><Rule severity="medium"><version>RHEL-09-255100</version><title>SRG-OS-000126-GPOS-00066</title><check system="C-x"><check-content><check-content>Verify the "ClientAliveInterval" variable is set to a value of "600" or less by performing the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*clientaliveinterval'
+
+/etc/ssh/sshd_config.d/ClientAliveInterval.conf:ClientAliveInterval 600
+
+Verify the runtime value of "ClientAliveInterval" with the following command:
+
+$ sudo sshd -T | grep -i clientaliveinterval
+
+clientaliveinterval 600
+
+If "ClientAliveInterval" does not exist, does not have a value of "600" or less in "/etc/ssh/sshd_config", or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Note: This setting must be applied in conjunction with RHEL-09-255095 to function correctly.
+
+Configure the SSH server to terminate a user session automatically after the SSH client has been unresponsive for 10 minutes.
+
+Modify or append the following lines in the "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+ClientAliveInterval 600
+
+For the changes to take effect, the SSH daemon must be restarted.
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258002"><Rule severity="medium"><version>RHEL-09-255130</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the RHEL 9 SSH daemon performs compression after a user successfully authenticates with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*compression'
+/etc/ssh/sshd_config:Compression no
+
+If the "Compression" keyword is set to "yes", is missing, or the returned line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow compression.
+
+Uncomment the "Compression" keyword in "/etc/ssh/sshd_config" on the system and set the value to "delayed" or "no":
+
+Compression no
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258003"><Rule severity="medium"><version>RHEL-09-255135</version><title>SRG-OS-000364-GPOS-00151</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow GSSAPI authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*gssapiauthentication'
+
+GSSAPIAuthentication no
+
+If the value is returned as "yes", the returned line is commented out, no output is returned, and the use of GSSAPI authentication has not been documented with the information system security officer (ISSO), this is a finding.
+
+If the required value is not set, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow GSSAPI authentication.
+
+Add or uncomment the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d" and set the value to "no":
+
+GSSAPIAuthentication no
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258004"><Rule severity="medium"><version>RHEL-09-255140</version><title>SRG-OS-000364-GPOS-00151</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow Kerberos authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*kerberosauthentication'
+
+KerberosAuthentication no
+
+If the value is returned as "yes", the returned line is commented out, no output is returned, and the use of Kerberos authentication has not been documented with the information system security officer (ISSO), this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow Kerberos authentication.
+
+Add the following line in "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "no":
+
+KerberosAuthentication no
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258005"><Rule severity="medium"><version>RHEL-09-255145</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow rhosts authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*ignorerhosts'
+
+IgnoreRhosts yes
+
+If the value is returned as "no", the returned line is commented out, or no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow rhosts authentication.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "yes":
+
+IgnoreRhosts yes
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258006"><Rule severity="medium"><version>RHEL-09-255150</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow known hosts authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*ignoreuserknownhosts'
+
+IgnoreUserKnownHosts yes
+
+If the value is returned as "no", the returned line is commented out, or no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow known hosts authentication.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "yes":
+
+IgnoreUserKnownHosts yes
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258007"><Rule severity="medium"><version>RHEL-09-255155</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow X11Forwarding with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*x11forwarding'
+
+X11forwarding no
+
+If the value is returned as "yes", the returned line is commented out, or no output is returned, and X11 forwarding is not documented with the information system security officer (ISSO) as an operational requirement, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow X11 forwarding.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "no":
+
+X11forwarding no
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258008"><Rule severity="medium"><version>RHEL-09-255160</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon performs strict mode checking of home directory configuration files with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*strictmodes'
+
+StrictModes yes
+
+If the "StrictModes" keyword is set to "no", the returned line is commented out, or no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to perform strict mode checking of home directory configuration files.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "yes":
+
+StrictModes yes
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258009"><Rule severity="medium"><version>RHEL-09-255165</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon provides users with feedback on when account accesses last occurred with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*printlastlog'
+
+PrintLastLog yes
+
+If the "PrintLastLog" keyword is set to "no", the returned line is commented out, or no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to provide users with feedback on when account accesses last occurred.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "yes":
+
+PrintLastLog yes
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258011"><Rule severity="medium"><version>RHEL-09-255175</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the SSH daemon prevents remote hosts from connecting to the proxy display with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*x11uselocalhost'
+
+X11UseLocalhost yes
+
+If the "X11UseLocalhost" keyword is set to "no", is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to prevent remote hosts from connecting to the proxy display.
+
+Add the following line to "/etc/ssh/sshd_config" or to a file in "/etc/ssh/sshd_config.d", or uncomment the line and set the value to "yes":
+
+X11UseLocalhost yes
+
+The SSH service must be restarted for changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-257989"><Rule severity="medium"><version>RHEL-09-255065</version><title>SRG-OS-000250-GPOS-00093</title><check system="C-x"><check-content><check-content>Verify the SSH server is configured to use only ciphers employing FIPS 140-3 approved algorithms.
+
+To verify the ciphers in the systemwide SSH configuration file, use the following command:
+
+$ sudo grep -i Ciphers /etc/crypto-policies/back-ends/opensshserver.config 
+Ciphers aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
+
+If the cipher entries in the "opensshserver.config" file have any ciphers other than "aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr", or they are missing or commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the RHEL 9 SSH server to use only ciphers employing FIPS 140-3 approved algorithms.
+
+Reinstall crypto-policies with the following command:
+
+$ sudo dnf -y reinstall crypto-policies
+
+Set the crypto-policy to FIPS with the following command:
+
+$ sudo update-crypto-policies --set FIPS
+
+Setting system policy to FIPS
+
+Note: Systemwide crypto policies are applied on application startup. It is recommended to restart the system for the change of policies to fully take place.</fixtext></Rule></Group><Group id="V-257997"><Rule severity="medium"><version>RHEL-09-255105</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the group ownership of the "/etc/ssh/sshd_config" file and the contents of "/etc/ssh/sshd_config.d" with the following command:
+
+$ sudo find /etc/ssh/sshd_config /etc/ssh/sshd_config.d -exec stat -c "%G %n" {} \;
+
+root /etc/ssh/sshd_config
+root /etc/ssh/sshd_config.d
+root /etc/ssh/sshd_config.d/50-cloud-init.conf
+root /etc/ssh/sshd_config.d/50-redhat.conf
+
+If the "/etc/ssh/sshd_config" file or "/etc/ssh/sshd_config.d" or any files in the sshd_config.d directory do not have a group owner of "root", this is a finding.</check-content></check><fixtext fixref="F-x">Configure the "/etc/ssh/sshd_config" file and the contents of "/etc/ssh/sshd_config.d" to be group-owned by root with the following command:
+
+$ sudo chgrp root /etc/ssh/sshd_config /etc/ssh/sshd_config.d</fixtext></Rule></Group>
+</Benchmark>
