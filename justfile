@@ -126,3 +126,48 @@ stig-derive product="all":
     else
         cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
+
+# (#444) Drift-check / refresh the sshd W01/W02 STIG baselines against the OFFICIAL
+# DISA XCCDF. Same nested-tool pattern (tools/sshd-stig-update, OUT of `just ci`).
+# DISA versions each RHEL STIG by FILENAME (no releases API), so there is NO
+# `--latest` mode; `check` derives at the pinned zips in the tool's stig-refs.toml.
+# The LIVE recipes skip gracefully (exit 0) when curl/unzip are absent.
+#
+# sshd-stig-check         : LIVE - fetch the pinned DISA zips; exit 1 on any drift vs
+#                           stig.rs (the weekly sshd-stig-drift workflow uses this).
+# sshd-stig-check-offline : OFFLINE - drift-check stig.rs against the committed real
+#                           DISA fixtures; no network (the PR-gate uses this).
+# sshd-stig-derive <p>    : print the derived table + diff + paste-ready lines for
+#                           review (p = rhel8|rhel9|rhel10, or `all`).
+sshd-stig-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "sshd-stig-check: prerequisites missing - need curl + unzip + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- check
+
+sshd-stig-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed real-DISA fixtures and confirm
+    # stig.rs still matches. No network. Any product's drift (exit 1) or error (2)
+    # fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- \
+            check --product "$p" --file "tools/sshd-stig-update/tests/fixtures/${p}_sshd_controls.xml"
+    done
+
+sshd-stig-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "sshd-stig-derive: prerequisites missing - need curl + unzip + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- derive --product "{{product}}"
+    fi

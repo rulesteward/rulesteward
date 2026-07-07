@@ -221,4 +221,32 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert!(d[0].contains("banner V-number: code V-257981 -> DISA V-999999"));
     }
+
+    /// The `Display` impl renders the value rule in the `derive` paste-ready output
+    /// and the drift-diff messages, so a broken rendering would ship wrong content
+    /// silently. Assert every variant's exact rendering.
+    #[test]
+    fn owned_value_rule_display_renders_each_variant() {
+        assert_eq!(
+            OwnedValueRule::PresenceOnly.to_string(),
+            "presence-only (W01)"
+        );
+        assert_eq!(
+            OwnedValueRule::ExactLower("no".into()).to_string(),
+            "exactly \"no\""
+        );
+        assert_eq!(
+            OwnedValueRule::TwoTokenExact("1g".into(), "1h".into()).to_string(),
+            "exactly \"1g 1h\""
+        );
+        assert_eq!(
+            OwnedValueRule::AnyOf(vec!["delayed".into(), "no".into()]).to_string(),
+            "one of: delayed, no"
+        );
+        assert_eq!(
+            OwnedValueRule::NumericCeiling(600).to_string(),
+            "> 0 and <= 600"
+        );
+        assert_eq!(OwnedValueRule::NumericExact(1).to_string(), "exactly 1");
+    }
 }
