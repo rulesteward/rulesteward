@@ -77,10 +77,49 @@ fn parse_curl_status(body_with_code: &str) -> Result<(u16, String), String> {
 
 /// Fetch the recursive git-tree (all paths) at `reff` once - used to locate each
 /// rule's `rule.yml` + optional `_value.var` without guessing the guide directory.
+///
+/// GitHub caps this endpoint at ~100k entries / 7MB and sets `truncated: true`
+/// on the response rather than erroring (see the GitHub REST API docs for
+/// `GET /repos/{owner}/{repo}/git/trees/{sha}`). A truncated tree is missing an
+/// unknown subset of paths, and a missing `rule.yml` path looks IDENTICAL to a
+/// path that is genuinely absent - `find_path` would silently return `None` and
+/// the derivation would proceed with an INCOMPLETE baseline. So this fails
+/// closed rather than trusting a partial tree.
 pub fn tree(reff: &str) -> Result<String, String> {
-    curl(&format!(
+    let json = curl(&format!(
         "https://api.github.com/repos/{REPO}/git/trees/{reff}?recursive=1"
-    ))
+    ))?;
+    reject_if_truncated(&json)?;
+    Ok(json)
+}
+
+/// Reject a git-tree JSON body whose `truncated` field is `true`. The value is an
+/// unquoted JSON boolean and GitHub may pretty-print the response (a space after the
+/// colon) or not, so this tolerates both spacings - mirroring `find_path`'s
+/// whitespace tolerance. A `truncated: false` value or an absent key (unlikely for
+/// this endpoint, but not treated as a failure either way) is `Ok`.
+///
+/// The scan is ORDER-INDEPENDENT: it checks EVERY occurrence of the token
+/// `"truncated"`, not just the first, so a benign earlier occurrence (e.g. a tree
+/// entry whose path is literally `truncated`) cannot mask the genuine top-level
+/// field that follows. It distinguishes the KEY `"truncated":` (the token followed
+/// by a colon) from a path VALUE `"truncated"` (followed by `,`/`}`/`]`, never a
+/// colon), so it is robust regardless of where the real field sits.
+fn reject_if_truncated(tree_json: &str) -> Result<(), String> {
+    for chunk in tree_json.split("\"truncated\"").skip(1) {
+        // Only a KEY `"truncated"` is followed by a colon; a path VALUE is not.
+        let Some(after_colon) = chunk.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        if after_colon.trim_start().starts_with("true") {
+            return Err(
+                "git-tree truncated (ComplianceAsCode exceeded the GitHub API tree cap); \
+                 cannot derive a complete baseline - failing closed"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The latest ComplianceAsCode release tag (for `check --latest`).
@@ -143,7 +182,7 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_json_string, find_path};
+    use super::{extract_json_string, find_path, reject_if_truncated};
 
     #[test]
     fn find_path_anchors_on_segment_boundary() {
@@ -164,6 +203,77 @@ mod tests {
         assert_eq!(
             find_path(tree, "/sysctl_x/rule.yml").as_deref(),
             Some("g/sysctl_x/rule.yml")
+        );
+    }
+
+    #[test]
+    fn reject_if_truncated_rejects_truncated_true_tolerating_spacing() {
+        // Compact JSON: no space after the colon.
+        let compact = r#"{"tree":[{"path":"a/rule.yml"}],"truncated":true}"#;
+        let err = reject_if_truncated(compact).expect_err("truncated:true must be rejected");
+        assert!(
+            err.to_lowercase().contains("truncated"),
+            "error must mention truncated: {err:?}"
+        );
+
+        // GitHub pretty-prints with a space after the colon: `"truncated": true`.
+        let pretty = "{\n  \"tree\": [\n    {\n      \"path\": \"a/rule.yml\"\n    }\n  ],\n  \"truncated\": true\n}";
+        let err = reject_if_truncated(pretty).expect_err("pretty truncated: true must be rejected");
+        assert!(
+            err.to_lowercase().contains("truncated"),
+            "error must mention truncated: {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_if_truncated_accepts_false_in_both_spacings() {
+        let compact = r#"{"tree":[{"path":"a/rule.yml"}],"truncated":false}"#;
+        assert!(
+            reject_if_truncated(compact).is_ok(),
+            "truncated:false must be accepted"
+        );
+
+        let pretty = "{\n  \"tree\": [\n    {\n      \"path\": \"a/rule.yml\"\n    }\n  ],\n  \"truncated\": false\n}";
+        assert!(
+            reject_if_truncated(pretty).is_ok(),
+            "truncated: false must be accepted"
+        );
+    }
+
+    #[test]
+    fn reject_if_truncated_accepts_key_absent() {
+        let tree = r#"{"tree":[{"path":"a/rule.yml"}]}"#;
+        assert!(
+            reject_if_truncated(tree).is_ok(),
+            "an absent truncated key must not be treated as truncated"
+        );
+    }
+
+    #[test]
+    fn reject_if_truncated_is_order_independent_earlier_path_named_truncated() {
+        // A benign earlier occurrence of the token `truncated` (a tree entry whose
+        // PATH is literally `truncated`) precedes the real top-level field. The scan
+        // must not stop at the first occurrence and miss the genuine `truncated:true`
+        // that follows - that would be a fail-OPEN in a guard whose whole job is to
+        // fail closed.
+        let tree = r#"{"tree":[{"path":"truncated","mode":"040000"}],"truncated":true}"#;
+        let err = reject_if_truncated(tree)
+            .expect_err("a real truncated:true after a path named `truncated` must be rejected");
+        assert!(
+            err.to_lowercase().contains("truncated"),
+            "error must mention truncated: {err:?}"
+        );
+    }
+
+    #[test]
+    fn reject_if_truncated_no_false_positive_when_path_named_truncated_but_field_false() {
+        // The mirror case: a path literally named `truncated` must NOT trip the guard
+        // when the real field is `false`. The path VALUE is followed by `,`/`}`/`]`,
+        // never `:`, so it is distinguishable from the KEY `"truncated":`.
+        let tree = r#"{"tree":[{"path":"truncated","mode":"040000"}],"truncated":false}"#;
+        assert!(
+            reject_if_truncated(tree).is_ok(),
+            "a path named `truncated` with the real field false must not false-positive"
         );
     }
 

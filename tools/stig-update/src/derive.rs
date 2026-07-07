@@ -348,4 +348,42 @@ ocil: 'crypto.fips_enabled should be 1'
             "{d:?}"
         );
     }
+
+    #[test]
+    fn diff_tables_flags_hand_edited_stale_baseline_as_drift() {
+        use super::diff_tables;
+        // `derived` mirrors what a fresh upstream `derive_table` call produces
+        // (the `derive()` fixture helper above). `stale_code` starts as an exact
+        // clone - as if `baseline.rs` were up to date - then gets ONE entry
+        // hand-edited out of sync, simulating a human forgetting to update the
+        // shipped table after ComplianceAsCode changed a sysctl's accepted value.
+        // This is exactly the condition `main.rs::cmd_check` turns into `ExitCode::from(1)`
+        // (ties `diff_tables` non-emptiness directly to the PR-CI drift gate).
+        let derived = derive("rhel9");
+        let mut stale_code = derived.clone();
+        let idx = stale_code
+            .iter()
+            .position(|d| d.key == "kernel.dmesg_restrict")
+            .expect("kernel.dmesg_restrict present in the fixture table");
+        stale_code[idx].accepted = vec!["0".to_string()]; // upstream derived value is ["1"]
+
+        let diff = diff_tables(&derived, &stale_code);
+        assert!(
+            !diff.is_empty(),
+            "a hand-edited-out-of-sync baseline.rs entry must produce non-empty drift \
+             (this is what makes cmd_check exit 1): {diff:?}"
+        );
+        assert!(
+            diff.iter().any(|l| l.contains("kernel.dmesg_restrict")),
+            "{diff:?}"
+        );
+
+        // Anti-vacuity: an UN-edited clone (code == derived) must report ZERO drift,
+        // proving the non-empty result above is detecting the injected divergence,
+        // not a `diff_tables` bug that always reports drift regardless of input.
+        assert!(
+            diff_tables(&derived, &derived).is_empty(),
+            "an unmodified clone must report no drift"
+        );
+    }
 }
