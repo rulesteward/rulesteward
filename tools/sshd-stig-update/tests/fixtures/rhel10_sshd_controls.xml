@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL10_STIG_V1R1_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel10 V1R1 sshd_config directive Groups (19) plus 2 non-directive decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant).</title>
+<Group id="V-281115"><Rule severity="medium"><version>RHEL-10-500215</version><title>SRG-OS-000032-GPOS-00013</title><check system="C-x"><check-content><check-content>Verify RHEL 10 logs SSH connection attempts and failures to the server with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*loglevel'
+/etc/ssh/sshd_config.d/90-sshd.conf:LogLevel VERBOSE
+
+If a value of "VERBOSE" is not returned, or the line is commented out or missing, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to log connection attempts by adding or modifying the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d":
+
+LogLevel VERBOSE
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281216"><Rule severity="medium"><version>RHEL-10-600640</version><title>SRG-OS-000125-GPOS-00065</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSHD is configured to allow for the "UsePAM" interface with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*usepam'
+UsePAM yes
+
+If the "UsePAM" keyword is set to "no", is missing, or is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSHD to use the "UsePAM" interface by adding or modifying the following line in "/etc/ssh/sshd_config" or in a file in "/etc/ssh/sshd_config.d".
+
+UsePAM yes
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281224"><Rule severity="medium"><version>RHEL-10-700010</version><title>SRG-OS-000080-GPOS-00048</title><check system="C-x"><check-content><check-content>Verify RHEL 10 is configured so that any SSH connection to the operating system displays the Standard Mandatory DOD Notice and Consent Banner before granting access to the system.
+
+Check for the location of the banner file currently being used with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*banner'
+/etc/ssh/sshd_config.d/10-stig.conf:Banner /etc/issue
+
+If the line is commented out or the file is missing, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to display the Standard Mandatory DOD Notice and Consent Banner before granting access to the system via SSH.
+
+Edit a file in "/etc/ssh/sshd_config.d" to uncomment or add the banner keyword and configure it to point to a file that will contain the login banner (this file may be named differently or be in a different location if using a version of SSH that is provided by a third-party vendor).
+
+An example configuration line is:
+
+Banner /etc/issue</fixtext></Rule></Group><Group id="V-281254"><Rule severity="medium"><version>RHEL-10-700510</version><title>SRG-OS-000364-GPOS-00151</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons do not allow GSSAPI authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*gssapiauthentication'
+/etc/ssh/sshd_config.d/10-stig.conf:GSSAPIAuthentication no
+/etc/ssh/sshd_config.d/50-redhat.conf:GSSAPIAuthentication yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i gssapiauthentication
+gssapiauthentication no
+
+If the "GSSAPIAuthentication" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, no output is returned, and the use of GSSAPI authentication has not been documented with the information system security officer, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to not allow GSSAPI authentication.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+GSSAPIAuthentication no
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281255"><Rule severity="medium"><version>RHEL-10-700520</version><title>SRG-OS-000364-GPOS-00151</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons do not allow Kerberos authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*kerberosauthentication'
+/etc/ssh/sshd_config.d/10-stig.conf:KerberosAuthentication no
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i kerberosauthentication
+kerberosauthentication no
+
+If the "KerberosAuthentication" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, no output is returned, and the use of Kerberos authentication has not been documented with the information system security officer, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to not allow Kerberos authentication.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+KerberosAuthentication no
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281256"><Rule severity="medium"><version>RHEL-10-700530</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons do not allow rhosts authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*ignorerhosts'
+/etc/ssh/sshd_config.d/10-stig.conf:IgnoreRhosts yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i ignorerhosts
+ignorerhosts yes
+
+If the "IgnoreRhosts" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to not allow rhosts authentication.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+IgnoreRhosts yes
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281257"><Rule severity="medium"><version>RHEL-10-700540</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons do not allow known hosts authentication with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*ignoreuserknownhosts'
+/etc/ssh/sshd_config.d/10-stig.conf:IgnoreUserKnownHosts yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i ignoreuserknownhosts
+ignoreuserknownhosts yes
+
+If the "IgnoreUserKnownHosts" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to not allow known hosts authentication.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+IgnoreUserKnownHosts yes
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281258"><Rule severity="medium"><version>RHEL-10-700550</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons do not allow X11Forwarding with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*x11forwarding'
+/etc/ssh/sshd_config.d/10-stig.conf:X11forwarding no
+/etc/ssh/sshd_config.d/50-redhat.conf:X11Forwarding yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i x11forwarding
+x11forwarding no
+
+If the "X11forwarding" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, and X11 forwarding is not documented with the information system security officer as an operational requirement, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to not allow X11 forwarding.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+X11forwarding no
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281259"><Rule severity="medium"><version>RHEL-10-700560</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons perform strict mode checking of home directory configuration files with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*strictmodes'
+/etc/ssh/sshd_config.d/10-stig.conf:StrictModes yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i strictmodes
+strictmodes yes
+
+If the "StrictModes" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to perform strict mode checking of home directory configuration files.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+StrictModes yes
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281260"><Rule severity="medium"><version>RHEL-10-700570</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons provide users with feedback on when account accesses last occurred with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*printlastlog'
+/etc/ssh/sshd_config.d/10-stig.conf:PrintLastLog yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i printlastlog
+printlastlog yes
+
+If the "PrintLastLog" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to provide users with feedback on when account accesses last occurred.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+PrintLastLog yes
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281261"><Rule severity="medium"><version>RHEL-10-700580</version><title>SRG-OS-000445-GPOS-00199</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH daemons prevent remote hosts from connecting to the proxy display with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*x11uselocalhost'
+/etc/ssh/sshd_config.d/10-stig.conf:X11UseLocalhost yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i x11uselocalhost
+x11uselocalhost yes
+
+If the "X11UseLocalhost" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH daemons to prevent remote hosts from connecting to the proxy display.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+X11UseLocalhost yes
+
+Restart the SSH service with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281263"><Rule severity="medium"><version>RHEL-10-700600</version><title>SRG-OS-000105-GPOS-00052</title><check system="C-x"><check-content><check-content>Note: If the system administrator demonstrates the use of an approved alternate multifactor authentication method, this requirement is not applicable.
+
+Verify RHEL 10 SSH daemons accept public key encryption with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*pubkeyauthentication'
+/etc/ssh/sshd_config.d/10-stig.conf:PubkeyAuthentication yes
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i pubkeyauthentication
+pubkeyauthentication yes
+
+If the "PubkeyAuthentication" keyword is not set to "yes" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to accept public key authentication.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+PubkeyAuthentication yes
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281264"><Rule severity="medium"><version>RHEL-10-700610</version><title>SRG-OS-000106-GPOS-00053</title><check system="C-x"><check-content><check-content>Verify RHEL 10 remote access using SSH prevents logging on with a blank password with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permitemptypasswords'
+/etc/ssh/sshd_config.d/10-stig.conf:PermitEmptyPasswords no
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i permitemptypasswords
+permitemptypasswords no
+
+If the "PermitEmptyPasswords" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to prevent SSH users from logging on with blank passwords. 
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+PermitEmptyPasswords no
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281265"><Rule severity="medium"><version>RHEL-10-700620</version><title>SRG-OS-000109-GPOS-00056</title><check system="C-x"><check-content><check-content>Verify RHEL 10 remote access using SSH prevents users from logging on directly as "root" with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permitrootlogin'
+/etc/ssh/sshd_config.d/10-stig.conf:PermitRootLogin no
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i permitrootlogin
+permitrootlogin no
+
+If the "PermitRootLogin" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to prevent SSH users from logging on directly as root.
+
+In "/etc/ssh/sshd_config.d", create a drop-in file that will lexicographically precede 50-redhat.conf and add the following line:
+
+PermitRootLogin no
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281266"><Rule severity="medium"><version>RHEL-10-700630</version><title>SRG-OS-000080-GPOS-00048</title><check system="C-x"><check-content><check-content>Verify RHEL 10 does not allow a noncertificate trusted host SSH login to the system with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*hostbasedauthentication'
+/etc/ssh/sshd_config.d/10-stig.conf:HostbasedAuthentication no
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i hostbasedauthentication
+hostbasedauthentication no
+
+If the "HostbasedAuthentication" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, or no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to not allow a noncertificate trusted host SSH login to the system.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+HostbasedAuthentication no
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281267"><Rule severity="medium"><version>RHEL-10-700640</version><title>SRG-OS-000095-GPOS-00049</title><check system="C-x"><check-content><check-content>Verify RHEL 10 disables unattended or automatic login via SSH with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*permituserenvironment'
+/etc/ssh/sshd_config.d/10-stig.conf:PermitUserEnvironment no
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i permituserenvironment
+permituserenvironment no
+
+If the "PermitUserEnvironment" keyword is not set to "no" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to disable unattended or automatic login via SSH.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+PermitUserEnvironment no
+
+Restart the SSH daemon with the following command for the setting to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281268"><Rule severity="medium"><version>RHEL-10-700650</version><title>SRG-OS-000423-GPOS-00187</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH servers are configured to force frequent session key renegotiation with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*rekeylimit'
+/etc/ssh/sshd_config.d/10-stig.conf:RekeyLimit 1G 1h
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i rekeylimit
+rekeylimit 1073741824 3600
+
+If the "RekeyLimit" keyword is not set to "1G 1h" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to force a frequent session key renegotiation for SSH connections to the server.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+RekeyLimit 1G 1h
+
+Restart the SSH daemon with the following command for the settings to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281269"><Rule severity="medium"><version>RHEL-10-700660</version><title>SRG-OS-000163-GPOS-00072</title><check system="C-x"><check-content><check-content>Verify RHEL 10 network connections associated with SSH traffic terminate after becoming unresponsive. 
+
+Set the "ClientAliveCountMax" to "1" by performing the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*clientalivecountmax'
+/etc/ssh/sshd_config.d/10-stig.conf:ClientAliveCountMax 1
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i clientalivecountmax
+clientalivecountmax 1
+
+If the "ClientAliveCountMax" keyword is not set to a value of "1" in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to automatically terminate all network connections associated with SSH traffic at the end of a session or after 10 minutes of inactivity.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+ClientAliveCountMax 1
+
+Restart the SSH daemon with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281296"><Rule severity="medium"><version>RHEL-10-700930</version><title>SRG-OS-000163-GPOS-00072</title><check system="C-x"><check-content><check-content>Verify RHEL 10 is configured with an SSH timeout interval.
+
+Verify the "ClientAliveInterval" variable is set to a value of "600" or less by performing the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*clientaliveinterval'
+/etc/ssh/sshd_config.d/10-stig.conf::ClientAliveInterval 600
+
+Verify the runtime setting with the following command:
+
+$ sudo sshd -T | grep -i clientaliveinterval
+clientaliveinterval 600
+
+If the "ClientAliveInterval" keyword is not set to a value of "600" or less in a drop-in that lexicographically precedes 50-redhat.conf, or if no output is returned, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 to automatically terminate all network connections associated with SSH traffic at the end of a session or after 10 minutes of inactivity.
+
+Note: This setting must be applied in conjunction with RHEL-10-700660 to function correctly.
+
+In "/etc/ssh/sshd_config.d", create a drop file that will lexicographically precede 50-redhat.conf and add the following line:
+
+ClientAliveInterval 600
+
+Restart the SSH daemon with the following command for the changes to take effect:
+
+$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-281011"><Rule severity="medium"><version>RHEL-10-300040</version><title>SRG-OS-000125-GPOS-00065</title><check system="C-x"><check-content><check-content>Verify RHEL 10 SSH servers are configured to use only ciphers employing FIPS 140-3-approved algorithms.
+
+To verify the ciphers in the systemwide SSH configuration file, use the following command:
+
+$ sudo grep -i Ciphers /etc/crypto-policies/back-ends/opensshserver.config
+Ciphers aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
+
+If the cipher entries in the "opensshserver.config" file have any ciphers other than "aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr", or they are missing or commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 SSH servers to use only ciphers employing FIPS 140-3-approved algorithms.
+
+Reinstall crypto-policies with the following command:
+
+$ sudo dnf -y reinstall crypto-policies
+
+Set the crypto-policy to FIPS with the following command:
+
+$ sudo update-crypto-policies --set FIPS
+Setting system policy to FIPS
+
+Note: Systemwide crypto policies are applied on application startup. It is recommended to restart the system for the change of policies to fully take place.</fixtext></Rule></Group><Group id="V-281047"><Rule severity="medium"><version>RHEL-10-400150</version><title>SRG-OS-000080-GPOS-00048</title><check system="C-x"><check-content><check-content>Verify RHEL 10 is configured so that the "/etc/ssh/sshd_config" file and the contents of "/etc/ssh/sshd_config.d" are group-owned by "root" with the following command:
+
+$ sudo find /etc/ssh/sshd_config /etc/ssh/sshd_config.d -exec stat -c "%G %n" {} \;
+root /etc/ssh/sshd_config
+root /etc/ssh/sshd_config.d
+root /etc/ssh/sshd_config.d/50-cloud-init.conf
+root /etc/ssh/sshd_config.d/50-redhat.conf
+
+If the "/etc/ssh/sshd_config" file or "/etc/ssh/sshd_config.d" or any files in the "sshd_config.d" directory do not have a group owner of "root", this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 10 so that the "/etc/ssh/sshd_config" file and the contents of "/etc/ssh/sshd_config.d" are group-owned by "root" with the following command:
+
+$ sudo chgrp root /etc/ssh/sshd_config /etc/ssh/sshd_config.d</fixtext></Rule></Group>
+</Benchmark>
