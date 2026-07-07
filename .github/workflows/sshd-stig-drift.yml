@@ -48,14 +48,19 @@ jobs:
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           cat drift.err
           cat drift.txt
-          # rc: 0 = no drift, 1 = drift (open issue), 2 = tool/CDN error (fail job).
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/CDN
+          # error, 101 = a `cargo run` compile failure if this out-of-workspace tool
+          # drifts from the rulesteward-sshd public API, etc.) = fail the job loudly.
           exit 0
       - name: Fail on tool error
-        if: steps.check.outputs.rc == '2'
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
         run: |
-          echo "sshd-stig-update errored against the pinned DISA zips (see logs above): either" \
-               "the DISA CDN was unreachable, or DISA reformatted the XCCDF and the parser" \
-               "failed closed. The tool needs a look." >&2
+          echo "sshd-stig-update did not exit cleanly (rc=$RC; see logs above): the DISA CDN" \
+               "may be unreachable, DISA may have reformatted the XCCDF and the parser failed" \
+               "closed, or the tool may no longer compile against the rulesteward-sshd API." \
+               "The tool needs a look." >&2
           exit 1
       - name: Open or update the drift tracking issue
         if: steps.check.outputs.rc == '1'

@@ -19,12 +19,16 @@ name: sshd-stig-check
 #
 # paths: is scoped to exactly the drift INPUTS so unrelated PRs never pay for this job:
 #   - crates/rulesteward-sshd/src/lints/stig.rs   - the shipped W01/W02 tables + projection
+#   - crates/rulesteward-sshd/src/lints/stig/**   - in case stig.rs is later split into a
+#     directory (a backstop so this gate does not silently stop triggering; the weekly
+#     sshd-stig-drift.yml still catches drift independently on its own schedule)
 #   - tools/sshd-stig-update/**                   - the tool + its fixtures + stig-refs.toml
 #   - .github/workflows/sshd-stig-check.yml       - this workflow
 on:
   pull_request:
     paths:
       - 'crates/rulesteward-sshd/src/lints/stig.rs'
+      - 'crates/rulesteward-sshd/src/lints/stig/**'
       - 'tools/sshd-stig-update/**'
       - '.github/workflows/sshd-stig-check.yml'
 
@@ -49,6 +53,14 @@ jobs:
         with:
           # The tool is its own workspace; cache it separately from the main build.
           workspaces: tools/sshd-stig-update
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/sshd-stig-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/sshd-stig-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
       - name: Tool tests (offline golden fixture drift + exit-code contract)
         run: cargo test --manifest-path tools/sshd-stig-update/Cargo.toml --locked
       - name: Offline drift gate (check --file vs committed DISA fixtures)

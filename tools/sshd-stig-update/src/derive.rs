@@ -40,7 +40,13 @@ impl OwnedValueRule {
                 OwnedValueRule::TwoTokenExact(a.to_string(), b.to_string())
             }
             StigValueRule::AnyOf(v) => {
-                OwnedValueRule::AnyOf(v.iter().map(|s| (*s).to_string()).collect())
+                // Sort so the comparison against the derived table (whose
+                // `anyof_alternatives` also sorts) is order-insensitive: AnyOf is a
+                // SET, so the shipped `StigValueRule::AnyOf` need not be authored in
+                // sorted order without provoking a false drift.
+                let mut alts: Vec<String> = v.iter().map(|s| (*s).to_string()).collect();
+                alts.sort();
+                OwnedValueRule::AnyOf(alts)
             }
             StigValueRule::NumericCeiling(n) => OwnedValueRule::NumericCeiling(n),
             StigValueRule::NumericExact(n) => OwnedValueRule::NumericExact(n),
@@ -177,6 +183,19 @@ mod tests {
     fn diff_empty_when_identical() {
         let code = code_table(TargetVersion::Rhel9);
         assert!(diff_controls(&code, &code).is_empty());
+    }
+
+    /// `of_projection` must SORT AnyOf alternatives, so an unsorted shipped
+    /// `StigValueRule::AnyOf` compares equal to the derived (sorted) table instead of
+    /// falsely reporting drift. Uses a deliberately UNSORTED input.
+    #[test]
+    fn of_projection_sorts_anyof() {
+        let owned = OwnedValueRule::of_projection(StigValueRule::AnyOf(&["no", "delayed"]));
+        assert_eq!(
+            owned,
+            OwnedValueRule::AnyOf(vec!["delayed".to_string(), "no".to_string()]),
+            "AnyOf alternatives must be sorted regardless of authored order"
+        );
     }
 
     #[test]
