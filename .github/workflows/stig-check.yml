@@ -1,0 +1,71 @@
+name: stig-check
+
+# PINNED drift gate: run on every pull request that touches a drift INPUT and fail
+# the build if the sysctld STIG baseline table no longer matches ComplianceAsCode
+# at the refs pinned in tools/stig-update/stig-refs.toml. This is distinct from the
+# weekly stig-drift.yml workflow, which derives against the LATEST ComplianceAsCode
+# release on a schedule/workflow_dispatch and only opens/updates a tracking issue -
+# it never fails a build. This workflow instead catches, at review time, the case
+# where a human hand-edits baseline.rs (or stig-update's derivation logic) out of
+# sync with what ComplianceAsCode ACTUALLY says at the pinned ref.
+#
+# paths: is scoped to exactly the drift INPUTS, so unrelated PRs never pay the
+# network-fetch cost of this job:
+#   - crates/rulesteward-sysctld/src/lints/baseline.rs  - the shipped baseline table
+#   - crates/rulesteward-sysctld/src/lints/baseline/**  - in case that file is later
+#     split into a directory (see the BACKSTOP note below)
+#   - tools/stig-update/**                              - the derivation tool itself,
+#     including stig-refs.toml (the pinned refs) and its exclusion list
+#   - .github/workflows/stig-check.yml                  - this workflow
+#
+# FUTURE (not implemented here): stig-update's curl calls hit the GitHub REST API
+# unauthenticated (60 requests/hour). Passing this job's Actions-provided
+# GITHUB_TOKEN to stig-update (e.g. an `Authorization: Bearer` header on the
+# GitHub API calls in tools/stig-update/src/source.rs) would raise that ceiling to
+# roughly 5000 requests/hour (~16x) - worth adding if a future growth in
+# product/rule count pushes a single `check` run close to the unauthenticated
+# limit. This GITHUB_TOKEN hardening is intentionally deferred (see #443); the gate
+# runs unauthenticated for now.
+#
+# BACKSTOP: if baseline.rs is later reorganized (e.g. split into a directory) and
+# this paths: filter goes stale before being updated, the weekly stig-drift.yml
+# run still independently catches drift on its own schedule - this workflow is an
+# earlier, PR-time gate layered on top of that backstop, not the only gate.
+on:
+  pull_request:
+    paths:
+      - 'crates/rulesteward-sysctld/src/lints/baseline.rs'
+      - 'crates/rulesteward-sysctld/src/lints/baseline/**'
+      - 'tools/stig-update/**'
+      - '.github/workflows/stig-check.yml'
+
+# Least privilege: this job only reads the repo and calls out to public APIs; it
+# never writes anything back to GitHub (contrast stig-drift.yml, which needs
+# issues: write to file its tracking issue).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: STIG baseline drift vs pinned ComplianceAsCode refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/stig-update
+      - name: cargo run -- check (pinned refs)
+        # Direct cargo run, NOT `just stig-check` - that recipe soft-skips (exit 0)
+        # when curl is absent, which is the right call for a local dev machine but
+        # WRONG for CI (a missing curl on a hosted runner should fail loudly, not
+        # silently report success). No `set +e` / error swallowing here either:
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool/upstream error, and
+        # ALL non-zero exits must hard-fail this job.
+        run: cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check
