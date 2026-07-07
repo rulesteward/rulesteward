@@ -926,6 +926,75 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Unknown attribute: fapd-E01's concern, not E07's (`attrs::type_category`
+    // returns `None`).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unknown_attribute_setref_is_not_e07() {
+        // `frobnicate` is not a real fapolicyd attribute (absent from every
+        // table in `attrs::type_category`). A `%set` assigned to it is fapd-E01's
+        // concern (unknown attribute name), not E07's (set/attribute TYPE
+        // compatibility) - E07 must skip it silently under every context.
+        let src = "%t=abc,def\nallow frobnicate=%t : all\n";
+        for ctx in ALL_CONTEXTS {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "unknown attribute frobnicate= is not fapd-E07's concern under {ctx:?}; \
+                 got codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Empty set: cannot be typed, so `walk` skips it before calling
+    // `fires_for`/`infer_set_type` (which assumes a non-empty slice).
+    //
+    // The real chumsky grammar requires `set_value.separated_by(',').at_least(1)`
+    // (`parser/grammar.rs::set_definition`), so an empty set can never be parsed
+    // from a rules-file string. Built directly via the shared `testkit` AST
+    // helpers instead (the same hand-built-entries technique
+    // `version_target.rs`'s test module uses), matching the shape `macro_map`
+    // would hold for a zero-value `SetDefinition`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn empty_set_values_cannot_be_typed_so_e07_does_not_fire() {
+        use crate::ast::{Attr, Decision};
+        use crate::lints::testkit::{kv_ref, modern_rule, set_def};
+
+        let entries = vec![
+            set_def(1, "empty", &[]),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv_ref("uid", "empty")],
+                vec![Attr::All],
+            ),
+        ];
+        let path = std::path::Path::new("rules.d/50-e07-empty.rules");
+        let source = "%empty=\nallow uid=%empty : all\n";
+        for ctx in ALL_CONTEXTS {
+            let lint_ctx = LintContext {
+                target: ctx,
+                ..Default::default()
+            };
+            let diags = crate::lints::lint_with_context(&entries, source, path, &lint_ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "an empty %set has no element to infer a type from; fapd-E07 must not fire \
+                 under {ctx:?}; got codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Non-SetRef values and literals are not E07's concern.
     // -----------------------------------------------------------------
 
@@ -964,6 +1033,23 @@ mod tests {
         assert!(
             !msg.contains("rhel8") && !msg.contains("rhel9") && !msg.contains("rhel10"),
             "under None the fapd-E07 message must NOT name a specific rhel target: {msg}",
+        );
+    }
+
+    /// `codes()` names every diagnostic firing on this fixture, not just the
+    /// count of fapd-E07-coded ones (`e07_count` alone cannot tell "exactly one
+    /// diagnostic total, and it is fapd-E07" apart from "fapd-E07 fires once
+    /// alongside some other unrelated diagnostic"). A minimal, unambiguous
+    /// string-set-on-uid fixture must fire fapd-E07 and NOTHING else.
+    #[test]
+    fn string_set_on_uid_is_the_only_diagnostic() {
+        let src = "%t=abc,def\nallow uid=%t : all\n";
+        let diags = lint_src(src, Some(TargetVersion::Rhel9));
+        assert_eq!(
+            codes(&diags),
+            vec!["fapd-E07"],
+            "a minimal string-set-on-uid= fixture must fire fapd-E07 and no other \
+             diagnostic under --target rhel9"
         );
     }
 }

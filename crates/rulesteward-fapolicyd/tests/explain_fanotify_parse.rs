@@ -179,6 +179,61 @@ fn malformed_missing_fan_info_is_error() {
     );
 }
 
+/// Non-numeric `fan_type` must be a `MalformedRecord` error, not a panic or a
+/// silent default (f1 §3.2 field layout: `fan_type=%u`).
+#[test]
+fn malformed_non_numeric_fan_type_is_error() {
+    let line = "type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=x fan_info=1 subj_trust=1 obj_trust=0";
+    assert!(
+        matches!(
+            parse_fanotify_record(line),
+            Err(ParseError::MalformedRecord(_))
+        ),
+        "non-numeric fan_type must be MalformedRecord"
+    );
+}
+
+/// Non-hex `fan_info` must be a `MalformedRecord` error. `fan_info` is parsed
+/// with `u32::from_str_radix(_, 16)` (f1 §3.2: kernel printf uses `%X`), so a
+/// value with non-hex-digit characters must fail to parse.
+#[test]
+fn malformed_non_hex_fan_info_is_error() {
+    let line = "type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=1 fan_info=zzz subj_trust=1 obj_trust=0";
+    assert!(
+        matches!(
+            parse_fanotify_record(line),
+            Err(ParseError::MalformedRecord(_))
+        ),
+        "non-hex fan_info must be MalformedRecord"
+    );
+}
+
+/// Non-numeric `subj_trust` must be a `MalformedRecord` error.
+#[test]
+fn malformed_non_numeric_subj_trust_is_error() {
+    let line = "type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=1 fan_info=1 subj_trust=x obj_trust=0";
+    assert!(
+        matches!(
+            parse_fanotify_record(line),
+            Err(ParseError::MalformedRecord(_))
+        ),
+        "non-numeric subj_trust must be MalformedRecord"
+    );
+}
+
+/// Non-numeric `obj_trust` must be a `MalformedRecord` error.
+#[test]
+fn malformed_non_numeric_obj_trust_is_error() {
+    let line = "type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=1 fan_info=1 subj_trust=1 obj_trust=x";
+    assert!(
+        matches!(
+            parse_fanotify_record(line),
+            Err(ParseError::MalformedRecord(_))
+        ),
+        "non-numeric obj_trust must be MalformedRecord"
+    );
+}
+
 /// A line with no FANOTIFY record must return NoFanotifyRecord.
 #[test]
 fn non_fanotify_line_returns_no_record_error() {
@@ -305,6 +360,32 @@ fn ausearch_block_with_no_fanotify_is_error() {
     assert!(
         matches!(parse_audit_event(input), Err(ParseError::NoFanotifyRecord)),
         "block without FANOTIFY line must return NoFanotifyRecord"
+    );
+}
+
+/// A SYSCALL companion record missing `auid=` and `syscall=` entirely (as
+/// opposed to carrying the `auid=4294967295` sentinel or a real syscall
+/// number) must leave `auid` and `perm` as `None` without erroring, while
+/// `pid`/`exe` (present) still populate. Exercises the "field absent" skip
+/// path for both `if let ... && let ...` extractions in the SYSCALL block.
+#[test]
+fn missing_auid_and_syscall_fields_leave_them_none() {
+    let input = "type=FANOTIFY msg=audit(1600385147.372:590): resp=2 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2\n\
+        type=SYSCALL msg=audit(1600385147.372:590): pid=52 exe=/usr/bin/cat\n";
+    let event = parse_audit_event(input).expect("must parse");
+    assert_eq!(event.pid, Some(52), "pid must still be extracted");
+    assert_eq!(
+        event.exe.as_deref(),
+        Some("/usr/bin/cat"),
+        "exe must still be extracted"
+    );
+    assert_eq!(
+        event.auid, None,
+        "SYSCALL record with no auid= field must leave auid None"
+    );
+    assert_eq!(
+        event.perm, None,
+        "SYSCALL record with no syscall= field must leave perm None"
     );
 }
 

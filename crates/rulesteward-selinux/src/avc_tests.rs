@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::avc::{Verdict, parse_avc};
+    use crate::avc::{AvcParseError, Verdict, parse_avc};
 
     // -----------------------------------------------------------------------
     // PRIMARY ANCHOR TEST (f4 §1.2 - real captured el9 AVC line)
@@ -281,6 +281,131 @@ type=PATH msg=audit(2000.002:200): name=\"/etc/file_b\"";
             result[0].permissive,
             Some(true),
             "permissive=1 -> Some(true)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: a blank line inside a multi-line block must be skipped, not
+    // treated as a record boundary or an error.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_blank_line_inside_block_is_skipped() {
+        let block = "type=SYSCALL msg=audit(1000000000.000:9): exe=\"/usr/bin/cat\"\n\
+            \n\
+            type=AVC msg=audit(1000000000.000:9): avc:  denied  { read } for  scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:etc_t:s0 tclass=file permissive=0";
+        let result =
+            parse_avc(block).expect("a blank line between companion records must be tolerated");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source_type, "httpd_t");
+        assert_eq!(
+            result[0].exe.as_deref(),
+            Some("/usr/bin/cat"),
+            "the blank line must not break SYSCALL companion correlation"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: input with no `type=AVC` line anywhere must be NoAvcRecord.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_input_is_no_avc_record() {
+        let result = parse_avc("");
+        assert!(
+            matches!(result, Err(AvcParseError::NoAvcRecord)),
+            "empty input must be NoAvcRecord, got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: malformed / absent `audit(...)` stamps on non-AVC junk lines
+    // must be tolerated (tolerant-by-default parser), not panic and not affect
+    // the real AVC line's parse. Exercises all three early-return paths in the
+    // internal `audit(TS:SERIAL)` scanner: no "audit(" substring at all, an
+    // "audit(" with no ':' before the line ends, and an "audit(TS:" with no
+    // closing ')'.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_malformed_audit_stamp_junk_lines_are_tolerated() {
+        let block = "----\n\
+            noise audit(999 no-colon-here\n\
+            noise audit(123:456 no-close-paren\n\
+            type=AVC msg=audit(1000000000.000:10): avc:  denied  { read } for  scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:etc_t:s0 tclass=file permissive=0";
+        let result = parse_avc(block)
+            .expect("malformed junk lines must not break the real AVC line's parse");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source_type, "httpd_t");
+        assert_eq!(result[0].serial, Some(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: an unrecognized verdict token (neither "denied" nor
+    // "granted") must be UnknownVerdict, carrying the offending token verbatim.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unknown_verdict_token_is_error() {
+        let line = "type=AVC msg=audit(1000000000.000:11): avc:  notified  { read } for  scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:etc_t:s0 tclass=file";
+        let result = parse_avc(line);
+        match result {
+            Err(AvcParseError::UnknownVerdict(token)) => {
+                assert_eq!(
+                    token, "notified",
+                    "unknown verdict token must be captured verbatim"
+                );
+            }
+            other => panic!("expected UnknownVerdict(\"notified\"), got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: a denied/granted line missing the perm brace `{` entirely.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_missing_perm_brace_is_error() {
+        let line = "type=AVC msg=audit(1000000000.000:12): avc:  denied  read } for  scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:etc_t:s0 tclass=file permissive=0";
+        let result = parse_avc(line);
+        assert!(
+            matches!(result, Err(AvcParseError::MissingField("perm brace {"))),
+            "missing opening perm brace must be MissingField(\"perm brace {{\"), got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: neither `scontext=` nor `ssid=` present -> MissingField.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_missing_scontext_and_ssid_is_error() {
+        let line = "type=AVC msg=audit(1000000000.000:13): avc:  denied  { read } for  tcontext=unconfined_u:object_r:etc_t:s0 tclass=file permissive=0";
+        let result = parse_avc(line);
+        assert!(
+            matches!(
+                result,
+                Err(AvcParseError::MissingField("scontext= or ssid="))
+            ),
+            "missing both scontext= and ssid= must error, got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EDGE CASE: scontext= present, but neither `tcontext=` nor `tsid=` ->
+    // MissingField.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_missing_tcontext_and_tsid_is_error() {
+        let line = "type=AVC msg=audit(1000000000.000:14): avc:  denied  { read } for  scontext=system_u:system_r:httpd_t:s0 tclass=file permissive=0";
+        let result = parse_avc(line);
+        assert!(
+            matches!(
+                result,
+                Err(AvcParseError::MissingField("tcontext= or tsid="))
+            ),
+            "missing both tcontext= and tsid= must error, got {result:?}"
         );
     }
 }
