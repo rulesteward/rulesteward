@@ -174,7 +174,7 @@ fn extract_key(line: &str) -> Option<Option<String>> {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::extract_serial;
+    use super::{count_events_by_key, extract_key, extract_serial};
 
     // Kills mutant: replace + with - (returns "3:8675309" instead of "8675309")
     // Kills mutant: replace + with * (returns ":8675309" instead of "8675309")
@@ -203,5 +203,117 @@ mod tests {
     fn extract_serial_missing_returns_none() {
         let line = "type=EOE";
         assert_eq!(extract_serial(line), None);
+    }
+
+    // -------------------------------------------------------------------
+    // extract_key: covers the quoted, null, absent, and unquoted branches
+    // of extract_key. Private helper, testable only from this same-module
+    // test block.
+    // -------------------------------------------------------------------
+
+    // key="value" - extracts up to the closing quote.
+    #[test]
+    fn extract_key_quoted_value() {
+        let line = "type=SYSCALL msg=audit(1780000000.100:12345): key=\"my_key\" success=yes";
+        assert_eq!(extract_key(line), Some(Some("my_key".to_string())));
+    }
+
+    // Quoted value with NO closing quote: the fallback returns the rest of the line.
+    #[test]
+    fn extract_key_quoted_value_unterminated() {
+        let line = "type=SYSCALL key=\"unterminated";
+        assert_eq!(extract_key(line), Some(Some("unterminated".to_string())));
+    }
+
+    // key=(null) - inner None (rule had no -k tag), still Some at the outer level
+    // (the field IS present, just with no value).
+    #[test]
+    fn extract_key_null_value() {
+        let line = "type=SYSCALL msg=audit(1780000000.100:12345): key=(null)";
+        assert_eq!(extract_key(line), Some(None));
+    }
+
+    // No " key=" field anywhere in the line - outer None (does not contribute to
+    // any key's event count).
+    #[test]
+    fn extract_key_absent_field() {
+        let line = "type=EOE msg=audit(1780000000.100:12345):";
+        assert_eq!(extract_key(line), None);
+    }
+
+    // Unquoted value terminated by whitespace (the unquoted-value branch of
+    // extract_key, terminator-found path).
+    #[test]
+    fn extract_key_unquoted_value_terminated_by_whitespace() {
+        let line = "type=SYSCALL key=abc123 success=yes";
+        assert_eq!(extract_key(line), Some(Some("abc123".to_string())));
+    }
+
+    // Unquoted value running to the end of the line (no trailing whitespace):
+    // exercises the `.unwrap_or(after_key.len())` fallback distinctly from the
+    // whitespace-terminated case above.
+    #[test]
+    fn extract_key_unquoted_value_runs_to_end_of_line() {
+        let line = "type=SYSCALL key=abc123";
+        assert_eq!(extract_key(line), Some(Some("abc123".to_string())));
+    }
+
+    // Unquoted empty value (key= immediately followed by whitespace) -> outer None
+    // (the unquoted-value branch of extract_key, empty-value case).
+    #[test]
+    fn extract_key_unquoted_empty_value_is_none() {
+        let line = "type=SYSCALL key= success=yes";
+        assert_eq!(extract_key(line), None);
+    }
+
+    // -------------------------------------------------------------------
+    // count_events_by_key: blank lines inside the scanned content must be
+    // skipped (the blank-line `continue` in count_events_by_key's scan loop)
+    // without halting the scan of subsequent records.
+    // -------------------------------------------------------------------
+    #[test]
+    fn count_events_by_key_skips_blank_lines() {
+        use std::io::Write as _;
+
+        let mut tmp = tempfile::NamedTempFile::new().expect("tmp file");
+        writeln!(
+            tmp,
+            "type=SYSCALL msg=audit(1780453999.100:5001): key=\"probe_a\""
+        )
+        .unwrap();
+        writeln!(tmp).unwrap(); // blank line
+        writeln!(
+            tmp,
+            "type=SYSCALL msg=audit(1780453999.200:5002): key=\"probe_b\""
+        )
+        .unwrap();
+        tmp.flush().unwrap();
+
+        let rates =
+            count_events_by_key(tmp.path()).expect("log with a blank line must be readable");
+
+        assert_eq!(
+            rates.lines_scanned, 3,
+            "all 3 lines (including the blank one) must be scanned"
+        );
+        assert_eq!(
+            rates
+                .counts
+                .get(&Some("probe_a".to_string()))
+                .copied()
+                .unwrap_or(0),
+            1,
+            "probe_a (before the blank line) must be counted"
+        );
+        assert_eq!(
+            rates
+                .counts
+                .get(&Some("probe_b".to_string()))
+                .copied()
+                .unwrap_or(0),
+            1,
+            "probe_b (after the blank line) must still be counted -- the blank \
+             line must not halt the scan of the rest of the file"
+        );
     }
 }
