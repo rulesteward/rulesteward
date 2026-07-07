@@ -243,6 +243,7 @@ pub(crate) fn baseline_check(
 // ---------------------------------------------------------------------------
 
 /// Comparison kind for a STIG-required directive's value.
+#[derive(Clone, Copy)]
 enum W02Rule {
     /// Exact case-insensitive literal match.
     ExactLower(&'static str),
@@ -306,6 +307,160 @@ fn w02_rule(keyword: &str, target: Option<TargetVersion>) -> Option<W02Rule> {
         // ---- Everything else: not a W02 concern for this target ----
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// #444 drift-tool projection
+//
+// A machine-comparable view of the shipped W01 required set + W02 value rule +
+// the V-number provenance, so the `sshd-stig-update` tool (issue #444) can derive
+// the same shape from the DISA XCCDF and drift-check it against these tables.
+//
+// This is ADDITIVE: the frozen `RHEL{8,9,10}_REQUIRED` arrays and `w02_rule` stay
+// the lint interface untouched. The only datum not already machine-readable is the
+// V-number (it lives in `//` comments on the required arrays); the per-target
+// `(keyword, v_number)` provenance maps below carry it as data. A consistency test
+// (`provenance_covers_required_set_exactly`) binds each map's keyword set to
+// `required_set`, so the parallel map cannot silently drift from the required set.
+// ---------------------------------------------------------------------------
+
+/// A STIG value assertion, projected for the #444 drift tool. Public mirror of the
+/// private [`W02Rule`], plus `PresenceOnly` for the one W01 presence-only control
+/// (Banner) that has no W02 value rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StigValueRule {
+    /// Presence-only (W01): the directive must be set, but no specific value is
+    /// asserted (Banner - the value is a site-specific path).
+    PresenceOnly,
+    /// Exact case-insensitive literal (e.g. PermitRootLogin `no`, LogLevel `verbose`).
+    ExactLower(&'static str),
+    /// Exact two-token match (RekeyLimit `1g 1h`).
+    TwoTokenExact(&'static str, &'static str),
+    /// Any of the listed lowercase values (Compression: `delayed` or `no`).
+    AnyOf(&'static [&'static str]),
+    /// Numeric ceiling: value must be `> 0` and `<= N` (ClientAliveInterval `<= 600`).
+    NumericCeiling(u64),
+    /// Numeric exact: value must equal N exactly (ClientAliveCountMax `1`).
+    NumericExact(u64),
+}
+
+/// One STIG-controlled sshd directive, projected for the #444 drift tool: the
+/// lowercase keyword, its DISA V-number for the target, and the value assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StigControl {
+    /// Directive keyword, lowercase (matches [`required_set`]).
+    pub keyword: &'static str,
+    /// DISA V-number for this target (e.g. `V-257985`), from `<Group id>`.
+    pub v_number: &'static str,
+    /// The W02 value assertion, or `PresenceOnly` (W01) for Banner.
+    pub value_rule: StigValueRule,
+}
+
+/// Per-target `(keyword, V-number)` provenance. Mirrors the `//` V-number comments
+/// on the `RHEL{8,9,10}_REQUIRED` arrays as data. The keyword set MUST equal
+/// `required_set(Some(target))` (asserted by `provenance_covers_required_set_exactly`).
+const RHEL8_VNUM: &[(&str, &str)] = &[
+    ("banner", "V-230225"),
+    ("clientalivecountmax", "V-230244"),
+    ("clientaliveinterval", "V-244525"),
+    ("gssapiauthentication", "V-244528"),
+    ("ignoreuserknownhosts", "V-230290"),
+    ("kerberosauthentication", "V-230291"),
+    ("permitemptypasswords", "V-230380"),
+    ("permitrootlogin", "V-230296"),
+    ("permituserenvironment", "V-230330"),
+    ("printlastlog", "V-230382"),
+    ("rekeylimit", "V-230527"),
+    ("strictmodes", "V-230288"),
+    ("x11forwarding", "V-230555"),
+    ("x11uselocalhost", "V-230556"),
+];
+
+const RHEL9_VNUM: &[(&str, &str)] = &[
+    ("banner", "V-257981"),
+    ("clientalivecountmax", "V-257995"),
+    ("clientaliveinterval", "V-257996"),
+    ("compression", "V-258002"),
+    ("gssapiauthentication", "V-258003"),
+    ("hostbasedauthentication", "V-257992"),
+    ("ignorerhosts", "V-258005"),
+    ("ignoreuserknownhosts", "V-258006"),
+    ("kerberosauthentication", "V-258004"),
+    ("loglevel", "V-257982"),
+    ("permitemptypasswords", "V-257984"),
+    ("permitrootlogin", "V-257985"),
+    ("permituserenvironment", "V-257993"),
+    ("printlastlog", "V-258009"),
+    ("pubkeyauthentication", "V-257983"),
+    ("rekeylimit", "V-257994"),
+    ("strictmodes", "V-258008"),
+    ("usepam", "V-257986"),
+    ("x11forwarding", "V-258007"),
+    ("x11uselocalhost", "V-258011"),
+];
+
+const RHEL10_VNUM: &[(&str, &str)] = &[
+    ("banner", "V-281224"),
+    ("clientalivecountmax", "V-281269"),
+    ("clientaliveinterval", "V-281296"),
+    ("gssapiauthentication", "V-281254"),
+    ("hostbasedauthentication", "V-281266"),
+    ("ignorerhosts", "V-281256"),
+    ("ignoreuserknownhosts", "V-281257"),
+    ("kerberosauthentication", "V-281255"),
+    ("loglevel", "V-281115"),
+    ("permitemptypasswords", "V-281264"),
+    ("permitrootlogin", "V-281265"),
+    ("permituserenvironment", "V-281267"),
+    ("printlastlog", "V-281260"),
+    ("pubkeyauthentication", "V-281263"),
+    ("rekeylimit", "V-281268"),
+    ("strictmodes", "V-281259"),
+    ("usepam", "V-281216"),
+    ("x11forwarding", "V-281258"),
+    ("x11uselocalhost", "V-281261"),
+];
+
+/// The `(keyword, V-number)` provenance map for a concrete target.
+fn provenance_map(target: TargetVersion) -> &'static [(&'static str, &'static str)] {
+    match target {
+        TargetVersion::Rhel8 => RHEL8_VNUM,
+        TargetVersion::Rhel9 => RHEL9_VNUM,
+        TargetVersion::Rhel10 => RHEL10_VNUM,
+    }
+}
+
+/// Widen the private [`W02Rule`] into the public [`StigValueRule`]; `None`
+/// (no W02 value rule) becomes `PresenceOnly`.
+fn value_rule_of(rule: Option<W02Rule>) -> StigValueRule {
+    match rule {
+        None => StigValueRule::PresenceOnly,
+        Some(W02Rule::ExactLower(s)) => StigValueRule::ExactLower(s),
+        Some(W02Rule::TwoTokenExact(a, b)) => StigValueRule::TwoTokenExact(a, b),
+        Some(W02Rule::AnyOf(v)) => StigValueRule::AnyOf(v),
+        Some(W02Rule::NumericCeiling(n)) => StigValueRule::NumericCeiling(n),
+        Some(W02Rule::NumericExact(n)) => StigValueRule::NumericExact(n),
+    }
+}
+
+/// The full STIG baseline projection for `target`: one [`StigControl`] per required
+/// directive (keyword + V-number + value rule), for the #444 drift tool to compare
+/// against its DISA-XCCDF-derived table.
+///
+/// Driven by [`provenance_map`] (so it never has a "missing V-number" case); the
+/// keyword coverage is cross-checked against [`required_set`] by a test. The value
+/// rule comes from the shipped [`w02_rule`], so this stays a pure projection of the
+/// existing tables - no second source of truth for the values.
+#[must_use]
+pub fn stig_baseline(target: TargetVersion) -> Vec<StigControl> {
+    provenance_map(target)
+        .iter()
+        .map(|&(keyword, v_number)| StigControl {
+            keyword,
+            v_number,
+            value_rule: value_rule_of(w02_rule(keyword, Some(target))),
+        })
+        .collect()
 }
 
 /// The directives that make up the EFFECTIVE global configuration: the leading
@@ -674,6 +829,147 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d.message.contains("'banner'")),
             "banner present inside `Match all` must not be reported missing; got {diags:?}"
+        );
+    }
+
+    // --- #444 drift-tool projection ---------------------------------------
+
+    /// The parallel `(keyword, V-number)` provenance map for each target must cover
+    /// EXACTLY `required_set` - no orphan V-number entry, no required directive
+    /// missing a V-number. This is the guard that lets the parallel map stay a
+    /// separate const without silently drifting from the frozen required arrays.
+    #[test]
+    fn provenance_covers_required_set_exactly() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            let required: std::collections::BTreeSet<&str> =
+                required_set(Some(target)).iter().copied().collect();
+            let provenance: std::collections::BTreeSet<&str> =
+                provenance_map(target).iter().map(|&(k, _)| k).collect();
+            assert_eq!(
+                provenance, required,
+                "provenance keyword set must equal required_set for {target:?}"
+            );
+            // No duplicate keyword rows (would make stig_baseline emit two controls
+            // for one directive).
+            assert_eq!(
+                provenance_map(target).len(),
+                provenance.len(),
+                "provenance_map has a duplicate keyword row for {target:?}"
+            );
+        }
+    }
+
+    /// V-numbers must be well-formed (`V-<digits>`) and unique within a target.
+    #[test]
+    fn v_numbers_are_well_formed_and_unique() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            let controls = stig_baseline(target);
+            let mut seen = std::collections::BTreeSet::new();
+            for c in &controls {
+                assert!(
+                    c.v_number.starts_with("V-")
+                        && c.v_number[2..].chars().all(|ch| ch.is_ascii_digit()),
+                    "malformed V-number {:?} for {} on {target:?}",
+                    c.v_number,
+                    c.keyword
+                );
+                assert!(
+                    seen.insert(c.v_number),
+                    "duplicate V-number {:?} on {target:?}",
+                    c.v_number
+                );
+            }
+        }
+    }
+
+    /// `stig_baseline` must have one control per required directive (14/20/19).
+    #[test]
+    fn stig_baseline_sizes_match_required_sets() {
+        assert_eq!(stig_baseline(TargetVersion::Rhel8).len(), 14);
+        assert_eq!(stig_baseline(TargetVersion::Rhel9).len(), 20);
+        assert_eq!(stig_baseline(TargetVersion::Rhel10).len(), 19);
+    }
+
+    /// Anti-tautology spot-checks: the projection must reproduce the exact
+    /// (V-number, value rule) tuples for one directive of every `StigValueRule`
+    /// kind, hard-coded from the DISA XCCDF grounding. A drift in either the
+    /// provenance map or `w02_rule` breaks this.
+    #[test]
+    fn stig_baseline_projects_known_rhel9_controls() {
+        let by_kw: std::collections::BTreeMap<&str, StigControl> =
+            stig_baseline(TargetVersion::Rhel9)
+                .into_iter()
+                .map(|c| (c.keyword, c))
+                .collect();
+        let get = |kw: &str| *by_kw.get(kw).unwrap_or_else(|| panic!("missing {kw}"));
+
+        // PresenceOnly (Banner, path value).
+        let banner = get("banner");
+        assert_eq!(banner.v_number, "V-257981");
+        assert_eq!(banner.value_rule, StigValueRule::PresenceOnly);
+        // ExactLower "no".
+        let prl = get("permitrootlogin");
+        assert_eq!(prl.v_number, "V-257985");
+        assert_eq!(prl.value_rule, StigValueRule::ExactLower("no"));
+        // ExactLower "verbose".
+        assert_eq!(
+            get("loglevel").value_rule,
+            StigValueRule::ExactLower("verbose")
+        );
+        // ExactLower "yes".
+        assert_eq!(
+            get("ignoreuserknownhosts").value_rule,
+            StigValueRule::ExactLower("yes")
+        );
+        // NumericCeiling 600.
+        let cai = get("clientaliveinterval");
+        assert_eq!(cai.v_number, "V-257996");
+        assert_eq!(cai.value_rule, StigValueRule::NumericCeiling(600));
+        // NumericExact 1.
+        assert_eq!(
+            get("clientalivecountmax").value_rule,
+            StigValueRule::NumericExact(1)
+        );
+        // TwoTokenExact 1g 1h.
+        assert_eq!(
+            get("rekeylimit").value_rule,
+            StigValueRule::TwoTokenExact("1g", "1h")
+        );
+        // AnyOf delayed/no.
+        assert_eq!(
+            get("compression").value_rule,
+            StigValueRule::AnyOf(&["delayed", "no"])
+        );
+    }
+
+    /// Compression is dropped from RHEL10, so its projection must NOT include it,
+    /// and RHEL8 (floor) also excludes it (matches the required-set tables).
+    #[test]
+    fn stig_baseline_compression_only_rhel9() {
+        assert!(
+            stig_baseline(TargetVersion::Rhel9)
+                .iter()
+                .any(|c| c.keyword == "compression")
+        );
+        assert!(
+            !stig_baseline(TargetVersion::Rhel10)
+                .iter()
+                .any(|c| c.keyword == "compression"),
+            "Compression dropped from RHEL10 V1R1"
+        );
+        assert!(
+            !stig_baseline(TargetVersion::Rhel8)
+                .iter()
+                .any(|c| c.keyword == "compression"),
+            "Compression not a RHEL8 V2R4 control"
         );
     }
 }
