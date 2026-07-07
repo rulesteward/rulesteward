@@ -26,6 +26,7 @@
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{AuditField, AuditRule, FilterList, LocatedRule};
+use crate::lints::field_name::field_name;
 
 /// Restriction kind for a field.
 ///
@@ -167,7 +168,7 @@ pub fn e04(rules: &[LocatedRule]) -> Vec<Diagnostic> {
             };
 
             if !restriction.allows(list) {
-                let field_name = field_name_str(&field_filter.field);
+                let field_name = field_name(&field_filter.field);
                 let list_name = filter_list_name(list);
                 // Do NOT self-prefix the code: the renderer already prints the
                 // `[au-E04]` tag, so an `au-E04:` here would double it. (Matches
@@ -190,58 +191,6 @@ pub fn e04(rules: &[LocatedRule]) -> Vec<Diagnostic> {
     }
 
     diags
-}
-
-/// Return the canonical lowercase string name for an `AuditField`, matching
-/// the auditctl field name used in diagnostics.
-fn field_name_str(field: &AuditField) -> &'static str {
-    match field {
-        AuditField::A0 => "a0",
-        AuditField::A1 => "a1",
-        AuditField::A2 => "a2",
-        AuditField::A3 => "a3",
-        AuditField::Arch => "arch",
-        AuditField::Auid => "auid",
-        AuditField::DevMajor => "devmajor",
-        AuditField::DevMinor => "devminor",
-        AuditField::Dir => "dir",
-        AuditField::Egid => "egid",
-        AuditField::Euid => "euid",
-        AuditField::Exe => "exe",
-        AuditField::Exit => "exit",
-        AuditField::FieldCompare => "field_compare",
-        AuditField::Filetype => "filetype",
-        AuditField::Fsgid => "fsgid",
-        AuditField::Fstype => "fstype",
-        AuditField::Fsuid => "fsuid",
-        AuditField::Gid => "gid",
-        AuditField::Inode => "inode",
-        AuditField::Key => "key",
-        AuditField::MsgType => "msgtype",
-        AuditField::ObjGid => "obj_gid",
-        AuditField::ObjLevHigh => "obj_lev_high",
-        AuditField::ObjLevLow => "obj_lev_low",
-        AuditField::ObjRole => "obj_role",
-        AuditField::ObjType => "obj_type",
-        AuditField::ObjUid => "obj_uid",
-        AuditField::ObjUser => "obj_user",
-        AuditField::Path => "path",
-        AuditField::Perm => "perm",
-        AuditField::Pers => "pers",
-        AuditField::Pid => "pid",
-        AuditField::Ppid => "ppid",
-        AuditField::SaddrFam => "saddr_fam",
-        AuditField::SessionId => "sessionid",
-        AuditField::Sgid => "sgid",
-        AuditField::SubjClr => "subj_clr",
-        AuditField::SubjRole => "subj_role",
-        AuditField::SubjSen => "subj_sen",
-        AuditField::SubjType => "subj_type",
-        AuditField::SubjUser => "subj_user",
-        AuditField::Success => "success",
-        AuditField::Suid => "suid",
-        AuditField::Uid => "uid",
-    }
 }
 
 /// Return the canonical lowercase string name for a `FilterList`.

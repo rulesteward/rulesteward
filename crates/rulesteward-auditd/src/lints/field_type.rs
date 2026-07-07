@@ -1,4 +1,4 @@
-//! Per-field type table for the 46 `-F` field names (pipeline P3, #193).
+//! Per-field type table for the 45 `-F` field names (pipeline P3, #193).
 //!
 //! The taxonomy below was drafted in Phase 0 from a survey of audit-userspace
 //! `lib/fieldtab.h` + `lib/libaudit.c` (`audit_rule_fieldpair_data`) at commit
@@ -68,9 +68,9 @@ pub enum FieldType {
     SaddrFam,
 }
 
-/// The type of each of the 46 `-F` fields.
+/// The type of each of the 45 `-F` fields.
 ///
-/// Body is pipeline P3's (46 arms, each citing `fieldtab.h`/`libaudit.c` at
+/// Body is pipeline P3's (45 arms, each citing `fieldtab.h`/`libaudit.c` at
 /// audit commit 3bfa048); the signature and taxonomy are Phase-0 frozen.
 ///
 /// Citations per arm:

@@ -134,7 +134,9 @@ pub struct FieldComparison {
     pub right: AuditField,
 }
 
-/// The 46 `-F` field names from `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048).
+/// The 45 `-F` field names from `/tmp/audit-src/lib/fieldtab.h:24-72` (audit 3bfa048).
+// string map: the field_name() free fn lives in lints/field_name.rs (#458; kept
+// out of this mutation-excluded file so the map stays mutation-gated).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuditField {

@@ -11,8 +11,11 @@
 //! * `normalize` - the shared rule canonicalization both P1 and P2 consume
 //!   (Phase-0 frozen; see [`normalize::canonical_key`]).
 //! * `field_type` - the per-field type table au-E02 consumes (taxonomy frozen
-//!   in Phase 0; the 46-arm match body is pipeline P3's, with per-arm
+//!   in Phase 0; the 45-arm match body is pipeline P3's, with per-arm
 //!   citations to audit-userspace commit 3bfa048).
+//! * `field_name` - the single shared [`field_name::field_name`] map of `-F`
+//!   field-name strings, consumed by both au-E02 and au-E04 (#458; was two
+//!   byte-identical private copies).
 //! * `catalog` - machine-readable `au-` code catalog.
 //!
 //! Unlike fapolicyd's per-file `lint()`, the auditd dispatcher takes the WHOLE
@@ -28,6 +31,7 @@ pub mod arch_coverage;
 pub mod catalog;
 pub mod duplicate;
 pub mod field_filter;
+pub mod field_name;
 pub mod field_type;
 pub mod normalize;
 pub mod operator_validity;

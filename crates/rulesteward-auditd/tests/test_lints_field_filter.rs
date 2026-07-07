@@ -525,11 +525,12 @@ fn dispatcher_includes_e04_findings() {
 //
 // The list name comes from filter_list_name() and the legal-lists text from
 // legal_lists_str(); both feed ONLY this message. The other illegal-case tests
-// (T1-T5c, T17) assert the message names the FIELD, which comes from a different
-// function (field_name_str), so they leave both string functions unpinned.
-// This test pins the full message for perm-on-task, so replacing either
-// filter_list_name or legal_lists_str with a constant ("" / "xyzzy") changes
-// the message and fails this assertion.
+// (T1-T5c, T17) assert the message names the FIELD, which comes from the shared
+// field_name() free fn (lints/field_name.rs, #458); that map is now pinned
+// exhaustively by field_name::tests::name_covers_all_45_variants, so this test
+// only needs to pin filter_list_name / legal_lists_str. Replacing either of
+// those with a constant ("" / "xyzzy") changes the message and fails this
+// assertion.
 // ---------------------------------------------------------------------------
 #[test]
 fn message_pins_list_name_and_legal_lists() {
