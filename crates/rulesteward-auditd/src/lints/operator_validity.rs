@@ -15,6 +15,7 @@ use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{AuditRule, CompareOp, LocatedRule};
 use crate::lints::anchored;
+use crate::lints::field_name::field_name;
 use crate::lints::field_type::{FieldType, field_type};
 
 /// au-E02 operator-validity pass.
@@ -77,7 +78,7 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
             };
 
             if invalid {
-                let field_name = field_name_str(&filter.field);
+                let field_name = field_name(&filter.field);
                 let op_str = op_str(op);
                 // Do NOT self-prefix the code: the renderer already prints the
                 // `[au-E02]` tag, so a `au-E02:` here would double it. (Matches
@@ -112,57 +113,5 @@ fn op_str(op: &CompareOp) -> &'static str {
         CompareOp::Ge => ">=",
         CompareOp::BitAnd => "&",
         CompareOp::BitAndEq => "&=",
-    }
-}
-
-/// Map an [`AuditField`] to its canonical name string for diagnostic messages.
-fn field_name_str(field: &crate::ast::AuditField) -> &'static str {
-    use crate::ast::AuditField;
-    match field {
-        AuditField::A0 => "a0",
-        AuditField::A1 => "a1",
-        AuditField::A2 => "a2",
-        AuditField::A3 => "a3",
-        AuditField::Arch => "arch",
-        AuditField::Auid => "auid",
-        AuditField::DevMajor => "devmajor",
-        AuditField::DevMinor => "devminor",
-        AuditField::Dir => "dir",
-        AuditField::Egid => "egid",
-        AuditField::Euid => "euid",
-        AuditField::Exe => "exe",
-        AuditField::Exit => "exit",
-        AuditField::FieldCompare => "field_compare",
-        AuditField::Filetype => "filetype",
-        AuditField::Fsgid => "fsgid",
-        AuditField::Fstype => "fstype",
-        AuditField::Fsuid => "fsuid",
-        AuditField::Gid => "gid",
-        AuditField::Inode => "inode",
-        AuditField::Key => "key",
-        AuditField::MsgType => "msgtype",
-        AuditField::ObjGid => "obj_gid",
-        AuditField::ObjLevHigh => "obj_lev_high",
-        AuditField::ObjLevLow => "obj_lev_low",
-        AuditField::ObjRole => "obj_role",
-        AuditField::ObjType => "obj_type",
-        AuditField::ObjUid => "obj_uid",
-        AuditField::ObjUser => "obj_user",
-        AuditField::Path => "path",
-        AuditField::Perm => "perm",
-        AuditField::Pers => "pers",
-        AuditField::Pid => "pid",
-        AuditField::Ppid => "ppid",
-        AuditField::SaddrFam => "saddr_fam",
-        AuditField::SessionId => "sessionid",
-        AuditField::Sgid => "sgid",
-        AuditField::SubjClr => "subj_clr",
-        AuditField::SubjRole => "subj_role",
-        AuditField::SubjSen => "subj_sen",
-        AuditField::SubjType => "subj_type",
-        AuditField::SubjUser => "subj_user",
-        AuditField::Success => "success",
-        AuditField::Suid => "suid",
-        AuditField::Uid => "uid",
     }
 }
