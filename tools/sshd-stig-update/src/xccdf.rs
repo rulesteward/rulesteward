@@ -11,18 +11,32 @@
 //! `<check-content>` contains DISA's canonical check idiom `grep -iH '^\s*<kw>'`
 //! AND the Rule references `sshd_config`. The keyword is the grepped (lowercase)
 //! word; the V-number is `<Group id>`. The required VALUE is the fixtext's canonical
-//! `<Keyword> <args>` config line; the comparison SEMANTIC is inferred from robust
-//! token-shape signals (never fragile sentence parsing):
+//! `<Keyword> <args>` config line (matched at line start); the comparison SEMANTIC is
+//! inferred from robust token-shape signals (never fragile sentence parsing):
 //!
-//! - value is a path (`/...`)                -> `PresenceOnly` (Banner)
-//! - two tokens (`1G 1h`)                    -> `TwoTokenExact`
-//! - all-digit token + "or less" in check    -> `NumericCeiling`, else `NumericExact`
-//! - fixtext `set the value to "X" or "Y"`   -> `AnyOf`
-//! - otherwise                               -> `ExactLower`
+//! - value is a path (`/...`)                    -> `PresenceOnly` (Banner)
+//! - two tokens (`1G 1h`)                        -> `TwoTokenExact`
+//! - all-digit token + "<value> or less" tied to
+//!   THIS value                                  -> `NumericCeiling`, else `NumericExact`
+//! - fixtext `set the value to "X", "Y"[, or "Z"]` -> `AnyOf` (ALL alternatives)
+//! - otherwise                                   -> `ExactLower`
 //!
-//! Anything the parser cannot confidently classify (a selected Rule with no fixtext
-//! config line, or a duplicate keyword) is a hard error - it fails CLOSED so a future
-//! DISA reformat surfaces loudly instead of silently deriving a wrong baseline.
+//! Anything the parser cannot confidently classify is a hard error - it fails CLOSED
+//! so a future DISA reformat surfaces loudly instead of silently deriving a wrong
+//! baseline. The fail-closed cases: a selected Rule with no fixtext config line; TWO
+//! keyword lines in one fixtext that DISAGREE on the value (DISA sometimes shows an
+//! illustrative/old value before the canonical one - the parser refuses to guess);
+//! and a duplicate keyword across Rules.
+//!
+//! # Known limitation: runtime-only checks (tracked for v0.6)
+//!
+//! The selector keys on the FILE-grep idiom. DISA is trending toward additional
+//! runtime checks (`sshd -T | grep -i <kw>`); today every controlled directive across
+//! RHEL 8/9/10 ALSO carries the file grep, so all are captured. A hypothetical FUTURE
+//! control that used ONLY a runtime check (no file grep) would be skipped. An existing
+//! control going runtime-only still surfaces as `- <dir>` drift (a human reviews it);
+//! only a brand-new runtime-only control would go unseen. Not guarded here (no current
+//! benchmark exercises it; per no-speculative-abstraction) - tracked as issue #468.
 
 use regex::Regex;
 
@@ -38,8 +52,6 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     let fixtext_re = Regex::new(r"(?s)<fixtext[^>]*>(.*?)</fixtext>").unwrap();
     // DISA canonical check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`.
     let grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
-    // fixtext "set the value to \"X\" or \"Y\"" (the AnyOf signal).
-    let anyof_re = Regex::new(r#"(?i)set the value to\s+"([^"]+)"\s+or\s+"([^"]+)""#).unwrap();
 
     let mut out: Vec<DerivedControl> = Vec::new();
     for caps in group_re.captures_iter(xccdf) {
@@ -65,7 +77,7 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
         }
         let keyword = gm[1].to_string();
 
-        let value_rule = classify(&keyword, &fixtext, &check, &anyof_re)
+        let value_rule = classify(&keyword, &fixtext, &check)
             .map_err(|e| format!("{v_number} ({keyword}): {e}"))?;
 
         out.push(DerivedControl {
@@ -92,14 +104,10 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
 /// Classify one selected Rule's value assertion from its fixtext + check-content.
 ///
 /// Fail-closed: a selected Rule with no canonical `<Keyword> <args>` fixtext config
-/// line is an error (the parser will not guess).
-fn classify(
-    keyword: &str,
-    fixtext: &str,
-    check: &str,
-    anyof_re: &Regex,
-) -> Result<OwnedValueRule, String> {
-    let Some(tokens) = config_line_value(keyword, fixtext) else {
+/// line - or with two config lines that DISAGREE on the value - is an error (the
+/// parser will not guess which value is canonical).
+fn classify(keyword: &str, fixtext: &str, check: &str) -> Result<OwnedValueRule, String> {
+    let Some(tokens) = config_line_value(keyword, fixtext)? else {
         return Err("no canonical config line in fixtext".to_string());
     };
     let first = &tokens[0];
@@ -115,21 +123,29 @@ fn classify(
             tokens[1].to_ascii_lowercase(),
         ));
     }
-    // Numeric: ceiling if the check says "or less", else exact.
-    if !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) {
+    // Numeric: a ceiling ONLY when "or less" is tied to THIS directive's own value
+    // (`<value>["']? or less`). A bare "or less" elsewhere in the check-content - e.g.
+    // a cross-reference to a DIFFERENT directive ("apply with ClientAliveInterval 600
+    // or less") - must NOT demote an exact-value control (ClientAliveCountMax = 1).
+    if first.bytes().all(|b| b.is_ascii_digit()) {
         let n: u64 = first
             .parse()
             .map_err(|_| format!("numeric value {first:?} does not fit u64"))?;
-        return Ok(if check.to_ascii_lowercase().contains("or less") {
+        let ceiling_re = Regex::new(&format!(
+            r#"(?i)\b{}["']?\s+or\s+less"#,
+            regex::escape(first)
+        ))
+        .expect("escaped numeric value always compiles");
+        return Ok(if ceiling_re.is_match(check) {
             OwnedValueRule::NumericCeiling(n)
         } else {
             OwnedValueRule::NumericExact(n)
         });
     }
-    // Compression: fixtext offers two alternatives.
-    if let Some(a) = anyof_re.captures(fixtext) {
-        let mut alts = vec![a[1].to_ascii_lowercase(), a[2].to_ascii_lowercase()];
-        alts.sort();
+    // AnyOf: the fixtext enumerates the acceptable values ("set the value to X, Y, or
+    // Z"). Capture EVERY quoted alternative in that clause (2+ -> AnyOf), so a
+    // three-alternative control is not silently narrowed to a single ExactLower.
+    if let Some(alts) = anyof_alternatives(fixtext) {
         return Ok(OwnedValueRule::AnyOf(alts));
     }
     // Otherwise an exact case-insensitive literal (no/yes/verbose).
@@ -137,22 +153,51 @@ fn classify(
 }
 
 /// The value tokens from the fixtext's canonical `<Keyword> <args>` config line
-/// (first matching line; case-insensitive keyword). `None` when no such line exists.
-fn config_line_value(keyword: &str, fixtext: &str) -> Option<Vec<String>> {
-    // Match a line that STARTS with the keyword (after optional leading blanks); the
-    // separator is horizontal whitespace only, so the value stays on that one line.
+/// (case-insensitive keyword, matched at line start).
+///
+/// Returns `Ok(None)` when there is no such line, `Ok(Some(tokens))` when there is
+/// exactly one distinct value, and `Err` when TWO OR MORE keyword lines disagree on
+/// the value (fail-closed: DISA sometimes shows an illustrative/old value before the
+/// canonical one, and the parser must not silently pick the wrong one).
+fn config_line_value(keyword: &str, fixtext: &str) -> Result<Option<Vec<String>>, String> {
+    // Match every line that STARTS with the keyword (after optional leading blanks);
+    // the separator is horizontal whitespace only, so the value stays on that line.
     let pat = format!(
         r"(?im)^[ \t]*{}[ \t]+(\S.*?)[ \t]*$",
         regex::escape(keyword)
     );
-    let re = Regex::new(&pat).ok()?;
-    let caps = re.captures(fixtext)?;
-    let tokens: Vec<String> = caps[1].split_whitespace().map(str::to_string).collect();
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens)
+    let re = Regex::new(&pat).expect("escaped keyword always compiles");
+    let mut candidates: Vec<Vec<String>> = Vec::new();
+    for caps in re.captures_iter(fixtext) {
+        let tokens: Vec<String> = caps[1].split_whitespace().map(str::to_string).collect();
+        if !tokens.is_empty() && !candidates.contains(&tokens) {
+            candidates.push(tokens);
+        }
     }
+    if candidates.len() > 1 {
+        return Err(format!(
+            "ambiguous fixtext: multiple differing {keyword:?} config lines {candidates:?}; \
+             cannot pick the canonical value - re-ground by hand"
+        ));
+    }
+    Ok(candidates.into_iter().next())
+}
+
+/// The acceptable values a fixtext enumerates in a "set the value to X, Y, or Z"
+/// clause, lowercased + sorted + deduped. `None` when the clause is absent or lists
+/// fewer than two values (a single "set the value to X" is an exact literal, not a
+/// choice). Captures ALL alternatives, so a three-value enumeration is not truncated.
+fn anyof_alternatives(fixtext: &str) -> Option<Vec<String>> {
+    let setval = Regex::new(r"(?i)set the value to\s+([^:.\n]+)").expect("literal regex compiles");
+    let quoted = Regex::new(r#""([^"]+)""#).expect("literal regex compiles");
+    let clause = setval.captures(fixtext)?;
+    let mut alts: Vec<String> = quoted
+        .captures_iter(&clause[1])
+        .map(|c| c[1].to_ascii_lowercase())
+        .collect();
+    alts.sort();
+    alts.dedup();
+    (alts.len() >= 2).then_some(alts)
 }
 
 /// Decode the handful of XML entities that appear in DISA XCCDF text. `&amp;` is
@@ -309,5 +354,83 @@ mod tests {
         assert_eq!(d[0].keyword, "permitrootlogin");
         assert_eq!(d[0].v_number, "V-7");
         assert_eq!(d[0].value_rule, OwnedValueRule::ExactLower("no".into()));
+    }
+
+    // --- adversarial miss-cases (impl-aware review, 2026-07-07) ---------------
+
+    /// MISS A: a fixtext that shows an illustrative/old value line before the
+    /// canonical one must NOT silently derive the first value. Two DIFFERING config
+    /// lines are ambiguous -> fail closed (error), so drift can never be masked.
+    #[test]
+    fn ambiguous_config_lines_fail_closed() {
+        let doc = "<Benchmark><Group id=\"V-9\"><Rule><version>RHEL-09-255045</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>The previous insecure setting was:\n\n\
+            PermitRootLogin no\n\nChange it to:\n\nPermitRootLogin prohibit-password\
+            </fixtext></Rule></Group></Benchmark>";
+        let err = parse_controls(doc).expect_err("two differing config lines must fail closed");
+        assert!(err.contains("V-9"), "{err}");
+        assert!(err.contains("ambiguous"), "{err}");
+    }
+
+    /// A duplicated but IDENTICAL config line (an example shown twice) is NOT
+    /// ambiguous - it derives the single agreed value.
+    #[test]
+    fn duplicate_identical_config_lines_are_ok() {
+        let doc = "<Benchmark><Group id=\"V-10\"><Rule><version>RHEL-09-255045</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>Add the line:\n\nPermitRootLogin no\n\n\
+            or confirm it already reads:\n\nPermitRootLogin no\
+            </fixtext></Rule></Group></Benchmark>";
+        let d = parse_controls(doc).expect("identical duplicate lines are unambiguous");
+        assert_eq!(d[0].value_rule, OwnedValueRule::ExactLower("no".into()));
+    }
+
+    /// MISS B: an "or less" clause that belongs to a DIFFERENT directive (a
+    /// cross-reference in the check-content) must not demote an exact-value control.
+    /// ClientAliveCountMax stays NumericExact(1) even when its check mentions
+    /// "ClientAliveInterval ... 600 or less".
+    #[test]
+    fn cross_reference_or_less_does_not_demote_numeric_exact() {
+        let doc = "<Benchmark><Group id=\"V-11\"><Rule><version>RHEL-09-255095</version>\
+            <check><check-content>Note: apply in conjunction with ClientAliveInterval set to \
+            600 or less.\nxargs sudo grep -iH '^\\s*clientalivecountmax' /etc/ssh/sshd_config\n\
+            If not set to a value of \"1\", this is a finding.</check-content></check>\
+            <fixtext>ClientAliveCountMax 1</fixtext></Rule></Group></Benchmark>";
+        let d = parse_controls(doc).expect("parses");
+        assert_eq!(
+            d[0].value_rule,
+            OwnedValueRule::NumericExact(1),
+            "a cross-reference 'or less' for another directive must not make this a ceiling"
+        );
+    }
+
+    /// A real ceiling ("value of 600 or less" tied to THIS directive) still derives
+    /// NumericCeiling.
+    #[test]
+    fn own_value_or_less_is_a_ceiling() {
+        let doc = "<Benchmark><Group id=\"V-12\"><Rule><version>RHEL-09-255100</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*clientaliveinterval' /etc/ssh/sshd_config\n\
+            Verify the value is \"600\" or less. If not, this is a finding.</check-content></check>\
+            <fixtext>ClientAliveInterval 600</fixtext></Rule></Group></Benchmark>";
+        let d = parse_controls(doc).expect("parses");
+        assert_eq!(d[0].value_rule, OwnedValueRule::NumericCeiling(600));
+    }
+
+    /// MISS C: a three-alternative AnyOf ("set the value to X, Y, or Z") must capture
+    /// ALL alternatives, not collapse to a single over-strict ExactLower that would
+    /// reject a compliant value.
+    #[test]
+    fn three_alternative_anyof_captures_all() {
+        let doc = "<Benchmark><Group id=\"V-13\"><Rule><version>RHEL-09-255130</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*compression' /etc/ssh/sshd_config\n\
+            If set to \"yes\", this is a finding.</check-content></check>\
+            <fixtext>Uncomment the \"Compression\" keyword and set the value to \"delayed\", \"no\", \
+            or \"zlib\":\n\nCompression no</fixtext></Rule></Group></Benchmark>";
+        let d = parse_controls(doc).expect("parses");
+        assert_eq!(
+            d[0].value_rule,
+            OwnedValueRule::AnyOf(vec!["delayed".into(), "no".into(), "zlib".into()])
+        );
     }
 }
