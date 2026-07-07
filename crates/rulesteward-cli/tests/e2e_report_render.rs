@@ -460,3 +460,110 @@ fn report_csv_scope_str_all_variants_pinned() {
         "CSV must have scope=pattern row: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// resolve_targets + against-trustdb wiring arms (#440 coverage top-up)
+// ---------------------------------------------------------------------------
+//
+// None of `report_oracle.rs`'s 73 golden scenarios or the renderer tests above
+// exercise `--file` (single-file mode), a non-directory positional PATH, a
+// fapd-F01 parse error, or an `--against-trustdb` path that fails to resolve -
+// every one of those tests passes a plain, already-valid `rules.d/` directory.
+
+/// `--file <single-file>` is single-file mode (`resolve_targets` returns a
+/// one-element `Vec` without ever consulting `read_dir`), distinct from the
+/// positional-directory mode every other test in this file uses.
+#[test]
+fn report_file_flag_single_file_mode() {
+    let tmp = make_rules_dir("10-x.rules", "deny_audit perm=open all : all\n");
+    let single_file = tmp.path().join("rules.d").join("10-x.rules");
+
+    Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&single_file)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .code(0)
+        .stdout(predicates::str::contains(
+            "\"kind\": \"exception-register\"",
+        ));
+}
+
+/// A positional PATH that is not a directory (and `--file` was not used) hits
+/// `resolve_targets`'s `dir.is_dir()` guard: a tool failure, not a parse error.
+#[test]
+fn report_positional_path_not_a_directory_is_a_tool_failure() {
+    let tmp = make_rules_dir("10-x.rules", "allow perm=open all : all\n");
+    let not_a_dir = tmp.path().join("rules.d").join("10-x.rules");
+
+    Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .arg("fapolicyd")
+        .arg("report")
+        .arg(&not_a_dir)
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicates::str::contains("not a directory"));
+}
+
+/// A `rules.d/` containing a fapd-F01 parse error exits `EXIT_RULE_PARSE_ERROR`
+/// = 5 with the diagnostic printed to stderr - the parse-error arm inside
+/// `run`'s per-file loop, distinct from `resolve_targets`'s own errors above.
+#[test]
+fn report_rules_parse_error_exits_five() {
+    let tmp = make_rules_dir("10-bad.rules", "allow uid=0 : all\n!!!garbage\n");
+    let rules_d = tmp.path().join("rules.d");
+
+    Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report"])
+        .arg(&rules_d)
+        .assert()
+        .failure()
+        .code(5)
+        .stderr(predicates::str::contains("fapd-F01"));
+}
+
+/// `--against-trustdb <path>` that is not a directory hits the trust-DB
+/// enrichment block's own directory guard: exit `EXIT_LMDB_ERROR` = 4.
+#[test]
+fn report_against_trustdb_not_a_directory_exits_lmdb_error() {
+    let tmp = make_rules_dir("10-x.rules", "allow perm=open all : all\n");
+    let rules_d = tmp.path().join("rules.d");
+    let not_a_dir = rules_d.join("10-x.rules");
+
+    Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report"])
+        .arg(&rules_d)
+        .args(["--against-trustdb"])
+        .arg(&not_a_dir)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("not a directory"));
+}
+
+/// `--against-trustdb <dir>` that IS a directory but is not a valid LMDB
+/// environment (no `data.mdb`/`lock.mdb`) hits `open_trustdb_readonly`'s error
+/// arm - distinct from the not-a-directory guard above.
+#[test]
+fn report_against_trustdb_invalid_env_exits_lmdb_error() {
+    let tmp = make_rules_dir("10-x.rules", "allow perm=open all : all\n");
+    let rules_d = tmp.path().join("rules.d");
+    let empty_dir = tempfile::tempdir().expect("tempdir for empty (non-LMDB) trust DB");
+
+    Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report"])
+        .arg(&rules_d)
+        .args(["--against-trustdb"])
+        .arg(empty_dir.path())
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("opening trust DB"));
+}

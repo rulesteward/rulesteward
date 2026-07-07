@@ -529,3 +529,134 @@ fn auditd_cost_json_measured_shared_key_sums_per_rule() {
         "two rules sharing a key must sum the bucket 2x (per-key-sums); g1={g1} g2={g2}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Command-shell error arms + control/Watch-rule rendering (#440 coverage top-up)
+// ---------------------------------------------------------------------------
+
+/// An unparseable rules file hits `cost`'s parse-error arm: exit 5
+/// (`EXIT_RULE_PARSE_ERROR`, matching `lint`'s fapd-F01 mapping per #114 -
+/// distinct from `explain`'s exit 2 for an unparseable denial record).
+#[test]
+fn auditd_cost_unparseable_rules_exits_five() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("bad.rules");
+    std::fs::write(&rules, "!!!not a valid audit rule\n").expect("write");
+
+    bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .assert()
+        .failure()
+        .code(5)
+        .stderr(predicates::str::contains("parse error"));
+}
+
+/// `--recommend` is a documented no-op today (#85 Option 2 deferred): it
+/// prints a `[NOT YET IMPLEMENTED]` notice to stderr but still exits 0 with
+/// the normal cost report on stdout.
+#[test]
+fn auditd_cost_recommend_flag_prints_not_implemented_notice() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+
+    bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .arg("--recommend")
+        .assert()
+        .success()
+        .code(0)
+        .stderr(predicates::str::contains("[NOT YET IMPLEMENTED]"))
+        .stdout(predicates::str::contains("auditd cost estimate"));
+}
+
+/// `--from-log` pointing at a nonexistent file hits the measured-mode read
+/// error arm: exit 3 (`EXIT_TOOL_FAILURE`), distinct from the rules-parse
+/// error above.
+#[test]
+fn auditd_cost_from_log_unreadable_exits_tool_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+
+    bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(dir.path().join("nonexistent.log"))
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicates::str::contains("cannot read --from-log"));
+}
+
+/// Control-directive rules (`-D`, `-b <n>`) are NOT `Watch`/`Syscall` rules:
+/// `rule_key` returns `None` for them, `classify_rule` marks them
+/// `Direction::Suppressive` (so the human renderer's "0 (suppressive)" rate
+/// string fires instead of a numeric rate), and `fmt_rule` renders them via
+/// `{:?}` (`"DeleteAll"` / `"Backlog(8192)"`) rather than the `-w`/`-a` text
+/// forms. A `-w` rule with every permission bit set (`-p rwxa`) and a >49-char
+/// path additionally exercises `fmt_rule`'s full read/write/exec/attr match
+/// and the human renderer's long-rule-text truncation, in the same run.
+#[test]
+fn auditd_cost_control_rules_and_full_perm_watch_rule() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(
+        &rules,
+        "-D\n\
+         -b 8192\n\
+         -w /etc/some/very/long/path/that/exceeds/forty/nine/characters -p rwxa -k longkey\n",
+    )
+    .expect("write");
+
+    // Human format: control rules render as "DeleteAll"/"Backlog(8192)" with a
+    // "0 (suppressive)" rate string, and the long watch rule's text is
+    // truncated with a trailing "...".
+    let human = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(human).expect("utf8 stdout");
+    assert!(human.contains("DeleteAll"), "{human}");
+    assert!(human.contains("Backlog(8192)"), "{human}");
+    assert!(
+        human.contains("0 (suppressive)"),
+        "control-directive rules must render the suppressive rate string: {human}"
+    );
+    assert!(
+        human.contains("..."),
+        "a >49-char rule text must be truncated with an ellipsis: {human}"
+    );
+
+    // JSON format: the full (untruncated) rule text proves every perm bit
+    // (read/write/exec/attr) was rendered, and the control rules carry
+    // `key: null` (the `rule_key` `Control(_) => None` arm) plus
+    // `direction: "suppressive"`.
+    let json = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(json).expect("utf8")).expect("valid JSON");
+    let rules_arr = v["rules"].as_array().expect("rules array");
+    assert_eq!(rules_arr[0]["rule"], "DeleteAll");
+    assert_eq!(rules_arr[0]["key"], serde_json::Value::Null);
+    assert_eq!(rules_arr[0]["direction"], "suppressive");
+    assert_eq!(rules_arr[1]["rule"], "Backlog(8192)");
+    assert_eq!(
+        rules_arr[2]["rule"],
+        "-w /etc/some/very/long/path/that/exceeds/forty/nine/characters -p rwxa -k longkey"
+    );
+}

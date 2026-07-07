@@ -211,3 +211,120 @@ pub(super) fn parse_workload(raw: &str) -> anyhow::Result<Vec<Query>> {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Assert `parse_workload` fails and the error message contains `needle`.
+    ///
+    /// `Query` has no `Debug` impl (it is a private parser-internal type with
+    /// no production need for one), so this avoids `Result::expect_err`'s
+    /// `T: Debug` bound rather than adding a derive to production code for
+    /// test convenience alone.
+    fn assert_parse_err(result: anyhow::Result<Vec<Query>>, needle: &str) {
+        match result {
+            Ok(_) => panic!("expected a parse error containing {needle:?}, got Ok"),
+            Err(e) => assert!(
+                e.to_string().contains(needle),
+                "error {e:?} must contain {needle:?}"
+            ),
+        }
+    }
+
+    /// `perm="any"` in a JSON object workload maps to `Perm::Any` (the third,
+    /// previously-uncovered arm of the JSON perm match).
+    #[test]
+    fn json_object_perm_any_maps_to_perm_any() {
+        let queries = parse_workload(r#"{"exe":"/bin/true","perm":"any"}"#).expect("parses");
+        assert_eq!(queries[0].perm, Perm::Any);
+    }
+
+    /// An unrecognized `perm` string in a JSON object is a parse error, not a
+    /// silent default.
+    #[test]
+    fn json_object_unknown_perm_is_an_error() {
+        assert_parse_err(
+            parse_workload(r#"{"exe":"/bin/true","perm":"frobnicate"}"#),
+            "unknown perm value in workload",
+        );
+    }
+
+    /// A `trust`/`subjTrust`/`objTrust` field that is neither a bool nor null
+    /// (e.g. a number) is a parse error - the "unexpected type" arm of
+    /// `parse_trust_field`.
+    #[test]
+    fn wrong_type_trust_field_is_an_error() {
+        assert_parse_err(
+            parse_workload(r#"{"exe":"/bin/true","trust":42}"#),
+            "unexpected trust value in workload",
+        );
+    }
+
+    /// `uid`/`gid` accept an array of integers (not just a single integer),
+    /// producing one entry per array element.
+    #[test]
+    fn uid_gid_array_of_integers_is_accepted() {
+        let queries = parse_workload(r#"{"exe":"/bin/true","uid":[0,1000],"gid":[0,1000,2000]}"#)
+            .expect("parses");
+        assert_eq!(queries[0].uids, vec![0, 1000]);
+        assert_eq!(queries[0].gids, vec![0, 1000, 2000]);
+    }
+
+    /// A `uid`/`gid` array containing a non-integer element (e.g. a string)
+    /// is a parse error, not a silently-skipped entry.
+    #[test]
+    fn uid_array_with_non_integer_element_is_an_error() {
+        assert_parse_err(
+            parse_workload(r#"{"exe":"/bin/true","uid":[0,"oops"]}"#),
+            "uid array element must be a non-negative integer",
+        );
+    }
+
+    /// A `uid`/`gid` array element that overflows `u32` (e.g. `u64::MAX`) is a
+    /// parse error - distinct from the non-integer-element error above.
+    #[test]
+    fn uid_array_element_overflowing_u32_is_an_error() {
+        assert_parse_err(
+            parse_workload(r#"{"exe":"/bin/true","uid":[18446744073709551615]}"#),
+            "overflows u32",
+        );
+    }
+
+    /// A `uid`/`gid` field of an unexpected JSON type (neither a number, an
+    /// array, nor null/absent - e.g. a string) is a parse error.
+    #[test]
+    fn wrong_type_uid_field_is_an_error() {
+        assert_parse_err(
+            parse_workload(r#"{"exe":"/bin/true","uid":"nobody"}"#),
+            "unexpected uid value",
+        );
+    }
+
+    /// A terse line's `perm=any` maps to `Perm::Any` (mirrors the JSON-object
+    /// test above, but for the terse-line grammar's independent match arm).
+    #[test]
+    fn terse_line_perm_any_maps_to_perm_any() {
+        let queries = parse_workload("any /bin/true -> /tmp/x\n").expect("parses");
+        assert_eq!(queries[0].perm, Perm::Any);
+    }
+
+    /// An unrecognized perm token in a terse line is a parse error.
+    #[test]
+    fn terse_line_unknown_perm_is_an_error() {
+        assert_parse_err(
+            parse_workload("frobnicate /bin/true -> /tmp/x\n"),
+            "unknown perm in terse line",
+        );
+    }
+
+    /// A JSON workload array whose element is not itself a JSON object (e.g. a
+    /// bare number) is a parse error naming the offending index.
+    #[test]
+    fn json_array_element_not_an_object_is_an_error() {
+        assert_parse_err(
+            parse_workload("[1, 2]"),
+            "workload array element 0 is not an object",
+        );
+    }
+}
