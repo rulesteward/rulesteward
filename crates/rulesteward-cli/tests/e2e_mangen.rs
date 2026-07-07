@@ -39,6 +39,21 @@ fn mangen_outdir_parent_unwritable_exits_tool_failure() {
     let parent = tempfile::tempdir().expect("tempdir");
     std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o555))
         .expect("chmod 0555 (read+search, no write)");
+
+    // Root (RHEL-family distro CI) bypasses DAC: a 0o555 directory is still
+    // writable, so `create_dir_all` succeeds and the tool-failure arm is
+    // unreachable. Probe by attempting a write; skip rather than false-fail (the
+    // assertion stays fully live on every non-root run).
+    if std::fs::create_dir(parent.path().join(".probe-write")).is_ok() {
+        let _ = std::fs::remove_dir(parent.path().join(".probe-write"));
+        let _ = std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "SKIP mangen_outdir_parent_unwritable_exits_tool_failure: 0o555 dir is writable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
+
     let outdir = parent.path().join("newsubdir");
 
     let assert = Command::cargo_bin("rulesteward")
@@ -67,6 +82,19 @@ fn mangen_outdir_unwritable_exits_tool_failure() {
     let outdir = tempfile::tempdir().expect("tempdir");
     std::fs::set_permissions(outdir.path(), std::fs::Permissions::from_mode(0o555))
         .expect("chmod 0555 (read+search, no write)");
+
+    // Root bypasses DAC: a 0o555 directory is still writable, so the
+    // `rulesteward.1` write succeeds and the tool-failure arm is unreachable.
+    // Probe by attempting a write; skip rather than false-fail.
+    if std::fs::File::create(outdir.path().join(".probe-write")).is_ok() {
+        let _ = std::fs::remove_file(outdir.path().join(".probe-write"));
+        let _ = std::fs::set_permissions(outdir.path(), std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "SKIP mangen_outdir_unwritable_exits_tool_failure: 0o555 dir is writable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
 
     let assert = Command::cargo_bin("rulesteward")
         .expect("binary built")
