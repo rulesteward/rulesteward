@@ -383,6 +383,43 @@ fn triage_policy_reason_zero_has_distinct_already_allows_message() {
     );
 }
 
+/// A single run with TWO DISTINCT groups - one Reason(0) "already allows"
+/// (`AVC_REASON_ZERO`, triple `(src_t,tgt_t,file)`) and one true bad-context
+/// (`AVC_BADSCON`, triple `(zzz_undefined_t,tgt_t,file)`) - both against
+/// `allow.policy`. `render_human_with_already_allows` (commands/selinux.rs)
+/// takes its "some but not all groups are already-allows" branch ONLY when a
+/// run mixes both outcomes; every other test in this file has either zero
+/// already-allows groups or exactly one group whose entire membership is
+/// already-allows, so this is the only place that path is reached (#440).
+#[test]
+fn triage_mixed_already_allows_and_other_groups_renders_both() {
+    let log = format!("{AVC_REASON_ZERO}\n{AVC_BADSCON}\n");
+    let record = write_record(&log);
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(record.path())
+        .arg("--policy")
+        .arg(selinux_fixture("allow.policy"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let msg = String::from_utf8(out).expect("UTF-8 stdout (mixed already-allows + other)");
+
+    assert!(
+        msg.contains("already allow"),
+        "the reason==0 group must still render its already-allows message \
+         alongside the other group; got:\n{msg}"
+    );
+    assert!(
+        msg.contains("does not define"),
+        "the BADSCON group must still render via the standard (non-already-allows) \
+         renderer fallback in the same run; got:\n{msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 3 + 4: heterogeneous group (the grounded MISS from the round-2 review)
 // ---------------------------------------------------------------------------

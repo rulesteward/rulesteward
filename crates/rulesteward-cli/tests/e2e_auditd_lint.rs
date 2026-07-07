@@ -33,6 +33,30 @@ fn lint_missing_path_exits_three_with_message() {
         .stderr(predicate::str::contains("does not exist"));
 }
 
+/// An EXISTING file the process cannot read is a distinct arm from the
+/// missing-path case above: `resolve_lint_target` succeeds (the file exists),
+/// but the per-file `std::fs::read_to_string` inside the staging loop fails.
+/// Relies on chmod 0000 reliably denying read for the non-root user this
+/// suite runs as (both locally and in CI).
+#[test]
+fn lint_unreadable_existing_file_exits_three() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("10-unreadable.rules");
+    std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let rc = lint_cmd().args(["auditd", "lint"]).arg(&f).assert();
+
+    // Restore permissions unconditionally so the tempdir's own Drop cleanup
+    // can still remove the file.
+    let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+
+    rc.code(3)
+        .stderr(predicate::str::contains("auditd lint: cannot read"));
+}
+
 #[test]
 fn lint_unparseable_rules_exits_five_with_au_f01_json() {
     let dir = tempfile::tempdir().unwrap();

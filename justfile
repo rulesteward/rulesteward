@@ -35,7 +35,7 @@ test:
 cov:
     cargo llvm-cov --no-report --workspace --locked
     cargo llvm-cov report --fail-under-lines 80
-    cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --fail-under-lines 90
+    cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --package rulesteward-cli --fail-under-lines 90
 
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:

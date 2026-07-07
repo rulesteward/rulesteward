@@ -122,3 +122,95 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
 
     exit_code::compute(&diags, false)
 }
+
+#[cfg(test)]
+mod lint_shell_tests {
+    use super::{HostTargetProbe, lint, lint_with_probe};
+    use crate::cli::{HumanJsonFormat, SysctlLintArgs, TargetSelector};
+    use crate::exit_code::EXIT_TOOL_FAILURE;
+
+    /// A host probe returning a canned result, so the `--target auto` wiring
+    /// (including its degrade-with-warning path) is exercised without depending
+    /// on the test host's `/etc/os-release`. Mirrors `commands::sshd`'s
+    /// `FakeProbe`.
+    struct FakeProbe(Result<Option<crate::cli::TargetVersionArg>, String>);
+    impl HostTargetProbe for FakeProbe {
+        fn detect(&self) -> Result<Option<crate::cli::TargetVersionArg>, String> {
+            self.0.clone()
+        }
+    }
+
+    fn args(path: Option<std::path::PathBuf>) -> SysctlLintArgs {
+        SysctlLintArgs {
+            path,
+            system: false,
+            root: None,
+            format: HumanJsonFormat::Human,
+            target: None,
+        }
+    }
+
+    /// A path that is neither a file nor a directory is a tool failure (line
+    /// 93-95: the `!path.is_file()` arm, reached after the `is_dir()` check
+    /// above it already failed).
+    #[test]
+    fn missing_path_exits_tool_failure() {
+        let a = args(Some(std::path::PathBuf::from(
+            "/nonexistent/440/sysctl.conf",
+        )));
+        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+    }
+
+    /// An existing file the process cannot read hits the `read_to_string`
+    /// error arm (distinct from the missing-path arm above): exit 3
+    /// (`EXIT_TOOL_FAILURE`). Relies on chmod 0000 reliably denying read for
+    /// the non-root user this suite runs as (both locally and in CI).
+    #[test]
+    fn unreadable_file_exits_tool_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sysctl.conf");
+        std::fs::write(&f, "net.ipv4.ip_forward = 0\n").expect("write");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).expect("chmod 0000");
+
+        let rc = lint(&args(Some(f.clone())));
+
+        // Restore permissions unconditionally so the tempdir's own Drop cleanup
+        // can still remove the file, even though this assertion is not expected
+        // to panic.
+        let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+
+        assert_eq!(rc, EXIT_TOOL_FAILURE);
+    }
+
+    /// `--target auto` on a host the probe cannot map degrades to the
+    /// version-agnostic dialect AND prints the operator warning (line 38-40):
+    /// exercised here via `lint_with_probe` + a fake `Ok(None)` probe result,
+    /// same pattern as `commands::sshd`'s
+    /// `target_auto_degrades_gracefully_when_unmappable`.
+    #[test]
+    fn target_auto_degrades_gracefully_when_unmappable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sysctl.conf");
+        std::fs::write(&f, "net.ipv4.ip_forward = 0\n").expect("write");
+        let a = SysctlLintArgs {
+            path: Some(f),
+            system: false,
+            root: None,
+            format: HumanJsonFormat::Human,
+            target: Some(TargetSelector::Auto),
+        };
+        let probe = FakeProbe(Ok(None));
+        // Not asserting a specific exit: the point of this test is the
+        // warning-print branch, which is exercised regardless of the diag
+        // outcome. A clean file with no target-specific findings exits 0.
+        let rc = lint_with_probe(&a, &probe);
+        assert_eq!(
+            rc,
+            crate::exit_code::EXIT_CLEAN,
+            "a minimal-but-parseable file with target degraded to version-agnostic \
+             should still lint clean (no F01/W01 findings)"
+        );
+    }
+}

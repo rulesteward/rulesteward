@@ -412,3 +412,33 @@ fn write_output(rendered: &str, output: Option<&Path>) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::TriageArgs;
+
+    /// `triage` documents (via `unreachable!`) that `--record` and
+    /// `--audit-log` both being set cannot happen through the real CLI -
+    /// clap's `conflicts_with` on `TriageArgs::record` rejects that
+    /// combination at parse time, before `triage` is ever called. This
+    /// directly calls the private `triage` fn with a hand-built `TriageArgs`
+    /// that bypasses clap, to prove the documented invariant actually panics
+    /// as claimed (rather than silently misbehaving) if it were ever reached.
+    #[test]
+    #[should_panic(expected = "clap conflicts_with prevents both")]
+    fn triage_direct_call_with_both_record_and_audit_log_panics() {
+        let args = TriageArgs {
+            audit_log: Some(std::path::PathBuf::from("/dev/null")),
+            record: Some(std::path::PathBuf::from("/dev/null")),
+            since: None,
+            format: HumanJsonFormat::Human,
+            emit_te: false,
+            module_name: None,
+            output: None,
+            #[cfg(feature = "authoritative-categorizer")]
+            policy: None,
+        };
+        let _ = triage(&args);
+    }
+}

@@ -233,6 +233,39 @@ mod tests {
     }
 
     #[test]
+    fn human_renders_rhcos_notice_when_is_rhcos_true() {
+        let mut report = report_with(vec![]);
+        report.rhcos = RhcosStatus {
+            is_rhcos: true,
+            detail: "/etc/os-release ID=rhcos".into(),
+        };
+        let out = render_human(&report);
+        assert!(
+            out.contains("[RHCOS] /etc/os-release ID=rhcos (fapolicyd is not the supported app-control path here)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn human_labels_each_finding_severity() {
+        // Pins the human renderer's High/Warn/Info label match independently
+        // of the JSON summary tally test above (a distinct match expression).
+        let f = |code, sev| Finding {
+            code,
+            severity: sev,
+            detail: String::new(),
+        };
+        let out = render_human(&report_with(vec![
+            f("a", Severity::High),
+            f("b", Severity::Warn),
+            f("c", Severity::Info),
+        ]));
+        assert!(out.contains("[HIGH] a:"), "{out}");
+        assert!(out.contains("[WARN] b:"), "{out}");
+        assert!(out.contains("[INFO] c:"), "{out}");
+    }
+
+    #[test]
     fn human_deep_section_renders_each_trust_state() {
         use crate::commands::container_check::model::{DeepDenials, DeepTrust};
         let mut report = report_with(vec![]);

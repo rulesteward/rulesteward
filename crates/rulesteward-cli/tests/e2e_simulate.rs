@@ -1169,3 +1169,65 @@ fn summary_no_match_count_multiple_fallthrough_queries() {
         "noMatch must be 2 (kills the *= mutant)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// mod.rs error arms (#440 coverage top-up)
+// ---------------------------------------------------------------------------
+
+/// A `--rules` path that is not a directory (missing, or a plain file) makes
+/// `load_ruleset` return `Err`, distinct from the fapd-F01 parse-error path
+/// above: exit `EXIT_TOOL_FAILURE` = 3, not 5.
+#[test]
+fn rules_path_not_a_directory_is_a_tool_failure() {
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "simulate", "--rules"])
+        .arg(workload.path()) // a file, not a directory
+        .args(["--workload"])
+        .arg(workload.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("loading ruleset"));
+}
+
+/// An unopenable `--trustdb` path is non-fatal (#127): the command warns on
+/// stderr and falls back to workload-only trust, still exiting 0 with a
+/// normal result on stdout.
+#[test]
+fn bad_trustdb_path_warns_and_falls_back_to_workload_only_trust() {
+    let (_rules_dir, rules_path) = write_rules_dir("deny_audit perm=open all : all\n");
+    let workload = write_tmp(r#"{"exe":"/usr/bin/cat","path":"/etc/hostname","perm":"open"}"#);
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "simulate", "--rules"])
+        .arg(&rules_path)
+        .args(["--workload"])
+        .arg(workload.path())
+        .args(["--trustdb"])
+        .arg(rules_path.join("nonexistent-trustdb-dir"))
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("could not open --trustdb"))
+        .stdout(predicate::str::contains("DECISIVE deny"));
+}
+
+/// Workload input that starts with `{` but is not valid JSON hits
+/// `parse_workload`'s JSON-parse error arm: exit `EXIT_TOOL_FAILURE` = 3.
+#[test]
+fn unparseable_json_workload_is_a_tool_failure() {
+    let (_rules_dir, rules_path) = write_rules_dir("deny_audit perm=open all : all\n");
+    let workload = write_tmp("{invalid json");
+
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "simulate", "--rules"])
+        .arg(&rules_path)
+        .args(["--workload"])
+        .arg(workload.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("parsing workload"));
+}
