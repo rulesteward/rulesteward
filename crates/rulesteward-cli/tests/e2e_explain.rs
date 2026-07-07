@@ -257,6 +257,17 @@ fn explain_record_file_unreadable_exits_tool_failure() {
         .expect("chmod 0000");
     let _restore = RestorePerms(record_path.clone());
 
+    // Root (RHEL-family distro CI) bypasses DAC: 0o000 stays readable, so the
+    // "reading record file" arm is unreachable. Skip rather than false-fail (the
+    // `_restore` guard restores perms on return); assertion stays live non-root.
+    if std::fs::File::open(&record_path).is_ok() {
+        eprintln!(
+            "SKIP explain_record_file_unreadable_exits_tool_failure: 0o000 is readable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
+
     let ruleset = ruleset_13_dir();
     bin()
         .args(["fapolicyd", "explain", "--record"])
@@ -280,6 +291,17 @@ fn explain_ruleset_dir_unreadable_exits_tool_failure() {
         .expect("chmod 0000");
     let _restore = RestorePerms(dir.path().to_path_buf());
 
+    // Root bypasses DAC: read_dir on a 0o000 directory still succeeds, so the
+    // "reading ruleset directory" arm is unreachable. Skip rather than
+    // false-fail (the `_restore` guard restores perms on return).
+    if std::fs::read_dir(dir.path()).is_ok() {
+        eprintln!(
+            "SKIP explain_ruleset_dir_unreadable_exits_tool_failure: 0o000 dir is readable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
+
     bin()
         .args(["fapolicyd", "explain", "--record"])
         .arg(corpus_record("rocky9"))
@@ -302,6 +324,17 @@ fn explain_rule_file_unreadable_exits_tool_failure() {
     std::fs::set_permissions(&rule_file, std::fs::Permissions::from_mode(0o000))
         .expect("chmod 0000");
     let _restore = RestorePerms(rule_file.clone());
+
+    // Root bypasses DAC: File::open on the 0o000 rule file still succeeds, so
+    // the "reading rule file" arm is unreachable. Skip rather than false-fail
+    // (the `_restore` guard restores perms on return).
+    if std::fs::File::open(&rule_file).is_ok() {
+        eprintln!(
+            "SKIP explain_rule_file_unreadable_exits_tool_failure: 0o000 file is readable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
 
     bin()
         .args(["fapolicyd", "explain", "--record"])

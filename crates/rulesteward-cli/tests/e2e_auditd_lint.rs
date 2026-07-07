@@ -47,6 +47,18 @@ fn lint_unreadable_existing_file_exits_three() {
     std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").unwrap();
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
 
+    // Root (RHEL-family distro CI) bypasses DAC, so 0o000 stays readable and the
+    // "cannot read" arm is structurally unreachable. Probe and skip rather than
+    // false-fail; the assertion stays fully live on every non-root run.
+    if std::fs::File::open(&f).is_ok() {
+        let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+        eprintln!(
+            "SKIP lint_unreadable_existing_file_exits_three: 0o000 is readable here \
+             (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+        );
+        return;
+    }
+
     let rc = lint_cmd().args(["auditd", "lint"]).arg(&f).assert();
 
     // Restore permissions unconditionally so the tempdir's own Drop cleanup

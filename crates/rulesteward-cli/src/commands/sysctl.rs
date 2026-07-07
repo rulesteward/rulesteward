@@ -174,6 +174,23 @@ mod lint_shell_tests {
         std::fs::write(&f, "net.ipv4.ip_forward = 0\n").expect("write");
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).expect("chmod 0000");
 
+        // Precondition: mode 0o000 only denies reads for a process WITHOUT
+        // DAC-override. RHEL-family distro CI runs the suite as root, which
+        // bypasses DAC, so the read still succeeds and the tool-failure arm is
+        // structurally unreachable. Probe the actual precondition and skip
+        // (rather than false-fail) when the environment cannot produce the
+        // denial; the assertion stays fully live on every non-root run (local
+        // dev, the ubuntu llvm-cov gate, mutation CI). Mirrors the convention in
+        // rulesteward-sysctld/tests/system.rs.
+        if std::fs::File::open(&f).is_ok() {
+            let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+            eprintln!(
+                "SKIP unreadable_file_exits_tool_failure: 0o000 is readable here \
+                 (running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+            );
+            return;
+        }
+
         let rc = lint(&args(Some(f.clone())));
 
         // Restore permissions unconditionally so the tempdir's own Drop cleanup
