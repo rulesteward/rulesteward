@@ -30,13 +30,36 @@
 # (the `unreadable_search_directory_emits_a_file_level_f01` test) and the
 # "DAC guard" section of CONTRIBUTING.md.
 #
-# Implementation note: function-scope detection is a lightweight character
-# scanner (comment/string-aware brace counting keyed off the `fn` keyword),
-# not a full Rust parser. It is exact for the guard idiom actually used in
-# this repo (single-line `fn name(...) { ... }` signatures) and for the
-# common case generally; pathological inputs (raw string literals, `fn`
-# appearing inside an unrelated type annotation such as a bare function
-# pointer type) are out of scope for a CI shell gate.
+# Implementation note: function-scope detection is FN-HEADER-ANCHORED, not
+# a brace/string/comment lexer. For every from_mode(deny) hit, the AWK
+# scanner records every line in the file that matches a `fn` HEADER regex
+# (line-start, optional whitespace, optional pub(...)/async/unsafe/extern
+# "ABI" modifiers, then a bare `fn` keyword followed by whitespace - see
+# FN_HEADER_RE below). The hit's enclosing region is
+# [nearest preceding fn-header line, next following fn-header line - 1]
+# (or EOF if there is no following fn-header line; or line 1 if the hit
+# precedes every fn-header line in the file). A CAP_DAC_OVERRIDE marker or
+# dac-override-exempt hatch is credited only if it falls inside that
+# region. This never inspects string or comment contents to find the
+# region boundaries, so it is immune by construction to raw string
+# literals (r#"..."#), ordinary string literals, and char-literal braces
+# desyncing detection - unlike a brace-counting scanner, which a raw
+# string with an odd interior double-quote count can desync for the rest
+# of the file (the bug this rewrite fixes; see #467 case8/case9 in
+# scripts/check-dac-guard-test.sh).
+#
+# Documented blind spots (both rare in this repo's test code, and neither
+# is a silent-fail-open risk the way the old brace desync was - a nested
+# fn item narrows the guard-search region rather than widening it past a
+# real violation):
+#   - A `fn` item NESTED inside another fn's body counts as its own
+#     region boundary, splitting the outer fn's body into two regions at
+#     that point. A guard placed on the far side of a nested fn from its
+#     from_mode(...) call would not be credited even though both are
+#     lexically inside the same outer fn.
+#   - A line that starts with (optional whitespace then) literal `fn `
+#     text embedded inside a multi-line string literal is indistinguishable
+#     from a real fn header and would false-anchor a region boundary.
 
 set -uo pipefail
 
@@ -47,135 +70,45 @@ fi
 
 # AWK_PROG: per-file scanner.
 #
-# Pass 1 (per input line, main rule): a character-by-character scan that
-# tracks block-comment / line-comment / string-literal state (so brace
-# characters inside comments or strings are never counted) and maintains a
-# brace-depth stack. Every time a `{` opens, the accumulated "code since the
-# last brace event" buffer is checked for a whole-word `fn` token; the new
-# stack frame is tagged is_fn accordingly. Every time a `}` closes, the
-# frame is popped and recorded as a closed block [start_line, end_line,
-# is_fn]. The buffer resets on every brace event, so a block's is_fn tag
-# reflects only the signature immediately preceding its own opening brace.
-# Raw (unmodified) line text is also stored, and every line is grep'd for
-# the literal from_mode(0o000 / from_mode(0o555 substrings.
+# Pass 1 (per input line, main rule): record the raw line text, note
+# whether the line matches the fn-header regex (recording its line
+# number in order), and note whether the line contains a from_mode(deny)
+# hit (recording its line number).
 #
-# Pass 2 (END): for every from_mode(deny) hit line, find the innermost
-# is_fn block that contains it (max start_line among candidates spanning
-# the hit line) and search that block's raw lines for CAP_DAC_OVERRIDE or
-# a dac-override-exempt: comment. No enclosing fn is found only for
-# pathological input; a small window around the hit line is used instead.
+# Pass 2 (END): for every from_mode(deny) hit line, walk the ordered
+# fn-header line numbers to find the enclosing region - the nearest
+# fn-header line at or before the hit, through the line before the next
+# fn-header line after it (or EOF if none). Search that region's raw
+# lines for a CAP_DAC_OVERRIDE marker or a dac-override-exempt: comment.
 AWK_PROG=$(cat <<'AWK_EOF'
 BEGIN {
-    depth = 0
-    cb = 0
     nhits = 0
-    in_string = 0
-    in_block_comment = 0
-    escaped = 0
-    buffer = ""
+    nfn = 0
 }
 {
     raw[NR] = $0
-    line = $0
-    n = length(line)
-    i = 1
-    while (i <= n) {
-        c = substr(line, i, 1)
-        if (in_block_comment) {
-            if (c == "*" && substr(line, i + 1, 1) == "/") {
-                in_block_comment = 0
-                i += 2
-                continue
-            }
-            i++
-            continue
-        }
-        if (in_string) {
-            if (escaped) {
-                escaped = 0
-                i++
-                continue
-            }
-            if (c == "\\") {
-                escaped = 1
-                i++
-                continue
-            }
-            if (c == "\"") {
-                in_string = 0
-                i++
-                continue
-            }
-            i++
-            continue
-        }
-        if (c == "/" && substr(line, i + 1, 1) == "/") {
-            break
-        }
-        if (c == "/" && substr(line, i + 1, 1) == "*") {
-            in_block_comment = 1
-            i += 2
-            continue
-        }
-        if (c == "\"") {
-            in_string = 1
-            escaped = 0
-            i++
-            continue
-        }
-        if (c == "{") {
-            newdepth = depth + 1
-            stack_start[newdepth] = NR
-            stack_isfn[newdepth] = (buffer ~ /(^|[^A-Za-z0-9_])fn([^A-Za-z0-9_]|$)/) ? 1 : 0
-            depth = newdepth
-            buffer = ""
-            i++
-            continue
-        }
-        if (c == "}") {
-            if (depth > 0) {
-                s = stack_start[depth]
-                f = stack_isfn[depth]
-                cb++
-                cbstart[cb] = s
-                cbend[cb] = NR
-                cbisfn[cb] = f
-                depth--
-            }
-            buffer = ""
-            i++
-            continue
-        }
-        buffer = buffer c
-        i++
+    if ($0 ~ /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(extern[[:space:]]+"[^"]*"[[:space:]]+)?fn[[:space:]]/) {
+        nfn++
+        fnline[nfn] = NR
     }
-    if (!in_block_comment && !in_string) {
-        buffer = buffer " "
-    }
-    if (index(line, "from_mode(0o000") > 0 || index(line, "from_mode(0o555") > 0) {
+    if (index($0, "from_mode(0o000") > 0 || index($0, "from_mode(0o555") > 0) {
         nhits++
         hitline[nhits] = NR
     }
 }
 END {
+    total = NR
     for (h = 1; h <= nhits; h++) {
         hl = hitline[h]
-        beststart = -1
-        bestend = -1
-        for (b = 1; b <= cb; b++) {
-            if (cbisfn[b] && cbstart[b] <= hl && hl <= cbend[b]) {
-                if (cbstart[b] > beststart) {
-                    beststart = cbstart[b]
-                    bestend = cbend[b]
-                }
+        wstart = 1
+        wend = total
+        for (f = 1; f <= nfn; f++) {
+            if (fnline[f] <= hl) {
+                wstart = fnline[f]
+            } else {
+                wend = fnline[f] - 1
+                break
             }
-        }
-        if (beststart != -1) {
-            wstart = beststart
-            wend = bestend
-        } else {
-            wstart = (hl - 5 > 1) ? hl - 5 : 1
-            wend = (hl + 2 <= NR) ? hl + 2 : NR
         }
         guarded = 0
         for (ln = wstart; ln <= wend; ln++) {

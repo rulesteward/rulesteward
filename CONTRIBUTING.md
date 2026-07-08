@@ -69,8 +69,10 @@ See `crates/rulesteward-sysctld/tests/system.rs`
 worked example, and the 7 guards added across `crates/rulesteward-cli` in
 #465 for more instances.
 
-`scripts/check-dac-guard.sh` (wired into CI as `just dac-guard`, #467) is a
-static gate that enforces this: every `from_mode(0o000)` or `from_mode(0o555)`
+`scripts/check-dac-guard.sh` (#467) is a static gate that enforces this;
+CI's lint job runs it directly as `bash scripts/check-dac-guard.sh`, and
+`just ci` (via the `dac-guard` recipe) runs the same script locally. Every
+`from_mode(0o000)` or `from_mode(0o555)`
 call under `crates/**/{src,tests}/**/*.rs` must have a `CAP_DAC_OVERRIDE`
 marker (a comment or string literal containing that exact token) somewhere
 in the *same function* as the call. If a fixture genuinely does not need the
@@ -83,8 +85,8 @@ a `CAP_DAC_OVERRIDE` marker:
 // fixture depends on the denial actually being enforced.
 ```
 
-Run `just dac-guard` locally to check before pushing; the same command runs
-in the PR-CI lint tier.
+Run `just dac-guard` locally to check before pushing (the local equivalent
+of the `bash scripts/check-dac-guard.sh` step CI's lint job runs).
 
 ## Commit authorship
 

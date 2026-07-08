@@ -50,8 +50,8 @@ musl:
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + test + cov).
-ci: fmt clippy test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + test + cov).
+ci: fmt clippy dac-guard test cov
 
 # (#287) Cross-version fapolicyd differential harness (opt-in, dev-only; NOT part of
 # `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10} images and validate.sh.
