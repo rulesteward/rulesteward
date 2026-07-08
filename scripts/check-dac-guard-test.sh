@@ -283,6 +283,111 @@ fn case9_guarded_real_idiom() {
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# Case 10: round-2 adversarial finding 1 (fail-open). Clones case6's shape
+# (an unguarded deny fn followed by a textually adjacent sibling fn that
+# carries a CAP_DAC_OVERRIDE marker), but this time the marker sits in the
+# GAP between the deny fn's closing brace and the sibling fn's OWN header -
+# i.e. in the sibling's lead-in (a doc comment, an attribute, or a
+# freestanding // comment), not inside either fn's body. The fn-header-
+# anchored region for the deny fn's hit is
+# [nearest-preceding-fn-header, next-fn-header - 1]; a lead-in line sitting
+# just above the sibling's header line is (next-fn-header - 1) or earlier,
+# so an untrimmed region wrongly credits it to the deny fn -> exit 0
+# (fail-open bug). The frozen contract requires the marker within the SAME
+# fn body (check-dac-guard-test.sh's own contract comment above, and
+# CONTRIBUTING.md's "DAC guard" section); a sibling's lead-in is not that,
+# so the correct behavior is exit 1. Exercises all three lead-in shapes
+# (doc comment, attribute, freestanding comment) as separate fixture files
+# in the same case so a fix that only trims one comment style is still
+# caught.
+# ---------------------------------------------------------------------------
+write_fixture "case10/crates/fakecrate10_doc_comment_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case10_doc_comment_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case10-doc-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+/// CAP_DAC_OVERRIDE noted here in a doc comment sitting in the GAP between
+/// this fn's own header and the deny fn's closing brace above - this is the
+/// sibling's lead-in, not the deny fn's body, and must not be credited.
+#[test]
+fn case10_doc_comment_gap_sibling() {
+    assert!(true);
+}
+EOF
+
+write_fixture "case10/crates/fakecrate10_attribute_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case10_attribute_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case10-attr-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+#[doc = "CAP_DAC_OVERRIDE noted in an attribute in the sibling's lead-in gap"]
+#[test]
+fn case10_attribute_gap_sibling() {
+    assert!(true);
+}
+EOF
+
+write_fixture "case10/crates/fakecrate10_freestanding_comment_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case10_freestanding_comment_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case10-free-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+// CAP_DAC_OVERRIDE noted here as a freestanding comment in the sibling's
+// lead-in gap, not inside either fn's body.
+#[test]
+fn case10_freestanding_comment_gap_sibling() {
+    assert!(true);
+}
+EOF
+
+# ---------------------------------------------------------------------------
+# Case 11: round-2 adversarial finding 2 (nested-fn fail-closed - PINNED).
+# An outer test fn makes the deny call, then declares a nested `fn helper()
+# {}` item, then (still lexically inside the outer fn's braces, after the
+# nested item) has a comment naming CAP_DAC_OVERRIDE. The fn-header-anchored
+# scanner treats the nested fn's header as its own region boundary, so the
+# outer fn's body is split into two regions at that point; the marker (in
+# the second sub-region) is never credited to the from_mode hit (in the
+# first sub-region) -> exit 1.
+#
+# RULING (orchestrator, round 3): this fail-closed behavior is PINNED as the
+# contract, not a bug to fix. It can force a spurious/over-strict guard
+# requirement in the rare case of a nested fn item, but it can never hide a
+# real violation (narrowing the search region only removes credit, never
+# grants it) - the opposite failure mode from case10's fail-open gap, which
+# is why case10 must be fixed and this must not be "fixed" into matching
+# case10's leniency. The remedy for a real guard in this shape is to place
+# the CAP_DAC_OVERRIDE marker BEFORE the nested item (in the same
+# sub-region as the from_mode call), or to use the dac-override-exempt:
+# hatch instead.
+# ---------------------------------------------------------------------------
+write_fixture "case11/crates/fakecrate11/tests/it.rs" <<'EOF'
+#[test]
+fn case11_nested_fn_splits_region() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case11-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    fn helper() {}
+
+    // probe still succeeds (running as root / CAP_DAC_OVERRIDE)
+    assert!(true);
+}
+EOF
+
 run_case "case1_unguarded_read_deny" "${TMPROOT}/case1/crates" 1
 assert_mentions_convention "case1_unguarded_read_deny"
 
@@ -302,6 +407,20 @@ run_case "case8_raw_string_desync_still_catches_violation" "${TMPROOT}/case8/cra
 assert_mentions_convention "case8_raw_string_desync_still_catches_violation"
 
 run_case "case9_raw_string_desync_no_false_positive" "${TMPROOT}/case9/crates" 0
+
+run_case "case10_gap_marker_excluded" "${TMPROOT}/case10/crates" 1
+assert_mentions_convention "case10_gap_marker_excluded"
+case10_out="${TMPROOT}/case10_gap_marker_excluded.out"
+for variant in doc_comment_gap attribute_gap freestanding_comment_gap; do
+    if grep -q "${variant}" "${case10_out}" 2>/dev/null; then
+        note_pass "case10_gap_marker_excluded: ${variant} variant flagged as violation"
+    else
+        note_fail "case10_gap_marker_excluded: ${variant} variant NOT flagged (gap marker wrongly credited to the deny fn)"
+    fi
+done
+
+run_case "case11_nested_fn_splits_region" "${TMPROOT}/case11/crates" 1
+assert_mentions_convention "case11_nested_fn_splits_region"
 
 # ---------------------------------------------------------------------------
 # Case 7: the real repo tree, invoked with NO arguments (default "crates/"),
