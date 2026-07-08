@@ -220,6 +220,69 @@ fn case6_neighbor_fn_with_marker() {
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# Case 8: a raw string literal (r#"..."#) with an ODD number of interior
+# double-quote characters appears earlier in the file, ahead of an
+# unrelated, genuinely unguarded from_mode(0o555) violation in a LATER fn
+# (same shadowing shape as case6: a CAP_DAC_OVERRIDE marker exists only in
+# a textually adjacent SIBLING fn, never in the deny fn's own body). Raw
+# strings are not ordinary double-quoted strings; a scanner that is only
+# aware of ordinary double-quoted strings must not let this raw string
+# desync its fn-boundary tracking for the rest of the file in a way that
+# causes it to miss the later violation -> exit 1, message must still name
+# CAP_DAC_OVERRIDE.
+# ---------------------------------------------------------------------------
+write_fixture "case8/crates/fakecrate8/tests/it.rs" <<'EOF'
+fn holds_raw_string() {
+    let s = r#"he said "hi to the world"#;
+    let _ = s;
+}
+
+fn sibling_with_marker() {
+    // CAP_DAC_OVERRIDE
+    let _ = 1;
+}
+
+fn unguarded_deny() {
+    std::fs::set_permissions(".", std::fs::Permissions::from_mode(0o555)).unwrap();
+}
+EOF
+
+# ---------------------------------------------------------------------------
+# Case 9: the same raw-string shape as case8 (an earlier r#"..."# with an
+# odd interior double-quote count), this time ahead of a CORRECTLY guarded
+# deny site using the real repo idiom: from_mode(0o000) followed several
+# lines later, in the SAME fn, by an eprintln! naming CAP_DAC_OVERRIDE
+# (mirrors crates/rulesteward-sysctld/tests/system.rs:753-777, where the
+# marker sits ~13 lines after the from_mode call in the same fn). The
+# earlier raw string must not cause this already-guarded site to be
+# false-flagged -> exit 0 (guarded, no violation).
+# ---------------------------------------------------------------------------
+write_fixture "case9/crates/fakecrate9/tests/it.rs" <<'EOF'
+fn holds_raw_string() {
+    let s = r#"pattern: "x { y"#;
+    let _ = s;
+}
+
+#[test]
+fn case9_guarded_real_idiom() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case9-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    if std::fs::File::open(f).is_ok() {
+        let _ = std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644));
+        eprintln!(
+            "SKIP case9_guarded_real_idiom: mode 0o000 is readable here \
+             (running as root / with CAP_DAC_OVERRIDE); cannot exercise the deny path"
+        );
+        return;
+    }
+
+    assert!(true);
+}
+EOF
+
 run_case "case1_unguarded_read_deny" "${TMPROOT}/case1/crates" 1
 assert_mentions_convention "case1_unguarded_read_deny"
 
@@ -234,6 +297,11 @@ run_case "case5_benign_modes_only" "${TMPROOT}/case5/crates" 0
 
 run_case "case6_unguarded_neighbor_has_marker" "${TMPROOT}/case6/crates" 1
 assert_mentions_convention "case6_unguarded_neighbor_has_marker"
+
+run_case "case8_raw_string_desync_still_catches_violation" "${TMPROOT}/case8/crates" 1
+assert_mentions_convention "case8_raw_string_desync_still_catches_violation"
+
+run_case "case9_raw_string_desync_no_false_positive" "${TMPROOT}/case9/crates" 0
 
 # ---------------------------------------------------------------------------
 # Case 7: the real repo tree, invoked with NO arguments (default "crates/"),
