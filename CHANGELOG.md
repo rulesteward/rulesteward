@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
+A resiliency and code-quality release. No new backends and no new lint codes
+(59 total, unchanged): v0.5 continues v0.4's correctness-hardening theme one layer
+up - the grounded tables the lints depend on - plus readability and coverage. It
+deepens two existing lints, fixes several `sshd` false-positives and missed
+deprecations surfaced by new daemon-grounded provenance tooling, refactors eight
+modules for readability (behavior-preserving), and raises the per-crate coverage
+floor to 90% everywhere (the CLI is now in the CI coverage gate).
+
+### Changed
+
+- **`sshd-W07`** now detects per-sub-population (partitioned-criteria) `Match`-block
+  shadows, not only whole-block shadows. (#409)
+- **`sudoers-F01`/`sudoers-F02`** empty comma-member detection now covers the fourth
+  scope arm, `Defaults!` (Cmnd) scope. (#429)
+
+### Fixed
+
+- **`sshd-E04`**: removed four false-positive errors on keywords the daemon actually
+  honors inside `Match` blocks - `authorizedkeysfile2`, `rsaauthentication`,
+  `rhostsrsaauthentication`, and `gssapiindicators` (on RHEL 9 / 10). Grounded
+  against the real `sshd` binary on Rocky Linux 8 / 9 / 10 by a new daemon-probe
+  drift tool. (#372)
+- **`sshd-W04`**: now flags three previously-missed deprecated keywords -
+  `checkmail`, `authorizedkeysfile2`, and `pamauthenticationviakbdint`. (#372)
+- **`sshd-W07`**: fixed a false-positive where a wildcard region incorrectly covered
+  a same-type `Match` block. (#409)
+
 ## [0.4.0] - 2026-07-04
 
 Correctness and fidelity hardening of the three backends first shipped in v0.3.0
@@ -283,7 +312,9 @@ Initial release. Cargo workspace (`-core`, `-fapolicyd`, `-sink`, `-cli`) with t
 fapolicyd lint backend, the `rulesteward` CLI, and a signed static
 `x86_64-unknown-linux-musl` binary plus RPM, SBOM, and cosign keyless signatures.
 
-[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rulesteward/rulesteward/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/rulesteward/rulesteward/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rulesteward/rulesteward/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/rulesteward/rulesteward/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/rulesteward/rulesteward/compare/v0.1.0...v0.2.0
