@@ -1,0 +1,75 @@
+name: sshd-probe-check
+
+# PR-time drift gate for the sshd E01/E04/W04 lint tables (issue #372). Fail the build
+# if the shipped registry (E01), Match-permitted set (E04), or deprecated set (W04) no
+# longer matches what a real sshd daemon does.
+#
+# This gate runs OFFLINE, against the committed captured probe transcripts under
+# tools/sshd-probe-update/tests/fixtures/ (real `sshd -t` output from Rocky 8/9/10).
+# That is a deliberate reliability choice: a PR should not spin up docker + pull
+# rockylinux images to gate a table edit. The offline gate catches the common case - a
+# human edits registry.rs / structural/e04.rs / deprecation.rs out of sync with the
+# grounded daemon behavior. The complementary weekly sshd-probe-drift.yml does the LIVE
+# docker probe against fresh Rocky images and opens an issue on drift (catching an
+# upstream OpenSSH change in a RHEL base image, or a fixture that has itself drifted).
+#
+# paths: is scoped to exactly the drift INPUTS so unrelated PRs never pay for this job:
+#   - registry.rs        - the E01 recognized-keyword registry
+#   - deprecation.rs      - the W04 deprecated-keyword set
+#   - structural/e04.rs   - the E04 Match-permitted set
+#   - structural/e04/**   - backstop in case e04.rs is later split into a directory
+#   - structural/mod.rs   - the `pub use` re-export the tool imports (match_permitted_keywords)
+#   - tools/sshd-probe-update/**  - the tool + its fixtures
+#   - .github/workflows/sshd-probe-check.yml  - this workflow
+on:
+  pull_request:
+    paths:
+      - 'crates/rulesteward-sshd/src/lints/registry.rs'
+      - 'crates/rulesteward-sshd/src/lints/deprecation.rs'
+      - 'crates/rulesteward-sshd/src/lints/structural/e04.rs'
+      - 'crates/rulesteward-sshd/src/lints/structural/e04/**'
+      - 'crates/rulesteward-sshd/src/lints/structural/mod.rs'
+      - 'tools/sshd-probe-update/**'
+      - '.github/workflows/sshd-probe-check.yml'
+
+# Least privilege: read the repo only. This job never writes back to GitHub (contrast
+# sshd-probe-drift.yml, which needs issues: write for its tracking issue).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: sshd E01/E04/W04 drift vs committed daemon-probe fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/sshd-probe-update
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/sshd-probe-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/sshd-probe-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
+      - name: Tool tests (offline fixture drift + exit-code contract)
+        run: cargo test --manifest-path tools/sshd-probe-update/Cargo.toml --locked
+      - name: Offline drift gate (check --transcript vs committed daemon fixtures)
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool error; ALL non-zero
+        # exits must hard-fail this job. No error swallowing.
+        run: |
+          set -euo pipefail
+          for p in rhel8 rhel9 rhel10; do
+            cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- \
+              check --product "$p" \
+              --transcript "tools/sshd-probe-update/tests/fixtures/${p}_probe.jsonl"
+          done

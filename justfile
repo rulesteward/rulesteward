@@ -171,3 +171,53 @@ sshd-stig-derive product="all":
     else
         cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
+
+# (#372) Drift-check the sshd E01/E04/W04 lint tables against a LIVE sshd daemon by
+# probing the Rocky 8/9/10 + openssh-server images. Same nested-tool pattern
+# (tools/sshd-probe-update, OUT of `just ci`). The LIVE recipes skip gracefully (exit 0)
+# when docker or the images are absent; the weekly sshd-probe-drift workflow builds the
+# images and runs the live check in CI.
+#
+# diff-sshd             : LIVE - probe the sshd-probe{8,9,10} images; exit 1 on drift.
+# diff-sshd-offline     : OFFLINE - drift-check against the committed daemon fixtures
+#                         (the PR-gate uses this); no docker.
+# sshd-probe-derive <p> : print the derived sets + diff + paste-ready lines (p =
+#                         rhel8|rhel9|rhel10, or `all`).
+
+# LIVE: probe the sshd-probe{8,9,10} images and drift-check; exit 1 on drift.
+diff-sshd:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "diff-sshd: prerequisites missing - need docker + the sshd-probe{8,9,10} images (build from tools/sshd-probe-update/dockerfiles/<n>/)" >&2
+        exit 0
+    fi
+    if ! docker image inspect sshd-probe8 sshd-probe9 sshd-probe10 >/dev/null 2>&1; then
+        echo "diff-sshd: prerequisites missing - sshd-probe8/9/10 images not found; build each from tools/sshd-probe-update/dockerfiles/<n>/Dockerfile (docker build -t sshd-probe<n> ...)" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- check
+
+diff-sshd-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: replay the committed daemon-probe fixtures and confirm the
+    # shipped E01/E04/W04 tables still match. No docker. Any product's drift (exit 1)
+    # or error (2) fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- \
+            check --product "$p" --transcript "tools/sshd-probe-update/tests/fixtures/${p}_probe.jsonl"
+    done
+
+sshd-probe-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "sshd-probe-derive: prerequisites missing - need docker + the sshd-probe{8,9,10} images" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- derive --product "{{product}}"
+    fi

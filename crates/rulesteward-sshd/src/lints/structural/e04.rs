@@ -57,6 +57,12 @@ use crate::lints::{SshdLintContext, anchored, is_unconditional_match_all, regist
 /// 8.10 / 9.8 / 10.2. See also depth-sshd-sets.md FINDING 1 (2026-06-17, the
 /// non-activating-Match oracle) and issue #356 live differential
 /// (gssapienablek5users, 2026-06-29).
+///
+/// #372 (2026-07-07): a full-registry `sshd-probe-update` daemon probe (Rocky
+/// 8/9/10, same non-activating-Match oracle) found four keywords the daemon HONORS
+/// in Match that were still firing sshd-E04 as false positives. Honored on every
+/// version and added here: `authorizedkeysfile2`, `rhostsrsaauthentication`,
+/// `rsaauthentication`. The 9.x-only `gssapiindicators` went to the additions below.
 const E04_PERMITTED_BASE: &[&str] = &[
     "acceptenv",
     "allowagentforwarding",
@@ -68,6 +74,7 @@ const E04_PERMITTED_BASE: &[&str] = &[
     "authorizedkeyscommand",
     "authorizedkeyscommanduser",
     "authorizedkeysfile",
+    "authorizedkeysfile2",
     "authorizedprincipalscommand",
     "authorizedprincipalscommanduser",
     "authorizedprincipalsfile",
@@ -114,6 +121,8 @@ const E04_PERMITTED_BASE: &[&str] = &[
     "refuseconnection",
     "rekeylimit",
     "revokedkeys",
+    "rhostsrsaauthentication",
+    "rsaauthentication",
     "setenv",
     "streamlocalbindmask",
     "streamlocalbindunlink",
@@ -159,8 +168,13 @@ const E04_PERMITTED_BASE: &[&str] = &[
 ///
 /// A set edit must be accompanied by a guard-test update (see `e04_set_guard_tests`
 /// below) and VM re-verification on Rocky 8.10 / 9.8 / 10.2.
+///
+/// #372 (2026-07-07): `gssapiindicators` added here (a RHEL GSSAPI-patch keyword,
+/// UNKNOWN on 8.0p1, Match-honored on 9.9p1) after the full-registry
+/// `sshd-probe-update` probe found it firing sshd-E04 as a false positive on 9/10.
 const E04_PERMITTED_ADDED_9_9P1: &[&str] = &[
     "challengeresponseauthentication",
+    "gssapiindicators",
     "ignorerhosts",
     "logverbose",
     "requiredrsasize",
@@ -191,6 +205,20 @@ pub(super) fn e04_match_permitted(
             E04_PERMITTED_ADDED_9_9P1.contains(&keyword_lower)
         }
     }
+}
+
+/// The full set of `Match`-block-permitted keywords for `target`, enumerated for
+/// the out-of-tree `sshd-probe-update` drift tool. Mirrors [`e04_match_permitted`]:
+/// the base set on every version plus the 9.9p1 additions for rhel9/rhel10 (68 /
+/// 76 / 76 for RHEL 8 / 9 / 10). Order is unspecified.
+#[must_use]
+pub fn match_permitted_keywords(target: crate::lints::TargetVersion) -> Vec<&'static str> {
+    use crate::lints::TargetVersion;
+    let mut out: Vec<&'static str> = E04_PERMITTED_BASE.to_vec();
+    if !matches!(target, TargetVersion::Rhel8) {
+        out.extend_from_slice(E04_PERMITTED_ADDED_9_9P1);
+    }
+    out
 }
 
 /// sshd-E04: a directive not permitted inside a `Match` block (silently ignored
@@ -1082,6 +1110,50 @@ mod e04_tests {
             );
         }
     }
+
+    #[test]
+    fn e04_does_not_fire_on_daemon_honored_deprecated_keywords_in_match() {
+        // #372: AuthorizedKeysFile2, RSAAuthentication, RhostsRSAAuthentication are
+        // recognized-but-deprecated on 8/9/10 and the daemon HONORS them inside a
+        // Match block (`sshd -t -f`: "Deprecated option", rc 0 -- NOT "not allowed
+        // within a Match block"), so E04's "silently ignored at runtime" was a false
+        // positive. Grounded 2026-07-07 on Rocky 8/9/10 (sshd-probe-update capture).
+        for kw in [
+            "AuthorizedKeysFile2",
+            "RSAAuthentication",
+            "RhostsRSAAuthentication",
+        ] {
+            let src = format!("Match User bob\n    {kw} yes\n");
+            for target in [
+                TargetVersion::Rhel8,
+                TargetVersion::Rhel9,
+                TargetVersion::Rhel10,
+            ] {
+                let diags = run_with_target(&src, target);
+                assert!(
+                    diags.is_empty(),
+                    "sshd-E04 must NOT fire on '{kw}' in a Match block ({target:?}): the \
+                     daemon honors it (rc 0, 'Deprecated option'); got {diags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn e04_does_not_fire_on_gssapiindicators_in_match_on_rhel9_rhel10() {
+        // #372: GSSAPIIndicators is a RHEL GSSAPI-patch keyword -- UNKNOWN on rhel8
+        // (the is_known gate already suppresses E04 there) but recognized and
+        // Match-honored on 9.9p1 (rc 0, clean parse). It must not fire E04 on
+        // rhel9/rhel10. Grounded 2026-07-07 on Rocky 9/10 (sshd-probe-update capture).
+        for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+            let diags = run_with_target("Match User bob\n    GSSAPIIndicators yes\n", target);
+            assert!(
+                diags.is_empty(),
+                "sshd-E04 must NOT fire on GSSAPIIndicators in a Match block ({target:?}); \
+                 got {diags:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1094,7 +1166,7 @@ mod e04_set_guard_tests {
     //! `registry.rs` `measured_set_sizes` and `grounded_membership_spot_checks`
     //! tests use for the E01 keyword registry.
     //!
-    //! Grounding: 2026-06-29 snapshot on Rocky 8.10 / 9.8 / 10.2 (OpenSSH
+    //! Grounding: 2026-06-29 snapshot + #372 2026-07-07 additions, Rocky 8.10 / 9.8 / 10.2 (OpenSSH
     //! 8.0p1 / 9.9p1 / 9.9p1). The Match-legality oracle is the daemon's FATAL
     //! MESSAGE for a keyword inside a NON-ACTIVATING Match block: a config file
     //! with `Match User nomatch_zz_user` then `KW yes`, run plain `sshd -t -f
@@ -1128,6 +1200,7 @@ mod e04_set_guard_tests {
         "authorizedkeyscommand",
         "authorizedkeyscommanduser",
         "authorizedkeysfile",
+        "authorizedkeysfile2",
         "authorizedprincipalscommand",
         "authorizedprincipalscommanduser",
         "authorizedprincipalsfile",
@@ -1174,6 +1247,8 @@ mod e04_set_guard_tests {
         "refuseconnection",
         "rekeylimit",
         "revokedkeys",
+        "rhostsrsaauthentication",
+        "rsaauthentication",
         "setenv",
         "streamlocalbindmask",
         "streamlocalbindunlink",
@@ -1189,6 +1264,7 @@ mod e04_set_guard_tests {
     /// 2026-06-29 snapshot.
     const EXPECTED_ADDED_9_9P1: &[&str] = &[
         "challengeresponseauthentication",
+        "gssapiindicators",
         "ignorerhosts",
         "logverbose",
         "requiredrsasize",
@@ -1231,14 +1307,14 @@ mod e04_set_guard_tests {
         // assertions above). E04_PERMITTED_BASE: 65; E04_PERMITTED_ADDED_9_9P1: 7.
         assert_eq!(
             E04_PERMITTED_BASE.len(),
-            65,
-            "E04_PERMITTED_BASE size changed from the 2026-06-29 snapshot (65); \
+            68,
+            "E04_PERMITTED_BASE size changed from the pinned snapshot (68); \
              re-ground on Rocky 8.10/9.8/10.2 and update both the set and this count"
         );
         assert_eq!(
             E04_PERMITTED_ADDED_9_9P1.len(),
-            7,
-            "E04_PERMITTED_ADDED_9_9P1 size changed from the 2026-06-29 snapshot (7); \
+            8,
+            "E04_PERMITTED_ADDED_9_9P1 size changed from the pinned snapshot (8); \
              re-ground on Rocky 8.10/9.8/10.2 and update both the set and this count"
         );
     }
@@ -1285,6 +1361,35 @@ mod e04_set_guard_tests {
                  E04_PERMITTED_ADDED_9_9P1; a base entry is Match-permitted on EVERY \
                  target, which would defeat its rhel8-only restriction"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::{e04_match_permitted, match_permitted_keywords};
+    use crate::lints::TargetVersion;
+
+    #[test]
+    fn match_permitted_keyword_sizes() {
+        assert_eq!(match_permitted_keywords(TargetVersion::Rhel8).len(), 68);
+        assert_eq!(match_permitted_keywords(TargetVersion::Rhel9).len(), 76);
+        assert_eq!(match_permitted_keywords(TargetVersion::Rhel10).len(), 76);
+    }
+
+    #[test]
+    fn every_enumerated_keyword_is_match_permitted_on_its_tier() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            for kw in match_permitted_keywords(target) {
+                assert!(
+                    e04_match_permitted(kw, Some(target)),
+                    "{kw} enumerated but e04_match_permitted=false at {target:?}"
+                );
+            }
         }
     }
 }

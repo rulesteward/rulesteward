@@ -23,6 +23,7 @@ pub use e01::e01;
 pub use e02::e02;
 pub use e03::e03;
 pub use e04::e04;
+pub use e04::match_permitted_keywords;
 pub use w05::w05;
 pub use w07::w07;
 
