@@ -285,22 +285,40 @@ fn check_defaults_scope(
 /// member -- the reserved `ALL` (bare or `!`-negated), a `Cmnd_Alias`-shaped
 /// reference (`[A-Z][A-Z0-9_]*`, delegating to the shared
 /// [`is_alias_ref`](crate::lints::aliases::is_alias_ref) so the two shape
-/// checks never drift apart), or a (`!`-negatable) fully-qualified absolute
-/// path. `is_alias_ref` strips its own leading `!` run and rejects `ALL`
-/// itself, so only the `ALL` and path arms need an explicit strip here.
+/// checks never drift apart), a (`!`-negatable) fully-qualified absolute
+/// path, or one of the two reserved Cmnd-position pseudo-commands `sudoedit`
+/// / `list` (also `!`-negatable). `is_alias_ref` strips its own leading `!`
+/// run and rejects `ALL` itself, so only the `ALL`, path, and
+/// `sudoedit`/`list` arms need an explicit strip here.
+///
+/// `sudoedit`/`list` are matched CASE-SENSITIVELY on the exact lowercase
+/// spelling -- they are not a case-insensitive keyword pair. Grounded
+/// against `visudo -cf` (Rocky Linux 9, sudo 1.9.17p2,
+/// rockylinux/rockylinux:9 image, `dnf install sudo`, 2026-07-08):
+/// `sudoedit` / `list` (lowercase) rc=0 "parsed OK"; `Sudoedit` / `List`
+/// (mixed case) rc=1 "expected a fully-qualified path name". Note
+/// `SUDOEDIT` / `LIST` (all-uppercase) also rc=0, but NOT via a
+/// case-insensitive keyword match -- an all-uppercase bareword happens to
+/// satisfy the pre-existing `is_alias_ref` shape (`[A-Z][A-Z0-9_]*`), so
+/// `visudo -cf` (syntax-only, no semantic "is this alias defined" pass)
+/// accepts it as an alias-shaped reference. No dedicated uppercase handling
+/// is needed here; `is_alias_ref` already covers it.
 ///
 /// Anything else is visudo-rejected in command position: a `#<digits>` token
 /// (tail or pure -- unlike the User/Runas/Host scopes, a PURE digit run is
 /// still invalid here, which is why this is a dedicated predicate and not a
 /// relaxed `is_malformed_gid_tail`), a `%group` / `%#gid` group reference, a
-/// quoted literal, a relative path, a lowercase bareword, a digest-spec
-/// fragment (`sha224:<hex>`) split out of its `sha224:<hex> /path` pairing,
-/// or a lone `!`. All cases grounded locally: `visudo -cf`, Rocky Linux 9,
-/// sudo 1.9.17p2, 2026-07-08 (rockylinux/rockylinux:9 image,
-/// `dnf install sudo`).
+/// quoted literal, a relative path, an ordinary (non-reserved) lowercase
+/// bareword, a digest-spec fragment (`sha224:<hex>`) split out of its
+/// `sha224:<hex> /path` pairing, or a lone `!`. All cases grounded locally:
+/// `visudo -cf`, Rocky Linux 9, sudo 1.9.17p2, 2026-07-08
+/// (rockylinux/rockylinux:9 image, `dnf install sudo`).
 fn is_valid_cmnd_scope_member(member: &str) -> bool {
     let stripped = member.trim_start_matches('!');
-    stripped == "ALL" || stripped.starts_with('/') || is_alias_ref(member)
+    stripped == "ALL"
+        || stripped.starts_with('/')
+        || is_alias_ref(member)
+        || matches!(stripped, "sudoedit" | "list")
 }
 
 /// #424 value-path addendum to [`has_hash_digits`]: `true` when `s` contains a
