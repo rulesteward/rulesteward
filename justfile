@@ -37,6 +37,13 @@ cov:
     cargo llvm-cov report --fail-under-lines 80
     cargo llvm-cov report --package rulesteward-core --package rulesteward-fapolicyd --package rulesteward-selinux --package rulesteward-auditd --package rulesteward-sshd --package rulesteward-sudoers --package rulesteward-sysctld --package rulesteward-cli --fail-under-lines 90
 
+# (#467) Guard against unguarded chmod deny-mode fixtures (from_mode(0o000) /
+# from_mode(0o555)) under crates/**/{src,tests} that lack a CAP_DAC_OVERRIDE
+# marker (or a dac-override-exempt: escape hatch) in the same function - see
+# the "DAC guard" section of CONTRIBUTING.md.
+dac-guard:
+    bash scripts/check-dac-guard.sh
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
