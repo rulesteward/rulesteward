@@ -388,6 +388,82 @@ fn case11_nested_fn_splits_region() {
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# Case 12: round-4 adversarial finding (fail-open, gap-marker-above-code-line
+# - PINNED). The round-3 tail-trim (case10's fix) only removes a CONTIGUOUS
+# trailing run of blank/comment/attribute lines walking backward from the
+# next fn header (or from EOF when there is no next fn). A non-comment code
+# line sitting in the gap between a deny fn's closing brace and the next
+# boundary - a const/use/static/mod/macro-invocation item that is lexically
+# a SIBLING item, not part of either fn's body - stops that backward walk
+# before it reaches a CAP_DAC_OVERRIDE marker comment sitting ABOVE that code
+# line, so the marker is wrongly left inside the (still untrimmed) region and
+# credited to the deny fn's hit -> fail-open (exit 0). All three fixtures
+# below must be flagged as violations (exit 1, message names
+# CAP_DAC_OVERRIDE): interior gap with a trailing const item, interior gap
+# with a trailing use item, and the EOF variant (deny fn is the file's last
+# fn, so there is no next-fn-header boundary at all and the walk starts from
+# EOF instead).
+# ---------------------------------------------------------------------------
+write_fixture "case12/crates/fakecrate12_const_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case12_const_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case12-const-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+// CAP_DAC_OVERRIDE noted here, but a non-comment code line (a const item)
+// sits between this comment and the next fn's own header - the round-3
+// tail-trim only removes a CONTIGUOUS run of blank/comment/attribute lines
+// walking backward from the next fn header, so the const line below stops
+// the walk and this marker survives inside the (wrongly) untrimmed region.
+const SHARED_PATH: &str = "/tmp/x";
+
+#[test]
+fn case12_const_gap_sibling() {
+    assert!(true);
+}
+EOF
+
+write_fixture "case12/crates/fakecrate12_use_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case12_use_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case12-use-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+// CAP_DAC_OVERRIDE noted here, but a non-comment code line (a use item)
+// sits between this comment and the next fn's own header - same fail-open
+// shape as the const-gap variant above, using an import statement instead.
+use std::fs;
+
+#[test]
+fn case12_use_gap_sibling() {
+    assert!(true);
+}
+EOF
+
+write_fixture "case12/crates/fakecrate12_eof_gap/tests/it.rs" <<'EOF'
+#[test]
+fn case12_eof_gap_unguarded() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = std::path::Path::new("/tmp/case12-eof-fixture");
+    std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(true);
+}
+
+// CAP_DAC_OVERRIDE noted here, after this fn's closing brace, at EOF - the
+// round-3 tail-trim walks backward from EOF and stops at the first
+// non-blank/comment/attribute line, which is the trailing const item below,
+// so this marker survives inside the (wrongly) untrimmed region even though
+// there is no following fn at all to anchor a next-header trim.
+const TRAILING: u32 = 1;
+EOF
+
 run_case "case1_unguarded_read_deny" "${TMPROOT}/case1/crates" 1
 assert_mentions_convention "case1_unguarded_read_deny"
 
@@ -421,6 +497,17 @@ done
 
 run_case "case11_nested_fn_splits_region" "${TMPROOT}/case11/crates" 1
 assert_mentions_convention "case11_nested_fn_splits_region"
+
+run_case "case12_gap_marker_above_code_line_excluded" "${TMPROOT}/case12/crates" 1
+assert_mentions_convention "case12_gap_marker_above_code_line_excluded"
+case12_out="${TMPROOT}/case12_gap_marker_above_code_line_excluded.out"
+for variant in const_gap use_gap eof_gap; do
+    if grep -q "${variant}" "${case12_out}" 2>/dev/null; then
+        note_pass "case12_gap_marker_above_code_line_excluded: ${variant} variant flagged as violation"
+    else
+        note_fail "case12_gap_marker_above_code_line_excluded: ${variant} variant NOT flagged (gap marker above a code line wrongly credited to the deny fn)"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Case 7: the real repo tree, invoked with NO arguments (default "crates/"),
