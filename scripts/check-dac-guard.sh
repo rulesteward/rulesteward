@@ -35,13 +35,22 @@
 # scanner records every line in the file that matches a `fn` HEADER regex
 # (line-start, optional whitespace, optional pub(...)/async/unsafe/extern
 # "ABI" modifiers, then a bare `fn` keyword followed by whitespace - see
-# FN_HEADER_RE below). The hit's enclosing region is
+# FN_HEADER_RE below). The hit's enclosing region starts at
 # [nearest preceding fn-header line, next following fn-header line - 1]
 # (or EOF if there is no following fn-header line; or line 1 if the hit
-# precedes every fn-header line in the file). A CAP_DAC_OVERRIDE marker or
+# precedes every fn-header line in the file) and is then TRIMMED from the
+# tail: the region is walked backward from its end line while each line is
+# blank, a line comment (// or ///), or an attribute (#[...] / #![...]),
+# stopping at the first line that is none of those (typically the region's
+# own closing brace). That trim removes the NEXT fn's lead-in (its doc
+# comment / attributes / a freestanding comment above its own header) from
+# the region, so a marker sitting only in that lead-in gap is not credited
+# to this fn's hit (#467 case10 in scripts/check-dac-guard-test.sh) - the
+# region is effectively [nearest preceding fn-header line, last real code
+# line before the next fn's lead-in]. A CAP_DAC_OVERRIDE marker or
 # dac-override-exempt hatch is credited only if it falls inside that
-# region. This never inspects string or comment contents to find the
-# region boundaries, so it is immune by construction to raw string
+# trimmed region. This never inspects string or comment contents to find
+# the region boundaries, so it is immune by construction to raw string
 # literals (r#"..."#), ordinary string literals, and char-literal braces
 # desyncing detection - unlike a brace-counting scanner, which a raw
 # string with an odd interior double-quote count can desync for the rest
@@ -52,11 +61,17 @@
 # is a silent-fail-open risk the way the old brace desync was - a nested
 # fn item narrows the guard-search region rather than widening it past a
 # real violation):
-#   - A `fn` item NESTED inside another fn's body counts as its own
-#     region boundary, splitting the outer fn's body into two regions at
-#     that point. A guard placed on the far side of a nested fn from its
-#     from_mode(...) call would not be credited even though both are
-#     lexically inside the same outer fn.
+#   - PINNED CONTRACT: a `fn` item NESTED inside another fn's body counts
+#     as its own region boundary, splitting the outer fn's body into two
+#     regions at that point. A guard placed on the far side of a nested fn
+#     from its from_mode(...) call is deliberately NOT credited, even
+#     though both are lexically inside the same outer fn (#467 case11).
+#     This is intentionally over-strict rather than fixed to match: it can
+#     force a spurious guard requirement but can never hide a real
+#     violation, which is the opposite failure mode from the gap-marker
+#     case the tail-trim above fixes. The remedy for a real guard in this
+#     shape is to place the CAP_DAC_OVERRIDE marker before the nested item,
+#     or to use the dac-override-exempt: hatch instead.
 #   - A line that starts with (optional whitespace then) literal `fn `
 #     text embedded inside a multi-line string literal is indistinguishable
 #     from a real fn header and would false-anchor a region boundary.
@@ -109,6 +124,19 @@ END {
                 wend = fnline[f] - 1
                 break
             }
+        }
+        # Trim the region tail: a region ending at (next fn header - 1)
+        # includes that next fn's lead-in (its doc comment, attributes,
+        # and/or a freestanding line comment, plus any blank separator
+        # lines) - that lead-in belongs to the SIBLING fn, not to this
+        # region, so a marker sitting there must not be credited to this
+        # hit. Walk backward from wend while the line is blank, a line
+        # comment (// or /// - both match the // prefix), or an attribute
+        # (#[...] or #![...]); stop at the first line that is none of
+        # those (typically the region's own closing brace). Bounded at
+        # wstart so the fn header line itself is never trimmed away.
+        while (wend > wstart && (raw[wend] ~ /^[[:space:]]*$/ || raw[wend] ~ /^[[:space:]]*\/\// || raw[wend] ~ /^[[:space:]]*#!?\[/)) {
+            wend--
         }
         guarded = 0
         for (ln = wstart; ln <= wend; ln++) {

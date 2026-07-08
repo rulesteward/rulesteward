@@ -88,6 +88,14 @@ a `CAP_DAC_OVERRIDE` marker:
 Run `just dac-guard` locally to check before pushing (the local equivalent
 of the `bash scripts/check-dac-guard.sh` step CI's lint job runs).
 
+The gate's per-function scoping is deliberately fail-closed around nested
+`fn` items: a `fn` declared inside another fn's body splits the outer fn
+into two search regions at that point, so a `CAP_DAC_OVERRIDE` marker
+placed after a nested `fn` is not credited to a `from_mode(...)` call
+before it even though both are lexically inside the same outer fn - place
+the marker before the nested item (or use the `dac-override-exempt:`
+hatch) if you hit this shape.
+
 ## Commit authorship
 
 All commits are user-authored. Do not add `Co-Authored-By: Claude` or
