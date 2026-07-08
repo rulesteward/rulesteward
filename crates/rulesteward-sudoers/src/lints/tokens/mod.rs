@@ -1786,6 +1786,168 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // #451 round-3 adversarial MISS A (impl-aware review, 2026-07-08): a
+    // DOUBLE-QUOTED `"list"` Cmnd-scope member is a distinct visudo grammar
+    // quirk, not covered by the quoted-literal case above
+    // (`f02_defaults_cmnd_scope_quoted_non_path_member_fires`, `"foo"`).
+    // `split_default_settings` uses quotes only to protect an interior comma
+    // from the top-level split -- it does NOT strip them -- so a quoted
+    // member reaches `is_valid_cmnd_scope_member` WITH its quotes still
+    // attached, and the literal string `"list"` (quotes included) matches
+    // none of the existing arms. But visudo accepts `Defaults!"list"` (rc=0)
+    // even though it rejects every OTHER quoted reserved word or path
+    // (`Defaults!"sudoedit"`, `Defaults!"ALL"`, `Defaults!"/bin/ls"`, all
+    // rc=1) -- a `list`-specific grammar quirk, not a general "quotes are
+    // unwrapped" rule. All five cases in this block grounded locally:
+    // `visudo -cf`, Rocky Linux 9, sudo 1.9.17p2, 2026-07-08
+    // (rockylinux/rockylinux:9 image, `dnf install sudo`).
+    // -----------------------------------------------------------------------
+
+    /// `Defaults!"list" env_reset` -- quoted `list` as the SOLE Cmnd-scope
+    /// target. Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_quoted_list_sole_member_no_f02() {
+        let d = f02s("Defaults!\"list\" env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!\"list\"` is a visudo grammar quirk, valid (rc=0) -- \
+             must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls,"list" env_reset` -- quoted `list` as the SECOND
+    /// member of a comma list. Oracle: `visudo -cf` rc=0, "parsed OK". Must
+    /// NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_quoted_list_list_member_no_f02() {
+        let d = f02s("Defaults!/bin/ls,\"list\" env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,\"list\"` is valid (rc=0) -- must NOT fire; \
+             got {d:?}"
+        );
+    }
+
+    /// `Defaults!"sudoedit" env_reset` -- quoted `sudoedit`, a BOUNDING
+    /// CONTROL that pins the fix to the `list`-specific quirk and not to a
+    /// general "unwrap quotes" widening. Oracle: `visudo -cf` rc=1,
+    /// "expected a fully-qualified path name". Must still fire exactly one
+    /// Fatal `sudo-F02`.
+    #[test]
+    fn f02_defaults_cmnd_scope_quoted_sudoedit_sole_member_fires() {
+        let d = f02s("Defaults!\"sudoedit\" env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!\"sudoedit\"` (rc=1) must still fire exactly one F02 \
+             -- quoting does NOT exempt `sudoedit`; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `Defaults!"ALL" env_reset` -- quoted `ALL`, a second bounding control.
+    /// Oracle: `visudo -cf` rc=1, "expected a fully-qualified path name".
+    /// Must still fire exactly one Fatal `sudo-F02`.
+    #[test]
+    fn f02_defaults_cmnd_scope_quoted_all_sole_member_fires() {
+        let d = f02s("Defaults!\"ALL\" env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!\"ALL\"` (rc=1) must still fire exactly one F02 -- \
+             quoting does NOT exempt `ALL`; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    /// `Defaults!"/bin/ls" env_reset` -- quoted absolute path, a third
+    /// bounding control. Oracle: `visudo -cf` rc=1, "expected a
+    /// fully-qualified path name". Must still fire exactly one Fatal
+    /// `sudo-F02`.
+    #[test]
+    fn f02_defaults_cmnd_scope_quoted_path_sole_member_fires() {
+        let d = f02s("Defaults!\"/bin/ls\" env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!\"/bin/ls\"` (rc=1) must still fire exactly one F02 \
+             -- quoting does NOT exempt an absolute path; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+    }
+
+    // -----------------------------------------------------------------------
+    // #451 round-3 adversarial MISS B (impl-aware review, 2026-07-08): a bare
+    // `/` Cmnd-scope member passes the naive `starts_with('/')` arm, but
+    // visudo requires a FULLY-QUALIFIED path name -- a lone `/` names the
+    // root directory, not a command, and is rejected. Contrast `/.`, which
+    // IS a fully-qualified path name (however unusual) and stays valid.
+    // Grounded locally: `visudo -cf`, Rocky Linux 9, sudo 1.9.17p2,
+    // 2026-07-08 (rockylinux/rockylinux:9 image, `dnf install sudo`).
+    // -----------------------------------------------------------------------
+
+    /// `Defaults!/ env_reset` -- a bare `/` as the SOLE Cmnd-scope target.
+    /// Oracle: `visudo -cf` rc=1, "expected a fully-qualified path name" at
+    /// `/`. Must fire exactly one Fatal `sudo-F02` naming the `/` member.
+    #[test]
+    fn f02_defaults_cmnd_scope_bare_slash_sole_member_fires() {
+        let d = f02s("Defaults!/ env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!/` (rc=1) must fire exactly one F02 -- a lone `/` is \
+             not a fully-qualified path name; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            d[0].message.contains("\"/\""),
+            "the F02 must name the offending `/` member; got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults!/bin/ls,/ env_reset` -- a bare `/` as the SECOND member of a
+    /// comma list. Oracle: `visudo -cf` rc=1, "expected a fully-qualified
+    /// path name" at `/`. Must fire exactly one Fatal `sudo-F02` naming the
+    /// `/` member (not the whole raw binding, which contains the valid
+    /// `/bin/ls`).
+    #[test]
+    fn f02_defaults_cmnd_scope_bare_slash_list_member_fires() {
+        let d = f02s("Defaults!/bin/ls,/ env_reset");
+        assert_eq!(
+            d.len(),
+            1,
+            "`Defaults!/bin/ls,/` (rc=1) must fire exactly one F02 -- a \
+             lone `/` member is not a fully-qualified path name; got {d:?}"
+        );
+        assert_eq!(d[0].severity, rulesteward_core::Severity::Fatal);
+        assert!(
+            d[0].message.contains("\"/\""),
+            "the F02 must name the offending `/` member; got {:?}",
+            d[0].message
+        );
+        assert!(
+            !d[0].message.contains("/bin/ls,/\""),
+            "the F02 must name ONLY the bad member, not the whole raw \
+             binding (which contains the valid `/bin/ls`); got {:?}",
+            d[0].message
+        );
+    }
+
+    /// `Defaults!/. env_reset` -- `/.`, the BOUNDING CONTROL that pins the
+    /// bare-`/` fix to the degenerate single-slash case only. Oracle: `visudo
+    /// -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_slash_dot_sole_member_no_f02() {
+        let d = f02s("Defaults!/. env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/.` is a valid fully-qualified path name (rc=0) -- \
+             must NOT fire; got {d:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // #407 round-3 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
     // -----------------------------------------------------------------------
