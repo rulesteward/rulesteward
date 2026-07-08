@@ -195,6 +195,23 @@ pub fn is_known_any(keyword_lower: &str) -> bool {
     is_known(keyword_lower, TargetVersion::Rhel10)
 }
 
+/// The full set of recognized `sshd_config` keywords for `target`, enumerated
+/// rather than membership-tested. Backs the out-of-tree `sshd-probe-update` drift
+/// tool, which diffs this shipped registry against a live daemon probe. The
+/// per-version sets nest, so this unions each tier's additions into the ones below
+/// it (119 / 138 / 139 for RHEL 8 / 9 / 10). Order is unspecified.
+#[must_use]
+pub fn known_keywords(target: TargetVersion) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = RHEL8_BASE.to_vec();
+    if matches!(target, TargetVersion::Rhel9 | TargetVersion::Rhel10) {
+        out.extend_from_slice(ADDED_RHEL9);
+    }
+    if matches!(target, TargetVersion::Rhel10) {
+        out.extend_from_slice(ADDED_RHEL10);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ADDED_RHEL9, ADDED_RHEL10, RHEL8_BASE, is_known, is_known_any};
@@ -318,5 +335,43 @@ mod tests {
             "RHEL 9+ RSAMinSize (binary-only keyword)"
         );
         assert_eq!(ADDED_RHEL10, &["gssapidelegatecredentials"]);
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::{is_known, known_keywords};
+    use crate::lints::TargetVersion;
+
+    #[test]
+    fn known_keywords_sizes_match_measured_sets() {
+        assert_eq!(known_keywords(TargetVersion::Rhel8).len(), 119);
+        assert_eq!(known_keywords(TargetVersion::Rhel9).len(), 138);
+        assert_eq!(known_keywords(TargetVersion::Rhel10).len(), 139);
+    }
+
+    #[test]
+    fn every_enumerated_keyword_is_known_on_its_tier() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            for kw in known_keywords(target) {
+                assert!(
+                    is_known(kw, target),
+                    "{kw} enumerated but is_known=false at {target:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn known_keyword_sets_nest_across_versions() {
+        let r8 = known_keywords(TargetVersion::Rhel8);
+        let r9 = known_keywords(TargetVersion::Rhel9);
+        let r10 = known_keywords(TargetVersion::Rhel10);
+        assert!(r8.iter().all(|k| r9.contains(k)), "rhel8 subset of rhel9");
+        assert!(r9.iter().all(|k| r10.contains(k)), "rhel9 subset of rhel10");
     }
 }

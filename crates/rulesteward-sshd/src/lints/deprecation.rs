@@ -26,10 +26,19 @@ use crate::lints::{SshdLintContext, TargetVersion, anchored};
 /// version-SPLIT keyword `skeyauthentication` (deprecated on 8.0p1 but a
 /// recognized non-deprecated legacy keyword on 9.9p1) is NOT here; it is gated on
 /// the target in [`w04`]. Lowercased and sorted for `binary_search`.
+///
+/// #372 (2026-07-07): a FULL-registry `sshd-probe-update` probe (vs FINDING 2's
+/// 31-keyword boundary probe) found three more version-uniform `Deprecated option`
+/// keywords the set missed: `authorizedkeysfile2`, `checkmail`,
+/// `pamauthenticationviakbdint`. (`authorizedkeysfile2` is also Match-honored, so it
+/// is likewise in the E04 permitted set.)
 const DEPRECATED_KEYWORDS: &[&str] = &[
+    "authorizedkeysfile2",
     "challengeresponseauthentication",
+    "checkmail",
     "hostbasedacceptedkeytypes",
     "keyregenerationinterval",
+    "pamauthenticationviakbdint",
     "protocol",
     "pubkeyacceptedkeytypes",
     "reversemappingcheck",
@@ -51,6 +60,20 @@ const DEPRECATED_KEYWORDS: &[&str] = &[
 /// Source: depth-sshd-sets.md FINDING 2 (DEPRECATED rocky8; ACCEPTED rocky9/10).
 fn skey_is_deprecated(target: Option<TargetVersion>) -> bool {
     !matches!(target, Some(TargetVersion::Rhel9 | TargetVersion::Rhel10))
+}
+
+/// The full set of deprecated `sshd_config` keywords sshd-W04 fires for `target`,
+/// enumerated for the out-of-tree `sshd-probe-update` drift tool. The
+/// version-uniform [`DEPRECATED_KEYWORDS`] plus `skeyauthentication` when it is
+/// deprecated for `target` (see [`skey_is_deprecated`]): 17 on rhel8, 16 on
+/// rhel9/rhel10. Order is unspecified.
+#[must_use]
+pub fn deprecated_keywords(target: TargetVersion) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = DEPRECATED_KEYWORDS.to_vec();
+    if skey_is_deprecated(Some(target)) {
+        out.push("skeyauthentication");
+    }
+    out
 }
 
 /// sshd-W04: a directive deprecated or removed in the target OpenSSH version.
@@ -549,6 +572,89 @@ GSSAPIAuthentication no\n\
         );
     }
 
+    // --- #372: 3 more missed deprecated keywords (full-registry probe) ---
+    //
+    // sshd-probe-update capture 2026-07-07 (oracle: `sshd -t -o "<kw>=yes"` on Rocky
+    // 8/9/10, "Deprecated option <X>"): a FULL-registry probe (vs the earlier
+    // 31-keyword boundary probe of FINDING 2) found three more recognized-but-
+    // deprecated keywords the W04 set missed. All three are in RHEL8_BASE (registry-
+    // known on every version) and version-uniform, so W04 must warn on every target.
+    //   - checkmail                  DEPRECATED on rhel8/9/10
+    //   - authorizedkeysfile2        DEPRECATED on rhel8/9/10 (also E04-honored-in-Match)
+    //   - pamauthenticationviakbdint DEPRECATED on rhel8/9/10
+
+    #[test]
+    fn checkmail_fires_w04_on_every_target() {
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("CheckMail yes\n", t),
+                None => run("CheckMail yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "CheckMail is deprecated on all versions -> one W04 for target {target:?}; \
+                 got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+            assert_eq!(diags[0].severity, Severity::Warning);
+        }
+    }
+
+    #[test]
+    fn authorizedkeysfile2_fires_w04_on_every_target() {
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("AuthorizedKeysFile2 yes\n", t),
+                None => run("AuthorizedKeysFile2 yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "AuthorizedKeysFile2 is deprecated on all versions -> one W04 for target \
+                 {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+            assert_eq!(diags[0].severity, Severity::Warning);
+        }
+    }
+
+    #[test]
+    fn pamauthenticationviakbdint_fires_w04_on_every_target() {
+        let contexts = [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ];
+        for target in contexts {
+            let diags = match target {
+                Some(t) => run_with_target("PAMAuthenticationViaKBDInt yes\n", t),
+                None => run("PAMAuthenticationViaKBDInt yes\n"),
+            };
+            assert_eq!(
+                diags.len(),
+                1,
+                "PAMAuthenticationViaKBDInt is deprecated on all versions -> one W04 for \
+                 target {target:?}; got {diags:?}"
+            );
+            assert_eq!(diags[0].code, "sshd-W04");
+            assert_eq!(diags[0].severity, Severity::Warning);
+        }
+    }
+
     // --- #267 / FINDING 2: 4 missed deprecated keywords ---
     //
     // depth-sshd-sets.md FINDING 2 (oracle: `sudo sshd -t -o "<kw>=yes"` on Rocky
@@ -753,6 +859,44 @@ GSSAPIAuthentication no\n\
                 "SKeyAuthentication is a recognized legacy keyword -> must NOT fire \
                  E01 ({ctx:?})"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::{DEPRECATED_KEYWORDS, deprecated_keywords};
+    use crate::lints::TargetVersion;
+
+    #[test]
+    fn deprecated_keyword_sizes_and_skey_version_split() {
+        assert_eq!(deprecated_keywords(TargetVersion::Rhel8).len(), 17);
+        assert_eq!(deprecated_keywords(TargetVersion::Rhel9).len(), 16);
+        assert_eq!(deprecated_keywords(TargetVersion::Rhel10).len(), 16);
+        assert!(
+            deprecated_keywords(TargetVersion::Rhel8).contains(&"skeyauthentication"),
+            "skeyauthentication is deprecated on rhel8"
+        );
+        assert!(
+            !deprecated_keywords(TargetVersion::Rhel9).contains(&"skeyauthentication"),
+            "skeyauthentication is accepted (not deprecated) on rhel9"
+        );
+    }
+
+    #[test]
+    fn deprecated_keywords_superset_of_uniform_table() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            let set = deprecated_keywords(target);
+            for kw in DEPRECATED_KEYWORDS {
+                assert!(
+                    set.contains(kw),
+                    "{kw} missing from deprecated_keywords({target:?})"
+                );
+            }
         }
     }
 }

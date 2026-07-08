@@ -1,0 +1,109 @@
+name: sshd-probe-drift
+
+# Weekly nudge for the sshd E01/E04/W04 lint tables (issue #372): probe a REAL sshd
+# binary LIVE (build the Rocky 8/9/10 + openssh-server images and run `sshd -t`) and
+# compare against the shipped tables. On drift, open/update a tracking issue (it never
+# edits code). The on-demand path is `just diff-sshd`.
+#
+# Unlike the offline PR gate (sshd-probe-check.yml, which replays committed fixtures),
+# this job rebuilds the images from tools/sshd-probe-update/dockerfiles/ so it tracks
+# the CURRENT Rocky base images. It therefore catches:
+#   - an upstream OpenSSH change pulled into a RHEL base image (a keyword recognized /
+#     deprecated / Match-legality flipped),
+#   - the committed probe fixtures having themselves drifted from the live daemon,
+#   - the tool no longer compiling against the rulesteward-sshd public API (fail-closed).
+# It probes only what the shipped registry knows plus a bogus sentinel (verify-only);
+# the issue body reminds a human that brand-new upstream keywords need a manual look.
+on:
+  schedule:
+    - cron: "0 8 * * 3" # Wednesdays 08:00 UTC (offset from Mon sysctld / Tue sshd-stig drift runs)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: sshd E01/E04/W04 drift vs live Rocky sshd daemons
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/sshd-probe-update
+      - name: Build the Rocky + openssh probe images
+        # A build failure here (e.g. a Rocky repo hiccup) fails the job distinctly from
+        # a drift; the tool's probe.rs invokes `docker run sshd-probe{8,9,10}` itself.
+        run: |
+          set -euo pipefail
+          for v in 8 9 10; do
+            docker build -t "sshd-probe${v}" "tools/sshd-probe-update/dockerfiles/${v}"
+          done
+      - name: Live probe + drift check vs the shipped tables
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- check \
+            > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/docker
+          # error, 101 = a `cargo run` compile failure if this out-of-workspace tool
+          # drifts from the rulesteward-sshd public API, etc.) = fail the job loudly.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "sshd-probe-update did not exit cleanly (rc=$RC; see logs above): docker" \
+               "may be unavailable, a Rocky image may have failed to build or run, or the" \
+               "tool may no longer compile against the rulesteward-sshd API." \
+               "The tool needs a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create sshd-probe-drift --color FBCA04 \
+            --description "sshd E01/E04/W04 daemon-probe drift" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`sshd-probe-update check\` found the shipped sshd E01/E04/W04 lint"
+            echo "tables no longer match what a live Rocky sshd daemon does."
+            echo
+            echo "To update: run \`just sshd-probe-derive <product>\`, review the diff, reconcile"
+            echo "the shipped tables (\`crates/rulesteward-sshd/src/lints/registry.rs\` for E01,"
+            echo "\`.../structural/e04.rs\` for E04, \`.../deprecation.rs\` for W04) + their golden"
+            echo "guards, refresh the committed \`tools/sshd-probe-update/tests/fixtures/\`, re-gate"
+            echo "(adversarial + mutation), and confirm \`just diff-sshd\` reports 0 drift."
+            echo
+            echo "NOTE: this run probes only keywords the shipped registry already knows (plus a"
+            echo "bogus sentinel). A brand-new upstream OpenSSH keyword will NOT appear here; on a"
+            echo "RHEL-major OpenSSH bump, re-ground the registry on the VMs (see registry.rs)."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label sshd-probe-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "sshd E01/E04/W04 drift: live daemon has changes" \
+              --label sshd-probe-drift --body-file issue-body.md
+          fi

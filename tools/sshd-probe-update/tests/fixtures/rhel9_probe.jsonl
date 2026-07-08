@@ -1,0 +1,278 @@
+{"kw": "acceptenv", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "acceptenv", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "addressfamily", "probe": "opt", "rc": 255, "stderr": "command-line line 0: unsupported option \"yes\"."}
+{"kw": "addressfamily", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'addressfamily' is not allowed within a Match block"}
+{"kw": "afstokenpassing", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Unsupported option afstokenpassing"}
+{"kw": "afstokenpassing", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'afstokenpassing' is not allowed within a Match block"}
+{"kw": "allowagentforwarding", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "allowagentforwarding", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "allowgroups", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "allowgroups", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "allowstreamlocalforwarding", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "allowstreamlocalforwarding", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "allowtcpforwarding", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "allowtcpforwarding", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "allowusers", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "allowusers", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "authenticationmethods", "probe": "opt", "rc": 255, "stderr": "Unknown authentication method \"yes\" in list command-line line 0: invalid authenticationmethods method list."}
+{"kw": "authenticationmethods", "probe": "match", "rc": 255, "stderr": "Unknown authentication method \"yes\" in list /tmp/rs_probe_match.conf line 2: invalid authenticationmethods method list."}
+{"kw": "authorizedkeyscommand", "probe": "opt", "rc": 255, "stderr": "command-line line 0: authorizedkeyscommand must be an absolute path"}
+{"kw": "authorizedkeyscommand", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: authorizedkeyscommand must be an absolute path"}
+{"kw": "authorizedkeyscommanduser", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "authorizedkeyscommanduser", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "authorizedkeysfile", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "authorizedkeysfile", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "authorizedkeysfile2", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option authorizedkeysfile2"}
+{"kw": "authorizedkeysfile2", "probe": "match", "rc": 0, "stderr": "/tmp/rs_probe_match.conf line 2: Deprecated option authorizedkeysfile2"}
+{"kw": "authorizedprincipalscommand", "probe": "opt", "rc": 255, "stderr": "command-line line 0: authorizedprincipalscommand must be an absolute path"}
+{"kw": "authorizedprincipalscommand", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: authorizedprincipalscommand must be an absolute path"}
+{"kw": "authorizedprincipalscommanduser", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "authorizedprincipalscommanduser", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "authorizedprincipalsfile", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "authorizedprincipalsfile", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "banner", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "banner", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "canonicalmatchuser", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "canonicalmatchuser", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'canonicalmatchuser' is not allowed within a Match block"}
+{"kw": "casignaturealgorithms", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "casignaturealgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad key types 'yes'."}
+{"kw": "challengeresponseauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "challengeresponseauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "channeltimeout", "probe": "opt", "rc": 255, "stderr": "command-line line 0: invalid channel timeout yes"}
+{"kw": "channeltimeout", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: invalid channel timeout yes"}
+{"kw": "checkmail", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option checkmail"}
+{"kw": "checkmail", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'checkmail' is not allowed within a Match block"}
+{"kw": "chrootdirectory", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "chrootdirectory", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "ciphers", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad SSH2 cipher spec 'yes'."}
+{"kw": "ciphers", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'ciphers' is not allowed within a Match block"}
+{"kw": "clientalivecountmax", "probe": "opt", "rc": 255, "stderr": "command-line line 0: clientalivecountmax integer value invalid."}
+{"kw": "clientalivecountmax", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: clientalivecountmax integer value invalid."}
+{"kw": "clientaliveinterval", "probe": "opt", "rc": 255, "stderr": "command-line line 0: invalid time value."}
+{"kw": "clientaliveinterval", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: invalid time value."}
+{"kw": "compression", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "compression", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'compression' is not allowed within a Match block"}
+{"kw": "denygroups", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "denygroups", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "denyusers", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "denyusers", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "disableforwarding", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "disableforwarding", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "dsaauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "dsaauthentication", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'dsaauthentication' is not allowed within a Match block"}
+{"kw": "exposeauthinfo", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "exposeauthinfo", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "fingerprinthash", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Invalid fingerprinthash algorithm \"yes\"."}
+{"kw": "fingerprinthash", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'fingerprinthash' is not allowed within a Match block"}
+{"kw": "forcecommand", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "forcecommand", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "gatewayports", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gatewayports", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "gssapiauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapiauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "gssapicleanupcredentials", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapicleanupcredentials", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapicleanupcredentials' is not allowed within a Match block"}
+{"kw": "gssapicleanupcreds", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapicleanupcreds", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapicleanupcreds' is not allowed within a Match block"}
+{"kw": "gssapienablek5users", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapienablek5users", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "gssapiindicators", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapiindicators", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "gssapikexalgorithms", "probe": "opt", "rc": 255, "stderr": "Unsupported KEX algorithm \"yes\" command-line line 0: Bad GSSAPI KexAlgorithms 'yes'."}
+{"kw": "gssapikexalgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapikexalgorithms' is not allowed within a Match block"}
+{"kw": "gssapikeyexchange", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapikeyexchange", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapikeyexchange' is not allowed within a Match block"}
+{"kw": "gssapistorecredentialsonrekey", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapistorecredentialsonrekey", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapistorecredentialsonrekey' is not allowed within a Match block"}
+{"kw": "gssapistrictacceptorcheck", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "gssapistrictacceptorcheck", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapistrictacceptorcheck' is not allowed within a Match block"}
+{"kw": "gssapiusesessioncredcache", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Unsupported option gssapiusesessioncredcache"}
+{"kw": "gssapiusesessioncredcache", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssapiusesessioncredcache' is not allowed within a Match block"}
+{"kw": "gssusesessionccache", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Unsupported option gssusesessionccache"}
+{"kw": "gssusesessionccache", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'gssusesessionccache' is not allowed within a Match block"}
+{"kw": "hostbasedacceptedalgorithms", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "hostbasedacceptedalgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad key types 'yes'."}
+{"kw": "hostbasedacceptedkeytypes", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "hostbasedacceptedkeytypes", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad key types 'yes'."}
+{"kw": "hostbasedauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "hostbasedauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "hostbasedusesnamefrompacketonly", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "hostbasedusesnamefrompacketonly", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "hostcertificate", "probe": "opt", "rc": 0, "stderr": "Could not load host certificate \"//yes\": No such file or directory"}
+{"kw": "hostcertificate", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'hostcertificate' is not allowed within a Match block"}
+{"kw": "hostdsakey", "probe": "opt", "rc": 1, "stderr": "Unable to load host key: //yes sshd: no hostkeys available -- exiting."}
+{"kw": "hostdsakey", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'hostdsakey' is not allowed within a Match block"}
+{"kw": "hostkey", "probe": "opt", "rc": 1, "stderr": "Unable to load host key: //yes sshd: no hostkeys available -- exiting."}
+{"kw": "hostkey", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'hostkey' is not allowed within a Match block"}
+{"kw": "hostkeyagent", "probe": "opt", "rc": 0, "stderr": "Could not connect to agent \"//yes\": No such file or directory"}
+{"kw": "hostkeyagent", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'hostkeyagent' is not allowed within a Match block"}
+{"kw": "hostkeyalgorithms", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "hostkeyalgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'hostkeyalgorithms' is not allowed within a Match block"}
+{"kw": "ignorerhosts", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "ignorerhosts", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "ignoreuserknownhosts", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "ignoreuserknownhosts", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'ignoreuserknownhosts' is not allowed within a Match block"}
+{"kw": "include", "probe": "opt", "rc": 255, "stderr": "Include directive not supported as a command-line option"}
+{"kw": "include", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "ipqos", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad ipqos value: yes"}
+{"kw": "ipqos", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad ipqos value: yes"}
+{"kw": "kbdinteractiveauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kbdinteractiveauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "keepalive", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "keepalive", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'keepalive' is not allowed within a Match block"}
+{"kw": "kerberosauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kerberosauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "kerberosgetafstoken", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Unsupported option kerberosgetafstoken"}
+{"kw": "kerberosgetafstoken", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kerberosgetafstoken' is not allowed within a Match block"}
+{"kw": "kerberosorlocalpasswd", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kerberosorlocalpasswd", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kerberosorlocalpasswd' is not allowed within a Match block"}
+{"kw": "kerberostgtpassing", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Unsupported option kerberostgtpassing"}
+{"kw": "kerberostgtpassing", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kerberostgtpassing' is not allowed within a Match block"}
+{"kw": "kerberosticketcleanup", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kerberosticketcleanup", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kerberosticketcleanup' is not allowed within a Match block"}
+{"kw": "kerberosuniqueccache", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kerberosuniqueccache", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kerberosuniqueccache' is not allowed within a Match block"}
+{"kw": "kerberosusekuserok", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "kerberosusekuserok", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "kexalgorithms", "probe": "opt", "rc": 255, "stderr": "Unsupported KEX algorithm \"yes\" command-line line 0: Bad SSH2 KexAlgorithms 'yes'."}
+{"kw": "kexalgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'kexalgorithms' is not allowed within a Match block"}
+{"kw": "keyregenerationinterval", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option keyregenerationinterval"}
+{"kw": "keyregenerationinterval", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'keyregenerationinterval' is not allowed within a Match block"}
+{"kw": "listenaddress", "probe": "opt", "rc": 255, "stderr": "bad addr or host: yes (Name or service not known)"}
+{"kw": "listenaddress", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'listenaddress' is not allowed within a Match block"}
+{"kw": "logingracetime", "probe": "opt", "rc": 255, "stderr": "command-line line 0: invalid time value."}
+{"kw": "logingracetime", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'logingracetime' is not allowed within a Match block"}
+{"kw": "loglevel", "probe": "opt", "rc": 255, "stderr": "command-line line 0: unsupported log level 'yes'"}
+{"kw": "loglevel", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: unsupported log level 'yes'"}
+{"kw": "logverbose", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "logverbose", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "macs", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad SSH2 mac spec 'yes'."}
+{"kw": "macs", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'macs' is not allowed within a Match block"}
+{"kw": "match", "probe": "opt", "rc": 255, "stderr": "Match directive not supported as a command-line option"}
+{"kw": "match", "probe": "match", "rc": 255, "stderr": "Missing Match criteria for yes /tmp/rs_probe_match.conf line 2: Bad Match condition"}
+{"kw": "maxauthtries", "probe": "opt", "rc": 255, "stderr": "command-line line 0: maxauthtries integer value invalid."}
+{"kw": "maxauthtries", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: maxauthtries integer value invalid."}
+{"kw": "maxsessions", "probe": "opt", "rc": 255, "stderr": "command-line line 0: maxsessions integer value invalid."}
+{"kw": "maxsessions", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: maxsessions integer value invalid."}
+{"kw": "maxstartups", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Invalid maxstartups spec."}
+{"kw": "maxstartups", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'maxstartups' is not allowed within a Match block"}
+{"kw": "modulifile", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "modulifile", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'modulifile' is not allowed within a Match block"}
+{"kw": "pamauthenticationviakbdint", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option pamauthenticationviakbdint"}
+{"kw": "pamauthenticationviakbdint", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'pamauthenticationviakbdint' is not allowed within a Match block"}
+{"kw": "pamservicename", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "pamservicename", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "passwordauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "passwordauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "permitemptypasswords", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permitemptypasswords", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "permitlisten", "probe": "opt", "rc": 255, "stderr": "command-line line 0: permitlisten bad port number"}
+{"kw": "permitlisten", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: permitlisten bad port number"}
+{"kw": "permitopen", "probe": "opt", "rc": 255, "stderr": "command-line line 0: permitopen bad port number"}
+{"kw": "permitopen", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: permitopen bad port number"}
+{"kw": "permitrootlogin", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permitrootlogin", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "permittty", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permittty", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "permittunnel", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permittunnel", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "permituserenvironment", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permituserenvironment", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'permituserenvironment' is not allowed within a Match block"}
+{"kw": "permituserrc", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "permituserrc", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "persourcemaxstartups", "probe": "opt", "rc": 255, "stderr": "command-line line 0: persourcemaxstartups integer value invalid."}
+{"kw": "persourcemaxstartups", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'persourcemaxstartups' is not allowed within a Match block"}
+{"kw": "persourcenetblocksize", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Invalid persourcenetblocksize spec."}
+{"kw": "persourcenetblocksize", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'persourcenetblocksize' is not allowed within a Match block"}
+{"kw": "persourcepenalties", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "persourcepenalties", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'persourcepenalties' is not allowed within a Match block"}
+{"kw": "persourcepenaltyexemptlist", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "persourcepenaltyexemptlist", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'persourcepenaltyexemptlist' is not allowed within a Match block"}
+{"kw": "pidfile", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "pidfile", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'pidfile' is not allowed within a Match block"}
+{"kw": "port", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Badly formatted port number."}
+{"kw": "port", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'port' is not allowed within a Match block"}
+{"kw": "printlastlog", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "printlastlog", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'printlastlog' is not allowed within a Match block"}
+{"kw": "printmotd", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "printmotd", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'printmotd' is not allowed within a Match block"}
+{"kw": "protocol", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "protocol", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'protocol' is not allowed within a Match block"}
+{"kw": "pubkeyacceptedalgorithms", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "pubkeyacceptedalgorithms", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad key types 'yes'."}
+{"kw": "pubkeyacceptedkeytypes", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad key types 'yes'."}
+{"kw": "pubkeyacceptedkeytypes", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad key types 'yes'."}
+{"kw": "pubkeyauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "pubkeyauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "pubkeyauthoptions", "probe": "opt", "rc": 1, "stderr": "command-line line 0: unsupported pubkeyauthoptions option yes"}
+{"kw": "pubkeyauthoptions", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: unsupported pubkeyauthoptions option yes /tmp/rs_probe_match.conf: terminating, 1 bad configuration options"}
+{"kw": "rdomain", "probe": "opt", "rc": 255, "stderr": "command-line line 0: setting RDomain not supported on this platform."}
+{"kw": "rdomain", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: setting RDomain not supported on this platform."}
+{"kw": "refuseconnection", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "refuseconnection", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "rekeylimit", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Bad rekeylimit number 'yes': Invalid argument"}
+{"kw": "rekeylimit", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Bad rekeylimit number 'yes': Invalid argument"}
+{"kw": "requiredrsasize", "probe": "opt", "rc": 255, "stderr": "command-line line 0: requiredrsasize integer value invalid."}
+{"kw": "requiredrsasize", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: requiredrsasize integer value invalid."}
+{"kw": "reversemappingcheck", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option reversemappingcheck"}
+{"kw": "reversemappingcheck", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'reversemappingcheck' is not allowed within a Match block"}
+{"kw": "revokedkeys", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "revokedkeys", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "rhostsauthentication", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option rhostsauthentication"}
+{"kw": "rhostsauthentication", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'rhostsauthentication' is not allowed within a Match block"}
+{"kw": "rhostsrsaauthentication", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option rhostsrsaauthentication"}
+{"kw": "rhostsrsaauthentication", "probe": "match", "rc": 0, "stderr": "/tmp/rs_probe_match.conf line 2: Deprecated option rhostsrsaauthentication"}
+{"kw": "rsaauthentication", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option rsaauthentication"}
+{"kw": "rsaauthentication", "probe": "match", "rc": 0, "stderr": "/tmp/rs_probe_match.conf line 2: Deprecated option rsaauthentication"}
+{"kw": "rsaminsize", "probe": "opt", "rc": 255, "stderr": "command-line line 0: rsaminsize integer value invalid."}
+{"kw": "rsaminsize", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: rsaminsize integer value invalid."}
+{"kw": "securitykeyprovider", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "securitykeyprovider", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'securitykeyprovider' is not allowed within a Match block"}
+{"kw": "serverkeybits", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option serverkeybits"}
+{"kw": "serverkeybits", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'serverkeybits' is not allowed within a Match block"}
+{"kw": "setenv", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Invalid environment."}
+{"kw": "setenv", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Invalid environment."}
+{"kw": "skeyauthentication", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "skeyauthentication", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "sshdsessionpath", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "sshdsessionpath", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'sshdsessionpath' is not allowed within a Match block"}
+{"kw": "streamlocalbindmask", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Invalid streamlocalbindmask."}
+{"kw": "streamlocalbindmask", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Invalid streamlocalbindmask."}
+{"kw": "streamlocalbindunlink", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "streamlocalbindunlink", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "strictmodes", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "strictmodes", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'strictmodes' is not allowed within a Match block"}
+{"kw": "subsystem", "probe": "opt", "rc": 255, "stderr": "command-line line 0: Missing subsystem command."}
+{"kw": "subsystem", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "syslogfacility", "probe": "opt", "rc": 255, "stderr": "command-line line 0: unsupported log facility 'yes'"}
+{"kw": "syslogfacility", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'syslogfacility' is not allowed within a Match block"}
+{"kw": "tcpkeepalive", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "tcpkeepalive", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'tcpkeepalive' is not allowed within a Match block"}
+{"kw": "trustedusercakeys", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "trustedusercakeys", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "unusedconnectiontimeout", "probe": "opt", "rc": 255, "stderr": "command-line line 0: invalid time value."}
+{"kw": "unusedconnectiontimeout", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: invalid time value."}
+{"kw": "usedns", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "usedns", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'usedns' is not allowed within a Match block"}
+{"kw": "uselogin", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option uselogin"}
+{"kw": "uselogin", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'uselogin' is not allowed within a Match block"}
+{"kw": "usepam", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "usepam", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'usepam' is not allowed within a Match block"}
+{"kw": "useprivilegeseparation", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option useprivilegeseparation"}
+{"kw": "useprivilegeseparation", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'useprivilegeseparation' is not allowed within a Match block"}
+{"kw": "verifyreversemapping", "probe": "opt", "rc": 0, "stderr": "command-line line 0: Deprecated option verifyreversemapping"}
+{"kw": "verifyreversemapping", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'verifyreversemapping' is not allowed within a Match block"}
+{"kw": "versionaddendum", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "versionaddendum", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'versionaddendum' is not allowed within a Match block"}
+{"kw": "x11displayoffset", "probe": "opt", "rc": 255, "stderr": "command-line line 0: x11displayoffset integer value invalid."}
+{"kw": "x11displayoffset", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: x11displayoffset integer value invalid."}
+{"kw": "x11forwarding", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "x11forwarding", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "x11maxdisplays", "probe": "opt", "rc": 255, "stderr": "command-line line 0: x11maxdisplays integer value invalid."}
+{"kw": "x11maxdisplays", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: x11maxdisplays integer value invalid."}
+{"kw": "x11uselocalhost", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "x11uselocalhost", "probe": "match", "rc": 0, "stderr": ""}
+{"kw": "xauthlocation", "probe": "opt", "rc": 0, "stderr": ""}
+{"kw": "xauthlocation", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf line 2: Directive 'xauthlocation' is not allowed within a Match block"}
+{"kw": "zzzz_rulesteward_probe_bogus", "probe": "opt", "rc": 1, "stderr": "command-line: line 0: Bad configuration option: zzzz_rulesteward_probe_bogus"}
+{"kw": "zzzz_rulesteward_probe_bogus", "probe": "match", "rc": 255, "stderr": "/tmp/rs_probe_match.conf: line 2: Bad configuration option: zzzz_rulesteward_probe_bogus /tmp/rs_probe_match.conf line 2: Directive 'zzzz_rulesteward_probe_bogus' is not allowed within a Match block"}

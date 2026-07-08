@@ -1,0 +1,23 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the sshd crate purely to import the three shipped lint-table
+# projections (`known_keywords`, `match_permitted_keywords`, `deprecated_keywords`)
+# for the `check` drift gate; that crate resolves its own workspace inheritance
+# against the repo root (cargo finds a package's workspace by walking up from the
+# package's OWN location), so the path-dep builds cleanly from here.
+[workspace]
+
+[package]
+name = "sshd-probe-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: probe a real sshd binary in Rocky 8/9/10 containers and drift-check the shipped sshd E01/E04/W04 lint tables against it."
+
+[dependencies]
+rulesteward-sshd = { path = "../../crates/rulesteward-sshd" }
+# serde_json (Value API, no derive) parses the JSONL probe transcript. Daemon
+# stderr contains JSON-escaped characters (e.g. `\"yes\"`), so a robust unescaping
+# parser is required; reinventing one by hand would be error-prone for zero gain.
+serde_json = "1"
