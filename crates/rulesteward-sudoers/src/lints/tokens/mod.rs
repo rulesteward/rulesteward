@@ -1511,6 +1511,12 @@ mod tests {
             "the F02 must name the offending member `ls`; got {:?}",
             d[0].message
         );
+        assert!(
+            !d[0].message.contains("/bin/ls,ls"),
+            "the F02 must name ONLY the bad member, not the whole raw binding \
+             (which contains the valid `/bin/ls`); got {:?}",
+            d[0].message
+        );
     }
 
     /// `Defaults!/bin/ls,! env_reset` -- a LONE `!` member (a negation with
@@ -1689,6 +1695,93 @@ mod tests {
             d.is_empty(),
             "`Defaults!/bin/ls,LS` (LS a defined Cmnd_Alias) is valid (rc=0) -- \
              must NOT fire; got {d:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #451 miss (impl-aware adversarial review, 2026-07-08): `sudoedit` and
+    // `list` are RESERVED sudoers Cmnd-position pseudo-commands, not ordinary
+    // lowercase barewords. `is_valid_cmnd_scope_member` has no reserved-
+    // keyword arm, so it wrongly fires a Fatal sudo-F02 on a `Defaults!`
+    // scope that visudo parses cleanly. Contrast the ORDINARY lowercase
+    // bareword `ls` (`f02_defaults_cmnd_scope_lowercase_bareword_member_fires`
+    // above, still rc=1) -- `sudoedit`/`list` are the only two reserved
+    // Cmnd-position keywords, not a general lowercase-bareword carve-out. All
+    // six cases grounded: `visudo -cf`, Rocky Linux 9, sudo 1.9.17p2,
+    // 2026-07-08 (rockylinux/rockylinux:9 image, `dnf install sudo`), all
+    // rc=0 "parsed OK".
+    // -----------------------------------------------------------------------
+
+    /// `Defaults!sudoedit env_reset` -- `sudoedit` as the SOLE Cmnd-scope
+    /// target. Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_sudoedit_sole_member_no_f02() {
+        let d = f02s("Defaults!sudoedit env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!sudoedit` is a reserved pseudo-command, valid as a \
+             Cmnd-scope target (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults!list env_reset` -- `list` as the SOLE Cmnd-scope target.
+    /// Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_list_sole_member_no_f02() {
+        let d = f02s("Defaults!list env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!list` is a reserved pseudo-command, valid as a \
+             Cmnd-scope target (rc=0) -- must NOT fire; got {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls,sudoedit env_reset` -- `sudoedit` as the SECOND
+    /// member of a comma list. Oracle: `visudo -cf` rc=0, "parsed OK". Must
+    /// NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_sudoedit_list_member_no_f02() {
+        let d = f02s("Defaults!/bin/ls,sudoedit env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,sudoedit` is valid (rc=0) -- must NOT fire; \
+             got {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls,list env_reset` -- `list` as the SECOND member of a
+    /// comma list. Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_list_list_member_no_f02() {
+        let d = f02s("Defaults!/bin/ls,list env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,list` is valid (rc=0) -- must NOT fire; got \
+             {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls,!sudoedit env_reset` -- a `!`-negated `sudoedit`
+    /// member. Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_negated_sudoedit_member_no_f02() {
+        let d = f02s("Defaults!/bin/ls,!sudoedit env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,!sudoedit` is valid (rc=0) -- must NOT fire; \
+             got {d:?}"
+        );
+    }
+
+    /// `Defaults!/bin/ls,!list env_reset` -- a `!`-negated `list` member.
+    /// Oracle: `visudo -cf` rc=0, "parsed OK". Must NOT fire.
+    #[test]
+    fn f02_defaults_cmnd_scope_negated_list_member_no_f02() {
+        let d = f02s("Defaults!/bin/ls,!list env_reset");
+        assert!(
+            d.is_empty(),
+            "`Defaults!/bin/ls,!list` is valid (rc=0) -- must NOT fire; got \
+             {d:?}"
         );
     }
 
