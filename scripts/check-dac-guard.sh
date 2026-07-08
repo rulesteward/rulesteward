@@ -47,15 +47,28 @@
 # the region, so a marker sitting only in that lead-in gap is not credited
 # to this fn's hit (#467 case10 in scripts/check-dac-guard-test.sh) - the
 # region is effectively [nearest preceding fn-header line, last real code
-# line before the next fn's lead-in]. A CAP_DAC_OVERRIDE marker or
-# dac-override-exempt hatch is credited only if it falls inside that
-# trimmed region. This never inspects string or comment contents to find
-# the region boundaries, so it is immune by construction to raw string
-# literals (r#"..."#), ordinary string literals, and char-literal braces
-# desyncing detection - unlike a brace-counting scanner, which a raw
-# string with an odd interior double-quote count can desync for the rest
-# of the file (the bug this rewrite fixes; see #467 case8/case9 in
-# scripts/check-dac-guard-test.sh).
+# line before the next fn's lead-in]. The region's end is then narrowed a
+# second way: the scanner captures the anchoring fn-header line's own
+# leading-whitespace indentation and scans FORWARD from that header for the
+# first line consisting of exactly that indentation followed by a bare `}`
+# (the fn's own closing brace, which standard Rust formatting places at the
+# same indentation as its header) - the region end becomes the EARLIER of
+# that brace line and the header/tail-trimmed end above (a MIN, never a
+# widening). This closes a second fail-open gap the tail-trim alone cannot:
+# a non-comment code line (const/use/static/mod/macro-invocation) sitting
+# between a deny fn's closing brace and the next boundary stops the tail
+# trim's backward walk before it reaches a CAP_DAC_OVERRIDE marker sitting
+# ABOVE that code line, wrongly leaving the marker inside the region (#467
+# case12 in scripts/check-dac-guard-test.sh) - the indentation-matched brace
+# scan excludes that whole gap (code line and any marker above it) instead.
+# A CAP_DAC_OVERRIDE marker or dac-override-exempt hatch is credited only if
+# it falls inside that doubly-narrowed region. Neither narrowing step
+# inspects string or comment contents to find the region boundaries, so both
+# are immune by construction to raw string literals (r#"..."#), ordinary
+# string literals, and char-literal braces desyncing detection - unlike a
+# brace-counting scanner, which a raw string with an odd interior
+# double-quote count can desync for the rest of the file (the bug this
+# rewrite fixes; see #467 case8/case9 in scripts/check-dac-guard-test.sh).
 #
 # Documented blind spots (both rare in this repo's test code, and neither
 # is a silent-fail-open risk the way the old brace desync was - a nested
@@ -71,10 +84,17 @@
 #     violation, which is the opposite failure mode from the gap-marker
 #     case the tail-trim above fixes. The remedy for a real guard in this
 #     shape is to place the CAP_DAC_OVERRIDE marker before the nested item,
-#     or to use the dac-override-exempt: hatch instead.
+#     or to use the dac-override-exempt: hatch instead. The indentation-
+#     matched brace-end narrowing is a MIN against this header-split
+#     boundary, never a replacement for it, so it cannot loosen case11.
 #   - A line that starts with (optional whitespace then) literal `fn `
 #     text embedded inside a multi-line string literal is indistinguishable
-#     from a real fn header and would false-anchor a region boundary.
+#     from a real fn header and would false-anchor a region boundary. The
+#     same is true, symmetrically, of a multi-line string or raw string
+#     literal whose content happens to contain a line consisting solely of
+#     the anchoring header's indentation followed by `}`: the indentation-
+#     matched brace scan would false-anchor the region end there. Neither
+#     case is known to occur in this repo's test code.
 
 set -uo pipefail
 
@@ -137,6 +157,33 @@ END {
         # wstart so the fn header line itself is never trimmed away.
         while (wend > wstart && (raw[wend] ~ /^[[:space:]]*$/ || raw[wend] ~ /^[[:space:]]*\/\// || raw[wend] ~ /^[[:space:]]*#!?\[/)) {
             wend--
+        }
+        # Indentation-matched closing-brace end (#467 case12): the tail-trim
+        # above only removes a CONTIGUOUS run of blank/comment/attribute
+        # lines walking backward from the region's end, so a non-comment
+        # code line sitting in the gap between this fn's own closing brace
+        # and the next boundary (a sibling const/use/static/mod/macro-
+        # invocation item) stops that walk before it reaches a marker
+        # comment sitting ABOVE that code line, wrongly leaving the marker
+        # inside the region. Close that gap directly: scan FORWARD from this
+        # hit's anchoring fn-header line (wstart) for the first line whose
+        # leading whitespace matches the header's OWN indentation followed
+        # by a bare closing brace - the fn's own closing brace, which
+        # standard Rust formatting places at the same indentation as its
+        # header. Only lines up to the already header/tail-trimmed wend are
+        # considered, so this can only NARROW the region, never widen it
+        # past a real fn-header split (#467 case11 stays pinned: this is a
+        # MIN with, not a replacement for, the header-split boundary). If no
+        # such brace line exists in range, wend is left unchanged (the
+        # existing header/tail-trimmed end is always a safe fallback).
+        match(raw[wstart], /^[[:space:]]*/)
+        hdr_indent = substr(raw[wstart], RSTART, RLENGTH)
+        brace_re = "^" hdr_indent "}[[:space:]]*$"
+        for (ln = wstart + 1; ln <= wend; ln++) {
+            if (raw[ln] ~ brace_re) {
+                wend = ln
+                break
+            }
         }
         guarded = 0
         for (ln = wstart; ln <= wend; ln++) {
