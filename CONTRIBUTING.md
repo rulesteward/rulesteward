@@ -41,6 +41,61 @@ Issues and PRs are reviewed on a solo-dev best-effort basis. Filing a PR
 with a clear summary, a passing CI run, and a checked-off PR template
 checklist is the fastest path to review.
 
+## DAC guard: root-safe chmod deny-mode fixtures
+
+Some tests exercise a permission-denied code path by chmod'ing a file or
+directory to a restrictive mode (`from_mode(0o000)` for read-deny,
+`from_mode(0o555)` for write-deny) and checking the resulting error. RHEL-
+family distro CI runs the suite as root, and root bypasses Linux DAC
+(discretionary access control) via `CAP_DAC_OVERRIDE` - the chmod still
+"succeeds" on disk, but the denial never actually blocks the process, so
+the assertion would silently pass for the wrong reason (or, before #464/#465,
+outright fail under root). Every such test must probe the real precondition
+and skip cleanly instead of assuming the deny lands:
+
+```rust
+if std::fs::File::open(&f).is_ok() {
+    let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+    eprintln!(
+        "SKIP <test_name>: 0o000 is readable here (running as root / \
+         CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+    );
+    return;
+}
+```
+
+See `crates/rulesteward-sysctld/tests/system.rs`
+(`unreadable_search_directory_emits_a_file_level_f01`) for the canonical
+worked example, and the 7 guards added across `crates/rulesteward-cli` in
+#465 for more instances.
+
+`scripts/check-dac-guard.sh` (#467) is a static gate that enforces this;
+CI's lint job runs it directly as `bash scripts/check-dac-guard.sh`, and
+`just ci` (via the `dac-guard` recipe) runs the same script locally. Every
+`from_mode(0o000)` or `from_mode(0o555)`
+call under `crates/**/{src,tests}/**/*.rs` must have a `CAP_DAC_OVERRIDE`
+marker (a comment or string literal containing that exact token) somewhere
+in the *same function* as the call. If a fixture genuinely does not need the
+guard (for example, an illustrative chmod whose assertions do not depend on
+the denial actually being enforced), add an explicit escape hatch instead of
+a `CAP_DAC_OVERRIDE` marker:
+
+```rust
+// dac-override-exempt: illustrative chmod only, no assertion in this
+// fixture depends on the denial actually being enforced.
+```
+
+Run `just dac-guard` locally to check before pushing (the local equivalent
+of the `bash scripts/check-dac-guard.sh` step CI's lint job runs).
+
+The gate's per-function scoping is deliberately fail-closed around nested
+`fn` items: a `fn` declared inside another fn's body splits the outer fn
+into two search regions at that point, so a `CAP_DAC_OVERRIDE` marker
+placed after a nested `fn` is not credited to a `from_mode(...)` call
+before it even though both are lexically inside the same outer fn - place
+the marker before the nested item (or use the `dac-override-exempt:`
+hatch) if you hit this shape.
+
 ## Commit authorship
 
 All commits are user-authored. Do not add `Co-Authored-By: Claude` or
