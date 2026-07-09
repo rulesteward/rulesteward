@@ -95,6 +95,10 @@
 #     the anchoring header's indentation followed by `}`: the indentation-
 #     matched brace scan would false-anchor the region end there. Neither
 #     case is known to occur in this repo's test code.
+#   - The fn-header regex covers pub/async/unsafe/extern modifiers but not
+#     `const fn` / `default fn`. Practical risk is nil: from_mode(...) is a
+#     runtime call that cannot appear in a const fn, and the brace-end
+#     narrowing independently caps each region; noted for completeness.
 
 set -uo pipefail
 
