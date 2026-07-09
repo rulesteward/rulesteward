@@ -372,6 +372,18 @@ fn trustdb_check_present_and_matching_exits_zero() {
 
 /// `trustdb check <PATH>` exits 1 when the path is present in the DB but the
 /// file on disk has a different size (mismatch).
+///
+/// Pins `--integrity sha256` explicitly (#466): `run_check` resolves the
+/// effective `IntegrityMode` from `--integrity`, else `--config` (default
+/// `/etc/fapolicyd/fapolicyd.conf`), else STRICT if no conf is found (see
+/// `resolve_integrity_mode` in `commands/fapolicyd/trustdb.rs`). Without an
+/// explicit override, a host that has a real `/etc/fapolicyd/fapolicyd.conf`
+/// with `integrity = none` (or `size`, for the hash side) would demote
+/// `SizeMismatch` and flip this test's asserted exit 1 to exit 0
+/// (`IntegrityMode::enforces`: `SizeMismatch` is enforced under
+/// Size/Ima/Sha256, NOT under None). `--integrity` is the highest-priority
+/// override and a clap value-enum validated to `{none,size,ima,sha256}`, so
+/// `sha256` deterministically forces full enforcement regardless of host state.
 #[test]
 fn trustdb_check_size_mismatch_exits_one() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -391,6 +403,8 @@ fn trustdb_check_size_mismatch_exits_one() {
     bin()
         .args(["fapolicyd", "trustdb", "check", "--db"])
         .arg(db_dir.path())
+        .arg("--integrity")
+        .arg("sha256")
         .arg(&f)
         .assert()
         .code(1);
