@@ -1,10 +1,11 @@
 //! sudo-F02 Case 2 (#433 split from `tokens.rs`): `Defaults` line checks --
-//! `#<digits>` in setting name/value, plus the #407 scope-target GID-tail
-//! check.
+//! `#<digits>` in setting name/value, the #407 scope-target GID-tail check,
+//! and the #451 Cmnd-scope member path-validity check.
 
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::SudoersFile;
+use crate::lints::aliases::is_alias_ref;
 use crate::lints::anchored;
 
 use super::shared::{has_hash_digits, is_malformed_gid_tail};
@@ -41,7 +42,9 @@ pub(super) fn check_defaults(
     // `#<digits>` outright in command position ("expected a fully-qualified path
     // name"), so the loop's "pure digits = valid" assumption is wrong for commands
     // and it would emit a nonsensical "GID" message. Validating command-target
-    // paths is a separate, broader defect class (out of #429's empty-member scope).
+    // paths is a separate, broader defect class (was out of #429's empty-member
+    // scope; #451 below adds the dedicated `check_cmnd_path` member-validity loop
+    // that covers it).
     //
     // Message note: for the host (`@`) scope the token is a host name, not a GID, so
     // its message says "not a pure digit run" (no "GID") even though the shared
@@ -74,28 +77,36 @@ pub(super) fn check_defaults(
             scope_word: "user",
             is_host: false,
             check_gid_tail: true,
+            check_cmnd_path: false,
         }),
         crate::ast::DefaultsScope::Runas(binding) => Some(ScopeCheck {
             binding: binding.as_str(),
             scope_word: "runas",
             is_host: false,
             check_gid_tail: true,
+            check_cmnd_path: false,
         }),
         crate::ast::DefaultsScope::Host(binding) => Some(ScopeCheck {
             binding: binding.as_str(),
             scope_word: "host",
             is_host: true,
             check_gid_tail: true,
+            check_cmnd_path: false,
         }),
         // #429: the Cmnd (`!`) scope runs the #426 empty-member check, but NOT the
         // #407 GID-tail loop (`check_gid_tail: false`; see the long comment above
         // for why command-position `#<digits>` must not use that loop). `scope_word`
-        // is "command" per the frozen tests' scope-word-agnostic message.
+        // is "command" per the frozen tests' scope-word-agnostic message. #451:
+        // Cmnd is the ONLY scope that runs the dedicated path-validity loop
+        // (`check_cmnd_path: true`) -- a bare digit run is a valid GID in the
+        // other three scopes but visudo rejects it outright in command position,
+        // so this is a distinct predicate, not a relaxation of the GID-tail one.
         crate::ast::DefaultsScope::Cmnd(binding) => Some(ScopeCheck {
             binding: binding.as_str(),
             scope_word: "command",
             is_host: false,
             check_gid_tail: false,
+            check_cmnd_path: true,
         }),
         // Global (no scope) is not a list.
         crate::ast::DefaultsScope::Global => None,
@@ -156,26 +167,29 @@ pub(super) fn check_defaults(
 
 /// The per-scope inputs to [`check_defaults_scope`]. `check_gid_tail` is the
 /// #429 decoupling signal: User/Runas/Host run the #407 GID-tail loop AND the
-/// #426 empty-member check; Cmnd (`!`) runs only the empty-member check (a
-/// `#`-prefixed command target never survives to the AST -- see the long
-/// comment in `check_defaults`).
+/// #426 empty-member check; Cmnd (`!`) runs the empty-member check plus its
+/// own #451 `check_cmnd_path` member-validity loop instead (a `#`-prefixed
+/// command target never survives to the AST -- see the long comment in
+/// `check_defaults`).
 #[derive(Clone, Copy)]
 struct ScopeCheck<'a> {
     binding: &'a str,
     scope_word: &'a str,
     is_host: bool,
     check_gid_tail: bool,
+    check_cmnd_path: bool,
 }
 
 /// Extracted from `check_defaults` (#433) to flatten its nesting: validates a
 /// `Defaults` scope-target binding (the User/Runas/Host/Cmnd comma-list) for a
 /// `#`-prefixed member with a non-digit tail (User/Runas/Host only, per
-/// `check_gid_tail`), or an empty comma-list member (all four scopes).
-/// `scope_binding` is `None` for a Global scope, in which case this is a
-/// no-op (`false`). Returns `true` when a diagnostic was pushed, so the
-/// caller can skip the setting scan for a line that already reported (one F02
-/// per line) -- mirroring the early `return` the inline `if let` block used
-/// to perform itself.
+/// `check_gid_tail`), an empty comma-list member (all four scopes), or --
+/// Cmnd only, per `check_cmnd_path` (#451) -- a member that is not a valid
+/// command-position target. `scope_binding` is `None` for a Global scope, in
+/// which case this is a no-op (`false`). Returns `true` when a diagnostic was
+/// pushed, so the caller can skip the setting scan for a line that already
+/// reported (one F02 per line) -- mirroring the early `return` the inline
+/// `if let` block used to perform itself.
 fn check_defaults_scope(
     scope_binding: Option<ScopeCheck<'_>>,
     file: &SudoersFile,
@@ -187,6 +201,7 @@ fn check_defaults_scope(
         scope_word,
         is_host,
         check_gid_tail,
+        check_cmnd_path,
     }) = scope_binding
     else {
         return false;
@@ -239,7 +254,92 @@ fn check_defaults_scope(
             logical.line,
         ));
     }
+    // #451: Cmnd-only path-validity loop. Run only when neither check above
+    // already flagged this line (one F02 per line) -- an empty member is
+    // caught by the #426 check just above and must not ALSO be re-flagged
+    // here as "not a valid command target" (both scans would otherwise fire
+    // on the same offending position with two different messages).
+    if diags.len() == before && check_cmnd_path {
+        for &element in &members {
+            if !is_valid_cmnd_scope_member(element) {
+                diags.push(anchored(
+                    Severity::Fatal,
+                    "sudo-F02",
+                    logical.span.clone(),
+                    format!(
+                        "Defaults {scope_word}-scope target has a member {element:?} \
+                         that visudo rejects (expected a fully-qualified path name, \
+                         `ALL`, or a Cmnd_Alias reference)"
+                    ),
+                    file.path.clone(),
+                    logical.line,
+                ));
+                break; // one diagnostic per Defaults line
+            }
+        }
+    }
     diags.len() > before
+}
+
+/// #451: `true` when `member` is a valid `Defaults!` (Cmnd-scope) comma-list
+/// member -- the reserved `ALL` (bare or `!`-negated), a `Cmnd_Alias`-shaped
+/// reference (`[A-Z][A-Z0-9_]*`, delegating to the shared
+/// [`is_alias_ref`](crate::lints::aliases::is_alias_ref) so the two shape
+/// checks never drift apart), a (`!`-negatable) fully-qualified absolute
+/// path, or one of the two reserved Cmnd-position pseudo-commands `sudoedit`
+/// / `list` (also `!`-negatable). `is_alias_ref` strips its own leading `!`
+/// run and rejects `ALL` itself, so only the `ALL`, path, and
+/// `sudoedit`/`list` arms need an explicit strip here.
+///
+/// `sudoedit`/`list` are matched CASE-SENSITIVELY on the exact lowercase
+/// spelling -- they are not a case-insensitive keyword pair. Grounded
+/// against `visudo -cf` (Rocky Linux 9, sudo 1.9.17p2,
+/// rockylinux/rockylinux:9 image, `dnf install sudo`, 2026-07-08):
+/// `sudoedit` / `list` (lowercase) rc=0 "parsed OK"; `Sudoedit` / `List`
+/// (mixed case) rc=1 "expected a fully-qualified path name". Note
+/// `SUDOEDIT` / `LIST` (all-uppercase) also rc=0, but NOT via a
+/// case-insensitive keyword match -- an all-uppercase bareword happens to
+/// satisfy the pre-existing `is_alias_ref` shape (`[A-Z][A-Z0-9_]*`), so
+/// `visudo -cf` (syntax-only, no semantic "is this alias defined" pass)
+/// accepts it as an alias-shaped reference. No dedicated uppercase handling
+/// is needed here; `is_alias_ref` already covers it.
+///
+/// #451 round-3 (impl-aware adversarial review, 2026-07-08) grounded two
+/// further quirks against the same oracle:
+///
+/// - A DOUBLE-QUOTED `"list"` member is accepted (`Defaults!"list"`, rc=0
+///   "parsed OK") even though `split_default_settings` retains the quotes
+///   (they only protect an interior comma from the split), so the member
+///   arrives as the literal 6-byte string `"list"` (quotes included). This
+///   is a `list`-SPECIFIC grammar quirk, not a general "quotes are
+///   unwrapped" rule: `Defaults!"sudoedit"`, `Defaults!"ALL"`, and
+///   `Defaults!"/bin/ls"` are all still rc=1 "expected a fully-qualified
+///   path name". The exact quoted spelling `"list"` (with quotes) is
+///   therefore matched as its own literal, distinct from the bare `list`
+///   arm below.
+/// - A bare `/` member is REJECTED (`Defaults!/`, rc=1 "expected a
+///   fully-qualified path name"), unlike every other path starting with
+///   `/` (e.g. `/.`, rc=0 "parsed OK") -- a lone `/` names the root
+///   directory, not a fully-qualified command path, so the
+///   `starts_with('/')` arm must exclude the degenerate single-slash case
+///   (after stripping a leading `!`) while still accepting any longer
+///   absolute path.
+///
+/// Anything else is visudo-rejected in command position: a `#<digits>` token
+/// (tail or pure -- unlike the User/Runas/Host scopes, a PURE digit run is
+/// still invalid here, which is why this is a dedicated predicate and not a
+/// relaxed `is_malformed_gid_tail`), a `%group` / `%#gid` group reference, a
+/// quoted literal (other than the `"list"` quirk above), a relative path, an
+/// ordinary (non-reserved) lowercase bareword, a digest-spec fragment
+/// (`sha224:<hex>`) split out of its `sha224:<hex> /path` pairing, or a lone
+/// `!`. All cases grounded locally: `visudo -cf`, Rocky Linux 9, sudo
+/// 1.9.17p2, 2026-07-08 (rockylinux/rockylinux:9 image, `dnf install sudo`).
+fn is_valid_cmnd_scope_member(member: &str) -> bool {
+    let stripped = member.trim_start_matches('!');
+    stripped == "ALL"
+        || (stripped.starts_with('/') && stripped != "/")
+        || is_alias_ref(member)
+        || matches!(stripped, "sudoedit" | "list" | "\"list\"")
 }
 
 /// #424 value-path addendum to [`has_hash_digits`]: `true` when `s` contains a
