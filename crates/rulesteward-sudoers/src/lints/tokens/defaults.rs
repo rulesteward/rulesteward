@@ -304,21 +304,42 @@ fn check_defaults_scope(
 /// accepts it as an alias-shaped reference. No dedicated uppercase handling
 /// is needed here; `is_alias_ref` already covers it.
 ///
+/// #451 round-3 (impl-aware adversarial review, 2026-07-08) grounded two
+/// further quirks against the same oracle:
+///
+/// - A DOUBLE-QUOTED `"list"` member is accepted (`Defaults!"list"`, rc=0
+///   "parsed OK") even though `split_default_settings` retains the quotes
+///   (they only protect an interior comma from the split), so the member
+///   arrives as the literal 6-byte string `"list"` (quotes included). This
+///   is a `list`-SPECIFIC grammar quirk, not a general "quotes are
+///   unwrapped" rule: `Defaults!"sudoedit"`, `Defaults!"ALL"`, and
+///   `Defaults!"/bin/ls"` are all still rc=1 "expected a fully-qualified
+///   path name". The exact quoted spelling `"list"` (with quotes) is
+///   therefore matched as its own literal, distinct from the bare `list`
+///   arm below.
+/// - A bare `/` member is REJECTED (`Defaults!/`, rc=1 "expected a
+///   fully-qualified path name"), unlike every other path starting with
+///   `/` (e.g. `/.`, rc=0 "parsed OK") -- a lone `/` names the root
+///   directory, not a fully-qualified command path, so the
+///   `starts_with('/')` arm must exclude the degenerate single-slash case
+///   (after stripping a leading `!`) while still accepting any longer
+///   absolute path.
+///
 /// Anything else is visudo-rejected in command position: a `#<digits>` token
 /// (tail or pure -- unlike the User/Runas/Host scopes, a PURE digit run is
 /// still invalid here, which is why this is a dedicated predicate and not a
 /// relaxed `is_malformed_gid_tail`), a `%group` / `%#gid` group reference, a
-/// quoted literal, a relative path, an ordinary (non-reserved) lowercase
-/// bareword, a digest-spec fragment (`sha224:<hex>`) split out of its
-/// `sha224:<hex> /path` pairing, or a lone `!`. All cases grounded locally:
-/// `visudo -cf`, Rocky Linux 9, sudo 1.9.17p2, 2026-07-08
-/// (rockylinux/rockylinux:9 image, `dnf install sudo`).
+/// quoted literal (other than the `"list"` quirk above), a relative path, an
+/// ordinary (non-reserved) lowercase bareword, a digest-spec fragment
+/// (`sha224:<hex>`) split out of its `sha224:<hex> /path` pairing, or a lone
+/// `!`. All cases grounded locally: `visudo -cf`, Rocky Linux 9, sudo
+/// 1.9.17p2, 2026-07-08 (rockylinux/rockylinux:9 image, `dnf install sudo`).
 fn is_valid_cmnd_scope_member(member: &str) -> bool {
     let stripped = member.trim_start_matches('!');
     stripped == "ALL"
-        || stripped.starts_with('/')
+        || (stripped.starts_with('/') && stripped != "/")
         || is_alias_ref(member)
-        || matches!(stripped, "sudoedit" | "list")
+        || matches!(stripped, "sudoedit" | "list" | "\"list\"")
 }
 
 /// #424 value-path addendum to [`has_hash_digits`]: `true` when `s` contains a
