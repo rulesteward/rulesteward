@@ -1713,6 +1713,190 @@ fn w03_c475_complementary_auid_euid_is_disjoint() {
     );
 }
 
+// --- ALL 16 safe pairs pinned: kill every canonical_pair match-arm mutant (ATL) ---
+//
+// The mutation gate on the class-2 impl left 10 MISSED mutants, one per SAFE
+// process-vs-process pair that had no disjoint-proving test (only 6 of 16 were
+// pinned above). Each survivor is `delete match arm (X, Y)` in
+// `canonical_pair`: dropping an arm makes it return None for that pair, so the
+// promotion silently stops firing for it -- undetected without a test that
+// exercises exactly that arm. The impl-aware adversary independently verified
+// all 16 arms map CORRECTLY (0 mismatches vs an independent oracle), so these
+// 10 are pure test-adequacy pins: GREEN against the current (correct) impl,
+// each one killing its own arm's delete-mutant. With these plus the 6 above,
+// all 16 safe pairs (uapi_audit.h:221-241, rows 10-25) are pinned. Every
+// fixture uses a legal `=`/`!=` pair the parser accepts (parser.rs:626-674).
+
+#[test]
+fn w03_c475_complementary_uid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_UID_TO_FSUID (uapi row 12).
+    let input = concat!(
+        "-a never,exit -S execve -C uid=fsuid -k c475_uid_fsuid_never\n",
+        "-a always,exit -S execve -C uid!=fsuid -k c475_uid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-uid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=fsuid vs -C uid!=fsuid are complements on AUDIT_COMPARE_UID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_uid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_UID_TO_SUID (uapi row 13).
+    let input = concat!(
+        "-a never,exit -S execve -C uid=suid -k c475_uid_suid_never\n",
+        "-a always,exit -S execve -C uid!=suid -k c475_uid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-uid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=suid vs -C uid!=suid are complements on AUDIT_COMPARE_UID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_AUID_TO_FSUID (uapi row 14).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=fsuid -k c475_auid_fsuid_never\n",
+        "-a always,exit -S execve -C auid!=fsuid -k c475_auid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=fsuid vs -C auid!=fsuid are complements on AUDIT_COMPARE_AUID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_AUID_TO_SUID (uapi row 15).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=suid -k c475_auid_suid_never\n",
+        "-a always,exit -S execve -C auid!=suid -k c475_auid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=suid vs -C auid!=suid are complements on AUDIT_COMPARE_AUID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_euid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EUID_TO_SUID (uapi row 17).
+    let input = concat!(
+        "-a never,exit -S execve -C euid=suid -k c475_euid_suid_never\n",
+        "-a always,exit -S execve -C euid!=suid -k c475_euid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-euid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C euid=suid vs -C euid!=suid are complements on AUDIT_COMPARE_EUID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_euid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EUID_TO_FSUID (uapi row 18).
+    let input = concat!(
+        "-a never,exit -S execve -C euid=fsuid -k c475_euid_fsuid_never\n",
+        "-a always,exit -S execve -C euid!=fsuid -k c475_euid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-euid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C euid=fsuid vs -C euid!=fsuid are complements on AUDIT_COMPARE_EUID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_gid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_GID_TO_FSGID (uapi row 21).
+    let input = concat!(
+        "-a never,exit -S execve -C gid=fsgid -k c475_gid_fsgid_never\n",
+        "-a always,exit -S execve -C gid!=fsgid -k c475_gid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-gid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C gid=fsgid vs -C gid!=fsgid are complements on AUDIT_COMPARE_GID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_gid_sgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_GID_TO_SGID (uapi row 22).
+    let input = concat!(
+        "-a never,exit -S execve -C gid=sgid -k c475_gid_sgid_never\n",
+        "-a always,exit -S execve -C gid!=sgid -k c475_gid_sgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-gid-sgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C gid=sgid vs -C gid!=sgid are complements on AUDIT_COMPARE_GID_TO_SGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_egid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EGID_TO_FSGID (uapi row 23).
+    let input = concat!(
+        "-a never,exit -S execve -C egid=fsgid -k c475_egid_fsgid_never\n",
+        "-a always,exit -S execve -C egid!=fsgid -k c475_egid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-egid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C egid=fsgid vs -C egid!=fsgid are complements on AUDIT_COMPARE_EGID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_sgid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_SGID_TO_FSGID (uapi row 25), the last of the 16.
+    let input = concat!(
+        "-a never,exit -S execve -C sgid=fsgid -k c475_sgid_fsgid_never\n",
+        "-a always,exit -S execve -C sgid!=fsgid -k c475_sgid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-sgid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C sgid=fsgid vs -C sgid!=fsgid are complements on AUDIT_COMPARE_SGID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
 // ===========================================================================
 // STRETCH: au-W04 (-D mid-stream) tests -- clearly marked, cuttable at integration
 // ===========================================================================
