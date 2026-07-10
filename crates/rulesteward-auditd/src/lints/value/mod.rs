@@ -1413,6 +1413,58 @@ mod tests {
     }
 
     #[test]
+    fn msgtype_u32_wraparound_same_value_stays_conservative_475() {
+        // The msgtype value is __u32 ON THE WIRE: uapi linux/audit.h:516
+        // (`__u32 values[AUDIT_MAX_FIELDS]` in struct audit_rule_data),
+        // libaudit.c:1788-1790 @ 3bfa048 (a truncating `strtol` assigned into
+        // that __u32 slot with NO range check), and the kernel's runtime
+        // audit_comparator(u32 left, u32 op, u32 right) (auditfilter.c:
+        // 1205-1227 @ v6.6). So the load path truncates mod 2^32:
+        // msgtype=4294967296 (2^32) and msgtype=0 denote the SAME kernel
+        // record type, and 4294968596 (2^32+1300) is SYSCALL. A resolution
+        // helper that parses at full u64 width without u32 narrowing sees
+        // both sides "resolve" to numbers whose decimal spellings differ and
+        // wrongly proves disjoint -- a NEW au-W03 false positive (these pairs
+        // were conservatively non-disjoint pre-promotion). Fix-agnostic:
+        // passes whether the impl declines to resolve above u32::MAX (the
+        // classify.rs uid/gid/sessionid precedent: u32::try_from, decline
+        // above -- pinned by uid_non_numeric_and_out_of_range_are_opaque and
+        // sessionid_out_of_range_and_nonnumeric_are_opaque above) or masks
+        // mod 2^32; both restore non-disjoint.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967296"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "0"),
+            OFF,
+        ));
+        // Nonzero residue: 2^32 + 1300 is congruent to 1300 (SYSCALL).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294968596"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_u32_wraparound_mirror_order_475() {
+        // Mirror-order variants of the wraparound pins above with the
+        // resolved-in-range side FIRST and the out-of-u32-range spelling
+        // SECOND, so the symmetric resolution gate stays pinned at the u32
+        // boundary too (same rationale as the other mirror_order pins in
+        // this block: an asymmetric impl that narrows or declines only
+        // operand A must not survive).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "0"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967296"),
+            OFF,
+        ));
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294968596"),
+            OFF,
+        ));
+    }
+
+    #[test]
     fn msgtype_relational_pairs_stay_conservative_475() {
         // Interval/relational reasoning for msgtype is explicitly OUT of scope
         // for #475 (a documented non-goal, not a soundness gap:
