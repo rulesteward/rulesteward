@@ -22,3 +22,7 @@ description = "Dev tool: derive + drift-check the auditd au-W06 STIG baselines f
 rulesteward-auditd = { path = "../../crates/rulesteward-auditd" }
 regex = "1"
 toml = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (deliberate
+# deviation from tools/sshd-stig-update's homegrown regex+entity-decode
+# approach; see src/xccdf.rs's module doc for why a real parser is used here).
+quick-xml = "0.41"

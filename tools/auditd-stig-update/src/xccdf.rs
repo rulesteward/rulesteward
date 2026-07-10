@@ -85,7 +85,17 @@
 //!   trailing slash is that matcher's own documented design call, not this
 //!   extractor's.
 
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
+
 use crate::derive::DerivedRule;
+
+/// The check-content line selector (grounding Part B.2/B.3): a literal
+/// `auditctl`-syntax rule line, never the shell-invocation preamble (which
+/// starts with `$` or `auditctl`/`cat`/`grep`, never with the rule flag as the
+/// first token).
+static RULE_LINE_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^(-A|-a|-w)\s+\S").expect("valid regex"));
 
 /// Parse a full DISA XCCDF benchmark into the normalized au-W06 required-rules
 /// table, in document order. Returns an error on any selected Rule the parser
@@ -94,13 +104,173 @@ use crate::derive::DerivedRule;
 /// # Errors
 /// See the module doc's "fail closed" discipline: a selected-but-unextractable
 /// Rule is an `Err`, never a silently-empty or partially-guessed row.
-pub fn parse_requirements(_xccdf: &str) -> Result<Vec<DerivedRule>, String> {
-    // Implementer: see the module doc for the full grounded algorithm (selector,
-    // per-line extraction, one row per line, fail-closed on a selected-but-empty
-    // Rule). The frozen tests in this file pin the exact known-answer counts and
-    // several structural-variant spot-checks against the real DISA fixtures in
-    // tests/fixtures/.
-    todo!("P2 implementer: XCCDF Group/Rule -> DerivedRule extraction, see module doc")
+pub fn parse_requirements(xccdf: &str) -> Result<Vec<DerivedRule>, String> {
+    let mut reader = Reader::from_str(xccdf);
+
+    let mut out = Vec::new();
+
+    // State for the Group/Rule pair currently being walked. B.1 confirms Groups
+    // never nest and each wraps exactly one Rule, so a flat set of "current"
+    // slots (reset on </Group>) is sufficient - no stack needed.
+    let mut cur_group_id: Option<String> = None;
+    let mut cur_stig_id: Option<String> = None;
+    let mut cur_check_content: Option<String> = None;
+
+    // Which element (if any) text events should accumulate into right now.
+    #[derive(PartialEq)]
+    enum Capture {
+        None,
+        Version,
+        CheckContent,
+    }
+    let mut capture = Capture::None;
+    let mut text_buf = String::new();
+
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|e| format!("xccdf xml parse error: {e}"))?;
+        match event {
+            Event::Eof => break,
+
+            Event::Start(e) => match e.name().as_ref() {
+                b"Group" => {
+                    cur_group_id = xml_attr(&e, b"id");
+                    cur_stig_id = None;
+                    cur_check_content = None;
+                }
+                // Only the FIRST <version> in a Rule is the STIG id; a second
+                // <version> (not observed, but defended per the module doc's
+                // "fail closed for a future DISA reformat" posture) is ignored.
+                b"version" if cur_stig_id.is_none() => {
+                    capture = Capture::Version;
+                    text_buf.clear();
+                }
+                b"check-content" => {
+                    capture = Capture::CheckContent;
+                    text_buf.clear();
+                }
+                _ => {}
+            },
+
+            Event::Text(t) => {
+                if capture != Capture::None {
+                    let decoded = t
+                        .decode()
+                        .map_err(|e| format!("xccdf xml text decode error: {e}"))?;
+                    text_buf.push_str(&decoded);
+                }
+            }
+
+            // quick-xml 0.41 tokenizes an entity/character reference (e.g. the
+            // `&gt;` in `-F auid&gt;=1000`) as its OWN event, separate from the
+            // surrounding Text events (NOT folded into Event::Text as older
+            // quick-xml versions did) - confirmed empirically against this
+            // version. Resolve numeric char refs first, then the five
+            // predefined XML entities (lt/gt/amp/apos/quot; the only ones the
+            // real DISA corpus uses - grounding Part B.3.1). An unresolvable
+            // entity is a hard parse error (fail-closed, per the module doc),
+            // never silently dropped or passed through as literal `&name;`.
+            Event::GeneralRef(r) => {
+                if capture != Capture::None {
+                    let resolved = match r
+                        .resolve_char_ref()
+                        .map_err(|e| format!("xccdf xml char-ref resolve error: {e}"))?
+                    {
+                        Some(c) => c.to_string(),
+                        None => {
+                            let name = r
+                                .decode()
+                                .map_err(|e| format!("xccdf xml entity decode error: {e}"))?;
+                            quick_xml::escape::resolve_xml_entity(&name)
+                                .map(str::to_string)
+                                .ok_or_else(|| {
+                                    format!("xccdf xml: unresolvable entity '&{name};'")
+                                })?
+                        }
+                    };
+                    text_buf.push_str(&resolved);
+                }
+            }
+
+            Event::End(e) => match e.name().as_ref() {
+                b"version" if capture == Capture::Version => {
+                    cur_stig_id = Some(text_buf.trim().to_string());
+                    capture = Capture::None;
+                }
+                b"check-content" if capture == Capture::CheckContent => {
+                    cur_check_content = Some(std::mem::take(&mut text_buf));
+                    capture = Capture::None;
+                }
+                b"Group" => {
+                    if let Some(content) = cur_check_content.take() {
+                        let lines = extract_rule_lines(&content);
+                        if !lines.is_empty() {
+                            let v_number = cur_group_id.clone().ok_or_else(|| {
+                                format!(
+                                    "selected Rule {} has no enclosing Group id (fail-closed)",
+                                    cur_stig_id.clone().unwrap_or_default()
+                                )
+                            })?;
+                            let stig_id = cur_stig_id.clone().unwrap_or_default();
+                            for line in lines {
+                                out.push(DerivedRule {
+                                    v_number: v_number.clone(),
+                                    stig_id: stig_id.clone(),
+                                    line,
+                                });
+                            }
+                        }
+                    }
+                    cur_group_id = None;
+                    cur_stig_id = None;
+                    cur_check_content = None;
+                }
+                _ => {}
+            },
+
+            // Empty elements (`<version/>`) carry no text: nothing to capture,
+            // and Group id is already captured on Start above (a self-closed
+            // `<Group/>` never occurs in a real XCCDF, but handling id capture
+            // only on Start is deliberate - a self-closed Group can never wrap
+            // a Rule, so it is never "selected" and needs no id).
+            Event::Empty(_)
+            | Event::CData(_)
+            | Event::Comment(_)
+            | Event::Decl(_)
+            | Event::PI(_)
+            | Event::DocType(_) => {}
+        }
+    }
+
+    Ok(out)
+}
+
+/// Read an attribute's value as plain UTF-8 (no entity unescaping): the
+/// attributes this parser reads (`Group/@id`) are simple tokens (`V-NNNNNN`)
+/// that never contain XML entities in the real DISA corpus.
+fn xml_attr(start: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
+    start
+        .attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .map(|a| String::from_utf8_lossy(a.value.as_ref()).into_owned())
+}
+
+/// Extract the required rule lines from one Rule's check-content text
+/// (grounding Part B.3): split on `\n`, trim each line, keep lines matching
+/// the [`RULE_LINE_RE`] selector, in document order, deduped (a line repeated
+/// verbatim within one Rule collapses to one row).
+fn extract_rule_lines(content: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw_line in content.split('\n') {
+        let line = raw_line.trim();
+        if RULE_LINE_RE.is_match(line) && seen.insert(line.to_string()) {
+            out.push(line.to_string());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
