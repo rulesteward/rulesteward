@@ -9,8 +9,9 @@
 //!   `TargetVersion::fapolicyd_version()`.
 //! - (b) `derive_pattern`: the `pattern` dataset's per-value accept/reject rows -> the
 //!   accepted `pattern=` value set, compared against the shipped
-//!   `RHEL8_PATTERN_VALUES` / `RHEL9_PLUS_PATTERN_VALUES` (see the Cargo.toml header
-//!   comment for the current private-visibility gap blocking that comparison).
+//!   `RHEL8_PATTERN_VALUES` / `RHEL9_PLUS_PATTERN_VALUES` via the `pub`
+//!   `rulesteward_fapolicyd::lints::version_target::accepted_pattern_values` accessor
+//!   (made `pub` for this tool; see the Cargo.toml header comment for the prior gap).
 //! - (c) `derive_e07`: the `e07` dataset's per-`<attr>_<shape>` accept/reject rows ->
 //!   an `attr name -> AttrTypeCategory` map, compared against
 //!   `attrs::type_category_for(name, target)`.
@@ -23,9 +24,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rulesteward_fapolicyd::TargetVersion;
-use rulesteward_fapolicyd::attrs::AttrTypeCategory;
+use rulesteward_fapolicyd::attrs::{AttrTypeCategory, type_category_for};
+use rulesteward_fapolicyd::lints::version_target::accepted_pattern_values;
 
-use crate::transcript::ProbeRow;
+use crate::transcript::{ProbeRow, Verdict};
 
 /// One dataset's drift for one target: entries the probe derived that the shipped
 /// table lacks (`added`), and entries the shipped table asserts that the probe does
@@ -76,27 +78,24 @@ pub struct CheckReport {
 }
 
 impl CheckReport {
-    /// Whether ALL THREE datasets are drift-free. This is the final check VERDICT
-    /// (not mere plumbing), so it is `todo!()`-stubbed with the rest of the check
-    /// logic. (A single-dataset-drift case must flip this to `false` - see the
-    /// frozen `is_in_sync_requires_every_dataset_empty` test below; a `||`-based
-    /// implementation would wrongly report "in sync" when only two of three
-    /// datasets are clean.)
+    /// Whether ALL THREE datasets are drift-free (conjunction, not disjunction - a
+    /// `||`-based implementation would wrongly report "in sync" when only two of
+    /// three datasets are clean; see the frozen
+    /// `is_in_sync_requires_every_dataset_empty` test below).
     #[must_use]
     pub fn is_in_sync(&self) -> bool {
-        todo!(
-            "true iff self.version, self.pattern, AND self.e07 are all is_empty() \
-             (conjunction, not disjunction - see the frozen test below)"
-        )
+        self.version.is_empty() && self.pattern.is_empty() && self.e07.is_empty()
     }
 
     /// The total number of drift entries across all three datasets.
     #[must_use]
     pub fn drift_count(&self) -> usize {
-        todo!(
-            "sum added.len() + removed.len() across all three datasets (6 fields \
-             total) - see the frozen test below"
-        )
+        self.version.added.len()
+            + self.version.removed.len()
+            + self.pattern.added.len()
+            + self.pattern.removed.len()
+            + self.e07.added.len()
+            + self.e07.removed.len()
     }
 
     /// Every drift line across the three datasets, in version, pattern, e07 order.
@@ -117,12 +116,25 @@ impl CheckReport {
 /// the row's `evidence` does not match the `rpm -q fapolicyd` NEVRA shape
 /// (`fapolicyd-<version>-<release>...`).
 pub fn derive_version(rows: &[ProbeRow]) -> Result<String, String> {
-    let _ = rows;
-    todo!(
-        "extract the bare fapolicyd version (e.g. \"1.3.2\") from the version \
-         dataset's single rpm_q evidence line; see derive::tests for the frozen \
-         known-answer cases"
-    )
+    let version_rows: Vec<&ProbeRow> = rows.iter().filter(|r| r.dataset == "version").collect();
+    if version_rows.len() != 1 {
+        return Err(format!(
+            "expected exactly one version-dataset row, found {}",
+            version_rows.len()
+        ));
+    }
+    let evidence = version_rows[0].evidence.trim();
+    let rest = evidence
+        .strip_prefix("fapolicyd-")
+        .ok_or_else(|| format!("version evidence {evidence:?} does not start with fapolicyd-"))?;
+    let version = rest
+        .split('-')
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            format!("version evidence {evidence:?} has no version segment after fapolicyd-")
+        })?;
+    Ok(version.to_string())
 }
 
 /// Derive the accepted `pattern=` value set from a `pattern`-dataset transcript: every
@@ -131,12 +143,19 @@ pub fn derive_version(rows: &[ProbeRow]) -> Result<String, String> {
 /// # Errors
 /// Returns `Err` if any row is not a `pattern`-dataset row.
 pub fn derive_pattern(rows: &[ProbeRow]) -> Result<BTreeSet<String>, String> {
-    let _ = rows;
-    todo!(
-        "collect every pattern-dataset row id whose verdict is Accept into a \
-         BTreeSet; see derive::tests for the frozen known-answer cases (rhel8 = 3 \
-         values, rhel9/rhel10 = 4 values)"
-    )
+    for r in rows {
+        if r.dataset != "pattern" {
+            return Err(format!(
+                "expected only pattern-dataset rows, found dataset {:?} (id {:?})",
+                r.dataset, r.id
+            ));
+        }
+    }
+    Ok(rows
+        .iter()
+        .filter(|r| r.verdict == Verdict::Accept)
+        .map(|r| r.id.clone())
+        .collect())
 }
 
 /// Derive the fapd-E07 type-category map from an `e07`-dataset transcript: group rows
@@ -158,12 +177,70 @@ pub fn derive_pattern(rows: &[ProbeRow]) -> Result<BTreeSet<String>, String> {
 /// shape/verdict combination does not match any of the patterns above (an
 /// unrecognized combination, e.g. from a corrupted fixture).
 pub fn derive_e07(rows: &[ProbeRow]) -> Result<BTreeMap<String, AttrTypeCategory>, String> {
-    let _ = rows;
-    todo!(
-        "group e07-dataset rows by attribute name and classify each attr's \
-         accept/reject shape pattern into an AttrTypeCategory; see derive::tests for \
-         the frozen known-answer cases (11 attrs, full map per fixture)"
-    )
+    for r in rows {
+        if r.dataset != "e07" {
+            return Err(format!(
+                "expected only e07-dataset rows, found dataset {:?} (id {:?})",
+                r.dataset, r.id
+            ));
+        }
+    }
+
+    let mut by_attr: BTreeMap<String, BTreeMap<String, Verdict>> = BTreeMap::new();
+    for r in rows {
+        let (attr, shape) =
+            r.id.split_once('_')
+                .ok_or_else(|| format!("e07 row id {:?} has no <attr>_<shape> separator", r.id))?;
+        by_attr
+            .entry(attr.to_string())
+            .or_default()
+            .insert(shape.to_string(), r.verdict);
+    }
+
+    let mut out = BTreeMap::new();
+    for (attr, shapes) in &by_attr {
+        let category = classify_e07_shapes(shapes).ok_or_else(|| {
+            format!("attr {attr:?} has an unrecognized e07 shape/verdict combination: {shapes:?}")
+        })?;
+        out.insert(attr.clone(), category);
+    }
+    Ok(out)
+}
+
+/// Classify one attribute's observed `<shape> -> verdict` map into an
+/// [`AttrTypeCategory`] per the seven patterns documented on [`derive_e07`], or
+/// `None` if the shape/verdict combination matches none of them.
+fn classify_e07_shapes(shapes: &BTreeMap<String, Verdict>) -> Option<AttrTypeCategory> {
+    let get = |k: &str| shapes.get(k).copied();
+    match (
+        shapes.len(),
+        get("int"),
+        get("str"),
+        get("signed_negfirst"),
+        get("mixed"),
+        get("set"),
+    ) {
+        (2, Some(Verdict::Accept), Some(Verdict::Reject), None, None, None) => {
+            Some(AttrTypeCategory::Unsigned)
+        }
+        (2, Some(Verdict::Reject), Some(Verdict::Accept), None, None, None) => {
+            Some(AttrTypeCategory::Str)
+        }
+        (3, Some(Verdict::Accept), Some(Verdict::Reject), Some(Verdict::Reject), None, None) => {
+            Some(AttrTypeCategory::Unsigned)
+        }
+        (3, Some(Verdict::Reject), Some(Verdict::Reject), Some(Verdict::Accept), None, None) => {
+            Some(AttrTypeCategory::Signed)
+        }
+        (3, Some(Verdict::Accept), Some(Verdict::Accept), None, Some(Verdict::Accept), None) => {
+            Some(AttrTypeCategory::Permissive)
+        }
+        (3, Some(Verdict::Accept), Some(Verdict::Reject), None, Some(Verdict::Reject), None) => {
+            Some(AttrTypeCategory::Unsigned)
+        }
+        (1, None, None, None, None, Some(Verdict::Reject)) => Some(AttrTypeCategory::NoSet),
+        _ => None,
+    }
 }
 
 /// Compare the probe-derived version (from `version_rows`) against the shipped
@@ -175,33 +252,42 @@ pub fn check_version(
     version_rows: &[ProbeRow],
     target: TargetVersion,
 ) -> Result<DatasetDrift, String> {
-    let _ = (version_rows, target);
-    todo!(
-        "diff derive_version(version_rows) against target.fapolicyd_version(); a \
-         mismatch reports BOTH sides (added = the probed version, removed = the \
-         shipped version) so `check` names what the daemon actually reports"
-    )
+    let probed = derive_version(version_rows)?;
+    let shipped = target.fapolicyd_version();
+    if probed == shipped {
+        Ok(DatasetDrift {
+            dataset: "version",
+            added: Vec::new(),
+            removed: Vec::new(),
+        })
+    } else {
+        Ok(DatasetDrift {
+            dataset: "version",
+            added: vec![probed],
+            removed: vec![shipped.to_string()],
+        })
+    }
 }
 
 /// Compare the probe-derived accepted `pattern=` set (from `pattern_rows`) against the
 /// shipped table for `target`.
 ///
 /// # Errors
-/// Propagates any [`derive_pattern`] error, or (once implemented) any error from
-/// resolving the shipped-table comparison side (see the Cargo.toml header comment:
-/// `rulesteward-fapolicyd`'s pattern-value constants are not yet `pub`).
+/// Propagates any [`derive_pattern`] error.
 pub fn check_pattern(
     pattern_rows: &[ProbeRow],
     target: TargetVersion,
 ) -> Result<DatasetDrift, String> {
-    let _ = (pattern_rows, target);
-    todo!(
-        "diff derive_pattern(pattern_rows) against the shipped accepted pattern= \
-         value set for target (rulesteward_fapolicyd::lints::version_target's \
-         RHEL8_PATTERN_VALUES / RHEL9_PLUS_PATTERN_VALUES are private today - a pub \
-         accessor must be added to that crate as part of this implementation, \
-         outside tools/fapolicyd-probe-update/)"
-    )
+    let probed = derive_pattern(pattern_rows)?;
+    let shipped: BTreeSet<String> = accepted_pattern_values(target)
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    Ok(DatasetDrift {
+        dataset: "pattern",
+        added: probed.difference(&shipped).cloned().collect(),
+        removed: shipped.difference(&probed).cloned().collect(),
+    })
 }
 
 /// Compare the probe-derived fapd-E07 type-category map (from `e07_rows`) against
@@ -210,11 +296,28 @@ pub fn check_pattern(
 /// # Errors
 /// Propagates any [`derive_e07`] error.
 pub fn check_e07(e07_rows: &[ProbeRow], target: TargetVersion) -> Result<DatasetDrift, String> {
-    let _ = (e07_rows, target);
-    todo!(
-        "diff derive_e07(e07_rows) against rulesteward_fapolicyd::attrs::type_category_for \
-         for every attr name the probe covers"
-    )
+    let probed = derive_e07(e07_rows)?;
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    for (attr, probed_cat) in &probed {
+        match type_category_for(attr, target) {
+            Some(shipped_cat) if shipped_cat == *probed_cat => {}
+            Some(shipped_cat) => {
+                added.push(format!("{attr}={probed_cat:?}"));
+                removed.push(format!("{attr}={shipped_cat:?}"));
+            }
+            None => {
+                added.push(format!(
+                    "{attr}={probed_cat:?} (unknown to the shipped table)"
+                ));
+            }
+        }
+    }
+    Ok(DatasetDrift {
+        dataset: "e07",
+        added,
+        removed,
+    })
 }
 
 /// Compare all three probe-derived datasets against the shipped tables for `target`,

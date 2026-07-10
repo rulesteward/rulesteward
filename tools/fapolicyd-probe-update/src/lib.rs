@@ -21,15 +21,15 @@
 //! fixtures. The `main` binary (not part of this library) wires these into the
 //! `check` / `derive` subcommands.
 //!
-//! NOTE (RED-test-authoring pass, issue #478, session 7b-v0_6-wave2 pipeline P2):
-//! `transcript::parse_tsv`, `derive::derive_version` / `derive_pattern` /
-//! `derive_e07`, and `derive::check_version` / `check_pattern` / `check_e07` /
-//! `check_target` are all `todo!()` stubs. This session authored the crate skeleton,
-//! the committed fixtures, and a frozen RED test suite (in `#[cfg(test)]` modules
-//! here and in `tests/cli.rs`); a separate implementer session fills in the parse /
-//! derive / check logic without weakening any authored assertion. See Cargo.toml's
-//! header comment for a known gap: dataset (b)'s shipped constants are not yet
-//! `pub` in `rulesteward-fapolicyd`.
+//! NOTE (issue #478, session 7b-v0_6-wave2 pipeline P2): the RED-test-authoring pass
+//! authored the crate skeleton, the committed fixtures, and a frozen RED test suite
+//! (in `#[cfg(test)]` modules here and in `tests/cli.rs`) with `transcript::parse_tsv`,
+//! `derive::derive_version` / `derive_pattern` / `derive_e07`, `derive::check_version`
+//! / `check_pattern` / `check_e07` / `check_target`, and `probe::probe_live` all
+//! `todo!()`-stubbed; a later implementer pass (same pipeline) filled in the parse /
+//! derive / check / live-probe logic without weakening any authored assertion,
+//! including adding a `pub` accessor to `rulesteward-fapolicyd` for dataset (b) (see
+//! Cargo.toml's header comment).
 
 pub mod derive;
 pub mod probe;

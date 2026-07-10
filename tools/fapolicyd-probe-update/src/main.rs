@@ -14,9 +14,9 @@
 //!
 //! This file is CLI plumbing only (arg parsing, subcommand dispatch, rendering); the
 //! parse/derive/check LOGIC it calls into ([`fapolicyd_probe_update::transcript`],
-//! [`fapolicyd_probe_update::derive`]) is `todo!()`-stubbed as of this
-//! RED-test-authoring pass (issue #478) - running this binary today panics once it
-//! reaches that logic. `tests/cli.rs` pins the intended exit-code / output contract.
+//! [`fapolicyd_probe_update::derive`]) was `todo!()`-stubbed during the
+//! RED-test-authoring pass (issue #478) and filled in by a later implementer pass.
+//! `tests/cli.rs` pins the exit-code / output contract.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

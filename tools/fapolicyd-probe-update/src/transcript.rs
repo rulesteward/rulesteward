@@ -83,13 +83,84 @@ pub fn read_transcript(path: &Path) -> Result<Transcript, String> {
 /// # Errors
 /// See "Frozen contract" and "Fails CLOSED" above.
 pub fn parse_tsv(body: &str) -> Result<Transcript, String> {
-    let _ = body;
-    todo!(
-        "parse the 5-column fapolicyd probe TSV format; see the transcript::tests \
-         module for the frozen contract (comment/blank-line skip, fail-closed empty \
-         / missing-header / no-data-rows cases, per-field validation with 1-based \
-         line numbers on malformed rows)"
-    )
+    if body.trim().is_empty() {
+        return Err("empty probe transcript body".to_string());
+    }
+
+    let mut rows = Vec::new();
+    let mut saw_header = false;
+
+    for (idx, line) in body.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            saw_header = true;
+            continue;
+        }
+
+        let fields: Vec<&str> = line.splitn(5, '\t').collect();
+        let [dataset, id, verdict_str, loaded_n_str, evidence] = fields.as_slice() else {
+            return Err(format!(
+                "line {line_no}: expected 5 tab-separated fields (dataset, id, verdict, \
+                 loaded_n, evidence), got {}",
+                fields.len()
+            ));
+        };
+
+        if !matches!(*dataset, "version" | "pattern" | "e07") {
+            return Err(format!(
+                "line {line_no}: unknown dataset {dataset:?} (expected version|pattern|e07)"
+            ));
+        }
+        if id.is_empty() {
+            return Err(format!("line {line_no}: id must not be empty"));
+        }
+        let verdict = match *verdict_str {
+            "ok" => Verdict::Ok,
+            "accept" => Verdict::Accept,
+            "reject" => Verdict::Reject,
+            other => {
+                return Err(format!(
+                    "line {line_no}: unknown verdict {other:?} (expected ok|accept|reject)"
+                ));
+            }
+        };
+        let loaded_n = if loaded_n_str.is_empty() {
+            None
+        } else {
+            Some(loaded_n_str.parse::<u32>().map_err(|e| {
+                format!("line {line_no}: loaded_n {loaded_n_str:?} is not a valid u32: {e}")
+            })?)
+        };
+
+        rows.push(ProbeRow {
+            dataset: (*dataset).to_string(),
+            id: (*id).to_string(),
+            verdict,
+            loaded_n,
+            evidence: (*evidence).to_string(),
+        });
+    }
+
+    if !saw_header {
+        return Err(
+            "missing documentation header (no '#'-prefixed line found; the fixture may be \
+             truncated from the top)"
+                .to_string(),
+        );
+    }
+    if rows.is_empty() {
+        return Err(
+            "no data rows found (the fixture may be truncated from the bottom, or is \
+             comments-only)"
+                .to_string(),
+        );
+    }
+
+    Ok(rows)
 }
 
 #[cfg(test)]
