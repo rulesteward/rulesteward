@@ -329,17 +329,22 @@ pub(super) fn msgtype_number(name: &str, opts: LintOptions) -> Option<u32> {
 pub(super) fn msgtype_resolved_number(raw: &str, opts: LintOptions) -> Option<u64> {
     let t = raw.trim();
     // The name table already yields in-range record numbers. A NUMERIC spelling
-    // must be truncated to the __u32 wire width: the load path assigns a base-0
-    // `strtol` result straight into `struct audit_rule_data`'s `__u32 values[]`
-    // with NO range check (libaudit.c:1788-1790 @ 3bfa048), and the kernel then
-    // compares with `audit_comparator(u32, ...)` (auditfilter.c:1205-1227 @ v6.6).
-    // So `msgtype=4294967296` denotes record type 0 and `msgtype=4294968596`
-    // denotes 1300 (SYSCALL). Mask mod 2^32 so congruent spellings fold to the one
-    // real record type. This differs from uid/gid/sessionid, which the kernel
-    // REJECTS out of range (classify.rs declines those via `u32::try_from`);
-    // msgtype TRUNCATES, so it masks. Below 2^32 the mask is a no-op, so every
-    // in-range value (and the name-table path) is unchanged.
-    msgtype_number(t, opts)
-        .map(u64::from)
-        .or_else(|| parse_u64_base0(t).map(|n| n & 0xFFFF_FFFF))
+    // is a __u32 on the wire (`struct audit_rule_data`'s `__u32 values[]`, uapi
+    // audit.h:516; the kernel compares with `audit_comparator(u32, ...)`,
+    // auditfilter.c:1205-1227 @ v6.6). DECLINE any spelling that does not fit in
+    // u32 rather than trying to model the daemon's exact out-of-range behaviour:
+    // libaudit parses with SIGNED `strtol` (libaudit.c:1788-1790 @ 3bfa048), which
+    // clamps a positive overflow to LONG_MAX BEFORE the truncation, so e.g. 2^63
+    // loads as 0xFFFF_FFFF, NOT 0 -- an unsigned `& 0xFFFF_FFFF` mask would
+    // mis-model that and prove a false disjointness (dropping an au-W03 warning).
+    // Declining above u32::MAX is the conservative, sound choice and mirrors the
+    // classify.rs uid/gid/sessionid precedent (`u32::try_from`, decline above): a
+    // >u32 spelling never participates in an identity disjointness/equality proof.
+    // Below 2^32 this is a no-op, so every in-range value (and the name path) is
+    // unchanged. No real audit rule carries a msgtype above u32::MAX.
+    msgtype_number(t, opts).map(u64::from).or_else(|| {
+        parse_u64_base0(t)
+            .and_then(|n| u32::try_from(n).ok())
+            .map(u64::from)
+    })
 }
