@@ -328,7 +328,18 @@ pub(super) fn msgtype_number(name: &str, opts: LintOptions) -> Option<u32> {
 /// via a direct import.
 pub(super) fn msgtype_resolved_number(raw: &str, opts: LintOptions) -> Option<u64> {
     let t = raw.trim();
+    // The name table already yields in-range record numbers. A NUMERIC spelling
+    // must be truncated to the __u32 wire width: the load path assigns a base-0
+    // `strtol` result straight into `struct audit_rule_data`'s `__u32 values[]`
+    // with NO range check (libaudit.c:1788-1790 @ 3bfa048), and the kernel then
+    // compares with `audit_comparator(u32, ...)` (auditfilter.c:1205-1227 @ v6.6).
+    // So `msgtype=4294967296` denotes record type 0 and `msgtype=4294968596`
+    // denotes 1300 (SYSCALL). Mask mod 2^32 so congruent spellings fold to the one
+    // real record type. This differs from uid/gid/sessionid, which the kernel
+    // REJECTS out of range (classify.rs declines those via `u32::try_from`);
+    // msgtype TRUNCATES, so it masks. Below 2^32 the mask is a no-op, so every
+    // in-range value (and the name-table path) is unchanged.
     msgtype_number(t, opts)
         .map(u64::from)
-        .or_else(|| parse_u64_base0(t))
+        .or_else(|| parse_u64_base0(t).map(|n| n & 0xFFFF_FFFF))
 }
