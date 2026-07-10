@@ -378,3 +378,19 @@ fn derive_unknown_version_exits_2() {
         "the error must name the unknown version: stderr={stderr}"
     );
 }
+
+/// ATL round-3 clean-run survivor (main.rs:55 `print_help` -> `()`): the help
+/// text must actually print - exit 0 with non-empty usage on stderr naming
+/// both subcommands and the offline flag (mirrors
+/// tools/sshd-stig-update/tests/cli.rs's help pin).
+#[test]
+fn help_exits_0_and_names_both_subcommands() {
+    let (code, _stdout, stderr) = run(&["--help"]);
+    assert_eq!(code, Some(0), "--help must exit 0; stderr={stderr}");
+    for token in ["check", "derive", "--fixtures", "--config"] {
+        assert!(
+            stderr.contains(token),
+            "help output must mention {token:?}: stderr={stderr}"
+        );
+    }
+}

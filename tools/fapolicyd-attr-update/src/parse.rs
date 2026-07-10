@@ -662,4 +662,196 @@ static const nv_t xtable2[] = {
             .expect_err("an xtable2-only source has no table2 declaration; must be rejected");
         assert!(!err.is_empty(), "error message must not be empty");
     }
+
+    /// ATL round-3 adversary miss #3 (repro /var/tmp/7b-atl-p3/p2f/): the brace
+    /// matcher must not treat a lone `}` inside a `//` line comment as the
+    /// table's closing brace. Comments are NOT delimiters - a correct
+    /// comment-aware extraction returns ALL rows. Today the brace scan runs
+    /// BEFORE comment stripping, so the comment's `}` closes the slice early
+    /// and the trailing rows (`path`, `mode` below) are SILENTLY dropped with
+    /// exit 0 - the worst failure shape for a drift gate. NOTE: the round-2
+    /// phantom-comment test used a block comment with BALANCED braces
+    /// (`/* { CGROUP, "cgroup" }, */`), which is exactly what let this slip:
+    /// balanced braces keep the depth count intact, so only comment-stripping
+    /// was exercised, never the matcher's comment-blindness. This test is
+    /// impl-agnostic about the fix (strip comments before matching, or make
+    /// the matcher comment-aware).
+    #[test]
+    fn table_rows_survive_a_lone_close_brace_in_a_line_comment() {
+        let src = "\
+static const nv_t table[] = {
+{\tALL_OBJ, \t\"all\" },\t// legacy row layout used a bare } terminator
+{\tPATH, \t\t\"path\" },
+{\tFMODE,\t\t\"mode\" },
+};
+";
+        let names = extract_table_names(src, "table")
+            .expect("a lone } inside a // comment must not truncate the table");
+        assert_eq!(
+            names,
+            ["all", "path", "mode"],
+            "rows after the commented lone }} must not be silently dropped: {names:?}"
+        );
+    }
+
+    /// The mirror of the lone-`}` miss: a lone `{` inside a `//` line comment
+    /// must not inflate the brace depth (today it over-extends the scan past
+    /// the real `};` and errors "unbalanced"; the ruled contract is that
+    /// comments are not delimiters, so ALL rows parse). Same impl-agnostic
+    /// framing as the test above.
+    #[test]
+    fn table_rows_survive_a_lone_open_brace_in_a_line_comment() {
+        let src = "\
+static const nv_t table[] = {
+{\tALL_OBJ, \t\"all\" },\t// upstream once proposed a nested { group here
+{\tPATH, \t\t\"path\" },
+};
+";
+        let names = extract_table_names(src, "table")
+            .expect("a lone { inside a // comment must not unbalance the table");
+        assert_eq!(
+            names,
+            ["all", "path"],
+            "a commented lone {{ must not change what parses: {names:?}"
+        );
+    }
+
+    /// ATL round-3 clean-run survivor battery for `strip_comments`'s scanning
+    /// arithmetic (14 survivors at parse.rs 188/191/192/197/199/201/202/203:
+    /// guard `==`/`&&` inversions, `+`/`+=` arithmetic, and `<` vs `<=`
+    /// advance bounds). Each row pins a specific guard or advance with an
+    /// EXACT expected output, so an off-by-one or inverted guard diverges on
+    /// at least one row (several also diverge by panicking on an out-of-bounds
+    /// index or usize underflow):
+    /// * `"a/"`   - `/` as the LAST byte: the `bytes.get(i + 1)` lookahead is
+    ///   `None`, both comment guards stay false, the byte is kept.
+    /// * `"a/b"`  - `/` followed by neither `/` nor `*`: kept verbatim (an
+    ///   `&&`->`||` guard inversion turns this into a comment / an
+    ///   unterminated-block error).
+    /// * `"/x"`   - single `/` at offset 0 (a `+`->`*` lookahead mutant reads
+    ///   `bytes.get(0)` = the `/` itself and eats the whole slice).
+    /// * `"x//y\nz"` - line comment mid-slice; the newline itself is KEPT.
+    /// * `"//x\ny"`  - line comment at slice START (a `+`->`-` lookahead
+    ///   mutant underflows at i=0).
+    /// * `"a//x"` - line comment to EOF with NO trailing newline (a `<`->`<=`
+    ///   advance-bound mutant indexes one past the end).
+    /// * `"abcd//\nef"` - comment far enough in that an `i+=2`->`i*=2` start
+    ///   skip lands PAST the newline and would eat the next row.
+    /// * `"/*x*/y"` - block comment at slice start (an `i+=2`->`i-=2` start
+    ///   skip underflows at i=0).
+    /// * `"/*a/b*/c"` - lone `/` INSIDE a block comment (an `&&`->`||`
+    ///   terminator mutant closes the comment at the `/`).
+    /// * `"/*a*/b"` - an `i+=2`->`i-=2` terminator skip re-emits the comment
+    ///   tail.
+    /// * `"/***/x"` - `**/` shape: the terminator is the LAST `*` + `/`.
+    /// * `"/*a*//*b*/c"` - two adjacent block comments.
+    #[test]
+    fn strip_comments_scanning_battery() {
+        let ok_cases: &[(&str, &str)] = &[
+            ("a/", "a/"),
+            ("a/b", "a/b"),
+            ("/x", "/x"),
+            ("x//y\nz", "x\nz"),
+            ("//x\ny", "\ny"),
+            ("a//x", "a"),
+            ("abcd//\nef", "abcd\nef"),
+            ("/*x*/y", "y"),
+            ("/*a/b*/c", "c"),
+            ("/*a*/b", "b"),
+            ("/***/x", "x"),
+            ("/*a*//*b*/c", "c"),
+        ];
+        for (input, want) in ok_cases {
+            let got = strip_comments(input)
+                .unwrap_or_else(|e| panic!("strip_comments({input:?}) must be Ok: {e}"));
+            assert_eq!(got, *want, "strip_comments({input:?})");
+        }
+
+        // Fail-closed rows: unterminated block comments, including `*` as the
+        // very last byte inside the comment (a `<`->`<=` terminator-scan bound
+        // mutant indexes `bytes[len]` here instead of erroring).
+        for input in ["/*x", "/*ab*", "a/*"] {
+            assert!(
+                strip_comments(input).is_err(),
+                "strip_comments({input:?}) must fail closed on an unterminated block comment"
+            );
+        }
+    }
+
+    /// ATL round-3 clean-run survivor (parse.rs:104:21 `decl + open_rel`
+    /// mutated to `-`): the brace-scan start offset must be ANCHORED at the
+    /// declaration. A quoted decoy sits BEFORE the declaration and the real
+    /// `{` sits far to the right of `table2[]` (a long space run), so a
+    /// miscomputed `decl - open_rel` start lands back inside the decoy line
+    /// and the extraction would include `"decoy"`.
+    #[test]
+    fn extraction_excludes_quoted_decoy_before_the_declaration() {
+        let src = "\
+static const char *v = \"decoy\";
+static const nv_t table2[] =                                        {
+{\tALL_SUBJ, \"all\"\t},
+{\tAUID, \"auid\"\t},
+};
+";
+        assert_eq!(
+            extract_table_names(src, "table2").expect("table2 parses"),
+            ["all", "auid"],
+            "the quoted decoy on the line BEFORE the declaration must never be extracted"
+        );
+    }
+
+    /// ATL round-3 clean-run survivor (parse.rs:111:45 `open + 1` slice start
+    /// mutated to `open - 1`): the extracted body must start strictly AFTER
+    /// the opening brace. The decoy's closing quote is the byte IMMEDIATELY
+    /// before `{`, so an `open - 1` slice start begins ON that quote and the
+    /// quote pairing shifts by one (the junk between the decoy's closing
+    /// quote and `"all"`'s opening quote becomes a "name").
+    ///
+    /// Note: the sibling mutant `open + 1` -> `open * 1` (slice starting AT
+    /// the brace) is EQUIVALENT-BY-ANALYSIS and documented-parked: the one
+    /// extra byte is always the `{` itself, which is inert to both the
+    /// comment stripper and the quote scan, so no input can distinguish it.
+    #[test]
+    fn extraction_body_starts_strictly_after_the_opening_brace() {
+        let src = "static const nv_t table2[] = \"zz\"{\n{\tALL_SUBJ, \"all\"\t},\n};\n";
+        assert_eq!(
+            extract_table_names(src, "table2").expect("table2 parses"),
+            ["all"],
+            "a quoted decoy whose closing quote abuts the opening brace must not \
+             shift the quote pairing"
+        );
+    }
+
+    /// ATL round-3 clean-run survivor (parse.rs:268:30 `&&` -> `||`, and one
+    /// side of 266:63 `==` -> `!=`): when NEITHER the canonical (`filehash`)
+    /// nor the alias (`sha256hash`) is present, the exception must not fire.
+    /// An `||`-mutated trigger (canonical-present OR alias-absent) and a
+    /// `!=`-mutated canonical match (any-name-differs) BOTH spuriously push
+    /// `sha256hash` into this table.
+    #[test]
+    fn apply_object_alias_exceptions_noop_when_canonical_and_alias_both_absent() {
+        let literal = vec!["path".to_string(), "mode".to_string()];
+        let out = apply_object_alias_exceptions(literal.clone());
+        assert_eq!(
+            out, literal,
+            "no filehash and no sha256hash present -> the exception must not fire"
+        );
+    }
+
+    /// The discriminating mirror for parse.rs:266:63 `==` -> `!=`: on a table
+    /// whose ONLY row is the canonical name, an inverted match (`any(n !=
+    /// canonical)`) sees no other name and reports the canonical ABSENT,
+    /// silently skipping the required alias push. (The existing 1.3.2/1.4.5
+    /// fixture pair never isolates this: those tables always carry other
+    /// names alongside the canonical, so the inverted `any` still returns
+    /// true on them.)
+    #[test]
+    fn apply_object_alias_exceptions_applies_on_a_canonical_only_table() {
+        let out = apply_object_alias_exceptions(vec!["filehash".to_string()]);
+        assert_eq!(
+            out,
+            ["filehash".to_string(), "sha256hash".to_string()],
+            "a canonical-only table must still gain the alias"
+        );
+    }
 }
