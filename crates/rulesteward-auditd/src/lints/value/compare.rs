@@ -205,14 +205,20 @@ fn eq_sentinel_relational_disjoint(
     let Some(p) = classify(ft, rel_val).position() else {
         return false; // symbolic/opaque/also-sentinel relational value: stay conservative
     };
-    let (lo, hi): (i128, i128) = match rel_op {
-        CompareOp::Ge => (p, i128::MAX),
-        CompareOp::Gt => (p + 1, i128::MAX),
-        CompareOp::Le => (i128::MIN, p),
-        CompareOp::Lt => (i128::MIN, p - 1),
+    // Only an UPPER-bounded range can exclude the sentinel: a concrete
+    // uid/gid/sessionid position `p` caps at 4294967294 (u32::MAX itself folds
+    // to the sentinel, so it never reaches here as a concrete `p`), so the
+    // sentinel at u32::MAX sits strictly ABOVE every `p`. A LOWER-bounded range
+    // (Ge/Gt) therefore always contains the sentinel -> never disjoint; and the
+    // symmetric "sentinel below the lower bound" case is impossible since
+    // nothing exceeds u32::MAX. So only Le/Lt can prove disjointness, via their
+    // upper bound `hi`.
+    let hi: i128 = match rel_op {
+        CompareOp::Le => p,
+        CompareOp::Lt => p - 1,
         _ => return false,
     };
-    SENTINEL_POSITION < lo || hi < SENTINEL_POSITION
+    hi < SENTINEL_POSITION
 }
 
 /// Whether two `=`/`!=` values on field `ft` can be decided same-vs-different
