@@ -1465,6 +1465,45 @@ mod tests {
     }
 
     #[test]
+    fn msgtype_above_u32_stays_conservative_signed_strtol_clamp_475() {
+        // Above u32::MAX the two "restore non-disjoint" strategies DIVERGE, and
+        // only DECLINE is sound. libaudit.c:1788-1790 @ 3bfa048 parses msgtype
+        // with SIGNED `strtol`, which clamps a positive overflow to LONG_MAX
+        // (0x7FFF_FFFF_FFFF_FFFF) BEFORE the __u32 truncation (uapi audit.h:516
+        // `__u32 values[]`), so 2^63 loads as 0xFFFF_FFFF == 4294967295, NOT 0.
+        // An unsigned `& 0xFFFF_FFFF` mask would fold 2^63 -> 0 and reintroduce
+        // the round-1 false positive at a higher magnitude. The prover instead
+        // DECLINES any spelling above u32::MAX (the classify.rs uid/gid/sessionid
+        // precedent: `u32::try_from`, decline above), so it never proves a
+        // >u32 spelling disjoint -> never drops an au-W03 suppression warning.
+        //
+        // Dropped-warning guard: 2^63 and 4294967295 both load as 4294967295, so
+        // a never/always pair on them conflicts; declining keeps them
+        // non-disjoint (conservative AND, here, exactly correct).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "9223372036854775808"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967295"),
+            OFF,
+        ));
+        // Mirror order: the symmetric gate must decline the >u32 operand on
+        // either side.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967295"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "9223372036854775808"),
+            OFF,
+        ));
+        // au-W01/au-W02 fold guard: `canonical_value` shares the same resolver,
+        // so a >u32 spelling must NOT canonicalize to an in-range record number
+        // (an unsigned mask folded 2^63 -> "0", false-equating it with
+        // msgtype=0 for duplicate/shadow detection).
+        assert_ne!(
+            canonical_value(ft(AuditField::MsgType), "9223372036854775808", OFF),
+            canonical_value(ft(AuditField::MsgType), "0", OFF),
+            "a msgtype spelling above u32::MAX must not fold to an in-range record number",
+        );
+    }
+
+    #[test]
     fn msgtype_relational_pairs_stay_conservative_475() {
         // Interval/relational reasoning for msgtype is explicitly OUT of scope
         // for #475 (a documented non-goal, not a soundness gap:
