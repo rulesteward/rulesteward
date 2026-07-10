@@ -107,14 +107,26 @@ fn target_none_is_silent_even_on_a_wildly_non_compliant_ruleset() {
 }
 
 #[test]
-fn target_some_with_empty_shipped_table_is_silent_today() {
-    // The shipped RHEL9_REQUIRED table is empty (test-author state); w06's
-    // dispatch to w06_with_baseline short-circuits on an empty baseline BEFORE
-    // reaching the todo!(), so this specific path is GREEN today even though
-    // the real matcher is not implemented yet.
+fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_required_line() {
+    // The shipped RHEL9_REQUIRED table is now populated (issue #474): a bare
+    // ruleset with zero matching watch/syscall rules is missing every one of
+    // the 67 required lines, so w06's real dispatch (w06 -> baseline_for ->
+    // w06_with_baseline) must report exactly one finding per line - the exact
+    // count this test-author independently confirmed via
+    // `code_table(Rhel9).len()` (mirrors
+    // `tools/auditd-stig-update`'s frozen `rhel9_known_answer_counts`/
+    // `rhel9_fixture_reproduces_code_table_exactly` pins). Distinct from the
+    // adjacent `w06_real_entrypoint_fires_on_a_bare_ruleset_...` test (which
+    // proves the dispatch fires + names RHEL-09-654010 but does not pin the
+    // exact count or that EVERY finding is severity=Warning): this adds the
+    // count precision that test lacks.
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
-    assert!(diags.is_empty(), "{diags:?}");
+    assert_eq!(diags.len(), 67, "{diags:?}");
+    assert!(
+        diags.iter().all(|d| d.severity == Severity::Warning),
+        "every au-W06 finding must be severity=Warning: {diags:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1046,7 +1046,7 @@ mod tests {
 mod lint_shell_tests {
     use super::{HostTargetProbe, lint, lint_with_probe, resolve_lint_target};
     use crate::cli::{AuditdLintArgs, HumanJsonFormat, TargetSelector, TargetVersionArg};
-    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
 
     /// A host probe returning a canned result, so the `--target auto` wiring
     /// (including its degrade-with-warning path) is exercised without depending
@@ -1121,14 +1121,14 @@ mod lint_shell_tests {
 
     // -- issue #474: --target wiring (mirrors commands::sysctl / commands::sshd) --
 
-    /// `--target` is plumbed into the lint context: an au-W06-clean (target=None
-    /// would be clean too, but this pins the WIRING) ruleset still exits 0 under
-    /// an explicit --target, since the shipped RHEL*_REQUIRED tables are empty
-    /// today (test-author state) - this only proves the flag reaches `lints::lint`
-    /// without erroring, not that au-W06 fires (it cannot yet; see
-    /// `rulesteward_auditd::lints::stig_required`'s module doc).
+    /// `--target` is plumbed into the lint context: the shipped `RHEL9_REQUIRED`
+    /// table is now populated (issue #474), so a ruleset satisfying only one of
+    /// its 67 required lines (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240)
+    /// exits `EXIT_WARNINGS` under an explicit --target - this pins that the flag
+    /// reaches `lints::lint` and threads through to the real au-W06 dispatch,
+    /// not just that it doesn't error.
     #[test]
-    fn target_flag_is_accepted_and_stays_clean_against_the_empty_shipped_table() {
+    fn target_flag_threads_and_warns_against_the_populated_table() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("10-a.rules");
         std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
@@ -1138,14 +1138,15 @@ mod lint_shell_tests {
             apparmor: false,
             target: Some(TargetSelector::Rhel9),
         };
-        assert_eq!(lint(&a), EXIT_CLEAN);
+        assert_eq!(lint(&a), EXIT_WARNINGS);
     }
 
     #[test]
     fn target_auto_threads_the_probed_target() {
-        // `--target auto` resolves via the host probe; with the shipped tables
-        // still empty this stays clean (proves the resolved target reaches the
-        // dispatcher without the probe ever touching the real host).
+        // `--target auto` resolves via the host probe; with the shipped RHEL9
+        // table now populated, the same one-of-67-satisfied ruleset warns
+        // (proves the resolved target reaches the dispatcher without the probe
+        // ever touching the real host).
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("10-a.rules");
         std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
@@ -1156,7 +1157,7 @@ mod lint_shell_tests {
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
-        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
+        assert_eq!(lint_with_probe(&a, &probe), EXIT_WARNINGS);
     }
 
     #[test]

@@ -63,11 +63,13 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 // --- exit-code contract: 0 in sync -------------------------------------------
 
 #[test]
-fn check_file_with_no_audit_rule_groups_is_in_sync_exits_0() {
-    // Both sides empty (no Groups select, and the shipped table starts empty)
-    // is the one "in sync" case reachable without the shipped table being
-    // populated yet - it pins the 0-exit WIRING independent of the real-data
-    // milestone. RED today: parse_requirements is todo!() (see module doc).
+fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
+    // The shipped RHEL9_REQUIRED table is now populated (issue #474): a file
+    // with no audit-rule Groups derives an empty set, which necessarily
+    // drifts against the (now 67-row) shipped table - this keeps coverage of
+    // the zero-selection -> drift -> exit-1 path (the mirror-image case of
+    // the "both sides empty" wiring pin this test used to be, before
+    // population inverted its premise).
     let f = temp_xccdf("empty", EMPTY_SELECTION_XCCDF);
     let (code, stdout, err) = run(&[
         "check",
@@ -78,22 +80,22 @@ fn check_file_with_no_audit_rule_groups_is_in_sync_exits_0() {
     ]);
     assert_eq!(
         code,
-        Some(0),
-        "an empty-selection file vs the empty shipped table must be in sync; \
+        Some(1),
+        "an empty-selection file must drift against the populated shipped table; \
          stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("OK (0 drift"), "stdout={stdout}");
+    assert!(stdout.contains("DRIFT (67 change(s))"), "stdout={stdout}");
 }
 
 // --- exit-code contract: 1 drift ---------------------------------------------
 
 #[test]
-fn check_real_rhel9_fixture_shows_drift_against_the_empty_shipped_table() {
-    // The real, non-empty rhel9 fixture necessarily drifts against the
-    // (currently empty, per the P2 test-author dispatch's "the implementer +
-    // tool derive fill real content" instruction) shipped table. RED today
-    // via the todo!() panic; once xccdf.rs is implemented this becomes a
-    // meaningful, always-true-until-the-table-is-populated exit-1 case.
+fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
+    // The shipped RHEL9_REQUIRED table is now populated from this same
+    // fixture's derived output (issue #474), so the real, non-empty rhel9
+    // fixture matches it exactly: 0 drift, 67 rules - mirrors
+    // `xccdf.rs`'s `rhel9_fixture_reproduces_code_table_exactly` through the
+    // CLI's `check` subcommand.
     let f = temp_xccdf("rhel9-full", RHEL9_FIXTURE);
     let (code, stdout, err) = run(&[
         "check",
@@ -104,10 +106,11 @@ fn check_real_rhel9_fixture_shows_drift_against_the_empty_shipped_table() {
     ]);
     assert_eq!(
         code,
-        Some(1),
-        "drift must exit 1; stdout={stdout} stderr={err}"
+        Some(0),
+        "the real rhel9 fixture must be in sync with the populated table; \
+         stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("DRIFT"), "stdout={stdout}");
+    assert!(stdout.contains("OK (0 drift, 67 rules)"), "stdout={stdout}");
 }
 
 #[test]

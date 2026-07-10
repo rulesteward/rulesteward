@@ -311,7 +311,13 @@ fn help_lists_the_target_flag() {
 }
 
 #[test]
-fn target_rhel9_flag_accepted_and_stays_clean_against_the_empty_shipped_table() {
+fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
+    // The shipped RHEL9_REQUIRED table is now populated (issue #474): this
+    // fixture satisfies only one of its 67 required lines
+    // (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240), so --target rhel9
+    // now surfaces the other 66 as au-W06 warnings (exit 1) - the same
+    // FLAG-WIRING proof as before (the flag reaches the real matcher), just
+    // with the outcome the populated table actually produces.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -323,13 +329,27 @@ fn target_rhel9_flag_accepted_and_stays_clean_against_the_empty_shipped_table() 
         .arg(dir.path())
         .args(["--target", "rhel9", "--format", "json"])
         .assert()
-        .code(0);
+        .code(1);
     let out = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).expect("stdout must be JSON");
+    let diags = v["diagnostics"].as_array().expect("diagnostics array");
     assert_eq!(
-        v["diagnostics"],
-        serde_json::json!([]),
-        "no au-W06 findings until the shipped baseline table is populated: {out}"
+        diags.len(),
+        66,
+        "66 of the 67 required lines are missing (RHEL-09-654240 is satisfied): {out}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d["code"] == serde_json::json!("au-W06")),
+        "every finding must be au-W06: {out}"
+    );
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("RHEL-09-654240")),
+        "the satisfied requirement must not be reported missing: {out}"
     );
 }
 

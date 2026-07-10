@@ -103,15 +103,32 @@ mod tests {
     }
 
     #[test]
-    fn code_table_projects_the_shipped_stub_as_empty() {
-        // Phase-0 / test-author state: the shipped RHEL*_REQUIRED tables are empty
-        // placeholders (populated later by the implementer via `derive`), so the
-        // projection is empty for every target. Once the implementer fills the
-        // real tables this test's expected length changes with them -- it is a
-        // parity pin on the PROJECTION MECHANISM, not a content oracle.
-        assert_eq!(code_table(TargetVersion::Rhel8), vec![]);
-        assert_eq!(code_table(TargetVersion::Rhel9), vec![]);
-        assert_eq!(code_table(TargetVersion::Rhel10), vec![]);
+    fn code_table_projects_the_populated_shipped_tables() {
+        // The shipped RHEL*_REQUIRED tables are now populated (issue #474); this
+        // is a parity pin on the PROJECTION MECHANISM, not a content oracle -- the
+        // lengths mirror the frozen per-product line counts pinned by
+        // `xccdf.rs`'s `rhelN_fixture_reproduces_code_table_exactly` /
+        // `rhelN_known_answer_counts` tests (rhel8=61, rhel9=67, rhel10=75), and
+        // each spot-check id is one this test-author independently confirmed
+        // present in the shipped table.
+        let rhel8 = code_table(TargetVersion::Rhel8);
+        let rhel9 = code_table(TargetVersion::Rhel9);
+        let rhel10 = code_table(TargetVersion::Rhel10);
+        assert_eq!(rhel8.len(), 61, "{rhel8:?}");
+        assert_eq!(rhel9.len(), 67, "{rhel9:?}");
+        assert_eq!(rhel10.len(), 75, "{rhel10:?}");
+        assert!(
+            rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),
+            "{rhel8:?}"
+        );
+        assert!(
+            rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
+            "{rhel9:?}"
+        );
+        assert!(
+            rhel10.iter().any(|r| r.stig_id == "RHEL-10-500300"),
+            "{rhel10:?}"
+        );
     }
 
     #[test]
