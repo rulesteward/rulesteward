@@ -452,6 +452,55 @@ _S(AUDIT_AA,                         \"USER\"                          )
         assert!(!err.is_empty(), "error message must not be empty");
     }
 
+    /// The line-number formatting in a malformed-row error must be the
+    /// 1-based `idx + 1`, not the raw 0-based `enumerate` index. Reuses the
+    /// mid-row-truncation fixture from
+    /// `parse_typetab_fails_closed_on_midline_truncation` (malformed row is
+    /// the SECOND source line) and additionally pins the reported line
+    /// number - that test only asserts the error is non-empty, so it cannot
+    /// distinguish `idx + 1` from a mutated `idx * 1` (which would report
+    /// line 1, not line 2, for this fixture). Kills `parse.rs:90:26`
+    /// (`idx + 1` -> `idx * 1` in `parse_typetab`).
+    #[test]
+    fn parse_typetab_malformed_row_error_reports_the_correct_one_based_line_number() {
+        let src = "\
+_S(AUDIT_USER,                       \"USER\"                          )
+_S(AUDIT_LOGIN,                      \"LOGIN\"";
+        let err = parse_typetab(src).expect_err("a mid-row truncation must be rejected");
+        assert!(
+            err.starts_with("line 2:"),
+            "the malformed row is the second (1-based) source line: {err:?}"
+        );
+    }
+
+    /// A row whose `AUDIT_<NAME>` half is empty (a bare `,` immediately after
+    /// `_S(`) must be rejected as malformed via `parse_s_row` returning
+    /// `None`, never silently accepted as a name-only entry and never a
+    /// panic. Kills three survivors in one input:
+    /// * `parse.rs:150:36` `comma + 1` -> `comma - 1`: with `comma == 0`
+    ///   (the row starts with the comma), `0usize - 1` underflows and panics
+    ///   in a debug build instead of returning `None`.
+    /// * `parse.rs:150:36` `comma + 1` -> `comma * 1` is a separate mutant
+    ///   NOT killed here (see `.cargo/mutants.toml`: `inner[comma]` is
+    ///   provably always the comma character itself, never `"`, so shifting
+    ///   the search start by exactly that one non-quote character cannot
+    ///   change which `"` is found - a genuine equivalent mutant, proved in
+    ///   the exclude_re rationale, not chased with a test here).
+    /// * `parse.rs:156:31` `||` -> `&&` in
+    ///   `audit_const.is_empty() || name.is_empty()`: the mutated guard only
+    ///   rejects a row when BOTH halves are empty, so this one-sided-empty
+    ///   row would fall through and be accepted as
+    ///   `Some(TypetabEntry { audit_const: "", name: "NAME" })` instead of
+    ///   `None`, turning the expected `Err` into an `Ok` here.
+    #[test]
+    fn parse_typetab_rejects_a_row_with_an_empty_audit_const_before_the_comma() {
+        let src = "_S(,\"NAME\"                                                    )\n";
+        let err = parse_typetab(src).expect_err(
+            "an empty audit_const before the comma must be rejected, not silently accepted",
+        );
+        assert!(!err.is_empty(), "error message must not be empty");
+    }
+
     /// KNOWN-ANSWER on the real audit-records.h fixture: exactly 166
     /// decimal-valued `#define AUDIT_*` constants, with pinned spot values
     /// spanning the file (first block, daemon block, integrity `#ifndef`

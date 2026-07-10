@@ -224,6 +224,34 @@ mod tests {
         );
     }
 
+    /// Isolates the `table_drift` `None` match arm (a name present in
+    /// `derived` but absent from `shipped`) from the OTHER direction (a name
+    /// present in `shipped` but absent from `derived`): `derived` here is
+    /// `shipped` plus exactly one extra name, so nothing fires the
+    /// shipped-only loop. `drift_detects_a_renamed_entry` and
+    /// `drift_detects_a_table_misplacement` both exercise this direction
+    /// too, but always alongside a shipped-only message that ALSO contains
+    /// the same substring their `any(|l| l.contains(...))` assertions check
+    /// for - so deleting the `None` arm (falls through to the `_ => {}`
+    /// catch-all) silently drops only this direction's line while the other
+    /// direction's line still satisfies those loose assertions. Asserting
+    /// the exact single-line output here has nothing else to fall back on:
+    /// kills `registry.rs:76:13` "delete match arm None in table_drift".
+    #[test]
+    fn table_drift_reports_derived_only_entry_when_nothing_else_drifts() {
+        let shipped = map(&[("SYSCALL", 1300)]);
+        let derived = map(&[("SYSCALL", 1300), ("NEWTYPE", 1400)]);
+        let out = table_drift("base", &derived, &shipped);
+        assert_eq!(
+            out,
+            vec![
+                "base: NEWTYPE present in the derived (upstream header) table but missing from the shipped table"
+                    .to_string()
+            ],
+            "a derived-only entry, with nothing else drifting, must still be reported"
+        );
+    }
+
     /// The two tables are compared SEPARATELY: an entry that migrated from
     /// the AppArmor table into the base table (same name, same number) is
     /// drift in BOTH tables, not a wash. An implementation that unions the

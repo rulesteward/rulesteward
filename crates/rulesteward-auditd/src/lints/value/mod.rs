@@ -89,8 +89,8 @@ mod tests {
     #![allow(clippy::similar_names, clippy::needless_pass_by_value)]
 
     use super::{
-        FieldValue, LintOptions, canonical_value, classify, disjoint, eq_values_provably_equal,
-        implies, msgtype_number,
+        FieldValue, LintOptions, apparmor_msgtype_names, base_msgtype_names, canonical_value,
+        classify, disjoint, eq_values_provably_equal, implies, msgtype_number,
     };
     use crate::ast::{AuditField, CompareOp, FieldFilter};
     use crate::lints::field_type::field_type;
@@ -524,6 +524,26 @@ mod tests {
         // The count of uncommented, non-APPARMOR _S entries in msg_typetab.h
         // @ 3bfa048. Guards against an accidental add/drop during transcription.
         assert_eq!(super::MSGTYPE_NAMES.len(), 189);
+    }
+
+    /// `base_msgtype_names()` / `apparmor_msgtype_names()` (#476) are pure
+    /// visibility projections of `MSGTYPE_NAMES` / `APPARMOR_MSGTYPE_NAMES`
+    /// for the out-of-workspace `tools/auditd-msgtype-update` derive tool.
+    /// That tool's own drift test (`shipped_tables_project_the_real_msgtype_
+    /// consts`) lives outside this workspace, so a `just cov` / in-workspace
+    /// mutation run has no test that would notice an accessor silently
+    /// returning a canned/wrong slice - these two identity pins close that
+    /// gap directly: they kill all 10 `Vec::leak(...)`-constant-return
+    /// mutants cargo-mutants reported for the two accessors (session 7c ATL
+    /// round 1, #476).
+    #[test]
+    fn base_msgtype_names_accessor_returns_the_real_table() {
+        assert_eq!(base_msgtype_names(), super::MSGTYPE_NAMES);
+    }
+
+    #[test]
+    fn apparmor_msgtype_names_accessor_returns_the_real_table() {
+        assert_eq!(apparmor_msgtype_names(), super::APPARMOR_MSGTYPE_NAMES);
     }
 
     #[test]
