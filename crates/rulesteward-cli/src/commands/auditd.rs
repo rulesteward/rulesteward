@@ -89,7 +89,9 @@ fn lint(args: &AuditdLintArgs) -> i32 {
         let opts = lints::LintOptions {
             include_apparmor: args.apparmor,
         };
-        diags.extend(lints::lint(&rules, opts));
+        // `--target` wiring for the version-aware au-W06 pass lands with #474;
+        // until then the portable default (None) keeps it silent.
+        diags.extend(lints::lint(&rules, opts, None));
     }
 
     crate::output::emit_lint(
