@@ -134,6 +134,49 @@ stig-derive product="all":
         cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
+# (#479) Drift-check / refresh the fapd-E01 attribute registry against upstream
+# fapolicyd's src/library/{subject,object}-attr.c. Same nested-tool pattern
+# (tools/fapolicyd-attr-update, OUT of `just ci`). The LIVE recipe skips gracefully
+# (exit 0) when curl is absent; the OFFLINE recipe never touches the network.
+#
+# fapd-attr-check          : LIVE - fetch the pinned attr-refs.toml sources from
+#                            GitHub; exit 1 on any drift vs the shipped
+#                            rulesteward-fapolicyd attrs.rs consts.
+# fapd-attr-check-offline  : OFFLINE - drift-check against the committed
+#                            tests/fixtures/ (the PR-gate uses this); no network.
+# fapd-attr-derive <v>     : print the derived registry + paste-ready rows for
+#                            review (v = a pinned fapolicyd version, or `all`).
+fapd-attr-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "fapd-attr-check: prerequisites missing - need curl + network access to GitHub" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- check
+
+fapd-attr-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed tests/fixtures/ and confirm the
+    # shipped attrs.rs registry still matches. No network. Drift (exit 1) or error
+    # (exit 2) fails the recipe.
+    cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- \
+        check --fixtures tools/fapolicyd-attr-update/tests/fixtures
+
+fapd-attr-derive version="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "fapd-attr-derive: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    if [ "{{version}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- derive --version "{{version}}"
+    fi
+
 # (#444) Drift-check / refresh the sshd W01/W02 STIG baselines against the OFFICIAL
 # DISA XCCDF. Same nested-tool pattern (tools/sshd-stig-update, OUT of `just ci`).
 # DISA versions each RHEL STIG by FILENAME (no releases API), so there is NO
@@ -227,4 +270,57 @@ sshd-probe-derive product="all":
         cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- derive
     else
         cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- derive --product "{{product}}"
+    fi
+
+# (#478) Drift-check the shipped fapolicyd version-map / pattern= value-set / fapd-E07
+# type-category tables against a REAL fapolicyd daemon by probing the prebuilt
+# fapolicyd8/9/10 images directly (see this repo's CLAUDE.md "Differential
+# verification" section - these images are NOT built by this tool, unlike
+# tools/sshd-probe-update's dockerfiles/, since fapolicyd already ships on them). Same
+# nested-tool pattern (tools/fapolicyd-probe-update, OUT of `just ci`). The LIVE recipes
+# skip gracefully (exit 0) when docker or the images are absent; the offline recipe
+# replays the committed daemon-probe fixtures (no docker) and is what the PR-gate
+# workflow runs.
+#
+# fapolicyd-probe-check          : LIVE - probe fapolicyd8/9/10; exit 1 on drift.
+# fapolicyd-probe-check-offline  : OFFLINE - drift-check against the committed
+#                                   tests/fixtures/ transcripts (the PR-gate uses this).
+# fapolicyd-probe-derive <t>     : print the derived sets + diff (t = rhel8|rhel9|rhel10,
+#                                   or `all`).
+
+# LIVE: probe the prebuilt fapolicyd8/9/10 images and drift-check; exit 1 on drift.
+fapolicyd-probe-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "fapolicyd-probe-check: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images (see CLAUDE.md 'Differential verification')" >&2
+        exit 0
+    fi
+    if ! docker image inspect fapolicyd8 fapolicyd9 fapolicyd10 >/dev/null 2>&1; then
+        echo "fapolicyd-probe-check: prerequisites missing - fapolicyd8/9/10 docker images not found; pull or build them first (see CLAUDE.md 'Differential verification')" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- check
+
+# OFFLINE: replay the committed tests/fixtures/ transcripts; no docker. Any target's
+# drift (exit 1) or error (exit 2) fails the recipe. This is the PR-CI gate.
+fapolicyd-probe-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- \
+            check --target "$p" --transcript-dir tools/fapolicyd-probe-update/tests/fixtures
+    done
+
+fapolicyd-probe-derive target="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "fapolicyd-probe-derive: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images" >&2
+        exit 0
+    fi
+    if [ "{{target}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- derive --target "{{target}}"
     fi

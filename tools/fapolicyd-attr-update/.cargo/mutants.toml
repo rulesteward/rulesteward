@@ -1,0 +1,14 @@
+# cargo-mutants configuration for the fapolicyd-attr-update dev tool.
+#
+# src/source.rs's `curl` and `fetch_source` are the live network seam: they are
+# exercised only by the live (non---fixtures) `check`/`derive` runs, never by
+# the offline unit/CLI tests (by design - the tests are fully hermetic against
+# the committed fixtures). Excluded from the mutation gate BY FUNCTION NAME so a
+# guaranteed "survivor" there does not mask a real gap in the tested core. This
+# mirrors tools/sshd-probe-update/.cargo/mutants.toml's exclusion of its live
+# probe seam - but that tool isolates the whole seam in probe.rs and excludes
+# the FILE via exclude_globs, while this crate's source.rs also contains the
+# offline-testable `verify_sha256` + `to_hex` (which MUST stay in the gate:
+# they are the provenance guard), so the narrower name-level exclude_re is used
+# instead of excluding the file.
+exclude_re = ["\\bcurl\\b", "\\bfetch_source\\b"]

@@ -24,7 +24,14 @@ const RHEL8_PATTERN_VALUES: &[&str] = &["ld_so", "ld_preload", "static"];
 const RHEL9_PLUS_PATTERN_VALUES: &[&str] = &["normal", "ld_so", "ld_preload", "static"];
 
 /// The accepted `pattern=` value set for `target`.
-fn accepted_pattern_values(target: TargetVersion) -> &'static [&'static str] {
+///
+/// `pub` (module `pub` since #478) so `tools/fapolicyd-probe-update` can diff a live
+/// daemon probe against this shipped table without duplicating it - the same
+/// consumer-driven visibility rulesteward-sshd already uses for
+/// `lints::registry::known_keywords` / `lints::deprecation::deprecated_keywords`.
+/// Pure visibility change; the values and logic are unchanged.
+#[must_use]
+pub fn accepted_pattern_values(target: TargetVersion) -> &'static [&'static str] {
     match target {
         TargetVersion::Rhel8 => RHEL8_PATTERN_VALUES,
         TargetVersion::Rhel9 | TargetVersion::Rhel10 => RHEL9_PLUS_PATTERN_VALUES,

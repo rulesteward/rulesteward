@@ -1,0 +1,108 @@
+name: fapolicyd-attr-drift
+
+# Weekly nudge for the fapd-E01 attribute registry (issue #479): fetch the pinned
+# upstream fapolicyd sources LIVE (attr-refs.toml's pinned tags/commits, sha256
+# pin-verified) and compare against the shipped
+# crates/rulesteward-fapolicyd/src/attrs.rs consts. On drift, open/update a
+# tracking issue (it never edits code). The on-demand path is `just fapd-attr-check`.
+#
+# Unlike ComplianceAsCode, upstream fapolicyd has no releases/latest heuristic this
+# tool relies on - each pinned fapolicyd version is a fixed git tag/commit in
+# attr-refs.toml - so there is no `--latest` mode. This run derives at the PINNED
+# refs. It therefore catches:
+#   - upstream force-pushing / re-tagging a pinned tag (the sha256 pin catches a
+#     changed body; a hard tool error here still surfaces as a job failure),
+#   - the committed tests/fixtures/ having themselves drifted from live upstream.
+# It CANNOT auto-detect a brand-new fapolicyd point release; the issue body
+# reminds a human to check github.com/linux-application-whitelisting/fapolicyd
+# for a newer RHEL-shipped version.
+on:
+  schedule:
+    - cron: "0 9 * * 4" # Thursdays 09:00 UTC (offset from the Mon/Tue/Wed sysctld/sshd drift runs)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: fapd-E01 attribute registry drift vs live pinned upstream fapolicyd
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/fapolicyd-attr-update
+      - name: Live check vs the pinned upstream refs
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- check \
+            > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/fetch
+          # error - e.g. a sha256 pin mismatch or upstream reformat, 101 = a
+          # `cargo run` compile failure if this out-of-workspace tool drifts from
+          # the rulesteward-fapolicyd public API, etc.) = fail the job loudly.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "fapolicyd-attr-update did not exit cleanly (rc=$RC; see logs above): the" \
+               "sha256 pin may no longer match (upstream re-tagged/force-pushed), upstream" \
+               "may have reformatted the C source and the parser failed closed, or the tool" \
+               "may no longer compile against the rulesteward-fapolicyd API. The tool needs" \
+               "a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create fapolicyd-attr-drift --color FBCA04 \
+            --description "fapd-E01 attribute registry drift vs upstream fapolicyd" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`fapolicyd-attr-update check\` found the shipped fapd-E01"
+            echo "attribute registry no longer matches upstream fapolicyd's"
+            echo "\`src/library/{subject,object}-attr.c\` at the refs pinned in"
+            echo "\`tools/fapolicyd-attr-update/attr-refs.toml\`."
+            echo
+            echo "To update: run \`just fapd-attr-derive <version>\`, review the diff, reconcile"
+            echo "\`crates/rulesteward-fapolicyd/src/attrs.rs\`'s \`SUBJECT_ONLY\` /"
+            echo "\`OBJECT_ONLY\` / \`BOTH_SIDES\` consts, refresh the committed"
+            echo "\`tools/fapolicyd-attr-update/tests/fixtures/\` if the upstream tables"
+            echo "changed, re-gate (adversarial + mutation), and confirm"
+            echo "\`just fapd-attr-check-offline\` reports 0 drift."
+            echo
+            echo "NOTE: this run derives at the PINNED tags/commits. If upstream tagged a new"
+            echo "fapolicyd point release, bump the affected version's \`tag\`/\`commit\`/"
+            echo "\`subject_sha256\`/\`object_sha256\` in \`attr-refs.toml\` first."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label fapolicyd-attr-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "fapd-E01 attribute registry drift: upstream fapolicyd has changes" \
+              --label fapolicyd-attr-drift --body-file issue-body.md
+          fi

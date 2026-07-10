@@ -1,0 +1,75 @@
+name: fapolicyd-probe-check
+
+# PR-time drift gate for the shipped fapolicyd version-map / pattern= value-set /
+# fapd-E07 type-category tables (issue #478). Fail the build if
+# `TargetVersion::fapolicyd_version()`, `lints::version_target::accepted_pattern_values`,
+# or `attrs::type_category_for` no longer matches what a real fapolicyd daemon does.
+#
+# This gate runs OFFLINE, against the committed captured probe transcripts under
+# tools/fapolicyd-probe-update/tests/fixtures/ (real `fapolicyd --debug --permissive`
+# output from the fapolicyd8/9/10 differential images). That is a deliberate
+# reliability choice mirroring sshd-probe-check.yml: a PR should not need docker + the
+# prebuilt fapolicyd8/9/10 images (dev-only per this repo's CLAUDE.md "Differential
+# verification" section - they are NOT built by this tool or by CI) to gate a table
+# edit. A live weekly drift job is deferred (see tools/fapolicyd-probe-update's own
+# module docs): unlike tools/sshd-probe-update, these images have no committed
+# Dockerfile CI can rebuild, so `just fapolicyd-probe-check` (LIVE) stays a dev-machine
+# recipe for now. The on-demand offline path is `just fapolicyd-probe-check-offline`.
+#
+# paths: is scoped to exactly the drift INPUTS so unrelated PRs never pay for this job:
+#   - version.rs               - the RHEL-major -> fapolicyd version map
+#   - lints/version_target.rs  - the pattern= accepted-value sets (dataset b)
+#   - attrs.rs                 - the fapd-E07 type-category table (dataset c)
+#   - lints/mod.rs             - the `pub mod version_target;` re-export the tool imports
+#   - tools/fapolicyd-probe-update/**  - the tool + its fixtures
+#   - .github/workflows/fapolicyd-probe-check.yml  - this workflow
+on:
+  pull_request:
+    paths:
+      - 'crates/rulesteward-fapolicyd/src/version.rs'
+      - 'crates/rulesteward-fapolicyd/src/lints/version_target.rs'
+      - 'crates/rulesteward-fapolicyd/src/attrs.rs'
+      - 'crates/rulesteward-fapolicyd/src/lints/mod.rs'
+      - 'tools/fapolicyd-probe-update/**'
+      - '.github/workflows/fapolicyd-probe-check.yml'
+
+# Least privilege: read the repo only. This job never writes back to GitHub.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fapolicyd version-map/pattern/fapd-E07 drift vs committed daemon-probe fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/fapolicyd-probe-update
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/fapolicyd-probe-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/fapolicyd-probe-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
+      - name: Tool tests (offline fixture drift + known-answer + exit-code contract)
+        run: cargo test --manifest-path tools/fapolicyd-probe-update/Cargo.toml --locked
+      - name: Offline drift gate (check --transcript-dir vs committed daemon fixtures)
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool error; ALL non-zero
+        # exits must hard-fail this job. No error swallowing.
+        run: |
+          set -euo pipefail
+          for p in rhel8 rhel9 rhel10; do
+            cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- \
+              check --target "$p" \
+              --transcript-dir tools/fapolicyd-probe-update/tests/fixtures
+          done

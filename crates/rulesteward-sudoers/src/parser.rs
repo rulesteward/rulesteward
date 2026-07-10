@@ -380,10 +380,9 @@ fn classify_logical_line(text: &str, was_comment: bool) -> LineKind {
 fn classify_include(trimmed: &str) -> Option<IncludeDirective> {
     let (legacy, rest) = if let Some(r) = trimmed.strip_prefix('@') {
         (false, r)
-    } else if let Some(r) = trimmed.strip_prefix('#') {
-        (true, r)
     } else {
-        return None;
+        let r = trimmed.strip_prefix('#')?;
+        (true, r)
     };
 
     // The keyword (`include` / `includedir`) is the first whitespace-delimited
