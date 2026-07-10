@@ -16,8 +16,6 @@
 //! * `field_name` - the single shared [`field_name::field_name`] map of `-F`
 //!   field-name strings, consumed by both au-E02 and au-E04 (#458; was two
 //!   byte-identical private copies).
-//! * `key_collision` - au-W05 same audit key on unrelated rules (issue #473;
-//!   Phase-0 stub, predicate pending operator sign-off).
 //! * `stig_required` - au-W06 ruleset missing rules the applicable RHEL STIG
 //!   requires, version-aware under `--target` (issue #474; Phase-0 stub; owns
 //!   the clap-free [`TargetVersion`]).
@@ -38,7 +36,6 @@ pub mod duplicate;
 pub mod field_filter;
 pub mod field_name;
 pub mod field_type;
-pub mod key_collision;
 pub mod normalize;
 pub mod operator_validity;
 pub mod ordering;
@@ -89,9 +86,8 @@ pub fn parse_error_to_diagnostic(err: &crate::parser::LocatedParseError) -> Diag
 /// output of [`crate::parser::parse_target_located`]). Pass ordering is
 /// load-bearing for byte-stable output and MUST be preserved: duplicates
 /// (P1), then ordering/shadowing (P2), then operator validity (P3), then
-/// ABI coverage (au-W04), then STIG baseline (au-W06) and key collision
-/// (au-W05), each appended last in its session so existing output is
-/// unchanged.
+/// ABI coverage (au-W04), then STIG baseline (au-W06), appended last so
+/// existing output is unchanged.
 ///
 /// `opts` controls opt-in folding behaviour (e.g. `include_apparmor`).
 /// `LintOptions::default()` restores the pre-#230 behaviour exactly.
@@ -113,7 +109,6 @@ pub fn lint(
     diags.extend(arch_coverage::w04(rules));
     diags.extend(field_filter::e04(rules));
     diags.extend(stig_required::w06(rules, opts, target));
-    diags.extend(key_collision::w05(rules, opts));
     diags
 }
 
