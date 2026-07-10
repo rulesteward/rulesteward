@@ -1,0 +1,70 @@
+name: fapolicyd-attr-check
+
+# PR-time drift gate for the fapd-E01 attribute registry (issue #479). Fail the
+# build if crates/rulesteward-fapolicyd/src/attrs.rs (SUBJECT_ONLY / OBJECT_ONLY /
+# BOTH_SIDES) no longer matches upstream fapolicyd's
+# src/library/{subject,object}-attr.c at the refs pinned in
+# tools/fapolicyd-attr-update/attr-refs.toml.
+#
+# This gate runs OFFLINE, against the committed
+# tools/fapolicyd-attr-update/tests/fixtures/ (the pinned-version subject/object
+# sources, sha256-verified when they were copied in). That is a deliberate
+# reliability choice, mirroring sshd-stig-check.yml: raw.githubusercontent.com /
+# the GitHub REST API is not a dependency a PR should block on. The offline gate
+# catches the common case - a human edits attrs.rs (or the tool's derivation
+# logic) out of sync with the grounded upstream C source. The complementary
+# weekly fapolicyd-attr-drift.yml does the LIVE fetch against the pinned refs and
+# opens an issue on drift (catching an upstream force-push of a pinned tag, or a
+# fixture that has itself drifted from real upstream).
+#
+# paths: is scoped to exactly the drift INPUTS so unrelated PRs never pay for
+# this job:
+#   - crates/rulesteward-fapolicyd/src/attrs.rs   - the shipped registry consts
+#   - tools/fapolicyd-attr-update/**              - the tool + its fixtures + attr-refs.toml
+#   - .github/workflows/fapolicyd-attr-check.yml  - this workflow
+on:
+  pull_request:
+    paths:
+      - 'crates/rulesteward-fapolicyd/src/attrs.rs'
+      - 'tools/fapolicyd-attr-update/**'
+      - '.github/workflows/fapolicyd-attr-check.yml'
+
+# Least privilege: read the repo only. This job never writes back to GitHub
+# (contrast fapolicyd-attr-drift.yml, which needs issues: write for its tracking
+# issue).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fapd-E01 attribute registry drift vs committed upstream fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/fapolicyd-attr-update
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/fapolicyd-attr-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/fapolicyd-attr-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
+      - name: Tool tests (offline fixture-derivation + exit-code contract)
+        run: cargo test --manifest-path tools/fapolicyd-attr-update/Cargo.toml --locked
+      - name: Offline drift gate (check --fixtures vs committed upstream fixtures)
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool error; ALL non-zero
+        # exits must hard-fail this job. No error swallowing.
+        run: |
+          set -euo pipefail
+          cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- \
+            check --fixtures tools/fapolicyd-attr-update/tests/fixtures
