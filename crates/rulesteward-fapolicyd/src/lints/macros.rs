@@ -1890,6 +1890,99 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // #477 mutation-gate boundary pins: the final `cargo mutants` run left
+    // exactly two survivors, both in `strtol_out_of_range`'s
+    // negative-magnitude threshold `i64::MAX as u128 + 1` (`+` -> `*` and
+    // `+` -> `-`). Both mutants LOWER the negative limit (to i64::MAX or
+    // i64::MAX - 1), and the only discriminating input is exactly
+    // `i64::MIN` (magnitude i64::MAX + 1): in-range under the correct
+    // threshold, wrongly out-of-range under either mutant. Neither
+    // pre-existing negative fixture discriminates (`-5` is far inside; the
+    // 20-nines member is outside under both correct code and mutants), so
+    // the boundary gets pinned from BOTH sides here.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e05_i64_min_member_is_in_range_never_fires() {
+        // GREEN pin; kills both `i64::MAX as u128 + 1` mutants.
+        // daemon-verified (impl-aware adversary's delta-confirm run on
+        // fapolicyd8, fixture /var/tmp/7b-atl-p1/P3_i64min):
+        //   %s=1,-9223372036854775808
+        //   allow perm=open all : all
+        // loads cleanly on fapolicyd 1.3.2 ("Loaded 1 rules") - strtol
+        // consumes `-` + the digit run and returns exactly LONG_MIN
+        // (i64::MIN) WITHOUT ERANGE; |i64::MIN| = i64::MAX + 1 is the
+        // asymmetric bottom of the i64 range, so the member is in-range and
+        // 1.4.5 has nothing to reject either (unused macro). ZERO fapd-E05
+        // at every context.
+        let src = "%s=1,-9223372036854775808\nallow perm=open all : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "i64::MIN (-9223372036854775808) is IN-range for strtol/i64 \
+                 (LONG_MIN, no ERANGE; daemon: \"Loaded 1 rules\" on fapolicyd \
+                 1.3.2, ATL fixture P3_i64min); fapd-E05 must not fire under \
+                 {ctx:?}: got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+
+        // Same boundary pinned at the unit seam (the unconditional-policy
+        // `e05`, which both the portable default and rhel8 use).
+        let entries = vec![set_def(1, "s", &["1", "-9223372036854775808"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "i64::MIN member must be in-range at the unit seam too: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_below_i64_min_member_fires_portable_and_rhel8() {
+        // The other side of the boundary bracket: `-9223372036854775809`
+        // (magnitude i64::MAX + 2) is one below i64::MIN. DERIVED from
+        // strtol semantics consistent with the adversary's ERANGE model
+        // (no dedicated daemon fixture): strtol(3) sets ERANGE and clamps
+        // to LONG_MIN for any value below LONG_MIN, and fapolicyd's
+        // conversion aborts on ERANGE - the same "Error converting val"
+        // class daemon-verified for `-99999999999999999999` (ATL fixture
+        // B2_negoverflow_unused). Unused shape: fires at portable/rhel8,
+        // silent at rhel9/rhel10 (contract C, unused macro).
+        //
+        // Together with the i64::MIN pin above this brackets the negative
+        // threshold exactly: magnitude i64::MAX + 1 in-range, i64::MAX + 2
+        // out-of-range. A mutant RAISING the limit (e.g. `+ 1` -> `+ 2` or
+        // a widened bound) dies here; the LOWERING mutants die above.
+        let src = "%s=1,-9223372036854775809\nallow perm=open all : all\n";
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "one-below-i64::MIN (-9223372036854775809, magnitude \
+                 i64::MAX + 2) is out of strtol range (ERANGE) and must fire \
+                 fapd-E05 under {ctx:?}; got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "unused below-min set must stay silent under {ctx:?} \
+                 (contract C: unused macro, 1.4.5 never types it); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // fapd-S02 helper-level unit tests. Pin the single-pass `seen_rule`
     // walker so every branch (macro-before-rule -> silent, macro-after-rule
     // -> fire, comment does not close the window, blank does not close the
