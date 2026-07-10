@@ -1534,4 +1534,223 @@ mod tests {
             OFF,
         ));
     }
+
+    // --- disjoint: sentinel-vs-relational disjointness (#475, class 3) --
+    //
+    // Promotes Eq-sentinel-vs-relational disjointness on Uid/Gid/SessionId
+    // fields: the kernel's audit_uid_comparator/audit_gid_comparator
+    // (uid_lt/uid_gte/etc, include/linux/uidgid.h @ v6.6) and plain
+    // audit_comparator (auditsc.c:542-545, SessionId) do RAW numeric
+    // comparison with NO special-casing for the unset/-1/4294967295
+    // sentinel -- it sits at position u32::MAX (4294967295) on the number
+    // line exactly like any other value (session 7c #475 P3 class-3
+    // grounding doc, sections 2 and 4). So a sentinel Eq predicate and a
+    // same-field relational predicate ARE provably disjoint whenever
+    // 4294967295 falls outside the relational predicate's matched
+    // interval, and provably NOT disjoint (the existing conservative
+    // answer, now backed by proof rather than a declined comparison)
+    // whenever it falls inside.
+    //
+    // Design: implemented as a new match arm in disjoint() (compare.rs)
+    // ONLY, gated on FieldValue::UidGidUnset via classify() -- NOT a
+    // change to FieldValue::position()/interval(), which implies() (au-W02)
+    // also shares. See the grounding doc section 5 for why a position()
+    // change would unsoundly promote au-W02 subsumption too.
+    //
+    // RED-now: the promotion's positive ("provably disjoint") cases --
+    // today's code always declines (interval(Eq sentinel) is None), so
+    // disjoint() returns false where the grounded-correct answer is true.
+    // GREEN-now: cases where the grounded-correct answer is "not disjoint"
+    // (the sentinel is genuinely in-range, or the pair falls outside the
+    // new arm's scope) -- these already pass under today's conservative
+    // fallback and MUST continue to pass unchanged after the promotion.
+    //
+    // PRESERVED, NOT DUPLICATED: `disjoint_conservative_on_sentinel_and_relational`
+    // (above, au-W03 section, auid=unset vs auid>=1000) already pins the
+    // canonical "sentinel is in-range" boundary case; its asserted boolean
+    // (`!disjoint`) does not change under this promotion (4294967295 >=
+    // 1000 is genuinely true), so it is left completely untouched here.
+
+    #[test]
+    fn sentinel_lt_excludes_all_spellings_disjoint_class3_475() {
+        // RED-now. All three canonical sentinel spellings on auid=unset
+        // fold to the same value before reaching the new arm; auid<1000
+        // excludes 4294967295 -> disjoint for every spelling.
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        for s in ["unset", "-1", "4294967295"] {
+            let eq_unset = ff(AuditField::Auid, CompareOp::Eq, s);
+            assert!(
+                disjoint(&eq_unset, &lt1000, OFF),
+                "auid={s} and auid<1000 must be disjoint (sentinel 4294967295 is not < 1000)"
+            );
+        }
+    }
+
+    #[test]
+    fn sentinel_le_one_below_relational_is_disjoint_class3_475() {
+        // RED-now. auid<=999 excludes 4294967295 -> disjoint.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le999 = ff(AuditField::Auid, CompareOp::Le, "999");
+        assert!(disjoint(&eq_unset, &le999, OFF));
+    }
+
+    #[test]
+    fn sentinel_lt_gid_family_is_disjoint_class3_475() {
+        // RED-now. Gid family gets the SAME treatment as Uid (grounding
+        // section 4: "no field needs to be excluded"), even though only
+        // the 4294967295 spelling is load-reachable for Gid in practice
+        // (section 3c) -- the prover reasons soundly about the written
+        // value regardless of load-time restrictions.
+        let eq_unset = ff(AuditField::Gid, CompareOp::Eq, "4294967295");
+        let lt1000 = ff(AuditField::Gid, CompareOp::Lt, "1000");
+        assert!(disjoint(&eq_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_ge_gid_family_is_not_disjoint_class3_475() {
+        // GREEN-now. The mirror of the previous test on the same field:
+        // gid=unset vs gid>=1000 must NOT be disjoint (4294967295 >= 1000
+        // is genuinely true) -- confirms Gid sees both sides of the
+        // boundary, not just the disjoint-payoff direction.
+        let eq_unset = ff(AuditField::Gid, CompareOp::Eq, "unset");
+        let ge1000 = ff(AuditField::Gid, CompareOp::Ge, "1000");
+        assert!(!disjoint(&eq_unset, &ge1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_lt_sessionid_family_is_disjoint_class3_475() {
+        // RED-now. SessionId is the most directly grounded case (section
+        // 3d): no legacy-rewrite indirection, no load-time restriction at
+        // all, plain u32 audit_comparator.
+        let eq_unset = ff(AuditField::SessionId, CompareOp::Eq, "unset");
+        let lt1000 = ff(AuditField::SessionId, CompareOp::Lt, "1000");
+        assert!(disjoint(&eq_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_relational_first_operand_order_is_disjoint_class3_475() {
+        // RED-now. Operand-order symmetry: the relational predicate first,
+        // the sentinel Eq second -- pins that BOTH new match arms
+        // ((Eq,rel) and (rel,Eq)) are wired, not just one.
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        assert!(disjoint(&lt1000, &eq_unset, OFF));
+    }
+
+    #[test]
+    fn sentinel_le_loosest_upper_bound_is_not_disjoint_class3_475() {
+        // GREEN-now. auid<=4294967295 is the loosest possible upper bound:
+        // the relational value IS the sentinel spelling itself, so it
+        // classifies as UidGidUnset (not a concrete Unsigned) and the new
+        // arm's position() guard declines -- same conservative "not
+        // disjoint" answer as today, for a value that is genuinely in
+        // range. Mirrors disjoint_touching_boundary_is_not_disjoint's
+        // "meet at the boundary" style.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le_sentinel = ff(AuditField::Auid, CompareOp::Le, "4294967295");
+        assert!(!disjoint(&eq_unset, &le_sentinel, OFF));
+    }
+
+    #[test]
+    fn sentinel_le_tight_seam_one_below_sentinel_is_disjoint_class3_475() {
+        // RED-now. THE seam: auid<=4294967294 (one less than the sentinel)
+        // excludes 4294967295 by exactly one -- the case most likely to
+        // catch an off-by-one in the Le interval arithmetic. Mirrors
+        // disjoint_tight_lt_boundary's exact-offset pinning style.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le_below = ff(AuditField::Auid, CompareOp::Le, "4294967294");
+        assert!(disjoint(&eq_unset, &le_below, OFF));
+    }
+
+    #[test]
+    fn sentinel_gt_one_below_sentinel_is_not_disjoint_class3_475() {
+        // GREEN-now. auid>4294967294 -> interval [4294967295, MAX] via the
+        // Gt `p+1` adjustment -- pins that the `+1` doesn't accidentally
+        // push the sentinel out of range (it lands EXACTLY on it).
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let gt_below = ff(AuditField::Auid, CompareOp::Gt, "4294967294");
+        assert!(!disjoint(&eq_unset, &gt_below, OFF));
+    }
+
+    #[test]
+    fn sentinel_gt_sentinel_value_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. auid>4294967295: the relational
+        // value is ITSELF the sentinel spelling, which is unloadable for
+        // Auid at this operator (grounding section 3a) -- if written
+        // anyway, it classifies as UidGidUnset too, so position() is None
+        // and the new arm declines rather than panicking or misfiring.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let gt_sentinel = ff(AuditField::Auid, CompareOp::Gt, "4294967295");
+        assert!(!disjoint(&eq_unset, &gt_sentinel, OFF));
+    }
+
+    #[test]
+    fn sentinel_euid_ge_zero_matches_everything_is_not_disjoint_class3_475() {
+        // GREEN-now. euid>=0 is a degenerate "matches everything" predicate
+        // on an unsigned domain -- sanity check that the loosest possible
+        // lower bound correctly includes the sentinel too, on a different
+        // uid-family member than auid.
+        let eq_unset = ff(AuditField::Euid, CompareOp::Eq, "unset");
+        let ge0 = ff(AuditField::Euid, CompareOp::Ge, "0");
+        assert!(!disjoint(&eq_unset, &ge0, OFF));
+    }
+
+    #[test]
+    fn sentinel_name_value_is_not_the_sentinel_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. auid=root is a NAME, not the
+        // sentinel -- classify() returns Opaque, so the new arm's first
+        // guard (classify(ft, eq) != UidGidUnset) declines before any
+        // interval math runs.
+        let eq_root = ff(AuditField::Auid, CompareOp::Eq, "root");
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&eq_root, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_ne_relational_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. Ne is not in the new arm's op set
+        // {Ge,Gt,Le,Lt} paired with Eq -- the promotion is scoped to Eq
+        // specifically (grounding section 5b); a sentinel Ne vs a
+        // relational falls through unchanged to the existing conservative
+        // fallback.
+        let ne_unset = ff(AuditField::Auid, CompareOp::Ne, "unset");
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&ne_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_different_fields_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. disjoint()'s field-equality guard
+        // fires before the new arm is ever reached.
+        let auid_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let uid_lt1000 = ff(AuditField::Uid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&auid_unset, &uid_lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_promotion_does_not_perturb_plain_relational_disjoint_class3_475() {
+        // GREEN-now, regression guard. Ordinary relational-vs-relational
+        // disjointness on the Gid family (no sentinel operand at all) must
+        // be completely unaffected: this pairing never matches the new
+        // (Eq,rel)/(rel,Eq) arms, so it still falls to the untouched
+        // generic interval fallback, both operand orders.
+        let ge2000 = ff(AuditField::Gid, CompareOp::Ge, "2000");
+        let lt1000 = ff(AuditField::Gid, CompareOp::Lt, "1000");
+        assert!(disjoint(&ge2000, &lt1000, OFF));
+        assert!(disjoint(&lt1000, &ge2000, OFF));
+    }
+
+    #[test]
+    fn sentinel_promotion_does_not_perturb_implies_class3_475() {
+        // GREEN-now, regression guard (au-W02 isolation). Mirrors the
+        // frozen implies_sentinel_in_relational_is_conservative pin (above,
+        // au-W02 section) but on the Gid family, to confirm class 3's
+        // disjoint()-only design left implies()/position() byte-for-byte
+        // untouched: no interval math on the sentinel here either, so this
+        // stays conservative false exactly as before, both operand orders.
+        let ge0 = ff(AuditField::Gid, CompareOp::Ge, "0");
+        let ge_sentinel = ff(AuditField::Gid, CompareOp::Ge, "4294967295");
+        assert!(!implies(&ge0, &ge_sentinel, OFF));
+        assert!(!implies(&ge_sentinel, &ge0, OFF));
+    }
 }
