@@ -2,6 +2,8 @@
 //! the opt-in `AppArmor` extension (#230). Split out of `value.rs` (#438); see
 //! the parent `value` module doc for the overall design.
 
+use rulesteward_core::parse_base0_u64 as parse_u64_base0;
+
 use super::LintOptions;
 
 /// The audit record-type `msgtype` name -> number table (#227), so au-W01 and
@@ -302,4 +304,31 @@ pub(super) fn msgtype_number(name: &str, opts: LintOptions) -> Option<u32> {
                 None
             }
         })
+}
+
+/// The resolved record-type NUMBER for a msgtype value under `opts`, or `None`
+/// if `raw` does not resolve to a concrete number: an unknown name, an
+/// `AppArmor` name with `opts.include_apparmor` off, or an unparseable
+/// spelling (#475). Mirrors [`super::canonical_value`]'s `MsgType` branch
+/// exactly -- name lookup via [`msgtype_number`] first, then the base-0
+/// numeric fallback (#229) -- so the two can never disagree on whether a
+/// msgtype value denotes a concrete kernel record type.
+///
+/// This is the resolution gate the disjointness prover
+/// (`compare::canonical_decides_value_identity`) uses: msgtype disjointness is
+/// provable only when BOTH sides of a pair independently resolve here (see the
+/// module doc's "central correctness hazard": a naive canonical-STRING
+/// inequality is unsound for an alias-bearing field like msgtype, since an
+/// unresolved spelling and a resolved one can denote the identical kernel
+/// value, e.g. `APPARMOR_DENIED` with the flag off vs `1503`).
+///
+/// `pub(super)`: called by `compare::canonical_decides_value_identity` and
+/// `canonical::canonical_value` (sibling modules in `value`); the frozen
+/// `mod tests` suite exercises it indirectly through [`super::disjoint`], not
+/// via a direct import.
+pub(super) fn msgtype_resolved_number(raw: &str, opts: LintOptions) -> Option<u64> {
+    let t = raw.trim();
+    msgtype_number(t, opts)
+        .map(u64::from)
+        .or_else(|| parse_u64_base0(t))
 }

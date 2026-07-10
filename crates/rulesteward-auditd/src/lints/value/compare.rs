@@ -9,6 +9,7 @@ use crate::lints::field_type::{FieldType, field_type};
 use super::LintOptions;
 use super::canonical::canonical_value;
 use super::classify::{FieldValue, classify};
+use super::msgtype::msgtype_resolved_number;
 
 /// True when the later predicate `pl` IMPLIES the earlier predicate `pe`: every
 /// value matching `pl` also matches `pe` (so `pl`'s matched set is a subset of
@@ -62,9 +63,24 @@ pub fn implies(pe: &FieldFilter, pl: &FieldFilter, opts: LintOptions) -> bool {
 /// (the Ne/bitmask set has no interval). These fall through to the interval arm,
 /// where Ne/bitmask yield `None`.
 ///
-/// NOTE: for `msgtype`, [`canonical_decides_value_identity`] returns `false`
-/// (alias-bearing field), so this function is conservative for `msgtype` regardless
-/// of `opts` -- threading `opts` through is for signature uniformity only (#230).
+/// NOTE: for `msgtype` (#475), [`canonical_decides_value_identity`] returns
+/// `true` ONLY when BOTH compared values independently resolve to a concrete
+/// record-type number via [`msgtype_resolved_number`] (name lookup, then the
+/// base-0 numeric fallback -- the same resolution `canonical_value` uses, so
+/// the two can never disagree). This mirrors the real system: userspace
+/// resolves a msgtype NAME to its number at rule-load time
+/// (`audit_rule_fieldpair_data`, libaudit.c @ 3bfa048) and the kernel compares
+/// only the resolved `u32` numbers at match time (`audit_comparator`,
+/// auditfilter.c @ v6.6) -- so two spellings that resolve to the SAME number
+/// (`msgtype=SYSCALL` and `msgtype=1300`) denote the identical kernel value and
+/// must NOT be claimed disjoint, while two that resolve to DIFFERENT numbers
+/// genuinely are. If EITHER side fails to resolve (an unrecognized name, or an
+/// `AppArmor` name with `opts.include_apparmor` off), this stays conservative
+/// (`false`) -- a bare canonical-STRING inequality is unsound here, since an
+/// unresolved spelling and a resolved one can denote the identical value (see
+/// the `value` module's #475 test-comment block for the concrete
+/// counter-example). For every other operator pairing on `msgtype` (relational,
+/// bitmask), this function is still fully conservative, exactly as before.
 #[must_use]
 pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter, opts: LintOptions) -> bool {
     if pa.field != pb.field {
@@ -128,14 +144,19 @@ fn eq_bitandeq_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
 
 /// Whether two `=`/`!=` values on field `ft` can be decided same-vs-different
 /// from their canonical spelling alone: both concrete-comparable (a numeric value
-/// or the uid/gid sentinel) OR a free-form exact-match string field
+/// or the uid/gid sentinel), a free-form exact-match string field
 /// ([`FieldType::String`]/[`FieldType::StringEqNe`]/[`FieldType::Key`]: path, dir,
-/// exe, subj_*, obj_*, key). Alias-bearing fields where one spelling can denote
-/// the same value as another (uid/gid NAMES like `uid=root` == `uid=0`;
-/// `arch=b64` == `arch=x86_64`; msgtype; filetype/fstype symbolic names) are NOT
-/// decidable from a spelling, so this returns false and the caller stays
-/// conservative (never DROPS a real au-W03 suppression warning).
-fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str) -> bool {
+/// exe, subj_*, obj_*, key), OR (#475) `msgtype` when BOTH values independently
+/// resolve to a concrete record-type number ([`msgtype_resolved_number`]).
+/// Alias-bearing fields where one spelling can denote the same value as another
+/// (uid/gid NAMES like `uid=root` == `uid=0`; `arch=b64` == `arch=x86_64`;
+/// filetype/fstype symbolic names) are otherwise NOT decidable from a spelling,
+/// so this returns false and the caller stays conservative (never DROPS a real
+/// au-W03 suppression warning). The `msgtype` exception is sound specifically
+/// because it gates on RESOLUTION, not on raw spelling equality/inequality --
+/// see [`disjoint`]'s doc NOTE for why a naive string-inequality shortcut would
+/// be unsound here.
+fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
     let comparable = |v: FieldValue| {
         matches!(
             v,
@@ -147,14 +168,17 @@ fn canonical_decides_value_identity(ft: FieldType, a: &str, b: &str) -> bool {
         ft,
         FieldType::String | FieldType::StringEqNe | FieldType::Key
     );
-    both_concrete || free_form
+    let msgtype_resolved = ft == FieldType::MsgType
+        && msgtype_resolved_number(a, opts).is_some()
+        && msgtype_resolved_number(b, opts).is_some();
+    both_concrete || free_form || msgtype_resolved
 }
 
 /// True when two values on the same field are PROVABLY DIFFERENT kernel values
 /// (e.g. `uid=0` vs `uid=1000`, `path=/a` vs `path=/b`). Decidable only when
 /// [`canonical_decides_value_identity`] holds; otherwise false (conservative).
 fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
-    canonical_decides_value_identity(ft, a, b)
+    canonical_decides_value_identity(ft, a, b, opts)
         && canonical_value(ft, a, opts) != canonical_value(ft, b, opts)
 }
 
@@ -167,7 +191,7 @@ fn eq_values_provably_differ(ft: FieldType, a: &str, b: &str, opts: LintOptions)
 /// directly by `mod tests` in the parent `value::mod` via a `#[cfg(test)]`
 /// import.
 pub(super) fn eq_values_provably_equal(ft: FieldType, a: &str, b: &str, opts: LintOptions) -> bool {
-    canonical_decides_value_identity(ft, a, b)
+    canonical_decides_value_identity(ft, a, b, opts)
         && canonical_value(ft, a, opts) == canonical_value(ft, b, opts)
 }
 
