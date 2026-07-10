@@ -34,7 +34,7 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
-use super::macros::looks_int;
+use super::macros::is_fap_int;
 use super::subsume::build_macro_map;
 use crate::ast::{Attr, AttrValue, Entry};
 use crate::attrs::{self, AttrTypeCategory};
@@ -198,10 +198,15 @@ fn infer_set_type(values: &[String], version: TargetVersion) -> SetType {
 
 /// Whether `v` is an integer fapolicyd 1.4.x would accept as a SIGNED or UNSIGNED
 /// set member: an optional leading sign (`-` or `+`, strtol-style) followed by
-/// [`looks_int`] digits. Only a leading `-` makes the member negative (the SIGNED
+/// digits that fit `i64` ([`is_fap_int`], NOT just "looks like digits" -
+/// `looks_int`). #477: an all-digit member that overflows `i64` must NOT count
+/// as numeric membership on rhel9/rhel10 - the real 1.4.5 daemon types such a
+/// set STRING ("cannot assign %s which has STRING type to uid (UNSIGNED
+/// expected)", grounded `/var/tmp/7b-grounding/p1` corpus cases 03-07), not
+/// UNSIGNED/SIGNED. Only a leading `-` makes the member negative (the SIGNED
 /// determination in [`infer_set_type`] keys on `-`, so `+1` stays UNSIGNED).
 fn looks_signed_int(v: &str) -> bool {
-    looks_int(v.strip_prefix(['-', '+']).unwrap_or(v))
+    is_fap_int(v.strip_prefix(['-', '+']).unwrap_or(v))
 }
 
 /// The fapd-E07 diagnostic message. Under an explicit `--target` it names the

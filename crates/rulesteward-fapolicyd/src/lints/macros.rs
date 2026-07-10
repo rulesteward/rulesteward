@@ -178,7 +178,13 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 /// fapolicyd types a set by its first value and stores INT sets as `i64`; a value
 /// with a leading sign is a STRING, and an all-digit value exceeding `i64::MAX`
 /// fails fapolicyd's conversion ("Error converting val").
-fn is_fap_int(v: &str) -> bool {
+///
+/// `pub(crate)` - shared with fapd-E07's rhel9/rhel10 set-type inference
+/// (`lints::type_compat::looks_signed_int`, #477): an all-digit member that
+/// overflows `i64` must NOT count as numeric membership on 1.4.x, matching the
+/// real daemon which types such a set STRING (`.private-docs` grounding,
+/// corpus case 17/`matrix.md`), not UNSIGNED/SIGNED.
+pub(crate) fn is_fap_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.parse::<i64>().is_ok()
 }
 
