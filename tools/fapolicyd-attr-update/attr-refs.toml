@@ -1,0 +1,37 @@
+# Pinned upstream fapolicyd git tags/commits + fetched-source sha256 for
+# tools/fapolicyd-attr-update.
+#
+# Keyed by upstream fapolicyd VERSION (matching
+# crates/rulesteward-fapolicyd/src/version.rs's `TargetVersion::fapolicyd_version()`
+# strings), NOT by RHEL target - rhel9 and rhel10 currently pin the same fapolicyd
+# version (1.4.5), so keying by version avoids fetching + checking the identical
+# source twice.
+#
+# Repo: github.com/linux-application-whitelisting/fapolicyd . Both tags below were
+# confirmed (via the GitHub tags + recursive git-tree API, 2026-07-10 grounding
+# recon for #479) to carry `src/library/{subject,object}-attr.c` at the IDENTICAL
+# path - no file move between the two pinned versions.
+#
+# Update workflow: bump a version's `tag`/`commit` below when
+# `TargetVersion::fapolicyd_version()` changes for a RHEL target, or when upstream
+# tags a new fapolicyd point release that touches
+# `src/library/{subject,object}-attr.c`. Then run `fapolicyd-attr-update derive`,
+# review the diff, update `crates/rulesteward-fapolicyd/src/attrs.rs`, re-copy
+# `tests/fixtures/<version>/*.c`, and re-verify `fapolicyd-attr-update check`
+# reports 0 drift.
+#
+# NOTE on TOML layout: a version like "1.3.2" is not a bare TOML key (dots would
+# nest it as `versions.1.3.2` -> three levels), so each version is a QUOTED key:
+# `[versions."1.3.2"]`.
+
+[versions."1.3.2"]
+tag = "v1.3.2"
+commit = "7870b72f60394c8f1f8e22db9f738bbf1855978c"
+subject_sha256 = "40dcab75bf382ffd8967f11452ed2a9919d9640501272a62a3789cdc4a279c65"
+object_sha256 = "d0f3e5fe251e39c4cbf2116a612b45d25ba0dcf09b79dccf74159bd495e2b8aa"
+
+[versions."1.4.5"]
+tag = "v1.4.5"
+commit = "69b55c21271aa40ae24bce7e1c869a635ea08776"
+subject_sha256 = "e6e1bef074a49ff0a7c61e902609f254cff968ee00fbb40cfe42fe053988b57d"
+object_sha256 = "74894ea4e921da62c3154a79e858482bfe51fc7351290739c56bbdb69acfea44"

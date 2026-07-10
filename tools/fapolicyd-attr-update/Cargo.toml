@@ -1,0 +1,20 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the fapolicyd crate purely to import the real fapd-E01 attribute
+# registry consts (SUBJECT_ONLY / OBJECT_ONLY / BOTH_SIDES) for the `check` drift
+# gate; that crate resolves its own workspace inheritance against the repo root
+# (cargo finds a package's workspace by walking up from the package's OWN
+# location), so the path-dep builds cleanly from here.
+[workspace]
+
+[package]
+name = "fapolicyd-attr-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the fapd-E01 attribute registry from upstream fapolicyd C sources."
+
+[dependencies]
+rulesteward-fapolicyd = { path = "../../crates/rulesteward-fapolicyd" }
+toml = "1"
