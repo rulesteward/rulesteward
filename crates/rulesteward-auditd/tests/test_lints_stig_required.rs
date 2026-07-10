@@ -137,9 +137,9 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
 // chain by injecting a small test-local baseline straight into
 // w06_with_baseline, so NOTHING here fails if w06() silently ignores
 // stig_baseline(target) and stays permanently silent -- only
-// target_some_with_empty_shipped_table_is_silent_today exercises the real
-// dispatch, and it only proves the wiring is silent on an EMPTY table, never
-// that it fires once the table has content.
+// target_some_with_populated_shipped_table_yields_exactly_one_finding_per_required_line
+// (above) exercises the real dispatch; the test below adds the "fires + names
+// a specific control id" proof that count alone does not give.
 // ---------------------------------------------------------------------------
 
 #[test]
