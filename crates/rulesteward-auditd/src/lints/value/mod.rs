@@ -1228,4 +1228,188 @@ mod tests {
             "msgtype Eq/Eq stays conservative (not decidable from spelling)"
         );
     }
+
+    // --- disjoint: msgtype record-type-number folding (#475, class 1) ---
+    //
+    // Promotes msgtype Eq/Eq (and Eq/Ne) disjointness: two msgtype predicates
+    // are provably disjoint/contradictory ONLY when BOTH sides independently
+    // resolve to a concrete record-type NUMBER under the SAME `opts` (name
+    // lookup via MSGTYPE_NAMES/APPARMOR_MSGTYPE_NAMES, or the base-0 numeric
+    // fallback -- mirrors canonical_value's MsgType branch exactly) and those
+    // numbers differ (or match, for the Eq/Ne contradiction direction).
+    // Ground truth: kernel auditfilter.c:1205-1227 `audit_comparator` (a plain
+    // u32 `==`/`!=` compare) and libaudit.c:1783-1797 `AUDIT_MSGTYPE` value
+    // resolution, both @ audit-userspace/kernel 3bfa048/v6.6 (session 7c #475
+    // P3 grounding doc). An unresolved side (an unknown name, or an AppArmor
+    // name with `include_apparmor` off) MUST stay conservative.
+    //
+    // PRESERVED, NOT FLIPPED: `disjoint_alias_bearing_eq_pairs_are_not_disjoint`'s
+    // msgtype case (above, SYSCALL==1300) and `t14_apparmor_does_not_change_w03_disjoint`
+    // (above, APPARMOR_DENIED==1503) both test SAME-VALUE pairs under different
+    // spellings; a sound promotion keeps both asserting `!disjoint(...)`
+    // exactly as written. Flipping either would encode a false-positive au-W03
+    // regression (claiming two spellings of the SAME record type are
+    // "provably different", silently dropping a real suppression warning).
+
+    #[test]
+    fn msgtype_eq_eq_different_names_are_disjoint_475() {
+        // SYSCALL=1300, LOGIN=1006 (msgtype.rs MSGTYPE_NAMES): both resolve,
+        // genuinely different record types -> disjoint.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "LOGIN"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_eq_name_vs_number_different_are_disjoint_475() {
+        // SYSCALL=1300 vs the literal number 1309 (EXECVE): mixed resolution
+        // paths (name lookup vs numeric fallback), genuinely different.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_eq_number_vs_number_different_are_disjoint_475() {
+        // Pure numeric spellings, no name lookup involved at all.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+        // A base-0 spelling of the SAME number as one side (0x514 == 1300,
+        // confirmed by msgtype_number_and_name_fold_to_same_canonical above)
+        // must resolve identically through the numeric fallback.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "0x514"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_ne_same_value_cross_spelling_is_disjoint_475() {
+        // #475's design threads the new msgtype-resolution gate through
+        // canonical_decides_value_identity, which is shared by
+        // eq_values_provably_differ AND eq_values_provably_equal -- so the
+        // Eq/Ne contradiction direction folds too. SYSCALL and 1300 are the
+        // SAME record type under DIFFERENT spellings: `msgtype=SYSCALL` and
+        // `msgtype!=1300` contradict (a SYSCALL event always fails `!=1300`).
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "1300"),
+            OFF,
+        ));
+        // Same-spelling contradiction (extends #228's existing Eq/Ne pattern
+        // to msgtype): `msgtype=SYSCALL` and `msgtype!=SYSCALL` contradict.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "SYSCALL"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_ne_different_value_still_overlaps_475() {
+        // Regression guard: `msgtype=SYSCALL` and `msgtype!=CONFIG_CHANGE`
+        // (1300 vs 1305, different) do NOT contradict -- a SYSCALL event
+        // satisfies `!=CONFIG_CHANGE` too, so the predicates overlap. Pins the
+        // Eq/Ne direction against a mutant that inverts the newly-reachable
+        // msgtype equality gate.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "CONFIG_CHANGE"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_on_different_numbers_are_disjoint_475() {
+        // With include_apparmor ON, AppArmor names resolve too (1500-1507).
+        // APPARMOR_DENIED=1503 vs APPARMOR=1500: different -> disjoint.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            ON,
+        ));
+        // APPARMOR_DENIED=1503 vs APPARMOR_ALLOWED=1502: both names, different.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_ALLOWED"),
+            ON,
+        ));
+        // Mixed base-table vs AppArmor: SYSCALL=1300 vs APPARMOR_DENIED=1503.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            ON,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_off_unresolved_name_stays_conservative_475() {
+        // Same pair as the first assertion above, but OFF: APPARMOR_DENIED
+        // does not resolve (the AppArmor table is opt-in), so even though
+        // 1500 != 1503 IF resolved, the pair must stay conservative (not
+        // disjoint) -- one side unresolved is enough to decline, regardless
+        // of the other side's value (grounding doc section 4's per-case
+        // table: "AppArmor NAME, include_apparmor=false: does NOT resolve ->
+        // stays unfoldable -> conservative, never provably disjoint from
+        // anything").
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_unknown_name_never_disjoint_either_opts_475() {
+        // An unrecognized name never resolves, ON or OFF (it is in neither
+        // MSGTYPE_NAMES nor APPARMOR_MSGTYPE_NAMES) -- must stay conservative
+        // even against a known, different number.
+        for opts in [OFF, ON] {
+            assert!(!disjoint(
+                &ff(AuditField::MsgType, CompareOp::Eq, "NOT_A_RECORD"),
+                &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+                opts,
+            ));
+        }
+    }
+
+    #[test]
+    fn msgtype_relational_pairs_stay_conservative_475() {
+        // Interval/relational reasoning for msgtype is explicitly OUT of scope
+        // for #475 (a documented non-goal, not a soundness gap:
+        // classify(MsgType) stays Opaque BY DESIGN per canonical.rs, so
+        // msgtype never enters interval position -- see
+        // msgtype_classify_stays_opaque_no_intervals above). Two disjoint-
+        // looking relational ranges must NOT be claimed disjoint; this pins
+        // the boundary so a future interval extension is a deliberate,
+        // separately-tested change, not an accidental side effect of #475.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Ge, "2000"),
+            &ff(AuditField::MsgType, CompareOp::Le, "1500"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_bitmask_pairs_stay_conservative_475() {
+        // Bitmask ops reach disjoint() via eq_bitand_disjoint /
+        // eq_bitandeq_disjoint (as_u64 -> classify(), still Opaque for
+        // msgtype), a path #475 does not touch. Also matches reality: the
+        // kernel rejects `&`/`&=` on AUDIT_MSGTYPE at rule-insert time
+        // (auditfilter.c:366-393 @ v6.6), so no legally-loadable ruleset
+        // could present this case either way.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::BitAnd, "2"),
+            OFF,
+        ));
+    }
 }

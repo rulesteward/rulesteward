@@ -597,6 +597,35 @@ mod tests {
         ));
     }
 
+    // --- w03 Case 2: msgtype-fold disjointness promotion (#475, class 1) ---
+
+    #[test]
+    fn w03_msgtype_provably_different_no_longer_flags_475() {
+        // #475: before the msgtype-fold promotion, `disjoint()` is always
+        // conservative for msgtype Eq/Eq (compare.rs's NOTE), so ANY
+        // never/always pair on the same list "overlaps" regardless of the
+        // msgtype values and w03's Case 2 fires. After: SYSCALL(1300) and
+        // CONFIG_CHANGE(1305) both resolve to numbers (msgtype.rs
+        // MSGTYPE_NAMES) and differ -> traffic_overlaps() == false -> w03
+        // does NOT fire for this pair. msgtype is legal on exclude|user
+        // filter lists only (au-E04, field_filter.rs:134
+        // Restriction::ExcludeOrUser); `user` is used here (live-confirmed
+        // legal: test_lints_field_filter.rs's msgtype_on_user_must_not_fire,
+        // "-a always,user -F msgtype=AVC").
+        let input = concat!(
+            "-a never,user -F msgtype=SYSCALL -k never_syscall\n",
+            "-a always,user -F msgtype=1305 -k always_configchange\n",
+        );
+        let rules = parse_rules_str_located(input, Path::new("10-msgtype-disjoint.rules")).unwrap();
+        let diags = w03(&rules, OFF);
+        assert!(
+            diags.is_empty(),
+            "msgtype=SYSCALL (1300) and msgtype=1305 (CONFIG_CHANGE) are \
+             provably different record types -> no suppression conflict, \
+             got: {diags:?}"
+        );
+    }
+
     // --- w02 boundaries beyond the frozen integration fixtures ------------
 
     #[test]
