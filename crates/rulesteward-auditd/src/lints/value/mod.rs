@@ -1753,4 +1753,36 @@ mod tests {
         assert!(!implies(&ge0, &ge_sentinel, OFF));
         assert!(!implies(&ge_sentinel, &ge0, OFF));
     }
+
+    #[test]
+    fn concrete_eq_vs_relational_reversed_order_stays_correct_class3_475() {
+        // GREEN-now AND GREEN after a correct impl. These use CONCRETE
+        // (non-sentinel) Eq values, so they do NOT exercise the new
+        // sentinel arm at all -- they guard the SHADOWING regression it
+        // could introduce. The forward order (Eq first) is already pinned
+        // by disjoint_eq_outside_relational (above), but the REVERSED
+        // (relational first, Eq second) order for a concrete value is not.
+        //
+        // Today both are decided by disjoint()'s generic interval fallback
+        // (compare.rs:109-112), which is order-symmetric. Class 3 adds a
+        // new `(rel, Eq)` match arm that SHADOWS that fallback; an impl
+        // that wires the sentinel helper as bare `helper(...)` (instead of
+        // `helper(...) || interval_fallback(...)`) in the reversed arm would
+        // silently regress disjoint(auid>=1000, auid=0) from true to false,
+        // dropping a real au-W03 disjointness AND breaking the
+        // disjoint(a,b) == disjoint(b,a) symmetry invariant. That wrong
+        // impl passes all 16 sentinel pins + the whole suite; only these
+        // reversed-order concrete pins catch it.
+        let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
+        // concrete 0 is OUTSIDE [1000, MAX] -> disjoint, reversed order.
+        assert!(
+            disjoint(&ge1000, &ff(AuditField::Auid, CompareOp::Eq, "0"), OFF),
+            "auid>=1000 and auid=0 are disjoint regardless of operand order"
+        );
+        // concrete 1500 is INSIDE [1000, MAX] -> NOT disjoint, reversed order.
+        assert!(
+            !disjoint(&ge1000, &ff(AuditField::Auid, CompareOp::Eq, "1500"), OFF),
+            "auid>=1000 and auid=1500 overlap regardless of operand order"
+        );
+    }
 }
