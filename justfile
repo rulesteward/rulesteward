@@ -324,3 +324,46 @@ fapolicyd-probe-derive target="all":
     else
         cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- derive --target "{{target}}"
     fi
+
+# (#476) Drift-check / refresh the auditd msgtype name<->number tables
+# (crates/rulesteward-auditd/src/lints/value/msgtype.rs) against upstream
+# audit-userspace's lib/msg_typetab.h + lib/audit-records.h and the Linux
+# kernel's include/uapi/linux/audit.h. Same nested-tool pattern
+# (tools/auditd-msgtype-update, OUT of `just ci`). The LIVE recipe skips
+# gracefully (exit 0) when curl is absent; the OFFLINE recipe never touches
+# the network.
+#
+# auditd-msgtype-check          : LIVE - fetch the pinned msgtype-refs.toml
+#                                  sources from GitHub; exit 1 on any drift vs
+#                                  the shipped rulesteward-auditd msgtype.rs
+#                                  consts.
+# auditd-msgtype-check-offline  : OFFLINE - drift-check against the committed
+#                                  tests/fixtures/ (the PR-gate uses this); no
+#                                  network.
+# auditd-msgtype-derive         : print the derived tables for review.
+auditd-msgtype-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "auditd-msgtype-check: prerequisites missing - need curl + network access to GitHub" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- check
+
+auditd-msgtype-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed tests/fixtures/ and confirm the
+    # shipped msgtype.rs tables still match. No network. Drift (exit 1) or error
+    # (exit 2) fails the recipe.
+    cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- \
+        check --fixtures tools/auditd-msgtype-update/tests/fixtures
+
+auditd-msgtype-derive:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "auditd-msgtype-derive: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- derive

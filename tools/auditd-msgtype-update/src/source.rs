@@ -14,10 +14,23 @@
 //!   `https://raw.githubusercontent.com/torvalds/linux/<tag>/include/uapi/linux/audit.h`
 //!   at the pinned tag.
 
+const USERSPACE_REPO: &str = "linux-audit/audit-userspace";
+const KERNEL_REPO: &str = "torvalds/linux";
+
 /// `curl -fsSL <url>` -> body. Errors carry curl's stderr. Mirrors
 /// `tools/fapolicyd-attr-update/src/source.rs`.
-pub fn curl(_url: &str) -> Result<String, String> {
-    todo!("implementer: shell out to curl -fsSL")
+pub fn curl(url: &str) -> Result<String, String> {
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", url])
+        .output()
+        .map_err(|e| format!("spawn curl (is it installed?): {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "curl {url} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("curl {url}: non-utf8 body: {e}"))
 }
 
 /// Fetch `lib/<file>` (`msg_typetab.h` or `audit-records.h`) from
@@ -27,18 +40,25 @@ pub fn curl(_url: &str) -> Result<String, String> {
 /// serving stale/corrupted bytes, or upstream rewriting history all look
 /// identical to a caller that skips this check).
 pub fn fetch_userspace_source(
-    _commit: &str,
-    _file: &str,
-    _expected_sha256: &str,
+    commit: &str,
+    file: &str,
+    expected_sha256: &str,
 ) -> Result<String, String> {
-    todo!("implementer: curl the raw audit-userspace URL + verify_sha256")
+    let url = format!("https://raw.githubusercontent.com/{USERSPACE_REPO}/{commit}/lib/{file}");
+    let body = curl(&url)?;
+    verify_sha256(&body, expected_sha256)?;
+    Ok(body)
 }
 
 /// Fetch `include/uapi/linux/audit.h` from the Linux kernel at `tag`, then
 /// verify it against `expected_sha256` via [`verify_sha256`] before returning
 /// it - same fail-closed contract as [`fetch_userspace_source`].
-pub fn fetch_kernel_header(_tag: &str, _expected_sha256: &str) -> Result<String, String> {
-    todo!("implementer: curl the raw kernel URL + verify_sha256")
+pub fn fetch_kernel_header(tag: &str, expected_sha256: &str) -> Result<String, String> {
+    let url =
+        format!("https://raw.githubusercontent.com/{KERNEL_REPO}/{tag}/include/uapi/linux/audit.h");
+    let body = curl(&url)?;
+    verify_sha256(&body, expected_sha256)?;
+    Ok(body)
 }
 
 /// Compute the sha256 of `content` and compare (case-insensitively) against
@@ -51,8 +71,33 @@ pub fn fetch_kernel_header(_tag: &str, _expected_sha256: &str) -> Result<String,
 /// implementer: in the `digest` 0.11 line the finalize output type does not
 /// implement `std::fmt::LowerHex`; hand-roll the hex encoding (see
 /// `tools/fapolicyd-attr-update/src/source.rs`'s `to_hex`).
-pub fn verify_sha256(_content: &str, _expected_hex: &str) -> Result<(), String> {
-    todo!("implementer: sha2 digest + case-insensitive hex compare, Err carries both hashes")
+pub fn verify_sha256(content: &str, expected_hex: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let actual_hex = to_hex(&hasher.finalize());
+
+    if actual_hex.eq_ignore_ascii_case(expected_hex) {
+        Ok(())
+    } else {
+        Err(format!(
+            "sha256 mismatch: expected {expected_hex}, got {actual_hex}"
+        ))
+    }
+}
+
+/// Lowercase-hex encode raw digest bytes. Hand-rolled rather than `{:x}`:
+/// mirrors `tools/fapolicyd-attr-update/src/source.rs`'s `to_hex` - in the
+/// `digest` 0.11 line the finalize output type does not implement
+/// `std::fmt::LowerHex`.
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 #[cfg(test)]

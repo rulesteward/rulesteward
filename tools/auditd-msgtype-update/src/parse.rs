@@ -80,8 +80,83 @@ pub struct DerivedTables {
 /// A caller that silently accepted a truncated result would make the `check`
 /// subcommand's drift gate report a false "no drift" on a corrupted source -
 /// the worst failure shape for a drift gate.
-pub fn parse_typetab(_src: &str) -> Result<Typetab, String> {
-    todo!("implementer: line scan with WITH_APPARMOR region tracking + fail-closed guards")
+pub fn parse_typetab(src: &str) -> Result<Typetab, String> {
+    let mut base = Vec::new();
+    let mut apparmor = Vec::new();
+    let mut in_apparmor = false;
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (idx, line) in src.lines().enumerate() {
+        let lineno = idx + 1;
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with("#ifdef WITH_APPARMOR") {
+            in_apparmor = true;
+            continue;
+        }
+        if trimmed.starts_with("#endif") {
+            in_apparmor = false;
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            // A commented-out row (deprecated/daemon-filtered) - never extracted.
+            continue;
+        }
+        if !trimmed.starts_with("_S(") {
+            continue;
+        }
+
+        let entry = parse_s_row(trimmed).ok_or_else(|| {
+            format!("line {lineno}: malformed _S(...) row (no closing ')'): {trimmed:?}")
+        })?;
+        if !seen_names.insert(entry.name.clone()) {
+            return Err(format!(
+                "line {lineno}: duplicate record-type name {:?} (already seen earlier in the file)",
+                entry.name
+            ));
+        }
+        if in_apparmor {
+            apparmor.push(entry);
+        } else {
+            base.push(entry);
+        }
+    }
+
+    if in_apparmor {
+        return Err(
+            "unterminated #ifdef WITH_APPARMOR block: reached end of file with no matching #endif"
+                .to_string(),
+        );
+    }
+
+    if base.is_empty() && apparmor.is_empty() {
+        return Err("no _S(AUDIT_<NAME>, \"<NAME>\") rows found in the source".to_string());
+    }
+
+    Ok(Typetab { base, apparmor })
+}
+
+/// Parse one `_S(AUDIT_<NAME>, "<NAME>")` row (already known to start with
+/// `_S(`). Returns `None` on a truncated row (no closing `)`, no comma, or no
+/// closing quote) - the caller turns that into a named, line-numbered error.
+fn parse_s_row(trimmed: &str) -> Option<TypetabEntry> {
+    let rest = trimmed.strip_prefix("_S(")?;
+    let close_paren = rest.find(')')?;
+    let inner = &rest[..close_paren];
+
+    let comma = inner.find(',')?;
+    let audit_const = inner[..comma].trim().to_string();
+
+    let after_comma = &inner[comma + 1..];
+    let open_quote = after_comma.find('"')?;
+    let after_open_quote = &after_comma[open_quote + 1..];
+    let close_quote = after_open_quote.find('"')?;
+    let name = after_open_quote[..close_quote].to_string();
+
+    if audit_const.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(TypetabEntry { audit_const, name })
 }
 
 /// Extract the `#define AUDIT_<NAME> <number>` constants of a number source.
@@ -94,8 +169,31 @@ pub fn parse_typetab(_src: &str) -> Result<Typetab, String> {
 /// record-type constant in both files is plain decimal. This keeps the scan
 /// minimal and the known-answer counts stable (166 in `audit-records.h`, 199
 /// in the kernel header, both pinned by the tests below).
-pub fn parse_defines(_src: &str) -> Result<BTreeMap<String, u32>, String> {
-    todo!("implementer: #define AUDIT_* scan, decimal-token values only")
+pub fn parse_defines(src: &str) -> Result<BTreeMap<String, u32>, String> {
+    let mut out = BTreeMap::new();
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#define") else {
+            continue;
+        };
+        let mut tokens = rest.split_whitespace();
+        let Some(name) = tokens.next() else {
+            continue;
+        };
+        if !name.starts_with("AUDIT_") {
+            continue;
+        }
+        let Some(value_tok) = tokens.next() else {
+            continue;
+        };
+        if let Ok(value) = value_tok.parse::<u32>() {
+            out.insert(name.to_string(), value);
+        }
+        // Expression-valued (`(EM_X86_64|...)`) and hex-valued (`0x0001`)
+        // defines fail the plain-decimal u32 parse above and are silently
+        // skipped, per the documented contract.
+    }
+    Ok(out)
 }
 
 /// Resolve every [`Typetab`] row's `AUDIT_<NAME>` constant to its number.
@@ -117,11 +215,47 @@ pub fn parse_defines(_src: &str) -> Result<BTreeMap<String, u32>, String> {
 ///   (`AUDIT_FIRST_*`/`AUDIT_LAST_*`) that no `_S` row references, and a
 ///   future legitimate divergence there must not fail the msgtype drift gate.
 pub fn resolve(
-    _typetab: &Typetab,
-    _records: &BTreeMap<String, u32>,
-    _kernel: &BTreeMap<String, u32>,
+    typetab: &Typetab,
+    records: &BTreeMap<String, u32>,
+    kernel: &BTreeMap<String, u32>,
 ) -> Result<DerivedTables, String> {
-    todo!("implementer: records-first lookup, conflict + missing hard errors")
+    Ok(DerivedTables {
+        base: resolve_entries(&typetab.base, records, kernel)?,
+        apparmor: resolve_entries(&typetab.apparmor, records, kernel)?,
+    })
+}
+
+/// Resolve one table's entries (base or apparmor) name -> number, per
+/// [`resolve`]'s records-first / kernel-fallback / conflict-hard-error /
+/// missing-hard-error contract.
+fn resolve_entries(
+    entries: &[TypetabEntry],
+    records: &BTreeMap<String, u32>,
+    kernel: &BTreeMap<String, u32>,
+) -> Result<BTreeMap<String, u32>, String> {
+    let mut out = BTreeMap::new();
+    for e in entries {
+        let in_records = records.get(&e.audit_const);
+        let in_kernel = kernel.get(&e.audit_const);
+        let number = match (in_records, in_kernel) {
+            (Some(&r), Some(&k)) if r != k => {
+                return Err(format!(
+                    "{}: conflicting definition (audit-records.h has {r}, kernel header has {k})",
+                    e.audit_const
+                ));
+            }
+            (Some(&r), _) => r,
+            (None, Some(&k)) => k,
+            (None, None) => {
+                return Err(format!(
+                    "{}: not defined in audit-records.h or the kernel header",
+                    e.audit_const
+                ));
+            }
+        };
+        out.insert(e.name.clone(), number);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@
 //! `SYSTEM_BOOT` 1127 in file order) while the shipped consts are
 //! number-grouped - same 189 pairs, different order.
 
+use std::collections::BTreeMap;
+
 use crate::parse::DerivedTables;
 
 /// Project the shipped `rulesteward-auditd` msgtype consts (`MSGTYPE_NAMES` /
@@ -28,7 +30,18 @@ use crate::parse::DerivedTables;
 /// (see `shipped_tables_project_the_real_msgtype_consts` below).
 #[must_use]
 pub fn shipped_tables() -> DerivedTables {
-    todo!("implementer: map the two accessor slices into DerivedTables")
+    use rulesteward_auditd::lints::value::{apparmor_msgtype_names, base_msgtype_names};
+
+    DerivedTables {
+        base: base_msgtype_names()
+            .iter()
+            .map(|&(n, num)| (n.to_string(), num))
+            .collect(),
+        apparmor: apparmor_msgtype_names()
+            .iter()
+            .map(|&(n, num)| (n.to_string(), num))
+            .collect(),
+    }
 }
 
 /// Human-readable drift lines between `derived` and `shipped`: for EACH of
@@ -37,8 +50,46 @@ pub fn shipped_tables() -> DerivedTables {
 /// line per shared name whose numbers disagree. Empty == in sync. Lines are
 /// sorted for stable output.
 #[must_use]
-pub fn drift(_derived: &DerivedTables, _shipped: &DerivedTables) -> Vec<String> {
-    todo!("implementer: per-table symmetric name diff + number mismatch lines")
+pub fn drift(derived: &DerivedTables, shipped: &DerivedTables) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(table_drift("base", &derived.base, &shipped.base));
+    out.extend(table_drift(
+        "apparmor",
+        &derived.apparmor,
+        &shipped.apparmor,
+    ));
+    out.sort();
+    out
+}
+
+/// Symmetric name diff + number-mismatch lines for ONE table, labeled so a
+/// report line unambiguously names which of the two (separately-compared)
+/// tables drifted.
+fn table_drift(
+    label: &str,
+    derived: &BTreeMap<String, u32>,
+    shipped: &BTreeMap<String, u32>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, num) in derived {
+        match shipped.get(name) {
+            None => out.push(format!(
+                "{label}: {name} present in the derived (upstream header) table but missing from the shipped table"
+            )),
+            Some(shipped_num) if shipped_num != num => out.push(format!(
+                "{label}: {name} number mismatch: derived {num}, shipped {shipped_num}"
+            )),
+            _ => {}
+        }
+    }
+    for name in shipped.keys() {
+        if !derived.contains_key(name) {
+            out.push(format!(
+                "{label}: {name} present in the shipped table but missing from the derived (upstream header) table"
+            ));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

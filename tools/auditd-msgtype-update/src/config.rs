@@ -40,16 +40,58 @@ impl Config {
     /// absent, or any of the five required string fields is missing or not a
     /// string. Mirrors `tools/fapolicyd-attr-update/src/config.rs`'s
     /// parse-a-TOML-document convention.
-    pub fn parse(_toml_src: &str) -> Result<Config, String> {
-        todo!(
-            "implementer: parse [audit-userspace]{{commit,msg_typetab_sha256,audit_records_sha256}} + [kernel]{{tag,audit_h_sha256}}"
-        )
+    pub fn parse(toml_src: &str) -> Result<Config, String> {
+        let value: toml::Table = toml_src
+            .parse()
+            .map_err(|e| format!("msgtype-refs.toml: {e}"))?;
+
+        let audit_userspace_tbl = value
+            .get("audit-userspace")
+            .and_then(toml::Value::as_table)
+            .ok_or("msgtype-refs.toml: missing [audit-userspace] table")?;
+        let au_field = |name: &str| -> Result<String, String> {
+            audit_userspace_tbl
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    format!("msgtype-refs.toml: audit-userspace.{name} missing or not a string")
+                })
+        };
+        let audit_userspace = AuditUserspaceRef {
+            commit: au_field("commit")?,
+            msg_typetab_sha256: au_field("msg_typetab_sha256")?,
+            audit_records_sha256: au_field("audit_records_sha256")?,
+        };
+
+        let kernel_tbl = value
+            .get("kernel")
+            .and_then(toml::Value::as_table)
+            .ok_or("msgtype-refs.toml: missing [kernel] table")?;
+        let k_field = |name: &str| -> Result<String, String> {
+            kernel_tbl
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("msgtype-refs.toml: kernel.{name} missing or not a string"))
+        };
+        let kernel = KernelRef {
+            tag: k_field("tag")?,
+            audit_h_sha256: k_field("audit_h_sha256")?,
+        };
+
+        Ok(Config {
+            audit_userspace,
+            kernel,
+        })
     }
 
     /// Read `path` and [`Config::parse`] it, folding an IO failure into the
     /// error message.
-    pub fn load(_path: &Path) -> Result<Config, String> {
-        todo!("implementer: fs::read_to_string + Config::parse")
+    pub fn load(path: &Path) -> Result<Config, String> {
+        let s =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        Config::parse(&s)
     }
 }
 
