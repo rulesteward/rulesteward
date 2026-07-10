@@ -213,7 +213,7 @@ pub(crate) fn looks_int(v: &str) -> bool {
 /// hard-aborts parsing the whole rules FILE the instant an overflowing set is
 /// DEFINED, attribute-independently (it fires even for a macro that is never
 /// referenced by any rule, or one referenced only by a STRING attribute -
-/// grounded `/var/tmp/7b-grounding/p1` corpus cases 17/19). 1.4.5 never aborts
+/// grounded session-7b corpus cases 17/19). 1.4.5 never aborts
 /// at definition time; instead it types the whole set STRING and only rejects
 /// it later, at the point of ASSIGNMENT to a non-STRING attribute (cases
 /// 03-07).
@@ -244,8 +244,8 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 
 /// `(name, line, span, offending value)` for each INT-typed `SetDefinition`
 /// containing a member whose strtol-style conversion is out of the `i64`
-/// range. Two 1.3.2 semantics, both daemon-verified (ATL round-1 fixtures
-/// under `/var/tmp/7b-atl-p1/`; `/var/tmp/7b-grounding/p1/matrix.md`):
+/// range. Two 1.3.2 semantics, both daemon-verified (session-7b ATL round-1
+/// fixtures and the grounding `matrix.md`):
 ///
 ///   - Set typing is FIRST-CHARACTER-digit (isdigit-style, mirroring the
 ///     grounded rhel8 `first_is_intish` model in `type_compat.rs`), NOT
@@ -357,8 +357,8 @@ fn e05_diagnostic(name: &str, bad: &str, span: Span, file: &Path, line: usize) -
 
 /// fapd-E05, version-aware (#477). Layers the `--target rhel9`/`rhel10` gate on
 /// top of [`e05`]'s unconditional overflow detection. Contract, grounded
-/// 2026-07-10 via `fapolicyd --debug --permissive` against
-/// `/var/tmp/7b-grounding/p1/corpus` (`matrix.md`, `transcripts/*.txt`):
+/// 2026-07-10 via `fapolicyd --debug --permissive` against the session-7b
+/// grounding corpus (`matrix.md`, `transcripts/*.txt`):
 ///
 ///   - No `--target` / `--target rhel8`: IDENTICAL to `e05` - flag every
 ///     overflow set unconditionally (1.3.2's attribute-independent
@@ -380,7 +380,7 @@ fn e05_diagnostic(name: &str, bad: &str, span: Span, file: &Path, line: usize) -
 /// non-STRING attribute still fires exactly once (at least one non-STRING
 /// reference exists, so the daemon rejects the file at that reference
 /// regardless of the harmless STRING one).
-pub(crate) fn e05_with_target(
+fn e05_with_target(
     entries: &[Entry],
     file: &Path,
     target: Option<TargetVersion>,

@@ -202,7 +202,7 @@ fn infer_set_type(values: &[String], version: TargetVersion) -> SetType {
 /// `looks_int`). #477: an all-digit member that overflows `i64` must NOT count
 /// as numeric membership on rhel9/rhel10 - the real 1.4.5 daemon types such a
 /// set STRING ("cannot assign %s which has STRING type to uid (UNSIGNED
-/// expected)", grounded `/var/tmp/7b-grounding/p1` corpus cases 03-07), not
+/// expected)", grounded session-7b corpus cases 03-07), not
 /// UNSIGNED/SIGNED. Only a leading `-` makes the member negative (the SIGNED
 /// determination in [`infer_set_type`] keys on `-`, so `+1` stays UNSIGNED).
 fn looks_signed_int(v: &str) -> bool {
