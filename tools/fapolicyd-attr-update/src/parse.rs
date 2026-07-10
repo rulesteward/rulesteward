@@ -84,6 +84,8 @@ pub const OBJECT_ALIAS_EXCEPTIONS: &[AliasException] = &[AliasException {
 /// * the `table_name` declaration cannot be found at all;
 /// * the array's opening or matching closing brace cannot be located (a
 ///   truncated / hand-mangled source, e.g. cut off mid-table);
+/// * a `/*` block comment after the declaration is unterminated (invalid C -
+///   see [`strip_comments`]);
 /// * the declaration is found but contains zero quoted-string literals (an
 ///   empty table is not a real fapolicyd source file).
 ///
@@ -98,18 +100,27 @@ pub fn extract_table_names(src: &str, table_name: &str) -> Result<Vec<String>, S
         format!("no `{table_name}[]` declaration found in source (expected `static const nv_t {table_name}[] = {{ ... }};`)")
     })?;
 
-    let open_rel = src[decl..]
+    // Comments are NOT delimiters (ATL round-3 miss #3): a lone `{` or `}`
+    // inside a `//` / `/* */` comment must not close or unbalance the brace
+    // matching, and a quoted word inside a comment must not become a name. So
+    // the whole post-declaration region is comment-stripped ONCE up front, and
+    // the open-brace find, the brace matching, and the quoted-string scan
+    // below all run on the SAME stripped text - a single comment
+    // interpretation that separate scans cannot disagree about. An
+    // unterminated `/*` anywhere after the declaration (invalid C) fails
+    // closed inside [`strip_comments`].
+    let stripped = strip_comments(&src[decl..])?;
+
+    let open = stripped
         .find('{')
         .ok_or_else(|| format!("no opening brace found for `{table_name}[]`"))?;
-    let open = decl + open_rel;
-    let close = find_matching_close(src, open).ok_or_else(|| {
+    let close = find_matching_close(&stripped, open).ok_or_else(|| {
         format!(
             "unbalanced/truncated `{table_name}[]` declaration: no matching closing brace found"
         )
     })?;
 
-    let stripped = strip_comments(&src[open + 1..close])?;
-    let names = extract_quoted_strings(&stripped);
+    let names = extract_quoted_strings(&stripped[open + 1..close]);
     if names.is_empty() {
         return Err(format!(
             "`{table_name}[]` declaration has zero quoted name literals (empty table)"
@@ -146,9 +157,12 @@ fn is_ident_byte(b: u8) -> bool {
 }
 
 /// Find the `}` matching the `{` at `open` via simple brace-depth counting.
-/// Attribute-table sources never carry braces inside their quoted string
-/// literals (the names are plain lowercase words), so no quote-awareness is
-/// needed here.
+/// Runs on COMMENT-STRIPPED text ([`extract_table_names`] strips the whole
+/// post-declaration region via [`strip_comments`] before any brace scan), so a
+/// lone brace inside a `//` or `/* */` comment can never close or unbalance
+/// the count. Attribute-table sources never carry braces inside their quoted
+/// string literals (the names are plain lowercase words), so no
+/// quote-awareness is needed here.
 fn find_matching_close(src: &str, open: usize) -> Option<usize> {
     let bytes = src.as_bytes();
     let mut depth = 0i32;
@@ -167,18 +181,21 @@ fn find_matching_close(src: &str, open: usize) -> Option<usize> {
     None
 }
 
-/// Remove `//` line comments and `/* ... */` block comments from a table body
-/// before the quoted-string scan, so a quoted word inside a comment (a
-/// proposed-but-unmerged row, a deprecation TODO, an inline aside) never
-/// becomes a derived attribute name. Byte-level, consistent with
-/// [`find_matching_close`]'s brace-depth scan: these table bodies never nest a
+/// Remove `//` line comments and `/* ... */` block comments from the
+/// post-declaration region BEFORE any brace matching or quoted-string scan
+/// (ATL round-3 miss #3: comments are not delimiters), so a lone brace inside
+/// a comment never truncates/unbalances the table and a quoted word inside a
+/// comment (a proposed-but-unmerged row, a deprecation TODO, an inline aside)
+/// never becomes a derived attribute name. Byte-level, consistent with
+/// [`find_matching_close`]'s brace-depth scan: these sources never nest a
 /// comment marker inside a quoted literal or vice versa (the attribute-name
-/// literals are plain lowercase words - see [`extract_quoted_strings`]'s doc
-/// comment), so no quote-context tracking is needed here.
+/// literals are plain lowercase words, and the fixtures' post-table code
+/// carries no `//`/`/*` inside string literals - only lone division slashes,
+/// which are kept verbatim), so no quote-context tracking is needed here.
 ///
 /// Fails CLOSED (`Err`) on an unterminated `/*` block comment - the same
 /// fail-closed discipline as [`extract_table_names`]'s truncation guards. A
-/// caller that silently swallowed the remainder of the table body as "still
+/// caller that silently swallowed the remainder of the region as "still
 /// inside a comment" could drop real rows without any error.
 fn strip_comments(body: &str) -> Result<String, String> {
     let bytes = body.as_bytes();
@@ -208,7 +225,7 @@ fn strip_comments(body: &str) -> Result<String, String> {
             }
             if !closed {
                 return Err(format!(
-                    "unterminated `/*` block comment starting at byte offset {start} in table body"
+                    "unterminated `/*` block comment starting at byte offset {start} of the scanned region"
                 ));
             }
             continue;
@@ -217,7 +234,7 @@ fn strip_comments(body: &str) -> Result<String, String> {
         i += 1;
     }
     String::from_utf8(out)
-        .map_err(|e| format!("comment-stripped table body is not valid utf-8: {e}"))
+        .map_err(|e| format!("comment-stripped source region is not valid utf-8: {e}"))
 }
 
 /// Extract every double-quoted literal's contents from `body`, in source order.
