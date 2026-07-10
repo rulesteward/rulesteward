@@ -1,0 +1,13 @@
+# cargo-mutants configuration for the auditd-msgtype-update dev tool.
+#
+# src/source.rs's `curl`, `fetch_userspace_source`, and `fetch_kernel_header`
+# are the live network seam: they are exercised only by the live
+# (non---fixtures) `check`/`derive` runs, never by the offline unit/CLI tests
+# (by design - the tests are fully hermetic against the committed fixtures).
+# Excluded from the mutation gate BY FUNCTION NAME so a guaranteed "survivor"
+# there does not mask a real gap in the tested core. Mirrors
+# tools/fapolicyd-attr-update/.cargo/mutants.toml: source.rs also contains the
+# offline-testable `verify_sha256` (+ its hex encoder), which MUST stay in the
+# gate (it is the provenance guard), so the narrower name-level exclude_re is
+# used instead of excluding the file.
+exclude_re = ["\\bcurl\\b", "\\bfetch_userspace_source\\b", "\\bfetch_kernel_header\\b"]

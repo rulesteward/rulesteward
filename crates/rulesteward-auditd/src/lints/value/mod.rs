@@ -53,6 +53,9 @@ mod msgtype;
 pub use canonical::canonical_value;
 pub use classify::{FieldValue, classify};
 pub use compare::{disjoint, implies};
+// Public projections of the shipped msgtype tables for the out-of-workspace
+// tools/auditd-msgtype-update derive/drift tool (#476); pure visibility.
+pub use msgtype::{apparmor_msgtype_names, base_msgtype_names};
 
 // Only referenced from `mod tests` below (via `super::msgtype_number` /
 // `super::eq_values_provably_equal` / `super::MSGTYPE_NAMES` /
