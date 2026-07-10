@@ -176,6 +176,47 @@ fn check_rhel8_mutated_version_fixture_exits_1_and_names_the_version() {
     );
 }
 
+/// ATL finding 1b (adversary MISS 1, end-to-end leg): the same pid category flip as
+/// derive.rs's `check_e07_category_mismatch_reports_directional_drift_naming_both_categories`,
+/// driven through the built binary - `check` must exit 1 and its stdout must name
+/// the pid drift in both directions (probed Signed added, shipped Unsigned
+/// unconfirmed).
+#[test]
+fn check_rhel8_mutated_e07_fixture_exits_1_and_names_pid_categories() {
+    let mutated_e07 = RHEL8_E07
+        .replacen("e07\tpid_int\taccept\t1\t", "e07\tpid_int\treject\t0\t", 1)
+        .replacen(
+            "e07\tpid_signed_negfirst\treject\t0\t",
+            "e07\tpid_signed_negfirst\taccept\t1\t",
+            1,
+        );
+    assert_ne!(
+        mutated_e07, RHEL8_E07,
+        "both pid rows must have been rewritten"
+    );
+    let dir = temp_dir_with(
+        "e07-drift",
+        &[
+            ("fapolicyd8-version.tsv", RHEL8_VERSION),
+            ("fapolicyd8-pattern.tsv", RHEL8_PATTERN),
+            ("fapolicyd8-e07.tsv", &mutated_e07),
+        ],
+    );
+    let (code, stdout, _e) = run(&[
+        "check",
+        "--target",
+        "rhel8",
+        "--transcript-dir",
+        &dir.to_string_lossy(),
+    ]);
+    assert_eq!(code, Some(1), "e07 drift must exit 1; stdout={stdout}");
+    assert!(stdout.contains("DRIFT"), "stdout={stdout}");
+    assert!(
+        stdout.contains("pid=Signed") && stdout.contains("pid=Unsigned"),
+        "the drift must name pid with both categories; stdout={stdout}"
+    );
+}
+
 // -----------------------------------------------------------------------------
 // derive (offline, real committed fixtures): must exit 0 and report in sync.
 // -----------------------------------------------------------------------------
@@ -193,5 +234,43 @@ fn derive_rhel8_real_fixtures_exits_0_and_reports_no_drift() {
     assert!(
         stdout.contains("no drift vs the shipped tables"),
         "stdout={stdout}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// ATL strengthening round: CLI-glue pins for mutation survivors in main.rs.
+// -----------------------------------------------------------------------------
+
+/// ATL finding 3 (mutation survivor `require_single_product_for_transcript_dir ->
+/// Ok(())`, main.rs): `--transcript-dir` with the default all-three-targets
+/// selection must be REJECTED with the guard's error on stderr and exit 2. The
+/// mutant silently proceeds to read all nine committed fixtures and exits 0
+/// in-sync, so the exit-code assert alone kills it; the message assert pins WHICH
+/// error fired.
+#[test]
+fn check_transcript_dir_without_single_target_exits_2() {
+    let (code, _out, err) = run(&["check", "--transcript-dir", &fixtures_dir()]);
+    assert_eq!(
+        code,
+        Some(2),
+        "--transcript-dir without exactly one --target must exit 2; err={err}"
+    );
+    assert!(
+        err.contains("--transcript-dir requires exactly one --target"),
+        "err={err}"
+    );
+}
+
+/// ATL finding 4 (mutation survivor `print_help -> ()`, main.rs): the cheap pin -
+/// `--help` must exit 0 and print a non-empty usage on stderr naming both
+/// subcommands. The mutant prints nothing, dying on the content asserts.
+#[test]
+fn help_exits_0_and_prints_usage_naming_both_subcommands() {
+    let (code, _out, err) = run(&["--help"]);
+    assert_eq!(code, Some(0));
+    assert!(err.contains("USAGE"), "err={err}");
+    assert!(
+        err.contains("check") && err.contains("derive"),
+        "help must name both subcommands; err={err}"
     );
 }

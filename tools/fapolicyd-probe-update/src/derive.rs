@@ -726,6 +726,90 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // ATL strengthening round (post-GREEN): pins for check_e07's MISMATCH and
+    // UNKNOWN-ATTR arms, which the impl-aware adversary (MISS 1 / MISS 2) and the
+    // clean mutation run (survivor: `replace match guard shipped_cat == *probed_cat
+    // with true`) independently flagged as unprotected. The gidflip test above
+    // deliberately accepts EITHER an error or drift, so it never forces the
+    // mismatch arm itself; these two do.
+    // -----------------------------------------------------------------------
+
+    /// ATL finding 1 (adversary MISS 1 + the derive.rs match-guard mutation
+    /// survivor): a fixture whose pid rows flip to the rhel9+ shape (`pid_int` ->
+    /// reject, `pid_signed_negfirst` -> accept) makes `derive_e07` classify `pid` as
+    /// `Signed` while the shipped `type_category_for("pid", Rhel8)` says `Unsigned`
+    /// (attrs.rs lines 157-167) - a CATEGORY MISMATCH, which must land in the
+    /// mismatch arm as directional drift: probed category in `added`, shipped
+    /// category in `removed`. A `guard -> true` mutant swallows the mismatch into
+    /// the in-sync arm (empty drift); a swapped added/removed corruption reverses
+    /// the direction. Both die on the directional asserts below. Repro verified by
+    /// the adversary against the real impl under /var/tmp/7b-atl-p2/.
+    #[test]
+    fn check_e07_category_mismatch_reports_directional_drift_naming_both_categories() {
+        let mutated = RHEL8_E07
+            .replacen("e07\tpid_int\taccept\t1\t", "e07\tpid_int\treject\t0\t", 1)
+            .replacen(
+                "e07\tpid_signed_negfirst\treject\t0\t",
+                "e07\tpid_signed_negfirst\taccept\t1\t",
+                1,
+            );
+        assert_ne!(mutated, RHEL8_E07, "both pid rows must have been rewritten");
+        let rows = parse_tsv(&mutated).expect("parse");
+        let d = check_e07(&rows, TargetVersion::Rhel8).expect("check");
+        assert!(!d.is_empty(), "a pid category flip must be drift");
+        assert_eq!(d.dataset, "e07");
+        // Direction: probed (Signed) is what the daemon now shows -> `added`;
+        // shipped (Unsigned) is what the table asserts unconfirmed -> `removed`.
+        assert!(
+            d.added.iter().any(|e| e.contains("pid=Signed")),
+            "added must carry the probed category pid=Signed; got {:?}",
+            d.added
+        );
+        assert!(
+            d.removed.iter().any(|e| e.contains("pid=Unsigned")),
+            "removed must carry the shipped category pid=Unsigned; got {:?}",
+            d.removed
+        );
+        let lines = d.lines();
+        assert!(
+            lines.iter().any(|l| l.contains("pid=Signed"))
+                && lines.iter().any(|l| l.contains("pid=Unsigned")),
+            "drift lines must name BOTH categories; got {lines:?}"
+        );
+    }
+
+    /// ATL finding 2 (adversary MISS 2): an attribute the probe covers but the
+    /// shipped table does not know (`type_category_for` -> `None`, attrs.rs lines
+    /// 157-177 falling through to `type_category`'s `None` arm) must surface as
+    /// drift flagged "unknown to the shipped table" - the arm that catches a future
+    /// fapolicyd adding a brand-new attribute. Appends two synthetic `foobar` rows
+    /// (int accept / str reject -> classifies `Unsigned`, mirroring
+    /// /var/tmp/7b-atl-p2/unk/) to the otherwise in-sync rhel8 fixture so the ONLY
+    /// drift is the unknown attr.
+    #[test]
+    fn check_e07_unknown_attr_reports_drift_flagged_unknown_to_the_shipped_table() {
+        let mutated = format!(
+            "{RHEL8_E07}e07\tfoobar_int\taccept\t1\tsynthetic\ne07\tfoobar_str\treject\t0\tsynthetic\n"
+        );
+        let rows = parse_tsv(&mutated).expect("parse");
+        let d = check_e07(&rows, TargetVersion::Rhel8).expect("check");
+        assert!(!d.is_empty(), "an unknown probed attr must be drift");
+        assert_eq!(d.dataset, "e07");
+        assert!(
+            d.added
+                .iter()
+                .any(|e| e.contains("foobar") && e.contains("unknown to the shipped table")),
+            "added must flag foobar as unknown to the shipped table; got {:?}",
+            d.added
+        );
+        assert!(
+            d.removed.is_empty(),
+            "an unknown attr is probe-side only (nothing shipped to un-confirm); got {:?}",
+            d.removed
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Fail-closed propagation: check_* must propagate a parse-level fixture error,
     // never silently succeed with an empty/default drift report.
     // -----------------------------------------------------------------------
