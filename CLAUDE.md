@@ -14,7 +14,7 @@ This project uses OpenWolf for context management. Read and follow .wolf/OPENWOL
 
 Canonical commands live in the `justfile` (each recipe mirrors a CI gate verbatim). `just --list` shows all.
 
-- `just ci` - full local gate in CI order: fmt + clippy + test + cov. Run before every push.
+- `just ci` - full local gate in CI order: fmt + clippy + dac-guard + test + cov. Run before every push.
 - `just fmt` / `just fmt-fix` - `cargo fmt --all --check` / apply. clippy does NOT enforce formatting; fmt is a separate gate.
 - `just clippy` - `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 - `just test` / `just cov` - workspace tests / llvm-cov with the 80% line floor.

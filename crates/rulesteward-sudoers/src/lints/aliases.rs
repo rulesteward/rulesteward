@@ -70,8 +70,11 @@ fn kind_name(kind: AliasKind) -> &'static str {
 /// a `!!NAME` token as a non-alias, causing W03 false-positives and E01 false-negatives.
 ///
 /// Used to decide whether a raw token in a user-spec or alias-member list is an
-/// alias reference (vs a path, a username, a group, etc.).
-fn is_alias_ref(token: &str) -> bool {
+/// alias reference (vs a path, a username, a group, etc.). Also reused by
+/// `tokens::defaults::is_valid_cmnd_scope_member` (#451) to decide whether a
+/// `Defaults!` (Cmnd-scope) comma-list member is a `Cmnd_Alias`-shaped
+/// reference, hence `pub(crate)` rather than private.
+pub(crate) fn is_alias_ref(token: &str) -> bool {
     let t = token.trim_start_matches('!');
     if t == "ALL" {
         return false;

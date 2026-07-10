@@ -80,7 +80,7 @@ fn lint(args: &SudoersLintArgs) -> i32 {
 mod lint_shell_tests {
     use super::lint;
     use crate::cli::{HumanJsonFormat, SudoersLintArgs};
-    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
 
     fn args(path: &std::path::Path, format: HumanJsonFormat) -> SudoersLintArgs {
         SudoersLintArgs {
@@ -92,15 +92,28 @@ mod lint_shell_tests {
     // A STIG-clean sudoers file: env_reset, the required hardening (use_pty +
     // logfile + timestamp_timeout, satisfying the #347 / #363 merged missing-required
     // check), two user-specs, and a #includedir. Verified `visudo -c` clean.
-    const CLEAN_SUDOERS: &str = "\
+    //
+    // The `#includedir` target is a caller-supplied path rather than a literal
+    // `/etc/sudoers.d` (#466): the resolver in `rulesteward_sudoers::resolve`
+    // FOLLOWS `#includedir` into the given directory (an absolute path is used
+    // verbatim, not joined to anything), so a hardcoded `/etc/sudoers.d` made
+    // this fixture read the HOST's real drop-in directory. On a host with a
+    // readable NOPASSWD drop-in that flips the asserted exit code. Pointing the
+    // directive at a test-owned tempdir keeps the fixture hermetic.
+    fn clean_sudoers(includedir: &std::path::Path) -> String {
+        format!(
+            "\
 Defaults env_reset
 Defaults use_pty
 Defaults logfile=/var/log/sudo.log
 Defaults timestamp_timeout=5
 root ALL=(ALL:ALL) ALL
 %wheel ALL=(ALL) ALL
-#includedir /etc/sudoers.d
-";
+#includedir {}
+",
+            includedir.display()
+        )
+    }
 
     #[test]
     fn missing_path_exits_tool_failure() {
@@ -115,9 +128,35 @@ root ALL=(ALL:ALL) ALL
     fn clean_file_exits_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sudoers");
-        std::fs::write(&f, CLEAN_SUDOERS).expect("write");
+        // The includedir target is a test-owned, EMPTY tempdir (not the host's
+        // real /etc/sudoers.d) so this stays hermetic (#466).
+        let dropins = dir.path().join("sudoers.d");
+        std::fs::create_dir(&dropins).expect("mkdir dropins");
+        std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
         let a = args(&f, HumanJsonFormat::Json);
         assert_eq!(lint(&a), EXIT_CLEAN);
+    }
+
+    /// Companion to `clean_file_exits_zero` (#466): same fixture shape, but the
+    /// includedir tempdir now holds a NOPASSWD-on-ALL drop-in. Proves the
+    /// hermetic rewrite above did not lose `#includedir`-following coverage: the
+    /// linter must still follow the directive into the drop-in and raise
+    /// `sudo-W01` (a Warning, so `EXIT_WARNINGS` / exit 1 per
+    /// `exit_code::compute`) -- the same diagnostic a real
+    /// `/etc/sudoers.d/*NOPASSWD*` drop-in would have raised on a populated
+    /// host, grounded against the `sudo-W01` firing tests in
+    /// `rulesteward_sudoers::lints::tags` (NOPASSWD effective + `CmndItem::All`).
+    #[test]
+    fn clean_file_with_dropin_nopasswd_all_exits_one_w01() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        let dropins = dir.path().join("sudoers.d");
+        std::fs::create_dir(&dropins).expect("mkdir dropins");
+        std::fs::write(dropins.join("99-nopasswd"), "ALL ALL=(ALL) NOPASSWD: ALL\n")
+            .expect("write dropin");
+        std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
+        let a = args(&f, HumanJsonFormat::Human);
+        assert_eq!(lint(&a), EXIT_WARNINGS);
     }
 
     #[test]

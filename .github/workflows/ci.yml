@@ -99,6 +99,15 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # (#467) DAC guard: every restrictive chmod fixture (from_mode(0o000) /
+      # from_mode(0o555)) under crates/**/{src,tests} must carry a
+      # CAP_DAC_OVERRIDE marker (or a dac-override-exempt: escape hatch) in
+      # the same function, per CONTRIBUTING.md's "DAC guard" section. Cheap
+      # static check (bash + awk, no cargo build), so it lives here in the
+      # lint tier alongside fmt/clippy rather than in the Rocky matrix.
+      - name: DAC guard (unguarded chmod deny-mode fixtures)
+        run: bash scripts/check-dac-guard.sh
+
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
   # matrix, the dnf bootstrap, the bash shell override, and the
