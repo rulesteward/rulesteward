@@ -58,6 +58,7 @@ pub fn side_drift(derived: &[DerivedAttr], shipped: &[DerivedAttr]) -> Vec<Strin
 mod tests {
     use super::*;
     use crate::parse::{self, DerivedAttr, Side};
+    use rulesteward_fapolicyd::attrs::{BOTH_SIDES, OBJECT_ONLY, SUBJECT_ONLY};
 
     const SUBJECT_1_3_2: &str = include_str!("../tests/fixtures/1.3.2/subject-attr.c");
     const OBJECT_1_3_2: &str = include_str!("../tests/fixtures/1.3.2/object-attr.c");
@@ -82,46 +83,57 @@ mod tests {
         }
     }
 
-    /// Sanity check on [`shipped_registry`] itself: it must reproduce the exact
-    /// 18-name / 9-5-4 split documented in `attrs.rs` (see
-    /// `crates/rulesteward-fapolicyd/src/attrs.rs` lines 40-57). Guards against a
-    /// wrong projection (e.g. swapping `SUBJECT_ONLY`/`OBJECT_ONLY`, or dropping
-    /// `BOTH_SIDES` entirely).
+    /// [`shipped_registry`] must be a PROJECTION of the real
+    /// `rulesteward_fapolicyd::attrs` consts (imported via the path-dep), NOT a
+    /// hardcoded copy of their current content. The expectation below is BUILT
+    /// from `SUBJECT_ONLY`/`OBJECT_ONLY`/`BOTH_SIDES` at test runtime, so an
+    /// implementation that hardcodes today's 18-name / 9-5-4 split would pass
+    /// today but FAIL this test the moment `attrs.rs` changes - exactly the
+    /// silent-drift-defeat this test exists to make impossible (barrier
+    /// adversarial-review strengthening, 7b-v0_6-wave2).
     #[test]
-    fn shipped_registry_matches_the_documented_split() {
-        let shipped = shipped_registry();
-        assert_eq!(shipped.len(), 18, "{shipped:?}");
-        let subject_only: Vec<&str> = shipped
+    fn shipped_registry_projects_the_real_attrs_consts() {
+        // Anti-vacuity spot-check on the IMPORTS themselves: if the path-dep or
+        // the import were broken in a way that yielded empty consts, an
+        // empty-vs-empty projection comparison would pass vacuously. Pin the
+        // currently-known shape of the real consts (attrs.rs lines 40-57:
+        // 9 + 5 + 4 = 18 names, filehash/sha256hash OBJECT_ONLY, pattern
+        // SUBJECT_ONLY, trust BOTH_SIDES) so a hollow import is loud.
+        assert_eq!(
+            SUBJECT_ONLY.len() + OBJECT_ONLY.len() + BOTH_SIDES.len(),
+            18,
+            "the imported attrs.rs consts must carry the known 18 names"
+        );
+        assert!(SUBJECT_ONLY.contains(&"pattern"));
+        assert!(OBJECT_ONLY.contains(&"filehash"));
+        assert!(OBJECT_ONLY.contains(&"sha256hash"));
+        assert!(BOTH_SIDES.contains(&"trust"));
+
+        // Build the expected projection FROM the imported consts and require
+        // shipped_registry() to reproduce it exactly (order-insensitively).
+        let mut expected: Vec<DerivedAttr> = SUBJECT_ONLY
             .iter()
-            .filter(|a| a.side == Side::Subject)
-            .map(|a| a.name.as_str())
+            .map(|n| mk(n, Side::Subject))
+            .chain(OBJECT_ONLY.iter().map(|n| mk(n, Side::Object)))
+            .chain(BOTH_SIDES.iter().map(|n| mk(n, Side::Both)))
             .collect();
-        let object_only: Vec<&str> = shipped
-            .iter()
-            .filter(|a| a.side == Side::Object)
-            .map(|a| a.name.as_str())
-            .collect();
-        let both: Vec<&str> = shipped
-            .iter()
-            .filter(|a| a.side == Side::Both)
-            .map(|a| a.name.as_str())
-            .collect();
-        assert_eq!(subject_only.len(), 9, "{subject_only:?}");
-        assert_eq!(object_only.len(), 5, "{object_only:?}");
-        assert_eq!(both.len(), 4, "{both:?}");
-        assert!(subject_only.contains(&"pattern"));
-        assert!(object_only.contains(&"filehash"));
-        assert!(object_only.contains(&"sha256hash"));
-        assert!(both.contains(&"trust"));
+        expected.sort();
+        let mut got = shipped_registry();
+        got.sort();
+        assert_eq!(
+            got, expected,
+            "shipped_registry() must project the real attrs.rs consts, not a hardcoded copy"
+        );
     }
 
     /// GREEN-case (design decision #1a): the union of derived NAMES across BOTH
     /// pinned versions (1.3.2's 17 + 1.4.5's 18, with 1.3.2 a strict subset)
-    /// equals the shipped union exactly - reading the REAL `attrs.rs` consts via
-    /// the path-dep, not a copy. A wrong impl that hardcodes an 18-name list
-    /// independent of `attrs.rs` would pass today but silently stop catching a
-    /// real future `attrs.rs` edit; this test's use of [`shipped_registry`]
-    /// (which reads the real consts) is what makes it a genuine drift guard.
+    /// equals the shipped union exactly. The shipped side is built DIRECTLY from
+    /// the imported `attrs.rs` consts (via the path-dep) rather than through
+    /// [`shipped_registry`], so this drift guard cannot be defeated by a
+    /// `shipped_registry()` implementation that hardcodes the current names
+    /// (that hardcoding threat is separately pinned by
+    /// `shipped_registry_projects_the_real_attrs_consts`).
     #[test]
     fn name_union_across_1_3_2_and_1_4_5_matches_shipped() {
         let d132 = derive(SUBJECT_1_3_2, OBJECT_1_3_2);
@@ -129,12 +141,20 @@ mod tests {
         let mut union = parse::names(&d132);
         union.extend(parse::names(&d145));
 
-        let shipped_names: BTreeSet<String> = parse::names(&shipped_registry());
+        let shipped_names: BTreeSet<String> = SUBJECT_ONLY
+            .iter()
+            .chain(OBJECT_ONLY.iter())
+            .chain(BOTH_SIDES.iter())
+            .map(|s| (*s).to_string())
+            .collect();
+        // Anti-vacuity: the imported consts must be non-hollow (see the
+        // projection test above for the full spot-check rationale).
+        assert_eq!(shipped_names.len(), 18);
 
         let drift = name_drift(&union, &shipped_names);
         assert!(
             drift.is_empty(),
-            "the derived name union must match the shipped registry with 0 drift: {drift:?}"
+            "the derived name union must match the shipped attrs.rs consts with 0 drift: {drift:?}"
         );
     }
 
