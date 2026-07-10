@@ -6,27 +6,33 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, Span};
 
 use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
+use crate::attrs::{self, AttrTypeCategory};
+use crate::version::TargetVersion;
 
 /// Run every macro-related lint pass over `entries` and return the
 /// merged diagnostics. `earlier` is the set of macro names defined in
 /// earlier-loading files (cross-file scope for fapd-E03; `None` = per-file
 /// resolution); `single_file` selects fapd-W09 over fapd-E03 for an unresolved
-/// reference in single-file `--file` mode. Only fapd-E03 consults these;
-/// fapd-E04/E05/S02 are independent of macro definedness and ignore them.
+/// reference in single-file `--file` mode. `target` is the selected `--target`
+/// version (or `None` for the portable default); only fapd-E03 consults
+/// `earlier`/`single_file`, and only fapd-E05 consults `target` (#477 -
+/// version-aware overflow gate, see [`e05_with_target`]). fapd-E04/S02 ignore
+/// all three.
 pub(crate) fn walk(
     entries: &[Entry],
     file: &Path,
     earlier: Option<&HashSet<String>>,
     single_file: bool,
+    target: Option<TargetVersion>,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     out.extend(e03(entries, file, earlier, single_file));
     out.extend(e04(entries, file));
-    out.extend(e05(entries, file));
+    out.extend(e05_with_target(entries, file, target));
     out.extend(s02(entries, file));
     out
 }
@@ -178,39 +184,89 @@ fn e04(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 /// fapolicyd types a set by its first value and stores INT sets as `i64`; a value
 /// with a leading sign is a STRING, and an all-digit value exceeding `i64::MAX`
 /// fails fapolicyd's conversion ("Error converting val").
-fn is_fap_int(v: &str) -> bool {
+///
+/// `pub(crate)` - shared with fapd-E07's rhel9/rhel10 set-type inference
+/// (`lints::type_compat::looks_signed_int`, #477): an all-digit member that
+/// overflows `i64` must NOT count as numeric membership on 1.4.x, matching the
+/// real daemon which types such a set STRING (`.private-docs` grounding,
+/// corpus case 17/`matrix.md`), not UNSIGNED/SIGNED.
+pub(crate) fn is_fap_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.parse::<i64>().is_ok()
 }
 
-/// A value that fapolicyd's type-inference reads as "looks like an integer"
-/// (all ASCII digits). Used to decide the SET's type from its first value;
-/// an all-digit-but-overflowing first value still types the set INT (and then
-/// fails conversion, which `is_fap_int` catches per-value).
+/// A non-empty all-ASCII-digit string. Used by [`strtol_out_of_range`] as the
+/// "did strtol consume any digits?" test on the extracted digit run (an empty
+/// run converts to 0 and can never be out of range).
 ///
-/// Shared with fapd-E07 (`lints::type_compat`), which uses the same per-value
-/// "looks numeric" test to infer a set's type against an attribute's category.
+/// NOTE the #477 corrections: fapd-E05's INT-set typing gate is now
+/// FIRST-CHARACTER-digit (see [`overflow_set_definitions`]), not this
+/// whole-value test, and fapd-E07's rhel9+ numeric-membership test uses
+/// [`is_fap_int`] (all-digit AND fits `i64`), not this - an
+/// all-digit-but-overflowing member types a 1.4.x set STRING.
 pub(crate) fn looks_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// fapd-E05 - integer-typed set containing an all-digit value that overflows
-/// `i64`. fapolicyd set-type validity is version-divergent: 1.3.2 rejects
-/// overflow values in INT-typed sets; 1.4.3 accepts everything; 1.4.5 types a
-/// set INT only if ALL values are valid i64. Because the linter cannot know the
-/// target version, fapd-E05 fires ONLY on the one genuinely non-portable case:
-/// a set whose first value is all-ASCII-digits (INT-typed) and that contains an
-/// all-digit value exceeding `i64::MAX` (rejected by 1.3.2 and 1.4.5; only
-/// 1.4.3 is lenient).
+/// fapd-E05 - integer-typed set containing a member whose strtol-style
+/// integer conversion overflows `i64`. fapolicyd's overflow handling is
+/// version-divergent in MECHANISM but not (per-version) in outcome: 1.3.2
+/// hard-aborts parsing the whole rules FILE the instant an overflowing set is
+/// DEFINED, attribute-independently (it fires even for a macro that is never
+/// referenced by any rule, or one referenced only by a STRING attribute -
+/// grounded `/var/tmp/7b-grounding/p1` corpus cases 17/19). 1.4.5 never aborts
+/// at definition time; instead it types the whole set STRING and only rejects
+/// it later, at the point of ASSIGNMENT to a non-STRING attribute (cases
+/// 03-07).
+///
+/// This function implements the UNCONDITIONAL policy - flag every INT-typed set
+/// containing an overflowing member, regardless of usage - which matches 1.3.2's
+/// worst-case parse-time abort and is exactly right for the portable default and
+/// `--target rhel8`. The `--target rhel9`/`rhel10` category-dependent narrowing
+/// (1.4.5's actual behavior) is layered on top by [`e05_with_target`]; this
+/// function's own ~15 direct callers in `mod tests` pin ONLY this unconditional
+/// policy and must keep working unchanged (frozen-tests rule - do not thread
+/// `target` through this signature).
 ///
 /// Type-mix (a non-digit member in an INT-typed set) is intentionally NOT
 /// flagged here because its validity depends on the attribute and target version
 /// - it is tracked as a future usage/version-aware check.
 ///
-/// STRING-typed sets (first value is not all-ASCII-digits) are always silent.
-/// Independent of fapd-E03/fapd-E04: operates on `Entry::SetDefinition` only.
-/// One diagnostic per offending set, at the first overflowing value found.
+/// STRING-typed sets (first value does not START with an ASCII digit) are
+/// always silent. Independent of fapd-E03/fapd-E04: operates on
+/// `Entry::SetDefinition` only. One diagnostic per offending set, at the first
+/// overflowing value found.
 fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
+    overflow_set_definitions(entries)
+        .into_iter()
+        .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+        .collect()
+}
+
+/// `(name, line, span, offending value)` for each INT-typed `SetDefinition`
+/// containing a member whose strtol-style conversion is out of the `i64`
+/// range. Two 1.3.2 semantics, both daemon-verified (ATL round-1 fixtures
+/// under `/var/tmp/7b-atl-p1/`; `/var/tmp/7b-grounding/p1/matrix.md`):
+///
+///   - Set typing is FIRST-CHARACTER-digit (isdigit-style, mirroring the
+///     grounded rhel8 `first_is_intish` model in `type_compat.rs`), NOT
+///     whole-member `looks_int`: `%s=1abc,<overflow>` types INT and aborts
+///     (fixture `A2_partial_unused`), while a `-` or letter FIRST character
+///     makes a STRING set that never contributes here (matrix case 15:
+///     `%s=-5,abc` loads).
+///   - Within an INT-typed set, EVERY member is converted with lenient
+///     strtol semantics ([`strtol_out_of_range`]): trailing garbage and
+///     no-digit members convert fine (`%s=1abc,5` and `%s=1,-5` both load -
+///     fixtures `Actrl1_partial_noover`/`Bctrl_neg_small`, matrix cases
+///     08/09/11), but an out-of-range conversion in EITHER direction aborts:
+///     `99999999999999999999` AND `-99999999999999999999` both produce
+///     "Error converting val" (fixture `B2_negoverflow_unused`).
+///
+/// Extracted so [`e05`] (unconditional policy) and [`e05_with_target`]'s
+/// rhel9/rhel10 category gate (#477) walk the exact same overflow-detection
+/// logic and cannot drift apart into two different notions of "overflowing
+/// set".
+fn overflow_set_definitions(entries: &[Entry]) -> Vec<(&str, usize, Span, &str)> {
+    let mut out = Vec::new();
     for entry in entries {
         let Entry::SetDefinition {
             name,
@@ -225,30 +281,149 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         let Some(first) = values.first() else {
             continue;
         };
-        // Set type is determined by the first value.
-        // If not all-digits, this is a STRING set; nothing to check.
-        if !looks_int(first) {
+        // 1.3.2 types the set INT iff the FIRST CHARACTER of the first value
+        // is an ASCII digit (isdigit-style). Otherwise it is a STRING set;
+        // nothing to check.
+        if !first.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
             continue;
         }
-        // Overflow-only policy: fire ONLY on an all-digit value that exceeds i64
-        // (non-portable: rejected by fapolicyd 1.3.2 and 1.4.5; 1.4.3 is lenient).
-        // Type-mix (a non-digit member) is version-divergent and intentionally NOT
-        // flagged here - tracked as a future usage/version-aware check.
         for bad in values {
-            if looks_int(bad) && !is_fap_int(bad) {
-                diags.push(anchored(
-                    Severity::Error,
-                    "fapd-E05",
-                    span.clone(),
-                    format!("integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"),
-                    file,
-                    *line,
-                ));
-                break; // one diagnostic per set
+            if strtol_out_of_range(bad) {
+                out.push((name.as_str(), *line, span.clone(), bad.as_str()));
+                break; // one entry per set
             }
         }
     }
-    diags
+    out
+}
+
+/// Whether fapolicyd 1.3.2's strtol-style conversion of INT-set member `v` is
+/// out of the `i64` range (the definition-time "Error converting val" abort).
+///
+/// strtol consumes one optional leading sign (`-`/`+`), then the longest run
+/// of ASCII digits; trailing garbage is legal and ignored (`1abc` -> 1) and a
+/// member with no leading digits converts to 0 (`foo` -> 0) - neither aborts
+/// (daemon-verified controls `%s=1abc,5` / `%s=1,-5` load on 1.3.2; ATL
+/// fixtures `Actrl1_partial_noover`/`Bctrl_neg_small`, matrix cases 08/09/11).
+/// The conversion aborts iff the signed digit run does not fit `i64`, in
+/// EITHER direction: `-99999999999999999999` is as fatal as its positive
+/// twin (fixture `B2_negoverflow_unused`). The range is asymmetric: `i64::MIN`
+/// (magnitude `i64::MAX + 1`) fits, `+9223372036854775808` does not.
+fn strtol_out_of_range(v: &str) -> bool {
+    let (negative, rest) = match v.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, v.strip_prefix('+').unwrap_or(v)),
+    };
+    let digit_run = &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()];
+    // No digits consumed -> converts to 0, always in range.
+    if !looks_int(digit_run) {
+        return false;
+    }
+    let Ok(magnitude) = digit_run.parse::<u128>() else {
+        // Beyond even u128 (40+ significant digits): certainly out of range.
+        return true;
+    };
+    let limit = if negative {
+        // |i64::MIN| = i64::MAX + 1 (strtol returns LONG_MIN without ERANGE).
+        i64::MAX as u128 + 1
+    } else {
+        i64::MAX as u128
+    };
+    magnitude > limit
+}
+
+/// Build the fapd-E05 diagnostic for overflowing set `name`, whose first
+/// offending value is `bad`. The bound named in the message follows the
+/// overflow direction: a negative member underflows `i64::MIN` ("below the
+/// minimum integer"), everything else exceeds `i64::MAX` (wording pinned by
+/// the pre-#477 unit tests).
+fn e05_diagnostic(name: &str, bad: &str, span: Span, file: &Path, line: usize) -> Diagnostic {
+    let bound = if bad.starts_with('-') {
+        "is below the minimum integer"
+    } else {
+        "exceeds the maximum integer"
+    };
+    anchored(
+        Severity::Error,
+        "fapd-E05",
+        span,
+        format!(
+            "integer-typed set `%{name}` contains value `{bad}` that {bound} (fapolicyd stores set integers as i64)"
+        ),
+        file,
+        line,
+    )
+}
+
+/// fapd-E05, version-aware (#477). Layers the `--target rhel9`/`rhel10` gate on
+/// top of [`e05`]'s unconditional overflow detection. Contract, grounded
+/// 2026-07-10 via `fapolicyd --debug --permissive` against
+/// `/var/tmp/7b-grounding/p1/corpus` (`matrix.md`, `transcripts/*.txt`):
+///
+///   - No `--target` / `--target rhel8`: IDENTICAL to `e05` - flag every
+///     overflow set unconditionally (1.3.2's attribute-independent
+///     definition-time abort is the worst case across all supported
+///     versions, so the portable default must assume it - cases 17/19).
+///   - `--target rhel9` / `rhel10`: flag the overflow set ONLY when it is
+///     referenced by at least one attribute whose fapolicyd value-type
+///     CATEGORY at that target is NOT `Str`. An unused overflow set (case
+///     19), or one referenced exclusively by STRING-category attribute(s)
+///     (e.g. `ftype=` - case 17; the suppression is CATEGORY-level, not
+///     attribute-name-level, so it also covers `exe=`/`comm=`/`dir=`/
+///     `path=`/`device=`/`sha256hash=`), produces NO fapd-E05: 1.4.5 types
+///     the overflow member STRING, and a STRING set on a STRING attribute
+///     loads cleanly. This reuses the SAME `attrs::type_category_for`
+///     category machinery fapd-E07 (`type_compat.rs`) already uses for its
+///     own version-divergent set/attribute typing.
+///
+/// The gate is per-SET, not per-usage: a set referenced by both a STRING and a
+/// non-STRING attribute still fires exactly once (at least one non-STRING
+/// reference exists, so the daemon rejects the file at that reference
+/// regardless of the harmless STRING one).
+pub(crate) fn e05_with_target(
+    entries: &[Entry],
+    file: &Path,
+    target: Option<TargetVersion>,
+) -> Vec<Diagnostic> {
+    match target {
+        // Portable default / rhel8: identical to the unconditional policy.
+        None | Some(TargetVersion::Rhel8) => e05(entries, file),
+        Some(version) => overflow_set_definitions(entries)
+            .into_iter()
+            .filter(|(name, ..)| referenced_by_non_str_attr(entries, name, version))
+            .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+            .collect(),
+    }
+}
+
+/// Whether `name` (a `%macro`) is referenced by at least one attribute in
+/// `entries` whose fapolicyd value-type category at `version` is NOT `Str`.
+///
+/// An attribute name unknown to [`attrs::type_category_for`] (fapd-E01's
+/// concern, not fapd-E05's) is conservatively treated as non-STRING: fapd-E05
+/// errs toward flagging rather than silently trusting an unrecognized
+/// reference's safety.
+fn referenced_by_non_str_attr(entries: &[Entry], name: &str, version: TargetVersion) -> bool {
+    entries.iter().any(|entry| {
+        let Entry::Rule(rule) = entry else {
+            return false;
+        };
+        rule.subject.iter().chain(rule.object.iter()).any(|attr| {
+            let Attr::Kv {
+                key,
+                value: AttrValue::SetRef(ref_name),
+                ..
+            } = attr
+            else {
+                return false;
+            };
+            ref_name == name
+                && !matches!(
+                    attrs::type_category_for(key, version),
+                    Some(AttrTypeCategory::Str)
+                )
+        })
+    })
 }
 
 /// fapd-S02 - macro `%name=` set definition that appears AFTER the first rule
@@ -1204,6 +1379,607 @@ mod tests {
             "stops at first overflow value: {}",
             diags[0].message,
         );
+    }
+
+    // -----------------------------------------------------------------
+    // #477 (fapd-E05 version-aware overflow gating) - pipeline-level tests
+    // driven through the public `crate::lints::lint_with_context` seam
+    // (matching the fapd-E07 test module's convention in `type_compat.rs`:
+    // "driven through the public seam, NOT the private helper, so the
+    // activation/firing decision is tested as a whole-pipeline property
+    // regardless of where the implementer lands the target-threading
+    // logic"). Today's private `e05(entries, file)` takes no target at all,
+    // so calling it directly cannot express these contracts; the pipeline
+    // seam is the only call shape stable across whatever signature change
+    // the implementer makes.
+    //
+    // Grounded 2026-07-10 via `fapolicyd --debug --permissive` inside
+    // fapd8(1.3.2-el8)/fapd9(1.4.5-el9_8)/fapd10(1.4.5-el10) against
+    // /var/tmp/7b-grounding/p1/corpus (matrix.md, transcripts/*.txt).
+    //
+    // ORCHESTRATOR-RULED contract for #477 (do not re-litigate):
+    //   A. No --target (portable default): UNCHANGED - every overflow set
+    //      member is flagged (mirrors 1.3.2's attribute-independent hard
+    //      parse abort, the worst case across all supported versions).
+    //   B. --target rhel8: same as A (1.3.2 aborts on set DEFINITION,
+    //      regardless of whether/how the set is referenced).
+    //   C. --target rhel9 / rhel10: overflow fires ONLY when the set is
+    //      referenced by at least one NON-STRING attribute. An unused
+    //      overflow set, or one referenced only by STRING attribute(s)
+    //      (e.g. `ftype=`), produces NO fapd-E05 (1.4.5 types the set
+    //      STRING; the STRING-attribute assignment loads cleanly).
+    //
+    // RED expectation: today's `e05` ignores target entirely (fires
+    // unconditionally on every overflow SetDefinition), so every rhel9/
+    // rhel10 "must NOT fire" assertion below is RED against the frozen
+    // foundation; every "must fire" assertion (A/B, and the non-STRING-
+    // referenced C cases) is already GREEN and serves as a regression pin.
+    // -----------------------------------------------------------------
+
+    /// Parse `src` and lint it under `target` via the full pipeline seam.
+    /// Mirrors `type_compat::tests::lint_src` (kept local: `mod tests` here
+    /// has no visibility into that private sibling test module).
+    fn lint_src_e05(src: &str, target: Option<crate::version::TargetVersion>) -> Vec<Diagnostic> {
+        let path = std::path::Path::new("rules.d/50-e05-target.rules");
+        let entries = crate::parser::parse_rules_file(src, path)
+            .unwrap_or_else(|d| panic!("E05 target fixture must parse cleanly: {d:?}"));
+        let ctx = crate::lints::LintContext {
+            target,
+            ..Default::default()
+        };
+        crate::lints::lint_with_context(&entries, src, path, &ctx)
+    }
+
+    /// Count of `fapd-E05` diagnostics only. Other codes (e.g. fapd-E07) may
+    /// also fire on the same fixture and are deliberately NOT constrained
+    /// here - see contract note E in the #477 grounding: the rhel8-side
+    /// E05/E07 interplay is out of scope for this pass.
+    fn e05_target_count(diags: &[Diagnostic]) -> usize {
+        diags
+            .iter()
+            .filter(|d| d.code.as_ref() == "fapd-E05")
+            .count()
+    }
+
+    const E05_ALL_CONTEXTS: [Option<crate::version::TargetVersion>; 4] = [
+        None,
+        Some(crate::version::TargetVersion::Rhel8),
+        Some(crate::version::TargetVersion::Rhel9),
+        Some(crate::version::TargetVersion::Rhel10),
+    ];
+
+    #[test]
+    fn e05_overflow_referenced_by_uid_fires_on_every_context() {
+        // grounded: corpus case 03 (int-i64-max-plus-one), rules.d/10-case.rules:
+        //   %s=9223372036854775808
+        //   allow uid=%s : all
+        // transcripts 03-int-i64-max-plus-one__fapd{8,9,10}.txt: REJECT on
+        // fapolicyd 1.3.2 AND 1.4.5 alike, via version-distinct mechanisms:
+        // 1.3.2 aborts at set DEFINITION ("Error converting val
+        // (9223372036854775808) in line 2"); 1.4.5 types the overflowing set
+        // STRING and rejects the ASSIGNMENT ("assign_subject: cannot assign
+        // %s which has STRING type to uid (UNSIGNED expected)"). `uid=` is
+        // UNSIGNED (non-STRING), so under contract C this must still fire at
+        // rhel9/rhel10 too (at least one non-STRING reference exists).
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required pin after the version-aware C gate lands.
+        let src = "%s=9223372036854775808\nallow uid=%s : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced by uid= (non-STRING) must fire fapd-E05 \
+                 under {ctx:?}; got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_only_by_string_attr_ftype_fires_portable_and_rhel8_silent_rhel9_plus()
+     {
+        // grounded: corpus case 17 (overflow-used-as-ftype), rules.d/10-case.rules:
+        //   %s=99999999999999999999
+        //   allow perm=open all : ftype=%s
+        // transcripts 17-overflow-used-as-ftype__fapd8.txt: REJECT
+        // ("Error converting val", parse-time, attribute-independent);
+        // __fapd9.txt / __fapd10.txt: "Loaded 1 rules" (VALID) - 1.4.5 types
+        // the overflowing member STRING, and `ftype=` is a STRING attribute,
+        // so it loads cleanly.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions:
+        // today's e05 ignores target and fires unconditionally, so it
+        // currently (wrongly) fires here at rhel9/rhel10 too.
+        let src = "%s=99999999999999999999\nallow perm=open all : ftype=%s\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced only by ftype= (STRING) must still fire \
+                 fapd-E05 under {ctx:?} (portable default / rhel8: fapolicyd 1.3.2's \
+                 attribute-independent parse abort); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "overflow set referenced ONLY by ftype= (STRING) must NOT fire \
+                 fapd-E05 under {ctx:?} (fapolicyd 1.4.5 types the set STRING and \
+                 loads it cleanly against a STRING attribute; corpus case 17: \
+                 \"Loaded 1 rules\"); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_unused_macro_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // grounded: corpus case 19 (overflow-macro-unused), rules.d/10-case.rules:
+        //   %s=99999999999999999999
+        //   allow perm=open all : all
+        // transcripts 19-overflow-macro-unused__fapd8.txt: REJECT ("Error
+        // converting val") - fires even though `%s` is never referenced by
+        // any rule (1.3.2's parse-time abort happens at set DEFINITION, not
+        // at use). __fapd9.txt / __fapd10.txt: "Loaded 1 rules" (VALID) - the
+        // macro is simply unused; 1.4.5 never even attempts to type it.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions
+        // (today's e05 fires unconditionally regardless of usage or target).
+        let src = "%s=99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused overflow set must still fire fapd-E05 under {ctx:?} \
+                 (fapolicyd 1.3.2 aborts at set DEFINITION regardless of usage); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused overflow set must NOT fire fapd-E05 under {ctx:?} \
+                 (fapolicyd 1.4.5 never errors on an unreferenced macro; corpus \
+                 case 19: \"Loaded 1 rules\", no ERROR line); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_by_both_string_and_nonstring_attrs_still_fires_at_rhel9_plus() {
+        // DERIVED (no single corpus fixture combines both references in one
+        // file): case 05 (int-overflow-single via uid=, UNSIGNED) REJECTs on
+        // 1.4.5; case 17 (overflow-used-as-ftype, STRING) ACCEPTs on 1.4.5.
+        // A single overflow set referenced by BOTH a STRING attr (`ftype=`)
+        // and a non-STRING attr (`uid=`) must still be caught: `uid=%s` alone
+        // is grounded-REJECT (cases 03/05), and adding a second, harmless
+        // STRING-typed reference cannot make the daemon accept a ruleset it
+        // would otherwise reject on the `uid=` line. This guards against a
+        // wrong implementation that suppresses fapd-E05 whenever ANY STRING
+        // reference exists, instead of firing when AT LEAST ONE non-STRING
+        // reference exists.
+        //
+        // fapd-E05 fires once per offending SetDefinition (not per usage), so
+        // the expected count is 1 regardless of how many rules reference `%s`.
+        //
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required regression guard after the version-aware C gate
+        // lands - it must NOT flip to 0 at rhel9/rhel10.
+        let src = "%s=99999999999999999999\nallow perm=open uid=%s : all\nallow perm=open all : ftype=%s\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "a set referenced by BOTH a STRING attr (ftype=) and a \
+                 non-STRING attr (uid=) must fire fapd-E05 exactly once under \
+                 {ctx:?} (at least one non-STRING reference exists); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_i64_max_via_uid_never_fires_regardless_of_target() {
+        // grounded: corpus case 02 (int-i64-max), rules.d/10-case.rules:
+        //   %s=9223372036854775807
+        //   allow uid=%s : all
+        // transcripts 02-int-i64-max__fapd{8,9,10}.txt: "Loaded 1 rules"
+        // (VALID) on every version - i64::MAX is a valid fapolicyd integer,
+        // not an overflow. Boundary pin: must never fire fapd-E05, at any
+        // --target. GREEN today (is_fap_int(i64::MAX) is true).
+        let src = "%s=9223372036854775807\nallow uid=%s : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "i64::MAX is a valid fapolicyd integer on every version; fapd-E05 \
+                 must not fire under {ctx:?}: got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_only_by_exe_string_attr_silent_rhel9_plus() {
+        // DERIVED (the corpus's STRING-attr overflow fixture, case 17, uses
+        // `ftype=`; no case uses `exe=`): the contract-C suppression is
+        // CATEGORY-level, not attribute-name-level. matrix.md's divergence
+        // section (lines 69-72) enumerates the STRING-category attributes
+        // (`ftype=`, `exe=`, `comm=`, `dir=`, `path=`, `device=`,
+        // `sha256hash=`) and states that against ANY of them 1.3.2 still
+        // rejects (attribute-independent definition-time abort, per cases
+        // 17/19 fapd8 transcripts: "Error converting val") while 1.4.5
+        // accepts (the overflow member types the set STRING - case 17 fapd9/
+        // fapd10: "Loaded 1 rules" - and a STRING set on a STRING attribute
+        // is compatible). `exe=` is subject-side STRING (attrs.rs
+        // STR_ATTRS; pinned by type_compat's string_set_on_exe tests).
+        //
+        // Kills a wrong implementation that suppresses at rhel9+ only when
+        // the referencing attribute is literally `ftype=` instead of
+        // checking the attribute's TYPE CATEGORY.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions
+        // (today's e05 fires unconditionally).
+        let src = "%s=99999999999999999999\nallow perm=open exe=%s : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced only by exe= (STRING category) must \
+                 still fire fapd-E05 under {ctx:?} (1.3.2's definition-time abort \
+                 is attribute-independent); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "overflow set referenced ONLY by exe= (STRING category, not just \
+                 ftype=) must NOT fire fapd-E05 under {ctx:?} - the suppression \
+                 rule is category-level (matrix.md lines 69-72); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_by_auid_or_sessionid_fires_on_every_context() {
+        // DERIVED (the corpus's non-STRING overflow fixtures, cases 03-07,
+        // all use `uid=`): the contract-C firing condition is "referenced by
+        // at least one NON-STRING attribute", category-level, not
+        // "referenced by uid=". `auid=` and `sessionid=` are UNSIGNED on
+        // every supported version (attrs.rs UNSIGNED_ATTRS; pinned grounded
+        // by type_compat's auid_and_sessionid_are_unsigned_like_uid).
+        // Derivation for rhel9/rhel10: 1.4.5 types the overflow set STRING
+        // (case 17 fapd9/10) and rejects a STRING set on an UNSIGNED
+        // attribute (cases 03/05 fapd9/10: "cannot assign %s which has
+        // STRING type to uid (UNSIGNED expected)" - same category rule for
+        // auid/sessionid), so fapd-E05 must fire at rhel9/rhel10 too. For
+        // portable/rhel8: 1.3.2's definition-time abort is
+        // attribute-independent (cases 17/19 fapd8).
+        //
+        // Kills a wrong implementation that fires at rhel9+ only when the
+        // referencing attribute is literally `uid=`.
+        //
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required pin after the version-aware C gate lands.
+        for attr in ["auid", "sessionid"] {
+            let src = format!("%s=99999999999999999999\nallow perm=open {attr}=%s : all\n");
+            for ctx in E05_ALL_CONTEXTS {
+                let diags = lint_src_e05(&src, ctx);
+                assert_eq!(
+                    e05_target_count(&diags),
+                    1,
+                    "overflow set referenced by {attr}= (UNSIGNED, non-STRING) must \
+                     fire fapd-E05 under {ctx:?} (category-level rule, not uid=-only); \
+                     got codes={:?}",
+                    diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // #477 post-GREEN Adversarial Testing Loop round 1: two PRE-EXISTING
+    // false negatives in the shared overflow detector
+    // (`overflow_set_definitions`), daemon-CONFIRMED by the impl-aware
+    // adversary (repro fixtures: /var/tmp/7b-atl-p1/). Orchestrator scope
+    // ruling: fapd-E05 owns BOTH shapes (the daemon's abort is the same
+    // definition-time "Error converting val" class for both).
+    //
+    // MISS 1 - partial-int FIRST member: fapolicyd 1.3.2 types a set INT
+    // when the FIRST CHARACTER of the first member is a digit (isdigit-
+    // style, mirroring the grounded rhel8 model in type_compat.rs
+    // `first_is_intish`), then hard-aborts on a later overflow member.
+    // The detector's `looks_int(first)` gate (whole first member must be
+    // all-digits) wrongly skips the entire set.
+    //
+    // MISS 2 - SIGNED overflow member: 1.3.2 rejects an INT-typed set
+    // containing `-99999999999999999999` ("Error converting val
+    // (-99999999999999999999)"), but `looks_int` has no sign handling, so
+    // the member is never counted and the set passes silently.
+    //
+    // Both misses: 1.4.5 loads the unused fixtures cleanly, so the
+    // rhel9/rhel10 arms stay silent (same contract-C gate as above).
+    //
+    // Message-content pinning is deliberately loose per the orchestrator
+    // ruling: pin that the finding names the offending value; do NOT pin
+    // the exact "exceeds the maximum integer" sentence (the implementer
+    // may widen the wording to cover negative/magnitude overflow
+    // honestly). Count + code are the load-bearing assertions.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e05_partial_int_first_member_with_overflow_fires() {
+        // MISS 1 unit test, against the unconditional-policy `e05` directly.
+        // daemon-verified (ATL fixture A2_partial_unused / A_partial_uid,
+        // fapolicyd 1.3.2): `%s=1abc,99999999999999999999` hard-aborts at
+        // definition time ("Error converting val (99999999999999999999) in
+        // line 2"), usage-independently - 1.3.2 typed the set INT by the
+        // first CHARACTER of "1abc" (a digit). Control Actrl1_partial_noover
+        // (`%s=1abc,5`) LOADS on 1.3.2: a partial-int first member with only
+        // in-range digit members is daemon-valid, so the fix must not
+        // over-fire on it.
+        //
+        // RED today: `looks_int("1abc")` is false, so the detector types the
+        // set STRING and skips it entirely - zero findings.
+        let entries = vec![set_def(1, "s", &["1abc", "99999999999999999999"])];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "a set whose first member STARTS with a digit (1.3.2 isdigit-style \
+             INT typing) and that contains an overflow member must fire fapd-E05: \
+             {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E05");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("99999999999999999999"),
+            "message must name the offending overflow value: {}",
+            diags[0].message,
+        );
+
+        // Control (Actrl1_partial_noover): same partial-int first member, no
+        // overflow member -> daemon-valid on 1.3.2 -> no fapd-E05.
+        let control = vec![set_def(1, "s", &["1abc", "5"])];
+        let control_diags = e05(&control, &p());
+        assert!(
+            control_diags.is_empty(),
+            "partial-int first member with only in-range members loads on 1.3.2 \
+             (ATL control fixture); fapd-E05 must not fire: {control_diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_partial_int_first_with_overflow_unused_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // MISS 1 pipeline test (mirror of
+        // e05_overflow_unused_macro_fires_portable_and_rhel8_silent_rhel9_plus).
+        // daemon-verified (ATL fixture A2_partial_unused, fapolicyd 1.3.2 vs
+        // 1.4.5): the UNUSED `%s=1abc,99999999999999999999` rejects
+        // identically on 1.3.2 (definition-time, usage-independent abort:
+        // "Error converting val (99999999999999999999) in line 2") and loads
+        // cleanly on 1.4.5 (macro unused, never typed).
+        //
+        // RED today at portable/rhel8 (detector skips the set entirely);
+        // the rhel9/rhel10 arms assert the same contract-C silence as the
+        // all-digit unused case above.
+        let src = "%s=1abc,99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused partial-int-first overflow set must fire fapd-E05 under \
+                 {ctx:?} (1.3.2 types INT by the first CHARACTER of `1abc` and \
+                 aborts on the overflow member, ATL fixture A2_partial_unused); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused partial-int-first overflow set must NOT fire fapd-E05 \
+                 under {ctx:?} (fapolicyd 1.4.5 loads the unused fixture cleanly, \
+                 ATL fixture A2_partial_unused); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_signed_overflow_member_unused_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // MISS 2 pipeline test. daemon-verified (ATL fixture
+        // B2_negoverflow_unused, fapolicyd 1.3.2 vs 1.4.5): the UNUSED
+        // `%s=1,-99999999999999999999` rejects on 1.3.2 ("Error converting
+        // val (-99999999999999999999)") and loads cleanly on 1.4.5. Control
+        // Bctrl_neg_small (`%s=1,-5`) LOADS on 1.3.2, consistent with
+        // grounded matrix case 11 (`%s=1,-5,3` VALID on fapd8): a signed
+        // IN-RANGE member is not an overflow and must stay silent.
+        //
+        // RED today at portable/rhel8: `looks_int` has no sign handling, so
+        // the `-99999999999999999999` member is never counted and the set
+        // passes silently.
+        let src = "%s=1,-99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused INT-typed set with a SIGNED overflow member must fire \
+                 fapd-E05 under {ctx:?} (1.3.2: \"Error converting val \
+                 (-99999999999999999999)\", ATL fixture B2_negoverflow_unused); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+            let e05_diag = diags
+                .iter()
+                .find(|d| d.code.as_ref() == "fapd-E05")
+                .expect("checked count");
+            assert!(
+                e05_diag.message.contains("99999999999999999999"),
+                "the finding must name the offending value (exact wording \
+                 deliberately unpinned for the negative case): {}",
+                e05_diag.message,
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused signed-overflow set must NOT fire fapd-E05 under \
+                 {ctx:?} (fapolicyd 1.4.5 loads the unused fixture cleanly, ATL \
+                 fixture B2_negoverflow_unused); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+
+        // Control (Bctrl_neg_small / matrix case 11): signed IN-RANGE member
+        // -> daemon-valid on 1.3.2 -> no fapd-E05 at any context.
+        let control = "%s=1,-5\nallow perm=open all : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(control, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "a signed in-range member is not an overflow; fapd-E05 must not \
+                 fire under {ctx:?} (1.3.2 loads `1,-5`, matrix case 11 / ATL \
+                 control Bctrl_neg_small); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // #477 mutation-gate boundary pins: the final `cargo mutants` run left
+    // exactly two survivors, both in `strtol_out_of_range`'s
+    // negative-magnitude threshold `i64::MAX as u128 + 1` (`+` -> `*` and
+    // `+` -> `-`). Both mutants LOWER the negative limit (to i64::MAX or
+    // i64::MAX - 1), and the only discriminating input is exactly
+    // `i64::MIN` (magnitude i64::MAX + 1): in-range under the correct
+    // threshold, wrongly out-of-range under either mutant. Neither
+    // pre-existing negative fixture discriminates (`-5` is far inside; the
+    // 20-nines member is outside under both correct code and mutants), so
+    // the boundary gets pinned from BOTH sides here.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e05_i64_min_member_is_in_range_never_fires() {
+        // GREEN pin; kills both `i64::MAX as u128 + 1` mutants.
+        // daemon-verified (impl-aware adversary's delta-confirm run on
+        // fapolicyd8, fixture /var/tmp/7b-atl-p1/P3_i64min):
+        //   %s=1,-9223372036854775808
+        //   allow perm=open all : all
+        // loads cleanly on fapolicyd 1.3.2 ("Loaded 1 rules") - strtol
+        // consumes `-` + the digit run and returns exactly LONG_MIN
+        // (i64::MIN) WITHOUT ERANGE; |i64::MIN| = i64::MAX + 1 is the
+        // asymmetric bottom of the i64 range, so the member is in-range and
+        // 1.4.5 has nothing to reject either (unused macro). ZERO fapd-E05
+        // at every context.
+        let src = "%s=1,-9223372036854775808\nallow perm=open all : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "i64::MIN (-9223372036854775808) is IN-range for strtol/i64 \
+                 (LONG_MIN, no ERANGE; daemon: \"Loaded 1 rules\" on fapolicyd \
+                 1.3.2, ATL fixture P3_i64min); fapd-E05 must not fire under \
+                 {ctx:?}: got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+
+        // Same boundary pinned at the unit seam (the unconditional-policy
+        // `e05`, which both the portable default and rhel8 use).
+        let entries = vec![set_def(1, "s", &["1", "-9223372036854775808"])];
+        let diags = e05(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "i64::MIN member must be in-range at the unit seam too: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_below_i64_min_member_fires_portable_and_rhel8() {
+        // The other side of the boundary bracket: `-9223372036854775809`
+        // (magnitude i64::MAX + 2) is one below i64::MIN. DERIVED from
+        // strtol semantics consistent with the adversary's ERANGE model
+        // (no dedicated daemon fixture): strtol(3) sets ERANGE and clamps
+        // to LONG_MIN for any value below LONG_MIN, and fapolicyd's
+        // conversion aborts on ERANGE - the same "Error converting val"
+        // class daemon-verified for `-99999999999999999999` (ATL fixture
+        // B2_negoverflow_unused). Unused shape: fires at portable/rhel8,
+        // silent at rhel9/rhel10 (contract C, unused macro).
+        //
+        // Together with the i64::MIN pin above this brackets the negative
+        // threshold exactly: magnitude i64::MAX + 1 in-range, i64::MAX + 2
+        // out-of-range. A mutant RAISING the limit (e.g. `+ 1` -> `+ 2` or
+        // a widened bound) dies here; the LOWERING mutants die above.
+        let src = "%s=1,-9223372036854775809\nallow perm=open all : all\n";
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "one-below-i64::MIN (-9223372036854775809, magnitude \
+                 i64::MAX + 2) is out of strtol range (ERANGE) and must fire \
+                 fapd-E05 under {ctx:?}; got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "unused below-min set must stay silent under {ctx:?} \
+                 (contract C: unused macro, 1.4.5 never types it); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
     }
 
     // -----------------------------------------------------------------
