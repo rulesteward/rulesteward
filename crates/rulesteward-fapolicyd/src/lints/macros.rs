@@ -1645,6 +1645,189 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // #477 post-GREEN Adversarial Testing Loop round 1: two PRE-EXISTING
+    // false negatives in the shared overflow detector
+    // (`overflow_set_definitions`), daemon-CONFIRMED by the impl-aware
+    // adversary (repro fixtures: /var/tmp/7b-atl-p1/). Orchestrator scope
+    // ruling: fapd-E05 owns BOTH shapes (the daemon's abort is the same
+    // definition-time "Error converting val" class for both).
+    //
+    // MISS 1 - partial-int FIRST member: fapolicyd 1.3.2 types a set INT
+    // when the FIRST CHARACTER of the first member is a digit (isdigit-
+    // style, mirroring the grounded rhel8 model in type_compat.rs
+    // `first_is_intish`), then hard-aborts on a later overflow member.
+    // The detector's `looks_int(first)` gate (whole first member must be
+    // all-digits) wrongly skips the entire set.
+    //
+    // MISS 2 - SIGNED overflow member: 1.3.2 rejects an INT-typed set
+    // containing `-99999999999999999999` ("Error converting val
+    // (-99999999999999999999)"), but `looks_int` has no sign handling, so
+    // the member is never counted and the set passes silently.
+    //
+    // Both misses: 1.4.5 loads the unused fixtures cleanly, so the
+    // rhel9/rhel10 arms stay silent (same contract-C gate as above).
+    //
+    // Message-content pinning is deliberately loose per the orchestrator
+    // ruling: pin that the finding names the offending value; do NOT pin
+    // the exact "exceeds the maximum integer" sentence (the implementer
+    // may widen the wording to cover negative/magnitude overflow
+    // honestly). Count + code are the load-bearing assertions.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e05_partial_int_first_member_with_overflow_fires() {
+        // MISS 1 unit test, against the unconditional-policy `e05` directly.
+        // daemon-verified (ATL fixture A2_partial_unused / A_partial_uid,
+        // fapolicyd 1.3.2): `%s=1abc,99999999999999999999` hard-aborts at
+        // definition time ("Error converting val (99999999999999999999) in
+        // line 2"), usage-independently - 1.3.2 typed the set INT by the
+        // first CHARACTER of "1abc" (a digit). Control Actrl1_partial_noover
+        // (`%s=1abc,5`) LOADS on 1.3.2: a partial-int first member with only
+        // in-range digit members is daemon-valid, so the fix must not
+        // over-fire on it.
+        //
+        // RED today: `looks_int("1abc")` is false, so the detector types the
+        // set STRING and skips it entirely - zero findings.
+        let entries = vec![set_def(1, "s", &["1abc", "99999999999999999999"])];
+        let diags = e05(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "a set whose first member STARTS with a digit (1.3.2 isdigit-style \
+             INT typing) and that contains an overflow member must fire fapd-E05: \
+             {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E05");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("99999999999999999999"),
+            "message must name the offending overflow value: {}",
+            diags[0].message,
+        );
+
+        // Control (Actrl1_partial_noover): same partial-int first member, no
+        // overflow member -> daemon-valid on 1.3.2 -> no fapd-E05.
+        let control = vec![set_def(1, "s", &["1abc", "5"])];
+        let control_diags = e05(&control, &p());
+        assert!(
+            control_diags.is_empty(),
+            "partial-int first member with only in-range members loads on 1.3.2 \
+             (ATL control fixture); fapd-E05 must not fire: {control_diags:?}",
+        );
+    }
+
+    #[test]
+    fn e05_partial_int_first_with_overflow_unused_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // MISS 1 pipeline test (mirror of
+        // e05_overflow_unused_macro_fires_portable_and_rhel8_silent_rhel9_plus).
+        // daemon-verified (ATL fixture A2_partial_unused, fapolicyd 1.3.2 vs
+        // 1.4.5): the UNUSED `%s=1abc,99999999999999999999` rejects
+        // identically on 1.3.2 (definition-time, usage-independent abort:
+        // "Error converting val (99999999999999999999) in line 2") and loads
+        // cleanly on 1.4.5 (macro unused, never typed).
+        //
+        // RED today at portable/rhel8 (detector skips the set entirely);
+        // the rhel9/rhel10 arms assert the same contract-C silence as the
+        // all-digit unused case above.
+        let src = "%s=1abc,99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused partial-int-first overflow set must fire fapd-E05 under \
+                 {ctx:?} (1.3.2 types INT by the first CHARACTER of `1abc` and \
+                 aborts on the overflow member, ATL fixture A2_partial_unused); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused partial-int-first overflow set must NOT fire fapd-E05 \
+                 under {ctx:?} (fapolicyd 1.4.5 loads the unused fixture cleanly, \
+                 ATL fixture A2_partial_unused); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_signed_overflow_member_unused_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // MISS 2 pipeline test. daemon-verified (ATL fixture
+        // B2_negoverflow_unused, fapolicyd 1.3.2 vs 1.4.5): the UNUSED
+        // `%s=1,-99999999999999999999` rejects on 1.3.2 ("Error converting
+        // val (-99999999999999999999)") and loads cleanly on 1.4.5. Control
+        // Bctrl_neg_small (`%s=1,-5`) LOADS on 1.3.2, consistent with
+        // grounded matrix case 11 (`%s=1,-5,3` VALID on fapd8): a signed
+        // IN-RANGE member is not an overflow and must stay silent.
+        //
+        // RED today at portable/rhel8: `looks_int` has no sign handling, so
+        // the `-99999999999999999999` member is never counted and the set
+        // passes silently.
+        let src = "%s=1,-99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused INT-typed set with a SIGNED overflow member must fire \
+                 fapd-E05 under {ctx:?} (1.3.2: \"Error converting val \
+                 (-99999999999999999999)\", ATL fixture B2_negoverflow_unused); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+            let e05_diag = diags
+                .iter()
+                .find(|d| d.code.as_ref() == "fapd-E05")
+                .expect("checked count");
+            assert!(
+                e05_diag.message.contains("99999999999999999999"),
+                "the finding must name the offending value (exact wording \
+                 deliberately unpinned for the negative case): {}",
+                e05_diag.message,
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused signed-overflow set must NOT fire fapd-E05 under \
+                 {ctx:?} (fapolicyd 1.4.5 loads the unused fixture cleanly, ATL \
+                 fixture B2_negoverflow_unused); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+
+        // Control (Bctrl_neg_small / matrix case 11): signed IN-RANGE member
+        // -> daemon-valid on 1.3.2 -> no fapd-E05 at any context.
+        let control = "%s=1,-5\nallow perm=open all : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(control, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "a signed in-range member is not an overflow; fapd-E05 must not \
+                 fire under {ctx:?} (1.3.2 loads `1,-5`, matrix case 11 / ATL \
+                 control Bctrl_neg_small); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // fapd-S02 helper-level unit tests. Pin the single-pass `seen_rule`
     // walker so every branch (macro-before-rule -> silent, macro-after-rule
     // -> fire, comment does not close the window, blank does not close the
