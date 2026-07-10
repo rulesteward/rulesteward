@@ -4,3 +4,37 @@
 # Excluded from the mutation gate so a "survivor" there does not mask a real gap
 # in the tested derivation core.
 exclude_globs = ["src/source.rs"]
+
+# `parse_requirements` (xccdf.rs) two match-guard survivors from the mutation
+# gate (session 7c pipeline P2, #474). Both are genuine equivalent mutants for
+# any well-formed XCCDF (real DISA corpus or a synthetic-but-schema-plausible
+# reformat), verified by tracing the state machine, not merely "current tests
+# don't kill it". The sibling `cur_stig_id.is_none() -> true` guard at the
+# Start event (line ~145) IS killable and stays in the gate - see
+# `duplicate_version_element_within_one_rule_keeps_the_first` in this file's
+# test module.
+#
+# - `capture == Capture::Version with true` (End `</version>`, line ~197):
+#   this arm can only ever be reached with `capture != Capture::Version` when
+#   the SAME element's own Start did not set it - which happens only for a
+#   second-or-later `<version>` in one Rule, already blocked from re-entering
+#   `Capture::Version` by the Start guard above. Nothing else can flip
+#   `capture` between that Start and this End (no other Start/End fires for a
+#   leaf text element without invalid, unescaped nested markup a real
+#   check-content/version never contains). At that point `text_buf` is
+#   unchanged since the LAST successful capture (its End arm never clears it),
+#   so firing this arm anyway assigns `cur_stig_id` the SAME value it already
+#   holds. Byte-identical outcome whether the guard fires or not.
+# - `capture == Capture::CheckContent with true` (End `</check-content>`,
+#   line ~201): the `<check-content>` Start has NO guard at all (unconditional
+#   `capture = Capture::CheckContent; text_buf.clear();`), so `capture` is
+#   ALWAYS `Capture::CheckContent` immediately before this End can fire for
+#   that element's own matching pair - the real DISA corpus (and the
+#   fixtures) have exactly one `<check-content>` per Rule (53/53/53 in the
+#   rhel8/9/10 fixtures), and no other Start/End can intervene without
+#   unrealistic nested markup. The guard is a tautology at this call site for
+#   every reachable input; the mutant cannot be observed by any test.
+exclude_re = [
+    'replace match guard capture == Capture::Version with true in parse_requirements',
+    'replace match guard capture == Capture::CheckContent with true in parse_requirements',
+]

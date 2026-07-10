@@ -534,6 +534,29 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_version_element_within_one_rule_keeps_the_first() {
+        // Grounding: the module doc's Start-event guard, `b"version" if
+        // cur_stig_id.is_none()`, states "Only the FIRST <version> in a Rule
+        // is the STIG id; a second <version> (not observed, but defended per
+        // the module doc's 'fail closed for a future DISA reformat' posture)
+        // is ignored." (mutation gate, session 7c pipeline P2: the
+        // `cur_stig_id.is_none() -> true` mutant survived because no test
+        // pinned this contract). Pin: the FIRST <version> wins, not the
+        // last.
+        let doc = r#"<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1">
+            <Group id="V-42"><Rule severity="medium"><version>RHEL-09-999999</version>
+            <version>RHEL-09-000000</version>
+            <check><check-content>-w /etc/passwd -p wa -k identity</check-content></check>
+            </Rule></Group></Benchmark>"#;
+        let derived = parse_requirements(doc).expect("parses");
+        assert_eq!(derived.len(), 1, "{derived:?}");
+        assert_eq!(
+            derived[0].stig_id, "RHEL-09-999999",
+            "the FIRST <version> must win, not a later one: {derived:?}"
+        );
+    }
+
+    #[test]
     fn duplicate_verbatim_line_within_one_rule_dedupes_to_one_row() {
         // Grounding Part B.3.3: a line repeated verbatim within one Rule's
         // check-content collapses to one row (not observed in the real corpus,

@@ -27,7 +27,7 @@ use std::path::Path;
 use rulesteward_auditd::lints::LintOptions;
 use rulesteward_auditd::lints::catalog::AU_CODES;
 use rulesteward_auditd::lints::stig_required::{
-    BaselineRule, TargetVersion, w06, w06_with_baseline,
+    BaselineRule, TargetVersion, stig_baseline, w06, w06_with_baseline,
 };
 use rulesteward_auditd::parse_rules_str_located;
 use rulesteward_core::Severity;
@@ -520,4 +520,96 @@ fn catalog_lists_au_w06_as_warning() {
         .find(|c| c.code == "au-W06")
         .expect("au-W06 must be catalogued");
     assert_eq!(entry.severity, Severity::Warning);
+}
+
+// ---------------------------------------------------------------------------
+// stig_baseline: the pub accessor for the drift tool. `tools/auditd-stig-
+// update`'s `check`/`derive` subcommands import it directly, and (unlike
+// baseline_for, which is only reached indirectly via `w06`) it had no
+// in-crate test proving it forwards to the REAL per-product table rather
+// than an empty slice (mutation gate, session 7c pipeline P2: `stig_baseline
+// -> Vec::leak(Vec::new())` survived).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
+    // Length + a known control id per product, mirroring the tool crate's own
+    // rhel{8,9,10}_known_answer_counts pins (61/67/75 total extracted lines).
+    let rhel8 = stig_baseline(TargetVersion::Rhel8);
+    assert_eq!(rhel8.len(), 61, "{rhel8:?}");
+    assert!(
+        rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),
+        "RHEL8 baseline must contain RHEL-08-030000: {rhel8:?}"
+    );
+
+    let rhel9 = stig_baseline(TargetVersion::Rhel9);
+    assert_eq!(rhel9.len(), 67, "{rhel9:?}");
+    assert!(
+        rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
+        "RHEL9 baseline must contain RHEL-09-654010: {rhel9:?}"
+    );
+
+    let rhel10 = stig_baseline(TargetVersion::Rhel10);
+    assert_eq!(rhel10.len(), 75, "{rhel10:?}");
+    assert!(
+        rhel10.iter().any(|r| r.stig_id == "RHEL-10-500300"),
+        "RHEL10 baseline must contain RHEL-10-500300: {rhel10:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// normalize_watch_path: the trailing-slash-normalized watch-path compare
+// (grounding Part B.7.2). Mutation gate, session 7c pipeline P2: the two
+// constant-return mutants (-> "" / -> "xyzzy") both survived because every
+// other scenario test above uses paths that are ALREADY normalize-equal
+// (identical spelling), so a constant normalizer never diverged from the
+// real one. RHEL-08-030172 (V-230410) is the real DISA requirement that
+// grounded B.7.2's trailing-slash disagreement: "-w /etc/sudoers.d/ -p wa -k
+// identity".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn watch_path_trailing_slash_is_normalized_before_comparison() {
+    // A user rule spelled with the OPPOSITE trailing-slash convention (no
+    // trailing `/`) must still satisfy the requirement.
+    let baseline = vec![bl(
+        "V-230410",
+        "RHEL-08-030172",
+        "-w /etc/sudoers.d/ -p wa -k identity",
+    )];
+    let rules = parse("-w /etc/sudoers.d -p wa -k identity\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a watch path differing only by a trailing slash must satisfy the \
+         requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn distinct_watch_paths_are_not_normalized_to_the_same_value() {
+    // Companion to the test above: proves normalize_watch_path is not a
+    // constant function. A constant normalizer (the two MISSED mutants)
+    // would make EVERY watch path compare equal, silently widening the
+    // matcher to accept any watch as satisfying any path-differing
+    // requirement. A watch requirement on /etc/sudoers.d/ (RHEL-08-030172)
+    // is genuinely NOT satisfied by a user rule watching a DIFFERENT path,
+    // /etc/cron.d.
+    let baseline = vec![bl(
+        "V-230410",
+        "RHEL-08-030172",
+        "-w /etc/sudoers.d/ -p wa -k identity",
+    )];
+    let rules = parse("-w /etc/cron.d -p wa -k identity\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a watch on a DIFFERENT path must not satisfy the requirement: {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("RHEL-08-030172"),
+        "{:?}",
+        diags[0].message
+    );
 }
