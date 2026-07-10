@@ -134,6 +134,49 @@ stig-derive product="all":
         cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
+# (#479) Drift-check / refresh the fapd-E01 attribute registry against upstream
+# fapolicyd's src/library/{subject,object}-attr.c. Same nested-tool pattern
+# (tools/fapolicyd-attr-update, OUT of `just ci`). The LIVE recipe skips gracefully
+# (exit 0) when curl is absent; the OFFLINE recipe never touches the network.
+#
+# fapd-attr-check          : LIVE - fetch the pinned attr-refs.toml sources from
+#                            GitHub; exit 1 on any drift vs the shipped
+#                            rulesteward-fapolicyd attrs.rs consts.
+# fapd-attr-check-offline  : OFFLINE - drift-check against the committed
+#                            tests/fixtures/ (the PR-gate uses this); no network.
+# fapd-attr-derive <v>     : print the derived registry + paste-ready rows for
+#                            review (v = a pinned fapolicyd version, or `all`).
+fapd-attr-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "fapd-attr-check: prerequisites missing - need curl + network access to GitHub" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- check
+
+fapd-attr-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed tests/fixtures/ and confirm the
+    # shipped attrs.rs registry still matches. No network. Drift (exit 1) or error
+    # (exit 2) fails the recipe.
+    cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- \
+        check --fixtures tools/fapolicyd-attr-update/tests/fixtures
+
+fapd-attr-derive version="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "fapd-attr-derive: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    if [ "{{version}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/fapolicyd-attr-update/Cargo.toml -- derive --version "{{version}}"
+    fi
+
 # (#444) Drift-check / refresh the sshd W01/W02 STIG baselines against the OFFICIAL
 # DISA XCCDF. Same nested-tool pattern (tools/sshd-stig-update, OUT of `just ci`).
 # DISA versions each RHEL STIG by FILENAME (no releases API), so there is NO
