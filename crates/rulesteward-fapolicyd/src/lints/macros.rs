@@ -1279,7 +1279,11 @@ mod tests {
         //   %s=9223372036854775808
         //   allow uid=%s : all
         // transcripts 03-int-i64-max-plus-one__fapd{8,9,10}.txt: REJECT on
-        // fapolicyd 1.3.2 AND 1.4.5 alike ("Error converting val"). `uid=` is
+        // fapolicyd 1.3.2 AND 1.4.5 alike, via version-distinct mechanisms:
+        // 1.3.2 aborts at set DEFINITION ("Error converting val
+        // (9223372036854775808) in line 2"); 1.4.5 types the overflowing set
+        // STRING and rejects the ASSIGNMENT ("assign_subject: cannot assign
+        // %s which has STRING type to uid (UNSIGNED expected)"). `uid=` is
         // UNSIGNED (non-STRING), so under contract C this must still fire at
         // rhel9/rhel10 too (at least one non-STRING reference exists).
         // GREEN today at every context (today's e05 fires unconditionally);
@@ -1437,6 +1441,93 @@ mod tests {
                  must not fire under {ctx:?}: got codes={:?}",
                 diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
             );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_only_by_exe_string_attr_silent_rhel9_plus() {
+        // DERIVED (the corpus's STRING-attr overflow fixture, case 17, uses
+        // `ftype=`; no case uses `exe=`): the contract-C suppression is
+        // CATEGORY-level, not attribute-name-level. matrix.md's divergence
+        // section (lines 69-72) enumerates the STRING-category attributes
+        // (`ftype=`, `exe=`, `comm=`, `dir=`, `path=`, `device=`,
+        // `sha256hash=`) and states that against ANY of them 1.3.2 still
+        // rejects (attribute-independent definition-time abort, per cases
+        // 17/19 fapd8 transcripts: "Error converting val") while 1.4.5
+        // accepts (the overflow member types the set STRING - case 17 fapd9/
+        // fapd10: "Loaded 1 rules" - and a STRING set on a STRING attribute
+        // is compatible). `exe=` is subject-side STRING (attrs.rs
+        // STR_ATTRS; pinned by type_compat's string_set_on_exe tests).
+        //
+        // Kills a wrong implementation that suppresses at rhel9+ only when
+        // the referencing attribute is literally `ftype=` instead of
+        // checking the attribute's TYPE CATEGORY.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions
+        // (today's e05 fires unconditionally).
+        let src = "%s=99999999999999999999\nallow perm=open exe=%s : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced only by exe= (STRING category) must \
+                 still fire fapd-E05 under {ctx:?} (1.3.2's definition-time abort \
+                 is attribute-independent); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "overflow set referenced ONLY by exe= (STRING category, not just \
+                 ftype=) must NOT fire fapd-E05 under {ctx:?} - the suppression \
+                 rule is category-level (matrix.md lines 69-72); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_by_auid_or_sessionid_fires_on_every_context() {
+        // DERIVED (the corpus's non-STRING overflow fixtures, cases 03-07,
+        // all use `uid=`): the contract-C firing condition is "referenced by
+        // at least one NON-STRING attribute", category-level, not
+        // "referenced by uid=". `auid=` and `sessionid=` are UNSIGNED on
+        // every supported version (attrs.rs UNSIGNED_ATTRS; pinned grounded
+        // by type_compat's auid_and_sessionid_are_unsigned_like_uid).
+        // Derivation for rhel9/rhel10: 1.4.5 types the overflow set STRING
+        // (case 17 fapd9/10) and rejects a STRING set on an UNSIGNED
+        // attribute (cases 03/05 fapd9/10: "cannot assign %s which has
+        // STRING type to uid (UNSIGNED expected)" - same category rule for
+        // auid/sessionid), so fapd-E05 must fire at rhel9/rhel10 too. For
+        // portable/rhel8: 1.3.2's definition-time abort is
+        // attribute-independent (cases 17/19 fapd8).
+        //
+        // Kills a wrong implementation that fires at rhel9+ only when the
+        // referencing attribute is literally `uid=`.
+        //
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required pin after the version-aware C gate lands.
+        for attr in ["auid", "sessionid"] {
+            let src = format!("%s=99999999999999999999\nallow perm=open {attr}=%s : all\n");
+            for ctx in E05_ALL_CONTEXTS {
+                let diags = lint_src_e05(&src, ctx);
+                assert_eq!(
+                    e05_target_count(&diags),
+                    1,
+                    "overflow set referenced by {attr}= (UNSIGNED, non-STRING) must \
+                     fire fapd-E05 under {ctx:?} (category-level rule, not uid=-only); \
+                     got codes={:?}",
+                    diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+                );
+            }
         }
     }
 

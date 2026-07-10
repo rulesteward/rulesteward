@@ -895,6 +895,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overflow_set_on_uid_fires_e07_at_rhel9_plus() {
+        // The OTHER side of the #477 overflow-membership fix: an overflow set
+        // referenced by `uid=` (UNSIGNED) at rhel9/rhel10 MUST fire fapd-E07
+        // post-fix, because 1.4.5 types the set STRING and a STRING set on an
+        // UNSIGNED attribute is a genuine load-time mismatch.
+        //
+        // Grounded 2026-07-10: corpus case 05 (int-overflow-single),
+        // rules.d/10-case.rules:
+        //   %s=99999999999999999999
+        //   allow uid=%s : all
+        // transcripts 05-int-overflow-single__fapd9.txt / __fapd10.txt:
+        // "ERROR: rules: line:3: assign_subject: cannot assign %s which has
+        // STRING type to uid (UNSIGNED expected)" (case 03 gives the same
+        // message on fapd9/fapd10 for i64::MAX+1).
+        //
+        // RED today at rhel9/rhel10: pre-fix, `looks_int` treats the overflow
+        // member as numeric, the set types UNSIGNED, uid= expects UNSIGNED,
+        // no mismatch, no E07. Kills the "just drop the overflow member from
+        // typing" wrong implementation: a drop-impl leaves this single-member
+        // set with no members contributing STRING-ness and produces no E07
+        // here either.
+        //
+        // rhel8: NO E07 (GREEN pin) - 1.3.2 types the set UNSIGNED by its
+        // first CHARACTER (a digit), which uid= accepts; the real 1.3.2
+        // rejection of this file is the definition-time "Error converting
+        // val" abort (case 05 fapd8 transcript), which is fapd-E05's
+        // category, not a type mismatch. None: NO E07 (GREEN pin) - the
+        // mismatch does not hold on rhel8, so it is version-divergent, and
+        // divergent findings are suppressed under the portable default.
+        let src = "%s=99999999999999999999\nallow uid=%s : all\n";
+
+        for ctx in [Some(TargetVersion::Rhel9), Some(TargetVersion::Rhel10)] {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                1,
+                "an overflow set on uid= must fire fapd-E07 under {ctx:?} \
+                 (fapolicyd 1.4.5 types it STRING: \"cannot assign %s which has \
+                 STRING type to uid (UNSIGNED expected)\", corpus case 05); got \
+                 codes={:?}",
+                codes(&diags),
+            );
+            let e07 = first_e07(&diags).expect("checked count");
+            assert!(
+                e07.message.contains("uid") && e07.message.contains("%s"),
+                "fapd-E07 message must name the attribute `uid=` and the set `%s`: {}",
+                e07.message,
+            );
+        }
+        for ctx in [None, Some(TargetVersion::Rhel8)] {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "an overflow set on uid= must NOT fire fapd-E07 under {ctx:?} \
+                 (1.3.2 types it UNSIGNED by first character - the daemon's \
+                 rejection there is the definition-time abort, fapd-E05's \
+                 category; divergent findings are suppressed under None); got \
+                 codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_int_and_overflow_set_on_ftype_does_not_fire_e07_at_rhel9_plus() {
+        // DERIVED (no corpus case pairs exactly `1,<overflow>` with ftype=;
+        // the derivation composes three grounded rules): (a) case 17 fapd9/10
+        // grounds that an overflowing all-digit member types STRING on 1.4.5;
+        // (b) cases 08/09 ground that 1.4.5 scans EVERY member and types the
+        // whole set STRING if ANY member is non-numeric ("STRING type to uid"
+        // on `1,2,foo,3` / `1,abc`); (c) case 13 (`abc,99999999999999999999`
+        // referenced by ftype=) grounds that a STRING-typed set containing an
+        // overflow member loads cleanly against ftype= on every version
+        // ("Loaded 1 rules"). Composing (a)+(b): `%s=1,99999999999999999999`
+        // types STRING on 1.4.5; with (c): STRING on the STRING attribute
+        // ftype= is compatible -> no fapd-E07 at rhel9/rhel10, and (mismatch
+        // not universal) none under None either.
+        //
+        // RED today at all three contexts: pre-fix both members satisfy
+        // `looks_int`, so the set types UNSIGNED on rhel9/rhel10 (and
+        // INT-by-first-element on rhel8), the mismatch wrongly holds on
+        // EVERY version, and E07 fires even under None.
+        let src = "%s=1,99999999999999999999\nallow perm=open all : ftype=%s\n";
+        for ctx in [
+            None,
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "a mixed in-range+overflow set on ftype= must NOT fire fapd-E07 \
+                 under {ctx:?} (1.4.5 types it STRING - any member not fitting \
+                 i64 makes the set STRING - and STRING is compatible with \
+                 ftype=); got codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
     // -----------------------------------------------------------------
     // gid is VERSION-DIVERGENT (#163, re-grounded 2026-06-07):
     //   * rhel8 (1.3.2): gid is PERMISSIVE (accepts group NAMES) - string,
