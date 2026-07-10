@@ -118,6 +118,56 @@ fn target_some_with_empty_shipped_table_is_silent_today() {
 }
 
 // ---------------------------------------------------------------------------
+// Barrier BLOCKER 2: the real w06(rules, opts, Some(target)) entrypoint must
+// actually FIRE, not just the injected-baseline w06_with_baseline(...) path
+// every other scenario test below calls directly. Every scenario test in this
+// file bypasses w06's target -> baseline_for -> w06_with_baseline dispatch
+// chain by injecting a small test-local baseline straight into
+// w06_with_baseline, so NOTHING here fails if w06() silently ignores
+// stig_baseline(target) and stays permanently silent -- only
+// target_some_with_empty_shipped_table_is_silent_today exercises the real
+// dispatch, and it only proves the wiring is silent on an EMPTY table, never
+// that it fires once the table has content.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w06_real_entrypoint_fires_on_a_bare_ruleset_against_the_shipped_rhel9_table() {
+    // Goes through the REAL dispatch chain (w06 -> baseline_for ->
+    // w06_with_baseline) against the SHIPPED RHEL9_REQUIRED table, on a
+    // ruleset with no watch and no syscall audit rule at all (only
+    // control-plane lines). RED today for two independent, stacked reasons:
+    // RHEL9_REQUIRED is still an empty placeholder (dispatch short-circuits to
+    // Vec::new() before ever reaching the matcher -- same as the test above),
+    // AND once the implementer populates it, w06_with_baseline's real matcher
+    // body is todo!(). GREEN only when BOTH the shipped table is populated
+    // (from `auditd-stig-update derive`'s RHEL9 output) AND the matcher
+    // actually fires on a non-compliant ruleset.
+    let rules = parse("-D\n-b 8192\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        !diags.is_empty(),
+        "a bare ruleset with zero matching watch/syscall rules must not pass \
+         silently through the real w06 dispatch once the RHEL9 table is \
+         populated: {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code == "au-W06"),
+        "every finding from w06 must carry the au-W06 code: {diags:?}"
+    );
+    // SV-258176r1155595_rule (RHEL-09-654010, "execve") is one of the 51
+    // grounded RHEL9 requirements (P2 grounding doc appendix.txt) that
+    // tools/auditd-stig-update's rhel9_fixture_reproduces_code_table_exactly
+    // test pins the shipped table must reproduce exactly, so it is guaranteed
+    // to be present in the final RHEL9_REQUIRED table and must be reported
+    // missing here.
+    assert!(
+        diags.iter().any(|d| d.message.contains("RHEL-09-654010")),
+        "expected the execve requirement (RHEL-09-654010) to be reported \
+         missing on a bare ruleset: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Compliant ruleset -> ZERO findings
 // ---------------------------------------------------------------------------
 
@@ -154,6 +204,17 @@ fn removing_one_watch_yields_exactly_one_finding_naming_its_stig_id() {
     assert!(
         d.message.contains("RHEL-09-654215"),
         "message must name the missing watch's STIG id, got {:?}",
+        d.message
+    );
+    // CONCERN 1: a plain-missing finding (the required rule has no same-shape
+    // counterpart anywhere in the ruleset at all, not even with a different
+    // key) must NOT reuse the present-but-key-differs wording -- otherwise the
+    // two distinct cases (grounding Part C.5's "Missing" vs "Present-but-
+    // key-differs" verdicts) collapse into indistinguishable messages.
+    assert!(
+        !d.message.contains("different key"),
+        "a plain-missing finding must not use the present-but-key-differs \
+         wording, got {:?}",
         d.message
     );
 }
@@ -242,6 +303,51 @@ fn narrower_watch_perms_does_not_satisfy_the_requirement() {
 }
 
 // ---------------------------------------------------------------------------
+// Variant confusion: a Watch-shaped requirement must never be satisfied by a
+// kernel-equivalent Syscall-shaped rule (same-variant matching only).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn watch_requirement_not_satisfied_by_a_kernel_equivalent_syscall_spelling() {
+    // CONCERN 2 + grounding doc Part C.2's documented "known non-goal": a
+    // rules.d file could express a watch-equivalent effect via the raw
+    // syscall-rule spelling (`-a ... -F path=... -F perm=... -F key=...`, no
+    // `-S` at all) instead of `-w`. Kernel-functionally `auditctl -l` would
+    // print that back as `-w` (per audit-userspace's `is_watch()`), but our
+    // STATIC parser (reads rules.d text directly, never `-l` output)
+    // classifies it as `AuditRule::Syscall`, never `AuditRule::Watch` -- and
+    // this is not merely hypothetical: rhel10's real SV-281154 family
+    // (P2 grounding appendix.txt line 324) uses exactly this
+    // `-a ... -F path= -F perm= -F key=` shape for the SAME semantic that
+    // rhel8/rhel9 express with a plain `-w`. The au-W06 matcher must match a
+    // Watch-shaped baseline requirement ONLY against Watch-shaped AST nodes:
+    // a same-path/same-perm/same-key Syscall-shaped rule must NOT be accepted
+    // as satisfying it.
+    let rules = parse(
+        "-a always,exit -F path=/etc/sudoers -F perm=wa -F key=identity\n\
+         -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 \
+         -F key=perm_mod\n\
+         -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 \
+         -F key=perm_mod\n\
+         -a always,exit -S all -F path=/usr/bin/umount -F perm=x -F auid>=1000 -F auid!=-1 \
+         -F key=privileged-mount\n",
+    );
+    let baseline = rhel9_sample_baseline();
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a kernel-equivalent Syscall-spelled rule must NOT satisfy a \
+         Watch-shaped requirement: {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("RHEL-09-654215"),
+        "{:?}",
+        diags[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Present-but-key-differs: the locked DISTINCT finding
 // ---------------------------------------------------------------------------
 
@@ -293,6 +399,55 @@ fn dash_k_spelling_satisfies_a_dash_f_key_equals_requirement() {
     assert!(
         diags.is_empty(),
         "-k perm_mod must satisfy a -F key=perm_mod requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_key_unify_is_symmetric_in_both_spelling_directions() {
+    // BLOCKER 3: rhel9_sample_baseline() spells every SYSCALL requirement's
+    // key with "-F key=" (only the watch uses "-k"), so
+    // dash_k_spelling_satisfies_a_dash_f_key_equals_requirement above only
+    // ever exercises baseline "-F key=" vs ruleset "-k". But the REAL derived
+    // RHEL9 table has syscall requirements that spell the key "-k" in
+    // check-content too -- e.g. SV-258176r1155595_rule (RHEL-09-654010,
+    // "execve"): "... -k execpriv" (P2 grounding doc appendix.txt line 114).
+    // An asymmetric key-unify (e.g. reading a rule's "effective key" only via
+    // `fields.iter().find(Key)`, never falling back to the parsed `key` slot
+    // the "-k" token populates directly -- grounding Part C.5's `.or_else`
+    // spec) would pass every OTHER test in this file while false-positively
+    // reporting a MISSING finding on a fully compliant host whenever DISA's
+    // own baseline happens to spell a syscall key with "-k" instead of
+    // "-F key=". Pin BOTH directions side by side in one scenario so neither
+    // can be silently skipped.
+    let baseline = vec![
+        // SV-258176r1155595_rule (RHEL-09-654010): baseline spells the key
+        // "-k execpriv" (real grounded line).
+        bl(
+            "V-258176",
+            "RHEL-09-654010",
+            "-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k execpriv",
+        ),
+        // SV-258177r1155597_rule (RHEL-09-654015): baseline spells the key
+        // "-F key=perm_mod" (real grounded line; the opposite direction).
+        bl(
+            "V-258177",
+            "RHEL-09-654015",
+            "-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 \
+             -F key=perm_mod",
+        ),
+    ];
+    let rules = parse(
+        // Satisfies V-258176's baseline "-k execpriv" via the OPPOSITE
+        // ruleset spelling, "-F key=execpriv".
+        "-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -F key=execpriv\n\
+         -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 \
+         -k perm_mod\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "both key-spelling directions (baseline -k / ruleset -F key=, AND \
+         baseline -F key= / ruleset -k) must satisfy: {diags:?}"
     );
 }
 

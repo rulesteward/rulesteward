@@ -145,6 +145,41 @@ mod tests {
         );
     }
 
+    // Barrier BLOCKER 1: the rhel9 pin above was the ONLY per-product golden
+    // test before this addition. Without a pin for EVERY product, an
+    // implementation that populates only RHEL9_REQUIRED (leaving
+    // RHEL8_REQUIRED/RHEL10_REQUIRED as empty placeholders, or mis-wiring
+    // stig_required::baseline_for's match arms) passes every pre-existing
+    // test in this file while `--target rhel8`/`--target rhel10` silently
+    // emit zero au-W06 findings on a real host. RED now for the same two
+    // reasons as the rhel9 pin: parse_requirements is todo!(), AND the
+    // shipped RHEL8_REQUIRED/RHEL10_REQUIRED tables are empty placeholders
+    // (see stig_required.rs's module doc) -- GREEN only once the implementer
+    // populates ALL THREE shipped tables from `auditd-stig-update derive`'s
+    // per-product output.
+
+    #[test]
+    fn rhel8_fixture_reproduces_code_table_exactly() {
+        let derived = parse_requirements(RHEL8_FIXTURE).expect("parses");
+        let code = code_table(TargetVersion::Rhel8);
+        let diff = crate::derive::diff_rules(&derived, &code);
+        assert!(
+            diff.is_empty(),
+            "RHEL8 fixture must reproduce the shipped table: {diff:?}"
+        );
+    }
+
+    #[test]
+    fn rhel10_fixture_reproduces_code_table_exactly() {
+        let derived = parse_requirements(RHEL10_FIXTURE).expect("parses");
+        let code = code_table(TargetVersion::Rhel10);
+        let diff = crate::derive::diff_rules(&derived, &code);
+        assert!(
+            diff.is_empty(),
+            "RHEL10 fixture must reproduce the shipped table: {diff:?}"
+        );
+    }
+
     // --- known-answer counts (grounding doc Part B.2, re-verified against the
     // cached XCCDFs via an independent ElementTree-based script; re-confirmed by
     // this test-author's own fixture-generation script producing the SAME
