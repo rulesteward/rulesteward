@@ -149,6 +149,14 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
 /// `tests/fixtures/`-shaped directory - the offline path every test in this
 /// crate uses) or, when `fixtures` is `None`, by fetching + sha256-verifying the
 /// live upstream source (see [`fapolicyd_attr_update::source`]).
+///
+/// The offline `--fixtures` path verifies each file's bytes against `reference`'s
+/// sha256 pins via the SAME [`source::verify_sha256`] guard the live fetch path
+/// uses (via [`source::fetch_source`]), fed by [`read_and_verify`] - a single
+/// seam shared by both `check` and `derive` (both call this function). Without
+/// it, a `check --fixtures` PR gate would report "OK (0 drift)" on corrupted or
+/// stale fixture bytes that happen to parse to the same registry: a fail-OPEN
+/// divorcing the gate from the pinned upstream provenance.
 fn derive_version(
     version: &str,
     reference: &VersionRef,
@@ -158,10 +166,18 @@ fn derive_version(
         Some(dir) => {
             let root = PathBuf::from(dir).join(version);
             (
-                std::fs::read_to_string(root.join("subject-attr.c"))
-                    .map_err(|e| format!("{version}: read subject-attr.c: {e}"))?,
-                std::fs::read_to_string(root.join("object-attr.c"))
-                    .map_err(|e| format!("{version}: read object-attr.c: {e}"))?,
+                read_and_verify(
+                    &root.join("subject-attr.c"),
+                    &reference.subject_sha256,
+                    version,
+                    "subject-attr.c",
+                )?,
+                read_and_verify(
+                    &root.join("object-attr.c"),
+                    &reference.object_sha256,
+                    version,
+                    "object-attr.c",
+                )?,
             )
         }
         None => (
@@ -174,6 +190,24 @@ fn derive_version(
     let object_literal = parse::parse_object_table(&object_src)?;
     let object = parse::apply_object_alias_exceptions(object_literal);
     Ok(parse::classify(&subject, &object))
+}
+
+/// Read `path` and verify its bytes against `expected_sha256` via
+/// [`source::verify_sha256`] before returning it - the fail-closed offline
+/// counterpart to [`source::fetch_source`]'s live-fetch verification. `version`
+/// and `file` are folded into any error for a message that names both which
+/// pinned version and which of the two files failed.
+fn read_and_verify(
+    path: &std::path::Path,
+    expected_sha256: &str,
+    version: &str,
+    file: &str,
+) -> Result<String, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("{version}: read {file}: {e}"))?;
+    source::verify_sha256(&content, expected_sha256)
+        .map_err(|e| format!("{version}: {file}: {e}"))?;
+    Ok(content)
 }
 
 fn render_row(a: &DerivedAttr) -> String {

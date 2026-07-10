@@ -108,7 +108,8 @@ pub fn extract_table_names(src: &str, table_name: &str) -> Result<Vec<String>, S
         )
     })?;
 
-    let names = extract_quoted_strings(&src[open + 1..close]);
+    let stripped = strip_comments(&src[open + 1..close])?;
+    let names = extract_quoted_strings(&stripped);
     if names.is_empty() {
         return Err(format!(
             "`{table_name}[]` declaration has zero quoted name literals (empty table)"
@@ -164,6 +165,59 @@ fn find_matching_close(src: &str, open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Remove `//` line comments and `/* ... */` block comments from a table body
+/// before the quoted-string scan, so a quoted word inside a comment (a
+/// proposed-but-unmerged row, a deprecation TODO, an inline aside) never
+/// becomes a derived attribute name. Byte-level, consistent with
+/// [`find_matching_close`]'s brace-depth scan: these table bodies never nest a
+/// comment marker inside a quoted literal or vice versa (the attribute-name
+/// literals are plain lowercase words - see [`extract_quoted_strings`]'s doc
+/// comment), so no quote-context tracking is needed here.
+///
+/// Fails CLOSED (`Err`) on an unterminated `/*` block comment - the same
+/// fail-closed discipline as [`extract_table_names`]'s truncation guards. A
+/// caller that silently swallowed the remainder of the table body as "still
+/// inside a comment" could drop real rows without any error.
+fn strip_comments(body: &str) -> Result<String, String> {
+    let bytes = body.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            // Skip through (not including) the next newline, so the newline
+            // itself still separates this line from the next row.
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let start = i;
+            i += 2;
+            let mut closed = false;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    closed = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !closed {
+                return Err(format!(
+                    "unterminated `/*` block comment starting at byte offset {start} in table body"
+                ));
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out)
+        .map_err(|e| format!("comment-stripped table body is not valid utf-8: {e}"))
 }
 
 /// Extract every double-quoted literal's contents from `body`, in source order.
