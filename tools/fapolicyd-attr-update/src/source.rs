@@ -100,22 +100,50 @@ mod tests {
             .expect("hex case must not matter for the comparison");
     }
 
+    /// Known-answer sha256 of the literal byte string `"ab"` (reproducible via
+    /// `printf ab | sha256sum`) - the ACTUAL hash the truncated-content test's
+    /// error message must carry.
+    const AB_SHA256: &str = "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603";
+
     #[test]
     fn verify_sha256_fails_closed_on_a_mismatch() {
-        let err = verify_sha256(
-            "abc",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .expect_err("a wrong expected hash must be rejected, not silently accepted");
-        assert!(!err.is_empty());
+        // ATL round-1 strengthening: the error must carry BOTH sides of the
+        // comparison VERBATIM - the expected hex we passed in AND the real
+        // computed hash of the content (the NIST "abc" vector, hardcoded above,
+        // NOT recomputed through the impl's own hex encoder). An implementation
+        // whose hex encoding is broken (e.g. an empty string from a gutted
+        // to_hex) cannot produce ABC_SHA256 in its message, and a verify that
+        // silently returns Ok(()) never produces an Err at all.
+        let zeros = "0000000000000000000000000000000000000000000000000000000000000000";
+        let err = verify_sha256("abc", zeros)
+            .expect_err("a wrong expected hash must be rejected, not silently accepted");
+        assert!(
+            err.contains(ABC_SHA256),
+            "the mismatch error must carry the ACTUAL computed sha256 of the content \
+             (the known-answer abc vector) verbatim: {err:?}"
+        );
+        assert!(
+            err.contains(zeros),
+            "the mismatch error must carry the EXPECTED (pinned) hash verbatim: {err:?}"
+        );
     }
 
     #[test]
     fn verify_sha256_fails_closed_on_truncated_content() {
         // "ab" is NOT "abc" - a truncated fetch must not verify against the full
-        // file's pinned hash.
+        // file's pinned hash. Same verbatim-content discipline as the mismatch
+        // test: the message must carry the real computed hash of the truncated
+        // bytes (the "ab" known-answer above) and the pinned expectation.
         let err = verify_sha256("ab", ABC_SHA256)
             .expect_err("truncated content must not match the full file's pinned hash");
-        assert!(!err.is_empty());
+        assert!(
+            err.contains(AB_SHA256),
+            "the error must carry the ACTUAL computed sha256 of the truncated \
+             content verbatim: {err:?}"
+        );
+        assert!(
+            err.contains(ABC_SHA256),
+            "the error must carry the EXPECTED (pinned) hash verbatim: {err:?}"
+        );
     }
 }

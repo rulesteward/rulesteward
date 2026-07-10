@@ -530,4 +530,82 @@ static const nv_t table1[] = {
         );
         assert!(!err.is_empty(), "error message must not be empty");
     }
+
+    /// ATL round-1 adversary miss #2 (orchestrator ruled: harden the parser): a
+    /// quoted word inside a `//` or `/* */` COMMENT within the table body must
+    /// NOT become a derived attribute name. Reproduced by the impl-aware
+    /// adversary (artifact /var/tmp/7b-atl-p3/adir/): appending
+    /// `// TODO(upstream): add "cgroup" object attribute in a future release`
+    /// inside the table's braces produced a phantom 19th name and a false-drift
+    /// exit 1. The comment styles below mirror the real fixtures' own
+    /// conventions - `tests/fixtures/1.4.5/object-attr.c` uses both `//` line
+    /// comments (line 27 `// For NULL`, line 58) and `/* */` block comments
+    /// (lines 51) in this same file family; upstream C permits either inside an
+    /// initializer list, so the extractor must be comment-aware.
+    #[test]
+    fn extract_table_names_ignores_quoted_words_inside_comments() {
+        let src = "\
+static const nv_t table[] = {
+{\tALL_OBJ, \t\"all\" },
+{\tPATH, \t\t\"path\" },\t// the \"fullpath\" spelling was never accepted upstream
+/* {\tCGROUP,\t\"cgroup\" }, a row proposed but not merged */
+{\tFMODE,\t\t\"mode\" },
+// TODO(upstream): add \"magic\" object attribute in a future release
+};
+";
+        let names = extract_table_names(src, "table").expect("commented table parses");
+        assert_eq!(
+            names,
+            ["all", "path", "mode"],
+            "quoted words inside //-line and /* */-block comments must not \
+             become attribute names (phantom-token fail-open): {names:?}"
+        );
+    }
+
+    /// `find_declaration`'s LEFT word-boundary check must be load-bearing: when
+    /// a PREFIXED identifier declaration (`xtable2[]`, whose byte suffix
+    /// contains `table2[]`) precedes the real `table2[]` declaration, extraction
+    /// must skip the prefixed decoy and return the real table's rows. A
+    /// boundary check gutted by mutation (accepting any match, or matching the
+    /// decoy) yields the decoy's names instead. (ATL round-1 mutation survivors
+    /// in find_declaration, parse.rs lines 133-138: the +/==/||/! boundary
+    /// arithmetic all survived because no fixture exercised a prefixed
+    /// identifier.)
+    #[test]
+    fn extract_table_names_skips_prefixed_identifier_declaration() {
+        let src = "\
+static const nv_t xtable2[] = {
+{\tFOO,   \"decoy\"\t},
+};
+
+static const nv_t table2[] = {
+{\tALL_SUBJ,   \"all\"\t},
+{\tAUID,       \"auid\"\t},
+};
+";
+        let names = extract_table_names(src, "table2")
+            .expect("the real table2 declaration must be found past the xtable2 decoy");
+        assert_eq!(
+            names,
+            ["all", "auid"],
+            "extraction must come from the REAL table2, never the prefixed \
+             xtable2 decoy: {names:?}"
+        );
+    }
+
+    /// The mirror case: a source where ONLY the prefixed identifier
+    /// (`xtable2[]`) exists must fail CLOSED - `table2` genuinely has no
+    /// declaration there, and silently extracting the decoy's rows would be a
+    /// wrong-table parse presented as success.
+    #[test]
+    fn extract_table_names_fails_closed_when_only_prefixed_identifier_exists() {
+        let src = "\
+static const nv_t xtable2[] = {
+{\tFOO,   \"decoy\"\t},
+};
+";
+        let err = extract_table_names(src, "table2")
+            .expect_err("an xtable2-only source has no table2 declaration; must be rejected");
+        assert!(!err.is_empty(), "error message must not be empty");
+    }
 }
