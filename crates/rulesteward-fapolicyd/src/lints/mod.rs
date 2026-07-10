@@ -34,7 +34,7 @@ pub(crate) mod trust_hash;
 mod trust_path;
 mod type_compat;
 mod validation;
-mod version_target;
+pub mod version_target;
 mod walker;
 
 pub use layout::{check_layout, directory_has_nondotfile_entry, directory_has_rules_files};

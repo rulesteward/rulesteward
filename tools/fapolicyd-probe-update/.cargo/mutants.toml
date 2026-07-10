@@ -1,0 +1,5 @@
+# probe.rs is the live docker network/subprocess seam: it is exercised only by the
+# live `check`/`derive` runs, not by offline unit/CLI tests (by design, mirroring
+# tools/sshd-probe-update/.cargo/mutants.toml). Excluded from the mutation gate so a
+# "survivor" there does not mask a real gap in the tested transcript/derive core.
+exclude_globs = ["src/probe.rs"]

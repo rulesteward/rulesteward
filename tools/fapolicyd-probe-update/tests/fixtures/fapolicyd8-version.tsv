@@ -1,0 +1,11 @@
+# fapolicyd probe transcript - dataset: version (issue #478 grounding recon)
+# Format: TSV, 5 columns, no header row below this comment block:
+#   dataset\tid\tverdict\tloaded_n\tevidence
+# dataset  = "version" (constant in this file)
+# id       = "rpm_q" (constant; the probe method)
+# verdict  = "ok" (informational row, not accept/reject)
+# loaded_n = empty (not applicable to this dataset)
+# evidence = raw `rpm -q fapolicyd` output inside the container
+# Ground-truth method: `rpm -q fapolicyd` run directly in the named image.
+# Lines starting with "#" are comments; a derive tool should skip them.
+version	rpm_q	ok		fapolicyd-1.3.2-1.el8.x86_64
