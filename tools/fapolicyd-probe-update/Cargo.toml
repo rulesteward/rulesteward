@@ -1,0 +1,36 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# Mirrors tools/sshd-probe-update's layout and rationale (#372); see that crate's
+# Cargo.toml for the fuller explanation of why the [workspace] table + path-dep
+# combination resolves cleanly from a nested, non-member directory.
+#
+# It path-deps rulesteward-fapolicyd to import shipped grounded facts for the check
+# drift gate (#478):
+#   - dataset (a) version map: `TargetVersion::fapolicyd_version()` - already `pub`.
+#   - dataset (c) fapd-E07 categories: `attrs::type_category_for()` /
+#     `attrs::type_category()` - already `pub`, `attrs` is `pub mod`.
+#   - dataset (b) `pattern=` accepted-value sets: NOT YET reachable from outside the
+#     crate. `crates/rulesteward-fapolicyd/src/lints/version_target.rs` declares
+#     `mod version_target;` (private, not even `pub(crate)`) in `lints/mod.rs`, and
+#     `accepted_pattern_values()` plus `RHEL8_PATTERN_VALUES` / `RHEL9_PLUS_PATTERN_VALUES`
+#     are all private within it. This is UNLIKE rulesteward-sshd, where `registry` /
+#     `deprecation` / `structural` are `pub mod` specifically so sshd-probe-update
+#     could import `known_keywords` / `deprecated_keywords` / `match_permitted_keywords`
+#     (#372). A future implementer of #478's `derive::check_pattern` will need to add a
+#     `pub` accessor to rulesteward-fapolicyd for dataset (b) - a change OUTSIDE this
+#     crate, out of scope for the RED-test-authoring pass that wrote this file (which is
+#     restricted to tools/fapolicyd-probe-update/). Until then, `check_pattern` is a
+#     `todo!()` stub; the frozen tests assert on ITS return value's behavior, not on the
+#     private symbol directly, so they compile today regardless of this gap.
+[workspace]
+
+[package]
+name = "fapolicyd-probe-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: probe the prebuilt fapolicyd8/9/10 docker images and drift-check the shipped fapolicyd version-map / pattern= value-set / fapd-E07 type-category tables against them (#478)."
+
+[dependencies]
+rulesteward-fapolicyd = { path = "../../crates/rulesteward-fapolicyd" }
