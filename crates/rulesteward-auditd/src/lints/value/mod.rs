@@ -1382,6 +1382,37 @@ mod tests {
     }
 
     #[test]
+    fn msgtype_unknown_name_as_second_operand_mirror_order_475() {
+        // Mirror-order pin: the RESOLVED operand first, the unresolved one
+        // second. The resolution gate is SYMMETRIC (both sides must
+        // independently resolve), but every other unresolved-operand pin in
+        // this block puts the unresolved side FIRST -- so an asymmetric impl
+        // that checks only operand A's resolvability and then falls back to
+        // canonical-string comparison would pass them all ("1300" vs
+        // "NOT_A_RECORD" canonicalize to different strings, so it would
+        // wrongly claim disjoint here). This operand order kills it.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "NOT_A_RECORD"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_off_name_as_second_operand_mirror_order_475() {
+        // Mirror of msgtype_apparmor_off_unresolved_name_stays_conservative_475
+        // with the operands swapped: 1500 (resolved via the numeric fallback)
+        // FIRST, APPARMOR_DENIED (unresolved under OFF) SECOND. Same
+        // symmetric-gate rationale as the mirror pin above: one unresolved
+        // side is enough to decline, REGARDLESS of which side it is.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            OFF,
+        ));
+    }
+
+    #[test]
     fn msgtype_relational_pairs_stay_conservative_475() {
         // Interval/relational reasoning for msgtype is explicitly OUT of scope
         // for #475 (a documented non-goal, not a soundness gap:
