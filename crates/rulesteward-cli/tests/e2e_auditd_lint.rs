@@ -289,3 +289,61 @@ fn t11_apparmor_flag_folds_msgtype_names() {
         .code(1)
         .stdout(predicates::prelude::predicate::str::contains("au-W01"));
 }
+
+// ---------------------------------------------------------------------------
+// issue #474: --target wiring for the version-aware au-W06 STIG baseline.
+// The shipped RHEL*_REQUIRED tables are empty placeholders (test-author
+// state; the implementer populates them via `tools/auditd-stig-update
+// derive`), so these tests pin the FLAG WIRING (exit code, no crash, no
+// au-W06 leaking without --target) rather than a real "au-W06 fires" case -
+// that content-level proof lives in
+// crates/rulesteward-auditd/tests/test_lints_stig_required.rs, which
+// exercises the real matcher against a test-local injected baseline.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn help_lists_the_target_flag() {
+    lint_cmd()
+        .args(["auditd", "lint", "--help"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("--target"));
+}
+
+#[test]
+fn target_rhel9_flag_accepted_and_stays_clean_against_the_empty_shipped_table() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "10-a.rules",
+        "-w /etc/passwd -p wa -k identity\n",
+    );
+    let assert = lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .args(["--target", "rhel9", "--format", "json"])
+        .assert()
+        .code(0);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).expect("stdout must be JSON");
+    assert_eq!(
+        v["diagnostics"],
+        serde_json::json!([]),
+        "no au-W06 findings until the shipped baseline table is populated: {out}"
+    );
+}
+
+#[test]
+fn no_target_emits_no_au_w06() {
+    // Without --target, au-W06 never runs (version-agnostic contract) - a
+    // wildly non-compliant ruleset (no watches, no syscall rules at all)
+    // still shows no au-W06.
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "10-a.rules", "-D\n-b 8192\n");
+    lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("au-W06").not());
+}
