@@ -38,6 +38,7 @@ use crate::ast::{
     Action, AuditField, AuditRule, ControlRule, FieldComparison, FieldFilter, FilterList,
     LocatedRule,
 };
+use crate::lints::compare_pair::compare_pairs_contradictory;
 use crate::lints::field_type::field_type;
 use crate::lints::normalize::canonical_key;
 use crate::lints::value::{LintOptions, canonical_value, disjoint, implies};
@@ -135,11 +136,18 @@ fn subsumes(earlier: &SyscallParts, later: &SyscallParts, opts: LintOptions) -> 
 
 /// True when two same-list rules can match overlapping traffic. Syscall sets
 /// must intersect (empty = wildcard matches all). Two rules are DISJOINT when a
-/// shared field carries provably non-co-matching predicates (#219, via
+/// shared `-F` field carries provably non-co-matching predicates (#219, via
 /// [`crate::lints::value::disjoint`]): contradictory equality (with uid/gid
-/// value folding) or non-overlapping numeric intervals. Because all `-F`
-/// predicates must match together, a single disjoint field means the rules
-/// cannot co-match. Anything not provably disjoint is conservatively treated as
+/// value folding) or non-overlapping numeric intervals; OR when a shared safe
+/// `-C` field-pair carries opposite ops (#475 class 2, via
+/// [`compare_pairs_contradictory`]): `uid=euid` and `uid!=euid` (or any other
+/// of the 16 safe process-vs-process `AUDIT_COMPARE_*` pairs) are exact
+/// logical complements and can never co-match one event; the 9 process-vs-
+/// OBJECT pairs are excluded from this channel (existential over
+/// `ctx->names_list`, not a true complement -- see `compare_pair.rs`'s module
+/// doc). Because all `-F`/`-C` predicates on a rule must match together
+/// (kernel AND-loop), a single disjoint dimension means the rules cannot
+/// co-match. Anything not provably disjoint is conservatively treated as
 /// overlapping, so au-W03 never drops a real suppression warning.
 fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts, opts: LintOptions) -> bool {
     let syscalls_intersect = a.syscalls.is_empty()
@@ -152,7 +160,8 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts, opts: LintOptions) -> bo
         .fields
         .iter()
         .any(|fa| b.fields.iter().any(|fb| disjoint(fa, fb, opts)));
-    !field_disjoint
+    let compare_disjoint = compare_pairs_contradictory(a.field_compares, b.field_compares);
+    !(field_disjoint || compare_disjoint)
 }
 
 /// True for an exclude-list rule that suppresses the SYSCALL (1300) record
