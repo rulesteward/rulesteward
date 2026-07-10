@@ -161,6 +161,7 @@ name = "fapolicyd-attr-update"
 version = "0.1.0"
 dependencies = [
  "rulesteward-fapolicyd",
+ "sha2",
  "toml",
 ]
 

@@ -22,15 +22,32 @@
 
 use std::collections::BTreeSet;
 
-use crate::parse::DerivedAttr;
+use crate::parse::{DerivedAttr, Side};
 
 /// Project the shipped `rulesteward_fapolicyd::attrs` consts
 /// (`SUBJECT_ONLY` / `OBJECT_ONLY` / `BOTH_SIDES`) into [`DerivedAttr`]s, for
-/// comparison against a derived (parsed-from-C) registry.
+/// comparison against a derived (parsed-from-C) registry. This is a PROJECTION
+/// of the real, imported consts (via the `rulesteward-fapolicyd` path-dep) - not
+/// a hardcoded copy - so it tracks `attrs.rs` automatically as it changes (see
+/// `shipped_registry_projects_the_real_attrs_consts` below).
 pub fn shipped_registry() -> Vec<DerivedAttr> {
-    todo!(
-        "project rulesteward_fapolicyd::attrs SUBJECT_ONLY/OBJECT_ONLY/BOTH_SIDES into DerivedAttr"
-    )
+    use rulesteward_fapolicyd::attrs::{BOTH_SIDES, OBJECT_ONLY, SUBJECT_ONLY};
+
+    SUBJECT_ONLY
+        .iter()
+        .map(|name| DerivedAttr {
+            name: (*name).to_string(),
+            side: Side::Subject,
+        })
+        .chain(OBJECT_ONLY.iter().map(|name| DerivedAttr {
+            name: (*name).to_string(),
+            side: Side::Object,
+        }))
+        .chain(BOTH_SIDES.iter().map(|name| DerivedAttr {
+            name: (*name).to_string(),
+            side: Side::Both,
+        }))
+        .collect()
 }
 
 /// Symmetric difference of attribute NAMES between `derived` (already unioned
@@ -39,8 +56,19 @@ pub fn shipped_registry() -> Vec<DerivedAttr> {
 /// side of the comparison it is missing from.
 #[must_use]
 pub fn name_drift(derived: &BTreeSet<String>, shipped: &BTreeSet<String>) -> Vec<String> {
-    let _ = (derived, shipped);
-    todo!("symmetric set difference, one line per differing name")
+    let mut out: Vec<String> = Vec::new();
+    for name in derived.difference(shipped) {
+        out.push(format!(
+            "{name}: present in the derived (upstream C source) registry but missing from the shipped attrs.rs registry"
+        ));
+    }
+    for name in shipped.difference(derived) {
+        out.push(format!(
+            "{name}: present in the shipped attrs.rs registry but missing from the derived (upstream C source) registry"
+        ));
+    }
+    out.sort();
+    out
 }
 
 /// For names present in BOTH `derived` and `shipped`, lines describing every
@@ -50,8 +78,20 @@ pub fn name_drift(derived: &BTreeSet<String>, shipped: &BTreeSet<String>) -> Vec
 /// would double-report the same underlying drift under two different messages).
 #[must_use]
 pub fn side_drift(derived: &[DerivedAttr], shipped: &[DerivedAttr]) -> Vec<String> {
-    let _ = (derived, shipped);
-    todo!("for names present in both, report a line for every Side disagreement")
+    let mut out: Vec<String> = Vec::new();
+    for d in derived {
+        let Some(s) = shipped.iter().find(|s| s.name == d.name) else {
+            continue;
+        };
+        if s.side != d.side {
+            out.push(format!(
+                "{}: derived side {:?} but shipped side {:?}",
+                d.name, d.side, s.side
+            ));
+        }
+    }
+    out.sort();
+    out
 }
 
 #[cfg(test)]

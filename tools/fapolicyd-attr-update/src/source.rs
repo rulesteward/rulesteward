@@ -50,8 +50,32 @@ pub fn fetch_source(tag: &str, file: &str, expected_sha256: &str) -> Result<Stri
 /// `tools/stig-update/src/source.rs`'s `reject_if_truncated` guard (the
 /// analogous fail-closed check on that tool's git-tree fetch path).
 pub fn verify_sha256(content: &str, expected_hex: &str) -> Result<(), String> {
-    let _ = (content, expected_hex);
-    todo!("compute sha256(content), compare (case-insensitive) to expected_hex, Err on mismatch")
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let actual_hex = to_hex(&hasher.finalize());
+
+    if actual_hex.eq_ignore_ascii_case(expected_hex) {
+        Ok(())
+    } else {
+        Err(format!(
+            "sha256 mismatch: expected {expected_hex}, got {actual_hex}"
+        ))
+    }
+}
+
+/// Lowercase-hex encode raw digest bytes. Hand-rolled rather than `{:x}`:
+/// mirrors `crates/rulesteward-fapolicyd/src/trustdb/hash.rs`'s `to_hex` - in
+/// the `digest` 0.11 line the finalize output type moved from `generic-array`
+/// to `hybrid-array::Array`, which does not implement `std::fmt::LowerHex`.
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 #[cfg(test)]

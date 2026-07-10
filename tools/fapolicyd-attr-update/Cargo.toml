@@ -18,3 +18,4 @@ description = "Dev tool: derive + drift-check the fapd-E01 attribute registry fr
 [dependencies]
 rulesteward-fapolicyd = { path = "../../crates/rulesteward-fapolicyd" }
 toml = "1"
+sha2 = "0.11"

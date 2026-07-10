@@ -27,10 +27,45 @@ pub struct Config {
 
 impl Config {
     pub fn parse(toml_src: &str) -> Result<Config, String> {
-        let _ = toml_src;
-        todo!(
-            "parse the [versions.\"X.Y.Z\"] tables into Config::versions, error on a missing/empty [versions] table or a missing field"
-        )
+        // Parse a TOML *document* (`toml::Table`), not a bare value: matches
+        // `tools/stig-update/src/config.rs`'s convention.
+        let value: toml::Table = toml_src
+            .parse()
+            .map_err(|e| format!("attr-refs.toml: {e}"))?;
+
+        let versions_tbl = value
+            .get("versions")
+            .and_then(toml::Value::as_table)
+            .ok_or("attr-refs.toml: missing [versions] table")?;
+        if versions_tbl.is_empty() {
+            return Err("attr-refs.toml: [versions] is empty".to_string());
+        }
+
+        let mut versions = BTreeMap::new();
+        for (key, val) in versions_tbl {
+            let tbl = val
+                .as_table()
+                .ok_or_else(|| format!("attr-refs.toml: versions.{key} must be a table"))?;
+            let field = |name: &str| -> Result<String, String> {
+                tbl.get(name)
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        format!("attr-refs.toml: versions.{key}.{name} missing or not a string")
+                    })
+            };
+            versions.insert(
+                key.clone(),
+                VersionRef {
+                    tag: field("tag")?,
+                    commit: field("commit")?,
+                    subject_sha256: field("subject_sha256")?,
+                    object_sha256: field("object_sha256")?,
+                },
+            );
+        }
+
+        Ok(Config { versions })
     }
 
     pub fn load(path: &Path) -> Result<Config, String> {

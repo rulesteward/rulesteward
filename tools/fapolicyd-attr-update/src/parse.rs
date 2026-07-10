@@ -94,10 +94,98 @@ pub const OBJECT_ALIAS_EXCEPTIONS: &[AliasException] = &[AliasException {
 /// `reject_if_truncated`, which is the analogous FETCH-path guard - see
 /// [`crate::source`]).
 pub fn extract_table_names(src: &str, table_name: &str) -> Result<Vec<String>, String> {
-    let _ = (src, table_name);
-    todo!(
-        "locate `static const nv_t <table_name>[] = {{ ... }};`, extract the quoted name literals, fail closed on a missing declaration / unbalanced braces / empty table"
-    )
+    let decl = find_declaration(src, table_name).ok_or_else(|| {
+        format!("no `{table_name}[]` declaration found in source (expected `static const nv_t {table_name}[] = {{ ... }};`)")
+    })?;
+
+    let open_rel = src[decl..]
+        .find('{')
+        .ok_or_else(|| format!("no opening brace found for `{table_name}[]`"))?;
+    let open = decl + open_rel;
+    let close = find_matching_close(src, open).ok_or_else(|| {
+        format!(
+            "unbalanced/truncated `{table_name}[]` declaration: no matching closing brace found"
+        )
+    })?;
+
+    let names = extract_quoted_strings(&src[open + 1..close]);
+    if names.is_empty() {
+        return Err(format!(
+            "`{table_name}[]` declaration has zero quoted name literals (empty table)"
+        ));
+    }
+    Ok(names)
+}
+
+/// Locate the byte offset of the literal `<table_name>[]` in `src`, requiring a
+/// word-boundary on the LEFT side (the char immediately preceding the match, if
+/// any, must not be an identifier char) so a search for `"table"` cannot match a
+/// `"table1"`/`"table2"` identifier. The RIGHT-side boundary falls out of the
+/// literal match itself: searching for the exact bytes `<table_name>[]` cannot
+/// match inside a longer identifier like `table20[]` (its bytes are `t able 2 0
+/// [ ]`, not `t a b l e 2 [ ]`), and cannot match array-index usages like
+/// `table[i]` or `table2[0]` (neither is followed immediately by `[]`).
+fn find_declaration(src: &str, table_name: &str) -> Option<usize> {
+    let needle = format!("{table_name}[]");
+    let bytes = src.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = src[search_from..].find(needle.as_str()) {
+        let idx = search_from + rel;
+        let left_ok = idx == 0 || !is_ident_byte(bytes[idx - 1]);
+        if left_ok {
+            return Some(idx);
+        }
+        search_from = idx + 1;
+    }
+    None
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Find the `}` matching the `{` at `open` via simple brace-depth counting.
+/// Attribute-table sources never carry braces inside their quoted string
+/// literals (the names are plain lowercase words), so no quote-awareness is
+/// needed here.
+fn find_matching_close(src: &str, open: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract every double-quoted literal's contents from `body`, in source order.
+/// No escape handling: the attribute-name literals this parses are plain
+/// lowercase words with no embedded quotes or backslashes.
+fn extract_quoted_strings(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if let Some(end_rel) = body[i + 1..].find('"') {
+                let end = i + 1 + end_rel;
+                out.push(body[i + 1..end].to_string());
+                i = end + 1;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// [`extract_table_names`] scoped to `subject-attr.c`'s NEW-FORMAT table
@@ -119,11 +207,15 @@ pub fn parse_object_table(src: &str) -> Result<Vec<String>, String> {
 /// `object_names` and whose `alias` is not ALREADY a literal row (on fapolicyd
 /// 1.3.2, `sha256hash` is already literal and `filehash` does not exist, so the
 /// exception must be a no-op there).
-pub fn apply_object_alias_exceptions(object_names: Vec<String>) -> Vec<String> {
-    let _ = object_names;
-    todo!(
-        "for each OBJECT_ALIAS_EXCEPTIONS entry, add `alias` when `canonical` is present and `alias` is not already a row"
-    )
+pub fn apply_object_alias_exceptions(mut object_names: Vec<String>) -> Vec<String> {
+    for exception in OBJECT_ALIAS_EXCEPTIONS {
+        let canonical_present = object_names.iter().any(|n| n == exception.canonical);
+        let alias_present = object_names.iter().any(|n| n == exception.alias);
+        if canonical_present && !alias_present {
+            object_names.push(exception.alias.to_string());
+        }
+    }
+    object_names
 }
 
 /// Classify the union of `subject_names` (already scoped to `table2`) and
@@ -132,8 +224,28 @@ pub fn apply_object_alias_exceptions(object_names: Vec<String>) -> Vec<String> {
 /// [`Side::Subject`] (subject-list only), [`Side::Object`] (object-list only), or
 /// [`Side::Both`] (present in both lists).
 pub fn classify(subject_names: &[String], object_names: &[String]) -> Vec<DerivedAttr> {
-    let _ = (subject_names, object_names);
-    todo!("union subject_names + object_names, classify each name's Side")
+    let subject_set: BTreeSet<&String> = subject_names.iter().collect();
+    let object_set: BTreeSet<&String> = object_names.iter().collect();
+
+    let mut all_names: BTreeSet<&String> = BTreeSet::new();
+    all_names.extend(subject_set.iter().copied());
+    all_names.extend(object_set.iter().copied());
+
+    all_names
+        .into_iter()
+        .map(|name| {
+            let side = match (subject_set.contains(name), object_set.contains(name)) {
+                (true, true) => Side::Both,
+                (true, false) => Side::Subject,
+                (false, true) => Side::Object,
+                (false, false) => unreachable!("name came from subject_set or object_set"),
+            };
+            DerivedAttr {
+                name: name.clone(),
+                side,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
