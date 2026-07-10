@@ -455,8 +455,15 @@ _S(AUDIT_AA,                         \"USER\"                          )
     /// sources, parse the typetab, resolve - the derived tables must carry
     /// EXACTLY 189 + 8 entries, every AppArmor name stays out of the base
     /// table, and the 60 kernel-only constants resolve (spot-pinned:
-    /// SYSCALL/KERNEL/USER from the kernel header; USER_AUTH/DAEMON_START
-    /// from audit-records.h).
+    /// SYSCALL/KERNEL/USER/DAEMON_START from the kernel header;
+    /// USER_AUTH/DAEMON_ROTATE from audit-records.h). Source attributions
+    /// verified mechanically against the fixtures (adversarial-test review
+    /// round 1: DAEMON_START was mislabeled records-resolved; it is defined
+    /// ONLY in linux-v6.6/audit.h:82 - AUDIT_FIRST_DAEMON is the sole 1200
+    /// in audit-records.h and is a range marker, not DAEMON_START.
+    /// DAEMON_ROTATE 1205 is the swapped-in second records-only witness:
+    /// defined in audit-records.h, absent from the kernel header, referenced
+    /// by the typetab).
     #[test]
     fn resolve_real_fixtures_yields_189_base_and_8_apparmor_numbers() {
         let t = parse_typetab(MSG_TYPETAB).expect("typetab parses");
@@ -469,8 +476,12 @@ _S(AUDIT_AA,                         \"USER\"                          )
         assert_eq!(derived.base["USER"], 1005, "kernel-header-resolved");
         assert_eq!(derived.base["SYSCALL"], 1300, "kernel-header-resolved");
         assert_eq!(derived.base["KERNEL"], 2000, "kernel-header-resolved");
+        assert_eq!(derived.base["DAEMON_START"], 1200, "kernel-header-resolved");
         assert_eq!(derived.base["USER_AUTH"], 1100, "audit-records-resolved");
-        assert_eq!(derived.base["DAEMON_START"], 1200, "audit-records-resolved");
+        assert_eq!(
+            derived.base["DAEMON_ROTATE"], 1205,
+            "audit-records-resolved"
+        );
         assert_eq!(derived.apparmor["APPARMOR"], 1500);
         assert_eq!(derived.apparmor["APPARMOR_KILL"], 1507);
         assert!(

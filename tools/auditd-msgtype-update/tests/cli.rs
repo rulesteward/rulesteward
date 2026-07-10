@@ -219,6 +219,39 @@ fn check_tampered_kernel_header_bytes_fail_closed_exits_2() {
     );
 }
 
+/// PROVENANCE fail-closed, audit-records.h half (adversarial-test review
+/// round 1, BLOCKER): the THIRD pinned file needs its own tamper test - an
+/// impl that sha-verifies `msg_typetab.h` and the kernel header but NOT
+/// `audit-records.h` passed the previous suite (the only test that mutated
+/// audit-records.h bytes was the conflict test below, which deliberately
+/// supplies a pin-matching `--config`, so the sha path was never exercised
+/// with mismatched audit-records.h bytes). The tamper is parse-invariant (an
+/// appended block comment; the define scan only reads `#define` lines), so
+/// only the hash gate can catch it.
+#[test]
+fn check_tampered_audit_records_bytes_fail_closed_exits_2() {
+    let mut overrides = HashMap::new();
+    let tampered =
+        format!("{AUDIT_RECORDS}/* locally tampered: not the pinned upstream bytes */\n");
+    overrides.insert(("3bfa048", "audit-records.h"), tampered);
+    let root = write_fixtures_root("tampered-records", &overrides);
+    // Deliberately NO --config: the DEFAULT committed msgtype-refs.toml pins
+    // the real upstream bytes, which the tampered file no longer matches.
+
+    let (code, stdout, stderr) = run(&["check", "--fixtures", &root.to_string_lossy()]);
+    assert_eq!(
+        code,
+        Some(2),
+        "audit-records.h bytes that mismatch the committed sha256 pin must \
+         fail closed (exit 2), even though they parse to the identical \
+         define map; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("sha256"),
+        "the error must name the hash mismatch: stderr={stderr}"
+    );
+}
+
 /// CROSS-SOURCE CONFLICT hard error: doctor `audit-records.h`'s
 /// `#define AUDIT_BPF 1334` to `1399` while the kernel header still says
 /// `1334`. AUDIT_BPF is referenced by the typetab (`_S(AUDIT_BPF, "BPF")`),
@@ -306,6 +339,58 @@ fn derive_prints_both_derived_tables() {
             "derive output must carry {token:?}: stdout={stdout}"
         );
     }
+}
+
+/// `derive` must TRACK its input, not print a canned table (adversarial-test
+/// review round 1: a hardcoded-string derive impl survived the real-fixtures
+/// substring pins in `derive_prints_both_derived_tables`). Doctor
+/// `"SYSCALL"` -> `"SYSCALLX"` (the test-local pin-matching `--config` keeps
+/// the sha gate green): the listing must now carry the doctored name and NO
+/// standalone `SYSCALL` row. Absence is asserted format-agnostically: every
+/// `SYSCALL` occurrence in the output must be part of a `SYSCALLX`
+/// occurrence (equal substring-match counts), so the test does not freeze
+/// the listing layout. `derive` prints for review, it does not gate - so a
+/// doctored-but-parseable input is exit 0, and the row still resolves to
+/// 1300 through the unchanged `AUDIT_SYSCALL` constant.
+#[test]
+fn derive_tracks_a_doctored_fixture() {
+    let mut overrides = HashMap::new();
+    let doctored = MSG_TYPETAB.replace("\"SYSCALL\"", "\"SYSCALLX\"");
+    assert_ne!(
+        doctored, MSG_TYPETAB,
+        "sanity: the rename must actually change the fixture content"
+    );
+    overrides.insert(("3bfa048", "msg_typetab.h"), doctored);
+    let root = write_fixtures_root("derive-doctored", &overrides);
+    let config = root.join("refs.toml");
+
+    let (code, stdout, stderr) = run(&[
+        "derive",
+        "--fixtures",
+        &root.to_string_lossy(),
+        "--config",
+        &config.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(0),
+        "derive prints for review, it does not gate; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("SYSCALLX"),
+        "the doctored name must appear in the listing: stdout={stdout}"
+    );
+    assert_eq!(
+        stdout.matches("SYSCALL").count(),
+        stdout.matches("SYSCALLX").count(),
+        "every SYSCALL occurrence must be the doctored SYSCALLX - a canned \
+         listing (or a stale standalone SYSCALL row) fails here: stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("1300"),
+        "the doctored name still resolves via the unchanged AUDIT_SYSCALL \
+         constant: stdout={stdout}"
+    );
 }
 
 /// Help exits 0 with usage on stderr naming both subcommands and both flags
