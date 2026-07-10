@@ -55,7 +55,12 @@ pub fn implies(pe: &FieldFilter, pl: &FieldFilter, opts: LintOptions) -> bool {
 /// * Eq vs bitmask (#228): the Eq value pins the field, so the mask test is
 ///   decidable - `=k` vs `&m` iff `k & m == 0`; `=k` vs `&=m` iff `k & m != m`
 ///   (both operands must be concrete unsigned numbers).
-/// * Relational/Eq pairs: non-overlapping concrete intervals.
+/// * Relational/Eq pairs: non-overlapping concrete intervals, OR (#475 class
+///   3) a sentinel Eq (uid/gid/sessionid `unset`/`-1`/`4294967295`) whose
+///   fixed numeric position (`u32::MAX`) falls outside the relational's
+///   matched interval ([`eq_sentinel_relational_disjoint`]) - a promotion
+///   scoped to `disjoint()` only, never touching [`FieldValue::position`]/
+///   [`interval`], which `implies()` (au-W02) also shares.
 ///
 /// Cases that are NEVER provably disjoint (theorems, kept conservative -> false):
 /// two bitmask predicates (always co-satisfiable by `m1 | m2`), Ne vs Ne (each
@@ -103,13 +108,41 @@ pub fn disjoint(pa: &FieldFilter, pb: &FieldFilter, opts: LintOptions) -> bool {
         (CompareOp::BitAnd, CompareOp::Eq) => eq_bitand_disjoint(ft, &pb.value, &pa.value),
         (CompareOp::Eq, CompareOp::BitAndEq) => eq_bitandeq_disjoint(ft, &pa.value, &pb.value),
         (CompareOp::BitAndEq, CompareOp::Eq) => eq_bitandeq_disjoint(ft, &pb.value, &pa.value),
+        // Eq vs relational (either order, #475 class 3): a sentinel Eq
+        // (uid/gid/sessionid unset/-1/4294967295) is provably disjoint from a
+        // same-field relational predicate whenever the sentinel's fixed
+        // numeric position falls outside the relational's matched interval
+        // (see eq_sentinel_relational_disjoint's doc). This SHADOWS the
+        // generic interval fallback below for this operator pairing, so both
+        // arms OR in interval_disjoint to preserve the fallback's existing,
+        // unrelated proof for a CONCRETE (non-sentinel) Eq value -- the
+        // sentinel helper declines (returns false) for a concrete Eq, and the
+        // `||` lets the fallback still decide those cases exactly as before.
+        (CompareOp::Eq, CompareOp::Ge | CompareOp::Gt | CompareOp::Le | CompareOp::Lt) => {
+            eq_sentinel_relational_disjoint(ft, &pa.value, &pb.op, &pb.value)
+                || interval_disjoint(ft, pa, pb)
+        }
+        (CompareOp::Ge | CompareOp::Gt | CompareOp::Le | CompareOp::Lt, CompareOp::Eq) => {
+            eq_sentinel_relational_disjoint(ft, &pb.value, &pa.op, &pa.value)
+                || interval_disjoint(ft, pa, pb)
+        }
         // Otherwise prove disjointness only via non-overlapping concrete
         // intervals. Ne/bitmask/opaque/sentinel yield None -> not provably
         // disjoint -> overlap (this is where the conservative theorems land).
-        _ => match (interval(ft, pa), interval(ft, pb)) {
-            (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
-            _ => false,
-        },
+        _ => interval_disjoint(ft, pa, pb),
+    }
+}
+
+/// The generic interval-overlap fallback for `disjoint()`: PROVABLY disjoint
+/// iff both predicates resolve to a concrete `i128` interval and those
+/// intervals do not overlap. `Ne`/bitmask/opaque/sentinel operands yield
+/// `None` from [`interval`] -> conservative `false` (not provably disjoint).
+/// Factored out so the new sentinel-vs-relational arms above can fall back to
+/// it (via `||`) for the concrete-Eq case they do not decide themselves.
+fn interval_disjoint(ft: FieldType, pa: &FieldFilter, pb: &FieldFilter) -> bool {
+    match (interval(ft, pa), interval(ft, pb)) {
+        (Some((alo, ahi)), Some((blo, bhi))) => ahi < blo || bhi < alo,
+        _ => false,
     }
 }
 
@@ -140,6 +173,46 @@ fn eq_bitandeq_disjoint(ft: FieldType, eq: &str, mask: &str) -> bool {
         (Some(k), Some(m)) => k & m != m,
         _ => false,
     }
+}
+
+/// The uid/gid/sessionid unset sentinel's fixed numeric position: `u32::MAX`,
+/// i.e. `(uid_t)-1` (uapi audit.h `AUDIT_UID_UNSET`). Kept LOCAL to this
+/// disjointness helper (never fed into [`FieldValue::position`]/[`interval`],
+/// which `implies()` also shares) so the promotion cannot leak into au-W02
+/// subsumption reasoning (#475 class 3 grounding, section 5a).
+const SENTINEL_POSITION: i128 = 4_294_967_295; // u32::MAX
+
+/// True when a sentinel `Eq` (uid/gid/sessionid `unset`/`-1`/`4294967295`) and
+/// a same-field relational predicate cannot co-match (#475 class 3): the
+/// kernel's `audit_uid_comparator`/`audit_gid_comparator`
+/// (`uid_lt`/`uid_gte`/etc, `include/linux/uidgid.h` @ v6.6) and plain
+/// `audit_comparator` (`auditsc.c:542-545`, `SessionId`) do RAW numeric
+/// comparison with NO special-casing for the invalid/unset value, so the
+/// sentinel occupies exactly position `u32::MAX` on the number line like any
+/// other value. Both operands must resolve: `eq` to
+/// [`FieldValue::UidGidUnset`], `rel_val` to a concrete orderable position (a
+/// NAME, opaque value, or the sentinel spelling on the relational side stays
+/// conservative -> declines, returning `false`).
+fn eq_sentinel_relational_disjoint(
+    ft: FieldType,
+    eq: &str,
+    rel_op: &CompareOp,
+    rel_val: &str,
+) -> bool {
+    if classify(ft, eq) != FieldValue::UidGidUnset {
+        return false;
+    }
+    let Some(p) = classify(ft, rel_val).position() else {
+        return false; // symbolic/opaque/also-sentinel relational value: stay conservative
+    };
+    let (lo, hi): (i128, i128) = match rel_op {
+        CompareOp::Ge => (p, i128::MAX),
+        CompareOp::Gt => (p + 1, i128::MAX),
+        CompareOp::Le => (i128::MIN, p),
+        CompareOp::Lt => (i128::MIN, p - 1),
+        _ => return false,
+    };
+    SENTINEL_POSITION < lo || hi < SENTINEL_POSITION
 }
 
 /// Whether two `=`/`!=` values on field `ft` can be decided same-vs-different
