@@ -6,27 +6,33 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{Diagnostic, Severity, Span};
 
 use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
+use crate::attrs::{self, AttrTypeCategory};
+use crate::version::TargetVersion;
 
 /// Run every macro-related lint pass over `entries` and return the
 /// merged diagnostics. `earlier` is the set of macro names defined in
 /// earlier-loading files (cross-file scope for fapd-E03; `None` = per-file
 /// resolution); `single_file` selects fapd-W09 over fapd-E03 for an unresolved
-/// reference in single-file `--file` mode. Only fapd-E03 consults these;
-/// fapd-E04/E05/S02 are independent of macro definedness and ignore them.
+/// reference in single-file `--file` mode. `target` is the selected `--target`
+/// version (or `None` for the portable default); only fapd-E03 consults
+/// `earlier`/`single_file`, and only fapd-E05 consults `target` (#477 -
+/// version-aware overflow gate, see [`e05_with_target`]). fapd-E04/S02 ignore
+/// all three.
 pub(crate) fn walk(
     entries: &[Entry],
     file: &Path,
     earlier: Option<&HashSet<String>>,
     single_file: bool,
+    target: Option<TargetVersion>,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     out.extend(e03(entries, file, earlier, single_file));
     out.extend(e04(entries, file));
-    out.extend(e05(entries, file));
+    out.extend(e05_with_target(entries, file, target));
     out.extend(s02(entries, file));
     out
 }
@@ -200,13 +206,23 @@ pub(crate) fn looks_int(v: &str) -> bool {
 }
 
 /// fapd-E05 - integer-typed set containing an all-digit value that overflows
-/// `i64`. fapolicyd set-type validity is version-divergent: 1.3.2 rejects
-/// overflow values in INT-typed sets; 1.4.3 accepts everything; 1.4.5 types a
-/// set INT only if ALL values are valid i64. Because the linter cannot know the
-/// target version, fapd-E05 fires ONLY on the one genuinely non-portable case:
-/// a set whose first value is all-ASCII-digits (INT-typed) and that contains an
-/// all-digit value exceeding `i64::MAX` (rejected by 1.3.2 and 1.4.5; only
-/// 1.4.3 is lenient).
+/// `i64`. fapolicyd's overflow handling is version-divergent in MECHANISM but
+/// not (per-version) in outcome: 1.3.2 hard-aborts parsing the whole rules FILE
+/// the instant an overflowing all-digit set is DEFINED, attribute-independently
+/// (it fires even for a macro that is never referenced by any rule, or one
+/// referenced only by a STRING attribute - grounded `/var/tmp/7b-grounding/p1`
+/// corpus cases 17/19). 1.4.5 never aborts at definition time; instead it types
+/// the whole set STRING and only rejects it later, at the point of ASSIGNMENT
+/// to a non-STRING attribute (cases 03-07).
+///
+/// This function implements the UNCONDITIONAL policy - flag every INT-typed set
+/// containing an overflowing member, regardless of usage - which matches 1.3.2's
+/// worst-case parse-time abort and is exactly right for the portable default and
+/// `--target rhel8`. The `--target rhel9`/`rhel10` category-dependent narrowing
+/// (1.4.5's actual behavior) is layered on top by [`e05_with_target`]; this
+/// function's own ~15 direct callers in `mod tests` pin ONLY this unconditional
+/// policy and must keep working unchanged (frozen-tests rule - do not thread
+/// `target` through this signature).
 ///
 /// Type-mix (a non-digit member in an INT-typed set) is intentionally NOT
 /// flagged here because its validity depends on the attribute and target version
@@ -216,7 +232,23 @@ pub(crate) fn looks_int(v: &str) -> bool {
 /// Independent of fapd-E03/fapd-E04: operates on `Entry::SetDefinition` only.
 /// One diagnostic per offending set, at the first overflowing value found.
 fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
+    overflow_set_definitions(entries)
+        .into_iter()
+        .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+        .collect()
+}
+
+/// `(name, line, span, offending value)` for each INT-typed `SetDefinition`
+/// whose values contain an all-ASCII-digit member exceeding `i64::MAX`. Set
+/// type is determined by the FIRST value only (a non-digit first value makes it
+/// a STRING set, which never contributes here regardless of later members).
+///
+/// Extracted so [`e05`] (unconditional policy) and [`e05_with_target`]'s
+/// rhel9/rhel10 category gate (#477) walk the exact same overflow-detection
+/// logic and cannot drift apart into two different notions of "overflowing
+/// set".
+fn overflow_set_definitions(entries: &[Entry]) -> Vec<(&str, usize, Span, &str)> {
+    let mut out = Vec::new();
     for entry in entries {
         let Entry::SetDefinition {
             name,
@@ -236,25 +268,100 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
         if !looks_int(first) {
             continue;
         }
-        // Overflow-only policy: fire ONLY on an all-digit value that exceeds i64
-        // (non-portable: rejected by fapolicyd 1.3.2 and 1.4.5; 1.4.3 is lenient).
-        // Type-mix (a non-digit member) is version-divergent and intentionally NOT
-        // flagged here - tracked as a future usage/version-aware check.
         for bad in values {
             if looks_int(bad) && !is_fap_int(bad) {
-                diags.push(anchored(
-                    Severity::Error,
-                    "fapd-E05",
-                    span.clone(),
-                    format!("integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"),
-                    file,
-                    *line,
-                ));
-                break; // one diagnostic per set
+                out.push((name.as_str(), *line, span.clone(), bad.as_str()));
+                break; // one entry per set
             }
         }
     }
-    diags
+    out
+}
+
+/// Build the fapd-E05 diagnostic for overflowing set `name`, whose first
+/// offending value is `bad`.
+fn e05_diagnostic(name: &str, bad: &str, span: Span, file: &Path, line: usize) -> Diagnostic {
+    anchored(
+        Severity::Error,
+        "fapd-E05",
+        span,
+        format!(
+            "integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"
+        ),
+        file,
+        line,
+    )
+}
+
+/// fapd-E05, version-aware (#477). Layers the `--target rhel9`/`rhel10` gate on
+/// top of [`e05`]'s unconditional overflow detection. Contract, grounded
+/// 2026-07-10 via `fapolicyd --debug --permissive` against
+/// `/var/tmp/7b-grounding/p1/corpus` (`matrix.md`, `transcripts/*.txt`):
+///
+///   - No `--target` / `--target rhel8`: IDENTICAL to `e05` - flag every
+///     overflow set unconditionally (1.3.2's attribute-independent
+///     definition-time abort is the worst case across all supported
+///     versions, so the portable default must assume it - cases 17/19).
+///   - `--target rhel9` / `rhel10`: flag the overflow set ONLY when it is
+///     referenced by at least one attribute whose fapolicyd value-type
+///     CATEGORY at that target is NOT `Str`. An unused overflow set (case
+///     19), or one referenced exclusively by STRING-category attribute(s)
+///     (e.g. `ftype=` - case 17; the suppression is CATEGORY-level, not
+///     attribute-name-level, so it also covers `exe=`/`comm=`/`dir=`/
+///     `path=`/`device=`/`sha256hash=`), produces NO fapd-E05: 1.4.5 types
+///     the overflow member STRING, and a STRING set on a STRING attribute
+///     loads cleanly. This reuses the SAME `attrs::type_category_for`
+///     category machinery fapd-E07 (`type_compat.rs`) already uses for its
+///     own version-divergent set/attribute typing.
+///
+/// The gate is per-SET, not per-usage: a set referenced by both a STRING and a
+/// non-STRING attribute still fires exactly once (at least one non-STRING
+/// reference exists, so the daemon rejects the file at that reference
+/// regardless of the harmless STRING one).
+pub(crate) fn e05_with_target(
+    entries: &[Entry],
+    file: &Path,
+    target: Option<TargetVersion>,
+) -> Vec<Diagnostic> {
+    match target {
+        // Portable default / rhel8: identical to the unconditional policy.
+        None | Some(TargetVersion::Rhel8) => e05(entries, file),
+        Some(version) => overflow_set_definitions(entries)
+            .into_iter()
+            .filter(|(name, ..)| referenced_by_non_str_attr(entries, name, version))
+            .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+            .collect(),
+    }
+}
+
+/// Whether `name` (a `%macro`) is referenced by at least one attribute in
+/// `entries` whose fapolicyd value-type category at `version` is NOT `Str`.
+///
+/// An attribute name unknown to [`attrs::type_category_for`] (fapd-E01's
+/// concern, not fapd-E05's) is conservatively treated as non-STRING: fapd-E05
+/// errs toward flagging rather than silently trusting an unrecognized
+/// reference's safety.
+fn referenced_by_non_str_attr(entries: &[Entry], name: &str, version: TargetVersion) -> bool {
+    entries.iter().any(|entry| {
+        let Entry::Rule(rule) = entry else {
+            return false;
+        };
+        rule.subject.iter().chain(rule.object.iter()).any(|attr| {
+            let Attr::Kv {
+                key,
+                value: AttrValue::SetRef(ref_name),
+                ..
+            } = attr
+            else {
+                return false;
+            };
+            ref_name == name
+                && !matches!(
+                    attrs::type_category_for(key, version),
+                    Some(AttrTypeCategory::Str)
+                )
+        })
+    })
 }
 
 /// fapd-S02 - macro `%name=` set definition that appears AFTER the first rule

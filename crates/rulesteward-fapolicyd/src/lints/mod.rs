@@ -146,6 +146,7 @@ pub fn lint_with_context(
         file,
         ctx.earlier_macros,
         ctx.single_file,
+        ctx.target,
     ));
     diags.extend(reachability::walk(entries, file));
     diags.extend(deprecation::walk(entries, file, ctx.target));
