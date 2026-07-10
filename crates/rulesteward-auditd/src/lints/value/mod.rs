@@ -1663,6 +1663,30 @@ mod tests {
     }
 
     #[test]
+    fn sentinel_lt_tight_seam_one_below_sentinel_is_disjoint_class3_475() {
+        // GREEN-now (post-impl) AND after any correct impl. The Lt mirror of
+        // sentinel_le_tight_seam_one_below_sentinel: auid<4294967294 matches
+        // [MIN, 4294967293] (Lt's `p - 1` upper bound), which excludes the
+        // sentinel at 4294967295 -> disjoint. This pins the exact `p - 1`
+        // arithmetic in the helper's Lt arm: a `p + 1` (or `p`) boundary
+        // mutant makes the upper bound 4294967295 (or 4294967294), pulling the
+        // sentinel back into range -> not disjoint (WRONG). The existing Lt
+        // pins use small values (Lt(1000)) where `p +/- 1` both stay far below
+        // the sentinel, so only this seam value at 4294967294 kills the mutant.
+        let lt_below = ff(AuditField::Auid, CompareOp::Lt, "4294967294");
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        assert!(
+            disjoint(&lt_below, &eq_unset, OFF),
+            "auid<4294967294 excludes the sentinel 4294967295 -> disjoint"
+        );
+        // Mirror order (Eq first, Lt second) -- both new arms wired.
+        assert!(
+            disjoint(&eq_unset, &lt_below, OFF),
+            "symmetric: auid=unset vs auid<4294967294 disjoint either order"
+        );
+    }
+
+    #[test]
     fn sentinel_gt_one_below_sentinel_is_not_disjoint_class3_475() {
         // GREEN-now. auid>4294967294 -> interval [4294967295, MAX] via the
         // Gt `p+1` adjustment -- pins that the `+1` doesn't accidentally
