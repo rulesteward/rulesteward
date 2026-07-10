@@ -822,6 +822,80 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // #477 (fapd-E07 overflow-membership fix) - an all-digit member that
+    // EXCEEDS i64::MAX must NOT type a set UNSIGNED at rhel9/rhel10. Fixes a
+    // genuine pre-existing bug found by the #477 grounding pass (the #477
+    // issue itself is about fapd-E05; this fix rides along because the same
+    // corpus fixture surfaced it): `infer_set_type`'s rhel9/rhel10 arm uses
+    // `looks_int` (all-ASCII-digit only, via `looks_signed_int`) for its
+    // numeric-membership test instead of `is_fap_int` (all-ASCII-digit AND
+    // fits i64, already defined in `macros.rs` for exactly this purpose), so
+    // an overflowing value was wrongly treated as numeric, mistyping the set
+    // UNSIGNED instead of STRING.
+    //
+    // Grounded 2026-07-10 via `fapolicyd --debug --permissive` (corpus case
+    // 17, /var/tmp/7b-grounding/p1/corpus/17-overflow-used-as-ftype,
+    // rules.d/10-case.rules):
+    //   %s=99999999999999999999
+    //   allow perm=open all : ftype=%s
+    // transcripts 17-overflow-used-as-ftype__fapd9.txt /
+    // __fapd10.txt: "Loaded 1 rules" (VALID) - the real 1.4.5 daemon types
+    // the overflowing member STRING, and `ftype=` is a STRING attribute, so
+    // the assignment is compatible and loads cleanly.
+    //
+    // RED today: running this fixture through the CLI currently emits
+    // `[fapd-E07] set `%s` is type-incompatible with `ftype=` ...` at
+    // rhel9/rhel10 (and under None) - a false positive, because
+    // `looks_int("99999999999999999999")` is `true`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn overflow_member_referenced_by_string_attr_does_not_fire_e07_at_rhel9_plus() {
+        let src = "%s=99999999999999999999\nallow perm=open all : ftype=%s\n";
+        for ctx in [
+            None,
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src(src, ctx);
+            assert_eq!(
+                e07_count(&diags),
+                0,
+                "an overflowing all-digit member must NOT type the set UNSIGNED \
+                 at {ctx:?} (fapolicyd 1.4.5 types it STRING, compatible with the \
+                 STRING attribute ftype=); corpus case 17 loads cleanly; got \
+                 codes={:?}",
+                codes(&diags),
+            );
+        }
+    }
+
+    #[test]
+    fn overflow_member_referenced_by_string_attr_still_fires_e07_at_rhel8() {
+        // Regression guard, NOT a new #477 requirement (contract note E: "do
+        // not demand an E07 change [at rhel8] beyond what the matrix
+        // supports"). The fix touches only the rhel9/rhel10 arm of
+        // `infer_set_type` (`looks_int` -> `is_fap_int` via `looks_signed_int`);
+        // rhel8 types a set by its FIRST element via `first_is_intish` (a
+        // totally separate code path, unaffected by the fix) and is
+        // unrelated to this bug. fapolicyd 1.3.2 itself also rejects this
+        // fixture, but via a parse-time abort (fapd-E05's category, not a
+        // type-compatibility mismatch) - see corpus case 17's fapd8
+        // transcript. This test only pins that the fix does not accidentally
+        // change rhel8's E07 firing behavior for this fixture.
+        let src = "%s=99999999999999999999\nallow perm=open all : ftype=%s\n";
+        let diags = lint_src(src, Some(TargetVersion::Rhel8));
+        assert_eq!(
+            e07_count(&diags),
+            1,
+            "rhel8 E07 firing for this fixture must be UNCHANGED by the #477 \
+             overflow fix (the fix only touches the rhel9/rhel10 arm of \
+             infer_set_type); got codes={:?}",
+            codes(&diags),
+        );
+    }
+
+    // -----------------------------------------------------------------
     // gid is VERSION-DIVERGENT (#163, re-grounded 2026-06-07):
     //   * rhel8 (1.3.2): gid is PERMISSIVE (accepts group NAMES) - string,
     //     numeric, AND mixed sets all LOAD.

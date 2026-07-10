@@ -1207,6 +1207,240 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // #477 (fapd-E05 version-aware overflow gating) - pipeline-level tests
+    // driven through the public `crate::lints::lint_with_context` seam
+    // (matching the fapd-E07 test module's convention in `type_compat.rs`:
+    // "driven through the public seam, NOT the private helper, so the
+    // activation/firing decision is tested as a whole-pipeline property
+    // regardless of where the implementer lands the target-threading
+    // logic"). Today's private `e05(entries, file)` takes no target at all,
+    // so calling it directly cannot express these contracts; the pipeline
+    // seam is the only call shape stable across whatever signature change
+    // the implementer makes.
+    //
+    // Grounded 2026-07-10 via `fapolicyd --debug --permissive` inside
+    // fapd8(1.3.2-el8)/fapd9(1.4.5-el9_8)/fapd10(1.4.5-el10) against
+    // /var/tmp/7b-grounding/p1/corpus (matrix.md, transcripts/*.txt).
+    //
+    // ORCHESTRATOR-RULED contract for #477 (do not re-litigate):
+    //   A. No --target (portable default): UNCHANGED - every overflow set
+    //      member is flagged (mirrors 1.3.2's attribute-independent hard
+    //      parse abort, the worst case across all supported versions).
+    //   B. --target rhel8: same as A (1.3.2 aborts on set DEFINITION,
+    //      regardless of whether/how the set is referenced).
+    //   C. --target rhel9 / rhel10: overflow fires ONLY when the set is
+    //      referenced by at least one NON-STRING attribute. An unused
+    //      overflow set, or one referenced only by STRING attribute(s)
+    //      (e.g. `ftype=`), produces NO fapd-E05 (1.4.5 types the set
+    //      STRING; the STRING-attribute assignment loads cleanly).
+    //
+    // RED expectation: today's `e05` ignores target entirely (fires
+    // unconditionally on every overflow SetDefinition), so every rhel9/
+    // rhel10 "must NOT fire" assertion below is RED against the frozen
+    // foundation; every "must fire" assertion (A/B, and the non-STRING-
+    // referenced C cases) is already GREEN and serves as a regression pin.
+    // -----------------------------------------------------------------
+
+    /// Parse `src` and lint it under `target` via the full pipeline seam.
+    /// Mirrors `type_compat::tests::lint_src` (kept local: `mod tests` here
+    /// has no visibility into that private sibling test module).
+    fn lint_src_e05(src: &str, target: Option<crate::version::TargetVersion>) -> Vec<Diagnostic> {
+        let path = std::path::Path::new("rules.d/50-e05-target.rules");
+        let entries = crate::parser::parse_rules_file(src, path)
+            .unwrap_or_else(|d| panic!("E05 target fixture must parse cleanly: {d:?}"));
+        let ctx = crate::lints::LintContext {
+            target,
+            ..Default::default()
+        };
+        crate::lints::lint_with_context(&entries, src, path, &ctx)
+    }
+
+    /// Count of `fapd-E05` diagnostics only. Other codes (e.g. fapd-E07) may
+    /// also fire on the same fixture and are deliberately NOT constrained
+    /// here - see contract note E in the #477 grounding: the rhel8-side
+    /// E05/E07 interplay is out of scope for this pass.
+    fn e05_target_count(diags: &[Diagnostic]) -> usize {
+        diags
+            .iter()
+            .filter(|d| d.code.as_ref() == "fapd-E05")
+            .count()
+    }
+
+    const E05_ALL_CONTEXTS: [Option<crate::version::TargetVersion>; 4] = [
+        None,
+        Some(crate::version::TargetVersion::Rhel8),
+        Some(crate::version::TargetVersion::Rhel9),
+        Some(crate::version::TargetVersion::Rhel10),
+    ];
+
+    #[test]
+    fn e05_overflow_referenced_by_uid_fires_on_every_context() {
+        // grounded: corpus case 03 (int-i64-max-plus-one), rules.d/10-case.rules:
+        //   %s=9223372036854775808
+        //   allow uid=%s : all
+        // transcripts 03-int-i64-max-plus-one__fapd{8,9,10}.txt: REJECT on
+        // fapolicyd 1.3.2 AND 1.4.5 alike ("Error converting val"). `uid=` is
+        // UNSIGNED (non-STRING), so under contract C this must still fire at
+        // rhel9/rhel10 too (at least one non-STRING reference exists).
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required pin after the version-aware C gate lands.
+        let src = "%s=9223372036854775808\nallow uid=%s : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced by uid= (non-STRING) must fire fapd-E05 \
+                 under {ctx:?}; got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_only_by_string_attr_ftype_fires_portable_and_rhel8_silent_rhel9_plus()
+     {
+        // grounded: corpus case 17 (overflow-used-as-ftype), rules.d/10-case.rules:
+        //   %s=99999999999999999999
+        //   allow perm=open all : ftype=%s
+        // transcripts 17-overflow-used-as-ftype__fapd8.txt: REJECT
+        // ("Error converting val", parse-time, attribute-independent);
+        // __fapd9.txt / __fapd10.txt: "Loaded 1 rules" (VALID) - 1.4.5 types
+        // the overflowing member STRING, and `ftype=` is a STRING attribute,
+        // so it loads cleanly.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions:
+        // today's e05 ignores target and fires unconditionally, so it
+        // currently (wrongly) fires here at rhel9/rhel10 too.
+        let src = "%s=99999999999999999999\nallow perm=open all : ftype=%s\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "overflow set referenced only by ftype= (STRING) must still fire \
+                 fapd-E05 under {ctx:?} (portable default / rhel8: fapolicyd 1.3.2's \
+                 attribute-independent parse abort); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "overflow set referenced ONLY by ftype= (STRING) must NOT fire \
+                 fapd-E05 under {ctx:?} (fapolicyd 1.4.5 types the set STRING and \
+                 loads it cleanly against a STRING attribute; corpus case 17: \
+                 \"Loaded 1 rules\"); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_unused_macro_fires_portable_and_rhel8_silent_rhel9_plus() {
+        // grounded: corpus case 19 (overflow-macro-unused), rules.d/10-case.rules:
+        //   %s=99999999999999999999
+        //   allow perm=open all : all
+        // transcripts 19-overflow-macro-unused__fapd8.txt: REJECT ("Error
+        // converting val") - fires even though `%s` is never referenced by
+        // any rule (1.3.2's parse-time abort happens at set DEFINITION, not
+        // at use). __fapd9.txt / __fapd10.txt: "Loaded 1 rules" (VALID) - the
+        // macro is simply unused; 1.4.5 never even attempts to type it.
+        //
+        // RED against the frozen foundation for the rhel9/rhel10 assertions
+        // (today's e05 fires unconditionally regardless of usage or target).
+        let src = "%s=99999999999999999999\nallow perm=open all : all\n";
+
+        for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "an unused overflow set must still fire fapd-E05 under {ctx:?} \
+                 (fapolicyd 1.3.2 aborts at set DEFINITION regardless of usage); \
+                 got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "an unused overflow set must NOT fire fapd-E05 under {ctx:?} \
+                 (fapolicyd 1.4.5 never errors on an unreferenced macro; corpus \
+                 case 19: \"Loaded 1 rules\", no ERROR line); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_overflow_referenced_by_both_string_and_nonstring_attrs_still_fires_at_rhel9_plus() {
+        // DERIVED (no single corpus fixture combines both references in one
+        // file): case 05 (int-overflow-single via uid=, UNSIGNED) REJECTs on
+        // 1.4.5; case 17 (overflow-used-as-ftype, STRING) ACCEPTs on 1.4.5.
+        // A single overflow set referenced by BOTH a STRING attr (`ftype=`)
+        // and a non-STRING attr (`uid=`) must still be caught: `uid=%s` alone
+        // is grounded-REJECT (cases 03/05), and adding a second, harmless
+        // STRING-typed reference cannot make the daemon accept a ruleset it
+        // would otherwise reject on the `uid=` line. This guards against a
+        // wrong implementation that suppresses fapd-E05 whenever ANY STRING
+        // reference exists, instead of firing when AT LEAST ONE non-STRING
+        // reference exists.
+        //
+        // fapd-E05 fires once per offending SetDefinition (not per usage), so
+        // the expected count is 1 regardless of how many rules reference `%s`.
+        //
+        // GREEN today at every context (today's e05 fires unconditionally);
+        // remains a required regression guard after the version-aware C gate
+        // lands - it must NOT flip to 0 at rhel9/rhel10.
+        let src = "%s=99999999999999999999\nallow perm=open uid=%s : all\nallow perm=open all : ftype=%s\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                1,
+                "a set referenced by BOTH a STRING attr (ftype=) and a \
+                 non-STRING attr (uid=) must fire fapd-E05 exactly once under \
+                 {ctx:?} (at least one non-STRING reference exists); got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn e05_i64_max_via_uid_never_fires_regardless_of_target() {
+        // grounded: corpus case 02 (int-i64-max), rules.d/10-case.rules:
+        //   %s=9223372036854775807
+        //   allow uid=%s : all
+        // transcripts 02-int-i64-max__fapd{8,9,10}.txt: "Loaded 1 rules"
+        // (VALID) on every version - i64::MAX is a valid fapolicyd integer,
+        // not an overflow. Boundary pin: must never fire fapd-E05, at any
+        // --target. GREEN today (is_fap_int(i64::MAX) is true).
+        let src = "%s=9223372036854775807\nallow uid=%s : all\n";
+        for ctx in E05_ALL_CONTEXTS {
+            let diags = lint_src_e05(src, ctx);
+            assert_eq!(
+                e05_target_count(&diags),
+                0,
+                "i64::MAX is a valid fapolicyd integer on every version; fapd-E05 \
+                 must not fire under {ctx:?}: got codes={:?}",
+                diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // fapd-S02 helper-level unit tests. Pin the single-pass `seen_rule`
     // walker so every branch (macro-before-rule -> silent, macro-after-rule
     // -> fire, comment does not close the window, blank does not close the
