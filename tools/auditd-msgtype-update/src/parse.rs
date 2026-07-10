@@ -65,8 +65,32 @@ pub struct DerivedTables {
 ///   `SET`, `LIST`, `ADD`, `DEL`, `DAEMON_RECONFIG`, `SIGNAL_INFO`,
 ///   `FS_WATCH`, ... - 18 at the pinned commit) must NOT appear in either
 ///   table.
+/// * A `/* ... */` C block comment (single-line, multi-line, or opening
+///   mid-line after real code) is stripped BEFORE any of the above checks
+///   run, via [`strip_block_comments`] - matching real C preprocessor
+///   semantics, which strips block comments before tokenizing. A row (or a
+///   `#define`, in [`parse_defines`]) hidden inside one must not be
+///   extracted (adversarial finding, impl-aware review round 1, #476,
+///   MISS-1: the three pinned real headers happen to survive today only
+///   because none of their existing `/* */` prose blocks contain a
+///   row/define, not because the scanner understood block comments).
 /// * Rows between `#ifdef WITH_APPARMOR` and its `#endif` go to `apparmor`;
-///   all other rows (including rows AFTER the `#endif`) go to `base`.
+///   all other rows (including rows AFTER the `#endif`) go to `base`. This
+///   region tracking is FLAT: it assumes msg_typetab.h's actual shape of a
+///   single, non-nested `#ifdef WITH_APPARMOR` .. `#endif` block, matching
+///   upstream's real convention (deprecated/dead rows there are commented
+///   out with `//`, never wrapped in a nested `#ifdef` - see
+///   `../msgtype-refs.toml`). A `#ifdef` nested INSIDE the WITH_APPARMOR
+///   block is deliberately NOT specially handled (adversarial finding,
+///   round 1, #476, MISS-2: characterized, not fixed, since there is no
+///   real-fixture precedent and building for a hypothetical would be
+///   speculative) - its own `#endif` closes the region early, misrouting
+///   rows between the inner and outer `#endif` into `base` instead of
+///   `apparmor`. See
+///   `parse_typetab_characterizes_nested_ifdef_inside_apparmor_block_as_a_known_limitation`
+///   in the tests below. The backstop for a hypothetical future upstream
+///   nesting change is the `check` subcommand's drift-gate diff output
+///   plus human review, not scanner logic.
 ///
 /// Fails CLOSED (`Err`) - never returns a partial or empty table silently -
 /// when:
@@ -84,11 +108,13 @@ pub fn parse_typetab(src: &str) -> Result<Typetab, String> {
     let mut base = Vec::new();
     let mut apparmor = Vec::new();
     let mut in_apparmor = false;
+    let mut in_block_comment = false;
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (idx, line) in src.lines().enumerate() {
         let lineno = idx + 1;
-        let trimmed = line.trim_start();
+        let live = strip_block_comments(line, &mut in_block_comment);
+        let trimmed = live.trim_start();
 
         if trimmed.starts_with("#ifdef WITH_APPARMOR") {
             in_apparmor = true;
@@ -136,6 +162,53 @@ pub fn parse_typetab(src: &str) -> Result<Typetab, String> {
     Ok(Typetab { base, apparmor })
 }
 
+/// Strip C `/* ... */` block comments from one line, carrying the
+/// in-a-comment state across lines via `in_block_comment` (the caller owns
+/// one `bool` per source, threaded through every line of that source's
+/// scan). A small BOUNDED lexical scanner - NOT a full C preprocessor - but
+/// it implements the real block-comment grammar correctly for the shapes
+/// these headers use: C block comments never nest, so "am I inside a
+/// `/* */` right now" is exactly one bit of state, and the loop below
+/// resolves any number of open/close transitions on a single line by
+/// repeatedly finding the next `/*` or `*/` and toggling. It does NOT
+/// understand `//` line comments (handled separately, downstream, by each
+/// caller) or comments embedded inside string literals (`_S(..., "...")`
+/// never puts `/*`/`*/` inside a quoted name in the pinned sources, so this
+/// is not a real-world gap here).
+///
+/// Handles, per the adversarial finding (impl-aware review round 1, #476,
+/// MISS-1): a whole line already inside a block comment (returns empty), a
+/// block that opens and closes entirely on one line, a block that spans
+/// multiple lines, and a block that OPENS mid-line - after real code
+/// earlier on the same line - and closes on a later line.
+fn strip_block_comments(line: &str, in_block_comment: &mut bool) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        if *in_block_comment {
+            match rest.find("*/") {
+                Some(idx) => {
+                    *in_block_comment = false;
+                    rest = &rest[idx + 2..];
+                }
+                None => return out,
+            }
+        } else {
+            match rest.find("/*") {
+                Some(idx) => {
+                    out.push_str(&rest[..idx]);
+                    *in_block_comment = true;
+                    rest = &rest[idx + 2..];
+                }
+                None => {
+                    out.push_str(rest);
+                    return out;
+                }
+            }
+        }
+    }
+}
+
 /// Parse one `_S(AUDIT_<NAME>, "<NAME>")` row (already known to start with
 /// `_S(`). Returns `None` on a truncated row (no closing `)`, no comma, or no
 /// closing quote) - the caller turns that into a named, line-numbered error.
@@ -169,10 +242,20 @@ fn parse_s_row(trimmed: &str) -> Option<TypetabEntry> {
 /// record-type constant in both files is plain decimal. This keeps the scan
 /// minimal and the known-answer counts stable (166 in `audit-records.h`, 199
 /// in the kernel header, both pinned by the tests below).
+///
+/// Like [`parse_typetab`], a `/* ... */` C block comment is stripped BEFORE
+/// the `#define` check, via [`strip_block_comments`] - a `#define` hidden
+/// inside one must not be extracted (adversarial finding, impl-aware review
+/// round 1, #476, MISS-1). A genuine trailing single-line `/* ... */`
+/// comment after a live define's value (common in both pinned sources) is
+/// unaffected either way: the value token is already the second
+/// whitespace-delimited token, read before any trailing comment text.
 pub fn parse_defines(src: &str) -> Result<BTreeMap<String, u32>, String> {
     let mut out = BTreeMap::new();
+    let mut in_block_comment = false;
     for line in src.lines() {
-        let trimmed = line.trim_start();
+        let live = strip_block_comments(line, &mut in_block_comment);
+        let trimmed = live.trim_start();
         let Some(rest) = trimmed.strip_prefix("#define") else {
             continue;
         };
@@ -356,6 +439,48 @@ _S(AUDIT_LOGIN,                      \"LOGIN\"                         )
         assert!(tab.apparmor.is_empty());
     }
 
+    /// Adversarial finding (impl-aware review round 1, #476, MISS-1): the
+    /// real C preprocessor strips `/* ... */` block comments before
+    /// tokenizing, so a `_S(...)` row hidden inside one must NOT be
+    /// extracted into either table. The line-based scanner has no notion of
+    /// block comments unless it explicitly tracks them, so a naive
+    /// per-line `starts_with("_S(")` check (which is all the scanner had
+    /// before this fix) wrongly treats a commented-out row as live. Covers
+    /// three shapes: a block comment on its own lines (multi-line span) and
+    /// a block that OPENS mid-line - after real code earlier on the same
+    /// line - and closes on a LATER line.
+    #[test]
+    fn parse_typetab_ignores_rows_inside_block_comments() {
+        let src = "\
+_S(AUDIT_USER,                       \"USER\"                          )
+/*
+_S(AUDIT_FAKE_MULTI,                 \"FAKE_MULTI\"                    )
+still inside the block
+*/
+_S(AUDIT_LOGIN,                      \"LOGIN\"                         )  /* opens here
+_S(AUDIT_FAKE_MIDLINE,               \"FAKE_MIDLINE\"                  )
+closes on this line */
+_S(AUDIT_KERNEL,                     \"KERNEL\"                        )
+";
+        let tab = parse_typetab(src).expect("synthetic tab with block comments parses");
+        assert_eq!(
+            tab.base,
+            vec![
+                entry("AUDIT_USER", "USER"),
+                entry("AUDIT_LOGIN", "LOGIN"),
+                entry("AUDIT_KERNEL", "KERNEL"),
+            ],
+            "rows inside /* */ blocks (multi-line span and mid-line-open) \
+             must not be extracted, and live rows around them must still \
+             parse (a scanner that drops the WHOLE line when it merely \
+             CONTAINS a comment marker would lose LOGIN here too)"
+        );
+        assert!(
+            tab.apparmor.is_empty(),
+            "no row in this fixture is inside WITH_APPARMOR"
+        );
+    }
+
     /// Rows inside `#ifdef WITH_APPARMOR` land ONLY in the AppArmor table;
     /// rows after the `#endif` are base rows again.
     #[test]
@@ -381,6 +506,55 @@ _S(AUDIT_KERNEL,                     \"KERNEL\"                        )
                 entry("AUDIT_APPARMOR_AUDIT", "APPARMOR_AUDIT"),
             ],
             "rows inside the block are AppArmor rows"
+        );
+    }
+
+    /// Adversarial finding (impl-aware review round 1, #476, MISS-2) -
+    /// CHARACTERIZATION, not a bug fix: this test PINS the scanner's
+    /// existing flat single-`#ifdef WITH_APPARMOR` region tracking. The
+    /// scanner treats EVERY `#endif` as "leave the AppArmor region" with no
+    /// nesting depth counter, so a (hypothetical, no real-fixture
+    /// precedent) `#ifdef` nested INSIDE the WITH_APPARMOR block makes its
+    /// OWN `#endif` close the region early: rows between the inner
+    /// `#endif` and the real outer `#endif` land in `base` instead of
+    /// `apparmor`. This is a DOCUMENTED, DELIBERATELY-UNHANDLED limitation
+    /// (see the doc comment above `parse_typetab`) - upstream
+    /// `msg_typetab.h` has no nesting precedent and deprecates rows via
+    /// `//`, never `#ifdef` (see `../msgtype-refs.toml` / the module docs),
+    /// so building nested-`#ifdef` handling would be speculative. Do NOT
+    /// change this test to assert the "fixed" nested-aware behavior without
+    /// first re-grounding against a real upstream header that actually
+    /// nests - see the `[QUESTION FOR USER]` escalation path if that ever
+    /// happens.
+    #[test]
+    fn parse_typetab_characterizes_nested_ifdef_inside_apparmor_block_as_a_known_limitation() {
+        let src = "\
+#ifdef WITH_APPARMOR
+_S(AUDIT_AA,                         \"APPARMOR\"                      )
+#ifdef SOME_OTHER_FLAG
+_S(AUDIT_AA_X,                       \"AA_X\"                          )
+#endif
+_S(AUDIT_APPARMOR_AUDIT,             \"APPARMOR_AUDIT\"                )
+#endif
+_S(AUDIT_KERNEL,                     \"KERNEL\"                        )
+";
+        let tab = parse_typetab(src).expect("synthetic nested-ifdef tab parses");
+        assert_eq!(
+            tab.apparmor,
+            vec![entry("AUDIT_AA", "APPARMOR"), entry("AUDIT_AA_X", "AA_X")],
+            "current (limited) behavior: only rows BEFORE the inner #endif \
+             stay in the apparmor table"
+        );
+        assert_eq!(
+            tab.base,
+            vec![
+                entry("AUDIT_APPARMOR_AUDIT", "APPARMOR_AUDIT"),
+                entry("AUDIT_KERNEL", "KERNEL"),
+            ],
+            "current (limited) behavior: the inner #endif closes the region \
+             early, so APPARMOR_AUDIT is misrouted to base even though it \
+             is textually still inside the outer WITH_APPARMOR block - a \
+             known, documented limitation, not desired semantics"
         );
     }
 
@@ -562,6 +736,43 @@ _S(AUDIT_LOGIN,                      \"LOGIN\"";
 
     fn defines(pairs: &[(&str, u32)]) -> BTreeMap<String, u32> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    /// Adversarial finding (impl-aware review round 1, #476, MISS-1): a
+    /// `#define AUDIT_<NAME> <n>` hidden inside a `/* ... */` block comment
+    /// must NOT be extracted - the real C preprocessor strips block
+    /// comments before the compiler ever sees a `#define` token. Covers a
+    /// block spanning multiple lines and a block that OPENS mid-line -
+    /// after a real `#define` earlier on the same line - and closes on a
+    /// LATER line, both without disturbing the genuinely-live defines
+    /// around them (including a real single-line-trailing `/* ... */`
+    /// comment on a live define, which must keep working exactly as
+    /// before).
+    #[test]
+    fn parse_defines_ignores_defines_inside_block_comments() {
+        let src = "\
+#define AUDIT_FIRST_USER_MSG    1100    /* real, single-line trailing comment */
+/*
+#define AUDIT_FAKE_MULTI 9001
+still inside the block
+*/
+#define AUDIT_LAST_USER_MSG     1199    /* opens here
+#define AUDIT_FAKE_MIDLINE 9002
+closes on this line */
+#define AUDIT_USER_AUTH         1100
+";
+        let d = parse_defines(src).expect("synthetic defines with block comments parse");
+        assert_eq!(
+            d,
+            defines(&[
+                ("AUDIT_FIRST_USER_MSG", 1100),
+                ("AUDIT_LAST_USER_MSG", 1199),
+                ("AUDIT_USER_AUTH", 1100),
+            ]),
+            "defines inside /* */ blocks (multi-line span and mid-line-open) \
+             must not be extracted, and live defines around them (incl. one \
+             with a real trailing single-line comment) must still parse"
+        );
     }
 
     /// Precedence: audit-records.h resolves what it defines; the kernel
