@@ -194,26 +194,29 @@ pub(crate) fn is_fap_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v.parse::<i64>().is_ok()
 }
 
-/// A value that fapolicyd's type-inference reads as "looks like an integer"
-/// (all ASCII digits). Used to decide the SET's type from its first value;
-/// an all-digit-but-overflowing first value still types the set INT (and then
-/// fails conversion, which `is_fap_int` catches per-value).
+/// A non-empty all-ASCII-digit string. Used by [`strtol_out_of_range`] as the
+/// "did strtol consume any digits?" test on the extracted digit run (an empty
+/// run converts to 0 and can never be out of range).
 ///
-/// Shared with fapd-E07 (`lints::type_compat`), which uses the same per-value
-/// "looks numeric" test to infer a set's type against an attribute's category.
+/// NOTE the #477 corrections: fapd-E05's INT-set typing gate is now
+/// FIRST-CHARACTER-digit (see [`overflow_set_definitions`]), not this
+/// whole-value test, and fapd-E07's rhel9+ numeric-membership test uses
+/// [`is_fap_int`] (all-digit AND fits `i64`), not this - an
+/// all-digit-but-overflowing member types a 1.4.x set STRING.
 pub(crate) fn looks_int(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// fapd-E05 - integer-typed set containing an all-digit value that overflows
-/// `i64`. fapolicyd's overflow handling is version-divergent in MECHANISM but
-/// not (per-version) in outcome: 1.3.2 hard-aborts parsing the whole rules FILE
-/// the instant an overflowing all-digit set is DEFINED, attribute-independently
-/// (it fires even for a macro that is never referenced by any rule, or one
-/// referenced only by a STRING attribute - grounded `/var/tmp/7b-grounding/p1`
-/// corpus cases 17/19). 1.4.5 never aborts at definition time; instead it types
-/// the whole set STRING and only rejects it later, at the point of ASSIGNMENT
-/// to a non-STRING attribute (cases 03-07).
+/// fapd-E05 - integer-typed set containing a member whose strtol-style
+/// integer conversion overflows `i64`. fapolicyd's overflow handling is
+/// version-divergent in MECHANISM but not (per-version) in outcome: 1.3.2
+/// hard-aborts parsing the whole rules FILE the instant an overflowing set is
+/// DEFINED, attribute-independently (it fires even for a macro that is never
+/// referenced by any rule, or one referenced only by a STRING attribute -
+/// grounded `/var/tmp/7b-grounding/p1` corpus cases 17/19). 1.4.5 never aborts
+/// at definition time; instead it types the whole set STRING and only rejects
+/// it later, at the point of ASSIGNMENT to a non-STRING attribute (cases
+/// 03-07).
 ///
 /// This function implements the UNCONDITIONAL policy - flag every INT-typed set
 /// containing an overflowing member, regardless of usage - which matches 1.3.2's
@@ -228,9 +231,10 @@ pub(crate) fn looks_int(v: &str) -> bool {
 /// flagged here because its validity depends on the attribute and target version
 /// - it is tracked as a future usage/version-aware check.
 ///
-/// STRING-typed sets (first value is not all-ASCII-digits) are always silent.
-/// Independent of fapd-E03/fapd-E04: operates on `Entry::SetDefinition` only.
-/// One diagnostic per offending set, at the first overflowing value found.
+/// STRING-typed sets (first value does not START with an ASCII digit) are
+/// always silent. Independent of fapd-E03/fapd-E04: operates on
+/// `Entry::SetDefinition` only. One diagnostic per offending set, at the first
+/// overflowing value found.
 fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     overflow_set_definitions(entries)
         .into_iter()
@@ -239,9 +243,23 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 }
 
 /// `(name, line, span, offending value)` for each INT-typed `SetDefinition`
-/// whose values contain an all-ASCII-digit member exceeding `i64::MAX`. Set
-/// type is determined by the FIRST value only (a non-digit first value makes it
-/// a STRING set, which never contributes here regardless of later members).
+/// containing a member whose strtol-style conversion is out of the `i64`
+/// range. Two 1.3.2 semantics, both daemon-verified (ATL round-1 fixtures
+/// under `/var/tmp/7b-atl-p1/`; `/var/tmp/7b-grounding/p1/matrix.md`):
+///
+///   - Set typing is FIRST-CHARACTER-digit (isdigit-style, mirroring the
+///     grounded rhel8 `first_is_intish` model in `type_compat.rs`), NOT
+///     whole-member `looks_int`: `%s=1abc,<overflow>` types INT and aborts
+///     (fixture `A2_partial_unused`), while a `-` or letter FIRST character
+///     makes a STRING set that never contributes here (matrix case 15:
+///     `%s=-5,abc` loads).
+///   - Within an INT-typed set, EVERY member is converted with lenient
+///     strtol semantics ([`strtol_out_of_range`]): trailing garbage and
+///     no-digit members convert fine (`%s=1abc,5` and `%s=1,-5` both load -
+///     fixtures `Actrl1_partial_noover`/`Bctrl_neg_small`, matrix cases
+///     08/09/11), but an out-of-range conversion in EITHER direction aborts:
+///     `99999999999999999999` AND `-99999999999999999999` both produce
+///     "Error converting val" (fixture `B2_negoverflow_unused`).
 ///
 /// Extracted so [`e05`] (unconditional policy) and [`e05_with_target`]'s
 /// rhel9/rhel10 category gate (#477) walk the exact same overflow-detection
@@ -263,13 +281,14 @@ fn overflow_set_definitions(entries: &[Entry]) -> Vec<(&str, usize, Span, &str)>
         let Some(first) = values.first() else {
             continue;
         };
-        // Set type is determined by the first value.
-        // If not all-digits, this is a STRING set; nothing to check.
-        if !looks_int(first) {
+        // 1.3.2 types the set INT iff the FIRST CHARACTER of the first value
+        // is an ASCII digit (isdigit-style). Otherwise it is a STRING set;
+        // nothing to check.
+        if !first.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
             continue;
         }
         for bad in values {
-            if looks_int(bad) && !is_fap_int(bad) {
+            if strtol_out_of_range(bad) {
                 out.push((name.as_str(), *line, span.clone(), bad.as_str()));
                 break; // one entry per set
             }
@@ -278,15 +297,58 @@ fn overflow_set_definitions(entries: &[Entry]) -> Vec<(&str, usize, Span, &str)>
     out
 }
 
+/// Whether fapolicyd 1.3.2's strtol-style conversion of INT-set member `v` is
+/// out of the `i64` range (the definition-time "Error converting val" abort).
+///
+/// strtol consumes one optional leading sign (`-`/`+`), then the longest run
+/// of ASCII digits; trailing garbage is legal and ignored (`1abc` -> 1) and a
+/// member with no leading digits converts to 0 (`foo` -> 0) - neither aborts
+/// (daemon-verified controls `%s=1abc,5` / `%s=1,-5` load on 1.3.2; ATL
+/// fixtures `Actrl1_partial_noover`/`Bctrl_neg_small`, matrix cases 08/09/11).
+/// The conversion aborts iff the signed digit run does not fit `i64`, in
+/// EITHER direction: `-99999999999999999999` is as fatal as its positive
+/// twin (fixture `B2_negoverflow_unused`). The range is asymmetric: `i64::MIN`
+/// (magnitude `i64::MAX + 1`) fits, `+9223372036854775808` does not.
+fn strtol_out_of_range(v: &str) -> bool {
+    let (negative, rest) = match v.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, v.strip_prefix('+').unwrap_or(v)),
+    };
+    let digit_run = &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()];
+    // No digits consumed -> converts to 0, always in range.
+    if !looks_int(digit_run) {
+        return false;
+    }
+    let Ok(magnitude) = digit_run.parse::<u128>() else {
+        // Beyond even u128 (40+ significant digits): certainly out of range.
+        return true;
+    };
+    let limit = if negative {
+        // |i64::MIN| = i64::MAX + 1 (strtol returns LONG_MIN without ERANGE).
+        i64::MAX as u128 + 1
+    } else {
+        i64::MAX as u128
+    };
+    magnitude > limit
+}
+
 /// Build the fapd-E05 diagnostic for overflowing set `name`, whose first
-/// offending value is `bad`.
+/// offending value is `bad`. The bound named in the message follows the
+/// overflow direction: a negative member underflows `i64::MIN` ("below the
+/// minimum integer"), everything else exceeds `i64::MAX` (wording pinned by
+/// the pre-#477 unit tests).
 fn e05_diagnostic(name: &str, bad: &str, span: Span, file: &Path, line: usize) -> Diagnostic {
+    let bound = if bad.starts_with('-') {
+        "is below the minimum integer"
+    } else {
+        "exceeds the maximum integer"
+    };
     anchored(
         Severity::Error,
         "fapd-E05",
         span,
         format!(
-            "integer-typed set `%{name}` contains value `{bad}` that exceeds the maximum integer (fapolicyd stores set integers as i64)"
+            "integer-typed set `%{name}` contains value `{bad}` that {bound} (fapolicyd stores set integers as i64)"
         ),
         file,
         line,
