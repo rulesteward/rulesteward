@@ -3326,4 +3326,108 @@ mod w07_tests {
         );
         assert_eq!(d[0].line, 6, "the universe setter wins port 2222 with `no`");
     }
+
+    // ---- Multi-type NOBODY-block FP locks (#452 round 3, impl-aware adversary) ----
+    // The #452 rewrite routed multi-type later blocks off `match_blocks_overlap`
+    // (onto the structural `multitype_earlier_setters` selection) and thereby DROPPED
+    // its `block_matches_nobody(later)` short-circuit: a multi-type later block whose
+    // AND-ed criteria admit NO connection is now FP-flagged by both the reduction
+    // walk and the DECLINE fallback, where pre-#452 main was clean. Adversary-
+    // grounded (impl-aware review round 3): `sshd_config(5)` says a Match line's
+    // criteria are "used only if ALL of the criteria on the line are satisfied" (a
+    // repeated type is an intersection), and live `sshd -T -C` on OpenSSH 9.9p1 with
+    // `Match all X11Forwarding yes` / `Match User alice User bob Address 10.0.0.0/8
+    // X11Forwarding no` yields `x11forwarding yes` for BOTH user=alice and user=bob
+    // probes - the nobody block's `no` never applies to anyone, so nothing is ever
+    // shadowed. The existing single-type nobody locks
+    // (`repeated_same_type_criteria_are_and_match_nobody_is_clean`,
+    // `match_all_does_not_shadow_a_nobody_block_is_clean`,
+    // `block_matches_nobody_pinned_directly`) cover only single-type later blocks;
+    // the four tests below close the MULTI-TYPE gap. All four are RED against the
+    // current impl (each emits a line-4 FP, verified via a scratch `w07_diags` dump
+    // against this exact build before pinning); the implementer applies the
+    // `block_matches_nobody(later)` guard to make them green.
+
+    #[test]
+    fn multi_type_nobody_block_repeated_user_is_not_a_shadowee_fallback_clean() {
+        // Adversary-grounded (sshd -T -C 9.9p1, sshd_config(5) AND-of-criteria; the
+        // exact oracle fixture quoted in the section comment above): the later block
+        // AND-s `User alice` with `User bob` - no user is both - so it matches
+        // NOBODY, and `Match all`'s differing `yes` has nothing to drop. This is the
+        // DECLINE-fallback route: L's type-set {user,address} has TWO qualifying
+        // axes for the always-neutral `Match all` setter (no unique axis), so the
+        // coarse block-level comparison runs and currently FP-flags line 4 against
+        // the `Match all` winner. The multi-type analogue of
+        // `match_all_does_not_shadow_a_nobody_block_is_clean`.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User alice User bob Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a multi-type block whose repeated User criteria AND to nobody is never a shadowee"
+        );
+    }
+
+    #[test]
+    fn multi_type_nobody_block_repeated_user_is_not_a_shadowee_walk_clean() {
+        // The same repeated-User nobody block, but with a bare-Address predecessor
+        // so the reduction finds a UNIQUE axis and takes the WALK route instead of
+        // the fallback: the setter is universe on `user` (it does not constrain it)
+        // and non-covering on `address` (10.1.0.0/16 does not cover L's /8), so
+        // `address` is the unique reduction axis and the CIDR walk currently hands
+        // the setter's differing `no` the 10.1.0.0/16 sub-population - an FP on
+        // line 4, because L matches NOBODY (User alice AND User bob is impossible)
+        // and owns no population to be carved. Adversary-grounded (same
+        // sshd_config(5) AND-of-criteria + sshd -T -C 9.9p1 grounding as above);
+        // proves the nobody guard must sit ABOVE the axis walk, not only in the
+        // fallback.
+        assert!(
+            w07_diags(
+                "Match Address 10.1.0.0/16\n    X11Forwarding no\n\
+                 Match User alice User bob Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "the axis walk must not carve sub-populations out of a block that matches nobody"
+        );
+    }
+
+    #[test]
+    fn multi_type_nobody_block_disjoint_repeated_address_is_clean() {
+        // Nobody via disjoint repeated CIDR on a MULTI-TYPE block: `Address
+        // 10.0.0.0/8` AND `Address 192.168.0.0/16` intersect to the empty set, so
+        // the block matches no connection and `Match all`'s differing `yes` drops
+        // nothing. The multi-type analogue of the Address arm of
+        // `block_matches_nobody_pinned_directly` /
+        // `repeated_disjoint_address_criteria_match_nobody_is_clean` (which pin the
+        // single-type path). Adversary-grounded (sshd_config(5) AND-of-criteria;
+        // same round-3 finding); currently FP-flags line 4 via the fallback.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User alice Address 10.0.0.0/8 Address 192.168.0.0/16\n    \
+                 X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint repeated Address criteria AND to nobody; the multi-type block cannot shadow"
+        );
+    }
+
+    #[test]
+    fn multi_type_nobody_block_disjoint_repeated_localport_is_clean() {
+        // Nobody via disjoint repeated LocalPort on a MULTI-TYPE block: a connection
+        // arrives on exactly ONE local port, so `LocalPort 22` AND `LocalPort 2222`
+        // is unsatisfiable and the block matches nobody. The multi-type analogue of
+        // `repeated_disjoint_localport_criteria_match_nobody_is_clean`.
+        // Adversary-grounded (sshd_config(5) AND-of-criteria; same round-3
+        // finding); currently FP-flags line 4 via the fallback.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User alice LocalPort 22 LocalPort 2222\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint repeated LocalPort criteria AND to nobody; the multi-type block cannot shadow"
+        );
+    }
 }
