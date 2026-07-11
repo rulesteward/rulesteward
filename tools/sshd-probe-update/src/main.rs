@@ -252,6 +252,21 @@ fn transcript_flag(args: &[String]) -> Option<String> {
     flag(args, "--transcript").or_else(|| flag(args, "--file"))
 }
 
+/// Whether the best-effort `man sshd_config` keyword-discovery pass (#471)
+/// should run for this report acquisition: LIVE only. The offline
+/// `--transcript`/`--file` path has no docker container to discover a man
+/// page in, so discovery is gated off whenever a transcript path is given -
+/// mirrors the `None` (live) vs `Some` (offline) split in `report_for`.
+///
+/// TODO(#471 impl): call this from `report_for`'s `None` branch to gate the
+/// live `sshd_probe_update::discover` pass; remove the `#[allow(dead_code)]`
+/// once wired in.
+#[allow(dead_code)]
+fn discovery_enabled(transcript_path: Option<&str>) -> bool {
+    let _ = transcript_path;
+    todo!("#471: LIVE-only gate for the man-page keyword-discovery pass")
+}
+
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -313,5 +328,21 @@ mod tests {
         let c = candidates(TargetVersion::Rhel9);
         assert_eq!(c.len(), known_keywords(TargetVersion::Rhel9).len() + 1);
         assert!(c.contains(&BOGUS));
+    }
+
+    /// #471: man-page keyword discovery must be LIVE-only. `report_for`
+    /// passes `None` for a live probe and `Some(path)` for an offline
+    /// `--transcript`/`--file` run; discovery must be enabled in exactly the
+    /// former case.
+    #[test]
+    fn discovery_enabled_only_for_live_probing() {
+        assert!(
+            discovery_enabled(None),
+            "live probing (no transcript path) must enable discovery"
+        );
+        assert!(
+            !discovery_enabled(Some("/x.jsonl")),
+            "an offline transcript path must disable discovery"
+        );
     }
 }

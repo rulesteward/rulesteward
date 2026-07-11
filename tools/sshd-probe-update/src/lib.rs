@@ -8,12 +8,15 @@
 //! the docker output); [`classify`] turns one keyword's stderr into the
 //! per-family verdicts; [`overlay`] is the W04 hand-curated honesty layer;
 //! [`derive`] classifies a transcript and diffs it against the shipped
-//! projections. The docker probe is isolated behind the [`probe`] seam so the
-//! core is tested offline with fixtures. The `main` binary wires these into the
-//! `check` / `derive` subcommands.
+//! projections; [`discover`] is the best-effort `man sshd_config`
+//! keyword-discovery pass (#471), LIVE-only and advisory-only. The docker probe
+//! is isolated behind the [`probe`] seam so the core is tested offline with
+//! fixtures. The `main` binary wires these into the `check` / `derive`
+//! subcommands.
 
 pub mod classify;
 pub mod derive;
+pub mod discover;
 pub mod overlay;
 pub mod probe;
 pub mod transcript;
