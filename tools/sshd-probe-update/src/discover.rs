@@ -593,4 +593,105 @@ Description.
         };
         assert!(report.is_in_sync());
     }
+
+    // --- 4. mutation-survivor kills (post-GREEN mutation gate, #471) --------
+
+    /// Kills the `keywords_from_roff` return-replacement survivors
+    /// (`Ok(vec![])`, `Ok(vec![String::new()])`, `Ok(vec!["xyzzy".into()])`)
+    /// on the success branch: a small synthetic roff must extract EXACTLY
+    /// its two top-level keywords, in document order - every canned return
+    /// value differs from the real extraction.
+    #[test]
+    fn keywords_from_roff_returns_exact_extracted_content() {
+        let roff = "\
+.Sh DESCRIPTION
+The possible keywords are as follows:
+.Bl -tag -width Ds
+.It Cm ZzzAlphaKeyword
+Description alpha.
+.It Cm ZzzBetaKeyword
+Description beta.
+.El
+";
+        assert_eq!(
+            keywords_from_roff(roff),
+            Ok(vec![
+                "ZzzAlphaKeyword".to_string(),
+                "ZzzBetaKeyword".to_string()
+            ])
+        );
+    }
+
+    /// Kills the same `keywords_from_roff` return-replacement survivors via
+    /// the OTHER branch: a roff with no `.It Cm` entries at all must yield
+    /// the exact discovery-unavailable `Err` (any `Ok(...)` replacement
+    /// returns `Ok` here and fails), pinning the exact reason string
+    /// `main.rs::discover_man_keywords` hands to
+    /// `discovery_unavailable_advisory`.
+    #[test]
+    fn keywords_from_roff_empty_extraction_is_exact_unavailable_error() {
+        let roff = "\
+.Sh DESCRIPTION
+No keyword-enumeration list in this document at all.
+";
+        assert_eq!(
+            keywords_from_roff(roff),
+            Err("no top-level `.It Cm` entries found in the man page".to_string())
+        );
+    }
+
+    /// Kills the partition-polarity survivors (delete-`!` / `==` -> `!=` in
+    /// `assemble_discovery`'s partition predicate) by pinning BOTH
+    /// directions on a transcript holding non-discovered core records plus
+    /// two discovered keywords' records: the returned core must equal
+    /// EXACTLY the non-discovered records (delete-`!` returns the discovered
+    /// ones instead; `!=` with two distinct discovered keywords sends every
+    /// record to the discovered side, emptying core), and the advisories
+    /// must cover EXACTLY the discovered keywords, each with its own
+    /// daemon verdict (one recognized, one rejected) - a mis-partition also
+    /// mis-classifies the verdicts, so the advisory assertions double-pin
+    /// the polarity.
+    #[test]
+    fn assemble_discovery_partitions_core_and_advisories_both_directions() {
+        let transcript = crate::transcript::parse_jsonl(
+            "{\"kw\":\"acceptenv\",\"probe\":\"opt\",\"rc\":0,\"stderr\":\"\"}\n\
+             {\"kw\":\"acceptenv\",\"probe\":\"match\",\"rc\":0,\"stderr\":\"\"}\n\
+             {\"kw\":\"zzzrecognized\",\"probe\":\"opt\",\"rc\":0,\"stderr\":\"\"}\n\
+             {\"kw\":\"zzzrecognized\",\"probe\":\"match\",\"rc\":0,\"stderr\":\"\"}\n\
+             {\"kw\":\"zzzrejected\",\"probe\":\"opt\",\"rc\":255,\"stderr\":\"command-line line 0: Bad configuration option: zzzrejected\"}\n\
+             {\"kw\":\"zzzrejected\",\"probe\":\"match\",\"rc\":255,\"stderr\":\"command-line line 0: Bad configuration option: zzzrejected\"}",
+        )
+        .unwrap();
+        let discovered = vec!["zzzrecognized".to_string(), "zzzrejected".to_string()];
+
+        let (core, advisories) = assemble_discovery(transcript, &discovered);
+
+        let expected_core = crate::transcript::parse_jsonl(
+            "{\"kw\":\"acceptenv\",\"probe\":\"opt\",\"rc\":0,\"stderr\":\"\"}\n\
+             {\"kw\":\"acceptenv\",\"probe\":\"match\",\"rc\":0,\"stderr\":\"\"}",
+        )
+        .unwrap();
+        assert_eq!(
+            core, expected_core,
+            "core must be exactly the non-discovered records (no discovered \
+             record may leak in; no core record may leak out)"
+        );
+
+        assert_eq!(
+            advisories.len(),
+            2,
+            "exactly one advisory per discovered keyword; got {advisories:?}"
+        );
+        assert_eq!(
+            advisories[0],
+            discovery_advisory("zzzrecognized", DaemonVerdict::Recognized),
+            "the clean-parsing discovered keyword must carry the Recognized verdict"
+        );
+        assert_eq!(
+            advisories[1],
+            discovery_advisory("zzzrejected", DaemonVerdict::Rejected),
+            "the Bad-configuration-option discovered keyword must carry the \
+             Rejected verdict"
+        );
+    }
 }
