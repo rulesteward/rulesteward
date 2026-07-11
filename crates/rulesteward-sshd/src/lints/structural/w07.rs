@@ -3572,4 +3572,90 @@ mod w07_tests {
             "a pure-negation single-instance User list matches nobody; the block is never a shadowee"
         );
     }
+
+    // ---- WIDER-NEGATED-GLOB nobody FP locks on the DECLINE path (#452 round 5) ----
+    // Completion of the round-4 single-instance-nobody family (adversary round 2,
+    // second finding): `name_list_matches_nobody` handles pure-negation and
+    // EXACT self-negation only, deliberately treating a WIDER negated glob vetoing a
+    // narrower positive (`!a*,ab`) as satisfiable on the assumption the
+    // overlap/witness oracles reject such lists independently. That assumption
+    // holds on the axis-WALK path (its member() search runs match_pattern_list and
+    // finds no witness - verified clean by the adversary) but NOT on the DECLINE
+    // path: `block_level_shadow` is MEMBERSHIP-BLIND (it compares first-setter
+    // values without ever asking whether any connection satisfies the later block),
+    // so with a `Match all` or subset predecessor the dead block still FP-flags.
+    // Adversary-grounded, sshd -T -C 9.9p1 (all probes yes; the wider negated glob
+    // vetoes the narrower positive): user=ab -> yes, user=xyz -> yes, user=b -> yes
+    // (the block never applies). Each fixture's current-impl [line 4] FP was
+    // observed via a scratch `w07_diags` dump before pinning.
+    //
+    // FIX NOTE (for the implementer): the fix is a later-block WITNESS check on the
+    // decline path (reusing the walk's member()/match_pattern_list machinery to ask
+    // "does ANY candidate name satisfy the later block?"), NOT glob-subsumption
+    // math bolted onto name_list_matches_nobody - pattern-subsumption reasoning is
+    // exactly what that predicate's doc comment declines, and the witness search
+    // already decides these lists correctly on the walk path.
+
+    #[test]
+    fn wider_negated_glob_nobody_via_match_all_decline_is_clean() {
+        // RED (round 5): `User !a*,ab` matches NOBODY - the positive `ab` only
+        // admits the user "ab", and the negated glob `!a*` vetoes every name
+        // starting with "a", including "ab" itself; every other name fails the sole
+        // positive. Adversary-grounded (sshd -T -C 9.9p1: user=ab -> yes, user=xyz
+        // -> yes, user=b -> yes; the block's `no` never applies). The `Match all`
+        // predecessor is neutral on both of L's axes, so no unique reduction axis
+        // exists and the DECLINE route runs `block_level_shadow`, which is
+        // membership-blind and currently FP-flags line 4 against the `Match all`
+        // winner.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User !a*,ab Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a wider negated glob vetoes the narrower positive; the dead block is never a shadowee"
+        );
+    }
+
+    #[test]
+    fn wider_negated_glob_nobody_via_subset_predecessor_decline_is_clean() {
+        // RED (round 5): the same dead `User !a*,ab` block behind a bare-Address
+        // SUBSET predecessor (the #494 selection shape) instead of `Match all`. The
+        // predecessor's /8 exactly equals L's /8 (neutral on address) and it does
+        // not constrain user (universe there), so BOTH axes qualify, no unique axis
+        // exists, and the DECLINE route again compares values membership-blind ->
+        // currently FP-flags line 4. Same adversary grounding as above (sshd -T -C
+        // 9.9p1: all probes yes; the block never applies); proves the gap is the
+        // decline route itself, not something about `Match all` predecessors.
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User !a*,ab Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "the decline route must not flag a nobody block admitted by the subset selection"
+        );
+    }
+
+    #[test]
+    fn bang_star_negated_glob_nobody_decline_is_clean() {
+        // RED (round 5): `User !*,alice` - the negated glob `!*` vetoes EVERY name,
+        // so no candidate can survive it and the positive `alice` is unreachable:
+        // the list matches nobody. Same wider-negated-glob shape at its extreme
+        // (the widest possible veto), same DECLINE-route FP via the `Match all`
+        // predecessor, currently flagging line 4. Adversary-grounded (sshd -T -C
+        // 9.9p1: all probes yes; the wider negated glob vetoes the narrower
+        // positive). Distinct from the SATISFIABLE `!alice,*` control pinned in
+        // `single_instance_pure_negation_user_list_matches_nobody_is_clean`: there
+        // the positive is the glob and the negation is narrow (bob survives); here
+        // the NEGATION is the glob and nothing survives.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User !*,alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a !* veto admits no name at all; the dead block is never a shadowee"
+        );
+    }
 }
