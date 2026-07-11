@@ -3842,4 +3842,43 @@ mod w07_tests {
         // path - exact string containment only, the witness gate owns this shape.
         assert!(!nobody(&["!a*", "ab"]));
     }
+
+    #[test]
+    fn unmodeled_criterion_rdomain_takes_fallback_arm_and_flags() {
+        // GREEN pin (round 9, from the idiomatic review): the `_` arm of
+        // `multitype_axis_shadow` is documented "unreachable" but IS live, and this
+        // pins it. Reachability trace: `RDomain` is a VALID sshd Match criterion
+        // (sshd_config(5); accepted by the parser's generic criterion split and
+        // listed in e04's valid-criteria registry) but is NOT region-modeled, so a
+        // `Match RDomain vrf0` block takes `single_region_type` -> None -> the
+        // multitype path; `multitype_reduction_axis` returns Some("rdomain") (the
+        // block's lone axis, with no OTHER axis to disqualify it); and
+        // `multitype_axis_shadow` dispatches it to the `_` arm's conservative
+        // `block_level_shadow` fallback. The behavior is CORRECT: first-value-wins
+        // makes the always-satisfied `Match all yes` win every connection including
+        // rdomain=vrf0, so the later `no` is dead - a REAL shadow the fallback
+        // rightly flags. ORACLE (live probe, OpenSSH 9.9p1 sshd -T -C, this exact
+        // fixture): rdomain=vrf0 -> x11forwarding yes AND rdomain=other -> yes
+        // (`Match all` wins everywhere; the `no` never applies); CONTROL with the
+        // RDomain block FIRST -> x11forwarding no (proving sshd honors the RDomain
+        // criterion itself - the dead-ness above is purely Match-block ordering).
+        // This arm must NEVER become `unreachable!()` (a linter must not panic on
+        // valid input); the pin also kills the latent mutation gap on the arm
+        // (deleting it or constant-replacing its body now changes an asserted
+        // verdict).
+        let d = w07_diags(
+            "Match all\n    X11Forwarding yes\n\
+             Match RDomain vrf0\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the unmodeled-criterion block routes through the live fallback arm and flags"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(
+            d[0].line, 4,
+            "Match all wins every rdomain; the RDomain block's `no` on line 4 is dead"
+        );
+    }
 }
