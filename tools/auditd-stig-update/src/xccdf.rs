@@ -206,13 +206,19 @@ pub fn parse_requirements(xccdf: &str) -> Result<Vec<DerivedRule>, String> {
                     if let Some(content) = cur_check_content.take() {
                         let lines = extract_rule_lines(&content);
                         if !lines.is_empty() {
-                            let v_number = cur_group_id.clone().ok_or_else(|| {
+                            // `take()` moves each field out AND resets it to None in
+                            // one step. The trailing per-field `= None` resets the
+                            // old code carried are redundant: the only reader of these
+                            // fields is this handler, and the next `<Group>` start
+                            // resets all three before any new content accumulates.
+                            // stig_id is taken first so the fail-closed error message
+                            // can name it without a clone.
+                            let stig_id = cur_stig_id.take().unwrap_or_default();
+                            let v_number = cur_group_id.take().ok_or_else(|| {
                                 format!(
-                                    "selected Rule {} has no enclosing Group id (fail-closed)",
-                                    cur_stig_id.clone().unwrap_or_default()
+                                    "selected Rule {stig_id} has no enclosing Group id (fail-closed)"
                                 )
                             })?;
-                            let stig_id = cur_stig_id.clone().unwrap_or_default();
                             for line in lines {
                                 out.push(DerivedRule {
                                     v_number: v_number.clone(),
@@ -222,9 +228,6 @@ pub fn parse_requirements(xccdf: &str) -> Result<Vec<DerivedRule>, String> {
                             }
                         }
                     }
-                    cur_group_id = None;
-                    cur_stig_id = None;
-                    cur_check_content = None;
                 }
                 _ => {}
             },
@@ -262,11 +265,14 @@ fn xml_attr(start: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String>
 /// the [`RULE_LINE_RE`] selector, in document order, deduped (a line repeated
 /// verbatim within one Rule collapses to one row).
 fn extract_rule_lines(content: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+    // `seen` borrows the trimmed slices of `content` (which outlives this loop),
+    // so the dedup set costs no allocation; a kept line is allocated exactly once
+    // (in `out.push`), not twice.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out = Vec::new();
     for raw_line in content.split('\n') {
         let line = raw_line.trim();
-        if RULE_LINE_RE.is_match(line) && seen.insert(line.to_string()) {
+        if RULE_LINE_RE.is_match(line) && seen.insert(line) {
             out.push(line.to_string());
         }
     }

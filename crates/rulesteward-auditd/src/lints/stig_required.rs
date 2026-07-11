@@ -11,24 +11,19 @@
 //! with a distinct present-but-key-differs message (locked decisions,
 //! 2026-07-10).
 //!
-//! Test-author pass (session 7c-v0_6-wave3, P2): the shapes below
-//! ([`BaselineRule`], [`StigBaselineEntry`]/[`stig_baseline`],
-//! [`w06_with_baseline`]) are added as SIGNATURES beyond the frozen stub
-//! above. `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are empty
-//! placeholders: the REAL per-product data (61/67/75 grounded lines) is
-//! deliberately left for the implementer to populate from
-//! `tools/auditd-stig-update derive`'s paste-ready output, per this
-//! dispatch's explicit instruction - do not hand-transcribe it here. The real
-//! MATCHING algorithm (`w06_with_baseline`'s body) is `todo!()` for the same
-//! reason: it is the implementer's job (see the doc comment on
-//! [`w06_with_baseline`] for the full grounded matcher spec, sourced from the
-//! P2 grounding doc Part C.5). [`w06_with_baseline`] is `pub` (not
-//! `pub(crate)`) specifically so the frozen scenario tests in
-//! `tests/test_lints_stig_required.rs` (a separate integration-test crate)
-//! can inject a small, appendix-cited test-local baseline directly, WITHOUT
-//! depending on the shipped (still-empty) `RHEL*_REQUIRED` tables - that
-//! keeps the frozen adversarial tests meaningful today while still honoring
-//! "leave the real table content to the implementer."
+//! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
+//! [`w06_with_baseline`] are the shipped shapes.
+//! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
+//! per-RHEL-major required-rules tables (61/67/75 rules.d lines respectively),
+//! transcribed verbatim from `tools/auditd-stig-update derive`'s paste-ready
+//! output and kept drift-tethered to the DISA XCCDF by that tool's `check`
+//! gate (re-derive on a STIG bump; do not hand-edit). The matching algorithm
+//! (`w06_with_baseline`'s body) is implemented per the grounded matcher spec
+//! on that function's doc comment (sourced from the P2 grounding doc Part
+//! C.5). [`w06_with_baseline`] is `pub` (not `pub(crate)`) specifically so the
+//! frozen scenario tests in `tests/test_lints_stig_required.rs` (a separate
+//! integration-test crate) can inject a small, appendix-cited test-local
+//! baseline directly, independent of the shipped `RHEL*_REQUIRED` tables.
 
 use rulesteward_core::Diagnostic;
 
@@ -48,10 +43,9 @@ pub enum TargetVersion {
 
 /// au-W06 missing-required-STIG-rules pass. `target == None` (portable mode)
 /// stays silent by contract; `Some(t)` dispatches to [`w06_with_baseline`]
-/// against the shipped table for `t`. The shipped tables are empty
-/// placeholders until the implementer populates them (see the module doc),
-/// so this returns `Vec::new()` for every target today - dispatcher output
-/// stays byte-identical until the tables AND the matcher both land.
+/// against the shipped grounded table for `t` (via [`stig_baseline`]), which
+/// reports every rule that release's STIG requires but this ruleset is missing
+/// (or has present under a different key).
 #[must_use]
 pub fn w06(
     rules: &[LocatedRule],
@@ -83,9 +77,11 @@ pub struct BaselineRule {
     pub line: &'static str,
 }
 
-/// The grounded baseline table for `target`. EMPTY placeholders (see the
-/// module doc): populated by the implementer from `auditd-stig-update
-/// derive`'s paste-ready output, one `BaselineRule` literal per derived row.
+/// The grounded per-RHEL-major required-rules tables: one `BaselineRule`
+/// literal per derived rules.d line, transcribed verbatim from
+/// `auditd-stig-update derive`'s paste-ready output and kept drift-tethered to
+/// the DISA XCCDF by that tool's `check` gate (do not hand-edit; re-derive on a
+/// STIG revision bump).
 const RHEL8_REQUIRED: &[BaselineRule] = &[
     BaselineRule {
         v_number: "V-230386",
@@ -1124,18 +1120,14 @@ pub fn stig_baseline(target: TargetVersion) -> &'static [BaselineRule] {
     baseline_for(target)
 }
 
-/// The real au-W06 matcher, taking an EXPLICIT `baseline` slice (see the
-/// module doc for why this is `pub` and separate from `w06`'s frozen
-/// `target`-based signature). `todo!()` body: this is the implementer's
-/// pass, per the P2 dispatch's "the implementer + tool derive fill real
-/// content" instruction. An empty `baseline` short-circuits to `Vec::new()`
-/// BEFORE the `todo!()` so wiring/e2e tests that exercise `--target` against
-/// the still-empty shipped tables observe clean exit-0 plumbing rather than a
-/// spurious panic; a NON-empty baseline (the frozen scenario tests in
-/// `tests/test_lints_stig_required.rs` always pass one) reaches the real,
-/// currently-`todo!()`, matching algorithm.
+/// The au-W06 matcher, taking an EXPLICIT `baseline` slice (see the module doc
+/// for why this is `pub` and separate from `w06`'s `target`-based signature).
+/// An empty `baseline` short-circuits to `Vec::new()`, so a `--target` against
+/// a (hypothetically) empty table is clean exit-0 plumbing; a non-empty
+/// baseline (the shipped `RHEL*_REQUIRED` tables via [`w06`], or a test-local
+/// injected one) runs the full matcher below.
 ///
-/// # Grounded matcher spec (P2 grounding doc Part C.5; implementer fills the body)
+/// # Grounded matcher spec (P2 grounding doc Part C.5)
 ///
 /// For each `BaselineRule` in `baseline`:
 /// 1. Parse `rule.line` via [`crate::parser`] (the SAME parser rules.d files
