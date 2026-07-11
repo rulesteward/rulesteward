@@ -2484,6 +2484,8 @@ mod w07_tests {
         // earlier block as a candidate and `block_level_shadow` finds the differing
         // value) - this locks that the #494 fix's DECLINE fallback must reproduce that
         // same answer, not silently drop it in the name of two-axis conservatism.
+        // GROUNDING CLASS: inference from CE4 semantics + observed-vs-main (no
+        // transcript-pinned CE entry for this exact fixture).
         let d = w07_diags(
             "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
              Match User alice,bob Address 10.0.0.0/8\n    X11Forwarding no\n",
@@ -2517,6 +2519,8 @@ mod w07_tests {
         // excludes the bare-User predecessor on type-set-size mismatch (as in CE3) AND
         // its separate repeated-negation cross-occurrence guard would independently
         // suppress overlap even if the sizes matched.
+        // GROUNDING CLASS: inference from CE3 semantics + observed-vs-main (no
+        // transcript-pinned CE entry for this exact fixture).
         let d = w07_diags(
             "Match User alice\n    X11Forwarding yes\n\
              Match User alice Address 10.0.0.0/8 Address 10.0.0.0/8,!10.5.0.0/16\n    \
@@ -2544,6 +2548,8 @@ mod w07_tests {
         // where the #494 fix's broader earlier-setter inclusion starts comparing
         // against the wrong (block-level, non-region) value and false-fires on
         // agreement.
+        // GROUNDING CLASS: inference from CE3 semantics (agreeing-value variant) +
+        // observed-vs-main (no transcript-pinned CE entry for this exact fixture).
         assert!(
             w07_diags(
                 "Match User alice\n    X11Forwarding no\n\
@@ -2573,6 +2579,9 @@ mod w07_tests {
         // way. This locks that #494's structural subset-or-equal rule does not widen
         // to "any SHARED type overlaps", which would incorrectly let the outside-T
         // `host` criterion leak into the reduction.
+        // GROUNDING CLASS: inference from CE5 field-absent semantics + the #400
+        // cross-type contract + observed-vs-main (no transcript-pinned CE entry for
+        // this exact fixture).
         assert!(
             w07_diags(
                 "Match User alice Host web.corp\n    X11Forwarding yes\n\
@@ -2580,6 +2589,44 @@ mod w07_tests {
             )
             .is_empty(),
             "a type OUTSIDE the later block's type-set is ignored, not treated as overlap"
+        );
+    }
+
+    #[test]
+    fn ce7_disjoint_one_axis_nested_other_axis_stays_clean() {
+        // LOCK (barrier-review strengthening, NEEDS_REWORK round 1): the per-type
+        // co-satisfiability gate. `User alice Address 10.1.0.0/16` yes / `User bob
+        // Address 10.0.0.0/8` no: the two blocks share the identical {user,address}
+        // type-set and are NESTED on the address axis (10.1.0.0/16 inside
+        // 10.0.0.0/8) but DISJOINT on the user axis (alice vs bob), so NO single
+        // connection can ever satisfy both blocks at once and the later `no` (line
+        // 4) is never shadowed. Expected W07 diag set: EMPTY. GROUND TRUTH (CE7,
+        // 452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): user=bob,
+        // addr=10.1.0.5 -> no and user=bob,addr=10.5.0.5 -> no (the later block wins
+        // its own population; the alice block never applies to bob); user=alice,
+        // addr=10.1.0.5 -> yes (block 1); user=alice,addr=10.5.0.5 -> no (default;
+        // NEITHER block matches). This kills the wrong impl the impl-blind barrier
+        // adversary constructed: a per-axis walk that folds subset/same-set earlier
+        // setters into a single-axis region walk but DROPS the per-type
+        // co-satisfiability gate (today enforced by `match_blocks_overlap`'s
+        // per-shared-type `.all()` conjunction) would see only the nested address
+        // axis, treat the alice block as a differing earlier winner for part of the
+        // /8, and FP-flag line 4. The neighboring fixtures do not discriminate that
+        // impl: `multi_type_block_level_fallback_flags_and_disjoint_is_clean`'s
+        // disjoint pair is disjoint on BOTH axes, and the two-axis DECLINE fixture
+        // above expects {line 4}, which a naive per-axis walk coincidentally also
+        // produces. Main today is clean on this fixture (verified empirically: this
+        // assertion passes against the UNMODIFIED production code in this worktree -
+        // today's `match_blocks_overlap` returns no-overlap via its disjoint-user
+        // conjunct); the #494 structural subset selection must PRESERVE a per-type
+        // co-satisfiability check, not trade it away for the axis walk.
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+                 Match User bob Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "disjoint on one axis (user) means NO co-satisfaction, however nested the other axis is"
         );
     }
 }
