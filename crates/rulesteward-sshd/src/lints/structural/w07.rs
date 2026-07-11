@@ -753,8 +753,12 @@ fn multitype_axis_shadow(
         "localport" => {
             multitype_port_axis_shadow(later, axis, keyword_lower, value, earlier_setters)
         }
-        // Unreachable: `multitype_reduction_axis` only returns a key of `later_types`,
-        // which is itself gated to the modeled kinds by `criterion_overlap`.
+        // LIVE defensive fallback for unmodeled-but-valid Match criteria (e.g.
+        // `RDomain`): such a block has no region-modeled kind, so it reaches the
+        // multitype path even single-type, and its lone axis dispatches here to the
+        // conservative block-level comparison. MUST NOT become `unreachable!()` - a
+        // linter never panics on valid input. Pinned by
+        // `unmodeled_criterion_rdomain_takes_fallback_arm_and_flags`.
         _ => block_level_shadow(keyword_lower, value, earlier_setters),
     }
 }
@@ -810,35 +814,28 @@ fn multitype_shadow(
     value: &[String],
     earlier_setters: &[&MatchBlock],
 ) -> bool {
-    // A block that matches NOBODY ([`block_matches_nobody`]: a criterion type
-    // repeated on its header with no common witness - `sshd_config(5)` AND-s all
-    // criteria on the line) admits no connection, so nothing it sets is ever applied
-    // and nothing can be shadowed. This restores the short-circuit the old
-    // `match_blocks_overlap`-gated multi-type path had on its first line and the
-    // #452 structural-selection rewrite dropped; it must sit ABOVE the axis walk,
-    // not only in the fallback, so the walk never carves sub-populations out of a
-    // population that is empty (verified `sshd -T -C` OpenSSH 9.9p1: a `Match User
-    // alice User bob ...` block's value applies to no probe). The EARLIER side needs
-    // no twin guard, and the guarantee is stronger than repeated-instance folding:
-    // [`multitype_earlier_setters`] requires [`type_co_satisfiable`] to find a
-    // witness satisfying the earlier block's OWN criterion for each shared type
-    // (single-instance via [`criterion_overlap`]'s pattern/CIDR/port oracles, whose
-    // `match_pattern_list`-faithful search admits no member of a pure-negation or
-    // self-negated list; repeated via the combined-instance fold, which subsumes the
-    // earlier-only instances) - a nobody block cannot provide that witness REGARDLESS
-    // of instance count, so it is structurally never selected (and `Match all` is
-    // never nobody).
+    // INVARIANT: a block that matches NOBODY ([`block_matches_nobody`]:
+    // `sshd_config(5)` AND-s all criteria on a header, so a repeated type with no
+    // common witness admits no connection) is never a shadowee - nothing it sets is
+    // ever applied, so nothing can be shadowed. Sits above BOTH routes: the walk
+    // must never carve sub-populations out of an empty population. The EARLIER side
+    // needs no twin guard: [`multitype_earlier_setters`] requires
+    // [`type_co_satisfiable`] to find a witness satisfying the earlier block's OWN
+    // criterion for each shared type (single-instance via [`criterion_overlap`]'s
+    // `match_pattern_list`-faithful oracles; repeated via the combined-instance
+    // fold, which subsumes the earlier-only instances) - a nobody block cannot
+    // provide that witness regardless of instance count, so it is never selected
+    // (and `Match all` is never nobody).
     if block_matches_nobody(later) {
         return false;
     }
-    // Witness gate for BOTH routes (#452 rounds 5-7): a witness-less (nobody) name
-    // axis (`!a*,ab`, `!*,alice`) slips `block_matches_nobody` (which deliberately
-    // does no glob-subsumption math) and would otherwise be FP-flagged by EITHER
-    // route - the DECLINE fallback compares values membership-blind, and the axis
-    // WALK inspects only the walked axis, never a dead NON-walked one (its own
-    // member() search reruns this same match_pattern_list enumeration, but only for
-    // the reduction axis). Suppress-only, so hoisting it above the walk cannot
-    // introduce a false positive.
+    // INVARIANT: a witness-less name axis (`!a*,ab`, `!*,alice`) slips
+    // [`block_matches_nobody`] (which deliberately does no glob-subsumption math)
+    // but still admits no connection, so it too must be suppressed before EITHER
+    // route: the DECLINE fallback compares values membership-blind, and the axis
+    // WALK inspects only the walked axis, never a dead NON-walked one. The gate is
+    // suppress-only (it can turn a flag into silence, never silence into a flag),
+    // so it cannot introduce a false positive.
     if !name_axes_admit_witness(later) {
         return false;
     }
@@ -1292,6 +1289,13 @@ mod w07_tests {
     //!   `g3_earlier_type_outside_t_is_ignored_entirely` lock this, and
     //!   `ce6_match_all_agreeing_interleave_stays_correct_regression_lock` locks that
     //!   the pre-existing `Match all` interleave is undisturbed.
+    //! - HOST case-folding (#495): the impl's `Host` axis matching is case-SENSITIVE
+    //!   (`glob_match` compares chars exactly) but sshd lowercases the client
+    //!   hostname before Match evaluation, so a `Host` criterion differing from
+    //!   another only by case is treated as disjoint (accepted FN) and a mixed-case
+    //!   pattern that sshd would never match can still participate in overlap
+    //!   reasoning (accepted FP/FN on the host axis only). Parked as the tracked
+    //!   follow-up #495.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -3727,7 +3731,11 @@ mod w07_tests {
         // mutant on this exact fixture - the real impl emits nothing, the mutant
         // misses the nobody guard, walks the unique address axis, hands the
         // differing `no` setter the 10.1.0.0/16 sub-population, and FP-flags
-        // line 4.
+        // line 4. BACK-REFERENCE: the round-7 hoist (name_axes_admit_witness moved
+        // above the walk) re-masked this LINT-LEVEL kill - the hoisted witness gate
+        // now suppresses this fixture even under that mutant - so
+        // `name_list_matches_nobody_direct_pin` (round 8) is the surviving DIRECT
+        // kill for it; this test remains the walk-route behavioral lock.
         assert!(
             w07_diags(
                 "Match Address 10.1.0.0/16\n    X11Forwarding no\n\
