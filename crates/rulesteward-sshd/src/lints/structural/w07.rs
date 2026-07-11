@@ -782,11 +782,15 @@ fn multitype_shadow(
     // not only in the fallback, so the walk never carves sub-populations out of a
     // population that is empty (verified `sshd -T -C` OpenSSH 9.9p1: a `Match User
     // alice User bob ...` block's value applies to no probe). The EARLIER side needs
-    // no twin guard: [`multitype_earlier_setters`] folds an earlier block's own
-    // repeated instances into [`type_co_satisfiable`]'s combined witness search, and
-    // no witness can satisfy a combined list whose earlier-only subset is already
-    // unsatisfiable, so a nobody earlier block is structurally never selected (and
-    // `Match all` is never nobody).
+    // no twin guard, and the guarantee is stronger than repeated-instance folding:
+    // [`multitype_earlier_setters`] requires [`type_co_satisfiable`] to find a
+    // witness satisfying the earlier block's OWN criterion for each shared type
+    // (single-instance via [`criterion_overlap`]'s pattern/CIDR/port oracles, whose
+    // `match_pattern_list`-faithful search admits no member of a pure-negation or
+    // self-negated list; repeated via the combined-instance fold, which subsumes the
+    // earlier-only instances) - a nobody block cannot provide that witness REGARDLESS
+    // of instance count, so it is structurally never selected (and `Match all` is
+    // never nobody).
     if block_matches_nobody(later) {
         return false;
     }
@@ -841,22 +845,57 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
     })
 }
 
+/// Whether a NAME (`User`/`Group`/`Host`) pattern list positively matches NOBODY.
+/// OpenSSH `match_pattern_list` returns a match only when some POSITIVE (un-negated)
+/// pattern matches and no negated one does, so a SINGLE instance list is already
+/// unsatisfiable in two shapes:
+/// - PURE NEGATION (`!alice`): no un-negated entry at all, so no name ever matches
+///   positively - the OpenSSH footgun: it does NOT mean "everyone except alice".
+/// - SELF-NEGATION (`!alice,alice`): every un-negated entry also appears negated
+///   EXACTLY, so any name a positive pattern admits is vetoed by its own negation.
+///
+/// An un-negated positive glob or literal that is not exactly negated keeps the
+/// list SATISFIABLE (`!alice,*` matches every user except alice), so this must
+/// never widen to "contains a negation". Harder unsatisfiable shapes (a WIDER
+/// negated glob vetoing a narrower positive, e.g. `!a*,abc`) are conservatively
+/// treated as satisfiable here - FP-leaning for the nobody guard is the safe
+/// direction (a possible flag on a dead block, never a suppressed real shadow),
+/// and the overlap/witness oracles reject such lists independently anyway (their
+/// `match_pattern_list` searches can never find a member).
+fn name_list_matches_nobody(values: &[String]) -> bool {
+    let negated: BTreeSet<&str> = values.iter().filter_map(|v| v.strip_prefix('!')).collect();
+    values
+        .iter()
+        .filter(|v| !v.starts_with('!'))
+        .all(|v| negated.contains(v.as_str()))
+}
+
 /// Whether a `Match` block can be satisfied by NO connection. `sshd_config(5)`
 /// AND-s all criteria on a header, so a criterion TYPE repeated on the same header
 /// requires ONE connection to satisfy every occurrence of that type at once (e.g.
 /// `Match User alice User bob` needs user == alice AND user == bob - impossible).
-/// A block matches nobody iff some repeated type has no single common witness.
+/// A block matches nobody iff some repeated type has no single common witness, OR
+/// some NAME instance is unsatisfiable ON ITS OWN ([`name_list_matches_nobody`]:
+/// a pure-negation or self-negated `match_pattern_list` positively admits no name,
+/// regardless of how many instances the type has).
 ///
-/// Types appearing only once are assumed satisfiable (a single criterion normally
-/// admits someone). An unmodeled repeated type is also assumed satisfiable
-/// (conservative: [`criterion_overlap`] returns no-overlap for it anyway, so
-/// treating it as satisfiable never manufactures a finding). Reasoning per repeated
-/// type from the block's OWN criteria only makes this independent of the other block.
+/// Other types appearing only once are assumed satisfiable (a single CIDR/port
+/// criterion normally admits someone). An unmodeled repeated type is also assumed
+/// satisfiable (conservative: [`criterion_overlap`] returns no-overlap for it
+/// anyway, so treating it as satisfiable never manufactures a finding). Reasoning
+/// per type from the block's OWN criteria only makes this independent of the other
+/// block.
 fn block_matches_nobody(block: &MatchBlock) -> bool {
-    criteria_by_type(block)
-        .iter()
-        .filter(|(_, instances)| instances.len() >= 2)
-        .any(|(kind, instances)| !criterion_instances_have_common_witness(kind, instances))
+    criteria_by_type(block).iter().any(|(kind, instances)| {
+        if matches!(kind.as_str(), "user" | "group" | "host")
+            && instances
+                .iter()
+                .any(|values| name_list_matches_nobody(values))
+        {
+            return true;
+        }
+        instances.len() >= 2 && !criterion_instances_have_common_witness(kind, instances)
+    })
 }
 
 /// Whether ONE value satisfies EVERY instance of a repeated criterion type (i.e.
