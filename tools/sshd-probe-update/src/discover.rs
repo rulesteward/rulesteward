@@ -27,6 +27,9 @@
 //! `discovery_enabled` in `main.rs` and the comment at `derive.rs` around the
 //! `diff_target` advisory-building loop.
 
+use crate::derive::classify_transcript;
+use crate::transcript::Transcript;
+
 /// Parse the roff/mdoc SOURCE of `sshd_config(5)` (already gunzipped/decoded
 /// to a `&str`, e.g. via `gunzip -c sshd_config.5.gz`) and return every
 /// keyword name from a `.It Cm <Keyword>` line in the TOP-LEVEL
@@ -101,6 +104,20 @@ pub fn extract_manpage_keywords(roff: &str) -> Vec<String> {
     out
 }
 
+/// The pure tail of the LIVE man-page fetch (`main.rs::discover_man_keywords`
+/// is fetch + delegate-here): extract the top-level keyword names from the
+/// fetched roff/mdoc source, treating an empty extraction as a
+/// discovery-unavailable reason. The `Err` string is the exact reason the
+/// caller renders via `discovery_unavailable_advisory` - never a hard tool
+/// error.
+pub fn keywords_from_roff(roff: &str) -> Result<Vec<String>, String> {
+    let extracted = extract_manpage_keywords(roff);
+    if extracted.is_empty() {
+        return Err("no top-level `.It Cm` entries found in the man page".to_string());
+    }
+    Ok(extracted)
+}
+
 /// Case-insensitively compare `man_keywords` (as returned by
 /// `extract_manpage_keywords`) against `known` (typically
 /// `rulesteward_sshd::lints::registry::known_keywords(target)`), returning
@@ -152,6 +169,40 @@ pub fn discovery_advisory(kw: &str, verdict: DaemonVerdict) -> String {
 /// 2 is reserved for genuine tool errors unrelated to this best-effort pass).
 pub fn discovery_unavailable_advisory(reason: &str) -> String {
     format!("advisory: man-page keyword discovery unavailable: {reason}")
+}
+
+/// Assemble the discovery half of a LIVE probe run - pure, no docker
+/// (`main.rs::live_report` is fetch/probe + delegate-here): partition
+/// `transcript` into the CORE records (every non-discovered candidate,
+/// returned for the normal E01/W04/E04 diff) and the discovered keywords'
+/// own records, then render one advisory per discovered keyword carrying the
+/// daemon's verdict on it (from the discovered records' own classification).
+///
+/// Returns `(core_records, advisory_lines)`. Holding the discovered records
+/// OUT of the diff is what keeps discovery advisory-only: a
+/// discovered-and-recognized keyword is never in the shipped tables, so
+/// leaving its record in would surface it as gate-failing E01 drift.
+pub fn assemble_discovery(
+    transcript: Transcript,
+    discovered: &[String],
+) -> (Transcript, Vec<String>) {
+    let (core, disc): (Transcript, Transcript) = transcript
+        .into_iter()
+        .partition(|r| !discovered.iter().any(|kw| kw == &r.kw));
+
+    let disc_sets = classify_transcript(&disc);
+    let advisories = discovered
+        .iter()
+        .map(|kw| {
+            let verdict = if disc_sets.known.contains(kw) {
+                DaemonVerdict::Recognized
+            } else {
+                DaemonVerdict::Rejected
+            };
+            discovery_advisory(kw, verdict)
+        })
+        .collect();
+    (core, advisories)
 }
 
 #[cfg(test)]

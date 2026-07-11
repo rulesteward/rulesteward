@@ -16,9 +16,8 @@ use std::process::ExitCode;
 
 use rulesteward_sshd::TargetVersion;
 use rulesteward_sshd::lints::registry::known_keywords;
-use sshd_probe_update::derive::{DriftReport, classify_transcript, diff_target};
-use sshd_probe_update::discover::{self, DaemonVerdict};
-use sshd_probe_update::{probe, transcript};
+use sshd_probe_update::derive::{DriftReport, diff_target};
+use sshd_probe_update::{discover, probe, transcript};
 
 /// A guaranteed-unrecognized keyword seeded into the candidate list so every run
 /// exercises the "unknown" classification path end to end.
@@ -161,7 +160,9 @@ fn report_for(p: &Product, transcript_path: Option<&str>) -> Result<DriftReport,
 /// probes them like any other candidate, but their transcript records are
 /// held OUT of `diff_target`'s E01/W04/E04 comparison (they are never in the
 /// shipped tables by construction) and instead reported as one advisory line
-/// each - discovery never affects `is_in_sync()`/exit codes.
+/// each - discovery never affects `is_in_sync()`/exit codes. Only the
+/// fetch/probe steps here touch docker; the discovery split + advisory
+/// assembly is the pure, offline-testable `discover::assemble_discovery`.
 fn live_report(p: &Product) -> Result<DriftReport, String> {
     let cands = candidates(p.target);
 
@@ -180,24 +181,9 @@ fn live_report(p: &Product) -> Result<DriftReport, String> {
     probe_cands.extend(discovered.iter().map(String::as_str));
     let t = probe::probe_live(p.image, &probe_cands)?;
 
-    // Split the discovered keywords' own transcript records out before diffing,
-    // so a discovered-and-recognized keyword never surfaces as E01 drift.
-    let (core, disc): (Vec<_>, Vec<_>) = t
-        .into_iter()
-        .partition(|r| !discovered.iter().any(|kw| kw == &r.kw));
+    let (core, mut advisories) = discover::assemble_discovery(t, &discovered);
     let mut report = diff_target(&core, p.target);
-
-    let disc_sets = classify_transcript(&disc);
-    for kw in &discovered {
-        let verdict = if disc_sets.known.contains(kw) {
-            DaemonVerdict::Recognized
-        } else {
-            DaemonVerdict::Rejected
-        };
-        report
-            .advisories
-            .push(discover::discovery_advisory(kw, verdict));
-    }
+    report.advisories.append(&mut advisories);
     if let Some(reason) = unavailable_reason {
         report
             .advisories
@@ -206,19 +192,15 @@ fn live_report(p: &Product) -> Result<DriftReport, String> {
     Ok(report)
 }
 
-/// Fetch and parse the LIVE `sshd_config(5)` man page from `image`, returning
-/// the top-level keyword names it lists. `Err` names why discovery could not
-/// run this time (man page absent/unreadable, or zero top-level `.It Cm`
-/// entries found) - a normal, expected, non-gate-failing outcome, never a
-/// hard tool error.
+/// Fetch the LIVE `sshd_config(5)` man page source from `image` (docker) and
+/// delegate to the pure `discover::keywords_from_roff` for extraction. `Err`
+/// names why discovery could not run this time (man page absent/unreadable,
+/// or zero top-level `.It Cm` entries found) - a normal, expected,
+/// non-gate-failing outcome, never a hard tool error.
 fn discover_man_keywords(image: &str) -> Result<Vec<String>, String> {
     let roff = probe::fetch_manpage_source(image)?
         .ok_or_else(|| "man page absent or unreadable in the probe image".to_string())?;
-    let extracted = discover::extract_manpage_keywords(&roff);
-    if extracted.is_empty() {
-        return Err("no top-level `.It Cm` entries found in the man page".to_string());
-    }
-    Ok(extracted)
+    discover::keywords_from_roff(&roff)
 }
 
 /// The candidate keyword universe for `target`: every shipped registry keyword
