@@ -3447,4 +3447,90 @@ mod w07_tests {
             "disjoint repeated LocalPort criteria AND to nobody; the multi-type block cannot shadow"
         );
     }
+
+    // ---- SINGLE-INSTANCE nobody-criterion FP locks (#452 round 4, adversary round 2) ----
+    // `block_matches_nobody` only inspects REPEATED criterion types
+    // (`instances.len() >= 2`), so a block whose SINGLE-instance criterion admits no
+    // witness slips the round-3 nobody guard entirely and is still FP-flagged.
+    // OpenSSH `match_pattern_list` requires some POSITIVE pattern to match AND no
+    // negated pattern to match, which yields two single-instance nobody shapes:
+    // a PURE-NEGATION list (`!alice` positively matches NOBODY - the OpenSSH
+    // footgun: it does NOT mean "everyone except alice") and a SELF-NEGATED list
+    // (`!alice,alice`: alice is vetoed by the negation, everyone else fails the
+    // positive). Adversary-grounded, sshd -T -C 9.9p1: both user=alice and user=bob
+    // probes -> yes (the nobody block's `no` never applies); satisfiability CONTROL:
+    // `User !alice,*` IS satisfiable (bob -> no), so flagging THAT one is correct
+    // and stays locked below. Both fixtures' current-impl [line 4] FP was observed
+    // via a scratch `w07_diags` dump before pinning.
+    //
+    // FIX CAUTION (for the implementer): the single-instance nobody predicate must
+    // treat an UN-NEGATED positive glob (`a*`, `*`) as SATISFIABLE - only
+    // pure-negation and fully-self-negated lists are nobody. The control assertion
+    // in the second test enforces that boundary mechanically.
+
+    #[test]
+    fn single_instance_self_negated_user_list_matches_nobody_is_clean() {
+        // RED (round 4): `User !alice,alice` is a SINGLE-instance list that matches
+        // NOBODY - alice matches the positive `alice` but is vetoed by `!alice`
+        // (match_pattern_list's negation short-circuit), and every other name fails
+        // the sole positive pattern. The block's `no` therefore never applies and
+        // the bare-Address predecessor's differing `yes` has nothing to drop ->
+        // truth EMPTY. Adversary-grounded (sshd -T -C 9.9p1: user=alice and
+        // user=bob probes both -> yes; the block never applies). NOTE this is a NEW
+        // regression vs pre-#452 main, not just an uncovered case: main's
+        // `match_blocks_overlap` identical-type-set gate rejected the bare-Address
+        // predecessor ({address} vs {user,address}) before any value comparison, so
+        // main was CLEAN here; the #494 structural subset-or-equal selection now
+        // admits the predecessor, and the single-instance gap in
+        // `block_matches_nobody` lets the value comparison FP-flag line 4.
+        assert!(
+            w07_diags(
+                "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User !alice,alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a self-negated single-instance User list matches nobody; the block is never a shadowee"
+        );
+    }
+
+    #[test]
+    fn single_instance_pure_negation_user_list_matches_nobody_is_clean() {
+        // CONTROL (green, must STAY green after the fix): `User !alice,*` IS
+        // satisfiable - the positive `*` admits every user the negation does not
+        // veto (adversary probe: bob -> no), so the later block genuinely loses its
+        // `no` to the earlier `Match all yes` for every user it matches, and the
+        // line-4 flag is CORRECT. This pins the fix-caution boundary: an un-negated
+        // positive glob keeps the list satisfiable; the nobody predicate must not
+        // over-reach to any list that merely CONTAINS a negation.
+        let control = w07_diags(
+            "Match all\n    X11Forwarding yes\n\
+             Match User !alice,* Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            control.len(),
+            1,
+            "the satisfiable !alice,* control must keep its correct flag"
+        );
+        assert_eq!(control[0].line, 4);
+        // RED (round 4): `User !alice` is a PURE-NEGATION single-instance list.
+        // OpenSSH match_pattern_list returns a match only when some POSITIVE
+        // pattern matches, so a negation-only list positively matches NOBODY - it
+        // does NOT mean "everyone except alice". The block never applies, so the
+        // earlier `Match all yes` drops nothing -> truth EMPTY. Adversary-grounded
+        // (sshd -T -C 9.9p1: user=alice and user=bob probes both -> yes). Unlike
+        // the self-negated fixture above, this FP is PRE-EXISTING IN-FAMILY on
+        // main: a `Match all` predecessor short-circuits match_blocks_overlap's
+        // overlap check, and block_matches_nobody's repeated-types-only scan never
+        // inspected the single-instance pure-negation list, so main FP-flagged this
+        // shape too - the round-4 fix retires both the new and the inherited FP at
+        // one root.
+        assert!(
+            w07_diags(
+                "Match all\n    X11Forwarding yes\n\
+                 Match User !alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a pure-negation single-instance User list matches nobody; the block is never a shadowee"
+        );
+    }
 }
