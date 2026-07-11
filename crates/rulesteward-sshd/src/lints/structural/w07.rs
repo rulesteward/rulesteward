@@ -773,6 +773,23 @@ fn multitype_shadow(
     value: &[String],
     earlier_setters: &[&MatchBlock],
 ) -> bool {
+    // A block that matches NOBODY ([`block_matches_nobody`]: a criterion type
+    // repeated on its header with no common witness - `sshd_config(5)` AND-s all
+    // criteria on the line) admits no connection, so nothing it sets is ever applied
+    // and nothing can be shadowed. This restores the short-circuit the old
+    // `match_blocks_overlap`-gated multi-type path had on its first line and the
+    // #452 structural-selection rewrite dropped; it must sit ABOVE the axis walk,
+    // not only in the fallback, so the walk never carves sub-populations out of a
+    // population that is empty (verified `sshd -T -C` OpenSSH 9.9p1: a `Match User
+    // alice User bob ...` block's value applies to no probe). The EARLIER side needs
+    // no twin guard: [`multitype_earlier_setters`] folds an earlier block's own
+    // repeated instances into [`type_co_satisfiable`]'s combined witness search, and
+    // no witness can satisfy a combined list whose earlier-only subset is already
+    // unsatisfiable, so a nobody earlier block is structurally never selected (and
+    // `Match all` is never nobody).
+    if block_matches_nobody(later) {
+        return false;
+    }
     if !later_has_repeated_negated_region(later) {
         let later_types = criteria_by_type(later);
         if let Some(axis) = multitype_reduction_axis(later, &later_types, earlier_setters) {
