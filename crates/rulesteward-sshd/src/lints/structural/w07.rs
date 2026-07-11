@@ -3701,4 +3701,34 @@ mod w07_tests {
             "a !* veto admits no name at all; the dead block is never a shadowee"
         );
     }
+
+    #[test]
+    fn single_instance_nobody_walk_route_stays_clean() {
+        // LOCK (round 6, green today): the WALK-route single-instance analogue of
+        // `multi_type_nobody_block_repeated_user_is_not_a_shadowee_walk_clean`. The
+        // bare-Address predecessor (10.1.0.0/16, universe on `user`, NON-covering on
+        // `address` vs L's /8) gives the reduction a UNIQUE address axis, so this is
+        // an axis-WALK case that bypasses the round-5 witness gate on the DECLINE
+        // route entirely - the only thing keeping it clean is the nobody guard
+        // itself, whose name-list branch (`name_list_matches_nobody`) recognizes the
+        // self-negated `!alice,alice` list (round-4 oracle transcripts: sshd -T -C
+        // 9.9p1, user=alice and user=bob probes both take the OTHER block's value;
+        // the self-negated block never applies - same nobody list as the round-4
+        // fixtures, different route). KILLS the mutation survivor
+        // `name_list_matches_nobody -> bool with false` (w07.rs:909, surfaced after
+        // the round-5 witness gate took over the round-4 fixtures' protection):
+        // the implementer PROVED non-equivalence empirically by temp-applying the
+        // mutant on this exact fixture - the real impl emits nothing, the mutant
+        // misses the nobody guard, walks the unique address axis, hands the
+        // differing `no` setter the 10.1.0.0/16 sub-population, and FP-flags
+        // line 4.
+        assert!(
+            w07_diags(
+                "Match Address 10.1.0.0/16\n    X11Forwarding no\n\
+                 Match User !alice,alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "the walk route must not carve sub-populations out of a self-negated nobody block"
+        );
+    }
 }
