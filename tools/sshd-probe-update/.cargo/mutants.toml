@@ -3,3 +3,11 @@
 # tools/sshd-stig-update/src/source.rs). Excluded from the mutation gate so a
 # "survivor" there does not mask a real gap in the tested classify/derive core.
 exclude_globs = ["src/probe.rs"]
+
+# discover_man_keywords (main.rs) is the same class of live docker seam as
+# probe.rs, one function instead of a file: fetch_manpage_source (docker) +
+# ok_or_else + delegate to discover::keywords_from_roff. Its pure tail
+# (keywords_from_roff, assemble_discovery) is fully mutation-covered in
+# discover.rs (#471); the shim's only surviving mutants are return
+# replacements that no offline test can reach without spawning docker.
+exclude_re = ["discover_man_keywords"]
