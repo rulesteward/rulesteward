@@ -2254,4 +2254,332 @@ mod w07_tests {
             "disjoint multi-type blocks never co-satisfy, so nothing is shadowed"
         );
     }
+
+    // ---- Multi-type one-axis reduction (#452, #494) ----
+    // Grounding: /home/runner/rulesteward-docs/research-notes/452-multitype-grounding.md
+    // (session 7d, 2026-07-10). Oracle: live `sshd -T -C` in rockylinux containers,
+    // OpenSSH 9.9p1 (rocky9) cross-checked against OpenSSH 8.0p1 (rocky8) - all 17
+    // probed outcomes IDENTICAL across both versions.
+    //
+    // #494: today's multi-type reasoning goes through `block_level_shadow`, whose
+    // candidate earlier setters are filtered by `match_blocks_overlap`, which requires
+    // an EXACT same-criterion-type-set match. A bare `Match User alice` predecessor
+    // (type-set {user}) is silently DROPPED as a candidate winner for a later
+    // `Match User alice Address ...` block (type-set {user,address}), even though the
+    // predecessor is unconditionally satisfied by every connection the later block
+    // matches. This produces both a false positive (a later block that agrees with the
+    // TRUE (predecessor) winner still gets flagged against the wrong, merely
+    // type-set-identical, comparator) and a false negative (a later block that
+    // genuinely differs from the dropped predecessor is never flagged at all).
+    //
+    // The fix (design LOCKED, not implemented by these tests): select earlier setters
+    // STRUCTURALLY - `Match all` OR type_set(earlier) subset-or-equal type_set(later) -
+    // rather than via `match_blocks_overlap`'s exact-set gate. When exactly one axis X
+    // exists on which every selected setter differs from the later block (every other
+    // axis is a setter no-op: either unconstrained by the setter, i.e. universe, or an
+    // EXACT match of the later block's own restriction on that axis), the analysis
+    // reduces to the shipped single-type region walk on X. Otherwise it DECLINES the
+    // per-axis reduction and falls back to `block_level_shadow`, still using the
+    // structurally-selected (not `match_blocks_overlap`-selected) earlier-setter set.
+    //
+    // CE1/CE2/CE3/CE4 below are RED against TODAY's code (verified via a scratch
+    // `w07_diags` dump against this exact main-branch build before authoring these
+    // tests): CE4 and CE3 are currently silent (false negatives); CE1 and CE2 currently
+    // flag the WRONG (supernet) block while staying silent on the true shadow (both a
+    // false positive and a false negative on the same fixture). CE6, the two-axis
+    // DECLINE lock, and the type-outside-T (G3) lock are LOCKS: the scratch dump showed
+    // today's block-level fallback already produces the CE-pinned correct answer on
+    // those fixtures (via the pre-existing `Match all` short-circuit in
+    // `match_blocks_overlap`, or via today's exact-type-set match happening to coincide
+    // with the new structural selection, or via both today's and the new selection
+    // excluding a type-outside-T predecessor identically) - these guard the fix against
+    // REGRESSING an already-correct case, not against a currently-broken one.
+
+    #[test]
+    fn ce4_452_target_partition_flags_only_the_shadowed_subnet() {
+        // #452's issue example. `User alice Address 10.1.0.0/16` yes / `User alice
+        // Address 10.2.0.0/16` no / `User alice Address 10.0.0.0/8` yes: all three
+        // blocks share the IDENTICAL {user,address} type-set (equal, not a proper
+        // subset), so the reduction axis is `address` (every setter's `user`
+        // restriction is the same literal `alice` as the later block's own, an exact
+        // match = a no-op axis). Walking the address axis for the /8 block (line 6):
+        // the /16-yes predecessor (line 1-2) consumes 10.1.0.0/16 of the /8 with an
+        // AGREEING value; the /16-no predecessor (line 3-4) then wins the remaining
+        // 10.2.0.0/16 sub-population with a DIFFERING value -> line 6 is a real
+        // sub-population shadow. GROUND TRUTH (452-multitype-grounding.md CE4,
+        // OpenSSH 9.9p1/8.0p1): addr=10.2.0.5 -> no (middle block wins); addr=10.1.0.5
+        // -> yes; addr=10.3.0.5 -> yes. RED: TODAY's `match_blocks_overlap`-gated
+        // block-level fallback finds no differing earlier winner here (verified: main
+        // emits nothing on this fixture) since block-level compares only the FIRST
+        // overlapping setter's value block-wide, not per sub-population, and this
+        // shape needs a THIRD (partition) block to expose the gap the same way #409's
+        // partition tests did for the single-type case.
+        let d = w07_diags(
+            "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "only the /8 block's line is a genuine sub-population shadow"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 6,
+            "the 10.2.0.0/16 sub-population of the /8 block really resolves to `no`"
+        );
+    }
+
+    #[test]
+    fn ce1_agreeing_subset_user_predecessor_flags_middle_not_supernet() {
+        // #494's FP-guard shape. `User alice` yes (subset predecessor, type-set
+        // {user} - a PROPER subset of the later blocks' {user,address}) / `User alice
+        // Address 10.2.0.0/16` no / `User alice Address 10.0.0.0/8` yes. The bare-User
+        // block is unconditionally satisfied by every alice connection (universe on
+        // the address axis), so it is the FIRST winner for the entire /8 block's
+        // population, agreeing with its `yes` - the /16 block's `no` is whole-population
+        // DEAD, and the /8 block's `yes` is NOT a differing shadow (its value equals
+        // the true winner). GROUND TRUTH (CE1, OpenSSH 9.9p1/8.0p1): user=alice,
+        // addr=10.2.0.5 -> yes (bare-User block wins, NOT the /16 `no`); addr=10.5.0.5
+        // and addr=10.1.0.5 -> yes; user=bob,addr=10.2.0.5 -> no (default, no block
+        // applies). RED both ways: TODAY (confirmed via a scratch dump against this
+        // exact fixture on main) flags line 6 - a LATENT FALSE POSITIVE, since
+        // `match_blocks_overlap` drops the bare-User predecessor (type-set size 1 != 2)
+        // and instead compares the /8 block against the /16 block, whose value happens
+        // to differ - and stays silent on line 4, a FALSE NEGATIVE, since the /16
+        // block's true (bare-User) shadower is invisible to the type-set-exact gate.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding yes\n\
+             Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "only the /16 block is a real shadow of the bare-User predecessor"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (/16 `no`) is shadowed; line 6 (/8 `yes`) is NOT (its value IS the true winner's)"
+        );
+    }
+
+    #[test]
+    fn ce2_subset_address_predecessor_constrains_the_differing_axis() {
+        // The address-axis mirror of CE1: the subset predecessor restricts `address`
+        // (not `user`), so the reduction axis is `user` this time. `Address
+        // 10.2.0.0/16` yes (type-set {address}, subset) / `User alice Address
+        // 10.2.0.0/16` no / `User alice Address 10.0.0.0/8` yes. The bare-Address
+        // block is universe on `user` and its own address restriction EXACTLY equals
+        // the /16 block's, so it wins the /16 block's entire population first with
+        // `yes`; the /16 block's `no` (line 4) is dead. For the /8 block (line 6), the
+        // bare-Address predecessor's 10.2.0.0/16 covers only PART of the /8's
+        // population with the agreeing `yes`, and the /16 `no` block's own 10.2.0.0/16
+        // region is already fully consumed by the earlier (source-order-first)
+        // bare-Address block, so nothing differing remains uncovered - line 6 stays
+        // clean. GROUND TRUTH (CE2, OpenSSH 9.9p1/8.0p1): user=alice,addr=10.2.0.5 ->
+        // yes (bare-Address wins, block2's `no` is DEAD); addr=10.5.0.5 -> yes;
+        // user=bob,addr=10.2.0.5 -> yes (bare-Address has no user restriction). RED:
+        // TODAY (confirmed via scratch dump) flags line 6 instead (the same
+        // supernet-vs-subnet FP as CE1) and stays silent on line 4.
+        let d = w07_diags(
+            "Match Address 10.2.0.0/16\n    X11Forwarding yes\n\
+             Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "only the middle block is a real shadow of the bare-Address predecessor"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (`no`) is shadowed by the bare-Address block; line 6 (`yes`) is clean"
+        );
+    }
+
+    #[test]
+    fn ce3_differing_subset_user_predecessor_whole_population_shadow() {
+        // The plain (non-partitioned) whole-population #494 miss: `Match User alice`
+        // no / `Match User alice Address 10.0.0.0/8` yes. The bare-User predecessor is
+        // universe on `address`, so it unconditionally wins EVERY alice connection the
+        // later /8 block could also match, and its value (`no`) DIFFERS from the later
+        // block's (`yes`) - a genuine, unqualified whole-population shadow: the later
+        // `yes` never actually applies for any connection. GROUND TRUTH (CE3, OpenSSH
+        // 9.9p1/8.0p1): user=alice,addr=10.2.0.5 -> no; user=alice,addr=192.168.1.1 ->
+        // no (the /8 block's `yes` NEVER wins). RED: TODAY (confirmed via scratch
+        // dump) is completely silent on this fixture - `match_blocks_overlap` excludes
+        // the bare-User predecessor purely on type-set-size mismatch (1 vs 2), so no
+        // candidate winner is ever considered for the later block.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the /8 block's `yes` is fully shadowed by the differing bare-User predecessor"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn ce6_match_all_agreeing_interleave_stays_correct_regression_lock() {
+        // LOCK, not RED: `Match all` yes / `User alice Address 10.2.0.0/16` no /
+        // `User alice Address 10.0.0.0/8` yes. `Match all` is ALWAYS satisfied, so it
+        // is the unconditional first winner of BOTH later blocks' entire populations:
+        // the /16 block's `no` (line 4) is a real dead shadow, and the /8 block's
+        // `yes` (line 6) agrees with the `Match all` winner everywhere, so it is NOT a
+        // differing shadow. GROUND TRUTH (CE6, OpenSSH 9.9p1/8.0p1): every probe ->
+        // yes (`Match all` wins unconditionally). A scratch `w07_diags` dump against
+        // this EXACT fixture on unmodified main (session 7d-p1, before any #494 fix)
+        // already produces `{line 4}` and nothing else: `match_blocks_overlap`
+        // special-cases `Match all` as an unconditional overlap regardless of
+        // criterion-type-set size, so `Match all` already qualifies as a candidate
+        // winner for the /8 block today (via the pre-existing `is_unconditional_match_all`
+        // short-circuit, not the new structural subset selection), and it is the FIRST
+        // (and therefore decisive) candidate in source order for both later blocks.
+        // This test is a non-regression LOCK for the #494 fix: it must not disturb an
+        // interleave that a `Match all` predecessor already gets right.
+        let d = w07_diags(
+            "Match all\n    X11Forwarding yes\n\
+             Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "only the /16 block is shadowed by `Match all`");
+        assert_eq!(
+            d[0].line, 4,
+            "line 4 (/16 `no`) is shadowed; line 6 (/8 `yes`) agrees with the `Match all` winner"
+        );
+    }
+
+    #[test]
+    fn accepted_fn_two_differing_axes_declines_to_todays_block_level_result() {
+        // LOCK: the accepted-FN DECLINE case. `User alice Address 10.1.0.0/16` yes /
+        // `User alice,bob Address 10.0.0.0/8` no. The earlier block's type-set
+        // {user,address} equals the later block's, so it is structurally selected
+        // either way (old `match_blocks_overlap` or the new subset-or-equal rule).
+        // But NEITHER axis is a setter no-op: on `user`, the earlier block's {alice}
+        // does NOT cover the later block's {alice,bob} (bob is missing); on `address`,
+        // the earlier block's 10.1.0.0/16 does NOT cover the later block's wider
+        // 10.0.0.0/8. No single axis exists on which the earlier setter is neutral
+        // everywhere else, so the design DECLINES the per-axis reduction and falls
+        // back to `block_level_shadow` - which still uses the structurally-selected
+        // earlier-setter set (here, the same single candidate either selection method
+        // would pick), so the coarse whole-block comparison (`yes` != `no`) still
+        // fires. This is an ACCEPTED simplification, not a precision loss vs today:
+        // for user=alice,addr=10.1.0.5 (the only connection where BOTH blocks'
+        // criteria are simultaneously satisfiable), the earlier block genuinely wins
+        // and the later `no` really is dropped, so flagging line 4 is correct; the
+        // decline only means finer PARTIAL-shadow reasoning across the mismatched
+        // bob/10.0.0.0/8 remainder is not attempted (a documented v0.3-style accepted
+        // FN, not a false positive). A scratch `w07_diags` dump against this exact
+        // fixture on unmodified main already produces `{line 4}` (both blocks share an
+        // identical 2-type set, so today's `match_blocks_overlap` already selects the
+        // earlier block as a candidate and `block_level_shadow` finds the differing
+        // value) - this locks that the #494 fix's DECLINE fallback must reproduce that
+        // same answer, not silently drop it in the name of two-axis conservatism.
+        let d = w07_diags(
+            "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match User alice,bob Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the DECLINE fallback still reproduces today's whole-block comparison"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn g4_repeated_negated_address_does_not_block_a_whole_population_shadow() {
+        // RED: G4's guard ("repeated CIDR/port criteria carrying `!` in L decline")
+        // must decline only the PER-AXIS reduction attempt, not the coarse
+        // `block_level_shadow` fallback. `Match User alice` yes (subset predecessor,
+        // universe on `address`) / `Match User alice Address 10.0.0.0/8 Address
+        // 10.0.0.0/8,!10.5.0.0/16` no - the later block repeats the `Address` type
+        // with a negated occurrence (AND-folds to 10.0.0.0/8 minus 10.5.0.0/16), which
+        // trips G4 and declines the fine-grained per-axis carve. But the bare-User
+        // predecessor is universe on `address` regardless of what that AND-folded
+        // region actually is, so it unconditionally wins the ENTIRE later block's
+        // population (any alice connection, whatever its address) with a DIFFERING
+        // value - a whole-population shadow the safe block-level DECLINE path must
+        // still catch (structurally selecting the bare-User block as a subset
+        // predecessor, exactly as CE3 does, independent of L's own repeated-negation
+        // detail). Semantically identical to CE3 with an irrelevant repeated-negated
+        // Address decoration on the later block. RED: TODAY (confirmed via scratch
+        // dump against this exact fixture on main) is silent - `match_blocks_overlap`
+        // excludes the bare-User predecessor on type-set-size mismatch (as in CE3) AND
+        // its separate repeated-negation cross-occurrence guard would independently
+        // suppress overlap even if the sizes matched.
+        let d = w07_diags(
+            "Match User alice\n    X11Forwarding yes\n\
+             Match User alice Address 10.0.0.0/8 Address 10.0.0.0/8,!10.5.0.0/16\n    \
+             X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "declining the per-axis carve must not suppress a real whole-population shadow"
+        );
+        assert_eq!(d[0].line, 4);
+    }
+
+    #[test]
+    fn g4_repeated_negated_address_agreeing_value_stays_clean() {
+        // LOCK, pairs with the RED case directly above: same repeated-negated later
+        // block shape, but the subset predecessor's value AGREES (`no` both times).
+        // Whichever earlier-setter set G4's DECLINE fallback uses, an agreeing value
+        // can never produce a differing-value shadow, so this must stay clean both
+        // before and after the #494 fix - it locks that G4's guard does not
+        // accidentally FABRICATE a flag out of the newly-structurally-included subset
+        // predecessor when there is nothing to shadow. TODAY (confirmed via scratch
+        // dump) is already silent on this fixture (for the unrelated reason that the
+        // predecessor is excluded entirely), so this also guards against a regression
+        // where the #494 fix's broader earlier-setter inclusion starts comparing
+        // against the wrong (block-level, non-region) value and false-fires on
+        // agreement.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding no\n\
+                 Match User alice Address 10.0.0.0/8 Address 10.0.0.0/8,!10.5.0.0/16\n    \
+                 X11Forwarding no\n",
+            )
+            .is_empty(),
+            "an agreeing subset predecessor never shadows, regardless of L's negated repeat"
+        );
+    }
+
+    #[test]
+    fn g3_earlier_type_outside_t_is_ignored_entirely() {
+        // LOCK: design guard G3, "earlier setters with a type OUTSIDE T are ignored".
+        // `Match User alice Host web.corp` yes (type-set {user,host}) / `Match User
+        // alice Address 10.0.0.0/8` no (type-set {user,address}). `host` is present in
+        // the earlier block but ABSENT from the later block's type-set T={user,address},
+        // so {user,host} is NOT a subset-or-equal of T (host is outside T) - the
+        // earlier block is excluded from structural selection entirely, exactly the
+        // same conservative v0.3 CROSS-type posture `cross_type_user_and_group_do_not_flag_w07`
+        // already locks for a fully-disjoint type pair (#400): a static linter cannot
+        // resolve whether a connection's client hostname happens to equal `web.corp`
+        // without live DNS/NSS-style resolution, so the pair is left conservatively
+        // clean rather than guessed at. TODAY (confirmed via scratch dump) is already
+        // silent here too - `match_blocks_overlap` also requires an identical type-set,
+        // so a {user,host} vs {user,address} pair fails its size/key check the same
+        // way. This locks that #494's structural subset-or-equal rule does not widen
+        // to "any SHARED type overlaps", which would incorrectly let the outside-T
+        // `host` criterion leak into the reduction.
+        assert!(
+            w07_diags(
+                "Match User alice Host web.corp\n    X11Forwarding yes\n\
+                 Match User alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "a type OUTSIDE the later block's type-set is ignored, not treated as overlap"
+        );
+    }
 }
