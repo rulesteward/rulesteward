@@ -2974,4 +2974,356 @@ mod w07_tests {
             "disjoint on one axis (user) means NO co-satisfaction, however nested the other axis is"
         );
     }
+
+    // ---- Mutation-survivor killers for the multi-type reduction (#452 ATL round) ----
+    // The post-GREEN mutation gate on the multi-type reduction code left survivors
+    // whose common cause was one-sided axis coverage: every CE1-CE7 fixture walks the
+    // ADDRESS axis with USER as the neutral axis. The fixtures below rotate the walk
+    // axis (CE8: user walk) and the neutral axis (CE10: address cover; CE9prime:
+    // localport), and pin the guard seams (exact_name_set, G4) from both sides.
+    // Oracle-pinned fixtures cite their CE label in
+    // /home/runner/rulesteward-docs/research-notes/452-multitype-grounding.md
+    // ("Mutation-survivor fixture shapes"); the rest carry an explicit GROUNDING
+    // CLASS inference note, and EVERY fixture's current-impl output was observed via
+    // a scratch `w07_diags` dump before being pinned here.
+
+    #[test]
+    fn ce8_user_axis_walk_flags_partition_and_all_agreeing_is_clean() {
+        // CE8 (452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): the USER-axis
+        // walk. `User alice Address 10/8` yes / `User bob Address 10/8` no /
+        // L=`User alice,bob,carol Address 10/8` yes. The neutral axis is ADDRESS
+        // (every setter's /8 exactly equals L's /8), so the reduction walks USER:
+        // alice is consumed by the agreeing block 1; bob is won by the DIFFERING
+        // block 2 -> L (line 6) is a real sub-population shadow. Oracle: bob -> no,
+        // alice -> yes, carol -> yes.
+        // KILLS (multitype_names_axis_shadow): the `-> false` body replacement and
+        // the `"user"|"group"|"host"` walk-arm deletion in multitype_axis_shadow
+        // (either one degrades to the block-level fallback / never-flag, whose first
+        // structurally-selected setter block 1 AGREES with L -> no flag, RED vs the
+        // expected flag).
+        let d = w07_diags(
+            "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match User bob Address 10.0.0.0/8\n    X11Forwarding no\n\
+             Match User alice,bob,carol Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "the bob sub-population shadow flags L");
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(d[0].line, 6, "line 6 is shadowed for bob by block 2's `no`");
+        // ALL-AGREEING variant: identical partition structure, every value `yes`.
+        // Nothing behaviorally differs anywhere, so the walk must stay silent.
+        // GROUNDING CLASS: inference from CE8 (value-agreement corollary; mirrors
+        // `partition_all_same_value_is_clean`) + observed-vs-main.
+        // KILLS (multitype_names_axis_shadow): `-> true` (flags the clean fixture),
+        // `&&` -> `||` at the member/winner conjunction (a later-member candidate
+        // alone would satisfy the disjunction), and `!=` -> `==` at the winner-value
+        // comparison (an AGREEING winner would flag).
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User bob Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User alice,bob,carol Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "an all-agreeing user-axis partition drops nothing"
+        );
+    }
+
+    #[test]
+    fn ce10_address_cover_neutral_axis_flags_user_walk() {
+        // CE10 (452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): the neutral
+        // axis proven by a PROPER CIDR COVER, not exact equality. `User alice
+        // Address 10.0.0.0/8` yes / `User bob Address 10.0.0.0/8` no / L=`User
+        // alice,bob Address 10.2.0.0/16` yes. Each setter's /8 strictly COVERS L's
+        // /16 (cidr_set_difference(L, setter) empty), so ADDRESS is neutral and USER
+        // is the walk axis; bob is won by the differing block 2 -> FLAG L (line 6).
+        // Oracle: bob@10.2.0.5 -> no, alice@10.2.0.5 -> yes.
+        // KILLS (axis_is_noop): the `"address"|"localaddress"` arm deletion - the
+        // fallthrough `_ => false` would make ADDRESS never-neutral, so no unique
+        // axis exists, the reduction declines, and the fallback's first setter
+        // (block 1, agreeing `yes`) stays silent, RED vs the expected flag. The
+        // proper-cover shape (unlike CE8's equal /8s) also pins the difference-
+        // emptiness direction: covering must be judged setter-covers-L, not
+        // set-equality.
+        let d = w07_diags(
+            "Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match User bob Address 10.0.0.0/8\n    X11Forwarding no\n\
+             Match User alice,bob Address 10.2.0.0/16\n    X11Forwarding yes\n",
+        );
+        assert_eq!(d.len(), 1, "the bob sub-population shadow flags L");
+        assert_eq!(
+            d[0].line, 6,
+            "the /8-covers-/16 neutral address axis reduces to the user walk"
+        );
+    }
+
+    #[test]
+    fn ce9prime_localport_neutral_axis_flags_address_walk() {
+        // CE9prime (452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): the
+        // LOCALPORT arm of axis_is_noop as the NEUTRAL axis. CE4's address partition
+        // at a constant `LocalPort 22`: `Address 10.1.0.0/16 LocalPort 22` yes /
+        // `Address 10.2.0.0/16 LocalPort 22` no / L=`Address 10.0.0.0/8 LocalPort
+        // 22` yes. Every setter's port singleton {22} equals L's, so LOCALPORT is
+        // neutral and the walk runs on ADDRESS: block 1 agrees and consumes
+        // 10.1.0.0/16, block 2 differs and wins 10.2.0.0/16 -> FLAG L (line 6).
+        // Oracle: 10.2.0.5@22 -> no, 10.1.0.5@22 -> yes, 10.3.0.5@22 -> yes,
+        // 10.2.0.5@2222 -> no (default; no block applies).
+        // KILLS (axis_is_noop): the `"localport"` arm deletion - `_ => false` makes
+        // LOCALPORT never-neutral, no unique axis remains, and the fallback's
+        // agreeing first setter goes silent, RED vs the expected flag.
+        let d = w07_diags(
+            "Match Address 10.1.0.0/16 LocalPort 22\n    X11Forwarding yes\n\
+             Match Address 10.2.0.0/16 LocalPort 22\n    X11Forwarding no\n\
+             Match Address 10.0.0.0/8 LocalPort 22\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the 10.2.0.0/16 sub-population shadow flags L at constant LocalPort"
+        );
+        assert_eq!(d[0].line, 6);
+    }
+
+    #[test]
+    fn ce11_user_proper_superset_neutral_axis_flags_address_walk() {
+        // CE11 (452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): the USER
+        // neutral axis proven by PROPER literal-set superset, not equality. `User
+        // alice,bob Address 10.1.0.0/16` yes / `User alice,bob Address 10.2.0.0/16`
+        // no / L=`User alice Address 10.0.0.0/8` yes. Each setter's {alice,bob}
+        // strictly contains L's {alice} (exact_name_set containment), so USER is
+        // neutral and the ADDRESS walk finds the CE4 partition -> FLAG L (line 6).
+        // Oracle: alice@10.2.0.5 -> no, @10.1.0.5 -> yes, @10.3.0.5 -> yes.
+        // KILLS (exact_name_set): the `-> None` return replacement (None makes the
+        // user axis unprovable -> not neutral -> no unique axis -> the agreeing
+        // fallback goes silent, RED vs the expected flag). The Some(garbage)
+        // replacements are killed by the PROPER-SUBSET decline fixture below (they
+        // make containment hold trivially, so they pass here).
+        let d = w07_diags(
+            "Match User alice,bob Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match User alice,bob Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the proper-superset user axis is neutral; the address walk flags L"
+        );
+        assert_eq!(d[0].line, 6);
+    }
+
+    #[test]
+    fn proper_subset_user_on_neutral_axis_is_not_a_cover_declines_clean() {
+        // The reverse of CE11: the setters' user set {alice} is a PROPER SUBSET of
+        // L's {alice,bob} - NOT a cover - so the user axis is NOT neutral, and the
+        // address axis is not either (10.1.0.0/16 does not cover L's /8): a two-axis
+        // shape that DECLINES to the block-level fallback, whose first structurally-
+        // selected setter (block 1) AGREES with L -> entirely clean. sshd truth
+        // (alice@10.2.0.5 -> block 2 `no` while L says yes) makes this a genuinely
+        // shadowed sub-population, i.e. a documented ACCEPTED FN of the locked
+        // one-axis design (the same class the two-axis DECLINE lock above pins).
+        // GROUNDING CLASS: inference from the locked design's neutrality rule
+        // (subset-or-equal cover required) + observed-vs-main; no transcript-pinned
+        // CE entry for this exact fixture.
+        // KILLS (exact_name_set): the `-> Some(garbage)` return replacements
+        // (Some(BTreeSet::new()) / Some(junk-literal)): both make BOTH sides of the
+        // containment check the same garbage set, so `l.is_subset(e)` holds
+        // trivially, the user axis is wrongly declared neutral, the address walk
+        // runs, and block 2's differing `no` FP-flags line 6 on a fixture the design
+        // REQUIRES to stay clean.
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+                 Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+                 Match User alice,bob Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a proper-subset user set does not cover L; two-axis -> decline -> agreeing fallback"
+        );
+    }
+
+    #[test]
+    fn negation_in_neutral_axis_user_list_is_not_provably_neutral_declines_clean() {
+        // The "unprovable is not neutral" rule for name lists: the setters carry a
+        // NEGATED entry (`alice,!bob`) on the would-be neutral USER axis. The
+        // negation is semantically redundant (the positive list is alice-only), but
+        // exact containment is only computed for pure literal sets - a negation (or
+        // glob) makes the axis unprovable, so the reduction declines and the
+        // agreeing first setter keeps the fixture clean. sshd truth (alice@10.2.0.5
+        // -> block 2 `no` vs L's yes) again makes this an ACCEPTED FN of the locked
+        // conservative design, exactly like the proper-subset fixture above.
+        // GROUNDING CLASS: inference from the locked design's no-glob/no-negation
+        // neutrality guard + observed-vs-main; no transcript-pinned CE entry.
+        // KILLS (exact_name_set): `||` -> `&&` in the reject condition
+        // (`starts_with('!') || contains(*/?)`): under `&&` a negation-only value
+        // like `!bob` is no longer rejected and is kept as a LITERAL, so
+        // {alice,!bob} "contains" L's {alice}, the user axis is wrongly declared
+        // neutral, the address walk runs, and block 2 FP-flags line 6.
+        assert!(
+            w07_diags(
+                "Match User alice,!bob Address 10.1.0.0/16\n    X11Forwarding yes\n\
+                 Match User alice,!bob Address 10.2.0.0/16\n    X11Forwarding no\n\
+                 Match User alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a negated entry on the neutral axis is not provably neutral -> decline -> clean"
+        );
+    }
+
+    #[test]
+    fn g4_decline_beats_walk_when_l_repeats_negated_address_bare_user_setters() {
+        // G4 from the walk's side: L repeats the Address type with a negated
+        // occurrence (`10.0.0.0/8` AND `10.0.0.0/8,!10.2.0.0/16`), which DECLINES
+        // the per-axis reduction entirely, while the earlier setters are bare
+        // single-type User blocks ({user} is a proper subset of L's {user,address},
+        // and they do not constrain the negated address axis at all - so they stay
+        // structurally SELECTED, unlike CE12's setters). The DECLINE fallback's
+        // first setter (`User alice` yes) agrees with L -> clean. sshd truth
+        // (bob@10.1.0.5 -> block 2 `no` while L says yes) makes this an ACCEPTED FN
+        // of G4's conservatism. GROUNDING CLASS: inference from CE12's
+        // addr_match_list negation grounding + the locked G4 guard +
+        // observed-vs-main; no transcript-pinned CE entry for this exact fixture.
+        // KILLS (later_has_repeated_negated_region): `-> false` (G4 disabled, the
+        // user-axis walk runs - the setters are universe on address, so USER is the
+        // unique axis - and block 2's differing `no` wins the bob witness,
+        // FP-flagging line 6 where the design requires the decline). CE12 itself
+        // CANNOT kill this mutant: its setters constrain the negated address axis
+        // and are already excluded by type_co_satisfiable's negation guard, so both
+        // the real impl and the mutant see zero setters there.
+        assert!(
+            w07_diags(
+                "Match User alice\n    X11Forwarding yes\n\
+                 Match User bob\n    X11Forwarding no\n\
+                 Match User alice,bob,carol Address 10.0.0.0/8 Address 10.0.0.0/8,!10.2.0.0/16\n    \
+                 X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a repeated negated Address in L declines the walk; the agreeing fallback stays clean"
+        );
+    }
+
+    #[test]
+    fn single_negated_address_occurrence_does_not_trip_g4_walk_still_flags() {
+        // G4's boundary from the other side: L's Address type appears ONCE, carrying
+        // a negation (`10.0.0.0/8,!10.5.0.0/16`). G4 requires a REPEATED (>= 2
+        // occurrences) negated CIDR/port type - a single negated occurrence has an
+        // exact region (cidr_list_set already carves the negation), so the walk
+        // proceeds: user is neutral (equal {alice}), the address walk carves block
+        // 1's agreeing 10.1.0.0/16 out of (10/8 minus 10.5/16), and block 2's
+        // differing `no` wins 10.2.0.0/16 -> FLAG L (line 6). This mirrors the
+        // single-type guard's boundary pinned by `single_region_type_pinned_directly`
+        // (a SINGLE negated instance stays a region type; only a repeat trips it).
+        // GROUNDING CLASS: inference from CE4 + the #403 negation-aware carve
+        // semantics (both transcript-grounded classes) + observed-vs-main; no
+        // transcript-pinned CE entry for this exact fixture.
+        // KILLS (later_has_repeated_negated_region): `>=` -> `<` at the occurrence
+        // count and `&&` -> `||` joining it (both make a SINGLE negated occurrence
+        // trip G4 -> decline -> the agreeing fallback goes silent, RED vs the
+        // expected flag).
+        let d = w07_diags(
+            "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+             Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+             Match User alice Address 10.0.0.0/8,!10.5.0.0/16\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "a single negated Address occurrence keeps the exact walk; the partition flags"
+        );
+        assert_eq!(d[0].line, 6);
+    }
+
+    #[test]
+    fn ce12_negation_only_address_occurrence_matches_nothing_entirely_clean() {
+        // CE12 (452-multitype-grounding.md, `sshd -T -C` OpenSSH 9.9p1): a
+        // NEGATION-ONLY Address occurrence. sshd's addr_match_list lets a negated
+        // entry only VETO - it never positively matches - so L's second occurrence
+        // `Address !10.2.0.0/16` matches NO address, and the AND across occurrences
+        // makes L match NOTHING. Oracle: alice@10.3.0.5 -> no (the DEFAULT: L does
+        // not apply even though 10.3.0.5 is in 10/8 and not vetoed!), @10.2.0.5 ->
+        // no (block 2), @10.1.0.5 -> yes (block 1). L is self-dead, not shadowed,
+        // and blocks 1-2 are mutually disjoint -> the fixture is ENTIRELY CLEAN.
+        // W07's guard stack composes to that verdict: G4 declines the walk (repeated
+        // negated Address) and type_co_satisfiable's negation guard excludes both
+        // earlier setters (each constrains the negated address axis), so the
+        // fallback has no candidates. LOCKS the whole conservative composition; a
+        // wrong impl that computes L's region negation-BLIND (as the full 10/8)
+        // walks the partition and FP-flags line 6 via block 2.
+        assert!(
+            w07_diags(
+                "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
+                 Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
+                 Match User alice Address 10.0.0.0/8 Address !10.2.0.0/16\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "a negation-only Address occurrence makes L match nothing; nothing to flag anywhere"
+        );
+    }
+
+    #[test]
+    fn lenient_multiport_localport_walk_flags_partition_and_all_agreeing_is_clean() {
+        // TOOL-BEHAVIOR LOCK on an sshd-INVALID config (NOT sshd semantics): sshd's
+        // a2port REJECTS comma-list LocalPort ("Invalid LocalPort '22,2222' on Match
+        // line", rc 255 - CE9, 452-multitype-grounding.md), so no sshd-loadable
+        // config reaches the multi-type LOCALPORT WALK: on valid singleton ports
+        // every structurally-selected setter is provably neutral on the port axis
+        // (universe or equal singleton), so localport can never be the UNIQUE
+        // reduction axis and the walk is sshd-domain-unreachable. RuleSteward's
+        // parser, however, is LENIENT: parse_criteria comma-splits Match values
+        // generically, so `LocalPort 22,2222` parses as the port set {22, 2222} and
+        // W07 still runs. The locked tool behavior is CONSISTENCY with the CIDR
+        // walk: treat the lenient-parsed port set exactly like an address set
+        // (agreeing setter consumes its ports, differing setter wins the remainder).
+        // GROUNDING CLASS: tool-determinism lock (lenient-parse domain) + CE9 for
+        // the sshd-invalidity of the fixture itself + observed-vs-main; deliberately
+        // NOT a claim about sshd behavior (sshd refuses to load this config).
+        // KILLS (multitype_port_axis_shadow + the `"localport"` walk-arm in
+        // multitype_axis_shadow): the walk-arm deletion and `-> false` body
+        // replacement (fallback/never-flag: the agreeing first setter goes silent,
+        // RED vs the expected flag) via the partition fixture; `-> true`, the
+        // winner-value `!=` -> `==`, and the region/winner `&&` -> `||` via the
+        // all-agreeing fixture (each would flag a fixture with nothing to drop).
+        let d = w07_diags(
+            "Match User alice,bob LocalPort 22\n    X11Forwarding yes\n\
+             Match User alice,bob LocalPort 2222\n    X11Forwarding no\n\
+             Match User alice LocalPort 22,2222\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the lenient-parsed port partition walks like CIDR: block 2 wins port 2222"
+        );
+        assert_eq!(d[0].line, 6);
+        // ALL-AGREEING variant: same lenient-parsed shape, every value `yes`.
+        assert!(
+            w07_diags(
+                "Match User alice,bob LocalPort 22\n    X11Forwarding yes\n\
+                 Match User alice,bob LocalPort 2222\n    X11Forwarding yes\n\
+                 Match User alice LocalPort 22,2222\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "an all-agreeing lenient-parsed port partition drops nothing"
+        );
+        // UNIVERSE-SETTER variant: block 2 is a bare `Match User alice,bob` block
+        // (no LocalPort criterion at all), so on the walked port axis it is
+        // UNIVERSE - it must win every port block 1's agreeing {22} did not consume
+        // (here the lenient-parsed 2222) with its differing `no` -> FLAG L (line 6).
+        // Same tool-determinism grounding class as the partition fixture above.
+        // KILLS (multitype_port_axis_shadow): `||` -> `&&` in the universe-branch
+        // condition (`is_unconditional_match_all(earlier) || !constrains_axis`):
+        // under `&&` a non-`Match all` setter without a port criterion takes the
+        // set-intersection branch with an EMPTY port set, wins NOTHING instead of
+        // everything, and the flag is silently lost (the mutation gate's one
+        // first-round survivor, w07.rs:676).
+        let d = w07_diags(
+            "Match User alice,bob LocalPort 22\n    X11Forwarding yes\n\
+             Match User alice,bob\n    X11Forwarding no\n\
+             Match User alice LocalPort 22,2222\n    X11Forwarding yes\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "a setter without a port criterion is UNIVERSE on the walked port axis"
+        );
+        assert_eq!(d[0].line, 6, "the universe setter wins port 2222 with `no`");
+    }
 }
