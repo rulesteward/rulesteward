@@ -3731,4 +3731,69 @@ mod w07_tests {
             "the walk route must not carve sub-populations out of a self-negated nobody block"
         );
     }
+
+    // ---- WALK-ROUTE wider-negated-glob nobody FP locks (#452 round 7) ----
+    // The walk-route TWIN of the round-5 decline-route locks: the round-5 witness
+    // gate (`name_axes_admit_witness`) sits on the DECLINE path only, and the axis
+    // WALK never inspects a witness-less NON-walked axis - the round-1 #494
+    // mechanism resurfaced through a nobody shape `block_matches_nobody` cannot see
+    // (its `name_list_matches_nobody` handles pure-negation / exact self-negation,
+    // not a wider negated glob vetoing a narrower positive). A bare-Address subset
+    // predecessor makes ADDRESS the unique reduction axis, so the walk carves the
+    // predecessor's /16 out of L's /8 and flags the differing value without ever
+    // asking whether ANY user satisfies L's dead `!a*,ab` (or `!*,alice`) list.
+    // Adversary-grounded, sshd -T -C 9.9p1 (global X11Forwarding no; probes ab,
+    // xyz, b, abcd at addr=10.5.0.5 all -> no; the later block's `yes` never
+    // applies to anyone). Both fixtures' current-impl [line 4] FP was observed via
+    // a scratch `w07_diags` dump before pinning. After this round, walk and decline
+    // - the only two multitype routes - are BOTH witness-gated, closing the family
+    // exhaustively.
+    //
+    // FIX NOTE (for the implementer): hoist `name_axes_admit_witness` to the TOP of
+    // `multitype_shadow` so it guards both routes. The check is SUPPRESS-ONLY (it
+    // can only turn a flag into silence), so hoisting it cannot introduce new FPs.
+
+    #[test]
+    fn walk_route_wider_negated_glob_nobody_is_clean() {
+        // RED (round 7): `User !a*,ab` matches NOBODY (the negated glob `!a*`
+        // vetoes the only positive `ab`; every other name fails the positive - the
+        // same dead list as the round-5 decline fixtures). The bare-Address
+        // predecessor (10.1.0.0/16: universe on user, NON-covering on L's /8)
+        // makes ADDRESS the unique reduction axis, so this takes the WALK route,
+        // bypassing the round-5 decline-path witness gate; the walk hands the
+        // differing `no` predecessor the 10.1.0.0/16 sub-population of a block no
+        // connection can ever satisfy and currently FP-flags line 4.
+        // Adversary-grounded (sshd -T -C 9.9p1: probes ab, xyz, b, abcd at
+        // addr=10.5.0.5 all -> no under a global X11Forwarding no; L's `yes` never
+        // applies).
+        assert!(
+            w07_diags(
+                "Match Address 10.1.0.0/16\n    X11Forwarding no\n\
+                 Match User !a*,ab Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "the walk must not carve sub-populations out of a wider-glob-vetoed nobody block"
+        );
+    }
+
+    #[test]
+    fn walk_route_bang_star_negated_glob_nobody_is_clean() {
+        // RED (round 7): the same walk-route shape at the veto's extreme -
+        // `User !*,alice`, where the negated glob `!*` vetoes EVERY name and the
+        // positive `alice` is unreachable (the round-5 `bang_star` fixture's list,
+        // now reached via the WALK route instead of the decline route). The unique
+        // address axis again lets the walk flag line 4 against the differing
+        // bare-Address predecessor without a membership check on the dead user
+        // list. Same adversary grounding (sshd -T -C 9.9p1: all probes -> no; the
+        // block never applies); still distinct from the SATISFIABLE `!alice,*`
+        // control (there the positive is the glob and bob survives).
+        assert!(
+            w07_diags(
+                "Match Address 10.1.0.0/16\n    X11Forwarding no\n\
+                 Match User !*,alice Address 10.0.0.0/8\n    X11Forwarding yes\n",
+            )
+            .is_empty(),
+            "the walk must not carve sub-populations out of a !*-vetoed nobody block"
+        );
+    }
 }
