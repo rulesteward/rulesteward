@@ -168,6 +168,8 @@ fn live_report(p: &Product) -> Result<DriftReport, String> {
 
     let mut discovered: Vec<String> = Vec::new();
     let mut unavailable_reason: Option<String> = None;
+    // Always true by construction (report_for's None arm is the only caller);
+    // kept as the tested LIVE-only predicate seam.
     if discovery_enabled(None) {
         match discover_man_keywords(p.image) {
             Ok(extracted) => {

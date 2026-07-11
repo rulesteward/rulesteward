@@ -59,17 +59,14 @@ use crate::transcript::Transcript;
 /// are found; the caller treats an empty result as advisory-worthy
 /// ("discovery unavailable") rather than a hard failure - see
 /// `discovery_unavailable_advisory`.
+#[must_use]
 pub fn extract_manpage_keywords(roff: &str) -> Vec<String> {
     let mut depth: u32 = 0;
     let mut first_list_started = false;
     let mut in_first_list = false;
-    let mut finished = false;
     let mut out = Vec::new();
 
     for line in roff.lines() {
-        if finished {
-            break;
-        }
         let mut tokens = line.split_whitespace();
         let Some(macro_name) = tokens.next() else {
             continue;
@@ -87,7 +84,7 @@ pub fn extract_manpage_keywords(roff: &str) -> Vec<String> {
                 if in_first_list && depth == 0 {
                     // The FIRST top-level list just closed - stop before any
                     // sibling top-level list (e.g. TIME FORMATS) is reached.
-                    finished = true;
+                    break;
                 }
             }
             // Only a bare `.It Cm <Keyword>` at the first list's OWN depth
@@ -128,6 +125,7 @@ pub fn keywords_from_roff(roff: &str) -> Result<Vec<String>, String> {
 /// The reverse direction (a `known` entry the man page does not list) is
 /// NEVER computed here - see the module doc for why that divergence is
 /// expected, not a discovery finding.
+#[must_use]
 pub fn man_only_keywords(man_keywords: &[String], known: &[&str]) -> Vec<String> {
     man_keywords
         .iter()
@@ -150,6 +148,7 @@ pub enum DaemonVerdict {
 /// lists but the shipped registry does not know: names `kw`, states that the
 /// man page lists it and the registry lacks it, and reports the live
 /// daemon's verdict on it.
+#[must_use]
 pub fn discovery_advisory(kw: &str, verdict: DaemonVerdict) -> String {
     let verdict_desc = match verdict {
         DaemonVerdict::Recognized => "the live daemon recognized it",
@@ -167,6 +166,7 @@ pub fn discovery_advisory(kw: &str, verdict: DaemonVerdict) -> String {
 /// `.It Cm` entries found). Always exactly one advisory; discovery failure
 /// NEVER produces a gate-failing error (exit stays 0=in-sync / 1=drift; exit
 /// 2 is reserved for genuine tool errors unrelated to this best-effort pass).
+#[must_use]
 pub fn discovery_unavailable_advisory(reason: &str) -> String {
     format!("advisory: man-page keyword discovery unavailable: {reason}")
 }
@@ -182,6 +182,7 @@ pub fn discovery_unavailable_advisory(reason: &str) -> String {
 /// OUT of the diff is what keeps discovery advisory-only: a
 /// discovered-and-recognized keyword is never in the shipped tables, so
 /// leaving its record in would surface it as gate-failing E01 drift.
+#[must_use]
 pub fn assemble_discovery(
     transcript: Transcript,
     discovered: &[String],
