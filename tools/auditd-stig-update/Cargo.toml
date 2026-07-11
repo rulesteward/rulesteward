@@ -1,0 +1,28 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the auditd crate purely to import the shipped STIG baseline
+# projection (`stig_baseline`) for the `check` drift gate and to reuse the
+# `rulesteward-auditd` rules.d parser on both the derived and shipped canonical
+# rule-line text (so both sides of the drift diff compare as the SAME `AuditRule`
+# AST rather than two independent string representations); that crate resolves
+# its own workspace inheritance against the repo root (cargo finds a package's
+# workspace by walking up from the package's OWN location), so the path-dep
+# builds cleanly from here.
+[workspace]
+
+[package]
+name = "auditd-stig-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the auditd au-W06 STIG baselines from the official DISA XCCDF."
+
+[dependencies]
+rulesteward-auditd = { path = "../../crates/rulesteward-auditd" }
+regex = "1"
+toml = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (deliberate
+# deviation from tools/sshd-stig-update's homegrown regex+entity-decode
+# approach; see src/xccdf.rs's module doc for why a real parser is used here).
+quick-xml = "0.41"

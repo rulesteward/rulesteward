@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::{HumanJsonCsvFormat, HumanJsonFormat};
+use crate::cli::{HumanJsonCsvFormat, HumanJsonFormat, TargetSelector};
 
 /// Arguments for `rulesteward auditd cost` (#85).
 ///
@@ -62,4 +62,15 @@ pub struct AuditdLintArgs {
     /// recognize these names).
     #[arg(long)]
     pub apparmor: bool,
+
+    /// Target RHEL release for the STIG missing-audit-rule baseline
+    /// (auto|rhel8|rhel9|rhel10). Enables the version-aware `au-W06` check: an
+    /// audit rule the selected release's STIG requires but this ruleset does
+    /// not contain (or contains with a different key) is flagged. `auto`
+    /// detects the release from the host's /etc/os-release, falling back
+    /// (with a warning) to version-agnostic when detection fails. With no
+    /// `--target`, au-W06 does not run (version-agnostic: every other au-
+    /// code still does).
+    #[arg(long, value_enum)]
+    pub target: Option<TargetSelector>,
 }

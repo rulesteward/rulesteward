@@ -289,3 +289,81 @@ fn t11_apparmor_flag_folds_msgtype_names() {
         .code(1)
         .stdout(predicates::prelude::predicate::str::contains("au-W01"));
 }
+
+// ---------------------------------------------------------------------------
+// issue #474: --target wiring for the version-aware au-W06 STIG baseline.
+// The shipped RHEL*_REQUIRED tables are empty placeholders (test-author
+// state; the implementer populates them via `tools/auditd-stig-update
+// derive`), so these tests pin the FLAG WIRING (exit code, no crash, no
+// au-W06 leaking without --target) rather than a real "au-W06 fires" case -
+// that content-level proof lives in
+// crates/rulesteward-auditd/tests/test_lints_stig_required.rs, which
+// exercises the real matcher against a test-local injected baseline.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn help_lists_the_target_flag() {
+    lint_cmd()
+        .args(["auditd", "lint", "--help"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("--target"));
+}
+
+#[test]
+fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
+    // The shipped RHEL9_REQUIRED table is now populated (issue #474): this
+    // fixture satisfies only one of its 67 required lines
+    // (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240), so --target rhel9
+    // now surfaces the other 66 as au-W06 warnings (exit 1) - the same
+    // FLAG-WIRING proof as before (the flag reaches the real matcher), just
+    // with the outcome the populated table actually produces.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "10-a.rules",
+        "-w /etc/passwd -p wa -k identity\n",
+    );
+    let assert = lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .args(["--target", "rhel9", "--format", "json"])
+        .assert()
+        .code(1);
+    let out = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).expect("stdout must be JSON");
+    let diags = v["diagnostics"].as_array().expect("diagnostics array");
+    assert_eq!(
+        diags.len(),
+        66,
+        "66 of the 67 required lines are missing (RHEL-09-654240 is satisfied): {out}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d["code"] == serde_json::json!("au-W06")),
+        "every finding must be au-W06: {out}"
+    );
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("RHEL-09-654240")),
+        "the satisfied requirement must not be reported missing: {out}"
+    );
+}
+
+#[test]
+fn no_target_emits_no_au_w06() {
+    // Without --target, au-W06 never runs (version-agnostic contract) - a
+    // wildly non-compliant ruleset (no watches, no syscall rules at all)
+    // still shows no au-W06.
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "10-a.rules", "-D\n-b 8192\n");
+    lint_cmd()
+        .args(["auditd", "lint"])
+        .arg(dir.path())
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("au-W06").not());
+}

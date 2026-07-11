@@ -222,6 +222,54 @@ sshd-stig-derive product="all":
         cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
+# (#474) Drift-check / refresh the auditd au-W06 STIG missing-rule baselines against
+# the OFFICIAL DISA XCCDF. Same nested-tool pattern as sshd-stig-* above
+# (tools/auditd-stig-update, OUT of `just ci`). DISA versions each RHEL STIG by
+# FILENAME (no releases API), so there is NO `--latest` mode; `check` derives at the
+# pinned zips in the tool's stig-refs.toml. The LIVE recipes skip gracefully (exit 0)
+# when curl/unzip are absent.
+#
+# auditd-stig-check         : LIVE - fetch the pinned DISA zips; exit 1 on any drift vs
+#                              stig_required.rs (the weekly auditd-stig-drift workflow
+#                              uses this).
+# auditd-stig-check-offline : OFFLINE - drift-check stig_required.rs against the
+#                              committed real DISA fixtures; no network (the PR-gate
+#                              uses this).
+# auditd-stig-derive <p>    : print the derived table + diff + paste-ready lines for
+#                              review (p = rhel8|rhel9|rhel10, or `all`).
+auditd-stig-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "auditd-stig-check: prerequisites missing - need curl + unzip + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- check
+
+auditd-stig-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed real-DISA fixtures and confirm
+    # stig_required.rs still matches. No network. Any product's drift (exit 1) or
+    # error (2) fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- \
+            check --product "$p" --file "tools/auditd-stig-update/tests/fixtures/${p}_auditd_controls.xml"
+    done
+
+auditd-stig-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "auditd-stig-derive: prerequisites missing - need curl + unzip + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- derive --product "{{product}}"
+    fi
+
 # (#372) Drift-check the sshd E01/E04/W04 lint tables against a LIVE sshd daemon by
 # probing the Rocky 8/9/10 + openssh-server images. Same nested-tool pattern
 # (tools/sshd-probe-update, OUT of `just ci`). The LIVE recipes skip gracefully (exit 0)

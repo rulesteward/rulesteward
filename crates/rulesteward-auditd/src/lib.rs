@@ -18,6 +18,7 @@ pub use ast::{
 pub use bands::{Direction, RateBand, VolumeTier};
 pub use cost::{CostBand, LogFormat};
 pub use from_log::{LogReadError, MeasuredRates};
+pub use lints::TargetVersion;
 pub use parser::{
     LocatedParseError, ParseError, parse_rules_file, parse_rules_file_located, parse_rules_str,
     parse_rules_str_located, parse_target, parse_target_located, rules_files_in_load_order,
