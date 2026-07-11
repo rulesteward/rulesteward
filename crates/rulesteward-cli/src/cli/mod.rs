@@ -297,6 +297,20 @@ impl From<TargetVersionArg> for rulesteward_sysctld::TargetVersion {
     }
 }
 
+/// The same `--target` value-enum maps to the auditd domain's `TargetVersion`
+/// (the version-aware `au-W06` STIG missing-rule baseline selector, issue #474).
+/// One CLI surface, one `From` per backend domain, so each domain crate stays
+/// clap-free.
+impl From<TargetVersionArg> for rulesteward_auditd::TargetVersion {
+    fn from(arg: TargetVersionArg) -> Self {
+        match arg {
+            TargetVersionArg::Rhel8 => rulesteward_auditd::TargetVersion::Rhel8,
+            TargetVersionArg::Rhel9 => rulesteward_auditd::TargetVersion::Rhel9,
+            TargetVersionArg::Rhel10 => rulesteward_auditd::TargetVersion::Rhel10,
+        }
+    }
+}
+
 /// CLI value-enum for `--target` on the version-aware lint verbs: `auto` triggers
 /// host detection from `/etc/os-release`, the explicit values pin a baseline. The
 /// command layer resolves this to a concrete `TargetVersionArg` (or the
@@ -555,6 +569,67 @@ mod tests {
     fn auditd_lint_rejects_sarif_format() {
         let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--format", "sarif"]);
         assert!(cli.is_err(), "sarif must not be a valid auditd lint format");
+    }
+
+    /// `auditd lint --target auto|rhel8|rhel9|rhel10` parses to the matching
+    /// selector variant (issue #474: the au-W06 STIG baseline `--target`).
+    #[test]
+    fn auditd_lint_target_parses_each_rhel() {
+        for (flag, expected) in [
+            ("auto", TargetSelector::Auto),
+            ("rhel8", TargetSelector::Rhel8),
+            ("rhel9", TargetSelector::Rhel9),
+            ("rhel10", TargetSelector::Rhel10),
+        ] {
+            let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--target", flag]);
+            let Ok(Cli {
+                command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+            }) = cli
+            else {
+                panic!("expected Auditd(Lint(_)), got {cli:?}");
+            };
+            assert_eq!(
+                args.target,
+                Some(expected),
+                "--target {flag} must parse to {expected:?}"
+            );
+        }
+    }
+
+    /// No `--target` leaves `target` = None (au-W06 stays silent by contract).
+    #[test]
+    fn auditd_lint_target_defaults_none() {
+        let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint"]);
+        let Ok(Cli {
+            command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+        }) = cli
+        else {
+            panic!("expected Auditd(Lint(_)), got {cli:?}");
+        };
+        assert!(
+            args.target.is_none(),
+            "absent --target must default to None"
+        );
+    }
+
+    /// The CLI value-enum converts to the auditd domain `TargetVersion` (#474).
+    /// Keeps the domain crate clap-free (mirrors `target_arg_converts_to_domain_version`
+    /// for fapolicyd).
+    #[test]
+    fn target_arg_converts_to_auditd_domain_version() {
+        use rulesteward_auditd::TargetVersion;
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel8),
+            TargetVersion::Rhel8
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel9),
+            TargetVersion::Rhel9
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel10),
+            TargetVersion::Rhel10
+        );
     }
 
     /// `fapolicyd migrate --report <PATH>` (#212, owner decision D1): opt-in

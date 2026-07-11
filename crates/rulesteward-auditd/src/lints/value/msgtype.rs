@@ -2,6 +2,8 @@
 //! the opt-in `AppArmor` extension (#230). Split out of `value.rs` (#438); see
 //! the parent `value` module doc for the overall design.
 
+use rulesteward_core::parse_base0_u64 as parse_u64_base0;
+
 use super::LintOptions;
 
 /// The audit record-type `msgtype` name -> number table (#227), so au-W01 and
@@ -279,6 +281,27 @@ pub(super) const APPARMOR_MSGTYPE_NAMES: &[(&str, u32)] = &[
     ("APPARMOR_KILL", 1507),
 ];
 
+/// The shipped base msgtype table ([`MSGTYPE_NAMES`]), publicly projected.
+///
+/// `pub` (re-exported from `lints::value`) so the out-of-workspace
+/// `tools/auditd-msgtype-update` derive tool can drift-check the shipped
+/// table against the upstream audit-userspace / kernel-uapi headers without
+/// duplicating it (#476) - the same consumer-driven visibility precedent as
+/// rulesteward-fapolicyd's `accepted_pattern_values` (#478). Pure visibility
+/// change; the table and lookup logic are unchanged.
+#[must_use]
+pub fn base_msgtype_names() -> &'static [(&'static str, u32)] {
+    MSGTYPE_NAMES
+}
+
+/// The shipped `#ifdef WITH_APPARMOR` msgtype table
+/// ([`APPARMOR_MSGTYPE_NAMES`]), publicly projected - same rationale as
+/// [`base_msgtype_names`] (#476). Pure visibility change.
+#[must_use]
+pub fn apparmor_msgtype_names() -> &'static [(&'static str, u32)] {
+    APPARMOR_MSGTYPE_NAMES
+}
+
 /// The numeric audit record type for a msgtype NAME (case-insensitive per
 /// libaudit `audit_name_to_msg_type`), or `None` if `name` is not a known
 /// record-type name. Consults [`MSGTYPE_NAMES`] always; when
@@ -302,4 +325,47 @@ pub(super) fn msgtype_number(name: &str, opts: LintOptions) -> Option<u32> {
                 None
             }
         })
+}
+
+/// The resolved record-type NUMBER for a msgtype value under `opts`, or `None`
+/// if `raw` does not resolve to a concrete number: an unknown name, an
+/// `AppArmor` name with `opts.include_apparmor` off, or an unparseable
+/// spelling (#475). Mirrors [`super::canonical_value`]'s `MsgType` branch
+/// exactly -- name lookup via [`msgtype_number`] first, then the base-0
+/// numeric fallback (#229) -- so the two can never disagree on whether a
+/// msgtype value denotes a concrete kernel record type.
+///
+/// This is the resolution gate the disjointness prover
+/// (`compare::canonical_decides_value_identity`) uses: msgtype disjointness is
+/// provable only when BOTH sides of a pair independently resolve here (see the
+/// module doc's "central correctness hazard": a naive canonical-STRING
+/// inequality is unsound for an alias-bearing field like msgtype, since an
+/// unresolved spelling and a resolved one can denote the identical kernel
+/// value, e.g. `APPARMOR_DENIED` with the flag off vs `1503`).
+///
+/// `pub(super)`: called by `compare::canonical_decides_value_identity` and
+/// `canonical::canonical_value` (sibling modules in `value`); the frozen
+/// `mod tests` suite exercises it indirectly through [`super::disjoint`], not
+/// via a direct import.
+pub(super) fn msgtype_resolved_number(raw: &str, opts: LintOptions) -> Option<u64> {
+    let t = raw.trim();
+    // The name table already yields in-range record numbers. A NUMERIC spelling
+    // is a __u32 on the wire (`struct audit_rule_data`'s `__u32 values[]`, uapi
+    // audit.h:516; the kernel compares with `audit_comparator(u32, ...)`,
+    // auditfilter.c:1205-1227 @ v6.6). DECLINE any spelling that does not fit in
+    // u32 rather than trying to model the daemon's exact out-of-range behaviour:
+    // libaudit parses with SIGNED `strtol` (libaudit.c:1788-1790 @ 3bfa048), which
+    // clamps a positive overflow to LONG_MAX BEFORE the truncation, so e.g. 2^63
+    // loads as 0xFFFF_FFFF, NOT 0 -- an unsigned `& 0xFFFF_FFFF` mask would
+    // mis-model that and prove a false disjointness (dropping an au-W03 warning).
+    // Declining above u32::MAX is the conservative, sound choice and mirrors the
+    // classify.rs uid/gid/sessionid precedent (`u32::try_from`, decline above): a
+    // >u32 spelling never participates in an identity disjointness/equality proof.
+    // Below 2^32 this is a no-op, so every in-range value (and the name path) is
+    // unchanged. No real audit rule carries a msgtype above u32::MAX.
+    msgtype_number(t, opts).map(u64::from).or_else(|| {
+        parse_u64_base0(t)
+            .and_then(|n| u32::try_from(n).ok())
+            .map(u64::from)
+    })
 }

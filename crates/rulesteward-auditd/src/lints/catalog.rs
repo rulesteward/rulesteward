@@ -63,6 +63,11 @@ pub const AU_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "missing-ABI coverage: a syscall rule pins one ABI (arch=b32/b64) with no companion rule on the opposite ABI, so the other ABI's invocations of those syscalls go unaudited",
     },
+    LintCode {
+        code: "au-W06",
+        severity: Severity::Warning,
+        description: "missing STIG-required audit rule: the applicable RHEL STIG requires an audit rule this ruleset does not contain (fires only under --target)",
+    },
 ];
 
 #[cfg(test)]
@@ -74,6 +79,7 @@ mod tests {
     /// coverage warning, so the code number is now live again.
     const ALL_CODES: &[&str] = &[
         "au-E01", "au-E02", "au-E03", "au-E04", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
+        "au-W06",
     ];
 
     #[test]

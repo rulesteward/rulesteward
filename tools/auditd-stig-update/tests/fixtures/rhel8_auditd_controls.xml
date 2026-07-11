@@ -1,0 +1,615 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL8_STIG_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 audit-rule Groups (45) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant).</title>
+<Group id="V-230386"><Rule severity="medium"><version>RHEL-08-030000</version><title>The RHEL 8 audit system must be configured to audit the execution of privileged functions and prevent all software from executing at higher privilege levels than users executing the software.</title><check system="C-x"><check-content>Verify RHEL 8 audits the execution of privileged functions.
+
+Check if RHEL 8 is configured to audit the execution of the "execve" system call, by running the following command:
+
+$ sudo grep execve /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k execpriv 
+-a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k execpriv
+
+-a always,exit -F arch=b32 -S execve -C gid!=egid -F egid=0 -k execpriv 
+-a always,exit -F arch=b64 -S execve -C gid!=egid -F egid=0 -k execpriv
+
+If the command does not return all lines, or the lines are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to audit the execution of the "execve" system call.
+
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k execpriv 
+-a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k execpriv
+
+-a always,exit -F arch=b32 -S execve -C gid!=egid -F egid=0 -k execpriv 
+-a always,exit -F arch=b64 -S execve -C gid!=egid -F egid=0 -k execpriv 
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230404"><Rule severity="medium"><version>RHEL-08-030130</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/shadow.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/shadow".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/shadow /etc/audit/audit.rules
+
+-w /etc/shadow -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/shadow".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/shadow -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230405"><Rule severity="medium"><version>RHEL-08-030140</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/security/opasswd.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/security/opasswd".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/security/opasswd /etc/audit/audit.rules
+
+-w /etc/security/opasswd -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/security/opasswd".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/security/opasswd -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230406"><Rule severity="medium"><version>RHEL-08-030150</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/passwd.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/passwd /etc/audit/audit.rules
+
+-w /etc/passwd -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/passwd -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230407"><Rule severity="medium"><version>RHEL-08-030160</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/gshadow.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/gshadow".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/gshadow /etc/audit/audit.rules
+
+-w /etc/gshadow -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/gshadow".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/gshadow -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230408"><Rule severity="medium"><version>RHEL-08-030170</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/group.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/group".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/group /etc/audit/audit.rules
+
+-w /etc/group -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/group".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/group -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230409"><Rule severity="medium"><version>RHEL-08-030171</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/sudoers.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/sudoers /etc/audit/audit.rules
+
+-w /etc/sudoers -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/sudoers -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230410"><Rule severity="medium"><version>RHEL-08-030172</version><title>RHEL 8 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/sudoers.d/.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d/".
+
+Check the auditing rules in "/etc/audit/audit.rules" with the following command:
+
+$ sudo grep /etc/sudoers.d/ /etc/audit/audit.rules
+
+-w /etc/sudoers.d/ -p wa -k identity
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d/".
+
+Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+
+-w /etc/sudoers.d/ -p wa -k identity
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230412"><Rule severity="medium"><version>RHEL-08-030190</version><title>Successful/unsuccessful uses of the su command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates audit records when successful/unsuccessful attempts to use the "su" command by performing the following command to check the file system rules in "/etc/audit/audit.rules": 
+
+$ sudo grep -w /usr/bin/su /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/su -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-priv_change
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to generate audit records when successful/unsuccessful attempts to use the "su" command occur by adding or updating the following rule in "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F path=/usr/bin/su -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-priv_change
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230413"><Rule severity="medium"><version>RHEL-08-030200</version><title>The RHEL 8 audit system must be configured to audit any usage of the setxattr, fsetxattr, lsetxattr, removexattr, fremovexattr, and lremovexattr system calls.</title><check system="C-x"><check-content>Verify if RHEL 8 is configured to audit the execution of the "setxattr", "fsetxattr", "lsetxattr", "removexattr", "fremovexattr", and "lremovexattr" system calls by running the following command:
+
+$ sudo grep xattr /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+-a always,exit -F arch=b32 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid=0 -k perm_mod
+
+If the command does not return an audit rule for "setxattr", "fsetxattr", "lsetxattr", "removexattr", "fremovexattr", and "lremovexattr" or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to audit the execution of the "setxattr", "fsetxattr", "lsetxattr", "removexattr", "fremovexattr", and "lremovexattr" system calls by adding or updating the following lines to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+-a always,exit -F arch=b32 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S setxattr,fsetxattr,lsetxattr,removexattr,fremovexattr,lremovexattr -F auid=0 -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230418"><Rule severity="medium"><version>RHEL-08-030250</version><title>Successful/unsuccessful uses of the chage command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "chage" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w chage /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/chage -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-chage
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "chage" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/chage -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-chage
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230419"><Rule severity="medium"><version>RHEL-08-030260</version><title>Successful/unsuccessful uses of the chcon command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "chcon" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w chcon /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/chcon -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "chcon" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/chcon -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230421"><Rule severity="medium"><version>RHEL-08-030280</version><title>Successful/unsuccessful uses of the ssh-agent in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "ssh-agent" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep ssh-agent /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/ssh-agent -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-ssh
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "ssh-agent" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/ssh-agent -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-ssh
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230422"><Rule severity="medium"><version>RHEL-08-030290</version><title>Successful/unsuccessful uses of the passwd command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "passwd" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w passwd /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/passwd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-passwd
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "passwd" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/passwd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-passwd
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230423"><Rule severity="medium"><version>RHEL-08-030300</version><title>Successful/unsuccessful uses of the mount command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "mount" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w /usr/bin/mount /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/mount -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "mount" command by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/mount -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230424"><Rule severity="medium"><version>RHEL-08-030301</version><title>Successful/unsuccessful uses of the umount command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "umount" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w /usr/bin/umount /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/umount -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "umount" command by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/umount -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230425"><Rule severity="medium"><version>RHEL-08-030302</version><title>Successful/unsuccessful uses of the mount syscall in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "mount" syscall by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "\-S mount" /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S mount -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+-a always,exit -F arch=b64 -S mount -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "mount" syscall by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F arch=b32 -S mount -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+-a always,exit -F arch=b64 -S mount -F auid&gt;=1000 -F auid!=unset -k privileged-mount
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230426"><Rule severity="medium"><version>RHEL-08-030310</version><title>Successful/unsuccessful uses of the unix_update in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "unix_update" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "unix_update" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/unix_update -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "unix_update" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/unix_update -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230427"><Rule severity="medium"><version>RHEL-08-030311</version><title>Successful/unsuccessful uses of postdrop in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "postdrop" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "postdrop" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/postdrop -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "postdrop" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/postdrop -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230428"><Rule severity="medium"><version>RHEL-08-030312</version><title>Successful/unsuccessful uses of postqueue in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "postqueue" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "postqueue" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/postqueue -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "postqueue" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/postqueue -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230429"><Rule severity="medium"><version>RHEL-08-030313</version><title>Successful/unsuccessful uses of semanage in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "semanage" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "semanage" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/semanage -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "semanage" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/semanage -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230430"><Rule severity="medium"><version>RHEL-08-030314</version><title>Successful/unsuccessful uses of setfiles in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "setfiles" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "setfiles" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/setfiles -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "setfiles" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/setfiles -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230431"><Rule severity="medium"><version>RHEL-08-030315</version><title>Successful/unsuccessful uses of userhelper in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "userhelper" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "userhelper" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/userhelper -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "userhelper" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/userhelper -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230432"><Rule severity="medium"><version>RHEL-08-030316</version><title>Successful/unsuccessful uses of setsebool in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "setsebool" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "setsebool" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/setsebool -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "setsebool" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/setsebool -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230433"><Rule severity="medium"><version>RHEL-08-030317</version><title>Successful/unsuccessful uses of unix_chkpwd in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of "unix_chkpwd" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "unix_chkpwd" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/unix_chkpwd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "unix_chkpwd" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/unix_chkpwd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-unix-update
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230434"><Rule severity="medium"><version>RHEL-08-030320</version><title>Successful/unsuccessful uses of the ssh-keysign in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "ssh-keysign" by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep ssh-keysign /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/libexec/openssh/ssh-keysign -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-ssh
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "ssh-keysign" by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/libexec/openssh/ssh-keysign -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-ssh
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230435"><Rule severity="medium"><version>RHEL-08-030330</version><title>Successful/unsuccessful uses of the setfacl command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "setfacl" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w setfacl /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "setfacl" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230436"><Rule severity="medium"><version>RHEL-08-030340</version><title>Successful/unsuccessful uses of the pam_timestamp_check command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "pam_timestamp_check" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w pam_timestamp_check /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/pam_timestamp_check -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-pam_timestamp_check
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "pam_timestamp_check" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/pam_timestamp_check -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-pam_timestamp_check
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230437"><Rule severity="medium"><version>RHEL-08-030350</version><title>Successful/unsuccessful uses of the newgrp command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "newgrp" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w newgrp /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/newgrp -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "newgrp" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/newgrp -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230438"><Rule severity="medium"><version>RHEL-08-030360</version><title>Successful/unsuccessful uses of the init_module and finit_module system calls in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record upon successful/unsuccessful attempts to use the "init_module" and "finit_module" system calls by using the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep init_module /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S init_module,finit_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+-a always,exit -F arch=b64 -S init_module,finit_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+
+If the command does not return an audit rule for "init_module" and "finit_module" or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "init_module" and "finit_module" system calls by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F arch=b32 -S init_module,finit_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+-a always,exit -F arch=b64 -S init_module,finit_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230439"><Rule severity="medium"><version>RHEL-08-030361</version><title>Successful/unsuccessful uses of the rename, unlink, rmdir, renameat, and unlinkat system calls in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record upon successful/unsuccessful attempts to use the "rename", "unlink", "rmdir", "renameat", and "unlinkat" system calls by using the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep 'rename\|unlink\|rmdir' /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S rename,unlink,rmdir,renameat,unlinkat -F auid&gt;=1000 -F auid!=unset -k delete
+-a always,exit -F arch=b64 -S rename,unlink,rmdir,renameat,unlinkat -F auid&gt;=1000 -F auid!=unset -k delete
+
+If the command does not return an audit rule for "rename", "unlink", "rmdir", "renameat", and "unlinkat" or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "rename", "unlink", "rmdir", "renameat", and "unlinkat" system calls by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F arch=b32 -S rename,unlink,rmdir,renameat,unlinkat -F auid&gt;=1000 -F auid!=unset -k delete
+-a always,exit -F arch=b64 -S rename,unlink,rmdir,renameat,unlinkat -F auid&gt;=1000 -F auid!=unset -k delete
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230444"><Rule severity="medium"><version>RHEL-08-030370</version><title>Successful/unsuccessful uses of the gpasswd command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "gpasswd" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w gpasswd /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/gpasswd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-gpasswd
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "gpasswd" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/gpasswd -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-gpasswd
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230446"><Rule severity="medium"><version>RHEL-08-030390</version><title>Successful/unsuccessful uses of the delete_module command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "delete_module" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w "delete_module" /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S delete_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+-a always,exit -F arch=b64 -S delete_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "delete_module" command by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F arch=b32 -S delete_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+-a always,exit -F arch=b64 -S delete_module -F auid&gt;=1000 -F auid!=unset -k module_chng
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230447"><Rule severity="medium"><version>RHEL-08-030400</version><title>Successful/unsuccessful uses of the crontab command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "crontab" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w crontab /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/crontab -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-crontab
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "crontab" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/crontab -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-crontab
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230448"><Rule severity="medium"><version>RHEL-08-030410</version><title>Successful/unsuccessful uses of the chsh command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "chsh" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w chsh /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/chsh -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "chsh" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/chsh -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230449"><Rule severity="medium"><version>RHEL-08-030420</version><title>Successful/unsuccessful uses of the truncate, ftruncate, creat, open, openat, and open_by_handle_at system calls in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record upon successful/unsuccessful attempts to use the "truncate", "ftruncate", "creat", "open", "openat", and "open_by_handle_at" system calls by using the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep 'open\|truncate\|creat' /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EPERM -F auid&gt;=1000 -F auid!=unset -k perm_access
+-a always,exit -F arch=b64 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EPERM -F auid&gt;=1000 -F auid!=unset -k perm_access
+
+-a always,exit -F arch=b32 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EACCES -F auid&gt;=1000 -F auid!=unset -k perm_access
+-a always,exit -F arch=b64 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EACCES -F auid&gt;=1000 -F auid!=unset -k perm_access
+
+If the output does not produce rules containing "-F exit=-EPERM", this is a finding.
+If the output does not produce rules containing "-F exit=-EACCES", this is a finding.
+If the command does not return an audit rule for "truncate", "ftruncate", "creat", "open", "openat", and "open_by_handle_at" or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "truncate", "ftruncate", "creat", "open", "openat", and "open_by_handle_at" system calls by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F arch=b32 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EPERM -F auid&gt;=1000 -F auid!=unset -k perm_access
+-a always,exit -F arch=b64 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EPERM -F auid&gt;=1000 -F auid!=unset -k perm_access
+
+-a always,exit -F arch=b32 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EACCES -F auid&gt;=1000 -F auid!=unset -k perm_access
+-a always,exit -F arch=b64 -S truncate,ftruncate,creat,open,openat,open_by_handle_at -F exit=-EACCES -F auid&gt;=1000 -F auid!=unset -k perm_access
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230455"><Rule severity="medium"><version>RHEL-08-030480</version><title>Successful/unsuccessful uses of the chown, fchown, fchownat, and lchown system calls in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record upon successful/unsuccessful attempts to use the "chown", "fchown", "fchownat" and "lchown" system calls by using the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep chown /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S chown,fchown,fchownat,lchown -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S chown,fchown,fchownat,lchown -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+If audit rules are not defined for "chown", "fchown", "fchownat", and "lchown" or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "chown", "fchown", "fchownat", and "lchown" system calls by adding or updating the following line to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -S chown,fchown,fchownat,lchown -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S chown,fchown,fchownat,lchown -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230456"><Rule severity="medium"><version>RHEL-08-030490</version><title>Successful/unsuccessful uses of the chmod, fchmod, and fchmodat system calls in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record upon successful/unsuccessful attempts to use the "chmod", "fchmod", and "fchmodat" syscalls by using the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep chmod /etc/audit/audit.rules
+
+-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+If the command does not return an audit rule for "chmod", "fchmod", and "fchmodat", or any of the lines returned are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "chmod", "fchmod", and "fchmodat" syscalls by adding or updating the following line to "/etc/audit/rules.d/audit.rules": 
+
+-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid&gt;=1000 -F auid!=unset -k perm_mod
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230462"><Rule severity="medium"><version>RHEL-08-030550</version><title>Successful/unsuccessful uses of the sudo command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "sudo" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w sudo /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "sudo" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid&gt;=1000 -F auid!=unset -k priv_cmd
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230463"><Rule severity="medium"><version>RHEL-08-030560</version><title>Successful/unsuccessful uses of the usermod command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify that an audit event is generated for any successful/unsuccessful use of the "usermod" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w usermod /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/sbin/usermod -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-usermod
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful uses of the "usermod" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/sbin/usermod -F perm=x -F auid&gt;=1000 -F auid!=unset -k privileged-usermod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230464"><Rule severity="medium"><version>RHEL-08-030570</version><title>Successful/unsuccessful uses of the chacl command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful attempts to use the "chacl" command by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w chacl /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/chacl -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful use of the "chacl" command by adding or updating the following rule in the "/etc/audit/rules.d/audit.rules" file:
+
+-a always,exit -F path=/usr/bin/chacl -F perm=x -F auid&gt;=1000 -F auid!=unset -k perm_mod
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230465"><Rule severity="medium"><version>RHEL-08-030580</version><title>Successful/unsuccessful uses of the kmod command in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify if RHEL 8 is configured to audit the execution of the module management program "kmod", by running the following command:
+
+$ sudo grep "/usr/bin/kmod" /etc/audit/audit.rules
+
+-a always,exit -F path=/usr/bin/kmod -F perm=x -F auid&gt;=1000 -F auid!=unset -k modules
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to audit the execution of the module management program "kmod" by adding or updating the following line to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F path=/usr/bin/kmod -F perm=x -F auid&gt;=1000 -F auid!=unset -k modules
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230466"><Rule severity="medium"><version>RHEL-08-030590</version><title>Successful/unsuccessful modifications to the faillock log file in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful modifications to the "faillock" file occur. First, determine where the faillock tallies are stored with the following commands:
+
+For RHEL versions 8.0 and 8.1:
+
+$ sudo grep -i pam_faillock.so /etc/pam.d/system-auth
+
+auth     required          pam_faillock.so preauth dir=/var/log/faillock silent deny=3 fail_interval=900 even_deny_root
+
+For RHEL versions 8.2 and newer:
+
+$ sudo grep dir /etc/security/faillock.conf
+
+dir=/var/log/faillock
+
+Using the location of the faillock log file, check that the following calls are being audited by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w faillock /etc/audit/audit.rules
+
+-w /var/log/faillock -p wa -k logins
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful modifications to the "faillock" file by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-w /var/log/faillock -p wa -k logins
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-230467"><Rule severity="medium"><version>RHEL-08-030600</version><title>Successful/unsuccessful modifications to the lastlog file in RHEL 8 must generate an audit record.</title><check system="C-x"><check-content>Verify RHEL 8 generates an audit record when successful/unsuccessful modifications to the "lastlog" file by performing the following command to check the file system rules in "/etc/audit/audit.rules":
+
+$ sudo grep -w lastlog /etc/audit/audit.rules
+
+-w /var/log/lastlog -p wa -k logins
+
+If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to generate an audit event for any successful/unsuccessful modifications to the "lastlog" file by adding or updating the following rules in the "/etc/audit/rules.d/audit.rules" file:
+
+-w /var/log/lastlog -p wa -k logins
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-274877"><Rule severity="medium"><version>RHEL-08-030655</version><title>RHEL 8 must audit any script or executable called by cron as root or by any privileged user.</title><check system="C-x"><check-content>Verify RHEL 8 is configured to audit the execution of any system call made by cron as root or as any privileged user.
+
+$ sudo auditctl -l | grep /etc/cron.d
+-w /etc/cron.d -p wa -k cronjobs
+
+$ sudo auditctl -l | grep /var/spool/cron
+-w /var/spool/cron -p wa -k cronjobs
+
+If either of these commands do not return the expected output, or the lines are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 8 to audit the execution of any system call made by cron as root or as any privileged user.
+
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+auditctl -w /etc/cron.d/ -p wa -k cronjobs
+auditctl -w /var/spool/cron/ -p wa -k cronjobs
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
+<Group id="V-230388"><Rule severity="medium"><version>RHEL-08-030020</version><title>The RHEL 8 System Administrator (SA) and Information System Security Officer (ISSO) (at a minimum) must be alerted of an audit processing failure event.</title><check system="C-x"><check-content>Verify that the SA and ISSO (at a minimum) are notified in the event of an audit processing failure.
+
+Check that RHEL 8 notifies the SA and ISSO (at a minimum) in the event of an audit processing failure with the following command:
+
+$ sudo grep action_mail_acct /etc/audit/auditd.conf
+
+action_mail_acct = root
+
+If the value of the "action_mail_acct" keyword is not set to "root" and/or other accounts for security personnel, the "action_mail_acct" keyword is missing, or the retuned line is commented out, ask the system administrator to indicate how they and the ISSO are notified of an audit process failure.  If there is no evidence of the proper personnel being notified of an audit processing failure, this is a finding.</check-content></check><fixtext fixref="F-x">Configure "auditd" service to notify the SA and ISSO in the event of an audit processing failure. 
+
+Edit the following line in "/etc/audit/auditd.conf" to ensure that administrators are notified via email for those situations:
+
+action_mail_acct = root</fixtext></Rule></Group>
+<Group id="V-244542"><Rule severity="medium"><version>RHEL-08-030181</version><title>RHEL 8 audit records must contain information to establish what type of events occurred, the source of events, where events occurred, and the outcome of events.</title><check system="C-x"><check-content>Verify the audit service is configured to produce audit records with the following command:
+
+$ sudo systemctl status auditd.service
+
+auditd.service - Security Auditing Service
+Loaded:loaded (/usr/lib/systemd/system/auditd.service; enabled; vendor preset: enabled)
+Active: active (running) since Tues 2020-12-11 12:56:56 EST; 4 weeks 0 days ago
+
+If the audit service is not "active" and "running", this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit service to produce audit records containing the information needed to establish when (date and time) an event occurred with the following commands:
+
+$ sudo systemctl enable auditd.service
+
+$ sudo systemctl start auditd.service</fixtext></Rule></Group>
+</Benchmark>

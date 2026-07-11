@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::cli::{AuditdCommand, AuditdLintArgs, CostArgs, HumanJsonCsvFormat};
+use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
 use crate::exit_code::{self, EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
@@ -49,12 +50,19 @@ pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
 // ---------------------------------------------------------------------------
 
 fn lint(args: &AuditdLintArgs) -> i32 {
-    let target = args
+    lint_with_probe(args, &LiveTargetProbe)
+}
+
+/// `lint` with the host probe injected, so the `--target auto` resolution path is
+/// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
+/// the real [`LiveTargetProbe`]; tests supply a fake.
+fn lint_with_probe(args: &AuditdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
+    let target_path = args
         .path
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_AUDIT_RULES_D));
 
-    let files = match resolve_lint_target(&target) {
+    let files = match resolve_lint_target(&target_path) {
         Ok(files) => files,
         Err(msg) => {
             eprintln!("auditd lint: {msg}");
@@ -89,7 +97,16 @@ fn lint(args: &AuditdLintArgs) -> i32 {
         let opts = lints::LintOptions {
             include_apparmor: args.apparmor,
         };
-        diags.extend(lints::lint(&rules, opts));
+        // Resolve --target in the command layer (epic #251): explicit value as-is,
+        // `auto` from the host probe, omitted -> version-agnostic (no au-W06). A
+        // failed `auto` degrades to version-agnostic with a warning, never an
+        // error (read-only tool).
+        let resolved = resolve_target(args.target, probe);
+        if let Some(warning) = &resolved.warning {
+            eprintln!("auditd lint: {warning}");
+        }
+        let target: Option<rulesteward_auditd::TargetVersion> = resolved.target.map(Into::into);
+        diags.extend(lints::lint(&rules, opts, target));
     }
 
     crate::output::emit_lint(
@@ -1027,15 +1044,27 @@ mod tests {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod lint_shell_tests {
-    use super::{lint, resolve_lint_target};
-    use crate::cli::{AuditdLintArgs, HumanJsonFormat};
-    use crate::exit_code::{EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+    use super::{HostTargetProbe, lint, lint_with_probe, resolve_lint_target};
+    use crate::cli::{AuditdLintArgs, HumanJsonFormat, TargetSelector, TargetVersionArg};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
+
+    /// A host probe returning a canned result, so the `--target auto` wiring
+    /// (including its degrade-with-warning path) is exercised without depending
+    /// on the test host's `/etc/os-release`. Mirrors `commands::sysctl`'s /
+    /// `commands::sshd`'s `FakeProbe`.
+    struct FakeProbe(Result<Option<TargetVersionArg>, String>);
+    impl HostTargetProbe for FakeProbe {
+        fn detect(&self) -> Result<Option<TargetVersionArg>, String> {
+            self.0.clone()
+        }
+    }
 
     fn args(path: &std::path::Path, format: HumanJsonFormat) -> AuditdLintArgs {
         AuditdLintArgs {
             path: Some(path.to_path_buf()),
             format,
             apparmor: false,
+            target: None,
         }
     }
 
@@ -1088,5 +1117,63 @@ mod lint_shell_tests {
         std::fs::write(dir.path().join("10-bad.rules"), "-Z bogus\n").expect("write");
         let a = args(dir.path(), HumanJsonFormat::Json);
         assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
+    }
+
+    // -- issue #474: --target wiring (mirrors commands::sysctl / commands::sshd) --
+
+    /// `--target` is plumbed into the lint context: the shipped `RHEL9_REQUIRED`
+    /// table is now populated (issue #474), so a ruleset satisfying only one of
+    /// its 67 required lines (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240)
+    /// exits `EXIT_WARNINGS` under an explicit --target - this pins that the flag
+    /// reaches `lints::lint` and threads through to the real au-W06 dispatch,
+    /// not just that it doesn't error.
+    #[test]
+    fn target_flag_threads_and_warns_against_the_populated_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("10-a.rules");
+        std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
+        let a = AuditdLintArgs {
+            path: Some(f),
+            format: HumanJsonFormat::Human,
+            apparmor: false,
+            target: Some(TargetSelector::Rhel9),
+        };
+        assert_eq!(lint(&a), EXIT_WARNINGS);
+    }
+
+    #[test]
+    fn target_auto_threads_the_probed_target() {
+        // `--target auto` resolves via the host probe; with the shipped RHEL9
+        // table now populated, the same one-of-67-satisfied ruleset warns
+        // (proves the resolved target reaches the dispatcher without the probe
+        // ever touching the real host).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("10-a.rules");
+        std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
+        let a = AuditdLintArgs {
+            path: Some(f),
+            format: HumanJsonFormat::Human,
+            apparmor: false,
+            target: Some(TargetSelector::Auto),
+        };
+        let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
+        assert_eq!(lint_with_probe(&a, &probe), EXIT_WARNINGS);
+    }
+
+    #[test]
+    fn target_auto_degrades_gracefully_when_unmappable() {
+        // A non-RHEL host (probe yields None) must NOT error: `--target auto`
+        // falls back to the version-agnostic dialect.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("10-a.rules");
+        std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
+        let a = AuditdLintArgs {
+            path: Some(f),
+            format: HumanJsonFormat::Human,
+            apparmor: false,
+            target: Some(TargetSelector::Auto),
+        };
+        let probe = FakeProbe(Ok(None));
+        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
     }
 }

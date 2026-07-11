@@ -1,0 +1,38 @@
+# cargo-mutants configuration for the auditd-msgtype-update dev tool.
+#
+# src/source.rs's `curl`, `fetch_userspace_source`, and `fetch_kernel_header`
+# are the live network seam: they are exercised only by the live
+# (non---fixtures) `check`/`derive` runs, never by the offline unit/CLI tests
+# (by design - the tests are fully hermetic against the committed fixtures).
+# Excluded from the mutation gate BY FUNCTION NAME so a guaranteed "survivor"
+# there does not mask a real gap in the tested core. Mirrors
+# tools/fapolicyd-attr-update/.cargo/mutants.toml: source.rs also contains the
+# offline-testable `verify_sha256` (+ its hex encoder), which MUST stay in the
+# gate (it is the provenance guard), so the narrower name-level exclude_re is
+# used instead of excluding the file.
+#
+# `parse.rs:150:36` `comma + 1` -> `comma * 1` in `parse_s_row` (session 7c,
+# ATL round 1, #476): a genuine EQUIVALENT mutant, proved rather than merely
+# unobserved. `comma` is `inner.find(',')`, so `inner[comma]` is by
+# construction ALWAYS the comma character itself, never `"`. `comma * 1`
+# (== `comma`) only widens the `after_comma` slice to additionally include
+# that one leading comma byte versus the correct `comma + 1`; searching for
+# the opening `"` from one byte earlier, where that one extra byte is
+# provably never `"`, finds the identical absolute quote position, so
+# `open_quote`'s ABSOLUTE index (and everything derived from it - `name`,
+# `close_quote`) is byte-for-byte identical for every input that reaches
+# this line. No panic risk either (`comma` is always a valid index, so
+# `comma * 1` never underflows, unlike the sibling `comma - 1` mutant, which
+# IS killed by a test - see `parse_typetab_rejects_a_row_with_an_empty_
+# audit_const_before_the_comma` in `src/parse.rs`, whose doc comment has the
+# full three-mutant disposition for this line + the `||`/`&&` guard below
+# it). No test can distinguish this mutant from the real code because there
+# is nothing to distinguish - excluded by exact mutant text, not by function
+# name, so the sibling `comma - 1` mutant at the same line:col stays in the
+# gate.
+exclude_re = [
+    "\\bcurl\\b",
+    "\\bfetch_userspace_source\\b",
+    "\\bfetch_kernel_header\\b",
+    'replace \+ with \* in parse_s_row',
+]

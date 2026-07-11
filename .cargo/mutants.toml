@@ -528,6 +528,27 @@ exclude_re = [
     #   `cidr_contains` mutants (the `&&`, and returning a constant) stay in-gate, killed
     #   by the `cidr_contains` known-answer test.
     'matching\.rs:.*replace <= with > in cidr_contains',
+    # `eq_sentinel_relational_disjoint` (compare.rs, #475 class 3): two GENUINE
+    # equivalent mutants that arise from a domain constraint. The uid/gid/sessionid
+    # sentinel IS u32::MAX (4294967295), and a CONCRETE relational bound `p` caps at
+    # 4294967294 because u32::MAX itself folds to the sentinel (classify -> UidGidUnset,
+    # position() None -> the helper declines before `p` is used). So `p` is always in
+    # [0, 4294967294], strictly below the sentinel.
+    # - `Lt`'s `p - 1` -> `p / 1` (== p): for Lt the upper bound is `p - 1`; the mutant
+    #   makes it `p`. The disjoint test `hi < SENTINEL` is `(p-1) < 4294967295` vs
+    #   `p < 4294967295`; both are true for every reachable p (they could only differ at
+    #   p == 4294967295, which is unreachable - it folds to the sentinel). Behaviourally
+    #   identical. (The sibling `- with +` mutant IS killable and stays in-gate, caught by
+    #   `sentinel_lt_tight_seam_one_below_sentinel_is_disjoint_class3_475` at p=4294967294.)
+    # - `hi < SENTINEL_POSITION` -> `hi <= SENTINEL_POSITION`: differs only when
+    #   `hi == 4294967295`. `hi` is `p` (Le) or `p - 1` (Lt); reaching 4294967295 needs
+    #   p == u32::MAX (Le, folds/declined) or p == u32::MAX+1 (Lt, outside the u32 domain).
+    #   Unreachable -> equivalent. Excluded by name (function-anchored), not
+    #   `#[mutants::skip]`, so the rationale stays in reviewable config; a single `<`/`-`
+    #   remains in the function after the dead Ge/Gt branches were dropped, so these
+    #   operator-anchored patterns are unambiguous.
+    'replace - with / in eq_sentinel_relational_disjoint',
+    'replace < with <= in eq_sentinel_relational_disjoint',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is

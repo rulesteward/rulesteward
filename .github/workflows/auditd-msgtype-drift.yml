@@ -1,0 +1,115 @@
+name: auditd-msgtype-drift
+
+# Weekly nudge for the auditd msgtype name<->number tables (issue #476): fetch
+# the pinned upstream audit-userspace + kernel sources LIVE
+# (msgtype-refs.toml's pinned commit/tag, sha256 pin-verified) and compare
+# against the shipped
+# crates/rulesteward-auditd/src/lints/value/msgtype.rs consts. On drift,
+# open/update a tracking issue (it never edits code). The on-demand path is
+# `just auditd-msgtype-check`.
+#
+# Like fapolicyd-attr-drift.yml, upstream audit-userspace/the kernel have no
+# releases/latest heuristic this tool relies on - the commit and tag are fixed
+# pins in msgtype-refs.toml - so there is no `--latest` mode. This run derives
+# at the PINNED refs. It therefore catches:
+#   - upstream force-pushing / re-tagging the pinned commit/tag (the sha256
+#     pin catches a changed body; a hard tool error here still surfaces as a
+#     job failure),
+#   - the committed tests/fixtures/ having themselves drifted from live
+#     upstream.
+# It CANNOT auto-detect that a newer audit-userspace commit or kernel tag
+# should be pinned; the issue body reminds a human to check
+# github.com/linux-audit/audit-userspace and github.com/torvalds/linux for a
+# newer citation commit/LTS tag.
+on:
+  schedule:
+    - cron: "0 9 * * 5" # Fridays 09:00 UTC (offset from the Mon-Thu sysctld/sshd/fapd drift runs)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: auditd msgtype tables drift vs live pinned upstream sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/auditd-msgtype-update
+      - name: Live check vs the pinned upstream refs
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- check \
+            > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/fetch
+          # error - e.g. a sha256 pin mismatch or upstream reformat, 101 = a
+          # `cargo run` compile failure if this out-of-workspace tool drifts from
+          # the rulesteward-auditd public API, etc.) = fail the job loudly.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "auditd-msgtype-update did not exit cleanly (rc=$RC; see logs above): the" \
+               "sha256 pin may no longer match (upstream re-tagged/force-pushed), upstream" \
+               "may have reformatted the header source and the parser failed closed, or the" \
+               "tool may no longer compile against the rulesteward-auditd API. The tool needs" \
+               "a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create auditd-msgtype-drift --color FBCA04 \
+            --description "auditd msgtype name<->number table drift vs upstream audit-userspace/kernel" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`auditd-msgtype-update check\` found the shipped auditd msgtype"
+            echo "name<->number tables no longer match upstream audit-userspace's"
+            echo "\`lib/msg_typetab.h\` + \`lib/audit-records.h\` and the Linux kernel's"
+            echo "\`include/uapi/linux/audit.h\`, at the refs pinned in"
+            echo "\`tools/auditd-msgtype-update/msgtype-refs.toml\`."
+            echo
+            echo "To update: run \`just auditd-msgtype-derive\`, review the diff, reconcile"
+            echo "\`crates/rulesteward-auditd/src/lints/value/msgtype.rs\`'s \`MSGTYPE_NAMES\` /"
+            echo "\`APPARMOR_MSGTYPE_NAMES\` consts, refresh the committed"
+            echo "\`tools/auditd-msgtype-update/tests/fixtures/\` if the upstream tables"
+            echo "changed, re-gate (adversarial + mutation), and confirm"
+            echo "\`just auditd-msgtype-check-offline\` reports 0 drift."
+            echo
+            echo "NOTE: this run derives at the PINNED commit/tag. If upstream has a newer"
+            echo "citation commit or kernel LTS tag worth tracking, bump \`commit\`/\`tag\`/"
+            echo "\`msg_typetab_sha256\`/\`audit_records_sha256\`/\`audit_h_sha256\` in"
+            echo "\`msgtype-refs.toml\` first."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label auditd-msgtype-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "auditd msgtype table drift: upstream audit-userspace/kernel have changes" \
+              --label auditd-msgtype-drift --body-file issue-body.md
+          fi

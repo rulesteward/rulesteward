@@ -1,0 +1,35 @@
+# Pinned upstream refs + fetched-source sha256 for tools/auditd-msgtype-update.
+#
+# TWO distinct upstreams, deliberately kept in SEPARATE tables (do not blur the
+# provenances):
+#
+#  * [audit-userspace]: github.com/linux-audit/audit-userspace @ commit 3bfa048
+#    (the crate-wide pinned citation commit used throughout
+#    crates/rulesteward-auditd - see src/lints/value/msgtype.rs). Carries
+#    lib/msg_typetab.h (the `_S(AUDIT_<NAME>, "<NAME>")` record-type name table)
+#    and lib/audit-records.h (the userspace-side `#define AUDIT_<NAME> <number>`
+#    constants).
+#
+#  * [kernel]: github.com/torvalds/linux @ tag v6.6 (LTS) -
+#    include/uapi/linux/audit.h. audit-records.h resolves 60 of the 197
+#    `_S`-referenced AUDIT_* constants ONLY via `#include <linux/audit.h>`
+#    (e.g. AUDIT_SYSCALL, AUDIT_USER, AUDIT_LOGIN, AUDIT_KERNEL, AUDIT_AVC,
+#    the MAC_* and MQ_* families), so number resolution needs BOTH files:
+#    audit-records.h first, the kernel header for names it lacks; a name
+#    defined in BOTH with DIFFERENT numbers is a hard error (exit 2) - the
+#    tool must never silently prefer one source on a conflict.
+#
+# Update workflow: bump a pin when upstream changes a table (a new record type,
+# a rename, a renumber), run `auditd-msgtype-update derive`, review the diff,
+# update crates/rulesteward-auditd/src/lints/value/msgtype.rs, re-copy
+# tests/fixtures/ from the new pins, and re-verify `auditd-msgtype-update check`
+# reports 0 drift.
+
+[audit-userspace]
+commit = "3bfa048"
+msg_typetab_sha256 = "9c61cd1986271e6a1028ca587f9b7b99ac0d8a6d7d10b95dd284efe45255ff87"
+audit_records_sha256 = "47d10faa6f222387da89549bee202b85578dd36012b4d48d229ba107a67e67ae"
+
+[kernel]
+tag = "v6.6"
+audit_h_sha256 = "db86160b09c1ef7c1ac2dd59a9d6b5d19a8494739dd8d78fc0464e8bc8ad8f55"
