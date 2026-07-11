@@ -107,15 +107,9 @@ pub fn w07(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
                     region_earlier_setters(&match_blocks[..j], later, &keyword, &kind);
                 region_shadow(later, &kind, &keyword, value, &earlier_setters)
             } else {
-                let earlier_setters: Vec<&MatchBlock> = match_blocks[..j]
-                    .iter()
-                    .copied()
-                    .filter(|earlier| {
-                        match_blocks_overlap(earlier, later)
-                            && first_value_for(earlier, &keyword).is_some()
-                    })
-                    .collect();
-                block_level_shadow(&keyword, value, &earlier_setters)
+                let earlier_setters =
+                    multitype_earlier_setters(&match_blocks[..j], later, &keyword);
+                multitype_shadow(later, &keyword, value, &earlier_setters)
             };
             if shadowed {
                 diags.push(anchored(
@@ -435,6 +429,361 @@ fn port_region_set(block: &MatchBlock, kind: &str) -> BTreeSet<u32> {
     acc
 }
 
+// ---- Multi-type one-axis reduction (#452, #494) ----
+//
+// The block-level fallback used for a LATER block constraining 2+ criterion types
+// used to select candidate earlier winners via [`match_blocks_overlap`], whose
+// exact-type-set gate silently drops a SUBSET predecessor (a bare `Match User alice`
+// ahead of a later `Match User alice Address ...`), even though the predecessor is
+// unconditionally satisfied by every connection the later block matches (#494). The
+// fix below selects earlier setters STRUCTURALLY (subset-or-equal type-set, still
+// co-satisfiable per shared axis - [`multitype_earlier_setters`]) and, when exactly
+// one axis differs (every other axis is a provable setter no-op -
+// [`multitype_reduction_axis`] / [`axis_is_noop`]), reduces to the existing
+// single-type region walk on that one axis ([`multitype_axis_shadow`]). Otherwise it
+// DECLINES to the coarse [`block_level_shadow`] comparison, still using the
+// structurally-selected earlier-setter set rather than `match_blocks_overlap`'s
+// exact-type-set gate (G5) - [`multitype_shadow`] is the entry point.
+
+/// Whether one connection can satisfy every combined occurrence of criterion type
+/// `kind` across TWO blocks' instance lists at once - the per-type co-satisfiability
+/// oracle [`match_blocks_overlap`] uses for its identical-type-set case, reused by
+/// [`multitype_earlier_setters`] (#452) for a subset-or-equal type-set: a criterion
+/// type is AND-ed across BOTH blocks, so two blocks co-apply on it iff ONE witness
+/// satisfies EVERY occurrence of it in `a_insts` AND `b_insts` combined.
+fn type_co_satisfiable(kind: &str, a_insts: &[&[String]], b_insts: &[&[String]]) -> bool {
+    if a_insts.len() == 1 && b_insts.len() == 1 {
+        // One occurrence on each side: the negation-aware pairwise oracle.
+        criterion_overlap(kind, a_insts[0], b_insts[0])
+    } else {
+        // A type repeated on either header is an AND across its occurrences, so the
+        // blocks co-apply on it only if one witness satisfies every occurrence in
+        // BOTH blocks (the cross-block intersection).
+        let combined: Vec<&[String]> = a_insts.iter().chain(b_insts).copied().collect();
+        // CONSERVATIVE GUARD: the cross-occurrence CIDR/port witness
+        // ([`cidr_instances_have_common_address`] / [`port_instances_have_common_port`])
+        // is negation-BLIND - it drops `!` carve-outs - so a repeated CIDR/LocalPort
+        // type carrying a negation would be over-approximated into a possible false
+        // positive. Computing the true negation-aware intersection across repeated
+        // occurrences is out of v0.3 scope, so we treat such a type as
+        // non-overlapping: an FN-leaning accepted gap that never risks a false
+        // positive. Name lists stay negation-aware via [`match_pattern_list`], so the
+        // guard is CIDR/port only.
+        if matches!(kind, "address" | "localaddress" | "localport")
+            && combined
+                .iter()
+                .any(|occ| occ.iter().any(|value| value.starts_with('!')))
+        {
+            false
+        } else {
+            criterion_instances_have_common_witness(kind, &combined)
+        }
+    }
+}
+
+/// The STRUCTURAL earlier-setter selection for a multi-type LATER block `later`
+/// (#452, #494; G1-G3): an earlier block qualifies iff it is `Match all` (G2 -
+/// universe, unconditionally satisfied) OR its criterion type-set is a
+/// SUBSET-OR-EQUAL of `later`'s (a type of `earlier` OUTSIDE `later`'s type-set
+/// excludes it entirely - G3, the same conservative cross-type posture #400 already
+/// takes) AND `earlier` is co-satisfiable with `later` on every one of ITS OWN
+/// (shared) axes via [`type_co_satisfiable`] - G1's "structurally selected, then
+/// co-satisfiability re-tested" rule. This replaces `match_blocks_overlap`'s
+/// exact-type-set gate for the multi-type path only; the single-type region path
+/// ([`region_earlier_setters`]) is untouched.
+fn multitype_earlier_setters<'a>(
+    earlier_blocks: &[&'a MatchBlock],
+    later: &MatchBlock,
+    keyword_lower: &str,
+) -> Vec<&'a MatchBlock> {
+    let later_types = criteria_by_type(later);
+    earlier_blocks
+        .iter()
+        .copied()
+        .filter(|earlier| {
+            first_value_for(earlier, keyword_lower).is_some()
+                && (is_unconditional_match_all(earlier) || {
+                    let earlier_types = criteria_by_type(earlier);
+                    earlier_types.iter().all(|(kind, a_insts)| {
+                        later_types
+                            .get(kind)
+                            .is_some_and(|b_insts| type_co_satisfiable(kind, a_insts, b_insts))
+                    })
+                })
+        })
+        .collect()
+}
+
+/// The EXACT literal set of a block's `kind` NAME criterion (AND across repeated
+/// occurrences), or `None` if the type is absent, or if ANY occurrence uses a glob
+/// (`*`/`?`) or a negation (`!`). [`axis_is_noop`]'s exact-containment check is
+/// undecidable in those cases, so callers must treat the axis as NOT neutral rather
+/// than guess (per the design's "unprovable is not neutral" rule).
+fn exact_name_set(block: &MatchBlock, kind: &str) -> Option<BTreeSet<String>> {
+    let by_type = criteria_by_type(block);
+    let instances = by_type.get(kind)?;
+    let mut acc: Option<BTreeSet<String>> = None;
+    for values in instances {
+        let mut set = BTreeSet::new();
+        for value in *values {
+            if value.starts_with('!') || value.contains(['*', '?']) {
+                return None;
+            }
+            set.insert(value.clone());
+        }
+        acc = Some(match acc {
+            None => set,
+            Some(prev) => prev.intersection(&set).cloned().collect(),
+        });
+    }
+    acc
+}
+
+/// Whether `earlier` is a NO-OP on axis `axis_kind` relative to `later`'s OWN
+/// restriction there (#452): either `earlier` is `Match all` (universe on every
+/// axis), `earlier` does not constrain `axis_kind` at all (universe on this one
+/// axis - it can never narrow `later`'s population below what it already is there),
+/// or `earlier`'s region on `axis_kind` provably COVERS (superset-or-equal of)
+/// `later`'s own region there: CIDR via two-way [`cidr_set_difference`] emptiness,
+/// `LocalPort` via `BTreeSet` superset, and `User`/`Group`/`Host` via EXACT
+/// literal-set containment with NO glob or negation on either side. Anything
+/// unprovable (a glob, a negation, an unmodeled type) is conservatively NOT neutral.
+fn axis_is_noop(earlier: &MatchBlock, later: &MatchBlock, axis_kind: &str) -> bool {
+    if is_unconditional_match_all(earlier) {
+        return true;
+    }
+    if !criteria_by_type(earlier).contains_key(axis_kind) {
+        return true;
+    }
+    match axis_kind {
+        "address" | "localaddress" => {
+            let earlier_set = cidr_region_set(earlier, axis_kind);
+            let later_set = cidr_region_set(later, axis_kind);
+            cidr_set_difference(&later_set, &earlier_set).is_empty()
+        }
+        "localport" => {
+            let earlier_set = port_region_set(earlier, axis_kind);
+            let later_set = port_region_set(later, axis_kind);
+            later_set.is_subset(&earlier_set)
+        }
+        "user" | "group" | "host" => matches!(
+            (exact_name_set(earlier, axis_kind), exact_name_set(later, axis_kind)),
+            (Some(e), Some(l)) if l.is_subset(&e)
+        ),
+        // Unmodeled type: never manufactures a no-op (conservative).
+        _ => false,
+    }
+}
+
+/// The UNIQUE reduction axis (#452) among `later_types`' criterion types, or `None`
+/// when zero or 2+ axes qualify. An axis `X` qualifies iff EVERY entry of
+/// `earlier_setters` is a no-op ([`axis_is_noop`]) on every OTHER axis of
+/// `later_types`; a genuine two-axis partition (no axis is a setter no-op for every
+/// selected predecessor) has no qualifying axis, and DECLINES to the block-level
+/// fallback (an accepted FN by owner decision - #452 follow-up "Option B", subset-type
+/// product carving, is deliberately out of scope here).
+fn multitype_reduction_axis(
+    later: &MatchBlock,
+    later_types: &BTreeMap<String, Vec<&[String]>>,
+    earlier_setters: &[&MatchBlock],
+) -> Option<String> {
+    let axes: Vec<&String> = later_types.keys().collect();
+    let mut found: Option<&String> = None;
+    for axis in &axes {
+        let qualifies = earlier_setters.iter().all(|earlier| {
+            axes.iter()
+                .filter(|other| **other != *axis)
+                .all(|other| axis_is_noop(earlier, later, other))
+        });
+        if qualifies {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(axis);
+        }
+    }
+    found.cloned()
+}
+
+/// Whether `later` repeats an `Address`/`LocalAddress`/`LocalPort` criterion type
+/// with a negated (`!`) occurrence (G4, #452) - mirrors the existing conservative
+/// guard `single_region_type` applies to a SINGLE-type block, independently for the
+/// multi-type reduction path: it declines the fine-grained per-axis carve entirely
+/// (falling back to [`block_level_shadow`]) rather than compute an exact
+/// negation-aware cross-occurrence remainder, which is out of v0.3 scope.
+fn later_has_repeated_negated_region(later: &MatchBlock) -> bool {
+    criteria_by_type(later).iter().any(|(kind, instances)| {
+        matches!(kind.as_str(), "address" | "localaddress" | "localport")
+            && instances.len() >= 2
+            && instances
+                .iter()
+                .any(|occ| occ.iter().any(|value| value.starts_with('!')))
+    })
+}
+
+/// Per-sub-population shadow for the reduction axis `kind` walk of a multi-type
+/// later block (#452): the CIDR variant of [`multitype_axis_shadow`]'s dispatch.
+/// Unlike the existing single-type [`cidr_region_shadow`] (untouched), an earlier
+/// setter that does not constrain `kind` at all is treated as UNIVERSE on it (it was
+/// already proven a no-op on every OTHER axis by [`axis_is_noop`], so only its
+/// restriction on the walked axis can decide a differing sub-population).
+fn multitype_cidr_axis_shadow(
+    later: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = cidr_region_set(later, kind);
+    for earlier in earlier_setters {
+        let constrains_axis = criteria_by_type(earlier).contains_key(kind);
+        let (region, rest) = if is_unconditional_match_all(earlier) || !constrains_axis {
+            (remaining.clone(), Vec::new())
+        } else {
+            let earlier_set = cidr_region_set(earlier, kind);
+            (
+                cidr_set_intersection(&remaining, &earlier_set),
+                cidr_set_difference(&remaining, &earlier_set),
+            )
+        };
+        if !region.is_empty()
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
+/// The `LocalPort` analogue of [`multitype_cidr_axis_shadow`]: an earlier setter not
+/// constraining `kind` is UNIVERSE on it, mirroring [`multitype_cidr_axis_shadow`]
+/// (the existing single-type [`port_region_shadow`] stays untouched).
+fn multitype_port_axis_shadow(
+    later: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    let mut remaining = port_region_set(later, kind);
+    for earlier in earlier_setters {
+        let constrains_axis = criteria_by_type(earlier).contains_key(kind);
+        let (region, rest): (BTreeSet<u32>, BTreeSet<u32>) =
+            if is_unconditional_match_all(earlier) || !constrains_axis {
+                (remaining.clone(), BTreeSet::new())
+            } else {
+                let earlier_set = port_region_set(earlier, kind);
+                (
+                    remaining.intersection(&earlier_set).copied().collect(),
+                    remaining.difference(&earlier_set).copied().collect(),
+                )
+            };
+        if !region.is_empty()
+            && first_value_for(earlier, keyword_lower).is_some_and(|winning| winning != value)
+        {
+            return true;
+        }
+        remaining = rest;
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
+/// The NAME (`User`/`Group`/`Host`) analogue of [`multitype_cidr_axis_shadow`]: a
+/// witness-candidate search like the existing single-type [`names_region_shadow`]
+/// (untouched), except an earlier setter not constraining `kind` at all is a
+/// UNIVERSE member (every candidate name), not a non-member.
+fn multitype_names_axis_shadow(
+    later: &MatchBlock,
+    kind: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
+    let mut candidates: Vec<String> = Vec::new();
+    collect_name_literals(later, kind, &mut candidates);
+    for earlier in earlier_setters {
+        collect_name_literals(earlier, kind, &mut candidates);
+    }
+    candidates.push(FRESH.to_string());
+    let member = |block: &MatchBlock, x: &str| -> bool {
+        if is_unconditional_match_all(block) {
+            return true;
+        }
+        match criteria_by_type(block).get(kind) {
+            Some(instances) => instances.iter().all(|values| match_pattern_list(x, values)),
+            // Doesn't constrain this axis at all: universe, a no-op setter here.
+            None => true,
+        }
+    };
+    candidates.iter().any(|name| {
+        member(later, name)
+            && earlier_setters
+                .iter()
+                .find(|earlier| member(earlier, name))
+                .and_then(|winner| first_value_for(winner, keyword_lower))
+                .is_some_and(|winning| winning != value)
+    })
+}
+
+/// Dispatch the reduction-axis walk by criterion-type domain (the multi-type
+/// analogue of [`region_shadow`]). Only invoked with an axis
+/// [`multitype_reduction_axis`] selected.
+fn multitype_axis_shadow(
+    later: &MatchBlock,
+    axis: &str,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    match axis {
+        "user" | "group" | "host" => {
+            multitype_names_axis_shadow(later, axis, keyword_lower, value, earlier_setters)
+        }
+        "address" | "localaddress" => {
+            multitype_cidr_axis_shadow(later, axis, keyword_lower, value, earlier_setters)
+        }
+        "localport" => {
+            multitype_port_axis_shadow(later, axis, keyword_lower, value, earlier_setters)
+        }
+        // Unreachable: `multitype_reduction_axis` only returns a key of `later_types`,
+        // which is itself gated to the modeled kinds by `criterion_overlap`.
+        _ => block_level_shadow(keyword_lower, value, earlier_setters),
+    }
+}
+
+/// Multi-type (2+ criterion type) LATER-block shadow detection (#452, #494): the
+/// entry point the `w07` dispatcher calls once [`multitype_earlier_setters`] (G1-G3)
+/// has structurally selected candidate earlier setters. Declines the per-axis
+/// reduction (G4: `later` repeats a negated CIDR/port criterion,
+/// [`later_has_repeated_negated_region`]; or no/non-unique reduction axis,
+/// [`multitype_reduction_axis`]) to the coarse [`block_level_shadow`] comparison,
+/// still using the structurally-selected `earlier_setters` rather than
+/// `match_blocks_overlap`'s exact-type-set gate (G5).
+fn multitype_shadow(
+    later: &MatchBlock,
+    keyword_lower: &str,
+    value: &[String],
+    earlier_setters: &[&MatchBlock],
+) -> bool {
+    if !later_has_repeated_negated_region(later) {
+        let later_types = criteria_by_type(later);
+        if let Some(axis) = multitype_reduction_axis(later, &later_types, earlier_setters) {
+            return multitype_axis_shadow(later, &axis, keyword_lower, value, earlier_setters);
+        }
+    }
+    // future (#452 follow-up): subset-type product carving (Option B) - declined
+    // here deliberately; two-axis partitioned shadows are accepted FNs.
+    block_level_shadow(keyword_lower, value, earlier_setters)
+}
+
 /// Whether two `Match` blocks can be satisfied by ONE connection, decided
 /// conservatively from their criteria pattern text (no NSS / DNS resolution).
 ///
@@ -451,10 +800,8 @@ fn port_region_set(block: &MatchBlock, kind: &str) -> BTreeSet<u32> {
 ///
 /// A criterion type is AND-ed across BOTH blocks: since a repeated type is an
 /// intersection, two blocks co-apply on a type iff ONE witness satisfies EVERY
-/// occurrence of it in `a` AND `b` combined. When each block states the type exactly
-/// once, that reduces to the negation-aware pairwise oracle
-/// ([`criterion_overlap`]); when either block repeats the type, the cross-block
-/// intersection is decided by [`criterion_instances_have_common_witness`].
+/// occurrence of it in `a` AND `b` combined - decided by [`type_co_satisfiable`],
+/// shared with [`multitype_earlier_setters`]'s subset-or-equal selection (#452).
 fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
     // A nobody-block co-satisfies nothing (checked first so a `Match all` does not
     // overlap an impossible block).
@@ -471,35 +818,9 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
         return false;
     }
     a_types.iter().all(|(kind, a_insts)| {
-        b_types.get(kind).is_some_and(|b_insts| {
-            if a_insts.len() == 1 && b_insts.len() == 1 {
-                // One occurrence on each side: the negation-aware pairwise oracle.
-                criterion_overlap(kind, a_insts[0], b_insts[0])
-            } else {
-                // A type repeated on either header is an AND across its occurrences,
-                // so the blocks co-apply on it only if one witness satisfies every
-                // occurrence in BOTH blocks (the cross-block intersection).
-                let combined: Vec<&[String]> = a_insts.iter().chain(b_insts).copied().collect();
-                // CONSERVATIVE GUARD: the cross-occurrence CIDR/port witness
-                // ([`cidr_instances_have_common_address`] / [`port_instances_have_common_port`])
-                // is negation-BLIND - it drops `!` carve-outs - so a repeated
-                // CIDR/LocalPort type carrying a negation would be over-approximated
-                // into a possible false positive. Computing the true negation-aware
-                // intersection across repeated occurrences is out of v0.3 scope, so we
-                // treat such a type as non-overlapping: an FN-leaning accepted gap that
-                // never risks a false positive. Name lists stay negation-aware via
-                // [`match_pattern_list`], so the guard is CIDR/port only.
-                if matches!(kind.as_str(), "address" | "localaddress" | "localport")
-                    && combined
-                        .iter()
-                        .any(|occ| occ.iter().any(|value| value.starts_with('!')))
-                {
-                    false
-                } else {
-                    criterion_instances_have_common_witness(kind, &combined)
-                }
-            }
-        })
+        b_types
+            .get(kind)
+            .is_some_and(|b_insts| type_co_satisfiable(kind, a_insts, b_insts))
     })
 }
 
@@ -832,16 +1153,40 @@ mod w07_tests {
     //!   witness, so W07 declines to flag rather than risk a false positive (an
     //!   FN-leaning guard). `repeated_cidr_criteria_with_negation_conservative_no_shadow`
     //!   locks this.
-    //! - MULTI-TYPE-PRODUCT partitioned shadows: a block constraining 2+ criterion
-    //!   TYPES (e.g. `Match User alice Address 10.1.0.0/16` yes / `...Address
-    //!   10.2.0.0/16` no / `...Address 10.0.0.0/8` yes) routes cross-block overlap
-    //!   through the block-level fallback rather than per-type sub-population regions,
-    //!   so a partitioned shadow spanning the type PRODUCT (here the
-    //!   alice-and-10.2.0.0/16 sub-population, GROUND TRUTH `sshd -T -C
-    //!   user=alice,addr=10.2.0.5` -> `x11forwarding no` on OpenSSH 10.2p1) goes
-    //!   undetected. Per-sub-population detection (#409) covers single criterion-type
-    //!   partitions only; the multi-type product is a tracked follow-up (no locking
-    //!   test - it is an accepted FN, never a false positive).
+    //! - MULTI-TYPE shadows spanning a GENUINE TWO-AXIS partition remain an accepted
+    //!   FN (#452 follow-up, "Option B" subset-type product carving - deliberately
+    //!   declined, see the comment at the decline point in `multitype_shadow`). A
+    //!   block constraining 2+ criterion TYPES is now DETECTED via a
+    //!   single-differing-AXIS reduction (#452, #494): earlier setters are selected
+    //!   STRUCTURALLY (`Match all`, or a subset-or-equal criterion type-set that is
+    //!   still co-satisfiable per shared axis - including a bare-`User`/bare-`Address`
+    //!   SUBSET predecessor `match_blocks_overlap`'s old exact-type-set gate silently
+    //!   dropped, #494), and when exactly one axis is left differing (every OTHER
+    //!   axis is a provable setter no-op: unconstrained, or an EXACT algebraic cover
+    //!   of the later block's own restriction there) the existing single-type region
+    //!   walk runs on that one axis. `ce4_452_target_partition_flags_only_the_shadowed_subnet`
+    //!   is the issue's own target case (`Match User alice Address 10.1.0.0/16` yes /
+    //!   `...Address 10.2.0.0/16` no / `...Address 10.0.0.0/8` yes: GROUND TRUTH
+    //!   `sshd -T -C user=alice,addr=10.2.0.5` -> `x11forwarding no` on OpenSSH
+    //!   9.9p1/8.0p1); `ce1_agreeing_subset_user_predecessor_flags_middle_not_supernet`,
+    //!   `ce2_subset_address_predecessor_constrains_the_differing_axis`, and
+    //!   `ce3_differing_subset_user_predecessor_whole_population_shadow` lock the #494
+    //!   subset-predecessor fix. What remains an accepted FN: a genuine two-axis
+    //!   partition where no axis is a setter no-op for every selected predecessor
+    //!   (`accepted_fn_two_differing_axes_declines_to_todays_block_level_result`), an
+    //!   unprovable name-axis neutrality check (a glob or negation on either side of a
+    //!   would-be no-op axis), and G4 (the later block itself repeats an
+    //!   `Address`/`LocalAddress`/`LocalPort` criterion with a negation,
+    //!   `g4_repeated_negated_address_does_not_block_a_whole_population_shadow`) -
+    //!   these all DECLINE the per-axis reduction and fall back to the coarse
+    //!   `block_level_shadow` comparison (still using the new structural selection,
+    //!   not `match_blocks_overlap`), so they may still MISS a finer partition but
+    //!   never over-flag. The per-type co-satisfiability gate is still enforced during
+    //!   selection, not traded away for the axis walk:
+    //!   `ce7_disjoint_one_axis_nested_other_axis_stays_clean` and
+    //!   `g3_earlier_type_outside_t_is_ignored_entirely` lock this, and
+    //!   `ce6_match_all_agreeing_interleave_stays_correct_regression_lock` locks that
+    //!   the pre-existing `Match all` interleave is undisturbed.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
