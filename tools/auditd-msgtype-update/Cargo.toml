@@ -1,0 +1,22 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the auditd crate purely to import the real shipped msgtype tables
+# (MSGTYPE_NAMES / APPARMOR_MSGTYPE_NAMES, via the public accessors added for
+# #476) for the `check` drift gate; that crate resolves its own workspace
+# inheritance against the repo root (cargo finds a package's workspace by walking
+# up from the package's OWN location), so the path-dep builds cleanly from here.
+# Mirrors tools/fapolicyd-attr-update's layout exactly.
+[workspace]
+
+[package]
+name = "auditd-msgtype-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the auditd msgtype name<->number tables from upstream audit-userspace and kernel uapi headers."
+
+[dependencies]
+rulesteward-auditd = { path = "../../crates/rulesteward-auditd" }
+toml = "1"
+sha2 = "0.11"

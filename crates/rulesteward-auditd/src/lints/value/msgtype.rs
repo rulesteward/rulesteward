@@ -279,6 +279,27 @@ pub(super) const APPARMOR_MSGTYPE_NAMES: &[(&str, u32)] = &[
     ("APPARMOR_KILL", 1507),
 ];
 
+/// The shipped base msgtype table ([`MSGTYPE_NAMES`]), publicly projected.
+///
+/// `pub` (re-exported from `lints::value`) so the out-of-workspace
+/// `tools/auditd-msgtype-update` derive tool can drift-check the shipped
+/// table against the upstream audit-userspace / kernel-uapi headers without
+/// duplicating it (#476) - the same consumer-driven visibility precedent as
+/// rulesteward-fapolicyd's `accepted_pattern_values` (#478). Pure visibility
+/// change; the table and lookup logic are unchanged.
+#[must_use]
+pub fn base_msgtype_names() -> &'static [(&'static str, u32)] {
+    MSGTYPE_NAMES
+}
+
+/// The shipped `#ifdef WITH_APPARMOR` msgtype table
+/// ([`APPARMOR_MSGTYPE_NAMES`]), publicly projected - same rationale as
+/// [`base_msgtype_names`] (#476). Pure visibility change.
+#[must_use]
+pub fn apparmor_msgtype_names() -> &'static [(&'static str, u32)] {
+    APPARMOR_MSGTYPE_NAMES
+}
+
 /// The numeric audit record type for a msgtype NAME (case-insensitive per
 /// libaudit `audit_name_to_msg_type`), or `None` if `name` is not a known
 /// record-type name. Consults [`MSGTYPE_NAMES`] always; when
