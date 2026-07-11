@@ -3802,4 +3802,44 @@ mod w07_tests {
             "the walk must not carve sub-populations out of a !*-vetoed nobody block"
         );
     }
+
+    #[test]
+    fn name_list_matches_nobody_direct_pin() {
+        // Direct unit pin on the private fast-path predicate (round 8). The round-7
+        // hoist of `name_axes_admit_witness` to the top of `multitype_shadow`
+        // SUBSUMES this predicate's domain through the lint() entry point: every
+        // list it recognizes as nobody is also witness-less, so the mutation
+        // survivor `name_list_matches_nobody -> bool with false` became GENUINELY
+        // behavior-equivalent end-to-end (the implementer proved the whole suite
+        // passes with the mutant applied; this supersedes the round-6 lint-level
+        // kill, which the hoist re-masked). Rather than a documented-equivalence
+        // exclusion, this test kills the mutant DIRECTLY and pins the fast-path
+        // contract: TRUE only for pure-negation and EXACT self-negation (literal or
+        // glob-string-identical); FALSE for anything with a surviving positive.
+        // The ["!a*","ab"] FALSE case is INTENTIONAL - the wider-glob-veto shape is
+        // deliberately NOT detected here (no glob-subsumption math in the fast
+        // path); the hoisted witness gate catches it with real match_pattern_list
+        // semantics (#452 rounds 5-7), and this pin keeps the predicate honest
+        // about exactly where its cheap exact-match contract ends.
+        let nobody = |vals: &[&str]| -> bool {
+            let owned: Vec<String> = vals.iter().map(|v| (*v).to_string()).collect();
+            super::name_list_matches_nobody(&owned)
+        };
+        // Pure negation: no positive entry at all -> nobody.
+        assert!(nobody(&["!alice"]));
+        // Exact self-negation: the only positive is negated verbatim -> nobody.
+        assert!(nobody(&["!alice", "alice"]));
+        // Exact GLOB self-negation: same rule, the entries compare as strings
+        // (`a*` vs `a*`), no glob expansion involved -> nobody.
+        assert!(nobody(&["!a*", "a*"]));
+        // A positive glob not exactly negated keeps the list satisfiable
+        // (`!alice,*` admits every user except alice - the round-4 control).
+        assert!(!nobody(&["!alice", "*"]));
+        // A plain literal with no negation at all is trivially satisfiable.
+        assert!(!nobody(&["alice"]));
+        // The wider-glob-veto shape (`!a*` vetoes `ab` under real
+        // match_pattern_list semantics) is INTENTIONALLY not detected by the fast
+        // path - exact string containment only, the witness gate owns this shape.
+        assert!(!nobody(&["!a*", "ab"]));
+    }
 }
