@@ -769,11 +769,15 @@ fn multitype_axis_shadow(
 /// universal positive like `*` admits fresh names). A non-universal glob-only
 /// positive (`a*`: no literal, FRESH fails it) is conservatively treated as
 /// witness-less - the walk's documented literals+FRESH accepted-FN posture, an FN
-/// (suppressed flag) never an FP. Used by [`multitype_shadow`]'s DECLINE path
-/// (#452 round 5): [`block_level_shadow`] is MEMBERSHIP-BLIND (it compares
-/// first-setter values without asking whether ANY connection satisfies the later
-/// block), so without this gate a witness-less name axis FP-flags a dead block the
-/// axis WALK would have rejected via the same `member()` search.
+/// (suppressed flag) never an FP. Gates the TOP of [`multitype_shadow`] - BOTH
+/// multitype routes (#452 rounds 5-7): the DECLINE fallback because
+/// [`block_level_shadow`] is MEMBERSHIP-BLIND (it compares first-setter values
+/// without asking whether ANY connection satisfies the later block), and the axis
+/// WALK because it inspects only the WALKED axis - a witness-less NON-walked axis
+/// (a dead `!a*,ab` user list beside a walked address axis) is never consulted by
+/// the walk's own `member()` search, which only reruns this enumeration for the
+/// reduction axis itself. Suppress-only: it can turn a flag into silence, never
+/// silence into a flag, so gating both routes cannot introduce a false positive.
 fn name_axes_admit_witness(block: &MatchBlock) -> bool {
     const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
     criteria_by_type(block).iter().all(|(kind, _)| {
@@ -796,9 +800,10 @@ fn name_axes_admit_witness(block: &MatchBlock) -> bool {
 /// [`later_has_repeated_negated_region`]; or no/non-unique reduction axis,
 /// [`multitype_reduction_axis`]) to the coarse [`block_level_shadow`] comparison,
 /// still using the structurally-selected `earlier_setters` rather than
-/// `match_blocks_overlap`'s exact-type-set gate (G5), gated by
-/// [`name_axes_admit_witness`] so the membership-blind comparison never flags a
-/// witness-less (nobody) later block.
+/// `match_blocks_overlap`'s exact-type-set gate (G5). BOTH routes sit behind the
+/// top-of-function [`block_matches_nobody`] and [`name_axes_admit_witness`] guards,
+/// so neither the walk nor the membership-blind fallback ever flags a nobody later
+/// block.
 fn multitype_shadow(
     later: &MatchBlock,
     keyword_lower: &str,
@@ -826,21 +831,22 @@ fn multitype_shadow(
     if block_matches_nobody(later) {
         return false;
     }
+    // Witness gate for BOTH routes (#452 rounds 5-7): a witness-less (nobody) name
+    // axis (`!a*,ab`, `!*,alice`) slips `block_matches_nobody` (which deliberately
+    // does no glob-subsumption math) and would otherwise be FP-flagged by EITHER
+    // route - the DECLINE fallback compares values membership-blind, and the axis
+    // WALK inspects only the walked axis, never a dead NON-walked one (its own
+    // member() search reruns this same match_pattern_list enumeration, but only for
+    // the reduction axis). Suppress-only, so hoisting it above the walk cannot
+    // introduce a false positive.
+    if !name_axes_admit_witness(later) {
+        return false;
+    }
     if !later_has_repeated_negated_region(later) {
         let later_types = criteria_by_type(later);
         if let Some(axis) = multitype_reduction_axis(later, &later_types, earlier_setters) {
             return multitype_axis_shadow(later, &axis, keyword_lower, value, earlier_setters);
         }
-    }
-    // DECLINE path. `block_level_shadow` is membership-blind, so first confirm the
-    // later block's name axes admit at least one witness: a witness-less (nobody)
-    // name list (`!a*,ab`, `!*,alice`) reaches here past `block_matches_nobody`
-    // (which deliberately does no glob-subsumption math) and would otherwise be
-    // FP-flagged against a `Match all` or subset predecessor (#452 round 5). The
-    // axis WALK needs no such gate: its member() search runs the same
-    // match_pattern_list machinery and finds no witness on these lists.
-    if !name_axes_admit_witness(later) {
-        return false;
     }
     // future (#452 follow-up): subset-type product carving (Option B) - declined
     // here deliberately; two-axis partitioned shadows are accepted FNs.
@@ -901,10 +907,10 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
 /// never widen to "contains a negation". Harder unsatisfiable shapes (a WIDER
 /// negated glob vetoing a narrower positive, e.g. `!a*,abc` or `!*,alice`) are
 /// deliberately treated as satisfiable here - no glob-subsumption math. That
-/// residual is closed elsewhere by the witness searches that run the real
-/// `match_pattern_list` semantics: the axis WALK's `member()` search finds no
-/// witness on such lists, and the membership-blind DECLINE fallback is gated by
-/// [`name_axes_admit_witness`] (#452 round 5).
+/// residual is closed by the [`name_axes_admit_witness`] gate at the top of
+/// [`multitype_shadow`], whose literals+FRESH witness search runs the real
+/// `match_pattern_list` semantics and covers BOTH multitype routes, walk and
+/// decline (#452 rounds 5-7).
 fn name_list_matches_nobody(values: &[String]) -> bool {
     let negated: BTreeSet<&str> = values.iter().filter_map(|v| v.strip_prefix('!')).collect();
     values
