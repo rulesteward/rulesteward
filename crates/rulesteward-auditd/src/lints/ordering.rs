@@ -38,6 +38,7 @@ use crate::ast::{
     Action, AuditField, AuditRule, ControlRule, FieldComparison, FieldFilter, FilterList,
     LocatedRule,
 };
+use crate::lints::compare_pair::compare_pairs_contradictory;
 use crate::lints::field_type::field_type;
 use crate::lints::normalize::canonical_key;
 use crate::lints::value::{LintOptions, canonical_value, disjoint, implies};
@@ -135,11 +136,18 @@ fn subsumes(earlier: &SyscallParts, later: &SyscallParts, opts: LintOptions) -> 
 
 /// True when two same-list rules can match overlapping traffic. Syscall sets
 /// must intersect (empty = wildcard matches all). Two rules are DISJOINT when a
-/// shared field carries provably non-co-matching predicates (#219, via
+/// shared `-F` field carries provably non-co-matching predicates (#219, via
 /// [`crate::lints::value::disjoint`]): contradictory equality (with uid/gid
-/// value folding) or non-overlapping numeric intervals. Because all `-F`
-/// predicates must match together, a single disjoint field means the rules
-/// cannot co-match. Anything not provably disjoint is conservatively treated as
+/// value folding) or non-overlapping numeric intervals; OR when a shared safe
+/// `-C` field-pair carries opposite ops (#475 class 2, via
+/// [`compare_pairs_contradictory`]): `uid=euid` and `uid!=euid` (or any other
+/// of the 16 safe process-vs-process `AUDIT_COMPARE_*` pairs) are exact
+/// logical complements and can never co-match one event; the 9 process-vs-
+/// OBJECT pairs are excluded from this channel (existential over
+/// `ctx->names_list`, not a true complement -- see `compare_pair.rs`'s module
+/// doc). Because all `-F`/`-C` predicates on a rule must match together
+/// (kernel AND-loop), a single disjoint dimension means the rules cannot
+/// co-match. Anything not provably disjoint is conservatively treated as
 /// overlapping, so au-W03 never drops a real suppression warning.
 fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts, opts: LintOptions) -> bool {
     let syscalls_intersect = a.syscalls.is_empty()
@@ -152,7 +160,8 @@ fn traffic_overlaps(a: &SyscallParts, b: &SyscallParts, opts: LintOptions) -> bo
         .fields
         .iter()
         .any(|fa| b.fields.iter().any(|fb| disjoint(fa, fb, opts)));
-    !field_disjoint
+    let compare_disjoint = compare_pairs_contradictory(a.field_compares, b.field_compares);
+    !(field_disjoint || compare_disjoint)
 }
 
 /// True for an exclude-list rule that suppresses the SYSCALL (1300) record
@@ -595,6 +604,35 @@ mod tests {
             &exclude_msgtype(Action::Always, "1305"),
             OFF
         ));
+    }
+
+    // --- w03 Case 2: msgtype-fold disjointness promotion (#475, class 1) ---
+
+    #[test]
+    fn w03_msgtype_provably_different_no_longer_flags_475() {
+        // #475: before the msgtype-fold promotion, `disjoint()` is always
+        // conservative for msgtype Eq/Eq (compare.rs's NOTE), so ANY
+        // never/always pair on the same list "overlaps" regardless of the
+        // msgtype values and w03's Case 2 fires. After: SYSCALL(1300) and
+        // CONFIG_CHANGE(1305) both resolve to numbers (msgtype.rs
+        // MSGTYPE_NAMES) and differ -> traffic_overlaps() == false -> w03
+        // does NOT fire for this pair. msgtype is legal on exclude|user
+        // filter lists only (au-E04, field_filter.rs:134
+        // Restriction::ExcludeOrUser); `user` is used here (live-confirmed
+        // legal: test_lints_field_filter.rs's msgtype_on_user_must_not_fire,
+        // "-a always,user -F msgtype=AVC").
+        let input = concat!(
+            "-a never,user -F msgtype=SYSCALL -k never_syscall\n",
+            "-a always,user -F msgtype=1305 -k always_configchange\n",
+        );
+        let rules = parse_rules_str_located(input, Path::new("10-msgtype-disjoint.rules")).unwrap();
+        let diags = w03(&rules, OFF);
+        assert!(
+            diags.is_empty(),
+            "msgtype=SYSCALL (1300) and msgtype=1305 (CONFIG_CHANGE) are \
+             provably different record types -> no suppression conflict, \
+             got: {diags:?}"
+        );
     }
 
     // --- w02 boundaries beyond the frozen integration fixtures ------------

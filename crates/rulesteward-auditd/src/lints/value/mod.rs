@@ -1251,4 +1251,585 @@ mod tests {
             "msgtype Eq/Eq stays conservative (not decidable from spelling)"
         );
     }
+
+    // --- disjoint: msgtype record-type-number folding (#475, class 1) ---
+    //
+    // Promotes msgtype Eq/Eq (and Eq/Ne) disjointness: two msgtype predicates
+    // are provably disjoint/contradictory ONLY when BOTH sides independently
+    // resolve to a concrete record-type NUMBER under the SAME `opts` (name
+    // lookup via MSGTYPE_NAMES/APPARMOR_MSGTYPE_NAMES, or the base-0 numeric
+    // fallback -- mirrors canonical_value's MsgType branch exactly) and those
+    // numbers differ (or match, for the Eq/Ne contradiction direction).
+    // Ground truth: kernel auditfilter.c:1205-1227 `audit_comparator` (a plain
+    // u32 `==`/`!=` compare) and libaudit.c:1783-1797 `AUDIT_MSGTYPE` value
+    // resolution, both @ audit-userspace/kernel 3bfa048/v6.6 (session 7c #475
+    // P3 grounding doc). An unresolved side (an unknown name, or an AppArmor
+    // name with `include_apparmor` off) MUST stay conservative.
+    //
+    // PRESERVED, NOT FLIPPED: `disjoint_alias_bearing_eq_pairs_are_not_disjoint`'s
+    // msgtype case (above, SYSCALL==1300) and `t14_apparmor_does_not_change_w03_disjoint`
+    // (above, APPARMOR_DENIED==1503) both test SAME-VALUE pairs under different
+    // spellings; a sound promotion keeps both asserting `!disjoint(...)`
+    // exactly as written. Flipping either would encode a false-positive au-W03
+    // regression (claiming two spellings of the SAME record type are
+    // "provably different", silently dropping a real suppression warning).
+
+    #[test]
+    fn msgtype_eq_eq_different_names_are_disjoint_475() {
+        // SYSCALL=1300, LOGIN=1006 (msgtype.rs MSGTYPE_NAMES): both resolve,
+        // genuinely different record types -> disjoint.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "LOGIN"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_eq_name_vs_number_different_are_disjoint_475() {
+        // SYSCALL=1300 vs the literal number 1309 (EXECVE): mixed resolution
+        // paths (name lookup vs numeric fallback), genuinely different.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_eq_number_vs_number_different_are_disjoint_475() {
+        // Pure numeric spellings, no name lookup involved at all.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+        // A base-0 spelling of the SAME number as one side (0x514 == 1300,
+        // confirmed by msgtype_number_and_name_fold_to_same_canonical above)
+        // must resolve identically through the numeric fallback.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "0x514"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1309"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_ne_same_value_cross_spelling_is_disjoint_475() {
+        // #475's design threads the new msgtype-resolution gate through
+        // canonical_decides_value_identity, which is shared by
+        // eq_values_provably_differ AND eq_values_provably_equal -- so the
+        // Eq/Ne contradiction direction folds too. SYSCALL and 1300 are the
+        // SAME record type under DIFFERENT spellings: `msgtype=SYSCALL` and
+        // `msgtype!=1300` contradict (a SYSCALL event always fails `!=1300`).
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "1300"),
+            OFF,
+        ));
+        // Same-spelling contradiction (extends #228's existing Eq/Ne pattern
+        // to msgtype): `msgtype=SYSCALL` and `msgtype!=SYSCALL` contradict.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "SYSCALL"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_eq_ne_different_value_still_overlaps_475() {
+        // Regression guard: `msgtype=SYSCALL` and `msgtype!=CONFIG_CHANGE`
+        // (1300 vs 1305, different) do NOT contradict -- a SYSCALL event
+        // satisfies `!=CONFIG_CHANGE` too, so the predicates overlap. Pins the
+        // Eq/Ne direction against a mutant that inverts the newly-reachable
+        // msgtype equality gate.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Ne, "CONFIG_CHANGE"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_on_different_numbers_are_disjoint_475() {
+        // With include_apparmor ON, AppArmor names resolve too (1500-1507).
+        // APPARMOR_DENIED=1503 vs APPARMOR=1500: different -> disjoint.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            ON,
+        ));
+        // APPARMOR_DENIED=1503 vs APPARMOR_ALLOWED=1502: both names, different.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_ALLOWED"),
+            ON,
+        ));
+        // Mixed base-table vs AppArmor: SYSCALL=1300 vs APPARMOR_DENIED=1503.
+        assert!(disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "SYSCALL"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            ON,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_off_unresolved_name_stays_conservative_475() {
+        // Same pair as the first assertion above, but OFF: APPARMOR_DENIED
+        // does not resolve (the AppArmor table is opt-in), so even though
+        // 1500 != 1503 IF resolved, the pair must stay conservative (not
+        // disjoint) -- one side unresolved is enough to decline, regardless
+        // of the other side's value (grounding doc section 4's per-case
+        // table: "AppArmor NAME, include_apparmor=false: does NOT resolve ->
+        // stays unfoldable -> conservative, never provably disjoint from
+        // anything").
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_unknown_name_never_disjoint_either_opts_475() {
+        // An unrecognized name never resolves, ON or OFF (it is in neither
+        // MSGTYPE_NAMES nor APPARMOR_MSGTYPE_NAMES) -- must stay conservative
+        // even against a known, different number.
+        for opts in [OFF, ON] {
+            assert!(!disjoint(
+                &ff(AuditField::MsgType, CompareOp::Eq, "NOT_A_RECORD"),
+                &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+                opts,
+            ));
+        }
+    }
+
+    #[test]
+    fn msgtype_unknown_name_as_second_operand_mirror_order_475() {
+        // Mirror-order pin: the RESOLVED operand first, the unresolved one
+        // second. The resolution gate is SYMMETRIC (both sides must
+        // independently resolve), but every other unresolved-operand pin in
+        // this block puts the unresolved side FIRST -- so an asymmetric impl
+        // that checks only operand A's resolvability and then falls back to
+        // canonical-string comparison would pass them all ("1300" vs
+        // "NOT_A_RECORD" canonicalize to different strings, so it would
+        // wrongly claim disjoint here). This operand order kills it.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "NOT_A_RECORD"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_apparmor_off_name_as_second_operand_mirror_order_475() {
+        // Mirror of msgtype_apparmor_off_unresolved_name_stays_conservative_475
+        // with the operands swapped: 1500 (resolved via the numeric fallback)
+        // FIRST, APPARMOR_DENIED (unresolved under OFF) SECOND. Same
+        // symmetric-gate rationale as the mirror pin above: one unresolved
+        // side is enough to decline, REGARDLESS of which side it is.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1500"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "APPARMOR_DENIED"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_u32_wraparound_same_value_stays_conservative_475() {
+        // The msgtype value is __u32 ON THE WIRE: uapi linux/audit.h:516
+        // (`__u32 values[AUDIT_MAX_FIELDS]` in struct audit_rule_data),
+        // libaudit.c:1788-1790 @ 3bfa048 (a truncating `strtol` assigned into
+        // that __u32 slot with NO range check), and the kernel's runtime
+        // audit_comparator(u32 left, u32 op, u32 right) (auditfilter.c:
+        // 1205-1227 @ v6.6). So the load path truncates mod 2^32:
+        // msgtype=4294967296 (2^32) and msgtype=0 denote the SAME kernel
+        // record type, and 4294968596 (2^32+1300) is SYSCALL. A resolution
+        // helper that parses at full u64 width without u32 narrowing sees
+        // both sides "resolve" to numbers whose decimal spellings differ and
+        // wrongly proves disjoint -- a NEW au-W03 false positive (these pairs
+        // were conservatively non-disjoint pre-promotion). Fix-agnostic:
+        // passes whether the impl declines to resolve above u32::MAX (the
+        // classify.rs uid/gid/sessionid precedent: u32::try_from, decline
+        // above -- pinned by uid_non_numeric_and_out_of_range_are_opaque and
+        // sessionid_out_of_range_and_nonnumeric_are_opaque above) or masks
+        // mod 2^32; both restore non-disjoint.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967296"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "0"),
+            OFF,
+        ));
+        // Nonzero residue: 2^32 + 1300 is congruent to 1300 (SYSCALL).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294968596"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_u32_wraparound_mirror_order_475() {
+        // Mirror-order variants of the wraparound pins above with the
+        // resolved-in-range side FIRST and the out-of-u32-range spelling
+        // SECOND, so the symmetric resolution gate stays pinned at the u32
+        // boundary too (same rationale as the other mirror_order pins in
+        // this block: an asymmetric impl that narrows or declines only
+        // operand A must not survive).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "0"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967296"),
+            OFF,
+        ));
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294968596"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_above_u32_stays_conservative_signed_strtol_clamp_475() {
+        // Above u32::MAX the two "restore non-disjoint" strategies DIVERGE, and
+        // only DECLINE is sound. libaudit.c:1788-1790 @ 3bfa048 parses msgtype
+        // with SIGNED `strtol`, which clamps a positive overflow to LONG_MAX
+        // (0x7FFF_FFFF_FFFF_FFFF) BEFORE the __u32 truncation (uapi audit.h:516
+        // `__u32 values[]`), so 2^63 loads as 0xFFFF_FFFF == 4294967295, NOT 0.
+        // An unsigned `& 0xFFFF_FFFF` mask would fold 2^63 -> 0 and reintroduce
+        // the round-1 false positive at a higher magnitude. The prover instead
+        // DECLINES any spelling above u32::MAX (the classify.rs uid/gid/sessionid
+        // precedent: `u32::try_from`, decline above), so it never proves a
+        // >u32 spelling disjoint -> never drops an au-W03 suppression warning.
+        //
+        // Dropped-warning guard: 2^63 and 4294967295 both load as 4294967295, so
+        // a never/always pair on them conflicts; declining keeps them
+        // non-disjoint (conservative AND, here, exactly correct).
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "9223372036854775808"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967295"),
+            OFF,
+        ));
+        // Mirror order: the symmetric gate must decline the >u32 operand on
+        // either side.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "4294967295"),
+            &ff(AuditField::MsgType, CompareOp::Eq, "9223372036854775808"),
+            OFF,
+        ));
+        // au-W01/au-W02 fold guard: `canonical_value` shares the same resolver,
+        // so a >u32 spelling must NOT canonicalize to an in-range record number
+        // (an unsigned mask folded 2^63 -> "0", false-equating it with
+        // msgtype=0 for duplicate/shadow detection).
+        assert_ne!(
+            canonical_value(ft(AuditField::MsgType), "9223372036854775808", OFF),
+            canonical_value(ft(AuditField::MsgType), "0", OFF),
+            "a msgtype spelling above u32::MAX must not fold to an in-range record number",
+        );
+    }
+
+    #[test]
+    fn msgtype_relational_pairs_stay_conservative_475() {
+        // Interval/relational reasoning for msgtype is explicitly OUT of scope
+        // for #475 (a documented non-goal, not a soundness gap:
+        // classify(MsgType) stays Opaque BY DESIGN per canonical.rs, so
+        // msgtype never enters interval position -- see
+        // msgtype_classify_stays_opaque_no_intervals above). Two disjoint-
+        // looking relational ranges must NOT be claimed disjoint; this pins
+        // the boundary so a future interval extension is a deliberate,
+        // separately-tested change, not an accidental side effect of #475.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Ge, "2000"),
+            &ff(AuditField::MsgType, CompareOp::Le, "1500"),
+            OFF,
+        ));
+    }
+
+    #[test]
+    fn msgtype_bitmask_pairs_stay_conservative_475() {
+        // Bitmask ops reach disjoint() via eq_bitand_disjoint /
+        // eq_bitandeq_disjoint (as_u64 -> classify(), still Opaque for
+        // msgtype), a path #475 does not touch. Also matches reality: the
+        // kernel rejects `&`/`&=` on AUDIT_MSGTYPE at rule-insert time
+        // (auditfilter.c:366-393 @ v6.6), so no legally-loadable ruleset
+        // could present this case either way.
+        assert!(!disjoint(
+            &ff(AuditField::MsgType, CompareOp::Eq, "1300"),
+            &ff(AuditField::MsgType, CompareOp::BitAnd, "2"),
+            OFF,
+        ));
+    }
+
+    // --- disjoint: sentinel-vs-relational disjointness (#475, class 3) --
+    //
+    // Promotes Eq-sentinel-vs-relational disjointness on Uid/Gid/SessionId
+    // fields: the kernel's audit_uid_comparator/audit_gid_comparator
+    // (uid_lt/uid_gte/etc, include/linux/uidgid.h @ v6.6) and plain
+    // audit_comparator (auditsc.c:542-545, SessionId) do RAW numeric
+    // comparison with NO special-casing for the unset/-1/4294967295
+    // sentinel -- it sits at position u32::MAX (4294967295) on the number
+    // line exactly like any other value (session 7c #475 P3 class-3
+    // grounding doc, sections 2 and 4). So a sentinel Eq predicate and a
+    // same-field relational predicate ARE provably disjoint whenever
+    // 4294967295 falls outside the relational predicate's matched
+    // interval, and provably NOT disjoint (the existing conservative
+    // answer, now backed by proof rather than a declined comparison)
+    // whenever it falls inside.
+    //
+    // Design: implemented as a new match arm in disjoint() (compare.rs)
+    // ONLY, gated on FieldValue::UidGidUnset via classify() -- NOT a
+    // change to FieldValue::position()/interval(), which implies() (au-W02)
+    // also shares. See the grounding doc section 5 for why a position()
+    // change would unsoundly promote au-W02 subsumption too.
+    //
+    // RED-now: the promotion's positive ("provably disjoint") cases --
+    // today's code always declines (interval(Eq sentinel) is None), so
+    // disjoint() returns false where the grounded-correct answer is true.
+    // GREEN-now: cases where the grounded-correct answer is "not disjoint"
+    // (the sentinel is genuinely in-range, or the pair falls outside the
+    // new arm's scope) -- these already pass under today's conservative
+    // fallback and MUST continue to pass unchanged after the promotion.
+    //
+    // PRESERVED, NOT DUPLICATED: `disjoint_conservative_on_sentinel_and_relational`
+    // (above, au-W03 section, auid=unset vs auid>=1000) already pins the
+    // canonical "sentinel is in-range" boundary case; its asserted boolean
+    // (`!disjoint`) does not change under this promotion (4294967295 >=
+    // 1000 is genuinely true), so it is left completely untouched here.
+
+    #[test]
+    fn sentinel_lt_excludes_all_spellings_disjoint_class3_475() {
+        // RED-now. All three canonical sentinel spellings on auid=unset
+        // fold to the same value before reaching the new arm; auid<1000
+        // excludes 4294967295 -> disjoint for every spelling.
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        for s in ["unset", "-1", "4294967295"] {
+            let eq_unset = ff(AuditField::Auid, CompareOp::Eq, s);
+            assert!(
+                disjoint(&eq_unset, &lt1000, OFF),
+                "auid={s} and auid<1000 must be disjoint (sentinel 4294967295 is not < 1000)"
+            );
+        }
+    }
+
+    #[test]
+    fn sentinel_le_one_below_relational_is_disjoint_class3_475() {
+        // RED-now. auid<=999 excludes 4294967295 -> disjoint.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le999 = ff(AuditField::Auid, CompareOp::Le, "999");
+        assert!(disjoint(&eq_unset, &le999, OFF));
+    }
+
+    #[test]
+    fn sentinel_lt_gid_family_is_disjoint_class3_475() {
+        // RED-now. Gid family gets the SAME treatment as Uid (grounding
+        // section 4: "no field needs to be excluded"), even though only
+        // the 4294967295 spelling is load-reachable for Gid in practice
+        // (section 3c) -- the prover reasons soundly about the written
+        // value regardless of load-time restrictions.
+        let eq_unset = ff(AuditField::Gid, CompareOp::Eq, "4294967295");
+        let lt1000 = ff(AuditField::Gid, CompareOp::Lt, "1000");
+        assert!(disjoint(&eq_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_ge_gid_family_is_not_disjoint_class3_475() {
+        // GREEN-now. The mirror of the previous test on the same field:
+        // gid=unset vs gid>=1000 must NOT be disjoint (4294967295 >= 1000
+        // is genuinely true) -- confirms Gid sees both sides of the
+        // boundary, not just the disjoint-payoff direction.
+        let eq_unset = ff(AuditField::Gid, CompareOp::Eq, "unset");
+        let ge1000 = ff(AuditField::Gid, CompareOp::Ge, "1000");
+        assert!(!disjoint(&eq_unset, &ge1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_lt_sessionid_family_is_disjoint_class3_475() {
+        // RED-now. SessionId is the most directly grounded case (section
+        // 3d): no legacy-rewrite indirection, no load-time restriction at
+        // all, plain u32 audit_comparator.
+        let eq_unset = ff(AuditField::SessionId, CompareOp::Eq, "unset");
+        let lt1000 = ff(AuditField::SessionId, CompareOp::Lt, "1000");
+        assert!(disjoint(&eq_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_relational_first_operand_order_is_disjoint_class3_475() {
+        // RED-now. Operand-order symmetry: the relational predicate first,
+        // the sentinel Eq second -- pins that BOTH new match arms
+        // ((Eq,rel) and (rel,Eq)) are wired, not just one.
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        assert!(disjoint(&lt1000, &eq_unset, OFF));
+    }
+
+    #[test]
+    fn sentinel_le_loosest_upper_bound_is_not_disjoint_class3_475() {
+        // GREEN-now. auid<=4294967295 is the loosest possible upper bound:
+        // the relational value IS the sentinel spelling itself, so it
+        // classifies as UidGidUnset (not a concrete Unsigned) and the new
+        // arm's position() guard declines -- same conservative "not
+        // disjoint" answer as today, for a value that is genuinely in
+        // range. Mirrors disjoint_touching_boundary_is_not_disjoint's
+        // "meet at the boundary" style.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le_sentinel = ff(AuditField::Auid, CompareOp::Le, "4294967295");
+        assert!(!disjoint(&eq_unset, &le_sentinel, OFF));
+    }
+
+    #[test]
+    fn sentinel_le_tight_seam_one_below_sentinel_is_disjoint_class3_475() {
+        // RED-now. THE seam: auid<=4294967294 (one less than the sentinel)
+        // excludes 4294967295 by exactly one -- the case most likely to
+        // catch an off-by-one in the Le interval arithmetic. Mirrors
+        // disjoint_tight_lt_boundary's exact-offset pinning style.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let le_below = ff(AuditField::Auid, CompareOp::Le, "4294967294");
+        assert!(disjoint(&eq_unset, &le_below, OFF));
+    }
+
+    #[test]
+    fn sentinel_lt_tight_seam_one_below_sentinel_is_disjoint_class3_475() {
+        // GREEN-now (post-impl) AND after any correct impl. The Lt mirror of
+        // sentinel_le_tight_seam_one_below_sentinel: auid<4294967294 matches
+        // [MIN, 4294967293] (Lt's `p - 1` upper bound), which excludes the
+        // sentinel at 4294967295 -> disjoint. This pins the exact `p - 1`
+        // arithmetic in the helper's Lt arm: a `p + 1` (or `p`) boundary
+        // mutant makes the upper bound 4294967295 (or 4294967294), pulling the
+        // sentinel back into range -> not disjoint (WRONG). The existing Lt
+        // pins use small values (Lt(1000)) where `p +/- 1` both stay far below
+        // the sentinel, so only this seam value at 4294967294 kills the mutant.
+        let lt_below = ff(AuditField::Auid, CompareOp::Lt, "4294967294");
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        assert!(
+            disjoint(&lt_below, &eq_unset, OFF),
+            "auid<4294967294 excludes the sentinel 4294967295 -> disjoint"
+        );
+        // Mirror order (Eq first, Lt second) -- both new arms wired.
+        assert!(
+            disjoint(&eq_unset, &lt_below, OFF),
+            "symmetric: auid=unset vs auid<4294967294 disjoint either order"
+        );
+    }
+
+    #[test]
+    fn sentinel_gt_one_below_sentinel_is_not_disjoint_class3_475() {
+        // GREEN-now. auid>4294967294 -> interval [4294967295, MAX] via the
+        // Gt `p+1` adjustment -- pins that the `+1` doesn't accidentally
+        // push the sentinel out of range (it lands EXACTLY on it).
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let gt_below = ff(AuditField::Auid, CompareOp::Gt, "4294967294");
+        assert!(!disjoint(&eq_unset, &gt_below, OFF));
+    }
+
+    #[test]
+    fn sentinel_gt_sentinel_value_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. auid>4294967295: the relational
+        // value is ITSELF the sentinel spelling, which is unloadable for
+        // Auid at this operator (grounding section 3a) -- if written
+        // anyway, it classifies as UidGidUnset too, so position() is None
+        // and the new arm declines rather than panicking or misfiring.
+        let eq_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let gt_sentinel = ff(AuditField::Auid, CompareOp::Gt, "4294967295");
+        assert!(!disjoint(&eq_unset, &gt_sentinel, OFF));
+    }
+
+    #[test]
+    fn sentinel_euid_ge_zero_matches_everything_is_not_disjoint_class3_475() {
+        // GREEN-now. euid>=0 is a degenerate "matches everything" predicate
+        // on an unsigned domain -- sanity check that the loosest possible
+        // lower bound correctly includes the sentinel too, on a different
+        // uid-family member than auid.
+        let eq_unset = ff(AuditField::Euid, CompareOp::Eq, "unset");
+        let ge0 = ff(AuditField::Euid, CompareOp::Ge, "0");
+        assert!(!disjoint(&eq_unset, &ge0, OFF));
+    }
+
+    #[test]
+    fn sentinel_name_value_is_not_the_sentinel_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. auid=root is a NAME, not the
+        // sentinel -- classify() returns Opaque, so the new arm's first
+        // guard (classify(ft, eq) != UidGidUnset) declines before any
+        // interval math runs.
+        let eq_root = ff(AuditField::Auid, CompareOp::Eq, "root");
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&eq_root, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_ne_relational_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. Ne is not in the new arm's op set
+        // {Ge,Gt,Le,Lt} paired with Eq -- the promotion is scoped to Eq
+        // specifically (grounding section 5b); a sentinel Ne vs a
+        // relational falls through unchanged to the existing conservative
+        // fallback.
+        let ne_unset = ff(AuditField::Auid, CompareOp::Ne, "unset");
+        let lt1000 = ff(AuditField::Auid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&ne_unset, &lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_different_fields_stays_conservative_class3_475() {
+        // GREEN-now, regression guard. disjoint()'s field-equality guard
+        // fires before the new arm is ever reached.
+        let auid_unset = ff(AuditField::Auid, CompareOp::Eq, "unset");
+        let uid_lt1000 = ff(AuditField::Uid, CompareOp::Lt, "1000");
+        assert!(!disjoint(&auid_unset, &uid_lt1000, OFF));
+    }
+
+    #[test]
+    fn sentinel_promotion_does_not_perturb_plain_relational_disjoint_class3_475() {
+        // GREEN-now, regression guard. Ordinary relational-vs-relational
+        // disjointness on the Gid family (no sentinel operand at all) must
+        // be completely unaffected: this pairing never matches the new
+        // (Eq,rel)/(rel,Eq) arms, so it still falls to the untouched
+        // generic interval fallback, both operand orders.
+        let ge2000 = ff(AuditField::Gid, CompareOp::Ge, "2000");
+        let lt1000 = ff(AuditField::Gid, CompareOp::Lt, "1000");
+        assert!(disjoint(&ge2000, &lt1000, OFF));
+        assert!(disjoint(&lt1000, &ge2000, OFF));
+    }
+
+    #[test]
+    fn sentinel_promotion_does_not_perturb_implies_class3_475() {
+        // GREEN-now, regression guard (au-W02 isolation). Mirrors the
+        // frozen implies_sentinel_in_relational_is_conservative pin (above,
+        // au-W02 section) but on the Gid family, to confirm class 3's
+        // disjoint()-only design left implies()/position() byte-for-byte
+        // untouched: no interval math on the sentinel here either, so this
+        // stays conservative false exactly as before, both operand orders.
+        let ge0 = ff(AuditField::Gid, CompareOp::Ge, "0");
+        let ge_sentinel = ff(AuditField::Gid, CompareOp::Ge, "4294967295");
+        assert!(!implies(&ge0, &ge_sentinel, OFF));
+        assert!(!implies(&ge_sentinel, &ge0, OFF));
+    }
+
+    #[test]
+    fn concrete_eq_vs_relational_reversed_order_stays_correct_class3_475() {
+        // GREEN-now AND GREEN after a correct impl. These use CONCRETE
+        // (non-sentinel) Eq values, so they do NOT exercise the new
+        // sentinel arm at all -- they guard the SHADOWING regression it
+        // could introduce. The forward order (Eq first) is already pinned
+        // by disjoint_eq_outside_relational (above), but the REVERSED
+        // (relational first, Eq second) order for a concrete value is not.
+        //
+        // Today both are decided by disjoint()'s generic interval fallback
+        // (compare.rs:109-112), which is order-symmetric. Class 3 adds a
+        // new `(rel, Eq)` match arm that SHADOWS that fallback; an impl
+        // that wires the sentinel helper as bare `helper(...)` (instead of
+        // `helper(...) || interval_fallback(...)`) in the reversed arm would
+        // silently regress disjoint(auid>=1000, auid=0) from true to false,
+        // dropping a real au-W03 disjointness AND breaking the
+        // disjoint(a,b) == disjoint(b,a) symmetry invariant. That wrong
+        // impl passes all 16 sentinel pins + the whole suite; only these
+        // reversed-order concrete pins catch it.
+        let ge1000 = ff(AuditField::Auid, CompareOp::Ge, "1000");
+        // concrete 0 is OUTSIDE [1000, MAX] -> disjoint, reversed order.
+        assert!(
+            disjoint(&ge1000, &ff(AuditField::Auid, CompareOp::Eq, "0"), OFF),
+            "auid>=1000 and auid=0 are disjoint regardless of operand order"
+        );
+        // concrete 1500 is INSIDE [1000, MAX] -> NOT disjoint, reversed order.
+        assert!(
+            !disjoint(&ge1000, &ff(AuditField::Auid, CompareOp::Eq, "1500"), OFF),
+            "auid>=1000 and auid=1500 overlap regardless of operand order"
+        );
+    }
 }

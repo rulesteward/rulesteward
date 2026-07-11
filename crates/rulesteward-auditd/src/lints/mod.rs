@@ -32,6 +32,7 @@
 
 pub mod arch_coverage;
 pub mod catalog;
+pub mod compare_pair;
 pub mod duplicate;
 pub mod field_filter;
 pub mod field_name;

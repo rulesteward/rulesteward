@@ -1219,6 +1219,684 @@ fn w03_overlapping_never_still_suppresses_219() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// #475 class 2: au-W03 -C inter-field-comparison contradiction disjointness
+//
+// Promotion (operator-locked, scope NARROWED by grounding, see the session
+// 7c P3-class-2 grounding doc): a complementary `-C field=field` /
+// `-C field!=field` pair on the SAME canonical field pair proves the two
+// rules disjoint, but ONLY for the 16 PROCESS-vs-PROCESS AUDIT_COMPARE_*
+// constants (libaudit.c's field1/field2 switch, rows 10-25 of the 25-row
+// table; `AUDIT_MAX_FIELD_COMPARE` = 25, uapi_audit.h:211-243). The 9
+// PROCESS-vs-OBJECT constants (*_TO_OBJ_UID / *_TO_OBJ_GID, rows 1-9) are
+// EXCLUDED and MUST stay conservative (overlapping): the kernel dispatches
+// them to `audit_compare_uid`/`audit_compare_gid` (auditsc.c:332-378), which
+// existentially quantifies `=`/`!=` over `ctx->names_list` (ALL filesystem
+// objects a syscall like rename(2)/link(2) touches, each with its own
+// owning uid/gid) -- `=` and `!=` on the SAME pair can BOTH be true for one
+// such event, so they are not true complements there.
+//
+// Legal `-C` syntax: only `=`/`!=` are valid operators (parser.rs:601-605;
+// double-gated by libaudit.c:1099-1113 AND kernel auditfilter.c:408-413);
+// every fixture below uses a legal field pair from the 25-row table so the
+// parser accepts it as a REAL loadable rule (an illegal pair like `uid=uid`
+// or `uid=egid` currently parses too in rulesteward today -- no cross-
+// field-pair validation exists yet, a separate au-E04-family gap -- but
+// using one here would test undefined/non-representative behavior, so none
+// of the fixtures below use one).
+//
+// All rules below carry NO `-F` fields, only `-C`, so `field_disjoint` (the
+// existing `-F`-only channel) is always false and `traffic_overlaps`'s
+// verdict is driven ENTIRELY by whether the new `-C` channel recognizes the
+// contradiction. Today (before the class-2 promotion) `-C` is completely
+// ignored by `traffic_overlaps` (ordering.rs:144-156 never reads
+// `field_compares`), so every pair below currently overlaps (au-W03 fires,
+// 1 diag) regardless of what the `-C` clauses say. Tests asserting DISJOINT
+// (0 diags, "_is_disjoint" names) are RED today; tests asserting the
+// conservative/excluded NOT-disjoint verdict (1 diag, "_stays_conservative"
+// / "_not_disjoint" names) are already GREEN today and MUST STAY GREEN
+// after the promotion lands -- they are the soundness pins, in particular
+// the two OBJECT-family tests below, which guard the single highest-risk
+// false "provably disjoint" claim in this whole promotion.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w03_c475_complementary_uid_euid_is_disjoint() {
+    // RED. AUDIT_COMPARE_UID_TO_EUID (table row 11). `-C uid=euid` and
+    // `-C uid!=euid` are exact logical complements for every event
+    // (audit_uid_comparator, auditfilter.c:1229-1249, over a single scalar
+    // cred->uid/cred->euid pair -- no names_list involved), so the two rules
+    // can never co-match -> au-W03 must NOT fire.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_uid_euid_never\n",
+        "-a always,exit -S execve -C uid!=euid -k c475_uid_euid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-uid-euid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=euid vs -C uid!=euid are complements on AUDIT_COMPARE_UID_TO_EUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_uid_is_disjoint() {
+    // RED. AUDIT_COMPARE_UID_TO_AUID (table row 10).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=uid -k c475_auid_uid_never\n",
+        "-a always,exit -S execve -C auid!=uid -k c475_auid_uid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-uid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=uid vs -C auid!=uid are complements on AUDIT_COMPARE_UID_TO_AUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_gid_egid_is_disjoint() {
+    // RED. AUDIT_COMPARE_GID_TO_EGID (table row 20), the GID-family twin of
+    // audit_gid_comparator (auditfilter.c:1251-1271, byte-identical logic).
+    let input = concat!(
+        "-a never,exit -S execve -C gid=egid -k c475_gid_egid_never\n",
+        "-a always,exit -S execve -C gid!=egid -k c475_gid_egid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-gid-egid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C gid=egid vs -C gid!=egid are complements on AUDIT_COMPARE_GID_TO_EGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_operand_order_cross_spelling_contradictory_is_disjoint() {
+    // RED. `-C uid=euid` and `-C euid!=uid` resolve to the SAME wire constant
+    // (AUDIT_COMPARE_UID_TO_EUID) regardless of operand order: userspace
+    // hard-codes both field1/field2 orderings to the same output constant
+    // (libaudit.c:1274-1277 vs 1156-1159), and with opposite ops they are
+    // still exact complements. A wrong impl that compares FieldComparison
+    // operand-by-operand (left==left && right==right) without canonicalizing
+    // order would MISS this and wrongly stay conservative.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_order_a_never\n",
+        "-a always,exit -S execve -C euid!=uid -k c475_order_a_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-order-a.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=euid vs -C euid!=uid canonicalize to the same pair with opposite \
+         ops -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_operand_order_cross_spelling_same_op_not_disjoint() {
+    // GREEN today and after. `-C uid=euid` and `-C euid=uid` are the
+    // IDENTICAL rule spelled two ways (same wire constant, same op): not a
+    // contradiction, they co-match every event that satisfies either. A
+    // wrong impl that treats "operands swapped" alone as evidence of a
+    // contradiction (confusing operand-order-difference with operator-
+    // difference) would wrongly mark these disjoint -- a FALSE POSITIVE that
+    // would silently drop a real au-W03 warning.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_order_b_never\n",
+        "-a always,exit -S execve -C euid=uid -k c475_order_b_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-order-b.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C uid=euid vs -C euid=uid are the SAME rule spelled two ways (not a \
+         contradiction) -> must stay overlapping -> au-W03 must still fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_same_op_same_pair_not_disjoint() {
+    // GREEN today and after. An exact restatement is trivially
+    // non-contradictory.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_restate_never\n",
+        "-a always,exit -S execve -C uid=euid -k c475_restate_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-restate.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C uid=euid vs -C uid=euid (exact restatement) is not a contradiction \
+         -> must stay overlapping -> au-W03 must still fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_different_safe_pairs_stay_conservative() {
+    // GREEN today and after. UID-family and GID-family pairs share no
+    // logical relationship: cross-pair reasoning is out of scope, so the
+    // rules stay conservatively overlapping.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_crosspair_never\n",
+        "-a always,exit -S execve -C gid!=egid -k c475_crosspair_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-crosspair.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C uid=euid vs -C gid!=egid share no safe canonical pair -> cross-pair \
+         reasoning is out of scope -> au-W03 must still fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_uid_to_obj_uid_stays_conservative() {
+    // GREEN today, and MUST STAY GREEN forever -- the critical soundness
+    // guard. AUDIT_COMPARE_UID_TO_OBJ_UID (table row 1). The kernel
+    // dispatches this constant to audit_compare_uid (auditsc.c:332-378),
+    // which existentially quantifies over ctx->names_list (ALL filesystem
+    // objects a syscall touches; e.g. rename(2)/link(2) can attach 2+ names
+    // with DIFFERENT owning uids). For a cross-ownership rename, BOTH
+    // `uid=obj_uid` and `uid!=obj_uid` can independently find a matching
+    // name and return true -- they are NOT complements here. If a wrong
+    // impl includes the 9 OBJECT constants in its canonical-pair table, this
+    // test catches it: `traffic_overlaps` would wrongly return false, and
+    // au-W03 (whose documented invariant is "anything not provably disjoint
+    // stays conservatively overlapping", ordering.rs:141-143) would SILENTLY
+    // STOP WARNING about a real suppression conflict that genuinely can
+    // occur.
+    let input = concat!(
+        "-a never,exit -S rename -C uid=obj_uid -k c475_objuid_never\n",
+        "-a always,exit -S rename -C uid!=obj_uid -k c475_objuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-objuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C uid=obj_uid vs -C uid!=obj_uid are NOT complements (existential over \
+         names_list, auditsc.c:332-378) -> must stay conservatively overlapping -> \
+         au-W03 must still fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_gid_to_obj_gid_stays_conservative() {
+    // GREEN today, and MUST STAY GREEN forever. AUDIT_COMPARE_GID_TO_OBJ_GID
+    // (table row 2), the GID-family twin of the UID case above (same
+    // audit_compare_gid existential-over-names_list mechanism).
+    let input = concat!(
+        "-a never,exit -S rename -C gid=obj_gid -k c475_objgid_never\n",
+        "-a always,exit -S rename -C gid!=obj_gid -k c475_objgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-objgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C gid=obj_gid vs -C gid!=obj_gid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_c_vs_absent_c_stays_conservative() {
+    // GREEN today and after. Rule B has no `-C` at all, so its matched-event
+    // set is a superset of (or equal to) what it would be with the pair
+    // constrained: A's `-C uid=euid` cannot prove disjointness from B's
+    // absence of any constraint on that pair.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -k c475_absent_never\n",
+        "-a always,exit -S execve -k c475_absent_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-absent.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C uid=euid vs no -C at all: absence cannot prove disjointness -> \
+         au-W03 must still fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_multi_c_conjunction_shared_contradiction_is_disjoint() {
+    // RED. Rule A carries TWO -C comparisons (`uid=euid` AND `gid=egid`);
+    // rule B carries TWO DIFFERENT -C comparisons (`uid!=euid` AND
+    // `sgid=fsgid`), sharing no pair with A's second clause. The kernel ANDs
+    // every field in a rule (`audit_filter_rules`'s `if (!result) return 0`
+    // loop, auditsc.c:481-751) -- a single false conjunct fails the WHOLE
+    // rule -- so a contradiction on ANY one shared safe pair (uid/euid here)
+    // is sufficient to prove the two rules' overall AND-conjunctions can
+    // never both be true for one event, regardless of what else either rule
+    // contains.
+    let input = concat!(
+        "-a never,exit -S execve -C uid=euid -C gid=egid -k c475_multi_never\n",
+        "-a always,exit -S execve -C uid!=euid -C sgid=fsgid -k c475_multi_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-multi.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "rule A (-C uid=euid, -C gid=egid) and rule B (-C uid!=euid, -C sgid=fsgid) \
+         share a contradictory pair (uid/euid) -> disjoint regardless of the other \
+         conjuncts -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+// --- object-family exclusion: FULL coverage of all 9 *_TO_OBJ_* constants ---
+//
+// The two OBJECT pins above (rows 1-2) plus the seven below pin ALL 9
+// process-vs-object constants (uapi_audit.h:211-219, rows 1-9) as
+// conservatively-overlapping. Pinning all 9 kills the LAZIEST unsound impl: a
+// design that canonicalizes ANY field pair and then denylists only the two
+// literals actually tested would pass a 2-of-9 subset but be silently unsound
+// for the other 7 object pairs (e.g. `-C euid=obj_uid` vs `-C euid!=obj_uid`
+// wrongly proven disjoint, dropping a real au-W03 warning). All 9 GREEN pins
+// force the sound design (an allowlist of the 16 safe pairs, or a "contains
+// obj_uid/obj_gid => exclude" rule). Every pin is GREEN now (the `-C` channel
+// is inert today) and MUST STAY GREEN after the promotion. Each uses a legal
+// pair (=/!= + a real field pair) on a syscall (rename) that genuinely
+// attaches multiple names_list entries, so the existential-over-names_list
+// co-satisfaction (auditsc.c:332-378) is real, not hypothetical.
+
+#[test]
+fn w03_c475_object_family_euid_to_obj_uid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_EUID_TO_OBJ_UID (uapi row 3).
+    let input = concat!(
+        "-a never,exit -S rename -C euid=obj_uid -k c475_euidobj_never\n",
+        "-a always,exit -S rename -C euid!=obj_uid -k c475_euidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-euidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C euid=obj_uid vs -C euid!=obj_uid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_egid_to_obj_gid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_EGID_TO_OBJ_GID (uapi row 4).
+    let input = concat!(
+        "-a never,exit -S rename -C egid=obj_gid -k c475_egidobj_never\n",
+        "-a always,exit -S rename -C egid!=obj_gid -k c475_egidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-egidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C egid=obj_gid vs -C egid!=obj_gid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_auid_to_obj_uid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_AUID_TO_OBJ_UID (uapi row 5).
+    let input = concat!(
+        "-a never,exit -S rename -C auid=obj_uid -k c475_auidobj_never\n",
+        "-a always,exit -S rename -C auid!=obj_uid -k c475_auidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C auid=obj_uid vs -C auid!=obj_uid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_suid_to_obj_uid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_SUID_TO_OBJ_UID (uapi row 6).
+    let input = concat!(
+        "-a never,exit -S rename -C suid=obj_uid -k c475_suidobj_never\n",
+        "-a always,exit -S rename -C suid!=obj_uid -k c475_suidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-suidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C suid=obj_uid vs -C suid!=obj_uid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_sgid_to_obj_gid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_SGID_TO_OBJ_GID (uapi row 7).
+    let input = concat!(
+        "-a never,exit -S rename -C sgid=obj_gid -k c475_sgidobj_never\n",
+        "-a always,exit -S rename -C sgid!=obj_gid -k c475_sgidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-sgidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C sgid=obj_gid vs -C sgid!=obj_gid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_fsuid_to_obj_uid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_FSUID_TO_OBJ_UID (uapi row 8).
+    let input = concat!(
+        "-a never,exit -S rename -C fsuid=obj_uid -k c475_fsuidobj_never\n",
+        "-a always,exit -S rename -C fsuid!=obj_uid -k c475_fsuidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-fsuidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C fsuid=obj_uid vs -C fsuid!=obj_uid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_object_family_fsgid_to_obj_gid_stays_conservative() {
+    // GREEN, must never flip. AUDIT_COMPARE_FSGID_TO_OBJ_GID (uapi row 9).
+    let input = concat!(
+        "-a never,exit -S rename -C fsgid=obj_gid -k c475_fsgidobj_never\n",
+        "-a always,exit -S rename -C fsgid!=obj_gid -k c475_fsgidobj_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-fsgidobj.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert_eq!(
+        diags.len(),
+        1,
+        "-C fsgid=obj_gid vs -C fsgid!=obj_gid are NOT complements (existential over \
+         names_list) -> must stay conservatively overlapping -> au-W03 must still \
+         fire, got {diags:?}"
+    );
+}
+
+// --- more SAFE-pair disjoint pins: force the full 16-pair table, not a 3-pair overfit ---
+//
+// The five RED disjoint-proving tests above exercise only 3 of the 16 safe
+// process-vs-process pairs (UID_TO_EUID 11, UID_TO_AUID 10, GID_TO_EGID 20).
+// These three more (rows 19, 24, 16) spread the coverage across the suid/fsuid,
+// egid/sgid, and auid/euid sub-families so a 3-pair-allowlist impl cannot pass
+// while under-delivering on the rest of the 16. All RED now (the `-C` channel
+// is inert today) and must go GREEN with the sound 16-pair promotion.
+
+#[test]
+fn w03_c475_complementary_suid_fsuid_is_disjoint() {
+    // RED. AUDIT_COMPARE_SUID_TO_FSUID (uapi row 19).
+    let input = concat!(
+        "-a never,exit -S execve -C suid=fsuid -k c475_suid_fsuid_never\n",
+        "-a always,exit -S execve -C suid!=fsuid -k c475_suid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-suid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C suid=fsuid vs -C suid!=fsuid are complements on AUDIT_COMPARE_SUID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_egid_sgid_is_disjoint() {
+    // RED. AUDIT_COMPARE_EGID_TO_SGID (uapi row 24).
+    let input = concat!(
+        "-a never,exit -S execve -C egid=sgid -k c475_egid_sgid_never\n",
+        "-a always,exit -S execve -C egid!=sgid -k c475_egid_sgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-egid-sgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C egid=sgid vs -C egid!=sgid are complements on AUDIT_COMPARE_EGID_TO_SGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_euid_is_disjoint() {
+    // RED. AUDIT_COMPARE_AUID_TO_EUID (uapi row 16). Also cross-checks operand
+    // canonicalization the other direction: spelled auid=euid, the userspace
+    // constant is AUID_TO_EUID (libaudit.c AUID/EUID switch arm).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=euid -k c475_auid_euid_never\n",
+        "-a always,exit -S execve -C auid!=euid -k c475_auid_euid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-euid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=euid vs -C auid!=euid are complements on AUDIT_COMPARE_AUID_TO_EUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+// --- ALL 16 safe pairs pinned: kill every canonical_pair match-arm mutant (ATL) ---
+//
+// The mutation gate on the class-2 impl left 10 MISSED mutants, one per SAFE
+// process-vs-process pair that had no disjoint-proving test (only 6 of 16 were
+// pinned above). Each survivor is `delete match arm (X, Y)` in
+// `canonical_pair`: dropping an arm makes it return None for that pair, so the
+// promotion silently stops firing for it -- undetected without a test that
+// exercises exactly that arm. The impl-aware adversary independently verified
+// all 16 arms map CORRECTLY (0 mismatches vs an independent oracle), so these
+// 10 are pure test-adequacy pins: GREEN against the current (correct) impl,
+// each one killing its own arm's delete-mutant. With these plus the 6 above,
+// all 16 safe pairs (uapi_audit.h:221-241, rows 10-25) are pinned. Every
+// fixture uses a legal `=`/`!=` pair the parser accepts (parser.rs:626-674).
+
+#[test]
+fn w03_c475_complementary_uid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_UID_TO_FSUID (uapi row 12).
+    let input = concat!(
+        "-a never,exit -S execve -C uid=fsuid -k c475_uid_fsuid_never\n",
+        "-a always,exit -S execve -C uid!=fsuid -k c475_uid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-uid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=fsuid vs -C uid!=fsuid are complements on AUDIT_COMPARE_UID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_uid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_UID_TO_SUID (uapi row 13).
+    let input = concat!(
+        "-a never,exit -S execve -C uid=suid -k c475_uid_suid_never\n",
+        "-a always,exit -S execve -C uid!=suid -k c475_uid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-uid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C uid=suid vs -C uid!=suid are complements on AUDIT_COMPARE_UID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_AUID_TO_FSUID (uapi row 14).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=fsuid -k c475_auid_fsuid_never\n",
+        "-a always,exit -S execve -C auid!=fsuid -k c475_auid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=fsuid vs -C auid!=fsuid are complements on AUDIT_COMPARE_AUID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_auid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_AUID_TO_SUID (uapi row 15).
+    let input = concat!(
+        "-a never,exit -S execve -C auid=suid -k c475_auid_suid_never\n",
+        "-a always,exit -S execve -C auid!=suid -k c475_auid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-auid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C auid=suid vs -C auid!=suid are complements on AUDIT_COMPARE_AUID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_euid_suid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EUID_TO_SUID (uapi row 17).
+    let input = concat!(
+        "-a never,exit -S execve -C euid=suid -k c475_euid_suid_never\n",
+        "-a always,exit -S execve -C euid!=suid -k c475_euid_suid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-euid-suid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C euid=suid vs -C euid!=suid are complements on AUDIT_COMPARE_EUID_TO_SUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_euid_fsuid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EUID_TO_FSUID (uapi row 18).
+    let input = concat!(
+        "-a never,exit -S execve -C euid=fsuid -k c475_euid_fsuid_never\n",
+        "-a always,exit -S execve -C euid!=fsuid -k c475_euid_fsuid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-euid-fsuid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C euid=fsuid vs -C euid!=fsuid are complements on AUDIT_COMPARE_EUID_TO_FSUID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_gid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_GID_TO_FSGID (uapi row 21).
+    let input = concat!(
+        "-a never,exit -S execve -C gid=fsgid -k c475_gid_fsgid_never\n",
+        "-a always,exit -S execve -C gid!=fsgid -k c475_gid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-gid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C gid=fsgid vs -C gid!=fsgid are complements on AUDIT_COMPARE_GID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_gid_sgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_GID_TO_SGID (uapi row 22).
+    let input = concat!(
+        "-a never,exit -S execve -C gid=sgid -k c475_gid_sgid_never\n",
+        "-a always,exit -S execve -C gid!=sgid -k c475_gid_sgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-gid-sgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C gid=sgid vs -C gid!=sgid are complements on AUDIT_COMPARE_GID_TO_SGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_egid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_EGID_TO_FSGID (uapi row 23).
+    let input = concat!(
+        "-a never,exit -S execve -C egid=fsgid -k c475_egid_fsgid_never\n",
+        "-a always,exit -S execve -C egid!=fsgid -k c475_egid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-egid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C egid=fsgid vs -C egid!=fsgid are complements on AUDIT_COMPARE_EGID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
+#[test]
+fn w03_c475_complementary_sgid_fsgid_is_disjoint() {
+    // GREEN. AUDIT_COMPARE_SGID_TO_FSGID (uapi row 25), the last of the 16.
+    let input = concat!(
+        "-a never,exit -S execve -C sgid=fsgid -k c475_sgid_fsgid_never\n",
+        "-a always,exit -S execve -C sgid!=fsgid -k c475_sgid_fsgid_always\n",
+    );
+    let rules = parse_rules_str_located(input, Path::new("10-c475-sgid-fsgid.rules")).unwrap();
+    assert_eq!(rules.len(), 2);
+    let diags = w03(&rules, LintOptions::default());
+    assert!(
+        diags.is_empty(),
+        "-C sgid=fsgid vs -C sgid!=fsgid are complements on AUDIT_COMPARE_SGID_TO_FSGID \
+         -> provably disjoint -> au-W03 must not fire, got {diags:?}"
+    );
+}
+
 // ===========================================================================
 // STRETCH: au-W04 (-D mid-stream) tests -- clearly marked, cuttable at integration
 // ===========================================================================
