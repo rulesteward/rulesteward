@@ -1,8 +1,8 @@
 //! Best-effort `man sshd_config` keyword-discovery pass (#471).
 //!
 //! LIVE-only, advisory, NEVER gate-failing: widens the candidate universe
-//! beyond `known_keywords(target)` plus the bogus sentinel (see the
-//! `TODO(#372-followup)` in `probe.rs`) by parsing the roff/mdoc SOURCE of the
+//! beyond `known_keywords(target)` plus the bogus sentinel (see
+//! `probe::fetch_manpage_source`) by parsing the roff/mdoc SOURCE of the
 //! in-container
 //! `/usr/share/man/man5/sshd_config.5.gz`, extracting every keyword named in
 //! the man page's TOP-LEVEL keyword-enumeration list, and flagging any that
@@ -57,8 +57,48 @@
 /// ("discovery unavailable") rather than a hard failure - see
 /// `discovery_unavailable_advisory`.
 pub fn extract_manpage_keywords(roff: &str) -> Vec<String> {
-    let _ = roff;
-    todo!("#471: parse the roff/mdoc source's top-level `.It Cm <Keyword>` entries")
+    let mut depth: u32 = 0;
+    let mut first_list_started = false;
+    let mut in_first_list = false;
+    let mut finished = false;
+    let mut out = Vec::new();
+
+    for line in roff.lines() {
+        if finished {
+            break;
+        }
+        let mut tokens = line.split_whitespace();
+        let Some(macro_name) = tokens.next() else {
+            continue;
+        };
+        match macro_name {
+            ".Bl" => {
+                depth += 1;
+                if !first_list_started {
+                    first_list_started = true;
+                    in_first_list = true;
+                }
+            }
+            ".El" => {
+                depth = depth.saturating_sub(1);
+                if in_first_list && depth == 0 {
+                    // The FIRST top-level list just closed - stop before any
+                    // sibling top-level list (e.g. TIME FORMATS) is reached.
+                    finished = true;
+                }
+            }
+            // Only a bare `.It Cm <Keyword>` at the first list's OWN depth
+            // (not a nested suboption list) names an sshd_config keyword;
+            // only the token immediately after `Cm` is the keyword name.
+            ".It" if in_first_list && depth == 1 && tokens.next() == Some("Cm") => {
+                if let Some(kw) = tokens.next() {
+                    out.push(kw.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Case-insensitively compare `man_keywords` (as returned by
@@ -72,8 +112,11 @@ pub fn extract_manpage_keywords(roff: &str) -> Vec<String> {
 /// NEVER computed here - see the module doc for why that divergence is
 /// expected, not a discovery finding.
 pub fn man_only_keywords(man_keywords: &[String], known: &[&str]) -> Vec<String> {
-    let _ = (man_keywords, known);
-    todo!("#471: case-insensitive man-minus-registry diff")
+    man_keywords
+        .iter()
+        .filter(|kw| !known.iter().any(|k| k.eq_ignore_ascii_case(kw)))
+        .cloned()
+        .collect()
 }
 
 /// The live daemon's verdict on a man-page-discovered keyword, once probed
@@ -91,8 +134,14 @@ pub enum DaemonVerdict {
 /// man page lists it and the registry lacks it, and reports the live
 /// daemon's verdict on it.
 pub fn discovery_advisory(kw: &str, verdict: DaemonVerdict) -> String {
-    let _ = (kw, verdict);
-    todo!("#471: render a man-discovery advisory line")
+    let verdict_desc = match verdict {
+        DaemonVerdict::Recognized => "the live daemon recognized it",
+        DaemonVerdict::Rejected => "the live daemon rejected it as unknown",
+    };
+    format!(
+        "advisory: man-page discovery: `{kw}` is listed in the man page but absent \
+         from the shipped registry; {verdict_desc}"
+    )
 }
 
 /// Render the single advisory line emitted when the LIVE man-page-discovery
@@ -102,8 +151,7 @@ pub fn discovery_advisory(kw: &str, verdict: DaemonVerdict) -> String {
 /// NEVER produces a gate-failing error (exit stays 0=in-sync / 1=drift; exit
 /// 2 is reserved for genuine tool errors unrelated to this best-effort pass).
 pub fn discovery_unavailable_advisory(reason: &str) -> String {
-    let _ = reason;
-    todo!("#471: render a discovery-unavailable advisory line")
+    format!("advisory: man-page keyword discovery unavailable: {reason}")
 }
 
 #[cfg(test)]
