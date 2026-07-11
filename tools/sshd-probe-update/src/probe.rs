@@ -14,12 +14,12 @@ use crate::transcript::{Transcript, parse_tsv};
 /// self-contained binary with no external script dependency.
 const REMOTE_PROBE_SH: &str = include_str!("remote_probe.sh");
 
-// TODO(#372-followup): a best-effort `man sshd_config` keyword-discovery pass is
-// a LIVE-only advisory (it needs man-db in the container) that would widen the
-// candidate universe beyond `known_keywords ∪ bogus` to catch a keyword the
-// registry entirely missed. It is deferred: the current candidate universe is
-// VERIFY-ONLY (option C), which still catches every drift within the shipped
-// registry's own keywords plus the guaranteed-bogus sentinel.
+// #471: `fetch_manpage_source` below feeds the best-effort `man sshd_config`
+// keyword-discovery pass (`crate::discover`), which widens the LIVE candidate
+// universe beyond `known_keywords` plus the bogus sentinel to catch a keyword
+// the registry entirely missed. It is advisory-only and gated LIVE-only (see
+// `main.rs::discovery_enabled`); the offline `--transcript` path still runs
+// the VERIFY-ONLY `known_keywords` plus bogus-sentinel universe exactly as before.
 
 /// Probe a live `sshd` in the docker `image` for each of `candidates`, returning
 /// the parsed transcript. Feeds the embedded probe script + the candidate list to
@@ -71,4 +71,35 @@ pub fn probe_live(image: &str, candidates: &[&str]) -> Result<Transcript, String
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     parse_tsv(&stdout).map_err(|e| format!("parsing probe output from {image}: {e}"))
+}
+
+/// Fetch the roff/mdoc SOURCE of `sshd_config(5)` from a live docker `image`,
+/// for the best-effort man-page keyword-discovery pass (#471). Runs
+/// `gunzip -c /usr/share/man/man5/sshd_config.5.gz` inside a throwaway
+/// container and returns its decoded stdout.
+///
+/// Returns `Ok(None)` - NOT an error - if the man page is absent or unreadable
+/// in the image (e.g. `nodocs` install tsflags stripped it, or `gunzip`
+/// failed): a normal, expected outcome the caller turns into exactly one
+/// discovery-unavailable advisory, never a gate-failing error.
+///
+/// # Errors
+/// Returns `Err` only if `docker` itself could not be spawned - a genuine
+/// tool-level failure, distinct from "man page missing".
+pub fn fetch_manpage_source(image: &str) -> Result<Option<String>, String> {
+    let out = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            image,
+            "sh",
+            "-c",
+            "gunzip -c /usr/share/man/man5/sshd_config.5.gz 2>/dev/null",
+        ])
+        .output()
+        .map_err(|e| format!("spawn docker (is it installed and running?): {e}"))?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
 }

@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use rulesteward_sshd::TargetVersion;
 use rulesteward_sshd::lints::registry::known_keywords;
 use sshd_probe_update::derive::{DriftReport, diff_target};
-use sshd_probe_update::{probe, transcript};
+use sshd_probe_update::{discover, probe, transcript};
 
 /// A guaranteed-unrecognized keyword seeded into the candidate list so every run
 /// exercises the "unknown" classification path end to end.
@@ -87,8 +87,10 @@ fn print_help() {
          \n\
          Without --transcript, `check`/`derive` probe LIVE via docker images\n  \
          sshd-probe8 / sshd-probe9 / sshd-probe10 (build from dockerfiles/<n>/Dockerfile).\n  \
-         A `man sshd_config` keyword-discovery pass is deferred (TODO #372-followup);\n  \
-         the candidate universe is known_keywords ∪ a bogus sentinel (verify-only)."
+         A best-effort `man sshd_config` keyword-discovery pass (#471) widens the\n  \
+         LIVE candidate universe beyond known_keywords plus a bogus sentinel and\n  \
+         reports any man-listed keyword absent from the registry as an advisory\n  \
+         (never gate-failing; not run over an offline --transcript)."
     );
 }
 
@@ -139,15 +141,68 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
 /// Obtain the drift report for one product: read `transcript_path` (offline) or
 /// probe the product's docker image live.
 fn report_for(p: &Product, transcript_path: Option<&str>) -> Result<DriftReport, String> {
-    let t = match transcript_path {
-        Some(path) => transcript::read_transcript(Path::new(path))?,
-        None => {
-            let cands = candidates(p.target);
-            eprintln!("probing {} via docker image {} ...", p.name, p.image);
-            probe::probe_live(p.image, &cands)?
+    match transcript_path {
+        Some(path) => {
+            let t = transcript::read_transcript(Path::new(path))?;
+            Ok(diff_target(&t, p.target))
         }
-    };
-    Ok(diff_target(&t, p.target))
+        None => {
+            eprintln!("probing {} via docker image {} ...", p.name, p.image);
+            live_report(p)
+        }
+    }
+}
+
+/// Live-probe `p`'s docker image, running the best-effort `man sshd_config`
+/// keyword-discovery pass (#471) alongside the normal E01/W04/E04 probe.
+///
+/// Discovered keywords are appended to the candidate universe so the daemon
+/// probes them like any other candidate, but their transcript records are
+/// held OUT of `diff_target`'s E01/W04/E04 comparison (they are never in the
+/// shipped tables by construction) and instead reported as one advisory line
+/// each - discovery never affects `is_in_sync()`/exit codes. Only the
+/// fetch/probe steps here touch docker; the discovery split + advisory
+/// assembly is the pure, offline-testable `discover::assemble_discovery`.
+fn live_report(p: &Product) -> Result<DriftReport, String> {
+    let cands = candidates(p.target);
+
+    let mut discovered: Vec<String> = Vec::new();
+    let mut unavailable_reason: Option<String> = None;
+    // Always true by construction (report_for's None arm is the only caller);
+    // kept as the tested LIVE-only predicate seam.
+    if discovery_enabled(None) {
+        match discover_man_keywords(p.image) {
+            Ok(extracted) => {
+                discovered = discover::man_only_keywords(&extracted, &known_keywords(p.target));
+            }
+            Err(reason) => unavailable_reason = Some(reason),
+        }
+    }
+
+    let mut probe_cands: Vec<&str> = cands;
+    probe_cands.extend(discovered.iter().map(String::as_str));
+    let t = probe::probe_live(p.image, &probe_cands)?;
+
+    let (core, mut advisories) = discover::assemble_discovery(t, &discovered);
+    let mut report = diff_target(&core, p.target);
+    report.advisories.append(&mut advisories);
+    if let Some(reason) = unavailable_reason {
+        report
+            .advisories
+            .push(discover::discovery_unavailable_advisory(&reason));
+    }
+    Ok(report)
+}
+
+/// Fetch the LIVE `sshd_config(5)` man page source from `image` (docker) and
+/// delegate to the pure `discover::keywords_from_roff` for extraction. `Err`
+/// names why discovery could not run this time (man page absent/unreadable,
+/// or zero top-level `.It Cm` entries found) - a normal, expected,
+/// non-gate-failing outcome, never a hard tool error.
+fn discover_man_keywords(image: &str) -> Result<Vec<String>, String> {
+    let roff = probe::fetch_manpage_source(image)?
+        .ok_or_else(|| "man page absent or unreadable in the probe image".to_string())?;
+    discover::keywords_from_roff(&roff)
 }
 
 /// The candidate keyword universe for `target`: every shipped registry keyword
@@ -252,6 +307,15 @@ fn transcript_flag(args: &[String]) -> Option<String> {
     flag(args, "--transcript").or_else(|| flag(args, "--file"))
 }
 
+/// Whether the best-effort `man sshd_config` keyword-discovery pass (#471)
+/// should run for this report acquisition: LIVE only. The offline
+/// `--transcript`/`--file` path has no docker container to discover a man
+/// page in, so discovery is gated off whenever a transcript path is given -
+/// mirrors the `None` (live) vs `Some` (offline) split in `report_for`.
+fn discovery_enabled(transcript_path: Option<&str>) -> bool {
+    transcript_path.is_none()
+}
+
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -313,5 +377,21 @@ mod tests {
         let c = candidates(TargetVersion::Rhel9);
         assert_eq!(c.len(), known_keywords(TargetVersion::Rhel9).len() + 1);
         assert!(c.contains(&BOGUS));
+    }
+
+    /// #471: man-page keyword discovery must be LIVE-only. `report_for`
+    /// passes `None` for a live probe and `Some(path)` for an offline
+    /// `--transcript`/`--file` run; discovery must be enabled in exactly the
+    /// former case.
+    #[test]
+    fn discovery_enabled_only_for_live_probing() {
+        assert!(
+            discovery_enabled(None),
+            "live probing (no transcript path) must enable discovery"
+        );
+        assert!(
+            !discovery_enabled(Some("/x.jsonl")),
+            "an offline transcript path must disable discovery"
+        );
     }
 }

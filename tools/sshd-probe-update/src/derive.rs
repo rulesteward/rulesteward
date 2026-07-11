@@ -229,9 +229,11 @@ pub fn diff_target(transcript: &Transcript, target: TargetVersion) -> DriftRepor
             )),
         }
     }
-    // man-page keyword discovery is a LIVE-only advisory pass (deferred; see
-    // TODO(#372-followup) in probe.rs) and is intentionally not run over an
-    // offline transcript, so no man-derived advisory is emitted here.
+    // man-page keyword discovery (#471, see `crate::discover`) is a LIVE-only
+    // advisory pass, run by `main.rs::live_report` alongside the normal probe -
+    // it is intentionally NOT run over an offline transcript (there is no
+    // docker container to discover a man page in), so no man-derived advisory
+    // is emitted here; `main.rs::discovery_enabled` is the gate.
 
     DriftReport {
         target,
