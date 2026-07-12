@@ -753,6 +753,310 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Typed ControlRef backfill (#503, v0.7): each W04 weakening finding
+    // gains typed `rulesteward_core::ControlRef` entries mirroring its
+    // free-text citation (frozen above and pinned by
+    // `w04_weakening_findings_cite_grounded_controls`). Messages stay
+    // BYTE-IDENTICAL; only `Diagnostic::controls` is populated. RED until the
+    // implementer wires `.with_controls(...)` at each emit site.
+    // -----------------------------------------------------------------------
+
+    /// The `targetpw` / `rootpw` / `runaspw` pw-family weakenings ALL cite the
+    /// SAME control, DISA STIG RHEL-08-010383 / RHEL-09-432020
+    /// (`WEAKENING_PRESENT` rows at stig.rs:116/123/130), and all fire from the
+    /// SAME generic loop (stig.rs:258-273). Each finding must carry TWO typed
+    /// `ControlRef`s, both `Framework::Stig`, in citation order (RHEL-08 first,
+    /// then RHEL-09). Looping over all THREE fixtures (mirroring the
+    /// `w04_weakening_findings_cite_grounded_controls` drift-guard, which
+    /// enumerates the same three) closes the omission survivor: a wrong impl
+    /// that keys controls off the tested NAME (`"targetpw" => pair, _ => []`)
+    /// would pass a targetpw-only test yet ship rootpw + runaspw empty. The
+    /// mutation gate cannot backstop an omission, so it is pinned here.
+    #[test]
+    fn w04_pw_family_findings_carry_stig_controls() {
+        use rulesteward_core::Framework;
+
+        for name in ["targetpw", "rootpw", "runaspw"] {
+            let src = format!("Defaults {name}\nroot ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            let finding = diags
+                .iter()
+                .find(|d| d.code == "sudo-W04" && d.message.contains(name))
+                .unwrap_or_else(|| panic!("W04 fires for {name}"));
+            assert_eq!(
+                finding.controls.len(),
+                2,
+                "{name}'s dual RHEL-08/RHEL-09 citation must become two \
+                 ControlRefs; got {:?}",
+                finding.controls
+            );
+            assert_eq!(finding.controls[0].framework, Framework::Stig);
+            assert_eq!(finding.controls[0].id, "RHEL-08-010383");
+            assert_eq!(finding.controls[1].framework, Framework::Stig);
+            assert_eq!(finding.controls[1].id, "RHEL-09-432020");
+        }
+    }
+
+    /// `Defaults !use_pty` cites CIS Benchmark 1.3.2 AND PCI-DSS Req-10.2.5
+    /// (stig.rs:211-212, the negated `use_pty` arm of `check_file`). The dual
+    /// CROSS-framework citation must become TWO typed `ControlRef`s: one
+    /// `Framework::Cis` (bare id `"1.3.2"`) and one `Framework::Pci` (bare id
+    /// `"Req-10.2.5"`), in citation order (CIS first, then PCI, matching the
+    /// message text's "CIS Benchmark ... / PCI-DSS ..." order).
+    #[test]
+    fn w04_not_use_pty_finding_carries_cis_and_pci_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint_w04("Defaults !use_pty\nroot ALL=(ALL:ALL) ALL\n");
+        let finding = diags
+            .iter()
+            .find(|d| d.code == "sudo-W04" && d.message.contains("use_pty"))
+            .expect("W04 fires for !use_pty");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "!use_pty's CIS+PCI citation must become two ControlRefs; got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Cis);
+        assert_eq!(finding.controls[0].id, "1.3.2");
+        assert_eq!(finding.controls[1].framework, Framework::Pci);
+        assert_eq!(finding.controls[1].id, "Req-10.2.5");
+    }
+
+    /// `Defaults !authenticate` cites DISA STIG RHEL-08-010381 AND
+    /// RHEL-09-432025 (stig.rs:192, the negated `authenticate` arm of
+    /// `check_file`). Both ids are `Framework::Stig`, in citation order
+    /// (RHEL-08 first, then RHEL-09).
+    #[test]
+    fn w04_not_authenticate_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint_w04("Defaults !authenticate\nroot ALL=(ALL:ALL) ALL\n");
+        let finding = diags
+            .iter()
+            .find(|d| d.code == "sudo-W04" && d.message.contains("!authenticate"))
+            .expect("W04 fires for !authenticate");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "!authenticate's dual RHEL-08/RHEL-09 citation must become two \
+             ControlRefs; got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Stig);
+        assert_eq!(finding.controls[0].id, "RHEL-08-010381");
+        assert_eq!(finding.controls[1].framework, Framework::Stig);
+        assert_eq!(finding.controls[1].id, "RHEL-09-432025");
+    }
+
+    /// A NEGATIVE `Defaults timestamp_timeout=-1` (the per-file weakening,
+    /// line >= 1) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015
+    /// (stig.rs:248, the negative-value arm of `check_file`). Both ids are
+    /// `Framework::Stig`, in citation order. `use_pty` + `logfile` are present
+    /// so ONLY the per-file timestamp weakening is the timestamp finding under
+    /// test (no merged absent/conflict finding fires).
+    #[test]
+    fn w04_negative_timestamp_timeout_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint_w04(
+            "Defaults timestamp_timeout=-1\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let finding = diags
+            .iter()
+            .find(|d| {
+                d.code == "sudo-W04" && d.line >= 1 && d.message.contains("timestamp_timeout")
+            })
+            .expect("W04 fires for negative timestamp_timeout");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "negative timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
+             become two ControlRefs; got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Stig);
+        assert_eq!(finding.controls[0].id, "RHEL-08-010384");
+        assert_eq!(finding.controls[1].framework, Framework::Stig);
+        assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+    }
+
+    /// The merged-required MISSING `use_pty` absence finding (line 0) cites
+    /// CIS Benchmark 1.3.2 AND PCI-DSS Req-10.2.5 (stig.rs:382, the
+    /// `!has_use_pty` branch of `check_merged_required`). Its controls must be
+    /// `Framework::Cis` (id `"1.3.2"`) then `Framework::Pci` (id
+    /// `"Req-10.2.5"`), matching the `!use_pty` per-file finding's pair (same
+    /// control, different emit site). Fixture: `timestamp_timeout=5` present so
+    /// the timestamp absence does not fire; no I/O log so ONLY the use_pty and
+    /// I/O-log absences fire, and we select the use_pty one.
+    #[test]
+    fn w04_missing_use_pty_finding_carries_cis_and_pci_controls() {
+        use rulesteward_core::Framework;
+
+        let diags =
+            lint_w04("Defaults env_reset\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n");
+        let finding = w04_absence(&diags)
+            .into_iter()
+            .find(|d| d.message.contains("use_pty"))
+            .expect("the merged missing-use_pty absence finding fires");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "missing use_pty's CIS+PCI citation must become two ControlRefs; \
+             got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Cis);
+        assert_eq!(finding.controls[0].id, "1.3.2");
+        assert_eq!(finding.controls[1].framework, Framework::Pci);
+        assert_eq!(finding.controls[1].id, "Req-10.2.5");
+    }
+
+    /// The merged-required MISSING I/O-logging absence finding (line 0) cites
+    /// CIS Benchmark 1.3.3 AND PCI-DSS Req-10.2.5 (stig.rs:395, the
+    /// `!has_io_log` branch of `check_merged_required`). Its controls must be
+    /// `Framework::Cis` (id `"1.3.3"`, DISTINCT from use_pty's `1.3.2`) then
+    /// `Framework::Pci` (id `"Req-10.2.5"`). The absence finding's message
+    /// names "logging"; use_pty is present so only the I/O-log (and timestamp)
+    /// absences fire, and we select the logging one.
+    #[test]
+    fn w04_missing_io_log_finding_carries_cis_and_pci_controls() {
+        use rulesteward_core::Framework;
+
+        let diags =
+            lint_w04("Defaults use_pty\nDefaults timestamp_timeout=5\nroot ALL=(ALL:ALL) ALL\n");
+        let finding = w04_absence(&diags)
+            .into_iter()
+            .find(|d| d.message.contains("logging"))
+            .expect("the merged missing-I/O-logging absence finding fires");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "missing I/O logging's CIS+PCI citation must become two ControlRefs; \
+             got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Cis);
+        assert_eq!(finding.controls[0].id, "1.3.3");
+        assert_eq!(finding.controls[1].framework, Framework::Pci);
+        assert_eq!(finding.controls[1].id, "Req-10.2.5");
+    }
+
+    /// The merged-required ABSENT `timestamp_timeout` finding (line 0, the
+    /// STIG's PRIMARY trigger) cites DISA STIG RHEL-08-010384 AND
+    /// RHEL-09-432015 (stig.rs:425, the `[] if !has_negated_timestamp_timeout`
+    /// arm of `check_merged_required`). Both ids are `Framework::Stig`, in
+    /// citation order. `use_pty` + `logfile` present so ONLY the
+    /// timestamp_timeout absence fires. Same control-id pair as the per-file
+    /// negative weakening, DIFFERENT emit site -- pins that the impl wires
+    /// controls at the merged-absent site too (a partial impl fails).
+    #[test]
+    fn w04_missing_timestamp_timeout_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint_w04(
+            "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+        );
+        let finding = w04_absence(&diags)
+            .into_iter()
+            .find(|d| d.message.contains("timestamp_timeout"))
+            .expect("the merged absent timestamp_timeout finding fires");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "absent timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
+             become two ControlRefs; got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Stig);
+        assert_eq!(finding.controls[0].id, "RHEL-08-010384");
+        assert_eq!(finding.controls[1].framework, Framework::Stig);
+        assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+    }
+
+    /// The merged-required CONFLICTING `timestamp_timeout` finding (line 0, 2+
+    /// distinct values) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015
+    /// (stig.rs:438, the `_multiple` arm of `check_merged_required`). Both ids
+    /// are `Framework::Stig`, in citation order. Two merged files set `=5` and
+    /// `=30`; the conflict finding's message contains "conflict".
+    #[test]
+    fn w04_conflicting_timestamp_timeout_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "Defaults timestamp_timeout=5\nDefaults use_pty\nDefaults logfile=/var/log/sudo.log\nroot ALL=(ALL:ALL) ALL\n",
+            ),
+            ("/etc/sudoers.d/20-other", "Defaults timestamp_timeout=30\n"),
+        ]);
+        let diags = w04(&files, &CTX);
+        let finding = w04_absence(&diags)
+            .into_iter()
+            .find(|d| d.message.contains("timestamp_timeout") && d.message.contains("conflict"))
+            .expect("the merged conflicting timestamp_timeout finding fires");
+        assert_eq!(
+            finding.controls.len(),
+            2,
+            "conflicting timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
+             become two ControlRefs; got {:?}",
+            finding.controls
+        );
+        assert_eq!(finding.controls[0].framework, Framework::Stig);
+        assert_eq!(finding.controls[0].id, "RHEL-08-010384");
+        assert_eq!(finding.controls[1].framework, Framework::Stig);
+        assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+    }
+
+    /// `visiblepw`'s citation is "CIS / general hardening; not a DISA STIG
+    /// control" (stig.rs:137) -- it carries NO bare numeric control id. There
+    /// is no grounded id to attach, so a `visiblepw` finding must carry an
+    /// EMPTY `controls` vec: the deliberate exclusion is documented here rather
+    /// than by inventing a `Cis` id the citation text does not provide. (If a
+    /// grounded CIS id for visiblepw is later established, this guard is the
+    /// place the decision is revisited.)
+    #[test]
+    fn w04_visiblepw_finding_has_no_controls() {
+        let diags = lint_w04("Defaults visiblepw\nroot ALL=(ALL:ALL) ALL\n");
+        let finding = diags
+            .iter()
+            .find(|d| d.code == "sudo-W04" && d.message.contains("visiblepw"))
+            .expect("W04 fires for visiblepw");
+        assert!(
+            finding.controls.is_empty(),
+            "visiblepw cites 'CIS / general hardening' with no bare id, so it \
+             carries no typed control (no invented id); got {:?}",
+            finding.controls
+        );
+    }
+
+    /// A finding with NO compliance citation in its free text must carry an
+    /// EMPTY `controls` vec. This suite backfills typed controls for exactly
+    /// the citation-bearing sudoers findings: sudo-W01 (Stig), sudo-W05 (Stig),
+    /// and sudo-W04's per-file (`!authenticate` Stig, targetpw/rootpw/runaspw
+    /// Stig, `!use_pty` Cis+Pci, negative `timestamp_timeout` Stig) and
+    /// merged-required (missing `use_pty` Cis+Pci, missing I/O-log Cis+Pci,
+    /// absent + conflicting `timestamp_timeout` Stig) emit sites; `visiblepw`
+    /// is the documented no-id exclusion. `sudo-F01` (a malformed-line parse
+    /// Fatal, `f01.rs`) cites no compliance control at all, so it is the
+    /// empty-controls guard against over-eager backfill (e.g. accidentally
+    /// defaulting every `Diagnostic` to some control).
+    #[test]
+    fn f01_malformed_line_finding_has_no_controls() {
+        use crate::lints::f01::f01;
+
+        let files = parse_one("frobnicate\nroot ALL=(ALL:ALL) ALL\n");
+        let diags = f01(&files, &CTX);
+        assert_eq!(diags.len(), 1, "one malformed line -> one sudo-F01");
+        assert!(
+            diags[0].controls.is_empty(),
+            "a sudo-F01 parse failure carries no compliance control; got {:?}",
+            diags[0].controls
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Clean file: no W04 when no weakening Defaults present
     // -----------------------------------------------------------------------
 
