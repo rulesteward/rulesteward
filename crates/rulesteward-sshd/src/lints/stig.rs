@@ -972,4 +972,105 @@ mod tests {
             "Compression not a RHEL8 V2R4 control"
         );
     }
+
+    // --- #501 v0.7 typed control-ID backfill --------------------------------
+    // sshd-W01/W02 findings must carry a typed STIG `ControlRef` whose canonical
+    // `id` is the STIG Rule id (RHEL-09-######) and whose `alias` is the DISA
+    // V-number, alongside the byte-identical human message. Grounded in the data
+    // already in THIS file: the Rule id lives in the `//` comment on the
+    // `RHEL9_REQUIRED` array; the V-number lives in the `RHEL9_VNUM` table.
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control() {
+        // Representative: `banner` on target=Rhel9.
+        //   Rule id  RHEL-09-255025 -- RHEL9_REQUIRED comment:
+        //            `"banner", // RHEL-09-255025 V-257981` (this file).
+        //   V-number V-257981       -- RHEL9_VNUM entry `("banner", "V-257981")`.
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        // An empty config makes every required directive (incl. Banner) missing.
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let banner = diags
+            .iter()
+            .find(|d| d.message.contains("'banner'"))
+            .expect("banner reported missing on an empty config");
+
+        // Message stays byte-identical (the implementer must not alter it).
+        assert_eq!(
+            banner.message,
+            "STIG-required directive 'banner' is missing from the configuration"
+        );
+
+        // RED anchor: length first, so RED is a clean `0 != 1`, not an index panic.
+        assert_eq!(
+            banner.controls.len(),
+            1,
+            "W01 finding must carry exactly one STIG control"
+        );
+        assert_eq!(banner.controls[0].framework, Framework::Stig);
+        assert_eq!(banner.controls[0].id, "RHEL-09-255025");
+        assert_eq!(banner.controls[0].alias, Some("V-257981".to_string()));
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control() {
+        // Representative: `PermitRootLogin yes` on target=Rhel9 (STIG requires `no`).
+        //   Rule id  RHEL-09-255045 -- RHEL9_REQUIRED comment:
+        //            `"permitrootlogin", // RHEL-09-255045 V-257985` (this file).
+        //   V-number V-257985       -- RHEL9_VNUM entry `("permitrootlogin", "V-257985")`.
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one W02 finding for the weak PermitRootLogin; got {diags:?}"
+        );
+        let prl = &diags[0];
+        assert_eq!(prl.code, "sshd-W02");
+
+        // Message stays byte-identical (the implementer must not alter it).
+        assert_eq!(
+            prl.message,
+            "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
+        );
+
+        // RED anchor: length first.
+        assert_eq!(
+            prl.controls.len(),
+            1,
+            "W02 finding must carry exactly one STIG control"
+        );
+        assert_eq!(prl.controls[0].framework, Framework::Stig);
+        assert_eq!(prl.controls[0].id, "RHEL-09-255045");
+        assert_eq!(prl.controls[0].alias, Some("V-257985".to_string()));
+    }
+
+    #[test]
+    fn non_stig_findings_carry_no_controls() {
+        // Empty-controls guard: the backfill is scoped to the STIG passes (W01/W02).
+        // A finding from a non-STIG structural pass (here sshd-E02, a duplicate
+        // directive) must keep `controls` empty -- the implementer must not
+        // over-attach. `MaxSessions` is neither STIG-required nor W02-controlled.
+        let ctx = SshdLintContext::default();
+        let blocks = parse("MaxSessions 10\nMaxSessions 5\n");
+        let diags = crate::lints::structural::e02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let dup = diags
+            .iter()
+            .find(|d| d.code == "sshd-E02")
+            .expect("duplicate MaxSessions fires sshd-E02");
+        assert!(
+            dup.controls.is_empty(),
+            "a non-STIG (sshd-E02) finding must carry no controls; got {:?}",
+            dup.controls
+        );
+    }
 }
