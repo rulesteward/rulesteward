@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-12
+
+A backend-deepening release. No new backends; one new lint code (`au-W06`,
+bringing the total to 60: fapolicyd 25, sshd 13, auditd 10, sudoers 8,
+sysctld 4). v0.6 deepens the auditd, fapolicyd, sshd, and sudoers lanes where
+curated gaps were tracked - every change grounded against the real subsystem
+(fapolicyd 1.3.2 / 1.4.5 containers, `sshd -T` on OpenSSH 8.0p1 / 9.9p1,
+`visudo -c` 1.9.17p2, DISA XCCDF benchmarks) - and extends the v0.5
+provenance-tooling pattern with four new dev-only derive/drift tools
+(fapolicyd version/pattern probe, fapolicyd attribute registry, auditd
+message-type tables, auditd STIG required-rules tables), so every remaining
+hand-pinned table is now drift-tethered to its upstream source. The
+repository also gains `LICENSES/GPL-2.0.txt` and a NOTICE entry covering the
+GPL-2.0-or-later fapolicyd C test fixtures vendored for the attribute drift
+tool (dev-only test data; no obligation attaches to released binaries), plus
+two test/CI hygiene fixes (a preventive gate for unguarded permission-denial
+tests and hermetic fixtures for two host-reading CLI tests).
+
+### Added
+
+- **`au-W06`** (Warning, fires only under an explicit `--target
+  rhel8|rhel9|rhel10`): the audit ruleset is missing rules the applicable
+  DISA STIG requires. Key-sensitive matching, with a distinct "present but
+  under a different key" finding. The required-rules tables (61 / 67 / 75
+  `rules.d` lines for RHEL 8 / 9 / 10) are derived from the DISA XCCDF
+  benchmarks (RHEL8 V2R4 / RHEL9 V2R7 / RHEL10 V1R1) and kept drift-tethered
+  by a new dev tool. The portable default (no `--target`) stays silent, so
+  existing output is unchanged. `auditd` is now **10 codes**. (#474)
+
+### Changed
+
+- **`sshd-W07`** now detects per-sub-population shadows behind a later
+  `Match` block that constrains two or more criterion types, when a unique
+  differing axis exists and every other axis is provably neutral by exact
+  algebra (CIDR / port-set / literal-name containment); the reduction reuses
+  the shipped single-type region walks. The grounded example - a `/16`
+  sub-population of a `/8` block silently resolving to an earlier block's
+  value - is detected. Genuine two-axis partitions remain a documented
+  accepted false negative. (#452)
+- **`fapd-E05`** is now version-aware under `--target`: at `rhel9`/`rhel10`
+  an integer-overflow set member is flagged only when the set is referenced
+  by a non-STRING-category attribute (fapolicyd 1.4.5 loads unused or
+  STRING-only-referenced overflow sets cleanly, so those are now silent);
+  portable and `--target rhel8` keep the unconditional flag (1.3.2 aborts
+  the whole rules file on any overflow member, even unused). The detector is
+  also `strtol`-faithful now, fixing two daemon-verified false negatives
+  (first-character set typing; sign-aware out-of-range at the asymmetric
+  `i64` boundary). (#477)
+- **`sudo-F02`** now flags non-path members of a `Defaults!` (Cmnd) list -
+  `#`-prefixed non-numerics, `%`-group names, bare `/`, relative paths,
+  lowercase barewords - matching `visudo -c` (1.9.17p2) verdicts; the
+  reserved pseudo-commands `sudoedit` / `list` (including quoted `"list"`)
+  stay accepted. (#451)
+- **`au-W02`/`au-W03`** overlap analysis uses a tighter disjointness prover:
+  two `msgtype` equality predicates naming different record numbers,
+  complementary `-C` comparisons on the process-vs-process constants, and an
+  `unset` uid/gid/sessionid sentinel versus a relational range excluding it
+  are now all proven disjoint (fewer false-overlap findings; promotions are
+  sound-direction only, so no real suppression warning is dropped). (#475)
+
+### Fixed
+
+- **`sshd-W07`**: a latent false-positive / false-negative pair in
+  multi-type earlier-setter selection - the identical-type-set filter
+  dropped subset-typed predecessors, misattributing first-match wins
+  (flagging a block that is not shadowed while missing one that is dead).
+  Selection is now structural subset-or-equal plus per-shared-type
+  co-satisfiability. The "matches-nobody" family is also suppressed on both
+  the reduction and fallback routes: repeated-type contradictions and
+  pure-negation / self-negation / wider-negated-glob criteria lists (which
+  positively match no principal) no longer count as shadowing setters.
+  (#494, #452)
+- **`fapd-E07`**: an all-digit set member exceeding `i64::MAX` is no longer
+  typed numeric at `--target rhel9`+ (the 1.4.5 daemon types it STRING),
+  removing an `fapd-E05`+`fapd-E07` double false positive on
+  STRING-referenced overflow sets; the rhel8 typing path is deliberately
+  unchanged. (#477)
+
 ## [0.5.0] - 2026-07-08
 
 A resiliency and code-quality release. No new backends and no new lint codes
@@ -312,7 +390,8 @@ Initial release. Cargo workspace (`-core`, `-fapolicyd`, `-sink`, `-cli`) with t
 fapolicyd lint backend, the `rulesteward` CLI, and a signed static
 `x86_64-unknown-linux-musl` binary plus RPM, SBOM, and cosign keyless signatures.
 
-[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/rulesteward/rulesteward/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rulesteward/rulesteward/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rulesteward/rulesteward/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rulesteward/rulesteward/compare/v0.2.1...v0.3.0
