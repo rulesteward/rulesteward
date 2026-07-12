@@ -205,6 +205,40 @@ mod tests {
     }
 
     #[test]
+    fn format_controls_maps_every_framework_and_joins_multiple() {
+        // Direct pin on format_controls: empty -> "" (byte-identical), each
+        // framework's label, the alias arm, and the ", " join for multiple
+        // controls. human.rs is NOT in the mutation-gate examine_globs, so these
+        // direct assertions are the only net on the framework-label match arms
+        // (a mutant swapping "CIS" for "STIG" survives every render()-level test).
+        assert_eq!(format_controls(&[]), "");
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Stig, "RHEL-08-040110")]),
+            " (STIG RHEL-08-040110)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Cis, "1.1.1")]),
+            " (CIS 1.1.1)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Pci, "2.2.2")]),
+            " (PCI 2.2.2)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Nist, "AC-3")]),
+            " (NIST AC-3)"
+        );
+        assert_eq!(
+            format_controls(&[
+                ControlRef::new(Framework::Stig, "RHEL-08-030130").with_alias("V-230404"),
+                ControlRef::new(Framework::Cis, "5.2.1"),
+            ]),
+            " (STIG RHEL-08-030130/V-230404, CIS 5.2.1)",
+            "multiple controls join with ', ' and the alias renders as id/alias"
+        );
+    }
+
+    #[test]
     fn human_appends_control_suffix_on_plain_line() {
         // A finding carrying a STIG control renders ` (STIG <id>)` after the
         // message on the plain fallback line, so an operator reading text output
