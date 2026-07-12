@@ -118,7 +118,7 @@ pub fn render_lint_envelope(kind: &str, schema_version: u32, diags: &[Diagnostic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rulesteward_core::Severity;
+    use rulesteward_core::{ControlRef, Framework, Severity};
 
     fn sample_diag() -> Diagnostic {
         Diagnostic::new(
@@ -130,6 +130,36 @@ mod tests {
             3,
             12,
         )
+    }
+
+    #[test]
+    fn json_diagnostic_with_controls_emits_array() {
+        // The typed `controls` field auto-flows through the serde derive on
+        // `Diagnostic` straight into the envelope (no json.rs code): a populated
+        // control appears as a nested array under the diagnostic. Guards that
+        // cross-crate contract for machine consumers.
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1)
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let out = render(std::slice::from_ref(&d));
+        let v: serde_json::Value = serde_json::from_str(&out).expect("parse json output");
+        let controls = v["diagnostics"][0]["controls"]
+            .as_array()
+            .expect("`controls` array present");
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0]["framework"], serde_json::json!("stig"));
+        assert_eq!(controls[0]["id"], serde_json::json!("RHEL-08-040110"));
+    }
+
+    #[test]
+    fn json_diagnostic_without_controls_omits_key() {
+        // Empty controls -> the key is absent (skip_serializing_if=Vec::is_empty),
+        // so existing consumers see byte-identical output. No schemaVersion bump.
+        let out = render(std::slice::from_ref(&sample_diag()));
+        let v: serde_json::Value = serde_json::from_str(&out).expect("parse");
+        assert!(
+            v["diagnostics"][0].get("controls").is_none(),
+            "empty controls must be omitted from the JSON: {out}"
+        );
     }
 
     // --- render_envelope generic tests ---

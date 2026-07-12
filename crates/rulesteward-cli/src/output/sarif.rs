@@ -68,6 +68,12 @@ const fn severity_to_level(severity: Severity) -> ResultLevel {
 }
 
 /// Build the single SARIF `result` for one diagnostic.
+///
+/// v0.7 Phase 0 (D2): this deliberately does NOT read `diag.controls`. SARIF's
+/// purpose-built compliance slot is `tool.driver.taxonomies` + per-result
+/// `taxa`, and wiring those is deferred to L4 (session 8b) so one place owns
+/// SARIF compliance output. Until then a finding is byte-identical with vs
+/// without controls (pinned by `sarif_is_control_agnostic_in_v0_7_phase0`).
 fn diagnostic_to_result(diag: &Diagnostic) -> SarifResult {
     // `Region` line/column are i64 in the SARIF schema; the Diagnostic stores
     // them as usize (1-based). The cast is lossless for any real source file.
@@ -210,6 +216,24 @@ pub fn render(diags: &[Diagnostic], pass: Option<&PassInfo>) -> Result<String, R
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn sarif_is_control_agnostic_in_v0_7_phase0() {
+        // D2 (v0.7 Phase 0): SARIF freezes its signature and emits NOTHING for
+        // controls; the taxonomy/taxa wiring is deferred to L4 (session 8b). So a
+        // finding renders byte-identically with vs without controls. This lock is
+        // what lets 8b add SARIF compliance output in exactly one place.
+        use rulesteward_core::{ControlRef, Framework};
+        let base = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1);
+        let with = base
+            .clone()
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        assert_eq!(
+            render(&[base], None).expect("render base"),
+            render(&[with], None).expect("render with controls"),
+            "SARIF must not vary with controls in v0.7 Phase 0 (taxa are L4)"
+        );
+    }
 
     #[test]
     fn severity_levels_map_to_sarif_levels() {
