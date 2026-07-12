@@ -18,7 +18,7 @@ use std::io::IsTerminal as _;
 use core::fmt::Write as _;
 
 use ariadne::{Config, Label, Report, ReportKind, Source};
-use rulesteward_core::{Diagnostic, Severity, span::Span};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity, span::Span};
 
 /// Map our `Severity` to an `ariadne::ReportKind`.
 fn report_kind(severity: Severity) -> ReportKind<'static> {
@@ -79,10 +79,11 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
     let result = Report::build(report_kind(d.severity), (source_id, cspan.clone()))
         .with_config(config)
         .with_message(format!(
-            "[{code}] {sev}: {msg}",
+            "[{code}] {sev}: {msg}{controls}",
             code = d.code,
             sev = severity_word(d.severity),
             msg = d.message,
+            controls = format_controls(&d.controls),
         ))
         .with_label(label_for(source_id, cspan.clone(), d.message.as_str()))
         .finish()
@@ -126,13 +127,14 @@ pub fn render(diags: &[Diagnostic], sources: &BTreeMap<String, String>) -> Strin
             // to out_bytes as UTF-8 at the end.
             let _ = writeln!(
                 out_plain,
-                "{file}:{line}:{col} [{code}] {sev}: {msg}",
+                "{file}:{line}:{col} [{code}] {sev}: {msg}{controls}",
                 file = d.file.display(),
                 line = d.line,
                 col = d.column,
                 code = d.code,
                 sev = severity_word(d.severity),
                 msg = d.message,
+                controls = format_controls(&d.controls),
             );
         }
     }
@@ -163,13 +165,167 @@ fn severity_word(s: Severity) -> &'static str {
     }
 }
 
+/// Format the compliance-control suffix appended after a diagnostic's message.
+///
+/// Returns `""` for a finding with no controls, so the rendered line is
+/// byte-identical to the pre-v0.7 output. Otherwise returns ` (<FW> <id>)` (or
+/// ` (<FW> <id>/<alias>)` when a secondary id is present), joining multiple
+/// controls with `, `. The LEADING space is what makes the empty case add
+/// nothing to the line.
+fn format_controls(controls: &[ControlRef]) -> String {
+    if controls.is_empty() {
+        return String::new();
+    }
+    let joined = controls
+        .iter()
+        .map(|c| {
+            let framework = match c.framework {
+                Framework::Stig => "STIG",
+                Framework::Cis => "CIS",
+                Framework::Pci => "PCI",
+                Framework::Nist => "NIST",
+            };
+            match &c.alias {
+                Some(alias) => format!("{framework} {}/{alias}", c.id),
+                None => format!("{framework} {}", c.id),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" ({joined})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rulesteward_core::Severity;
+    use rulesteward_core::{ControlRef, Framework, Severity};
 
     fn empty_sources() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn format_controls_maps_every_framework_and_joins_multiple() {
+        // Direct pin on format_controls: empty -> "" (byte-identical), each
+        // framework's label, the alias arm, and the ", " join for multiple
+        // controls. human.rs is NOT in the mutation-gate examine_globs, so these
+        // direct assertions are the only net on the framework-label match arms
+        // (a mutant swapping "CIS" for "STIG" survives every render()-level test).
+        assert_eq!(format_controls(&[]), "");
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Stig, "RHEL-08-040110")]),
+            " (STIG RHEL-08-040110)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Cis, "1.1.1")]),
+            " (CIS 1.1.1)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Pci, "2.2.2")]),
+            " (PCI 2.2.2)"
+        );
+        assert_eq!(
+            format_controls(&[ControlRef::new(Framework::Nist, "AC-3")]),
+            " (NIST AC-3)"
+        );
+        assert_eq!(
+            format_controls(&[
+                ControlRef::new(Framework::Stig, "RHEL-08-030130").with_alias("V-230404"),
+                ControlRef::new(Framework::Cis, "5.2.1"),
+            ]),
+            " (STIG RHEL-08-030130/V-230404, CIS 5.2.1)",
+            "multiple controls join with ', ' and the alias renders as id/alias"
+        );
+    }
+
+    #[test]
+    fn human_appends_control_suffix_on_plain_line() {
+        // A finding carrying a STIG control renders ` (STIG <id>)` after the
+        // message on the plain fallback line, so an operator reading text output
+        // sees the control mapping, not just the free-text message.
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "sysctld-W02",
+            0..0,
+            "kernel param weak",
+            "/etc/sysctl.conf",
+            5,
+            1,
+        )
+        .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let out = render(&[d], &empty_sources());
+        assert!(
+            out.contains("(STIG RHEL-08-040110)"),
+            "control suffix must appear in {out:?}"
+        );
+    }
+
+    #[test]
+    fn human_omits_control_suffix_when_no_controls() {
+        // No controls -> no suffix, so the plain line stays byte-identical to the
+        // pre-v0.7 format. Guards the empty-is-unchanged invariant.
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            5..10,
+            "unknown attribute",
+            "/tmp/x.rules",
+            3,
+            12,
+        );
+        let out = render(&[d], &empty_sources());
+        assert!(
+            !out.contains("(STIG"),
+            "a finding with no controls must have no suffix, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn human_control_suffix_includes_alias_when_present() {
+        // When a control carries a secondary id (the DISA Group/Vuln number), the
+        // suffix shows `<id>/<alias>`. Pins the alias arm of format_controls.
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "au-W06",
+            0..0,
+            "missing rule",
+            "/etc/audit/rules.d/x.rules",
+            2,
+            1,
+        )
+        .with_controls(vec![
+            ControlRef::new(Framework::Stig, "RHEL-08-030130").with_alias("V-230404"),
+        ]);
+        let out = render(&[d], &empty_sources());
+        assert!(
+            out.contains("(STIG RHEL-08-030130/V-230404)"),
+            "alias must render after the id in {out:?}"
+        );
+    }
+
+    #[test]
+    fn human_ariadne_title_carries_control_id() {
+        // The ariadne snippet path (source present) also carries the control in
+        // its report title, so the mapping is visible in both render paths.
+        let source = "kernel.kptr_restrict = 0\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("/etc/sysctl.conf".to_string(), source.to_string());
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "sysctld-W02",
+            0..20,
+            "insecure value",
+            "/etc/sysctl.conf",
+            1,
+            1,
+        )
+        .with_source_id("/etc/sysctl.conf")
+        .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let out = render(&[d], &sources);
+        assert!(
+            out.contains("RHEL-08-040110"),
+            "ariadne title must carry the control id in {out:?}"
+        );
     }
 
     #[test]

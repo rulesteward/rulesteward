@@ -24,7 +24,7 @@
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity, anchored};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity, anchored};
 
 use crate::parser::{ParsedAssignment, canonical_key, effective_values};
 
@@ -432,29 +432,35 @@ pub(crate) fn w02_baseline(
         match effective.get(canonical.as_str()) {
             // Unset across the effective config: a STIG gap with no source line, so
             // anchor at the file/dir (line 0, no source_id -> plain `file:0:0` line).
-            None => diags.push(Diagnostic::new(
-                Severity::Warning,
-                "sysctld-W02",
-                0..0,
-                missing_message(key),
-                anchor.to_path_buf(),
-                0,
-                0,
-            )),
+            None => diags.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    "sysctld-W02",
+                    0..0,
+                    missing_message(key),
+                    anchor.to_path_buf(),
+                    0,
+                    0,
+                )
+                .with_controls(vec![ControlRef::new(Framework::Stig, key.stig_id)]),
+            ),
             // Present: a value outside the STIG-accepted set is insecure, anchored
             // at the real assignment (its span/line -> ariadne snippet). A value in
             // the set is compliant and emits nothing.
             Some(&idx) => {
                 let assignment = &assignments[idx];
                 if !is_compliant(key, &assignment.value) {
-                    diags.push(anchored(
-                        Severity::Warning,
-                        "sysctld-W02",
-                        assignment.span.clone(),
-                        insecure_message(key, &assignment.value),
-                        assignment.file.clone(),
-                        assignment.line,
-                    ));
+                    diags.push(
+                        anchored(
+                            Severity::Warning,
+                            "sysctld-W02",
+                            assignment.span.clone(),
+                            insecure_message(key, &assignment.value),
+                            assignment.file.clone(),
+                            assignment.line,
+                        )
+                        .with_controls(vec![ControlRef::new(Framework::Stig, key.stig_id)]),
+                    );
                 }
             }
         }
@@ -753,5 +759,70 @@ mod tests {
             matches!(exact_entry.kind, ValueKind::Exact),
             "`k_exact` must build an Exact-typed entry"
         );
+    }
+
+    #[test]
+    fn w02_baseline_findings_carry_their_stig_control() {
+        // F0.1 reference wiring: every W02 finding gains a typed STIG ControlRef
+        // (framework = Stig, id = the key's stig_id) at BOTH emit sites (the
+        // missing-key branch and the present-but-insecure branch), IN ADDITION to
+        // the unchanged human message that still interpolates the stig id as text.
+        use super::w02_baseline;
+        use crate::parser::ParsedAssignment;
+        use rulesteward_core::Framework;
+        use std::path::{Path, PathBuf};
+
+        let anchor = Path::new("/etc/sysctl.conf");
+        let kptr_stig = baseline_for(TargetVersion::Rhel9)
+            .iter()
+            .find(|key| key.key == "kernel.kptr_restrict")
+            .expect("kptr in rhel9 table")
+            .stig_id;
+
+        // Missing branch: an empty config makes every baseline key a gap.
+        let missing = w02_baseline(&[], TargetVersion::Rhel9, anchor);
+        assert!(!missing.is_empty(), "an empty config is all-gaps");
+        let m = missing
+            .iter()
+            .find(|d| d.message.contains("kernel.kptr_restrict"))
+            .expect("kptr gap emitted");
+        assert_eq!(m.line, 0, "a gap anchors at the file (line 0)");
+        assert_eq!(
+            m.controls.len(),
+            1,
+            "missing-branch finding carries one control"
+        );
+        assert_eq!(m.controls[0].framework, Framework::Stig);
+        assert_eq!(m.controls[0].id, kptr_stig);
+        assert!(
+            m.message.contains(kptr_stig),
+            "the human message still interpolates the stig id (byte-identical)"
+        );
+
+        // Insecure branch: a present-but-non-compliant value (0 is not in {1,2}).
+        let assignment = ParsedAssignment {
+            canonical: canonical_key("kernel.kptr_restrict"),
+            display: "kernel.kptr_restrict".to_string(),
+            value: "0".to_string(),
+            file: PathBuf::from("/etc/sysctl.d/10-x.conf"),
+            line: 4,
+            span: 0..24,
+        };
+        let insecure = w02_baseline(&[assignment], TargetVersion::Rhel9, anchor);
+        let ins = insecure
+            .iter()
+            .find(|d| d.message.contains("kernel.kptr_restrict"))
+            .expect("kptr insecure emitted");
+        assert_eq!(
+            ins.line, 4,
+            "a present-but-insecure key anchors at its line"
+        );
+        assert_eq!(
+            ins.controls.len(),
+            1,
+            "insecure-branch finding carries one control"
+        );
+        assert_eq!(ins.controls[0].framework, Framework::Stig);
+        assert_eq!(ins.controls[0].id, kptr_stig);
     }
 }
