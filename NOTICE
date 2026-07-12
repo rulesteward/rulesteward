@@ -47,6 +47,26 @@ v2.8 (SPDX OLDAP-2.8), statically linked into EVERY build.
   - Copyright 1999-2003 The OpenLDAP Foundation, Redwood City, California, USA.
     OpenLDAP is a registered trademark of the OpenLDAP Foundation.
 
+fapolicyd C source fixtures (dev-only test fixtures, GPL-2.0-or-later, NOT
+linked into or distributed with any RuleSteward artifact).
+
+  - The repository vendors UNMODIFIED copies of
+    `src/library/{subject,object}-attr.c` from the upstream fapolicyd project
+    (https://github.com/linux-application-whitelisting/fapolicyd, tags v1.3.2
+    and v1.4.5) under tools/fapolicyd-attr-update/tests/fixtures/, as pinned
+    provenance fixtures for the out-of-workspace `fapolicyd-attr-update`
+    drift tool (`publish = false`).
+  - Each file retains its original Red Hat copyright and GNU GPL
+    v2-or-later license header verbatim; sha256 pins and the provenance
+    record live in that tool's attr-refs.toml and tests/fixtures/README.md.
+  - License: GNU General Public License, version 2 (or later). The full
+    text is in LICENSES/GPL-2.0.txt. These files are compiled into NOTHING:
+    they are read as test data by the drift tool only, so the shipped
+    binary, the RPM, and every published artifact carry no GPL obligation
+    from them; the copyleft obligation attaches only to the repository
+    source distribution, and is satisfied by retaining the headers, this
+    notice, and the full license text.
+
 Licensing posture
 =================
 
