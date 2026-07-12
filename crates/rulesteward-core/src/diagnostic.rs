@@ -41,6 +41,87 @@ impl Severity {
     }
 }
 
+/// Compliance framework a [`ControlRef`] maps a finding to.
+///
+/// Serializes to a stable lowercase string (`"stig"`, `"cis"`, `"pci"`,
+/// `"nist"`) - deliberately UNLIKE [`Severity`], which serializes to its named
+/// variant (`"Fatal"`). A framework tag is a wire-facing identifier consumed by
+/// external compliance tooling, so the lowercase form is the stable contract.
+///
+/// Only `Stig` is filtered on today (v0.7 `--profile stig`); `Cis` / `Pci` /
+/// `Nist` exist as values so a finding can be tagged with its true framework
+/// (fixing mis-attribution) and so later frameworks are additive, not a struct
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum Framework {
+    Stig,
+    Cis,
+    Pci,
+    Nist,
+}
+
+/// A typed mapping from a [`Diagnostic`] to one compliance control.
+///
+/// Replaces the free-text control ids that today reach the user only inside a
+/// diagnostic's `message` (and inconsistently: some backends drop them). Making
+/// the mapping a first-class value lets a `--profile` filter, SARIF taxa, and
+/// machine consumers follow a finding to its control.
+///
+/// A DISA STIG control has two ids: the STIG/Rule id (e.g. `RHEL-08-030130`) and
+/// the Group/Vuln id (e.g. `V-230404`). `id` holds the canonical form (the Rule
+/// id for STIG) and `alias` the optional secondary id, so a single struct
+/// carries both without a per-framework variant. `name` is the optional human
+/// title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ControlRef {
+    /// The compliance framework this control belongs to.
+    pub framework: Framework,
+    /// Canonical control id (STIG: the Rule id, e.g. `"RHEL-08-030130"`).
+    pub id: String,
+    /// Optional human-readable control title.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub name: Option<String>,
+    /// Optional secondary id (STIG: the DISA Group/Vuln id, e.g. `"V-230404"`).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub alias: Option<String>,
+}
+
+impl ControlRef {
+    /// Build a control reference from its framework and canonical id.
+    #[must_use]
+    pub fn new(framework: Framework, id: impl Into<String>) -> Self {
+        Self {
+            framework,
+            id: id.into(),
+            name: None,
+            alias: None,
+        }
+    }
+
+    /// Set the human-readable control title.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the optional secondary id (the DISA Group/Vuln id for STIG).
+    #[must_use]
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
+    }
+}
+
 /// A single lint finding: where, what tier, what code, and operator-facing text.
 ///
 /// `span` is a byte range into the original source, matching
@@ -68,6 +149,15 @@ pub struct Diagnostic {
     /// not anchored to a specific source byte range (e.g., file-layout
     /// fatals).
     pub source_id: Option<String>,
+    /// Typed compliance-control mappings for this finding (e.g. the STIG Rule
+    /// id a lint enforces). Empty for findings that map to no control; the field
+    /// is OMITTED from serialized output when empty, so it is additive under the
+    /// tolerant-reader contract (no `schemaVersion` bump). See [`ControlRef`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub controls: Vec<ControlRef>,
 }
 
 impl Diagnostic {
@@ -90,6 +180,7 @@ impl Diagnostic {
             line,
             column,
             source_id: None,
+            controls: Vec::new(),
         }
     }
 
@@ -100,6 +191,17 @@ impl Diagnostic {
     #[must_use]
     pub fn with_source_id(mut self, id: impl Into<String>) -> Self {
         self.source_id = Some(id.into());
+        self
+    }
+
+    /// Attach typed compliance-control mappings to this diagnostic.
+    ///
+    /// Builder method: sets [`Diagnostic::controls`] and returns the modified
+    /// diagnostic. Backends chain this onto their emit sites to record which
+    /// control(s) a finding enforces (e.g. sysctld-W02 -> its STIG Rule id).
+    #[must_use]
+    pub fn with_controls(mut self, controls: Vec<ControlRef>) -> Self {
+        self.controls = controls;
         self
     }
 }
@@ -304,6 +406,95 @@ mod tests {
             d.source_id,
             Some("/etc/ssh/sshd_config".to_string()),
             "a line-level parse error is anchored to its source"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn framework_serializes_to_lowercase() {
+        // Framework is a wire-facing identifier: it serializes lowercase
+        // (`"stig"`), deliberately UNLIKE `Severity`, which serializes to its
+        // named variant (`"Fatal"`). Pins the `rename_all = "lowercase"`.
+        assert_eq!(
+            serde_json::to_string(&Framework::Stig).expect("serialize"),
+            "\"stig\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Framework::Cis).expect("serialize"),
+            "\"cis\""
+        );
+        let back: Framework = serde_json::from_str("\"nist\"").expect("deserialize");
+        assert_eq!(back, Framework::Nist);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn control_ref_omits_none_fields() {
+        // A bare control (no name, no alias) serializes to exactly two keys:
+        // `skip_serializing_if = "Option::is_none"` drops both optionals, so the
+        // common case stays compact. Pins the skip attrs on `name` and `alias`.
+        let c = ControlRef::new(Framework::Stig, "RHEL-08-030130");
+        assert_eq!(
+            serde_json::to_string(&c).expect("serialize"),
+            r#"{"framework":"stig","id":"RHEL-08-030130"}"#
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn control_ref_with_alias_round_trips() {
+        // Both optional builders populate their field and survive a JSON round
+        // trip. `alias` is the DISA Group/Vuln id, `name` the human title.
+        let c2 = ControlRef::new(Framework::Stig, "RHEL-08-030000")
+            .with_alias("V-230386")
+            .with_name("Enable FIPS mode");
+        let back: ControlRef =
+            serde_json::from_str(&serde_json::to_string(&c2).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back, c2);
+        assert_eq!(back.alias.as_deref(), Some("V-230386"));
+        assert_eq!(back.name.as_deref(), Some("Enable FIPS mode"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_without_controls_omits_field() {
+        // Empty controls -> the `controls` key is ABSENT (skip_serializing_if =
+        // "Vec::is_empty"), so a diagnostic carrying no mapping serializes
+        // byte-identically to the pre-v0.7 form. This is the additive/tolerant-
+        // reader contract that lets the field land without a schemaVersion bump.
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            5..10,
+            "unknown attribute",
+            "/tmp/x.rules",
+            3,
+            12,
+        );
+        assert!(
+            d.controls.is_empty(),
+            "a fresh diagnostic starts with no controls"
+        );
+        assert!(
+            !serde_json::to_string(&d)
+                .expect("serialize")
+                .contains("controls"),
+            "empty controls must be omitted from the JSON"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_with_controls_serializes_array() {
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 0, 0)
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-030130")]);
+        assert_eq!(d.controls.len(), 1, "with_controls sets the vec");
+        assert!(
+            serde_json::to_string(&d)
+                .expect("serialize")
+                .contains(r#""controls":[{"framework":"stig","id":"RHEL-08-030130"}]"#),
+            "populated controls serialize as an array of ControlRef objects"
         );
     }
 }
