@@ -1175,4 +1175,73 @@ mod tests {
         // V-number V-281265 (this file's RHEL10_VNUM `("permitrootlogin", "V-281265")`).
         assert_w02_permitrootlogin_control(TargetVersion::Rhel10, "RHEL-10-700620", "V-281265");
     }
+
+    // --- #501 backfill: full-coverage completeness (locks the user's decision to
+    //     source ALL three targets, so a two-keyword-hardcoded impl is wrong) ---
+    // Feed a config missing EVERY required directive for the target: W01 fires once
+    // per required directive, and each finding must carry a Stig control whose id
+    // uses that target's Rule-id prefix. This forces the emit path to attach a
+    // control to ALL required keywords, not just the `banner`/`permitrootlogin`
+    // pair pinned by value above. We do not pin each exact id here (the by-value
+    // tests do that for the representatives); count + non-empty + framework + prefix
+    // is what rules out a partial impl.
+
+    /// Shared completeness assertion (see the block comment above).
+    fn assert_w01_completeness(target: TargetVersion, id_prefix: &str) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        // An empty config makes every required directive for this target missing.
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+
+        let expected = required_set(Some(target)).len();
+        assert!(
+            expected > 2,
+            "sanity: the completeness check must span more than the 2 value-pinned \
+             keywords ({target:?})"
+        );
+        assert_eq!(
+            diags.len(),
+            expected,
+            "W01 must fire once per required directive on an empty config ({target:?})"
+        );
+        for d in &diags {
+            assert_eq!(d.code, "sshd-W01");
+            // len first so RED is a clean `0 != 1`, not an index panic.
+            assert_eq!(
+                d.controls.len(),
+                1,
+                "every W01 finding must carry exactly one STIG control ({target:?}); \
+                 offender: {}",
+                d.message
+            );
+            assert_eq!(d.controls[0].framework, Framework::Stig);
+            assert!(
+                d.controls[0].id.starts_with(id_prefix),
+                "W01 control id {:?} must start with {id_prefix:?} ({target:?})",
+                d.controls[0].id
+            );
+        }
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel8() {
+        // RHEL8 V2R4: 14 required directives, every id under the `RHEL-08-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel8, "RHEL-08-");
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel9() {
+        // RHEL9 V2R7: 20 required directives, every id under the `RHEL-09-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-");
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel10() {
+        // RHEL10 V1R1: 19 required directives, every id under the `RHEL-10-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel10, "RHEL-10-");
+    }
 }
