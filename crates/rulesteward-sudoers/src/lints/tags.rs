@@ -14,7 +14,7 @@
 //! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
 //! machine lives here and the passes only EMIT - they never re-parse.
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
@@ -110,17 +110,23 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     let mut diags = Vec::new();
     for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
         if cmnd_spec.cmnd == CmndItem::All {
-            diags.push(anchored(
-                Severity::Warning,
-                "sudo-W01",
-                logical.span.clone(),
-                "NOPASSWD applies to the reserved ALL command: this grants \
-                 passwordless authority to run any command \
-                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                    .to_string(),
-                file.path.clone(),
-                logical.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sudo-W01",
+                    logical.span.clone(),
+                    "NOPASSWD applies to the reserved ALL command: this grants \
+                     passwordless authority to run any command \
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                        .to_string(),
+                    file.path.clone(),
+                    logical.line,
+                )
+                .with_controls(vec![
+                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
+                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
+                ]),
+            );
         }
     });
     diags
@@ -218,17 +224,23 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
         // here IS the dedup-against-W01. Every other NOPASSWD-effective command
         // (including alias references) fires.
         if cmnd_spec.cmnd != CmndItem::All && !is_empty_command {
-            diags.push(anchored(
-                Severity::Warning,
-                "sudo-W05",
-                logical.span.clone(),
-                "NOPASSWD is in effect on this command: DISA STIG requires \
-                 removing all NOPASSWD usage from sudoers \
-                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                    .to_string(),
-                file.path.clone(),
-                logical.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sudo-W05",
+                    logical.span.clone(),
+                    "NOPASSWD is in effect on this command: DISA STIG requires \
+                     removing all NOPASSWD usage from sudoers \
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                        .to_string(),
+                    file.path.clone(),
+                    logical.line,
+                )
+                .with_controls(vec![
+                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
+                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
+                ]),
+            );
         }
     });
     diags

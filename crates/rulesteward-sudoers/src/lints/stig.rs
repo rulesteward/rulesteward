@@ -86,7 +86,9 @@
 // Wrapping them all in backticks in comments would bury the signal.
 #![allow(clippy::doc_markdown)]
 
-use rulesteward_core::{Diagnostic, Severity};
+use std::path::Path;
+
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity, Span};
 
 use crate::ast::{DefaultsScope, LineKind, SudoersFile};
 use crate::lints::{SudoersLintContext, anchored};
@@ -97,16 +99,30 @@ use crate::lints::{SudoersLintContext, anchored};
 
 /// Non-negated settings that weaken the sudo security posture below the sudo
 /// hardening baseline when present. Each tuple is
-/// `(name_as_written, human_explanation, grounded_citation)`; the citation
-/// (control id + framework) is appended to the diagnostic so an operator can
-/// cross-reference the finding. It is re-grounded per the module doc and pinned
-/// by `tests::w04_weakening_findings_cite_grounded_controls`.
+/// `(name_as_written, human_explanation, grounded_citation, typed_controls)`;
+/// the citation (control id + framework) is appended to the diagnostic so an
+/// operator can cross-reference the finding, and `typed_controls` is the SAME
+/// mapping as typed `(Framework, id)` pairs (#503, v0.7) so the free-text
+/// citation and the structured `ControlRef`s can never drift apart. It is
+/// re-grounded per the module doc and pinned by
+/// `tests::w04_weakening_findings_cite_grounded_controls` (the free text) and
+/// `tests::w04_pw_family_findings_carry_stig_controls` (the typed form).
 ///
+/// A `WEAKENING_PRESENT` row: `(name, explanation, citation, typed controls)`.
+/// A type alias per `clippy::type_complexity` -- the inline 4-tuple-of-slices
+/// form trips the lint.
+type WeakeningRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [(Framework, &'static str)],
+);
+
 /// Note: `!authenticate` is NOT in this table because it is a NEGATED setting
 /// (`DefaultSetting { negated: true, name: "authenticate" }`); it is handled
 /// separately in `check_file`'s negated arm. This table covers settings that
 /// are dangerous when present WITHOUT a `!` prefix.
-const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
+const WEAKENING_PRESENT: &[WeakeningRow] = &[
     // targetpw: prompts for the target user's password rather than the invoking
     // user's -- breaks PAM accountability chain.
     (
@@ -114,6 +130,7 @@ const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
         "prompts for the target user's password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
         "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        &PW_FAMILY_CONTROLS,
     ),
     // rootpw: prompts for root's password -- also breaks accountability.
     (
@@ -121,6 +138,7 @@ const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
         "prompts for the root password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
         "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        &PW_FAMILY_CONTROLS,
     ),
     // runaspw: prompts for the run-as user's password.
     (
@@ -128,15 +146,71 @@ const WEAKENING_PRESENT: &[(&str, &str, &str)] = &[
         "prompts for the run-as user's password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
         "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        &PW_FAMILY_CONTROLS,
     ),
     // visiblepw: allows sudo when the password would be echoed in plain text.
+    // No bare control id in the citation ("CIS / general hardening; not a DISA
+    // STIG control"), so NO typed control is attached (#503 documented
+    // exclusion; see `tests::w04_visiblepw_finding_has_no_controls`).
     (
         "visiblepw",
         "allows sudo to proceed when the password would be visible on the terminal; \
          the CIS / general hardening baseline requires this to be disabled",
         "CIS / general hardening; not a DISA STIG control",
+        &[],
     ),
 ];
+
+// ---------------------------------------------------------------------------
+// Typed ControlRef mappings (#503, v0.7): one `const` per DISTINCT citation,
+// shared by every emit site that cites it, so the typed form can never drift
+// from the free-text citation at a second call site (grep the const name to
+// find every site it backs).
+// ---------------------------------------------------------------------------
+
+/// `targetpw` / `rootpw` / `runaspw`: DISA STIG RHEL-08-010383 / RHEL-09-432020
+/// (`WEAKENING_PRESENT` rows above).
+const PW_FAMILY_CONTROLS: [(Framework, &str); 2] = [
+    (Framework::Stig, "RHEL-08-010383"),
+    (Framework::Stig, "RHEL-09-432020"),
+];
+
+/// `!authenticate`: DISA STIG RHEL-08-010381 / RHEL-09-432025 (`check_file`'s
+/// negated arm).
+const AUTHENTICATE_CONTROLS: [(Framework, &str); 2] = [
+    (Framework::Stig, "RHEL-08-010381"),
+    (Framework::Stig, "RHEL-09-432025"),
+];
+
+/// `use_pty`: CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5. Shared by the per-file
+/// `!use_pty` negation (`check_file`) and the merged missing-`use_pty`
+/// (`check_merged_required`) findings -- same control, two emit sites.
+const USE_PTY_CONTROLS: [(Framework, &str); 2] =
+    [(Framework::Cis, "1.3.2"), (Framework::Pci, "Req-10.2.5")];
+
+/// I/O logging (`logfile=` / `log_output`): CIS Benchmark 1.3.3 / PCI-DSS
+/// Req-10.2.5 (`check_merged_required`'s missing-I/O-log finding).
+const IO_LOG_CONTROLS: [(Framework, &str); 2] =
+    [(Framework::Cis, "1.3.3"), (Framework::Pci, "Req-10.2.5")];
+
+/// `timestamp_timeout`: DISA STIG RHEL-08-010384 / RHEL-09-432015. Shared by
+/// the per-file NEGATIVE-value weakening (`check_file`) and the merged
+/// ABSENT/CONFLICTING findings (`check_merged_required`) -- same control,
+/// three emit sites.
+const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 2] = [
+    (Framework::Stig, "RHEL-08-010384"),
+    (Framework::Stig, "RHEL-09-432015"),
+];
+
+/// Build the typed `ControlRef` vec for a `(Framework, id)` pair slice. The
+/// single conversion point every emit site's `.with_controls(controls(&X))`
+/// call goes through.
+fn controls(pairs: &[(Framework, &str)]) -> Vec<ControlRef> {
+    pairs
+        .iter()
+        .map(|&(framework, id)| ControlRef::new(framework, id))
+        .collect()
+}
 
 /// sudo-W04: a `Defaults` setting is weaker than the sudo STIG baseline.
 ///
@@ -177,46 +251,14 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
 
             // --- Negated checks ---
             if setting.negated {
-                match name {
-                    // `!authenticate`: disables per-invocation password re-authentication.
-                    // DISA STIG RHEL-08-010381 / RHEL-09-432025.
-                    "authenticate" => {
-                        diags.push(anchored(
-                            Severity::Warning,
-                            "sudo-W04",
-                            line.span.clone(),
-                            format!(
-                                "Defaults setting '!authenticate' {} disables \
-                                 per-invocation sudo re-authentication; \
-                                 STIG requires authentication for every invocation \
-                                 (DISA STIG RHEL-08-010381 / RHEL-09-432025)",
-                                scope_paren(&defaults.scope),
-                            ),
-                            &file.path,
-                            line.line,
-                        ));
-                    }
-                    // `!use_pty`: explicit negation of the pty requirement.
-                    // CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
-                    "use_pty" => {
-                        diags.push(anchored(
-                            Severity::Warning,
-                            "sudo-W04",
-                            line.span.clone(),
-                            format!(
-                                "Defaults setting '!use_pty' {} disables \
-                                 pseudo-terminal allocation; the CIS / PCI hardening \
-                                 baseline requires 'Defaults use_pty' to prevent I/O \
-                                 redirection attacks \
-                                 (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; \
-                                 not a DISA STIG control)",
-                                scope_paren(&defaults.scope),
-                            ),
-                            &file.path,
-                            line.line,
-                        ));
-                    }
-                    _ => {}
+                if let Some(d) = negated_weakening(
+                    name,
+                    &defaults.scope,
+                    line.span.clone(),
+                    &file.path,
+                    line.line,
+                ) {
+                    diags.push(d);
                 }
                 continue; // done with this negated setting
             }
@@ -236,45 +278,174 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                     .and_then(parse_signed_minutes)
                     .is_some_and(|v| v < 0.0)
             {
-                diags.push(anchored(
-                    Severity::Warning,
-                    "sudo-W04",
-                    line.span.clone(),
-                    format!(
-                        "Defaults setting 'timestamp_timeout' {} sets a negative value: \
-                         the sudo credential cache never expires, so a user is \
-                         re-authenticated once and trusted indefinitely; STIG requires \
-                         re-authentication (a non-negative timeout) \
-                         (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
-                        scope_paren(&defaults.scope),
-                    ),
-                    &file.path,
-                    line.line,
-                ));
-            }
-
-            // Fire for weakening non-negated settings (all entries in the table;
-            // `!authenticate` is handled in the negated arm above).
-            for &(weakening_name, explanation, citation) in WEAKENING_PRESENT {
-                if name == weakening_name {
-                    diags.push(anchored(
+                diags.push(
+                    anchored(
                         Severity::Warning,
                         "sudo-W04",
                         line.span.clone(),
                         format!(
-                            "Defaults setting '{name}' {} weakens sudo security: \
-                             {explanation} ({citation})",
+                            "Defaults setting 'timestamp_timeout' {} sets a negative value: \
+                             the sudo credential cache never expires, so a user is \
+                             re-authenticated once and trusted indefinitely; STIG requires \
+                             re-authentication (a non-negative timeout) \
+                             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
                             scope_paren(&defaults.scope),
                         ),
                         &file.path,
                         line.line,
-                    ));
+                    )
+                    .with_controls(controls(&TIMESTAMP_TIMEOUT_CONTROLS)),
+                );
+            }
+
+            // Fire for weakening non-negated settings (all entries in the table;
+            // `!authenticate` is handled in the negated arm above).
+            for &(weakening_name, explanation, citation, row_controls) in WEAKENING_PRESENT {
+                if name == weakening_name {
+                    diags.push(
+                        anchored(
+                            Severity::Warning,
+                            "sudo-W04",
+                            line.span.clone(),
+                            format!(
+                                "Defaults setting '{name}' {} weakens sudo security: \
+                                 {explanation} ({citation})",
+                                scope_paren(&defaults.scope),
+                            ),
+                            &file.path,
+                            line.line,
+                        )
+                        .with_controls(controls(row_controls)),
+                    );
                 }
             }
         }
     }
 
     diags
+}
+
+/// Build the diagnostic for a NEGATED weakening setting (`!authenticate` /
+/// `!use_pty`), or `None` for any other negated setting. Factored out of
+/// [`check_file`] to keep it under clippy's line-count gate; the message text
+/// and typed controls are unchanged from the inline arms this replaces.
+fn negated_weakening(
+    name: &str,
+    scope: &DefaultsScope,
+    span: Span,
+    file: &Path,
+    line_no: usize,
+) -> Option<Diagnostic> {
+    match name {
+        // `!authenticate`: disables per-invocation password re-authentication.
+        // DISA STIG RHEL-08-010381 / RHEL-09-432025.
+        "authenticate" => Some(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                span,
+                format!(
+                    "Defaults setting '!authenticate' {} disables \
+                     per-invocation sudo re-authentication; \
+                     STIG requires authentication for every invocation \
+                     (DISA STIG RHEL-08-010381 / RHEL-09-432025)",
+                    scope_paren(scope),
+                ),
+                file,
+                line_no,
+            )
+            .with_controls(controls(&AUTHENTICATE_CONTROLS)),
+        ),
+        // `!use_pty`: explicit negation of the pty requirement.
+        // CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
+        "use_pty" => Some(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                span,
+                format!(
+                    "Defaults setting '!use_pty' {} disables \
+                     pseudo-terminal allocation; the CIS / PCI hardening \
+                     baseline requires 'Defaults use_pty' to prevent I/O \
+                     redirection attacks \
+                     (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; \
+                     not a DISA STIG control)",
+                    scope_paren(scope),
+                ),
+                file,
+                line_no,
+            )
+            .with_controls(controls(&USE_PTY_CONTROLS)),
+        ),
+        _ => None,
+    }
+}
+
+/// Scan the merged file set for the presence signals [`check_merged_required`]
+/// needs: whether a positive `use_pty` / I/O-logging setting appears ANYWHERE,
+/// whether a negated `!timestamp_timeout` clear appears anywhere, and the set
+/// of DISTINCT `timestamp_timeout` values seen (first-seen order). Factored out
+/// of `check_merged_required` to keep it under clippy's line-count gate; the
+/// scanning logic is unchanged from the loop this replaces.
+///
+/// Returns `(has_use_pty, has_io_log, has_negated_timestamp_timeout,
+/// distinct_timestamp_values)`.
+///
+/// Distinct `timestamp_timeout` values are canonicalised through
+/// `parse_signed_minutes` and re-rendered so `=5` / `=05` / `=5.0` collapse to
+/// one entry (they ARE the same timeout); the canonical strings are the dedup
+/// key, avoiding fragile direct `f64` equality. The key is built from `v + 0.0`
+/// so signed zero normalizes (`-0.0` -> `0.0`), preventing a spurious `=0` vs
+/// `=-0` "conflict" (both are the same compliant value, 0). A negated
+/// `Defaults !timestamp_timeout` clears the timeout, which sudo treats as
+/// re-prompt-on-every-invocation -- functionally identical to `=0` and
+/// therefore COMPLIANT (#363 user decision); it SATISFIES the presence/absence
+/// requirement but contributes NO value to conflict detection and fires no
+/// weakening, so it is tracked separately from the positive-value list.
+fn scan_merged_settings(files: &[SudoersFile]) -> (bool, bool, bool, Vec<String>) {
+    let mut has_use_pty = false;
+    let mut has_io_log = false;
+    let mut has_negated_timestamp_timeout = false;
+    let mut timestamp_values: Vec<String> = Vec::new();
+    for file in files {
+        for line in &file.lines {
+            let LineKind::Defaults(defaults) = &line.kind else {
+                continue;
+            };
+            for setting in &defaults.settings {
+                if setting.negated {
+                    // A negated `timestamp_timeout` is a COMPLIANT clear (counts as
+                    // present, no value, no conflict). Every other negated setting
+                    // (`!use_pty` / `!log_output`) is a clear, not a positive set, so
+                    // it does not satisfy its requirement.
+                    if setting.name == "timestamp_timeout" {
+                        has_negated_timestamp_timeout = true;
+                    }
+                    continue;
+                }
+                match setting.name.as_str() {
+                    "use_pty" => has_use_pty = true,
+                    "logfile" | "log_output" => has_io_log = true,
+                    "timestamp_timeout" => {
+                        if let Some(v) = setting.value.as_deref().and_then(parse_signed_minutes) {
+                            // Normalize signed zero (`-0.0` -> `0.0`) before keying.
+                            let canonical = (v + 0.0).to_string();
+                            if !timestamp_values.contains(&canonical) {
+                                timestamp_values.push(canonical);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (
+        has_use_pty,
+        has_io_log,
+        has_negated_timestamp_timeout,
+        timestamp_values,
+    )
 }
 
 /// sudo-W04 missing-required hardening, checked over the MERGED resolved slice
@@ -319,83 +490,41 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
         return Vec::new();
     };
 
-    let mut has_use_pty = false;
-    let mut has_io_log = false;
-    // Distinct `timestamp_timeout` values seen across the WHOLE merged tree, in
-    // first-seen order. The sudoers model retains every occurrence (no last-wins
-    // collapse), so 2+ distinct values is a detectable conflict. Each value is
-    // canonicalised through `parse_signed_minutes` and re-rendered so `=5` / `=05` /
-    // `=5.0` collapse to one entry (they ARE the same timeout); the canonical
-    // strings are the dedup key, avoiding fragile direct `f64` equality. The key is
-    // built from `v + 0.0` so signed zero normalizes (`-0.0` -> `0.0`), preventing a
-    // spurious `=0` vs `=-0` "conflict" (both are the same compliant value, 0).
-    let mut timestamp_values: Vec<String> = Vec::new();
-    // A `Defaults !timestamp_timeout` (negated) clears the timeout, which sudo
-    // treats as re-prompt-on-every-invocation -- functionally identical to `=0` and
-    // therefore COMPLIANT (#363 user decision). It SATISFIES the presence/absence
-    // requirement but contributes NO value to conflict detection and fires no
-    // weakening, so it is tracked separately from the positive-value list.
-    let mut has_negated_timestamp_timeout = false;
-    for file in files {
-        for line in &file.lines {
-            let LineKind::Defaults(defaults) = &line.kind else {
-                continue;
-            };
-            for setting in &defaults.settings {
-                if setting.negated {
-                    // A negated `timestamp_timeout` is a COMPLIANT clear (counts as
-                    // present, no value, no conflict). Every other negated setting
-                    // (`!use_pty` / `!log_output`) is a clear, not a positive set, so
-                    // it does not satisfy its requirement.
-                    if setting.name == "timestamp_timeout" {
-                        has_negated_timestamp_timeout = true;
-                    }
-                    continue;
-                }
-                match setting.name.as_str() {
-                    "use_pty" => has_use_pty = true,
-                    "logfile" | "log_output" => has_io_log = true,
-                    "timestamp_timeout" => {
-                        if let Some(v) = setting.value.as_deref().and_then(parse_signed_minutes) {
-                            // Normalize signed zero (`-0.0` -> `0.0`) before keying.
-                            let canonical = (v + 0.0).to_string();
-                            if !timestamp_values.contains(&canonical) {
-                                timestamp_values.push(canonical);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    let (has_use_pty, has_io_log, has_negated_timestamp_timeout, timestamp_values) =
+        scan_merged_settings(files);
 
     let mut diags = Vec::new();
     if !has_use_pty {
-        diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            "required 'Defaults use_pty' is not set anywhere in the resolved \
-             sudoers configuration; without it sudo does not allocate a \
-             pseudo-terminal, leaving privileged sessions open to I/O redirection \
-             (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
-            &top.path,
-            0,
-        ));
+        diags.push(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                0..0,
+                "required 'Defaults use_pty' is not set anywhere in the resolved \
+                 sudoers configuration; without it sudo does not allocate a \
+                 pseudo-terminal, leaving privileged sessions open to I/O redirection \
+                 (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+                &top.path,
+                0,
+            )
+            .with_controls(controls(&USE_PTY_CONTROLS)),
+        );
     }
     if !has_io_log {
-        diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            "required sudo I/O logging is not configured anywhere in the resolved \
-             sudoers configuration (no 'Defaults logfile=' or 'Defaults \
-             log_output'); privileged command sessions are not recorded for audit \
-             (CIS Benchmark 1.3.3 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
-            &top.path,
-            0,
-        ));
+        diags.push(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                0..0,
+                "required sudo I/O logging is not configured anywhere in the resolved \
+                 sudoers configuration (no 'Defaults logfile=' or 'Defaults \
+                 log_output'); privileged command sessions are not recorded for audit \
+                 (CIS Benchmark 1.3.3 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+                &top.path,
+                0,
+            )
+            .with_controls(controls(&IO_LOG_CONTROLS)),
+        );
     }
     // timestamp_timeout (#363, DISA STIG RHEL-08-010384 / RHEL-09-432015,
     // ComplianceAsCode `sudo_require_reauthentication`):
@@ -414,31 +543,37 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
     match timestamp_values.as_slice() {
         // No POSITIVE value set. If a negated clear is present that is compliant
         // (requirement satisfied); otherwise the requirement is genuinely absent.
-        [] if !has_negated_timestamp_timeout => diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            "required 'Defaults timestamp_timeout' is not set anywhere in the \
-             resolved sudoers configuration; without an explicit re-authentication \
-             timeout sudo relies on the compiled-in default, so the policy does not \
-             demonstrably require re-authentication \
-             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
-            &top.path,
-            0,
-        )),
+        [] if !has_negated_timestamp_timeout => diags.push(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                0..0,
+                "required 'Defaults timestamp_timeout' is not set anywhere in the \
+                 resolved sudoers configuration; without an explicit re-authentication \
+                 timeout sudo relies on the compiled-in default, so the policy does not \
+                 demonstrably require re-authentication \
+                 (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                &top.path,
+                0,
+            )
+            .with_controls(controls(&TIMESTAMP_TIMEOUT_CONTROLS)),
+        ),
         [] => {}        // negated `!timestamp_timeout` only: compliant clear, nothing fires.
         [_single] => {} // exactly one value: unambiguous (compliance handled elsewhere).
-        _multiple => diags.push(anchored(
-            Severity::Warning,
-            "sudo-W04",
-            0..0,
-            "conflicting 'Defaults timestamp_timeout' values are set across the \
-             resolved sudoers configuration (the key is given more than one distinct \
-             value); the effective re-authentication timeout is ambiguous \
-             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
-            &top.path,
-            0,
-        )),
+        _multiple => diags.push(
+            anchored(
+                Severity::Warning,
+                "sudo-W04",
+                0..0,
+                "conflicting 'Defaults timestamp_timeout' values are set across the \
+                 resolved sudoers configuration (the key is given more than one distinct \
+                 value); the effective re-authentication timeout is ambiguous \
+                 (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                &top.path,
+                0,
+            )
+            .with_controls(controls(&TIMESTAMP_TIMEOUT_CONTROLS)),
+        ),
     }
     diags
 }
