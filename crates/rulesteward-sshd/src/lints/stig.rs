@@ -29,7 +29,7 @@
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::Block;
 use crate::lints::{SshdLintContext, TargetVersion, anchored};
@@ -430,6 +430,114 @@ fn provenance_map(target: TargetVersion) -> &'static [(&'static str, &'static st
     }
 }
 
+// ---------------------------------------------------------------------------
+// #501 typed control-ID backfill: per-target `(keyword, STIG Rule id)` maps.
+//
+// The Rule id (the DISA XCCDF `<version>`) is the canonical `ControlRef::id`;
+// paired with the DISA V-number from `provenance_map` it builds the typed STIG
+// control attached to every sshd-W01/W02 finding. This is a SECOND parallel map
+// (not an extension of `RHEL*_VNUM`) so `provenance_map` keeps its `(keyword,
+// v_number)` 2-tuple shape and the V-number stays single-sourced in `RHEL*_VNUM`.
+//
+// RHEL9 ids mirror the `//` comments on `RHEL9_REQUIRED`; RHEL8/RHEL10 ids are
+// grounded in the DISA XCCDF (RHEL 8 V2R4 / RHEL 10 V1R1), cross-validated
+// 0-drift against the shipped V-numbers. Each map's keyword set matches
+// `required_set` for the target, so the W01 emit path (which iterates the
+// required set) always resolves a control.
+// ---------------------------------------------------------------------------
+
+const RHEL8_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-08-010040"),
+    ("clientalivecountmax", "RHEL-08-010200"),
+    ("clientaliveinterval", "RHEL-08-010201"),
+    ("gssapiauthentication", "RHEL-08-010522"),
+    ("ignoreuserknownhosts", "RHEL-08-010520"),
+    ("kerberosauthentication", "RHEL-08-010521"),
+    ("permitemptypasswords", "RHEL-08-020330"),
+    ("permitrootlogin", "RHEL-08-010550"),
+    ("permituserenvironment", "RHEL-08-010830"),
+    ("printlastlog", "RHEL-08-020350"),
+    ("rekeylimit", "RHEL-08-040161"),
+    ("strictmodes", "RHEL-08-010500"),
+    ("x11forwarding", "RHEL-08-040340"),
+    ("x11uselocalhost", "RHEL-08-040341"),
+];
+
+const RHEL9_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-09-255025"),
+    ("clientalivecountmax", "RHEL-09-255095"),
+    ("clientaliveinterval", "RHEL-09-255100"),
+    ("compression", "RHEL-09-255130"),
+    ("gssapiauthentication", "RHEL-09-255135"),
+    ("hostbasedauthentication", "RHEL-09-255080"),
+    ("ignorerhosts", "RHEL-09-255145"),
+    ("ignoreuserknownhosts", "RHEL-09-255150"),
+    ("kerberosauthentication", "RHEL-09-255140"),
+    ("loglevel", "RHEL-09-255030"),
+    ("permitemptypasswords", "RHEL-09-255040"),
+    ("permitrootlogin", "RHEL-09-255045"),
+    ("permituserenvironment", "RHEL-09-255085"),
+    ("printlastlog", "RHEL-09-255165"),
+    ("pubkeyauthentication", "RHEL-09-255035"),
+    ("rekeylimit", "RHEL-09-255090"),
+    ("strictmodes", "RHEL-09-255160"),
+    ("usepam", "RHEL-09-255050"),
+    ("x11forwarding", "RHEL-09-255155"),
+    ("x11uselocalhost", "RHEL-09-255175"),
+];
+
+const RHEL10_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-10-700010"),
+    ("clientalivecountmax", "RHEL-10-700660"),
+    ("clientaliveinterval", "RHEL-10-700930"),
+    ("gssapiauthentication", "RHEL-10-700510"),
+    ("hostbasedauthentication", "RHEL-10-700630"),
+    ("ignorerhosts", "RHEL-10-700530"),
+    ("ignoreuserknownhosts", "RHEL-10-700540"),
+    ("kerberosauthentication", "RHEL-10-700520"),
+    ("loglevel", "RHEL-10-500215"),
+    ("permitemptypasswords", "RHEL-10-700610"),
+    ("permitrootlogin", "RHEL-10-700620"),
+    ("permituserenvironment", "RHEL-10-700640"),
+    ("printlastlog", "RHEL-10-700570"),
+    ("pubkeyauthentication", "RHEL-10-700600"),
+    ("rekeylimit", "RHEL-10-700650"),
+    ("strictmodes", "RHEL-10-700560"),
+    ("usepam", "RHEL-10-600640"),
+    ("x11forwarding", "RHEL-10-700550"),
+    ("x11uselocalhost", "RHEL-10-700580"),
+];
+
+/// The `(keyword, STIG Rule id)` map for a concrete target.
+fn rule_id_map(target: TargetVersion) -> &'static [(&'static str, &'static str)] {
+    match target {
+        TargetVersion::Rhel8 => RHEL8_RULE_ID,
+        TargetVersion::Rhel9 => RHEL9_RULE_ID,
+        TargetVersion::Rhel10 => RHEL10_RULE_ID,
+    }
+}
+
+/// Look up the value paired with `key` in a `(keyword, value)` table.
+fn lookup(table: &[(&'static str, &'static str)], key: &str) -> Option<&'static str> {
+    table.iter().find_map(|&(k, v)| (k == key).then_some(v))
+}
+
+/// Build the typed STIG [`ControlRef`] for `keyword_lower` on `target`: canonical
+/// `id` = STIG Rule id, `alias` = DISA V-number.
+///
+/// `target=None` uses the conservative floor (RHEL 8), matching [`required_set`].
+/// Returns `None` when the keyword has no STIG Rule id for the target, so the
+/// emit sites attach a control only for a genuinely STIG-controlled directive and
+/// never fabricate one. (The W01 emit path iterates `required_set`, so every W01
+/// keyword resolves; W02's one out-of-required-set control - Compression on the
+/// RHEL 8 floor - has no Rule id and correctly gets no control.)
+fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Option<ControlRef> {
+    let concrete = target.unwrap_or(TargetVersion::Rhel8);
+    let rule_id = lookup(rule_id_map(concrete), keyword_lower)?;
+    let v_number = lookup(provenance_map(concrete), keyword_lower)?;
+    Some(ControlRef::new(Framework::Stig, rule_id).with_alias(v_number))
+}
+
 /// Widen the private [`W02Rule`] into the public [`StigValueRule`]; `None`
 /// (no W02 value rule) becomes `PresenceOnly`.
 fn value_rule_of(rule: Option<W02Rule>) -> StigValueRule {
@@ -537,14 +645,17 @@ pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
         if !present.contains(req) {
             // Emit at byte offset 0 with an empty span: there is no line to anchor
             // to (the directive is absent). The file path is still reported.
-            diags.push(anchored(
-                Severity::Warning,
-                "sshd-W01",
-                0..0,
-                format!("STIG-required directive '{req}' is missing from the configuration"),
-                file,
-                0,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sshd-W01",
+                    0..0,
+                    format!("STIG-required directive '{req}' is missing from the configuration"),
+                    file,
+                    0,
+                )
+                .with_controls(stig_control_ref(req, ctx.target).into_iter().collect()),
+            );
         }
     }
     diags
@@ -596,17 +707,20 @@ pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
             displayed_value,
         } = baseline_check(&keyword, &directive.args, ctx.target)
         {
-            diags.push(anchored(
-                Severity::Warning,
-                "sshd-W02",
-                directive.span.clone(),
-                format!(
-                    "directive '{}' has value '{displayed_value}'; STIG baseline requires {requirement}",
-                    directive.keyword,
-                ),
-                file,
-                directive.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sshd-W02",
+                    directive.span.clone(),
+                    format!(
+                        "directive '{}' has value '{displayed_value}'; STIG baseline requires {requirement}",
+                        directive.keyword,
+                    ),
+                    file,
+                    directive.line,
+                )
+                .with_controls(stig_control_ref(&keyword, ctx.target).into_iter().collect()),
+            );
         }
     }
 
