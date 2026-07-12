@@ -1073,4 +1073,106 @@ mod tests {
             dup.controls
         );
     }
+
+    // --- #501 backfill: RHEL8 + RHEL10 targets (scope expansion) -------------
+    // Same shape as the RHEL9 W01/W02 tests above, on the other two targets, so
+    // the emit path must key the ControlRef on BOTH target AND keyword: a
+    // constant-control impl fails because per target `banner` (W01) and
+    // `permitrootlogin` (W02) pin DISTINCT ids/aliases, and each keyword's
+    // expected control also differs across targets. RHEL8/RHEL10 Rule ids come
+    // from the DISA XCCDF grounding (RHEL8 V2R4 / RHEL10 V1R1); each V-number
+    // alias is cross-validated against this file's shipped RHEL8_VNUM/RHEL10_VNUM.
+
+    /// Shared W01 assertion: an empty config makes `banner` missing on `target`;
+    /// the finding must carry exactly one STIG `ControlRef` (`id` = Rule id,
+    /// `alias` = V-number) and keep its message byte-identical.
+    fn assert_w01_banner_control(target: TargetVersion, expect_id: &str, expect_vnum: &str) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let banner = diags
+            .iter()
+            .find(|d| d.message.contains("'banner'"))
+            .expect("banner reported missing on an empty config");
+        assert_eq!(
+            banner.message,
+            "STIG-required directive 'banner' is missing from the configuration"
+        );
+        assert_eq!(
+            banner.controls.len(),
+            1,
+            "W01 finding must carry exactly one STIG control ({target:?})"
+        );
+        assert_eq!(banner.controls[0].framework, Framework::Stig);
+        assert_eq!(banner.controls[0].id, expect_id);
+        assert_eq!(banner.controls[0].alias, Some(expect_vnum.to_string()));
+    }
+
+    /// Shared W02 assertion: `PermitRootLogin yes` on `target` is a weak-value
+    /// finding (STIG requires `no`) that must carry exactly one STIG `ControlRef`
+    /// (`id` = Rule id, `alias` = V-number) and keep its message byte-identical.
+    fn assert_w02_permitrootlogin_control(
+        target: TargetVersion,
+        expect_id: &str,
+        expect_vnum: &str,
+    ) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one W02 finding for the weak PermitRootLogin ({target:?}); got {diags:?}"
+        );
+        let prl = &diags[0];
+        assert_eq!(prl.code, "sshd-W02");
+        assert_eq!(
+            prl.message,
+            "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
+        );
+        assert_eq!(
+            prl.controls.len(),
+            1,
+            "W02 finding must carry exactly one STIG control ({target:?})"
+        );
+        assert_eq!(prl.controls[0].framework, Framework::Stig);
+        assert_eq!(prl.controls[0].id, expect_id);
+        assert_eq!(prl.controls[0].alias, Some(expect_vnum.to_string()));
+    }
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control_rhel8() {
+        // banner on Rhel8: Rule id RHEL-08-010040 (DISA XCCDF RHEL8 V2R4),
+        // V-number V-230225 (this file's RHEL8_VNUM `("banner", "V-230225")`).
+        assert_w01_banner_control(TargetVersion::Rhel8, "RHEL-08-010040", "V-230225");
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control_rhel8() {
+        // PermitRootLogin on Rhel8: Rule id RHEL-08-010550 (DISA XCCDF RHEL8 V2R4),
+        // V-number V-230296 (this file's RHEL8_VNUM `("permitrootlogin", "V-230296")`).
+        assert_w02_permitrootlogin_control(TargetVersion::Rhel8, "RHEL-08-010550", "V-230296");
+    }
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control_rhel10() {
+        // banner on Rhel10: Rule id RHEL-10-700010 (DISA XCCDF RHEL10 V1R1),
+        // V-number V-281224 (this file's RHEL10_VNUM `("banner", "V-281224")`).
+        assert_w01_banner_control(TargetVersion::Rhel10, "RHEL-10-700010", "V-281224");
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control_rhel10() {
+        // PermitRootLogin on Rhel10: Rule id RHEL-10-700620 (DISA XCCDF RHEL10 V1R1),
+        // V-number V-281265 (this file's RHEL10_VNUM `("permitrootlogin", "V-281265")`).
+        assert_w02_permitrootlogin_control(TargetVersion::Rhel10, "RHEL-10-700620", "V-281265");
+    }
 }
