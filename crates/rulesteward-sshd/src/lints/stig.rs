@@ -29,7 +29,7 @@
 
 use std::path::Path;
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::Block;
 use crate::lints::{SshdLintContext, TargetVersion, anchored};
@@ -430,6 +430,114 @@ fn provenance_map(target: TargetVersion) -> &'static [(&'static str, &'static st
     }
 }
 
+// ---------------------------------------------------------------------------
+// #501 typed control-ID backfill: per-target `(keyword, STIG Rule id)` maps.
+//
+// The Rule id (the DISA XCCDF `<version>`) is the canonical `ControlRef::id`;
+// paired with the DISA V-number from `provenance_map` it builds the typed STIG
+// control attached to every sshd-W01/W02 finding. This is a SECOND parallel map
+// (not an extension of `RHEL*_VNUM`) so `provenance_map` keeps its `(keyword,
+// v_number)` 2-tuple shape and the V-number stays single-sourced in `RHEL*_VNUM`.
+//
+// RHEL9 ids mirror the `//` comments on `RHEL9_REQUIRED`; RHEL8/RHEL10 ids are
+// grounded in the DISA XCCDF (RHEL 8 V2R4 / RHEL 10 V1R1), cross-validated
+// 0-drift against the shipped V-numbers. Each map's keyword set matches
+// `required_set` for the target, so the W01 emit path (which iterates the
+// required set) always resolves a control.
+// ---------------------------------------------------------------------------
+
+const RHEL8_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-08-010040"),
+    ("clientalivecountmax", "RHEL-08-010200"),
+    ("clientaliveinterval", "RHEL-08-010201"),
+    ("gssapiauthentication", "RHEL-08-010522"),
+    ("ignoreuserknownhosts", "RHEL-08-010520"),
+    ("kerberosauthentication", "RHEL-08-010521"),
+    ("permitemptypasswords", "RHEL-08-020330"),
+    ("permitrootlogin", "RHEL-08-010550"),
+    ("permituserenvironment", "RHEL-08-010830"),
+    ("printlastlog", "RHEL-08-020350"),
+    ("rekeylimit", "RHEL-08-040161"),
+    ("strictmodes", "RHEL-08-010500"),
+    ("x11forwarding", "RHEL-08-040340"),
+    ("x11uselocalhost", "RHEL-08-040341"),
+];
+
+const RHEL9_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-09-255025"),
+    ("clientalivecountmax", "RHEL-09-255095"),
+    ("clientaliveinterval", "RHEL-09-255100"),
+    ("compression", "RHEL-09-255130"),
+    ("gssapiauthentication", "RHEL-09-255135"),
+    ("hostbasedauthentication", "RHEL-09-255080"),
+    ("ignorerhosts", "RHEL-09-255145"),
+    ("ignoreuserknownhosts", "RHEL-09-255150"),
+    ("kerberosauthentication", "RHEL-09-255140"),
+    ("loglevel", "RHEL-09-255030"),
+    ("permitemptypasswords", "RHEL-09-255040"),
+    ("permitrootlogin", "RHEL-09-255045"),
+    ("permituserenvironment", "RHEL-09-255085"),
+    ("printlastlog", "RHEL-09-255165"),
+    ("pubkeyauthentication", "RHEL-09-255035"),
+    ("rekeylimit", "RHEL-09-255090"),
+    ("strictmodes", "RHEL-09-255160"),
+    ("usepam", "RHEL-09-255050"),
+    ("x11forwarding", "RHEL-09-255155"),
+    ("x11uselocalhost", "RHEL-09-255175"),
+];
+
+const RHEL10_RULE_ID: &[(&str, &str)] = &[
+    ("banner", "RHEL-10-700010"),
+    ("clientalivecountmax", "RHEL-10-700660"),
+    ("clientaliveinterval", "RHEL-10-700930"),
+    ("gssapiauthentication", "RHEL-10-700510"),
+    ("hostbasedauthentication", "RHEL-10-700630"),
+    ("ignorerhosts", "RHEL-10-700530"),
+    ("ignoreuserknownhosts", "RHEL-10-700540"),
+    ("kerberosauthentication", "RHEL-10-700520"),
+    ("loglevel", "RHEL-10-500215"),
+    ("permitemptypasswords", "RHEL-10-700610"),
+    ("permitrootlogin", "RHEL-10-700620"),
+    ("permituserenvironment", "RHEL-10-700640"),
+    ("printlastlog", "RHEL-10-700570"),
+    ("pubkeyauthentication", "RHEL-10-700600"),
+    ("rekeylimit", "RHEL-10-700650"),
+    ("strictmodes", "RHEL-10-700560"),
+    ("usepam", "RHEL-10-600640"),
+    ("x11forwarding", "RHEL-10-700550"),
+    ("x11uselocalhost", "RHEL-10-700580"),
+];
+
+/// The `(keyword, STIG Rule id)` map for a concrete target.
+fn rule_id_map(target: TargetVersion) -> &'static [(&'static str, &'static str)] {
+    match target {
+        TargetVersion::Rhel8 => RHEL8_RULE_ID,
+        TargetVersion::Rhel9 => RHEL9_RULE_ID,
+        TargetVersion::Rhel10 => RHEL10_RULE_ID,
+    }
+}
+
+/// Look up the value paired with `key` in a `(keyword, value)` table.
+fn lookup(table: &[(&'static str, &'static str)], key: &str) -> Option<&'static str> {
+    table.iter().find_map(|&(k, v)| (k == key).then_some(v))
+}
+
+/// Build the typed STIG [`ControlRef`] for `keyword_lower` on `target`: canonical
+/// `id` = STIG Rule id, `alias` = DISA V-number.
+///
+/// `target=None` uses the conservative floor (RHEL 8), matching [`required_set`].
+/// Returns `None` when the keyword has no STIG Rule id for the target, so the
+/// emit sites attach a control only for a genuinely STIG-controlled directive and
+/// never fabricate one. (The W01 emit path iterates `required_set`, so every W01
+/// keyword resolves; W02's one out-of-required-set control - Compression on the
+/// RHEL 8 floor - has no Rule id and correctly gets no control.)
+fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Option<ControlRef> {
+    let concrete = target.unwrap_or(TargetVersion::Rhel8);
+    let rule_id = lookup(rule_id_map(concrete), keyword_lower)?;
+    let v_number = lookup(provenance_map(concrete), keyword_lower)?;
+    Some(ControlRef::new(Framework::Stig, rule_id).with_alias(v_number))
+}
+
 /// Widen the private [`W02Rule`] into the public [`StigValueRule`]; `None`
 /// (no W02 value rule) becomes `PresenceOnly`.
 fn value_rule_of(rule: Option<W02Rule>) -> StigValueRule {
@@ -537,14 +645,17 @@ pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
         if !present.contains(req) {
             // Emit at byte offset 0 with an empty span: there is no line to anchor
             // to (the directive is absent). The file path is still reported.
-            diags.push(anchored(
-                Severity::Warning,
-                "sshd-W01",
-                0..0,
-                format!("STIG-required directive '{req}' is missing from the configuration"),
-                file,
-                0,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sshd-W01",
+                    0..0,
+                    format!("STIG-required directive '{req}' is missing from the configuration"),
+                    file,
+                    0,
+                )
+                .with_controls(stig_control_ref(req, ctx.target).into_iter().collect()),
+            );
         }
     }
     diags
@@ -596,17 +707,20 @@ pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
             displayed_value,
         } = baseline_check(&keyword, &directive.args, ctx.target)
         {
-            diags.push(anchored(
-                Severity::Warning,
-                "sshd-W02",
-                directive.span.clone(),
-                format!(
-                    "directive '{}' has value '{displayed_value}'; STIG baseline requires {requirement}",
-                    directive.keyword,
-                ),
-                file,
-                directive.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sshd-W02",
+                    directive.span.clone(),
+                    format!(
+                        "directive '{}' has value '{displayed_value}'; STIG baseline requires {requirement}",
+                        directive.keyword,
+                    ),
+                    file,
+                    directive.line,
+                )
+                .with_controls(stig_control_ref(&keyword, ctx.target).into_iter().collect()),
+            );
         }
     }
 
@@ -971,5 +1085,277 @@ mod tests {
                 .any(|c| c.keyword == "compression"),
             "Compression not a RHEL8 V2R4 control"
         );
+    }
+
+    // --- #501 v0.7 typed control-ID backfill --------------------------------
+    // sshd-W01/W02 findings must carry a typed STIG `ControlRef` whose canonical
+    // `id` is the STIG Rule id (RHEL-09-######) and whose `alias` is the DISA
+    // V-number, alongside the byte-identical human message. Grounded in the data
+    // already in THIS file: the Rule id lives in the `//` comment on the
+    // `RHEL9_REQUIRED` array; the V-number lives in the `RHEL9_VNUM` table.
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control() {
+        // Representative: `banner` on target=Rhel9.
+        //   Rule id  RHEL-09-255025 -- RHEL9_REQUIRED comment:
+        //            `"banner", // RHEL-09-255025 V-257981` (this file).
+        //   V-number V-257981       -- RHEL9_VNUM entry `("banner", "V-257981")`.
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        // An empty config makes every required directive (incl. Banner) missing.
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let banner = diags
+            .iter()
+            .find(|d| d.message.contains("'banner'"))
+            .expect("banner reported missing on an empty config");
+
+        // Message stays byte-identical (the implementer must not alter it).
+        assert_eq!(
+            banner.message,
+            "STIG-required directive 'banner' is missing from the configuration"
+        );
+
+        // RED anchor: length first, so RED is a clean `0 != 1`, not an index panic.
+        assert_eq!(
+            banner.controls.len(),
+            1,
+            "W01 finding must carry exactly one STIG control"
+        );
+        assert_eq!(banner.controls[0].framework, Framework::Stig);
+        assert_eq!(banner.controls[0].id, "RHEL-09-255025");
+        assert_eq!(banner.controls[0].alias, Some("V-257981".to_string()));
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control() {
+        // Representative: `PermitRootLogin yes` on target=Rhel9 (STIG requires `no`).
+        //   Rule id  RHEL-09-255045 -- RHEL9_REQUIRED comment:
+        //            `"permitrootlogin", // RHEL-09-255045 V-257985` (this file).
+        //   V-number V-257985       -- RHEL9_VNUM entry `("permitrootlogin", "V-257985")`.
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(TargetVersion::Rhel9),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one W02 finding for the weak PermitRootLogin; got {diags:?}"
+        );
+        let prl = &diags[0];
+        assert_eq!(prl.code, "sshd-W02");
+
+        // Message stays byte-identical (the implementer must not alter it).
+        assert_eq!(
+            prl.message,
+            "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
+        );
+
+        // RED anchor: length first.
+        assert_eq!(
+            prl.controls.len(),
+            1,
+            "W02 finding must carry exactly one STIG control"
+        );
+        assert_eq!(prl.controls[0].framework, Framework::Stig);
+        assert_eq!(prl.controls[0].id, "RHEL-09-255045");
+        assert_eq!(prl.controls[0].alias, Some("V-257985".to_string()));
+    }
+
+    #[test]
+    fn non_stig_findings_carry_no_controls() {
+        // Empty-controls guard: the backfill is scoped to the STIG passes (W01/W02).
+        // A finding from a non-STIG structural pass (here sshd-E02, a duplicate
+        // directive) must keep `controls` empty -- the implementer must not
+        // over-attach. `MaxSessions` is neither STIG-required nor W02-controlled.
+        let ctx = SshdLintContext::default();
+        let blocks = parse("MaxSessions 10\nMaxSessions 5\n");
+        let diags = crate::lints::structural::e02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let dup = diags
+            .iter()
+            .find(|d| d.code == "sshd-E02")
+            .expect("duplicate MaxSessions fires sshd-E02");
+        assert!(
+            dup.controls.is_empty(),
+            "a non-STIG (sshd-E02) finding must carry no controls; got {:?}",
+            dup.controls
+        );
+    }
+
+    // --- #501 backfill: RHEL8 + RHEL10 targets (scope expansion) -------------
+    // Same shape as the RHEL9 W01/W02 tests above, on the other two targets, so
+    // the emit path must key the ControlRef on BOTH target AND keyword: a
+    // constant-control impl fails because per target `banner` (W01) and
+    // `permitrootlogin` (W02) pin DISTINCT ids/aliases, and each keyword's
+    // expected control also differs across targets. RHEL8/RHEL10 Rule ids come
+    // from the DISA XCCDF grounding (RHEL8 V2R4 / RHEL10 V1R1); each V-number
+    // alias is cross-validated against this file's shipped RHEL8_VNUM/RHEL10_VNUM.
+
+    /// Shared W01 assertion: an empty config makes `banner` missing on `target`;
+    /// the finding must carry exactly one STIG `ControlRef` (`id` = Rule id,
+    /// `alias` = V-number) and keep its message byte-identical.
+    fn assert_w01_banner_control(target: TargetVersion, expect_id: &str, expect_vnum: &str) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        let banner = diags
+            .iter()
+            .find(|d| d.message.contains("'banner'"))
+            .expect("banner reported missing on an empty config");
+        assert_eq!(
+            banner.message,
+            "STIG-required directive 'banner' is missing from the configuration"
+        );
+        assert_eq!(
+            banner.controls.len(),
+            1,
+            "W01 finding must carry exactly one STIG control ({target:?})"
+        );
+        assert_eq!(banner.controls[0].framework, Framework::Stig);
+        assert_eq!(banner.controls[0].id, expect_id);
+        assert_eq!(banner.controls[0].alias, Some(expect_vnum.to_string()));
+    }
+
+    /// Shared W02 assertion: `PermitRootLogin yes` on `target` is a weak-value
+    /// finding (STIG requires `no`) that must carry exactly one STIG `ControlRef`
+    /// (`id` = Rule id, `alias` = V-number) and keep its message byte-identical.
+    fn assert_w02_permitrootlogin_control(
+        target: TargetVersion,
+        expect_id: &str,
+        expect_vnum: &str,
+    ) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        let blocks = parse("PermitRootLogin yes\n");
+        let diags = w02(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one W02 finding for the weak PermitRootLogin ({target:?}); got {diags:?}"
+        );
+        let prl = &diags[0];
+        assert_eq!(prl.code, "sshd-W02");
+        assert_eq!(
+            prl.message,
+            "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
+        );
+        assert_eq!(
+            prl.controls.len(),
+            1,
+            "W02 finding must carry exactly one STIG control ({target:?})"
+        );
+        assert_eq!(prl.controls[0].framework, Framework::Stig);
+        assert_eq!(prl.controls[0].id, expect_id);
+        assert_eq!(prl.controls[0].alias, Some(expect_vnum.to_string()));
+    }
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control_rhel8() {
+        // banner on Rhel8: Rule id RHEL-08-010040 (DISA XCCDF RHEL8 V2R4),
+        // V-number V-230225 (this file's RHEL8_VNUM `("banner", "V-230225")`).
+        assert_w01_banner_control(TargetVersion::Rhel8, "RHEL-08-010040", "V-230225");
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control_rhel8() {
+        // PermitRootLogin on Rhel8: Rule id RHEL-08-010550 (DISA XCCDF RHEL8 V2R4),
+        // V-number V-230296 (this file's RHEL8_VNUM `("permitrootlogin", "V-230296")`).
+        assert_w02_permitrootlogin_control(TargetVersion::Rhel8, "RHEL-08-010550", "V-230296");
+    }
+
+    #[test]
+    fn w01_missing_findings_carry_typed_stig_control_rhel10() {
+        // banner on Rhel10: Rule id RHEL-10-700010 (DISA XCCDF RHEL10 V1R1),
+        // V-number V-281224 (this file's RHEL10_VNUM `("banner", "V-281224")`).
+        assert_w01_banner_control(TargetVersion::Rhel10, "RHEL-10-700010", "V-281224");
+    }
+
+    #[test]
+    fn w02_weak_value_findings_carry_typed_stig_control_rhel10() {
+        // PermitRootLogin on Rhel10: Rule id RHEL-10-700620 (DISA XCCDF RHEL10 V1R1),
+        // V-number V-281265 (this file's RHEL10_VNUM `("permitrootlogin", "V-281265")`).
+        assert_w02_permitrootlogin_control(TargetVersion::Rhel10, "RHEL-10-700620", "V-281265");
+    }
+
+    // --- #501 backfill: full-coverage completeness (locks the user's decision to
+    //     source ALL three targets, so a two-keyword-hardcoded impl is wrong) ---
+    // Feed a config missing EVERY required directive for the target: W01 fires once
+    // per required directive, and each finding must carry a Stig control whose id
+    // uses that target's Rule-id prefix. This forces the emit path to attach a
+    // control to ALL required keywords, not just the `banner`/`permitrootlogin`
+    // pair pinned by value above. We do not pin each exact id here (the by-value
+    // tests do that for the representatives); count + non-empty + framework + prefix
+    // is what rules out a partial impl.
+
+    /// Shared completeness assertion (see the block comment above).
+    fn assert_w01_completeness(target: TargetVersion, id_prefix: &str) {
+        use rulesteward_core::Framework;
+        let ctx = SshdLintContext {
+            target: Some(target),
+            single_file: true,
+        };
+        // An empty config makes every required directive for this target missing.
+        let blocks = parse("");
+        let diags = w01(&blocks, Path::new("/etc/ssh/sshd_config"), &ctx);
+
+        let expected = required_set(Some(target)).len();
+        assert!(
+            expected > 2,
+            "sanity: the completeness check must span more than the 2 value-pinned \
+             keywords ({target:?})"
+        );
+        assert_eq!(
+            diags.len(),
+            expected,
+            "W01 must fire once per required directive on an empty config ({target:?})"
+        );
+        for d in &diags {
+            assert_eq!(d.code, "sshd-W01");
+            // len first so RED is a clean `0 != 1`, not an index panic.
+            assert_eq!(
+                d.controls.len(),
+                1,
+                "every W01 finding must carry exactly one STIG control ({target:?}); \
+                 offender: {}",
+                d.message
+            );
+            assert_eq!(d.controls[0].framework, Framework::Stig);
+            assert!(
+                d.controls[0].id.starts_with(id_prefix),
+                "W01 control id {:?} must start with {id_prefix:?} ({target:?})",
+                d.controls[0].id
+            );
+        }
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel8() {
+        // RHEL8 V2R4: 14 required directives, every id under the `RHEL-08-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel8, "RHEL-08-");
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel9() {
+        // RHEL9 V2R7: 20 required directives, every id under the `RHEL-09-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-");
+    }
+
+    #[test]
+    fn w01_completeness_all_required_carry_stig_control_rhel10() {
+        // RHEL10 V1R1: 19 required directives, every id under the `RHEL-10-` prefix.
+        assert_w01_completeness(TargetVersion::Rhel10, "RHEL-10-");
     }
 }
