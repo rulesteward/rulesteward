@@ -18,7 +18,7 @@ use std::io::IsTerminal as _;
 use core::fmt::Write as _;
 
 use ariadne::{Config, Label, Report, ReportKind, Source};
-use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity, span::Span};
+use rulesteward_core::{ControlRef, Diagnostic, Severity, span::Span};
 
 /// Map our `Severity` to an `ariadne::ReportKind`.
 fn report_kind(severity: Severity) -> ReportKind<'static> {
@@ -179,12 +179,7 @@ fn format_controls(controls: &[ControlRef]) -> String {
     let joined = controls
         .iter()
         .map(|c| {
-            let framework = match c.framework {
-                Framework::Stig => "STIG",
-                Framework::Cis => "CIS",
-                Framework::Pci => "PCI",
-                Framework::Nist => "NIST",
-            };
+            let framework = c.framework.name();
             match &c.alias {
                 Some(alias) => format!("{framework} {}/{alias}", c.id),
                 None => format!("{framework} {}", c.id),

@@ -19,13 +19,22 @@
 //!   * `file`     -> `physicalLocation.artifactLocation.uri`
 //!   * `line`     -> `region.startLine`
 //!   * `column`   -> `region.startColumn`
+//!
+//! Control provenance (v0.7 L4, issue #505): `diag.controls` is read
+//! generically for every diagnostic (no backend special-casing) and rendered
+//! as SARIF taxonomies -- `runs[0].taxonomies[]` gets one `ToolComponent` per
+//! distinct [`rulesteward_core::Framework`] present across the input, and each
+//! control-bearing result's `taxa[]` references the matching taxon by id and
+//! index. A diagnostic with no controls renders byte-identically to the
+//! pre-L4 form: no `taxonomies` key, no `taxa` key on its result.
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 use rulesteward_fapolicyd::catalog::LintCode;
 use serde_sarif::sarif::{
     ArtifactLocation, Location, Message, MultiformatMessageString, PhysicalLocation, Region,
-    ReportingConfiguration, ReportingDescriptor, Result as SarifResult, ResultKind, ResultLevel,
-    Run, Sarif, Tool, ToolComponent,
+    ReportingConfiguration, ReportingDescriptor, ReportingDescriptorReference,
+    Result as SarifResult, ResultKind, ResultLevel, Run, Sarif, Tool, ToolComponent,
+    ToolComponentReference,
 };
 
 use super::RenderError;
@@ -67,14 +76,114 @@ const fn severity_to_level(severity: Severity) -> ResultLevel {
     }
 }
 
+/// Distinct controls for one [`Framework`], in first-seen order across the
+/// input diagnostics. One of these becomes one `runs[0].taxonomies[]`
+/// [`ToolComponent`]; each entry becomes one taxon in its `taxa[]`.
+type TaxonomyGroup = (Framework, Vec<ControlRef>);
+
+/// Group every diagnostic's controls by framework, deduplicated by `id`,
+/// preserving first-seen order for both the framework list and each
+/// framework's control list.
+///
+/// This is the generic, backend-agnostic read of `diag.controls`: it makes no
+/// assumption about which lint code or backend produced the finding, so a
+/// later backend that starts tagging controls picks up taxonomy output
+/// automatically. Returns an empty `Vec` when no diagnostic carries any
+/// control, which is what lets [`render`] skip `taxonomies` entirely for the
+/// byte-identical no-controls case.
+fn collect_taxonomy_groups(diags: &[Diagnostic]) -> Vec<TaxonomyGroup> {
+    let mut groups: Vec<TaxonomyGroup> = Vec::new();
+    for diag in diags {
+        for control in &diag.controls {
+            let idx = groups
+                .iter()
+                .position(|(fw, _)| *fw == control.framework)
+                .unwrap_or_else(|| {
+                    groups.push((control.framework, Vec::new()));
+                    groups.len() - 1
+                });
+            let group = &mut groups[idx];
+            if !group.1.iter().any(|c| c.id == control.id) {
+                group.1.push(control.clone());
+            }
+        }
+    }
+    groups
+}
+
+/// Find `control`'s position within its framework's group in `groups`.
+///
+/// Every control attached to a diagnostic is guaranteed to appear in the
+/// group [`collect_taxonomy_groups`] built from the SAME diagnostic slice, so
+/// this only returns `None` if called with a mismatched `groups` argument; the
+/// `unwrap_or(0)` fallback at call sites is unreachable defense, matching the
+/// project's other `unwrap_or` casts (e.g. `severity_to_level`'s callers).
+fn control_taxon_index(groups: &[TaxonomyGroup], control: &ControlRef) -> Option<i64> {
+    groups
+        .iter()
+        .find(|(fw, _)| *fw == control.framework)
+        .and_then(|(_, controls)| controls.iter().position(|c| c.id == control.id))
+        .and_then(|i| i64::try_from(i).ok())
+}
+
+/// Build one taxonomy `taxa[]` entry (a [`ReportingDescriptor`]) for a
+/// control: its canonical `id`, plus `name` when the control carries a human
+/// title.
+fn control_reporting_descriptor(control: &ControlRef) -> ReportingDescriptor {
+    match &control.name {
+        Some(name) => ReportingDescriptor::builder()
+            .id(control.id.clone())
+            .name(name.clone())
+            .build(),
+        None => ReportingDescriptor::builder()
+            .id(control.id.clone())
+            .build(),
+    }
+}
+
+/// Build one `runs[0].taxonomies[]` entry: a [`ToolComponent`] named after the
+/// framework's uppercase label, whose `taxa[]` is one [`ReportingDescriptor`]
+/// per distinct control in that framework.
+fn taxonomy_component(framework: Framework, controls: &[ControlRef]) -> ToolComponent {
+    ToolComponent::builder()
+        .name(framework.name())
+        .taxa(
+            controls
+                .iter()
+                .map(control_reporting_descriptor)
+                .collect::<Vec<_>>(),
+        )
+        .build()
+}
+
+/// Build one result `taxa[]` reference for a control: its own `id`, the
+/// `index` into its framework's taxonomy `taxa[]` (so the reference resolves
+/// precisely), and a [`ToolComponentReference`] naming the taxonomy component.
+fn control_taxa_reference(
+    control: &ControlRef,
+    groups: &[TaxonomyGroup],
+) -> ReportingDescriptorReference {
+    ReportingDescriptorReference::builder()
+        .id(control.id.clone())
+        .index(control_taxon_index(groups, control).unwrap_or(0))
+        .tool_component(
+            ToolComponentReference::builder()
+                .name(control.framework.name())
+                .build(),
+        )
+        .build()
+}
+
 /// Build the single SARIF `result` for one diagnostic.
 ///
-/// v0.7 Phase 0 (D2): this deliberately does NOT read `diag.controls`. SARIF's
-/// purpose-built compliance slot is `tool.driver.taxonomies` + per-result
-/// `taxa`, and wiring those is deferred to L4 (session 8b) so one place owns
-/// SARIF compliance output. Until then a finding is byte-identical with vs
-/// without controls (pinned by `sarif_is_control_agnostic_in_v0_7_phase0`).
-fn diagnostic_to_result(diag: &Diagnostic) -> SarifResult {
+/// Reads `diag.controls` generically (no backend special-casing): when
+/// non-empty, the result's `taxa[]` gets one [`ReportingDescriptorReference`]
+/// per control, each resolvable against `taxonomy_groups` (built by
+/// [`collect_taxonomy_groups`] over the SAME diagnostic slice passed to
+/// [`render`]). When `diag.controls` is empty, `taxa` is left unset (`None`),
+/// so a control-free diagnostic renders byte-identically to the pre-L4 form
+/// (pinned by `sarif_no_controls_omits_taxonomy_keys`).
+fn diagnostic_to_result(diag: &Diagnostic, taxonomy_groups: &[TaxonomyGroup]) -> SarifResult {
     // `Region` line/column are i64 in the SARIF schema; the Diagnostic stores
     // them as usize (1-based). The cast is lossless for any real source file.
     let region = Region::builder()
@@ -95,12 +204,31 @@ fn diagnostic_to_result(diag: &Diagnostic) -> SarifResult {
         .physical_location(physical_location)
         .build();
 
-    SarifResult::builder()
-        .rule_id(diag.code.to_string())
-        .level(severity_to_level(diag.severity))
-        .message(Message::builder().text(diag.message.clone()).build())
-        .locations(vec![location])
-        .build()
+    // TypedBuilder setters change the builder's type-state, so a conditional
+    // `.taxa(..)` on one shared builder does not type-check; two full build
+    // chains (as `render`'s `driver` construction already does for `rules[]`)
+    // is the idiom.
+    if diag.controls.is_empty() {
+        SarifResult::builder()
+            .rule_id(diag.code.to_string())
+            .level(severity_to_level(diag.severity))
+            .message(Message::builder().text(diag.message.clone()).build())
+            .locations(vec![location])
+            .build()
+    } else {
+        let taxa = diag
+            .controls
+            .iter()
+            .map(|c| control_taxa_reference(c, taxonomy_groups))
+            .collect::<Vec<_>>();
+        SarifResult::builder()
+            .rule_id(diag.code.to_string())
+            .level(severity_to_level(diag.severity))
+            .message(Message::builder().text(diag.message.clone()).build())
+            .locations(vec![location])
+            .taxa(taxa)
+            .build()
+    }
 }
 
 /// Build a `tool.driver.rules[]` entry (`ReportingDescriptor`) for a catalog
@@ -154,6 +282,14 @@ fn pass_result(c: &LintCode) -> SarifResult {
 /// `kind:"pass"` result per evaluated-and-clean check; `None` is byte-identical
 /// to the pre-#137 output (no `rules[]`, findings only).
 ///
+/// Control provenance (v0.7 L4): `diag.controls` is read generically for every
+/// diagnostic and rendered as SARIF taxonomies -- `runs[0].taxonomies[]` gets
+/// one [`ToolComponent`] per distinct [`Framework`] present, and each
+/// control-bearing result gets a matching `taxa[]`. When no diagnostic carries
+/// any control, `taxonomies` is omitted and no result gets a `taxa` key, so
+/// output stays byte-identical to the pre-L4 form (e.g. fapolicyd, which never
+/// tags controls).
+///
 /// # Errors
 /// Returns [`RenderError::Serialization`] if `serde_json` fails to serialize
 /// the SARIF log. In practice this cannot happen for the value built here
@@ -161,7 +297,11 @@ fn pass_result(c: &LintCode) -> SarifResult {
 /// serialized via the fallible `serde_json::to_string_pretty`, so the error
 /// path is surfaced rather than silently `expect`-ed.
 pub fn render(diags: &[Diagnostic], pass: Option<&PassInfo>) -> Result<String, RenderError> {
-    let mut results: Vec<SarifResult> = diags.iter().map(diagnostic_to_result).collect();
+    let taxonomy_groups = collect_taxonomy_groups(diags);
+    let mut results: Vec<SarifResult> = diags
+        .iter()
+        .map(|d| diagnostic_to_result(d, &taxonomy_groups))
+        .collect();
     if let Some(pass) = pass {
         results.extend(pass.passes.iter().map(|c| pass_result(c)));
     }
@@ -189,10 +329,25 @@ pub fn render(diags: &[Diagnostic], pass: Option<&PassInfo>) -> Result<String, R
             .build(),
     };
 
-    let run = Run::builder()
-        .tool(Tool::builder().driver(driver).build())
-        .results(results)
-        .build();
+    // Only attach `runs[0].taxonomies` when at least one diagnostic carries a
+    // control, so the no-controls output stays byte-identical to the pre-L4
+    // form (same two-full-branch reasoning as the `driver` construction above).
+    let run = if taxonomy_groups.is_empty() {
+        Run::builder()
+            .tool(Tool::builder().driver(driver).build())
+            .results(results)
+            .build()
+    } else {
+        let taxonomies = taxonomy_groups
+            .iter()
+            .map(|(framework, controls)| taxonomy_component(*framework, controls))
+            .collect::<Vec<_>>();
+        Run::builder()
+            .tool(Tool::builder().driver(driver).build())
+            .results(results)
+            .taxonomies(taxonomies)
+            .build()
+    };
 
     let log = Sarif::builder()
         .schema(serde_sarif::sarif::SCHEMA_URL.to_string())
@@ -218,21 +373,158 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn sarif_is_control_agnostic_in_v0_7_phase0() {
-        // D2 (v0.7 Phase 0): SARIF freezes its signature and emits NOTHING for
-        // controls; the taxonomy/taxa wiring is deferred to L4 (session 8b). So a
-        // finding renders byte-identically with vs without controls. This lock is
-        // what lets 8b add SARIF compliance output in exactly one place.
-        use rulesteward_core::{ControlRef, Framework};
-        let base = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1);
-        let with = base
-            .clone()
-            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+    fn sarif_emits_control_taxonomies() {
+        // Inverts the v0.7 Phase-0 lock (formerly
+        // `sarif_is_control_agnostic_in_v0_7_phase0`): L4 wires SARIF's
+        // purpose-built compliance slot (`taxonomies` + per-result `taxa`), so
+        // a control-bearing finding now DIFFERS from a control-free one, and
+        // the taxonomy component / taxon / result reference are all mutually
+        // resolvable (by id and by toolComponent.name + index).
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1)
+            .with_controls(vec![
+                ControlRef::new(Framework::Stig, "RHEL-08-040110").with_alias("V-230552"),
+            ]);
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let taxonomies = v
+            .pointer("/runs/0/taxonomies")
+            .and_then(Value::as_array)
+            .expect("runs[0].taxonomies present when a diagnostic carries controls");
+        assert_eq!(taxonomies.len(), 1, "exactly one taxonomy component (STIG)");
         assert_eq!(
-            render(&[base], None).expect("render base"),
-            render(&[with], None).expect("render with controls"),
-            "SARIF must not vary with controls in v0.7 Phase 0 (taxa are L4)"
+            taxonomies[0].get("name").and_then(Value::as_str),
+            Some("STIG"),
+            "taxonomy component name is the framework's uppercase label"
         );
+        let taxa = taxonomies[0]
+            .pointer("/taxa")
+            .and_then(Value::as_array)
+            .expect("taxonomy component has a taxa[] array");
+        assert_eq!(taxa.len(), 1);
+        assert_eq!(
+            taxa[0].get("id").and_then(Value::as_str),
+            Some("RHEL-08-040110"),
+            "the taxon's id is the control's canonical id"
+        );
+
+        let result_taxa = v
+            .pointer("/runs/0/results/0/taxa")
+            .and_then(Value::as_array)
+            .expect("result.taxa present when the diagnostic carries controls");
+        assert_eq!(result_taxa.len(), 1);
+        assert_eq!(
+            result_taxa[0].get("id").and_then(Value::as_str),
+            Some("RHEL-08-040110"),
+            "result.taxa[0].id references the same control id"
+        );
+        assert_eq!(
+            result_taxa[0]
+                .pointer("/toolComponent/name")
+                .and_then(Value::as_str),
+            Some("STIG"),
+            "result.taxa[0].toolComponent.name resolves to the STIG taxonomy component"
+        );
+        assert_eq!(
+            result_taxa[0].get("index").and_then(Value::as_i64),
+            Some(0),
+            "result.taxa[0].index points at the taxon's position in the taxonomy's taxa[]"
+        );
+    }
+
+    #[test]
+    fn sarif_dedups_the_same_control_across_diagnostics() {
+        // Two diagnostics both citing the same STIG control id must share ONE
+        // taxon (not two), and both results' taxa references must resolve to
+        // that same index. Exercises the "generic across all diagnostics, not
+        // per-diagnostic" grouping in `collect_taxonomy_groups`.
+        let d1 = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "a", "/a.conf", 1, 1)
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let d2 = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "b", "/b.conf", 2, 1)
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let out = render(&[d1, d2], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let taxa = v
+            .pointer("/runs/0/taxonomies/0/taxa")
+            .and_then(Value::as_array)
+            .expect("taxonomy taxa present");
+        assert_eq!(taxa.len(), 1, "the shared control id dedups to one taxon");
+
+        for i in 0..2 {
+            let idx = v
+                .pointer(&format!("/runs/0/results/{i}/taxa/0/index"))
+                .and_then(Value::as_i64)
+                .expect("result taxa index present");
+            assert_eq!(idx, 0, "both results reference the same (only) taxon");
+        }
+    }
+
+    #[test]
+    fn sarif_no_controls_omits_taxonomy_keys() {
+        // Additive-only contract: a diagnostic with EMPTY controls must render
+        // byte-identically to the pre-L4 shape -- no `taxonomies` key on the
+        // run, no `taxa` key on the result. This is what lets fapolicyd (which
+        // never carries controls) stay byte-for-byte unchanged.
+        let d = Diagnostic::new(Severity::Warning, "fapd-W01", 0..0, "x", "/e.rules", 1, 1);
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        assert!(
+            v.pointer("/runs/0/taxonomies").is_none(),
+            "no controls anywhere -> no taxonomies key at all"
+        );
+        assert!(
+            v.pointer("/runs/0/results/0/taxa").is_none(),
+            "a control-free result must have no taxa key"
+        );
+    }
+
+    #[test]
+    fn sarif_two_frameworks_each_get_taxonomy_and_referenced_taxa() {
+        // A finding carrying controls from TWO distinct frameworks gets two
+        // taxonomy components, and the result's taxa references both.
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1)
+            .with_controls(vec![
+                ControlRef::new(Framework::Stig, "RHEL-08-040110"),
+                ControlRef::new(Framework::Cis, "1.5.3"),
+            ]);
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let taxonomies = v
+            .pointer("/runs/0/taxonomies")
+            .and_then(Value::as_array)
+            .expect("taxonomies present");
+        assert_eq!(
+            taxonomies.len(),
+            2,
+            "one taxonomy component per distinct framework"
+        );
+        let names: Vec<&str> = taxonomies
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"STIG"), "STIG taxonomy component present");
+        assert!(names.contains(&"CIS"), "CIS taxonomy component present");
+
+        let result_taxa = v
+            .pointer("/runs/0/results/0/taxa")
+            .and_then(Value::as_array)
+            .expect("result.taxa present");
+        assert_eq!(result_taxa.len(), 2, "one taxa reference per control");
+        let ref_components: Vec<&str> = result_taxa
+            .iter()
+            .filter_map(|t| t.pointer("/toolComponent/name").and_then(Value::as_str))
+            .collect();
+        assert!(ref_components.contains(&"STIG"));
+        assert!(ref_components.contains(&"CIS"));
+        let ref_ids: Vec<&str> = result_taxa
+            .iter()
+            .filter_map(|t| t.get("id").and_then(Value::as_str))
+            .collect();
+        assert!(ref_ids.contains(&"RHEL-08-040110"));
+        assert!(ref_ids.contains(&"1.5.3"));
     }
 
     #[test]

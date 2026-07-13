@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use boon::{Compiler, Schemas};
 use rulesteward_cli::cli::OutputFormat;
 use rulesteward_cli::output::render;
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 use serde_json::Value;
 
 /// A known set of diagnostics covering ALL SIX severity tiers so the
@@ -160,22 +160,20 @@ fn load_sarif_schema() -> Value {
     serde_json::from_slice(&bytes).expect("bundled SARIF schema parses as JSON")
 }
 
-/// The rendered SARIF must (a) be `Ok`, (b) parse as JSON, and (c) validate
-/// against the official SARIF 2.1.0 JSON schema using `boon`. A stub returning
-/// `Err`, or a wrong serializer producing malformed SARIF, fails here.
-#[test]
-fn sarif_render_validates_against_official_schema() {
-    let diags = sample_diags();
-    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
-        .expect("SARIF render must return Ok(String) for a real implementation");
-
+/// Parse `rendered` as JSON and validate it against the bundled official
+/// SARIF 2.1.0 schema using `boon`, panicking with the validation error plus
+/// the rendered instance on failure.
+///
+/// boon 0.6.1: add the schema document under its own `$id`, compile by that
+/// same loc, then validate the rendered instance against the compiled index.
+/// Shared by every schema-validating test below so a stub returning `Err`, a
+/// malformed serializer, or an unresolvable taxa reference all fail the same
+/// way.
+fn validate_against_sarif_schema(rendered: &str) {
     let instance: Value =
-        serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
+        serde_json::from_str(rendered).expect("rendered SARIF must parse as JSON");
 
     let schema = load_sarif_schema();
-
-    // boon 0.6.1: add the schema document under its own `$id`, compile by that
-    // same loc, then validate the rendered instance against the compiled index.
     let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
     let mut compiler = Compiler::new();
     compiler
@@ -191,6 +189,17 @@ fn sarif_render_validates_against_official_schema() {
             "rendered SARIF failed official-schema validation:\n{e}\n--- instance ---\n{rendered}"
         );
     }
+}
+
+/// The rendered SARIF must (a) be `Ok`, (b) parse as JSON, and (c) validate
+/// against the official SARIF 2.1.0 JSON schema using `boon`. A stub returning
+/// `Err`, or a wrong serializer producing malformed SARIF, fails here.
+#[test]
+fn sarif_render_validates_against_official_schema() {
+    let diags = sample_diags();
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
+        .expect("SARIF render must return Ok(String) for a real implementation");
+    validate_against_sarif_schema(&rendered);
 }
 
 /// The rendered SARIF must carry the exact top-level + per-result structure a
@@ -294,4 +303,78 @@ fn sarif_render_information_uri_is_canonical_repo() {
         uri, "https://github.com/rulesteward/rulesteward",
         "informationUri must be the canonical repo URL, not a stale fork"
     );
+}
+
+/// A diagnostic carrying controls from two distinct frameworks must still
+/// validate against the bundled OASIS schema (L4), and every `taxa` reference
+/// on the result must RESOLVE: its `(toolComponent.name, index)` pair must
+/// point at a taxon inside the matching taxonomy component whose `id` matches
+/// the reference's own `id`. An unresolvable reference is the likely failure
+/// mode this schema-plus-resolvability pair is designed to catch.
+#[test]
+fn sarif_render_with_controls_validates_and_taxa_resolve() {
+    let diags = vec![
+        Diagnostic::new(
+            Severity::Warning,
+            "sysctld-W02",
+            0..0,
+            "kernel param weak",
+            "/etc/sysctl.conf",
+            5,
+            1,
+        )
+        .with_controls(vec![
+            ControlRef::new(Framework::Stig, "RHEL-08-040110").with_alias("V-230552"),
+            ControlRef::new(Framework::Cis, "1.5.3"),
+        ]),
+    ];
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
+        .expect("SARIF render must return Ok(String)");
+
+    validate_against_sarif_schema(&rendered);
+
+    let v: Value = serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
+    let taxonomies = v
+        .pointer("/runs/0/taxonomies")
+        .and_then(Value::as_array)
+        .expect("taxonomies present for a control-bearing diagnostic");
+    assert_eq!(taxonomies.len(), 2, "one taxonomy per distinct framework");
+
+    let result_taxa = v
+        .pointer("/runs/0/results/0/taxa")
+        .and_then(Value::as_array)
+        .expect("result.taxa present");
+    assert_eq!(result_taxa.len(), 2, "one taxa reference per control");
+
+    for taxa_ref in result_taxa {
+        let component_name = taxa_ref
+            .pointer("/toolComponent/name")
+            .and_then(Value::as_str)
+            .expect("taxa reference names its tool component");
+        let index = taxa_ref
+            .get("index")
+            .and_then(Value::as_i64)
+            .expect("taxa reference carries an index");
+        let ref_id = taxa_ref
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("taxa reference carries an id");
+
+        let component = taxonomies
+            .iter()
+            .find(|t| t.get("name").and_then(Value::as_str) == Some(component_name))
+            .unwrap_or_else(|| {
+                panic!("taxa reference points at unknown component {component_name}")
+            });
+        let taxon = component
+            .pointer("/taxa")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.get(usize::try_from(index).expect("non-negative index")))
+            .unwrap_or_else(|| panic!("index {index} out of range for component {component_name}"));
+        assert_eq!(
+            taxon.get("id").and_then(Value::as_str),
+            Some(ref_id),
+            "the indexed taxon's id must match the reference's own id"
+        );
+    }
 }
