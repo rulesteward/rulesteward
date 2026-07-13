@@ -27,6 +27,7 @@ use rulesteward_core::{Diagnostic, Framework};
 ///
 /// A finding with no `controls` never matches any framework, so any `--profile`
 /// drops it (e.g. every fapolicyd finding, which carries no control mapping).
+#[must_use]
 pub fn apply_profile(diags: &mut Vec<Diagnostic>, profile: Option<Framework>) -> bool {
     let Some(fw) = profile else {
         return false;
@@ -48,16 +49,21 @@ pub fn apply_profile(diags: &mut Vec<Diagnostic>, profile: Option<Framework>) ->
 /// Map a completed lint run to its process exit code, honoring the `--profile`
 /// no-op signal from [`apply_profile`].
 ///
-/// * `no_op == true` (the filter emptied a previously-non-empty set) ->
-///   [`crate::exit_code::EXIT_NO_OP`] (9).
-/// * `no_op == false` -> the normal severity-based [`crate::exit_code::compute`]
-///   over the (possibly filtered) `diags`.
+/// * `tool_err == true` (a file was unreadable / the backend could not run) ->
+///   deferred to [`crate::exit_code::compute`], which ranks it highest
+///   ([`crate::exit_code::EXIT_TOOL_FAILURE`], 3). A tool failure OUTRANKS the
+///   no-op signal: a file that could not be read was never checked, so masking it
+///   as a "profile matched nothing" no-op would be the same false signal the F01
+///   exemption prevents for parse errors.
+/// * `no_op == true` (and no tool error) -> [`crate::exit_code::EXIT_NO_OP`] (9).
+/// * otherwise -> the normal severity-based [`crate::exit_code::compute`] over the
+///   (possibly filtered) `diags`.
 ///
 /// Centralizes the identical post-render tail every lint seam runs, so the
 /// no-op-vs-compute decision cannot drift between backends.
 #[must_use]
 pub fn resolve_exit_code(no_op: bool, diags: &[Diagnostic], tool_err: bool) -> i32 {
-    if no_op {
+    if no_op && !tool_err {
         crate::exit_code::EXIT_NO_OP
     } else {
         crate::exit_code::compute(diags, tool_err)
@@ -197,6 +203,17 @@ mod tests {
         assert_eq!(
             super::resolve_exit_code(false, &[], true),
             EXIT_TOOL_FAILURE
+        );
+        // A tool error (e.g. an unreadable file) OUTRANKS the no-op signal: even
+        // when the profile filter emptied the set, a real tool failure must
+        // surface as EXIT_TOOL_FAILURE (3), never be masked as EXIT_NO_OP (9).
+        // Same "the file was never checked, so 9 is a false 'nothing to check'"
+        // reasoning as the F01 parse-error exemption; `compute` ranks tool_err
+        // highest, and resolve_exit_code must not short-circuit past it.
+        assert_eq!(
+            super::resolve_exit_code(true, &[], true),
+            EXIT_TOOL_FAILURE,
+            "tool_err must win over the --profile no-op signal"
         );
     }
 
