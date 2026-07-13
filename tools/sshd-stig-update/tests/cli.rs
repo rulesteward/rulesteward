@@ -67,6 +67,13 @@ fn check_file_drift_exits_1() {
         stdout.contains("banner"),
         "the drift must name banner; stdout={stdout}"
     );
+    // The DRIFT footer must name every map a human might need to reconcile,
+    // including RHEL*_RULE_ID (issue #507): a rule_id-only drift is only fixed by
+    // editing that map, so omitting it from the guidance misdirects the reader.
+    assert!(
+        stdout.contains("RHEL*_RULE_ID"),
+        "the DRIFT footer must name RHEL*_RULE_ID in the maps-to-update list; stdout={stdout}"
+    );
 }
 
 #[test]
@@ -135,6 +142,18 @@ fn derive_file_exits_0_and_reproduces_table() {
     assert!(
         stdout.contains("(\"permitrootlogin\", \"V-257985\")"),
         "stdout={stdout}"
+    );
+    // The paste-ready output must also emit a RHEL9_RULE_ID block (issue #507),
+    // so a human reconciling a rule_id drift has the map contents to paste. The
+    // permitrootlogin Rule id is RHEL-09-255045 (shipped RHEL9_RULE_ID map,
+    // 0-drift against the rhel9 fixture).
+    assert!(
+        stdout.contains("RHEL9_RULE_ID"),
+        "derive must emit a paste-ready RHEL9_RULE_ID block; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("(\"permitrootlogin\", \"RHEL-09-255045\")"),
+        "the RHEL9_RULE_ID block must carry the real permitrootlogin Rule id; stdout={stdout}"
     );
 }
 
