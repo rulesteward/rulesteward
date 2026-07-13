@@ -205,7 +205,7 @@ const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 2] = [
 /// Build the typed `ControlRef` vec for a `(Framework, id)` pair slice. The
 /// single conversion point every emit site's `.with_controls(controls(&X))`
 /// call goes through.
-fn controls(pairs: &[(Framework, &str)]) -> Vec<ControlRef> {
+pub(crate) fn controls(pairs: &[(Framework, &str)]) -> Vec<ControlRef> {
     pairs
         .iter()
         .map(|&(framework, id)| ControlRef::new(framework, id))

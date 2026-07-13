@@ -7,7 +7,8 @@
 //! (the sudo STIG findings are version-agnostic).
 
 use crate::cli::{SudoersCommand, SudoersLintArgs};
-use crate::exit_code::{self, EXIT_TOOL_FAILURE};
+use crate::exit_code::EXIT_TOOL_FAILURE;
+use rulesteward_core::Framework;
 use rulesteward_sudoers::{SudoersLintContext, lints, resolve};
 
 /// Schema version for the `sudoers-lint` payload kind (CC-1).
@@ -17,13 +18,13 @@ const SUDOERS_LINT_SCHEMA_VERSION: u32 = 1;
 /// Default lint target: where sudo reads its primary policy from.
 const DEFAULT_SUDOERS: &str = "/etc/sudoers";
 
-pub fn run(cmd: SudoersCommand) -> anyhow::Result<i32> {
+pub fn run(cmd: SudoersCommand, profile: Option<Framework>) -> anyhow::Result<i32> {
     match cmd {
-        SudoersCommand::Lint(args) => Ok(lint(&args)),
+        SudoersCommand::Lint(args) => Ok(lint(&args, profile)),
     }
 }
 
-fn lint(args: &SudoersLintArgs) -> i32 {
+fn lint(args: &SudoersLintArgs, profile: Option<Framework>) -> i32 {
     let path = args
         .path
         .clone()
@@ -41,7 +42,7 @@ fn lint(args: &SudoersLintArgs) -> i32 {
     };
 
     let ctx = SudoersLintContext::default();
-    let diags = lints::lint(&files, &ctx);
+    let mut diags = lints::lint(&files, &ctx);
 
     // Stage each file's source (keyed by display path, the diagnostics' source_id
     // convention) so the human renderer can resolve ariadne snippets for anchored
@@ -65,6 +66,8 @@ fn lint(args: &SudoersLintArgs) -> i32 {
         }
     }
 
+    let no_op = crate::profile::apply_profile(&mut diags, profile);
+
     crate::output::emit_lint(
         args.format,
         "sudoers-lint",
@@ -73,7 +76,7 @@ fn lint(args: &SudoersLintArgs) -> i32 {
         &sources,
     );
 
-    exit_code::compute(&diags, false)
+    crate::profile::resolve_exit_code(no_op, &diags, false)
 }
 
 #[cfg(test)]
@@ -121,7 +124,7 @@ root ALL=(ALL:ALL) ALL
             std::path::Path::new("/nonexistent/329/sudoers"),
             HumanJsonFormat::Human,
         );
-        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+        assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
 
     #[test]
@@ -134,7 +137,7 @@ root ALL=(ALL:ALL) ALL
         std::fs::create_dir(&dropins).expect("mkdir dropins");
         std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
         let a = args(&f, HumanJsonFormat::Json);
-        assert_eq!(lint(&a), EXIT_CLEAN);
+        assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
     /// Companion to `clean_file_exits_zero` (#466): same fixture shape, but the
@@ -156,7 +159,7 @@ root ALL=(ALL:ALL) ALL
             .expect("write dropin");
         std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
         let a = args(&f, HumanJsonFormat::Human);
-        assert_eq!(lint(&a), EXIT_WARNINGS);
+        assert_eq!(lint(&a, None), EXIT_WARNINGS);
     }
 
     #[test]
@@ -166,7 +169,7 @@ root ALL=(ALL:ALL) ALL
         let f = dir.path().join("sudoers");
         std::fs::write(&f, "this is not valid sudoers\n").expect("write");
         let a = args(&f, HumanJsonFormat::Human);
-        assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
+        assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
     #[test]
@@ -184,6 +187,6 @@ root ALL=(ALL:ALL) ALL
         std::fs::write(dir.path().join("10-alice"), "alice ALL=(ALL) ALL\n").expect("w");
         std::fs::write(dir.path().join("20-bob"), "bob ALL=(ALL) ALL\n").expect("w");
         let a = args(dir.path(), HumanJsonFormat::Human);
-        assert_eq!(lint(&a), EXIT_CLEAN);
+        assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 }

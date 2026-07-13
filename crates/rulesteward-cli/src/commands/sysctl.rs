@@ -7,7 +7,8 @@
 
 use crate::cli::{SysctlCommand, SysctlLintArgs};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
-use crate::exit_code::{self, EXIT_TOOL_FAILURE};
+use crate::exit_code::EXIT_TOOL_FAILURE;
+use rulesteward_core::Framework;
 
 /// Schema version for the `sysctl-lint` payload kind (CC-1).
 /// Bumps only on a breaking change (field removal, rename, retype).
@@ -16,20 +17,24 @@ const SYSCTL_LINT_SCHEMA_VERSION: u32 = 1;
 /// Default lint target: the primary system sysctl config file.
 const DEFAULT_SYSCTL_CONF: &str = "/etc/sysctl.conf";
 
-pub fn run(cmd: SysctlCommand) -> anyhow::Result<i32> {
+pub fn run(cmd: SysctlCommand, profile: Option<Framework>) -> anyhow::Result<i32> {
     match cmd {
-        SysctlCommand::Lint(args) => Ok(lint(&args)),
+        SysctlCommand::Lint(args) => Ok(lint(&args, profile)),
     }
 }
 
-fn lint(args: &SysctlLintArgs) -> i32 {
-    lint_with_probe(args, &LiveTargetProbe)
+fn lint(args: &SysctlLintArgs, profile: Option<Framework>) -> i32 {
+    lint_with_probe(args, &LiveTargetProbe, profile)
 }
 
 /// `lint` with the host probe injected, so the `--target auto` resolution path is
 /// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
 /// the real [`LiveTargetProbe`]; tests supply a fake.
-fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
+fn lint_with_probe(
+    args: &SysctlLintArgs,
+    probe: &dyn HostTargetProbe,
+    profile: Option<Framework>,
+) -> i32 {
     // Resolve --target in the command layer (epic #251): explicit value as-is,
     // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
     // `auto` degrades to version-agnostic with a warning, never an error (read-only
@@ -49,8 +54,9 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // `conflicts_with`/`requires` on SysctlLintArgs already reject --system + a
     // positional path, and --root without --system.
     if args.system {
-        let (diags, sources) =
+        let (mut diags, sources) =
             rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);
+        let no_op = crate::profile::apply_profile(&mut diags, profile);
         crate::output::emit_lint(
             args.format,
             "sysctl-lint",
@@ -58,7 +64,7 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
             &diags,
             &sources,
         );
-        return exit_code::compute(&diags, false);
+        return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
     let path = args
@@ -77,7 +83,8 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // (keyed by display path) so the human renderer shows an ariadne snippet for a
     // cross-file W01 or a present-but-insecure W02 (issue #337).
     if path.is_dir() {
-        let (diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
+        let (mut diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
+        let no_op = crate::profile::apply_profile(&mut diags, profile);
         crate::output::emit_lint(
             args.format,
             "sysctl-lint",
@@ -85,7 +92,7 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
             &diags,
             &sources,
         );
-        return exit_code::compute(&diags, false);
+        return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
     // A path that is neither a file nor a directory (e.g. missing) is a tool
@@ -103,7 +110,7 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         }
     };
 
-    let diags = rulesteward_sysctld::parser::lint_str_with_target(&source, &path, target);
+    let mut diags = rulesteward_sysctld::parser::lint_str_with_target(&source, &path, target);
 
     // Stage the file's source keyed by its display path (the `source_id` convention the
     // F01/W01 and present-but-insecure W02 diagnostics set), so the human renderer takes
@@ -112,6 +119,9 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     // renders as a plain `file:0:0` line. `source` is moved in after the borrow ends.
     let mut sources = std::collections::BTreeMap::new();
     sources.insert(path.display().to_string(), source);
+
+    let no_op = crate::profile::apply_profile(&mut diags, profile);
+
     crate::output::emit_lint(
         args.format,
         "sysctl-lint",
@@ -120,7 +130,7 @@ fn lint_with_probe(args: &SysctlLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         &sources,
     );
 
-    exit_code::compute(&diags, false)
+    crate::profile::resolve_exit_code(no_op, &diags, false)
 }
 
 #[cfg(test)]
@@ -158,7 +168,7 @@ mod lint_shell_tests {
         let a = args(Some(std::path::PathBuf::from(
             "/nonexistent/440/sysctl.conf",
         )));
-        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+        assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
 
     /// An existing file the process cannot read hits the `read_to_string`
@@ -191,7 +201,7 @@ mod lint_shell_tests {
             return;
         }
 
-        let rc = lint(&args(Some(f.clone())));
+        let rc = lint(&args(Some(f.clone())), None);
 
         // Restore permissions unconditionally so the tempdir's own Drop cleanup
         // can still remove the file, even though this assertion is not expected
@@ -222,7 +232,7 @@ mod lint_shell_tests {
         // Not asserting a specific exit: the point of this test is the
         // warning-print branch, which is exercised regardless of the diag
         // outcome. A clean file with no target-specific findings exits 0.
-        let rc = lint_with_probe(&a, &probe);
+        let rc = lint_with_probe(&a, &probe, None);
         assert_eq!(
             rc,
             crate::exit_code::EXIT_CLEAN,

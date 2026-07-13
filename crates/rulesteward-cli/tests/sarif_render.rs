@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use boon::{Compiler, Schemas};
 use rulesteward_cli::cli::OutputFormat;
 use rulesteward_cli::output::render;
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 use serde_json::Value;
 
 /// A known set of diagnostics covering ALL SIX severity tiers so the
@@ -160,22 +160,20 @@ fn load_sarif_schema() -> Value {
     serde_json::from_slice(&bytes).expect("bundled SARIF schema parses as JSON")
 }
 
-/// The rendered SARIF must (a) be `Ok`, (b) parse as JSON, and (c) validate
-/// against the official SARIF 2.1.0 JSON schema using `boon`. A stub returning
-/// `Err`, or a wrong serializer producing malformed SARIF, fails here.
-#[test]
-fn sarif_render_validates_against_official_schema() {
-    let diags = sample_diags();
-    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
-        .expect("SARIF render must return Ok(String) for a real implementation");
-
+/// Parse `rendered` as JSON and validate it against the bundled official
+/// SARIF 2.1.0 schema using `boon`, panicking with the validation error plus
+/// the rendered instance on failure.
+///
+/// boon 0.6.1: add the schema document under its own `$id`, compile by that
+/// same loc, then validate the rendered instance against the compiled index.
+/// Shared by every schema-validating test below so a stub returning `Err`, a
+/// malformed serializer, or an unresolvable taxa reference all fail the same
+/// way.
+fn validate_against_sarif_schema(rendered: &str) {
     let instance: Value =
-        serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
+        serde_json::from_str(rendered).expect("rendered SARIF must parse as JSON");
 
     let schema = load_sarif_schema();
-
-    // boon 0.6.1: add the schema document under its own `$id`, compile by that
-    // same loc, then validate the rendered instance against the compiled index.
     let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
     let mut compiler = Compiler::new();
     compiler
@@ -191,6 +189,17 @@ fn sarif_render_validates_against_official_schema() {
             "rendered SARIF failed official-schema validation:\n{e}\n--- instance ---\n{rendered}"
         );
     }
+}
+
+/// The rendered SARIF must (a) be `Ok`, (b) parse as JSON, and (c) validate
+/// against the official SARIF 2.1.0 JSON schema using `boon`. A stub returning
+/// `Err`, or a wrong serializer producing malformed SARIF, fails here.
+#[test]
+fn sarif_render_validates_against_official_schema() {
+    let diags = sample_diags();
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
+        .expect("SARIF render must return Ok(String) for a real implementation");
+    validate_against_sarif_schema(&rendered);
 }
 
 /// The rendered SARIF must carry the exact top-level + per-result structure a
@@ -294,4 +303,163 @@ fn sarif_render_information_uri_is_canonical_repo() {
         uri, "https://github.com/rulesteward/rulesteward",
         "informationUri must be the canonical repo URL, not a stale fork"
     );
+}
+
+/// Assert every result `taxa` reference resolves: its `(toolComponent.name,
+/// index)` pair must land on a taxon inside the matching taxonomy component
+/// whose `id` equals the reference's own `id`. An always-`0` index, an absent
+/// index, a wrong-framework component, or an off-by-one taxon position each
+/// produce a reference that fails to resolve here.
+fn assert_taxa_references_resolve(taxonomies: &[Value], result_taxa: &[Value]) {
+    for taxa_ref in result_taxa {
+        let component_name = taxa_ref
+            .pointer("/toolComponent/name")
+            .and_then(Value::as_str)
+            .expect("taxa reference names its tool component");
+        let index = taxa_ref
+            .get("index")
+            .and_then(Value::as_i64)
+            .expect("taxa reference carries an index");
+        let ref_id = taxa_ref
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("taxa reference carries an id");
+
+        let component = taxonomies
+            .iter()
+            .find(|t| t.get("name").and_then(Value::as_str) == Some(component_name))
+            .unwrap_or_else(|| {
+                panic!("taxa reference points at unknown component {component_name}")
+            });
+        let taxon = component
+            .pointer("/taxa")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.get(usize::try_from(index).expect("non-negative index")))
+            .unwrap_or_else(|| panic!("index {index} out of range for component {component_name}"));
+        assert_eq!(
+            taxon.get("id").and_then(Value::as_str),
+            Some(ref_id),
+            "the indexed taxon's id must match the reference's own id"
+        );
+    }
+}
+
+/// A diagnostic carrying controls from two distinct frameworks -- with the
+/// STIG framework contributing TWO controls -- must still validate against the
+/// bundled OASIS schema (L4, including the alias `properties` bags), and every
+/// `taxa` reference on the result must RESOLVE: its `(toolComponent.name,
+/// index)` pair must point at a taxon inside the matching taxonomy component
+/// whose `id` matches the reference's own `id`.
+///
+/// Two STIG controls make the STIG taxonomy `taxa[]` two-deep, so the second
+/// control's reference `index` is 1 (not 0) and the CIS reference must resolve
+/// into the CIS component (not STIG). That combination pins the index
+/// computation precisely: an always-`0` index, an always-absent index, a
+/// wrong-framework match, or an off-by-one taxon position each produce a
+/// reference that fails to resolve to its own id here.
+#[test]
+fn sarif_render_with_controls_validates_and_taxa_resolve() {
+    let diags = vec![
+        Diagnostic::new(
+            Severity::Warning,
+            "sysctld-W02",
+            0..0,
+            "kernel param weak",
+            "/etc/sysctl.conf",
+            5,
+            1,
+        )
+        .with_controls(vec![
+            ControlRef::new(Framework::Stig, "RHEL-08-010000").with_alias("V-230001"),
+            ControlRef::new(Framework::Stig, "RHEL-08-020000").with_alias("V-230002"),
+            ControlRef::new(Framework::Cis, "1.5.3"),
+        ]),
+    ];
+    let rendered = render(OutputFormat::Sarif, &diags, &empty_sources(), None)
+        .expect("SARIF render must return Ok(String)");
+
+    validate_against_sarif_schema(&rendered);
+
+    let v: Value = serde_json::from_str(&rendered).expect("rendered SARIF must parse as JSON");
+    let taxonomies = v
+        .pointer("/runs/0/taxonomies")
+        .and_then(Value::as_array)
+        .expect("taxonomies present for a control-bearing diagnostic");
+    assert_eq!(taxonomies.len(), 2, "one taxonomy per distinct framework");
+
+    // The STIG taxonomy carries BOTH controls, in first-seen order, so taxon
+    // position is meaningful: taxa[0]=RHEL-08-010000, taxa[1]=RHEL-08-020000.
+    let stig = taxonomies
+        .iter()
+        .find(|t| t.get("name").and_then(Value::as_str) == Some("STIG"))
+        .expect("STIG taxonomy component present");
+    let stig_taxa = stig
+        .pointer("/taxa")
+        .and_then(Value::as_array)
+        .expect("STIG taxa array");
+    assert_eq!(stig_taxa.len(), 2, "both STIG controls become taxa");
+    assert_eq!(
+        stig_taxa[0].get("id").and_then(Value::as_str),
+        Some("RHEL-08-010000"),
+        "first STIG control is taxa[0]"
+    );
+    assert_eq!(
+        stig_taxa[1].get("id").and_then(Value::as_str),
+        Some("RHEL-08-020000"),
+        "second STIG control is taxa[1]"
+    );
+
+    let result_taxa = v
+        .pointer("/runs/0/results/0/taxa")
+        .and_then(Value::as_array)
+        .expect("result.taxa present");
+    assert_eq!(result_taxa.len(), 3, "one taxa reference per control");
+
+    // Find a result taxa reference by its `id`.
+    let ref_by_id = |id: &str| -> &Value {
+        result_taxa
+            .iter()
+            .find(|r| r.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| panic!("result references control {id}"))
+    };
+
+    // The SECOND STIG control's reference must carry index 1 (not 0) and name
+    // the STIG component: kills always-0 index, always-absent index, and the
+    // position mutant (which would put it at index 0).
+    let s2_ref = ref_by_id("RHEL-08-020000");
+    assert_eq!(
+        s2_ref
+            .pointer("/toolComponent/name")
+            .and_then(Value::as_str),
+        Some("STIG"),
+        "the second STIG control resolves into the STIG component"
+    );
+    assert_eq!(
+        s2_ref.get("index").and_then(Value::as_i64),
+        Some(1),
+        "the second STIG control's reference index is 1, not 0"
+    );
+
+    // The first STIG control's reference must carry index 0.
+    let s1_ref = ref_by_id("RHEL-08-010000");
+    assert_eq!(
+        s1_ref.get("index").and_then(Value::as_i64),
+        Some(0),
+        "the first STIG control's reference index is 0"
+    );
+
+    // The CIS control's reference must resolve into the CIS component (not
+    // STIG): kills the wrong-framework match mutant.
+    let cis_ref = ref_by_id("1.5.3");
+    assert_eq!(
+        cis_ref
+            .pointer("/toolComponent/name")
+            .and_then(Value::as_str),
+        Some("CIS"),
+        "the CIS control resolves into the CIS component, not STIG"
+    );
+
+    // Generic resolvability backstop: every reference's (component, index)
+    // must land on a taxon whose id equals the reference's own id.
+    assert_taxa_references_resolve(taxonomies, result_taxa);
 }

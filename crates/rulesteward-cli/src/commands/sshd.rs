@@ -7,7 +7,8 @@
 
 use crate::cli::{SshdCommand, SshdLintArgs};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
-use crate::exit_code::{self, EXIT_TOOL_FAILURE};
+use crate::exit_code::EXIT_TOOL_FAILURE;
+use rulesteward_core::Framework;
 use rulesteward_sshd::{SshdLintContext, lints, parser::parse_config_str_located};
 
 /// Schema version for the `sshd-lint` payload kind (CC-1).
@@ -17,20 +18,24 @@ const SSHD_LINT_SCHEMA_VERSION: u32 = 1;
 /// Default lint target: where sshd reads its primary config from.
 const DEFAULT_SSHD_CONFIG: &str = "/etc/ssh/sshd_config";
 
-pub fn run(cmd: SshdCommand) -> anyhow::Result<i32> {
+pub fn run(cmd: SshdCommand, profile: Option<Framework>) -> anyhow::Result<i32> {
     match cmd {
-        SshdCommand::Lint(args) => Ok(lint(&args)),
+        SshdCommand::Lint(args) => Ok(lint(&args, profile)),
     }
 }
 
-fn lint(args: &SshdLintArgs) -> i32 {
-    lint_with_probe(args, &LiveTargetProbe)
+fn lint(args: &SshdLintArgs, profile: Option<Framework>) -> i32 {
+    lint_with_probe(args, &LiveTargetProbe, profile)
 }
 
 /// `lint` with the host probe injected, so the `--target auto` resolution path is
 /// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
 /// the real [`LiveTargetProbe`]; tests supply a fake.
-fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
+fn lint_with_probe(
+    args: &SshdLintArgs,
+    probe: &dyn HostTargetProbe,
+    profile: Option<Framework>,
+) -> i32 {
     let path = args
         .path
         .clone()
@@ -59,6 +64,7 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     if path.is_dir() {
         let mut diags = lints::drop_in::lint_drop_in(&path, &ctx);
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
+        let no_op = crate::profile::apply_profile(&mut diags, profile);
         let sources = std::collections::BTreeMap::new();
         crate::output::emit_lint(
             args.format,
@@ -67,7 +73,7 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
             &diags,
             &sources,
         );
-        return exit_code::compute(&diags, false);
+        return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
     // A path that is neither a file nor a directory (e.g. missing) is a tool
@@ -98,6 +104,8 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
     }
     sources.insert(path.display().to_string(), source);
 
+    let no_op = crate::profile::apply_profile(&mut diags, profile);
+
     crate::output::emit_lint(
         args.format,
         "sshd-lint",
@@ -106,7 +114,7 @@ fn lint_with_probe(args: &SshdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         &sources,
     );
 
-    exit_code::compute(&diags, false)
+    crate::profile::resolve_exit_code(no_op, &diags, false)
 }
 
 #[cfg(test)]
@@ -166,7 +174,7 @@ X11UseLocalhost yes
             std::path::Path::new("/nonexistent/149/sshd_config"),
             HumanJsonFormat::Human,
         );
-        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+        assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
 
     #[test]
@@ -185,7 +193,7 @@ X11UseLocalhost yes
             .expect("write drop-in");
         let a = args(dir.path(), HumanJsonFormat::Human);
         assert_eq!(
-            lint(&a),
+            lint(&a, None),
             EXIT_CLEAN,
             "a directory with clean drop-ins is accepted and exits 0"
         );
@@ -197,7 +205,7 @@ X11UseLocalhost yes
         let f = dir.path().join("sshd_config");
         std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = args(&f, HumanJsonFormat::Json);
-        assert_eq!(lint(&a), EXIT_CLEAN);
+        assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
     #[test]
@@ -207,7 +215,7 @@ X11UseLocalhost yes
         let f = dir.path().join("sshd_config");
         std::fs::write(&f, "Banner \"/etc/issue\n").expect("write");
         let a = args(&f, HumanJsonFormat::Human);
-        assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
+        assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
     #[test]
@@ -222,7 +230,7 @@ X11UseLocalhost yes
             format: HumanJsonFormat::Human,
             target: Some(TargetSelector::Rhel9),
         };
-        assert_eq!(lint(&a), EXIT_CLEAN);
+        assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
     #[test]
@@ -239,7 +247,7 @@ X11UseLocalhost yes
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
-        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
+        assert_eq!(lint_with_probe(&a, &probe, None), EXIT_CLEAN);
     }
 
     #[test]
@@ -256,6 +264,6 @@ X11UseLocalhost yes
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));
-        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
+        assert_eq!(lint_with_probe(&a, &probe, None), EXIT_CLEAN);
     }
 }

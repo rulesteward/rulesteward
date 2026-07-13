@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::cli::{AuditdCommand, AuditdLintArgs, CostArgs, HumanJsonCsvFormat};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
-use crate::exit_code::{self, EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
+use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::csv::to_csv;
 use crate::output::json::render_envelope;
 use rulesteward_auditd::{
@@ -23,6 +23,7 @@ use rulesteward_auditd::{
     lints,
     parser::{parse_rules_str_located, parse_target, rules_files_in_load_order},
 };
+use rulesteward_core::Framework;
 
 /// Schema version for the `auditd-cost` payload kind.
 /// Bumps only on a breaking change (field removal, rename, retype).
@@ -35,10 +36,12 @@ const AUDITD_LINT_SCHEMA_VERSION: u32 = 1;
 /// Default lint target, mirroring where augenrules(8) reads rules from.
 const DEFAULT_AUDIT_RULES_D: &str = "/etc/audit/rules.d/";
 
-pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
+pub fn run(cmd: AuditdCommand, profile: Option<Framework>) -> anyhow::Result<i32> {
     match cmd {
+        // `cost` emits no `Vec<Diagnostic>` (it prints a cost estimate), so the
+        // global `--profile` is inert there; only `lint` carries findings.
         AuditdCommand::Cost(args) => Ok(cost(&args)),
-        AuditdCommand::Lint(args) => Ok(lint(&args)),
+        AuditdCommand::Lint(args) => Ok(lint(&args, profile)),
     }
 }
 
@@ -49,14 +52,18 @@ pub fn run(cmd: AuditdCommand) -> anyhow::Result<i32> {
 // rendering, and exit-code mapping only.
 // ---------------------------------------------------------------------------
 
-fn lint(args: &AuditdLintArgs) -> i32 {
-    lint_with_probe(args, &LiveTargetProbe)
+fn lint(args: &AuditdLintArgs, profile: Option<Framework>) -> i32 {
+    lint_with_probe(args, &LiveTargetProbe, profile)
 }
 
 /// `lint` with the host probe injected, so the `--target auto` resolution path is
 /// unit-testable without reading the test host's `/etc/os-release`. `lint` supplies
 /// the real [`LiveTargetProbe`]; tests supply a fake.
-fn lint_with_probe(args: &AuditdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
+fn lint_with_probe(
+    args: &AuditdLintArgs,
+    probe: &dyn HostTargetProbe,
+    profile: Option<Framework>,
+) -> i32 {
     let target_path = args
         .path
         .clone()
@@ -109,6 +116,8 @@ fn lint_with_probe(args: &AuditdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         diags.extend(lints::lint(&rules, opts, target));
     }
 
+    let no_op = crate::profile::apply_profile(&mut diags, profile);
+
     crate::output::emit_lint(
         args.format,
         "auditd-lint",
@@ -117,7 +126,7 @@ fn lint_with_probe(args: &AuditdLintArgs, probe: &dyn HostTargetProbe) -> i32 {
         &sources,
     );
 
-    exit_code::compute(&diags, false)
+    crate::profile::resolve_exit_code(no_op, &diags, false)
 }
 
 /// Resolve the lint target to a load-ordered file list: a single file is
@@ -1104,7 +1113,7 @@ mod lint_shell_tests {
             std::path::Path::new("/nonexistent/6a/x"),
             HumanJsonFormat::Human,
         );
-        assert_eq!(lint(&a), EXIT_TOOL_FAILURE);
+        assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
 
     #[test]
@@ -1116,7 +1125,7 @@ mod lint_shell_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("10-bad.rules"), "-Z bogus\n").expect("write");
         let a = args(dir.path(), HumanJsonFormat::Json);
-        assert_eq!(lint(&a), EXIT_RULE_PARSE_ERROR);
+        assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
     // -- issue #474: --target wiring (mirrors commands::sysctl / commands::sshd) --
@@ -1138,7 +1147,7 @@ mod lint_shell_tests {
             apparmor: false,
             target: Some(TargetSelector::Rhel9),
         };
-        assert_eq!(lint(&a), EXIT_WARNINGS);
+        assert_eq!(lint(&a, None), EXIT_WARNINGS);
     }
 
     #[test]
@@ -1157,7 +1166,7 @@ mod lint_shell_tests {
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
-        assert_eq!(lint_with_probe(&a, &probe), EXIT_WARNINGS);
+        assert_eq!(lint_with_probe(&a, &probe, None), EXIT_WARNINGS);
     }
 
     #[test]
@@ -1174,6 +1183,6 @@ mod lint_shell_tests {
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));
-        assert_eq!(lint_with_probe(&a, &probe), EXIT_CLEAN);
+        assert_eq!(lint_with_probe(&a, &probe, None), EXIT_CLEAN);
     }
 }

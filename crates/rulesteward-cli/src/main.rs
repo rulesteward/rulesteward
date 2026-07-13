@@ -14,6 +14,7 @@ use clap::Parser;
 use rulesteward_cli::cli::{Cli, TopCommand};
 use rulesteward_cli::commands;
 use rulesteward_cli::exit_code::EXIT_TOOL_FAILURE;
+use rulesteward_core::Framework;
 
 fn main() {
     let cli = match Cli::try_parse() {
@@ -29,13 +30,20 @@ fn main() {
         }
     };
 
+    // The global `--profile <framework>` filter (issue #506): mapped once to the
+    // core `Framework` and threaded into every lint-bearing command. `None` (flag
+    // absent) is the byte-identical no-filter path. Non-lint verbs (selinux triage,
+    // completions, mangen, and fapolicyd's non-lint subcommands) carry no
+    // `Vec<Diagnostic>` seam, so `--profile` is accepted there but inert.
+    let profile: Option<Framework> = cli.profile.map(Into::into);
+
     let code = match cli.command {
-        TopCommand::Fapolicyd(cmd) => report(commands::fapolicyd::run(cmd)),
+        TopCommand::Fapolicyd(cmd) => report(commands::fapolicyd::run(cmd, profile)),
         TopCommand::Selinux(cmd) => report(commands::selinux::run(cmd)),
-        TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd)),
-        TopCommand::Sshd(cmd) => report(commands::sshd::run(cmd)),
-        TopCommand::Sysctl(cmd) => report(commands::sysctl::run(cmd)),
-        TopCommand::Sudoers(cmd) => report(commands::sudoers::run(cmd)),
+        TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd, profile)),
+        TopCommand::Sshd(cmd) => report(commands::sshd::run(cmd, profile)),
+        TopCommand::Sysctl(cmd) => report(commands::sysctl::run(cmd, profile)),
+        TopCommand::Sudoers(cmd) => report(commands::sudoers::run(cmd, profile)),
         TopCommand::Completions(args) => report(commands::completions::run(&args)),
         TopCommand::Mangen(args) => report(commands::mangen::run(&args)),
     };

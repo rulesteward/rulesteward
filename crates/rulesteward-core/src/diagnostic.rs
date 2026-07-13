@@ -62,6 +62,25 @@ pub enum Framework {
     Nist,
 }
 
+impl Framework {
+    /// Returns the human-facing UPPERCASE label for this framework
+    /// (`"STIG"`/`"CIS"`/`"PCI"`/`"NIST"`).
+    ///
+    /// Deliberately distinct from the serde wire form (`Framework`'s
+    /// `rename_all = "lowercase"`, e.g. `"stig"`): this is the display label
+    /// consumed by the human renderer's control suffix and the SARIF
+    /// taxonomy/tool-component names, both of which want the uppercase form.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Framework::Stig => "STIG",
+            Framework::Cis => "CIS",
+            Framework::Pci => "PCI",
+            Framework::Nist => "NIST",
+        }
+    }
+}
+
 /// A typed mapping from a [`Diagnostic`] to one compliance control.
 ///
 /// Replaces the free-text control ids that today reach the user only inside a
@@ -425,6 +444,18 @@ mod tests {
         );
         let back: Framework = serde_json::from_str("\"nist\"").expect("deserialize");
         assert_eq!(back, Framework::Nist);
+    }
+
+    #[test]
+    fn framework_name_returns_uppercase_label() {
+        // `name()` is the DRY human-facing label (UPPERCASE), deliberately
+        // distinct from the lowercase serde wire form pinned above. Both the
+        // human renderer's control suffix and the SARIF taxonomy names reuse
+        // this single mapping.
+        assert_eq!(Framework::Stig.name(), "STIG");
+        assert_eq!(Framework::Cis.name(), "CIS");
+        assert_eq!(Framework::Pci.name(), "PCI");
+        assert_eq!(Framework::Nist.name(), "NIST");
     }
 
     #[cfg(feature = "serde")]

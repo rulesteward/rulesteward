@@ -38,12 +38,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
     }
     // Each backend's parse-failure code maps to exit 5 (spec section 12.4 uses
     // one numbering across modules; D3, session 6a).
-    if diags.iter().any(|d| {
-        matches!(
-            d.code.as_ref(),
-            "fapd-F01" | "au-F01" | "sshd-F01" | "sysctld-F01" | "sudo-F01"
-        )
-    }) {
+    if diags.iter().any(|d| is_parse_error_code(d.code.as_ref())) {
         return EXIT_RULE_PARSE_ERROR;
     }
     if diags
@@ -56,6 +51,23 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
         return EXIT_WARNINGS;
     }
     EXIT_CLEAN
+}
+
+/// True if `code` is a backend parse-failure code.
+///
+/// The set is `fapd-F01`, `au-F01`, `sshd-F01`, `sysctld-F01`, and `sudo-F01`.
+/// These all map to [`EXIT_RULE_PARSE_ERROR`] (spec section 12.4 uses one
+/// numbering across modules; D3, session 6a). This is the single source of truth
+/// for the F01 set, shared by [`compute`] (the exit-code precedence) and
+/// `crate::profile::apply_profile` (the `--profile` parse-error exemption: a file
+/// that FAILED to parse was never checked, so its F01 must never be dropped as
+/// "no matching control").
+#[must_use]
+pub fn is_parse_error_code(code: &str) -> bool {
+    matches!(
+        code,
+        "fapd-F01" | "au-F01" | "sshd-F01" | "sysctld-F01" | "sudo-F01"
+    )
 }
 
 #[cfg(test)]
