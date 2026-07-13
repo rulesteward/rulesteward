@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Framework};
 use rulesteward_fapolicyd::{
     Entry, LintContext, catalog, check_layout, collect_macro_names, lint_cross_file, lint_orphans,
     lint_weak_digests, lint_with_context, open_trustdb_readonly, parse_rules_file,
@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::cli::{LintArgs, OutputFormat, TargetVersionArg};
 use crate::commands::target_probe::{HostTargetProbe, LiveTargetProbe, resolve_target};
-use crate::exit_code::{self, EXIT_LMDB_ERROR, EXIT_TOOL_FAILURE};
+use crate::exit_code::{EXIT_LMDB_ERROR, EXIT_TOOL_FAILURE};
 use crate::output::{self, RenderError};
 
 const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
@@ -41,14 +41,18 @@ pub enum ResolveError {
     },
 }
 
-pub(super) fn run_lint(args: &LintArgs) -> anyhow::Result<i32> {
-    run_lint_with_probe(args, &LiveTargetProbe)
+pub(super) fn run_lint(args: &LintArgs, profile: Option<Framework>) -> anyhow::Result<i32> {
+    run_lint_with_probe(args, &LiveTargetProbe, profile)
 }
 
 /// `run_lint` with the host probe injected, so the `--target auto` resolution path
 /// is unit-testable without reading the test host's `/etc/os-release`. `run_lint`
 /// supplies the real [`LiveTargetProbe`]; tests supply a fake.
-fn run_lint_with_probe(args: &LintArgs, probe: &dyn HostTargetProbe) -> anyhow::Result<i32> {
+fn run_lint_with_probe(
+    args: &LintArgs,
+    probe: &dyn HostTargetProbe,
+    profile: Option<Framework>,
+) -> anyhow::Result<i32> {
     // Resolve --target in the command layer (epic #251): explicit value as-is,
     // `auto` from the host probe, omitted -> version-agnostic. A failed `auto`
     // degrades to version-agnostic with a warning, never an error (read-only tool).
@@ -56,7 +60,7 @@ fn run_lint_with_probe(args: &LintArgs, probe: &dyn HostTargetProbe) -> anyhow::
     if let Some(warning) = &resolved.warning {
         eprintln!("fapolicyd lint: {warning}");
     }
-    run_lint_resolved(args, resolved.target)
+    run_lint_resolved(args, resolved.target, profile)
 }
 
 /// The lint pipeline with `--target` already resolved to a concrete baseline (or
@@ -64,7 +68,11 @@ fn run_lint_with_probe(args: &LintArgs, probe: &dyn HostTargetProbe) -> anyhow::
 /// the resolution boundary so the resolved target feeds BOTH the per-file lint
 /// context and the SARIF per-check coverage attestation (they never disagree),
 /// keeping each function within the line budget.
-fn run_lint_resolved(args: &LintArgs, target: Option<TargetVersionArg>) -> anyhow::Result<i32> {
+fn run_lint_resolved(
+    args: &LintArgs,
+    target: Option<TargetVersionArg>,
+    profile: Option<Framework>,
+) -> anyhow::Result<i32> {
     let trustdb = match &args.against_trustdb {
         Some(p) => {
             if !p.is_dir() {
@@ -180,6 +188,13 @@ fn run_lint_resolved(args: &LintArgs, target: Option<TargetVersionArg>) -> anyho
         all_diags.extend(lint_weak_digests(db));
     }
 
+    // Apply the global `--profile` filter (issue #506) BEFORE building the SARIF
+    // pass/coverage attestation, so the attestation and the rendered results
+    // reflect the SAME (filtered) set. fapolicyd findings carry no controls, so any
+    // `--profile` empties the set -> `no_op` -> exit 9 (correct: nothing in this
+    // policy maps to the requested framework).
+    let no_op = crate::profile::apply_profile(&mut all_diags, profile);
+
     let pass_info = sarif_pass_info(
         args,
         target,
@@ -201,7 +216,9 @@ fn run_lint_resolved(args: &LintArgs, target: Option<TargetVersionArg>) -> anyho
         print!("{rendered}");
     }
 
-    Ok(exit_code::compute(&all_diags, tool_err))
+    Ok(crate::profile::resolve_exit_code(
+        no_op, &all_diags, tool_err,
+    ))
 }
 
 /// Build the SARIF per-check coverage payload (#137) for a `--sarif-include-pass`
@@ -335,10 +352,11 @@ mod tests {
         auto.target = Some(TargetSelector::Auto);
         let mut explicit = lint_args(None, Some(f));
         explicit.target = Some(TargetSelector::Rhel9);
-        let auto_rc = run_lint_with_probe(&auto, &FakeProbe(Ok(Some(TargetVersionArg::Rhel9))))
-            .expect("auto run");
+        let auto_rc =
+            run_lint_with_probe(&auto, &FakeProbe(Ok(Some(TargetVersionArg::Rhel9))), None)
+                .expect("auto run");
         let explicit_rc =
-            run_lint_with_probe(&explicit, &FakeProbe(Ok(None))).expect("explicit run");
+            run_lint_with_probe(&explicit, &FakeProbe(Ok(None)), None).expect("explicit run");
         assert_ne!(
             auto_rc, EXIT_CLEAN,
             "the version-divergent fixture must not lint clean under rhel9 (else the test is vacuous)"
@@ -361,10 +379,11 @@ mod tests {
         let agnostic = lint_args(None, Some(f.clone())); // target: None
         let mut control = lint_args(None, Some(f));
         control.target = Some(TargetSelector::Rhel9);
-        let auto_rc = run_lint_with_probe(&auto, &FakeProbe(Ok(None))).expect("auto run");
+        let auto_rc = run_lint_with_probe(&auto, &FakeProbe(Ok(None)), None).expect("auto run");
         let agnostic_rc =
-            run_lint_with_probe(&agnostic, &FakeProbe(Ok(None))).expect("agnostic run");
-        let control_rc = run_lint_with_probe(&control, &FakeProbe(Ok(None))).expect("control run");
+            run_lint_with_probe(&agnostic, &FakeProbe(Ok(None)), None).expect("agnostic run");
+        let control_rc =
+            run_lint_with_probe(&control, &FakeProbe(Ok(None)), None).expect("control run");
         assert_eq!(
             auto_rc, EXIT_CLEAN,
             "auto resolving to None must lint the fixture version-agnostic (clean)"

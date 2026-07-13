@@ -102,6 +102,34 @@ impl From<IntegrityLevelArg> for rulesteward_fapolicyd::IntegrityMode {
     }
 }
 
+/// CLI value-enum for the global `--profile <framework>` finding filter (issue
+/// #506, v0.7). Mirrors the core `Framework` so the core crate stays clap-free
+/// (the same layering as `TargetVersionArg` -> a domain `TargetVersion`, and
+/// `IntegrityLevelArg` -> `IntegrityMode`).
+///
+/// The accepted values are EXACTLY `{stig, cis, pci, nist}`. Each variant is a
+/// single word, so clap's default kebab-casing already yields the lowercase token
+/// (no `#[value(name = ...)]` overrides needed); clap rejects any other token with
+/// a parse error (non-zero exit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FrameworkArg {
+    Stig,
+    Cis,
+    Pci,
+    Nist,
+}
+
+impl From<FrameworkArg> for rulesteward_core::Framework {
+    fn from(arg: FrameworkArg) -> Self {
+        match arg {
+            FrameworkArg::Stig => rulesteward_core::Framework::Stig,
+            FrameworkArg::Cis => rulesteward_core::Framework::Cis,
+            FrameworkArg::Pci => rulesteward_core::Framework::Pci,
+            FrameworkArg::Nist => rulesteward_core::Framework::Nist,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rulesteward",
@@ -126,6 +154,15 @@ is pre-designed to map to OSCAL, but no exporter is built in this release."
 pub struct Cli {
     #[command(subcommand)]
     pub command: TopCommand,
+
+    /// Filter findings to those enforcing a control in the given compliance
+    /// framework (stig, cis, pci, nist). When the filter empties a
+    /// previously-non-empty finding set the process exits 9 (no-op) so CI can tell
+    /// "nothing matched the profile" from "checked and clean". Global: accepted on
+    /// every subcommand, but inert on non-lint verbs (they carry no findings).
+    /// Absent = no filter (byte-identical to omitting the flag).
+    #[arg(global = true, long, value_enum)]
+    pub profile: Option<FrameworkArg>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -502,6 +539,7 @@ mod tests {
         );
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+            ..
         }) = cli
         {
             assert_eq!(
@@ -524,6 +562,7 @@ mod tests {
         assert!(cli.is_ok(), "bare `auditd lint` must parse, got: {cli:?}");
         if let Ok(Cli {
             command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+            ..
         }) = cli
         {
             assert!(args.path.is_none(), "positional path must default to None");
@@ -552,6 +591,7 @@ mod tests {
         assert!(cli.is_ok(), "got: {cli:?}");
         if let Ok(Cli {
             command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+            ..
         }) = cli
         {
             assert_eq!(
@@ -584,6 +624,7 @@ mod tests {
             let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--target", flag]);
             let Ok(Cli {
                 command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+                ..
             }) = cli
             else {
                 panic!("expected Auditd(Lint(_)), got {cli:?}");
@@ -602,6 +643,7 @@ mod tests {
         let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint"]);
         let Ok(Cli {
             command: TopCommand::Auditd(AuditdCommand::Lint(args)),
+            ..
         }) = cli
         else {
             panic!("expected Auditd(Lint(_)), got {cli:?}");
@@ -651,6 +693,7 @@ mod tests {
         assert!(cli.is_ok(), "got: {cli:?}");
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Migrate(args)),
+            ..
         }) = cli
         {
             assert!(args.report.is_none(), "--report must default to None");
@@ -666,6 +709,7 @@ mod tests {
         assert!(with_report.is_ok(), "got: {with_report:?}");
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Migrate(args)),
+            ..
         }) = with_report
         {
             assert_eq!(
@@ -703,6 +747,7 @@ mod tests {
         // The compile error is an acceptable RED signal.
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+            ..
         }) = cli
         {
             assert!(
@@ -723,6 +768,7 @@ mod tests {
         // Compile-coupled: will not compile until `report_orphans` is in LintArgs.
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+            ..
         }) = cli
         {
             assert!(
@@ -839,6 +885,7 @@ mod tests {
         .expect("trustdb list must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(List(_))");
@@ -866,6 +913,7 @@ mod tests {
             .expect("trustdb list with no args must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(List(_))");
@@ -896,6 +944,7 @@ mod tests {
         .expect("trustdb list --format csv must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::List(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(List(_))");
@@ -936,6 +985,7 @@ mod tests {
         .expect("trustdb check must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Check(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(Check(_))");
@@ -989,6 +1039,7 @@ mod tests {
         .expect("trustdb diff must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Diff(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(Diff(_))");
@@ -1010,6 +1061,7 @@ mod tests {
                 .expect("trustdb diff without --against must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Diff(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(Diff(_))");
@@ -1036,6 +1088,7 @@ mod tests {
         .expect("trustdb stale must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Trustdb(TrustdbCommand::Stale(args))),
+            ..
         } = cli
         else {
             panic!("expected Trustdb(Stale(_))");
@@ -1063,6 +1116,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("lint args must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
+            ..
         } = cli
         else {
             panic!("expected Fapolicyd(Lint(_))");
@@ -1167,6 +1221,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("explain args must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Explain(args)),
+            ..
         } = cli
         else {
             panic!("expected Fapolicyd(Explain(_))");
@@ -1256,6 +1311,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("cost args must parse");
         let Cli {
             command: TopCommand::Auditd(AuditdCommand::Cost(args)),
+            ..
         } = cli
         else {
             panic!("expected Auditd(Cost(_))");
@@ -1322,6 +1378,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("triage args must parse");
         let Cli {
             command: TopCommand::Selinux(SelinuxCommand::Triage(args)),
+            ..
         } = cli
         else {
             panic!("expected Selinux(Triage(_))");
@@ -1413,6 +1470,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("simulate args must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Simulate(args)),
+            ..
         } = cli
         else {
             panic!("expected Fapolicyd(Simulate(_))");
@@ -1484,6 +1542,7 @@ mod tests {
         let cli = Cli::try_parse_from(cmdline).expect("report args must parse");
         let Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Report(args)),
+            ..
         } = cli
         else {
             panic!("expected Fapolicyd(Report(_))");
@@ -1564,5 +1623,72 @@ mod tests {
         );
         assert!(args.fail_on_drift);
         assert!(args.enumerate_trust);
+    }
+
+    // -- session 8c L5: the global `--profile <framework>` filter (#506) --
+
+    /// `--profile {stig,cis,pci,nist}` parses to the matching `FrameworkArg`.
+    /// The flag is `global = true`, so it is accepted AFTER the subcommand.
+    #[test]
+    fn profile_flag_parses_each_framework() {
+        for (flag, expected) in [
+            ("stig", FrameworkArg::Stig),
+            ("cis", FrameworkArg::Cis),
+            ("pci", FrameworkArg::Pci),
+            ("nist", FrameworkArg::Nist),
+        ] {
+            let cli = Cli::try_parse_from(["rulesteward", "sysctl", "lint", "--profile", flag])
+                .unwrap_or_else(|e| panic!("--profile {flag} must parse: {e}"));
+            assert_eq!(
+                cli.profile,
+                Some(expected),
+                "--profile {flag} must parse to {expected:?}"
+            );
+        }
+    }
+
+    /// No `--profile` leaves the field `None` (the no-filter, byte-identical path).
+    #[test]
+    fn profile_flag_defaults_to_none() {
+        let cli = Cli::try_parse_from(["rulesteward", "sysctl", "lint"]).expect("bare lint parses");
+        assert!(
+            cli.profile.is_none(),
+            "absent --profile must default to None"
+        );
+    }
+
+    /// `--profile` is truly global: it attaches to every backend's subcommand,
+    /// not just one. Pins the `global = true` contract across namespaces.
+    #[test]
+    fn profile_flag_is_global_across_subcommands() {
+        for ns in [
+            ["fapolicyd", "lint"],
+            ["sshd", "lint"],
+            ["sudoers", "lint"],
+            ["auditd", "lint"],
+        ] {
+            let cli = Cli::try_parse_from(["rulesteward", ns[0], ns[1], "--profile", "cis"])
+                .unwrap_or_else(|e| panic!("--profile on {ns:?} must parse: {e}"));
+            assert_eq!(cli.profile, Some(FrameworkArg::Cis));
+        }
+    }
+
+    /// An invalid `--profile` value is rejected (pins the closed framework set).
+    #[test]
+    fn profile_flag_rejects_unknown_value() {
+        let cli = Cli::try_parse_from(["rulesteward", "sysctl", "lint", "--profile", "hipaa"]);
+        assert!(cli.is_err(), "an unknown --profile value must be rejected");
+    }
+
+    /// The CLI value-enum converts to the core `Framework` for each variant,
+    /// keeping the core crate clap-free (mirrors the `TargetVersionArg` -> domain
+    /// `TargetVersion` From-impl tests).
+    #[test]
+    fn framework_arg_converts_to_core_framework() {
+        use rulesteward_core::Framework;
+        assert_eq!(Framework::from(FrameworkArg::Stig), Framework::Stig);
+        assert_eq!(Framework::from(FrameworkArg::Cis), Framework::Cis);
+        assert_eq!(Framework::from(FrameworkArg::Pci), Framework::Pci);
+        assert_eq!(Framework::from(FrameworkArg::Nist), Framework::Nist);
     }
 }
