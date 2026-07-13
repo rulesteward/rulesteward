@@ -14,10 +14,19 @@
 //! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
 //! machine lives here and the passes only EMIT - they never re-parse.
 
-use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
+use rulesteward_core::{Diagnostic, Framework, Severity};
 
 use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
+
+/// The DISA STIG NOPASSWD control pair (RHEL-08-010380 + RHEL-09-611085) cited by
+/// BOTH sudo-W01 and sudo-W05. Shared here so the two emit sites cannot drift;
+/// mapped to typed `ControlRef`s via [`crate::lints::stig::controls`] (the same
+/// single conversion point stig.rs's own emit sites use).
+const NOPASSWD_STIG_CONTROLS: [(Framework, &str); 2] = [
+    (Framework::Stig, "RHEL-08-010380"),
+    (Framework::Stig, "RHEL-09-611085"),
+];
 
 /// Shared forward NOPASSWD/PASSWD tag-state walker for the W01/W02/W05 family
 /// (#404 DRY extraction of the rule-of-three-identical nested walk).
@@ -122,10 +131,7 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                     file.path.clone(),
                     logical.line,
                 )
-                .with_controls(vec![
-                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
-                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
-                ]),
+                .with_controls(crate::lints::stig::controls(&NOPASSWD_STIG_CONTROLS)),
             );
         }
     });
@@ -236,10 +242,7 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                     file.path.clone(),
                     logical.line,
                 )
-                .with_controls(vec![
-                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
-                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
-                ]),
+                .with_controls(crate::lints::stig::controls(&NOPASSWD_STIG_CONTROLS)),
             );
         }
     });
