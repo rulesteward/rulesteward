@@ -32,7 +32,16 @@ pub fn apply_profile(diags: &mut Vec<Diagnostic>, profile: Option<Framework>) ->
         return false;
     };
     let had = !diags.is_empty();
-    diags.retain(|d| d.controls.iter().any(|c| c.framework == fw));
+    // A parse-failure F01 is EXEMPT from the filter: a file that failed to parse
+    // was never checked, so dropping its (control-less) F01 would vanish the error
+    // and mis-signal a no-op. Keeping it also holds `parse_failed` true for the
+    // fapolicyd SARIF pass-attestation suppression (#137 / lint.rs). The exemption
+    // reuses `exit_code::is_parse_error_code` so the F01 set never drifts from the
+    // exit-code mapping. This branch lives here (mutation-gated) on purpose.
+    diags.retain(|d| {
+        crate::exit_code::is_parse_error_code(d.code.as_ref())
+            || d.controls.iter().any(|c| c.framework == fw)
+    });
     had && diags.is_empty()
 }
 
@@ -96,6 +105,37 @@ mod tests {
         );
         assert_eq!(diags.len(), 1, "only the STIG-bearing finding survives");
         assert_eq!(diags[0].code.as_ref(), "a-W01");
+    }
+
+    #[test]
+    fn parse_error_findings_are_exempt_from_the_filter() {
+        use rulesteward_core::Severity;
+        // A parse-failure F01 diagnostic (Fatal, no controls) MUST survive any
+        // --profile: a file that FAILED to parse was never checked, so its F01 can
+        // never be dropped as "no matching control" (that would vanish the error
+        // and mis-signal a no-op). The uncontrolled Warning beside it is still
+        // dropped, so this proves the exemption is CODE-specific, not blanket.
+        let f01 = Diagnostic::new(
+            Severity::Fatal,
+            "sysctld-F01",
+            0..0,
+            "parse fail",
+            "/tmp/x",
+            1,
+            1,
+        );
+        let mut diags = vec![f01, diag("a-W02", vec![])];
+        let no_op = apply_profile(&mut diags, Some(Framework::Stig));
+        assert!(
+            !no_op,
+            "a surviving F01 keeps the set non-empty -> not a no-op (compute returns 5, not 9)"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "the F01 is retained; the uncontrolled warning is dropped"
+        );
+        assert_eq!(diags[0].code.as_ref(), "sysctld-F01");
     }
 
     #[test]

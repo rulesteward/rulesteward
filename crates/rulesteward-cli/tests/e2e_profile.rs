@@ -23,6 +23,7 @@
 use std::io::Write;
 
 use assert_cmd::Command;
+use serde_json::Value;
 
 fn bin() -> Command {
     Command::cargo_bin("rulesteward").expect("binary built")
@@ -361,5 +362,147 @@ fn profile_is_accepted_but_inert_on_non_lint_verb() {
     assert!(
         stdout.contains("auditd cost estimate"),
         "the cost output is unaffected by the inert --profile; stdout: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PARSE-ERROR EXEMPTION (#506 defect fix): a file that FAILED to parse was never
+// checked, so its F01 must NOT be filtered by --profile. Exit stays 5 (F01
+// outranks all severities per exit_code.rs), the F01 renders (does not vanish),
+// and the SARIF coverage attestation stays suppressed. F01 carries no controls,
+// so a naive controls-only filter would drop it -> exit 9 / empty output.
+// ---------------------------------------------------------------------------
+
+/// A sysctl config that fails to parse (a bare key with no `=` -> sysctld-F01)
+/// under `--profile stig`: the F01 must SURVIVE the filter. Exit 5 (parse
+/// failure), NOT the no-op 9, and the F01 still renders (never a silent empty).
+#[test]
+fn sysctl_parse_error_under_profile_exits_five_and_renders_f01() {
+    let cfg = tmp_file("kernel.dmesg_restrict\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--profile",
+            "stig",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "a parse failure under --profile must exit 5 (F01 outranks severity), \
+         never the no-op 9 or a swallowed 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("sysctld-F01"),
+        "the parse error must still render under --profile (must not vanish); stdout: {stdout}"
+    );
+}
+
+/// Same exemption for the fapolicyd backend: a garbage `.rules` file (fapd-F01)
+/// under `--profile stig` exits 5 and renders the F01, not exit 9 with empty
+/// output. Covers a SECOND backend so the fix is not sysctl-specific.
+#[test]
+fn fapolicyd_parse_error_under_profile_exits_five_and_renders_f01() {
+    let f = tmp_file("!!!garbage line\n");
+    let out = bin()
+        .args([
+            "fapolicyd",
+            "lint",
+            "--file",
+            f.path().to_str().unwrap(),
+            "--profile",
+            "stig",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "a fapolicyd parse failure under --profile must exit 5, not the no-op 9; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains("fapd-F01"),
+        "the fapd-F01 parse error must still render under --profile; stdout: {stdout}"
+    );
+}
+
+/// #137 attestation guard must NOT be defeated by the profile filter: a rules.d
+/// with one VALID and one UN-PARSEABLE file, under
+/// `--format sarif --sarif-include-pass --profile stig`, must emit ZERO
+/// `kind:"pass"` results. If F01 were filtered out BEFORE the parse-failure check
+/// (`lint.rs` `sarif_pass_info`), the surviving-clean set would falsely attest
+/// full coverage. The retained F01 keeps `parse_failed` true -> attestation gone.
+#[test]
+fn fapolicyd_sarif_pass_attestation_suppressed_by_parse_failure_under_profile() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir_all(&rules_d).expect("create rules.d");
+    std::fs::write(rules_d.join("10-ok.rules"), "allow uid=0 : all\n").expect("write ok");
+    std::fs::write(rules_d.join("20-broken.rules"), "!!!garbage\n").expect("write broken");
+
+    let out = bin()
+        .args([
+            "fapolicyd",
+            "lint",
+            rules_d.to_str().unwrap(),
+            "--format",
+            "sarif",
+            "--sarif-include-pass",
+            "--profile",
+            "stig",
+        ])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF output must be valid JSON");
+
+    // Zero kind:"pass" results (the coverage attestation must stay suppressed).
+    let pass_results: Vec<&Value> = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .map(|rs| {
+            rs.iter()
+                .filter(|r| r.get("kind").and_then(Value::as_str) == Some("pass"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        pass_results.is_empty(),
+        "a surviving parse failure must suppress every kind:\"pass\" result even under \
+         --profile; got {} pass results:\n{stdout}",
+        pass_results.len()
+    );
+
+    // The tool.driver.rules[] coverage list must likewise be empty/absent.
+    let rules_len = v
+        .pointer("/runs/0/tool/driver/rules")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    assert_eq!(
+        rules_len, 0,
+        "a surviving parse failure must suppress the rules[] coverage attestation; stdout:\n{stdout}"
+    );
+
+    // The F01 itself must still be reported as a finding (it did not vanish).
+    let finding_ids: Vec<String> = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .map(|rs| {
+            rs.iter()
+                .filter_map(|r| r.get("ruleId").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        finding_ids.contains(&"fapd-F01".to_string()),
+        "the parse failure must still be reported as fapd-F01 under --profile; got {finding_ids:?}"
     );
 }
