@@ -89,14 +89,14 @@ dependencies = [
 
 [[package]]
 name = "rulesteward-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "rulesteward-sysctld"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "rulesteward-core",
 ]
