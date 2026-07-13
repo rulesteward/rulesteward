@@ -28,11 +28,13 @@
 //! index. A diagnostic with no controls renders byte-identically to the
 //! pre-L4 form: no `taxonomies` key, no `taxa` key on its result.
 
+use std::collections::BTreeMap;
+
 use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 use rulesteward_fapolicyd::catalog::LintCode;
 use serde_sarif::sarif::{
-    ArtifactLocation, Location, Message, MultiformatMessageString, PhysicalLocation, Region,
-    ReportingConfiguration, ReportingDescriptor, ReportingDescriptorReference,
+    ArtifactLocation, Location, Message, MultiformatMessageString, PhysicalLocation, PropertyBag,
+    Region, ReportingConfiguration, ReportingDescriptor, ReportingDescriptorReference,
     Result as SarifResult, ResultKind, ResultLevel, Run, Sarif, Tool, ToolComponent,
     ToolComponentReference,
 };
@@ -128,17 +130,36 @@ fn control_taxon_index(groups: &[TaxonomyGroup], control: &ControlRef) -> Option
 
 /// Build one taxonomy `taxa[]` entry (a [`ReportingDescriptor`]) for a
 /// control: its canonical `id`, plus `name` when the control carries a human
-/// title.
+/// title, plus a `properties.aliases` bag carrying the control's `alias` (the
+/// DISA V-number) when present.
+///
+/// `name` and `properties` are both `Option` fields on the `TypedBuilder`
+/// (`strip_option`), so conditionally setting them on a single builder chain
+/// would need a 4-way type-state branch. Instead the base descriptor (with the
+/// required `id`) is built once, then the two optionals are assigned directly
+/// to the public fields -- `None` leaves the field unset, so a no-name /
+/// no-alias control emits neither key (`skip_serializing_if = Option::is_none`).
 fn control_reporting_descriptor(control: &ControlRef) -> ReportingDescriptor {
-    match &control.name {
-        Some(name) => ReportingDescriptor::builder()
-            .id(control.id.clone())
-            .name(name.clone())
-            .build(),
-        None => ReportingDescriptor::builder()
-            .id(control.id.clone())
-            .build(),
+    let mut descriptor = ReportingDescriptor::builder()
+        .id(control.id.clone())
+        .build();
+    descriptor.name.clone_from(&control.name);
+    if let Some(alias) = &control.alias {
+        let mut properties = BTreeMap::new();
+        // `additional_properties` is `#[serde(flatten)]`, so this key lands
+        // directly inside the taxon's `properties` object:
+        //   "properties": { "aliases": ["<V-number>"] }
+        properties.insert(
+            "aliases".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(alias.clone())]),
+        );
+        descriptor.properties = Some(
+            PropertyBag::builder()
+                .additional_properties(properties)
+                .build(),
+        );
     }
+    descriptor
 }
 
 /// Build one `runs[0].taxonomies[]` entry: a [`ToolComponent`] named after the
@@ -429,6 +450,54 @@ mod tests {
             result_taxa[0].get("index").and_then(Value::as_i64),
             Some(0),
             "result.taxa[0].index points at the taxon's position in the taxonomy's taxa[]"
+        );
+    }
+
+    #[test]
+    fn sarif_taxon_carries_alias_in_properties() {
+        // A control's `alias` (the DISA V-number) is carried on the TAXON (the
+        // canonical metadata home), inside a SARIF properties bag under an
+        // `aliases` array -- NOT on the per-result taxa reference. This is the
+        // machine-readable analogue of the human renderer's ` (STIG id/V-num)`
+        // suffix.
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1)
+            .with_controls(vec![
+                ControlRef::new(Framework::Stig, "RHEL-08-040110").with_alias("V-230552"),
+            ]);
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        assert_eq!(
+            v.pointer("/runs/0/taxonomies/0/taxa/0/properties/aliases/0")
+                .and_then(Value::as_str),
+            Some("V-230552"),
+            "the taxon carries the DISA V-number under properties.aliases[0]"
+        );
+        // The alias lives on the taxon, not on the per-result reference.
+        assert!(
+            v.pointer("/runs/0/results/0/taxa/0/properties").is_none(),
+            "the per-result taxa reference must NOT carry the alias properties"
+        );
+    }
+
+    #[test]
+    fn sarif_taxon_without_alias_omits_properties() {
+        // A control with no alias emits NO properties key on its taxon, keeping
+        // the no-alias sub-case minimal (additive-only: properties appears only
+        // when there is an alias to carry).
+        let d = Diagnostic::new(Severity::Warning, "sysctld-W02", 0..0, "x", "/e.conf", 1, 1)
+            .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040110")]);
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        assert!(
+            v.pointer("/runs/0/taxonomies/0/taxa/0").is_some(),
+            "the taxon itself is present"
+        );
+        assert!(
+            v.pointer("/runs/0/taxonomies/0/taxa/0/properties")
+                .is_none(),
+            "a control with no alias must emit no properties key on its taxon"
         );
     }
 
