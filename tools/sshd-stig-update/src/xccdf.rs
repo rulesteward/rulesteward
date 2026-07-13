@@ -52,6 +52,11 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     let fixtext_re = Regex::new(r"(?s)<fixtext[^>]*>(.*?)</fixtext>").unwrap();
     // DISA canonical check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`.
     let grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
+    // The Rule id (STIG Rule id, e.g. `RHEL-09-255045`), carried in the FIRST
+    // `<version>` element inside the Rule (#507). Applied to the still-encoded
+    // block (not the decoded check/fixtext), so the search is scoped to the raw
+    // XCCDF tag rather than any prose that happens to mention "version".
+    let version_re = Regex::new(r"<version>([^<]+)</version>").unwrap();
 
     let mut out: Vec<DerivedControl> = Vec::new();
     for caps in group_re.captures_iter(xccdf) {
@@ -77,12 +82,21 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
         }
         let keyword = gm[1].to_string();
 
+        // Fail closed: a selected Rule with no `<version>` has no STIG Rule id to
+        // derive, and a default/empty value would silently defeat the #507 drift
+        // guard rather than surface the reformat loudly.
+        let rule_id = version_re
+            .captures(block)
+            .map(|c| c[1].trim().to_string())
+            .ok_or_else(|| format!("{v_number} ({keyword}): no <version> (STIG Rule id) found"))?;
+
         let value_rule = classify(&keyword, &fixtext, &check)
             .map_err(|e| format!("{v_number} ({keyword}): {e}"))?;
 
         out.push(DerivedControl {
             keyword,
             v_number: v_number.to_string(),
+            rule_id,
             value_rule,
         });
     }
@@ -432,5 +446,37 @@ mod tests {
             d[0].value_rule,
             OwnedValueRule::AnyOf(vec!["delayed".into(), "no".into(), "zlib".into()])
         );
+    }
+
+    // --- #507 STIG Rule id (`<version>`) capture ------------------------------
+    // 8b hand-authored the RHEL{8,9,10}_RULE_ID maps in stig.rs from the DISA
+    // XCCDF but this parser never read `<Rule><version>`, so those maps had zero
+    // drift protection. The Rule id is the canonical `ControlRef::id`; the
+    // Group id (already captured as `v_number`) is the DISA V-number alias.
+
+    #[test]
+    fn parse_controls_captures_rule_id() {
+        let doc = "<Benchmark><Group id=\"V-999999\"><Rule><version>RHEL-09-255045</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>PermitRootLogin no</fixtext></Rule></Group></Benchmark>";
+        let d = parse_controls(doc).expect("parses");
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].keyword, "permitrootlogin");
+        assert_eq!(d[0].v_number, "V-999999");
+        assert_eq!(d[0].rule_id, "RHEL-09-255045");
+    }
+
+    /// A selected Rule (grep idiom + sshd_config, valid fixtext config line) but
+    /// with NO `<version>` element must fail closed, not silently derive an empty
+    /// or default Rule id (the whole point of #507 is that the Rule id must be
+    /// genuinely load-bearing, not a decorative default).
+    #[test]
+    fn selected_rule_without_version_fails_closed() {
+        let doc = "<Benchmark><Group id=\"V-98\"><Rule>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>PermitRootLogin no</fixtext></Rule></Group></Benchmark>";
+        let err = parse_controls(doc).expect_err("missing <version> must fail closed");
+        assert!(err.contains("V-98"), "{err}");
+        assert!(err.contains("version"), "{err}");
     }
 }

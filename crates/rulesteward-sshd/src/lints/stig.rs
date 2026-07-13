@@ -538,6 +538,20 @@ fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Optio
     Some(ControlRef::new(Framework::Stig, rule_id).with_alias(v_number))
 }
 
+/// Look up the STIG Rule id (the DISA XCCDF `<Rule><version>`) for `keyword_lower`
+/// on a concrete `target`, or `None` if the keyword has no Rule id for that target.
+///
+/// Read-only accessor over [`rule_id_map`], added for the `sshd-stig-update` drift
+/// tool (issue #507): the tool's offline XCCDF parser derives the Rule id per
+/// keyword and needs this to compare against the shipped `RHEL*_RULE_ID` maps,
+/// closing the drift-protection gap those maps had after #501 (hand-authored from
+/// the DISA XCCDF with no automated cross-check). ADDITIVE only: does not touch
+/// [`StigControl`] or [`stig_baseline`]'s shape.
+#[must_use]
+pub fn rule_id_for(keyword_lower: &str, target: TargetVersion) -> Option<&'static str> {
+    lookup(rule_id_map(target), keyword_lower)
+}
+
 /// Widen the private [`W02Rule`] into the public [`StigValueRule`]; `None`
 /// (no W02 value rule) becomes `PresenceOnly`.
 fn value_rule_of(rule: Option<W02Rule>) -> StigValueRule {
@@ -1357,5 +1371,37 @@ mod tests {
     fn w01_completeness_all_required_carry_stig_control_rhel10() {
         // RHEL10 V1R1: 19 required directives, every id under the `RHEL-10-` prefix.
         assert_w01_completeness(TargetVersion::Rhel10, "RHEL-10-");
+    }
+
+    // --- #507 drift-tool `rule_id_for` accessor ------------------------------
+    // The `sshd-stig-update` tool needs a read-only way to project the Rule id
+    // (the DISA XCCDF `<version>`) per keyword+target, so it can compare it
+    // against the XCCDF-derived value and guard the RHEL*_RULE_ID maps that #501
+    // hand-authored with zero drift protection. This is a thin lookup over the
+    // existing `rule_id_map`, spot-checked here across all three targets plus
+    // the not-found case.
+
+    #[test]
+    fn rule_id_for_matches_shipped_rule_id_map() {
+        assert_eq!(
+            rule_id_for("banner", TargetVersion::Rhel9),
+            Some("RHEL-09-255025")
+        );
+        assert_eq!(
+            rule_id_for("banner", TargetVersion::Rhel8),
+            Some("RHEL-08-010040")
+        );
+        assert_eq!(
+            rule_id_for("banner", TargetVersion::Rhel10),
+            Some("RHEL-10-700010")
+        );
+    }
+
+    #[test]
+    fn rule_id_for_none_for_unknown_keyword() {
+        assert_eq!(
+            rule_id_for("not_a_real_directive", TargetVersion::Rhel9),
+            None
+        );
     }
 }

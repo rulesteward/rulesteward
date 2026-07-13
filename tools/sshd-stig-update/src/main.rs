@@ -91,7 +91,7 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
         println!(
             "\nThe DISA XCCDF changed since the shipped tables. Run `derive`, review, and \
              update crates/rulesteward-sshd/src/lints/stig.rs (required arrays + RHEL*_VNUM \
-             + w02_rule), then re-run `check`."
+             + RHEL*_RULE_ID + w02_rule), then re-run `check`."
         );
     }
     Ok(if drift {
@@ -144,8 +144,9 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
 // --- rendering ---------------------------------------------------------------
 
 /// Print paste-ready Rust for a human to reconcile `stig.rs` against: the required
-/// array (keyword + V-number comment), the `RHEL*_VNUM` provenance rows, and the
-/// derived value rule per keyword (to reconcile `w02_rule`).
+/// array (keyword + V-number comment), the `RHEL*_VNUM` provenance rows, the
+/// `RHEL*_RULE_ID` (keyword + STIG Rule id) rows, and the derived value rule per
+/// keyword (to reconcile `w02_rule`).
 fn print_paste_ready(name: &str, derived: &[DerivedControl]) {
     let major = name.strip_prefix("rhel").unwrap_or(name);
     println!("# paste-ready RHEL{major}_REQUIRED (keyword + V-number comment):");
@@ -155,6 +156,10 @@ fn print_paste_ready(name: &str, derived: &[DerivedControl]) {
     println!("# paste-ready RHEL{major}_VNUM (provenance map):");
     for c in derived {
         println!("    ({:?}, {:?}),", c.keyword, c.v_number);
+    }
+    println!("# paste-ready RHEL{major}_RULE_ID (keyword + STIG Rule id):");
+    for c in derived {
+        println!("    ({:?}, {:?}),", c.keyword, c.rule_id);
     }
     println!("# derived value rules (reconcile w02_rule):");
     for c in derived {
