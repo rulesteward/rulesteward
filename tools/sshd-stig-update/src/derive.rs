@@ -76,17 +76,34 @@ pub struct DerivedControl {
     pub keyword: String,
     /// DISA V-number (e.g. `V-257985`).
     pub v_number: String,
+    /// DISA STIG Rule id (e.g. `RHEL-09-255045`), from the XCCDF `<Rule><version>`
+    /// (issue #507). This is the canonical `ControlRef::id`; `v_number` is its alias.
+    pub rule_id: String,
     /// The W02 value assertion, or `PresenceOnly` for a W01 presence-only control.
     pub value_rule: OwnedValueRule,
 }
 
 impl DerivedControl {
     /// Project one shipped `&'static` [`StigControl`] into the owned comparison shape.
+    ///
+    /// `target` is needed alongside `c` to resolve the Rule id via
+    /// [`rulesteward_sshd::lints::stig::rule_id_for`] (the `&'static` [`StigControl`]
+    /// itself carries only keyword/`v_number`/value-rule, per #501's frozen shape).
     #[must_use]
-    pub fn of_projection(c: &StigControl) -> DerivedControl {
+    pub fn of_projection(c: &StigControl, target: TargetVersion) -> DerivedControl {
+        let rule_id = rulesteward_sshd::lints::stig::rule_id_for(c.keyword, target)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no STIG Rule id for keyword {:?} on {target:?}: rule_id_map has drifted \
+                     from provenance_map's keyword coverage in stig.rs",
+                    c.keyword
+                )
+            })
+            .to_string();
         DerivedControl {
             keyword: c.keyword.to_string(),
             v_number: c.v_number.to_string(),
+            rule_id,
             value_rule: OwnedValueRule::of_projection(c.value_rule),
         }
     }
@@ -98,7 +115,7 @@ impl DerivedControl {
 pub fn code_table(target: TargetVersion) -> Vec<DerivedControl> {
     rulesteward_sshd::lints::stig::stig_baseline(target)
         .iter()
-        .map(DerivedControl::of_projection)
+        .map(|c| DerivedControl::of_projection(c, target))
         .collect()
 }
 
@@ -133,6 +150,12 @@ pub fn diff_controls(upstream: &[DerivedControl], code: &[DerivedControl]) -> Ve
                         c.v_number, u.v_number
                     ));
                 }
+                if c.rule_id != u.rule_id {
+                    out.push(format!(
+                        "~ {k} rule id: code {} -> DISA {}",
+                        c.rule_id, u.rule_id
+                    ));
+                }
                 if c.value_rule != u.value_rule {
                     out.push(format!(
                         "~ {k} value rule: code [{}] -> DISA [{}]",
@@ -150,10 +173,11 @@ pub fn diff_controls(upstream: &[DerivedControl], code: &[DerivedControl]) -> Ve
 mod tests {
     use super::*;
 
-    fn ctl(kw: &str, v: &str, rule: OwnedValueRule) -> DerivedControl {
+    fn ctl(kw: &str, v: &str, rule_id: &str, rule: OwnedValueRule) -> DerivedControl {
         DerivedControl {
             keyword: kw.to_string(),
             v_number: v.to_string(),
+            rule_id: rule_id.to_string(),
             value_rule: rule,
         }
     }
@@ -168,6 +192,7 @@ mod tests {
             .find(|c| c.keyword == "permitrootlogin")
             .expect("permitrootlogin present");
         assert_eq!(prl.v_number, "V-257985");
+        assert_eq!(prl.rule_id, "RHEL-09-255045");
         assert_eq!(prl.value_rule, OwnedValueRule::ExactLower("no".to_string()));
         // Banner is presence-only.
         assert_eq!(
@@ -204,19 +229,31 @@ mod tests {
             ctl(
                 "permitrootlogin",
                 "V-1",
+                "RHEL-09-255045",
                 OwnedValueRule::ExactLower("no".into()),
             ),
-            ctl("removed", "V-9", OwnedValueRule::NumericExact(1)),
+            ctl(
+                "removed",
+                "V-9",
+                "RHEL-09-999998",
+                OwnedValueRule::NumericExact(1),
+            ),
         ];
         let upstream = vec![
-            // permitrootlogin: same v-number, but value rule changed
+            // permitrootlogin: same v-number + rule id, but value rule changed
             ctl(
                 "permitrootlogin",
                 "V-1",
+                "RHEL-09-255045",
                 OwnedValueRule::ExactLower("prohibit-password".into()),
             ),
             // added: brand new
-            ctl("added", "V-2", OwnedValueRule::PresenceOnly),
+            ctl(
+                "added",
+                "V-2",
+                "RHEL-09-999999",
+                OwnedValueRule::PresenceOnly,
+            ),
         ];
         let d = diff_controls(&upstream, &code);
         assert!(d.iter().any(|l| l.starts_with("- removed")), "{d:?}");
@@ -225,20 +262,56 @@ mod tests {
             d.iter().any(|l| l.contains("permitrootlogin value rule")),
             "{d:?}"
         );
-        // v-number unchanged for permitrootlogin -> no V-number drift line
+        // v-number and rule id unchanged for permitrootlogin -> no drift line for either
         assert!(
             !d.iter().any(|l| l.contains("permitrootlogin V-number")),
+            "{d:?}"
+        );
+        assert!(
+            !d.iter().any(|l| l.contains("permitrootlogin rule id")),
             "{d:?}"
         );
     }
 
     #[test]
     fn diff_reports_v_number_drift() {
-        let code = vec![ctl("banner", "V-257981", OwnedValueRule::PresenceOnly)];
-        let upstream = vec![ctl("banner", "V-999999", OwnedValueRule::PresenceOnly)];
+        let code = vec![ctl(
+            "banner",
+            "V-257981",
+            "RHEL-09-255025",
+            OwnedValueRule::PresenceOnly,
+        )];
+        let upstream = vec![ctl(
+            "banner",
+            "V-999999",
+            "RHEL-09-255025",
+            OwnedValueRule::PresenceOnly,
+        )];
         let d = diff_controls(&upstream, &code);
         assert_eq!(d.len(), 1);
         assert!(d[0].contains("banner V-number: code V-257981 -> DISA V-999999"));
+    }
+
+    #[test]
+    fn diff_reports_rule_id_drift() {
+        let code = vec![ctl(
+            "banner",
+            "V-257981",
+            "RHEL-09-255025",
+            OwnedValueRule::PresenceOnly,
+        )];
+        let upstream = vec![ctl(
+            "banner",
+            "V-257981",
+            "RHEL-09-999999",
+            OwnedValueRule::PresenceOnly,
+        )];
+        let d = diff_controls(&upstream, &code);
+        assert_eq!(d.len(), 1);
+        assert!(
+            d[0].contains("banner rule id: code RHEL-09-255025 -> DISA RHEL-09-999999"),
+            "{d:?}"
+        );
     }
 
     /// The `Display` impl renders the value rule in the `derive` paste-ready output
