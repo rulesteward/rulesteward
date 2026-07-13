@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-13
+
+A cross-cutting STIG compliance-profile release. No new backends and no new
+lint codes (unchanged from v0.6's 60): v0.7 instead promotes control
+provenance to a typed, first-class property of every finding and adds a
+`--profile` selector that turns the six independent linters into one
+framework-scoped compliance scanner. Control IDs previously reached the user
+only as inconsistent free text inside messages; they are now a structured
+`controls` field, surfaced identically across human, JSON, CSV, and SARIF
+output and machine-followable from a finding to its control. A dev-tooling
+gap is also closed: `tools/sshd-stig-update` now drift-guards the
+hand-authored sshd DISA Rule IDs against the upstream XCCDF.
+
+### Added
+
+- **`--profile <framework>`** (global flag; `stig`, `cis`, `pci`, or `nist`):
+  retains only findings that enforce a control in the named framework, so a
+  single scan answers "show me only the STIG-relevant findings." An
+  empty-after-filter result from a non-empty finding set returns the reserved
+  exit code `9` (`EXIT_NO_OP`), so CI can distinguish "profile matched
+  nothing" from "checked and clean" (exit `0`). Parse errors and unreadable
+  inputs are exempt from the filter and still exit `5` / `3` - a file that
+  was never checked is not reported as a compliance no-op. `--profile` absent
+  is byte-identical to prior behavior. (#506)
+- **Typed control references** on findings: a structured `controls` array
+  carrying each control's framework, ID, title, and (for DISA STIG) its
+  V-number alias, surfaced consistently in human, JSON, CSV, and SARIF
+  output. (#500, #504)
+- **SARIF control taxonomies**: the SARIF renderer emits `runs[0].taxonomies`
+  (one taxonomy component per framework) plus per-result `taxa` references -
+  the purpose-built SARIF slot that compliance consumers (e.g. GitHub
+  code-scanning) group findings by. Additive; a finding with no controls
+  renders byte-identically to before. (#505)
+
+### Changed
+
+- **`sshd`, `auditd`, and `sudoers` findings** now populate the typed
+  `controls` field instead of interpolating control IDs into free-text
+  messages (`sshd-W01` / `sshd-W02` previously dropped them entirely), so
+  control provenance is consistent and machine-readable across every output
+  format. (#501, #502, #503)
+- **Corrected CIS-vs-DISA control attribution**: sudoers findings that
+  enforce CIS / PCI controls are labeled `Cis` / `Pci` rather than mislabeled
+  as STIG, so `--profile stig` correctly excludes them while `--profile cis`
+  / `pci` include them. (#503)
+
 ## [0.6.0] - 2026-07-12
 
 A backend-deepening release. No new backends; one new lint code (`au-W06`,
@@ -390,7 +436,8 @@ Initial release. Cargo workspace (`-core`, `-fapolicyd`, `-sink`, `-cli`) with t
 fapolicyd lint backend, the `rulesteward` CLI, and a signed static
 `x86_64-unknown-linux-musl` binary plus RPM, SBOM, and cosign keyless signatures.
 
-[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/rulesteward/rulesteward/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/rulesteward/rulesteward/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rulesteward/rulesteward/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rulesteward/rulesteward/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rulesteward/rulesteward/compare/v0.3.0...v0.4.0
