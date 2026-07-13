@@ -14,7 +14,7 @@
 //! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
 //! machine lives here and the passes only EMIT - they never re-parse.
 
-use rulesteward_core::{Diagnostic, Severity};
+use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
@@ -110,17 +110,23 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     let mut diags = Vec::new();
     for_each_nopasswd_command(files, |file, logical, cmnd_spec| {
         if cmnd_spec.cmnd == CmndItem::All {
-            diags.push(anchored(
-                Severity::Warning,
-                "sudo-W01",
-                logical.span.clone(),
-                "NOPASSWD applies to the reserved ALL command: this grants \
-                 passwordless authority to run any command \
-                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                    .to_string(),
-                file.path.clone(),
-                logical.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sudo-W01",
+                    logical.span.clone(),
+                    "NOPASSWD applies to the reserved ALL command: this grants \
+                     passwordless authority to run any command \
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                        .to_string(),
+                    file.path.clone(),
+                    logical.line,
+                )
+                .with_controls(vec![
+                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
+                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
+                ]),
+            );
         }
     });
     diags
@@ -218,17 +224,23 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
         // here IS the dedup-against-W01. Every other NOPASSWD-effective command
         // (including alias references) fires.
         if cmnd_spec.cmnd != CmndItem::All && !is_empty_command {
-            diags.push(anchored(
-                Severity::Warning,
-                "sudo-W05",
-                logical.span.clone(),
-                "NOPASSWD is in effect on this command: DISA STIG requires \
-                 removing all NOPASSWD usage from sudoers \
-                 (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
-                    .to_string(),
-                file.path.clone(),
-                logical.line,
-            ));
+            diags.push(
+                anchored(
+                    Severity::Warning,
+                    "sudo-W05",
+                    logical.span.clone(),
+                    "NOPASSWD is in effect on this command: DISA STIG requires \
+                     removing all NOPASSWD usage from sudoers \
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                        .to_string(),
+                    file.path.clone(),
+                    logical.line,
+                )
+                .with_controls(vec![
+                    ControlRef::new(Framework::Stig, "RHEL-08-010380"),
+                    ControlRef::new(Framework::Stig, "RHEL-09-611085"),
+                ]),
+            );
         }
     });
     diags
@@ -614,6 +626,37 @@ mod tests {
             "W01 message must cite RHEL-09-611085; got {:?}",
             d.message
         );
+    }
+
+    // ---- Typed ControlRef backfill (#503, v0.7) ----
+
+    /// The W01 NOPASSWD-on-ALL finding cites DISA STIG RHEL-08-010380 AND
+    /// RHEL-09-611085 (tags.rs:119, the same dual-id citation
+    /// `w01_message_cites_grounded_stig_control` pins in the message text).
+    /// The dual per-distro-release id citation must become TWO typed
+    /// `rulesteward_core::ControlRef`s, both `Framework::Stig`, in citation
+    /// order (RHEL-08 first, then RHEL-09). The message stays byte-identical;
+    /// only `Diagnostic::controls` gains the typed mapping.
+    #[test]
+    fn w01_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint("alice ALL = NOPASSWD: ALL\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W01")
+            .expect("W01 fires for alice");
+        assert_eq!(
+            d.controls.len(),
+            2,
+            "W01's dual RHEL-08/RHEL-09 citation must become two ControlRefs; \
+             got {:?}",
+            d.controls
+        );
+        assert_eq!(d.controls[0].framework, Framework::Stig);
+        assert_eq!(d.controls[0].id, "RHEL-08-010380");
+        assert_eq!(d.controls[1].framework, Framework::Stig);
+        assert_eq!(d.controls[1].id, "RHEL-09-611085");
     }
 }
 
@@ -1078,6 +1121,39 @@ mod w05_tests {
             0,
             "W01 must not fire on NOPASSWD applied to a specific command"
         );
+    }
+
+    // ---- Typed ControlRef backfill (#503, v0.7) ----
+
+    /// The W05 broad-any-NOPASSWD finding cites the SAME control as W01: DISA
+    /// STIG RHEL-08-010380 / RHEL-09-611085 (tags.rs:227, the W05 emit-site
+    /// citation string; the same `sudo_remove_nopasswd` rule W01 cites with a
+    /// broader trigger). The dual per-distro-release id citation must become
+    /// TWO typed `rulesteward_core::ControlRef`s, both `Framework::Stig`, in
+    /// citation order (RHEL-08 first, then RHEL-09). Uses a SPECIFIC-command
+    /// NOPASSWD fixture so W05 (not W01) is the finding under test. The message
+    /// stays byte-identical; only `Diagnostic::controls` gains the mapping.
+    #[test]
+    fn w05_finding_carries_stig_controls() {
+        use rulesteward_core::Framework;
+
+        // NOPASSWD on a specific command (not ALL) -> W05 fires, W01 does not.
+        let diags = lint_w05("alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W05")
+            .expect("W05 fires for the specific-command NOPASSWD");
+        assert_eq!(
+            d.controls.len(),
+            2,
+            "W05's dual RHEL-08/RHEL-09 citation must become two ControlRefs; \
+             got {:?}",
+            d.controls
+        );
+        assert_eq!(d.controls[0].framework, Framework::Stig);
+        assert_eq!(d.controls[0].id, "RHEL-08-010380");
+        assert_eq!(d.controls[1].framework, Framework::Stig);
+        assert_eq!(d.controls[1].id, "RHEL-09-611085");
     }
 
     // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` used to MERGE two

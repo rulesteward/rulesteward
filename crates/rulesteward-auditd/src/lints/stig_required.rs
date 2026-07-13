@@ -25,7 +25,7 @@
 //! integration-test crate) can inject a small, appendix-cited test-local
 //! baseline directly, independent of the shipped `RHEL*_REQUIRED` tables.
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{ControlRef, Diagnostic, Framework};
 
 use super::LintOptions;
 use crate::ast::LocatedRule;
@@ -1230,15 +1230,20 @@ pub fn w06_with_baseline(
             )
         };
 
-        diags.push(Diagnostic::new(
-            rulesteward_core::Severity::Warning,
-            "au-W06",
-            0..0,
-            message,
-            anchor_file.clone(),
-            0,
-            0,
-        ));
+        diags.push(
+            Diagnostic::new(
+                rulesteward_core::Severity::Warning,
+                "au-W06",
+                0..0,
+                message,
+                anchor_file.clone(),
+                0,
+                0,
+            )
+            .with_controls(vec![
+                ControlRef::new(Framework::Stig, required.stig_id).with_alias(required.v_number),
+            ]),
+        );
     }
     diags
 }

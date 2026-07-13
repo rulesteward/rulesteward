@@ -15,22 +15,28 @@
 //! grounding doc appendix (real DISA RHEL 9 STIG V2R7 check-content), cited by
 //! its `SV-...` id / `RHEL-09-NNNNNN` control id inline.
 //!
-//! # RED-state note
-//! `w06_with_baseline`'s real matching body is `todo!()` (the implementer's
-//! job; see that function's doc comment for the full grounded C.5 matcher
-//! spec). Every test below that passes a NON-EMPTY baseline therefore PANICS
-//! today (RED). The two tests that pass through `w06`'s `target == None`
-//! branch (never reaching a non-empty baseline) are GREEN already.
+//! # RED-state note (session 8b, issue #502)
+//! `w06_with_baseline`'s matcher is FULLY IMPLEMENTED (au-W06 shipped in v0.6);
+//! the au-W06 scenario tests below are all GREEN. The only RED tests in this
+//! file are the control-ID backfill assertions added for issue #502
+//! (`w06_missing_finding_carries_its_stig_control_ref` and
+//! `multiple_missing_findings_carry_distinct_per_finding_controls`): they pin
+//! that every au-W06 finding must ALSO carry a typed
+//! `rulesteward_core::ControlRef { framework: Stig, id: <stig_id>, alias:
+//! <v_number> }`, which the emit sites do not attach yet. They fail on the
+//! `controls.len()` assertion (0 != 1) until the implementer wires the control
+//! onto each `Diagnostic`.
 
 use std::path::Path;
 
 use rulesteward_auditd::lints::LintOptions;
 use rulesteward_auditd::lints::catalog::AU_CODES;
+use rulesteward_auditd::lints::duplicate::w01;
 use rulesteward_auditd::lints::stig_required::{
     BaselineRule, TargetVersion, stig_baseline, w06, w06_with_baseline,
 };
 use rulesteward_auditd::parse_rules_str_located;
-use rulesteward_core::Severity;
+use rulesteward_core::{Framework, Severity};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -611,5 +617,187 @@ fn distinct_watch_paths_are_not_normalized_to_the_same_value() {
         diags[0].message.contains("RHEL-08-030172"),
         "{:?}",
         diags[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Control-ID backfill (issue #502, session 8b): au-W06 findings must carry a
+// typed rulesteward_core::ControlRef alongside the existing free-text message,
+// mirroring the sysctld-W02 precedent
+// (crates/rulesteward-sysctld/src/lints/baseline.rs's
+// `w02_baseline_findings_carry_their_stig_control`). Unlike sysctld's
+// `BaselineKey` (stig_id only), auditd's `BaselineRule` also carries a DISA
+// Group/Vuln `v_number`, so the control's `alias` slot is populated too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w06_missing_finding_carries_its_stig_control_ref() {
+    // SV-258217r1045436_rule (RHEL-09-654215, V-258217): plain watch on
+    // /etc/sudoers -- the same requirement `rhel9_sample_baseline()` above
+    // encodes, and the same shipped-table row at
+    // crates/rulesteward-auditd/src/lints/stig_required.rs:673-677
+    // (`BaselineRule { v_number: "V-258217", stig_id: "RHEL-09-654215", line:
+    // "-w /etc/sudoers -p wa -k identity" }`). Removing it from an otherwise-
+    // compliant ruleset (same fixture shape as
+    // `removing_one_watch_yields_exactly_one_finding_naming_its_stig_id`
+    // above) yields exactly one au-W06 MISSING finding; this test pins the
+    // typed `ControlRef` the implementer must additionally attach.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
+         -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
+         -a always,exit -S all -F path=/usr/bin/umount -F perm=x -F auid>=1000 -F auid!=-1 -F key=privileged-mount\n",
+    );
+    let baseline = rhel9_sample_baseline();
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    let d = &diags[0];
+
+    // MESSAGE assertion unchanged (the free-text shape the implementer must
+    // not alter): still names the STIG id as plain text.
+    assert!(
+        d.message.contains("RHEL-09-654215"),
+        "message must still name the missing watch's STIG id, got {:?}",
+        d.message
+    );
+
+    // NEW: the typed control assertion (issue #502). Length-first so a RED
+    // failure is a clean `0 != 1`, not an index panic on `controls[0]`.
+    assert_eq!(
+        d.controls.len(),
+        1,
+        "au-W06 finding must carry exactly one typed ControlRef: {d:?}"
+    );
+    assert_eq!(d.controls[0].framework, Framework::Stig);
+    assert_eq!(d.controls[0].id, "RHEL-09-654215");
+    assert_eq!(d.controls[0].alias.as_deref(), Some("V-258217"));
+}
+
+#[test]
+fn multiple_missing_findings_carry_distinct_per_finding_controls() {
+    // BLOCKER (barrier adversarial review): the single-finding test above is
+    // passed by a WRONG hardcoded-constant impl (attach ONE fixed ControlRef to
+    // every au-W06 finding). This test forecloses that: only the watch is
+    // present, so `rhel9_sample_baseline()`'s OTHER three required lines are all
+    // missing -- the chmod ABI pair (both b32 + b64 rows,
+    // RHEL-09-654015 / V-258177, shipped-table lines 413-417 and 418-422) and
+    // the umount privileged-command line (RHEL-09-654030 / V-258180, shipped-
+    // table line 453-457). That yields THREE findings carrying TWO distinct
+    // (id, alias) controls. A constant impl would pair, say, the chmod control
+    // with the umount finding whose message names RHEL-09-654030 -- caught here
+    // by requiring each finding's control id to appear in ITS OWN message.
+    let rules = parse("-w /etc/sudoers -p wa -k identity\n");
+    let baseline = rhel9_sample_baseline();
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert_eq!(
+        diags.len(),
+        3,
+        "the chmod ABI pair (2) + umount (1) are all missing: {diags:?}"
+    );
+
+    // Per-finding sourcing: each finding carries exactly one control whose id is
+    // the STIG id named in THAT finding's own message. Length-check first so RED
+    // is a clean `0 != 1`, never an index panic on `controls[0]`.
+    for d in &diags {
+        assert_eq!(d.code, "au-W06");
+        assert_eq!(
+            d.controls.len(),
+            1,
+            "each au-W06 finding carries exactly one control: {d:?}"
+        );
+        assert_eq!(d.controls[0].framework, Framework::Stig);
+        assert!(
+            d.message.contains(d.controls[0].id.as_str()),
+            "each finding's control id must be the one named in its OWN message \
+             (per-finding sourcing, not a shared constant): control={:?} \
+             message={:?}",
+            d.controls[0],
+            d.message
+        );
+    }
+
+    // The (id, alias) set across the findings contains BOTH distinct required
+    // controls, each grounded in the shipped RHEL9_REQUIRED table.
+    let got: std::collections::HashSet<(&str, Option<&str>)> = diags
+        .iter()
+        .map(|d| (d.controls[0].id.as_str(), d.controls[0].alias.as_deref()))
+        .collect();
+    assert!(
+        got.contains(&("RHEL-09-654015", Some("V-258177"))),
+        "must include the chmod ABI-pair control (RHEL-09-654015 / V-258177): {got:?}"
+    );
+    assert!(
+        got.contains(&("RHEL-09-654030", Some("V-258180"))),
+        "must include the umount control (RHEL-09-654030 / V-258180): {got:?}"
+    );
+}
+
+#[test]
+fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
+    // Barrier re-review gap: au-W06 emits TWO finding kinds from
+    // `w06_with_baseline` (stig_required.rs:1220-1241) -- "missing" AND
+    // "present-but-key-differs". The two control tests above only exercise the
+    // MISSING branch, so an impl attaching `.with_controls(...)` on the missing
+    // branch ONLY would leave every present-but-key-differs finding
+    // controls-empty yet still pass them. This pins the OTHER branch, mirroring
+    // sysctld-W02 which attaches + tests the control on BOTH its missing
+    // (baseline.rs:445) and present-insecure (baseline.rs:462) branches.
+    //
+    // Same fixture as `predicate_equal_rule_with_a_different_key_is_a_distinct_
+    // finding` above: the umount privileged-command line matches every axis of
+    // its requirement EXCEPT the key (WRONG_KEY instead of privileged-mount), so
+    // it is present-but-key-differs, not missing. Control grounded in the
+    // shipped RHEL9_REQUIRED table (stig_required.rs:453-457): V-258180 /
+    // RHEL-09-654030.
+    let rules = parse(
+        "-w /etc/sudoers -p wa -k identity\n\
+         -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
+         -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
+         -a always,exit -S all -F path=/usr/bin/umount -F perm=x -F auid>=1000 -F auid!=-1 -F key=WRONG_KEY\n",
+    );
+    let baseline = rhel9_sample_baseline();
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    let d = &diags[0];
+
+    // MESSAGE assertion unchanged: still the present-but-key-differs shape (names
+    // the stig id + the distinct "different key" wording).
+    assert!(
+        d.message.contains("RHEL-09-654030") && d.message.contains("different key"),
+        "must stay the present-but-key-differs message shape, got {:?}",
+        d.message
+    );
+
+    // NEW (#502): the key-differs branch must ALSO carry the typed control.
+    // Length-first so RED is a clean `0 != 1`, not an index panic.
+    assert_eq!(
+        d.controls.len(),
+        1,
+        "the present-but-key-differs finding must also carry one control: {d:?}"
+    );
+    assert_eq!(d.controls[0].framework, Framework::Stig);
+    assert_eq!(d.controls[0].id, "RHEL-09-654030");
+    assert_eq!(d.controls[0].alias.as_deref(), Some("V-258180"));
+}
+
+#[test]
+fn non_w06_finding_has_empty_controls() {
+    // Empty-controls guard (issue #502): this milestone wires a typed
+    // ControlRef onto au-W06 only. Every other au- code's findings must keep
+    // an EMPTY `controls` Vec (so the field stays omitted from serialization
+    // for those codes) -- picked au-E03 (lints::duplicate::w01, unrelated
+    // machinery to stig_required entirely) specifically so this guard cannot
+    // be satisfied by accident if the implementer wires the au-W06 control
+    // onto the wrong emission site or some shared helper.
+    let rules = parse(
+        "-w /etc/passwd -p wa -k identity\n\
+         -w /etc/passwd -p wa -k identity\n",
+    );
+    let diags = w01(&rules, LintOptions::default());
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].code, "au-E03");
+    assert!(
+        diags[0].controls.is_empty(),
+        "a non-au-W06 finding must carry no controls: {:?}",
+        diags[0].controls
     );
 }
