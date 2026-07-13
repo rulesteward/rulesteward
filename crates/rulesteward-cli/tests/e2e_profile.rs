@@ -506,3 +506,71 @@ fn fapolicyd_sarif_pass_attestation_suppressed_by_parse_failure_under_profile() 
         "the parse failure must still be reported as fapd-F01 under --profile; got {finding_ids:?}"
     );
 }
+
+/// The profile filter must NOT turn a check that ACTUALLY FIRED into a false
+/// pass. A VALID ruleset whose only finding is fapd-W03 (a fired Warning that
+/// carries no control), under `--format sarif --sarif-include-pass --profile
+/// stig`, must emit ZERO `kind:"pass"` results. fapolicyd carries no controls, so
+/// `--profile` empties the finding set (`no_op`) - and the coverage attestation
+/// must be suppressed, else the filtered-out fapd-W03 gets re-listed as passed:
+/// the exact coverage overstatement #137 forbids. Distinct from the F01 case
+/// above (a parse failure); here the file parsed fine and a real check fired.
+#[test]
+fn fapolicyd_sarif_pass_attestation_suppressed_when_profile_filters_a_fired_check() {
+    let f = tmp_file("allow uid=0 : all # bad comment\n");
+    let out = bin()
+        .args([
+            "fapolicyd",
+            "lint",
+            "--file",
+            f.path().to_str().unwrap(),
+            "--format",
+            "sarif",
+            "--sarif-include-pass",
+            "--profile",
+            "stig",
+        ])
+        .output()
+        .expect("binary ran");
+
+    // fapolicyd control-less findings are all filtered -> no_op -> exit 9.
+    assert_eq!(
+        out.status.code(),
+        Some(9),
+        "--profile empties fapolicyd's control-less findings -> exit 9; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF output must be valid JSON");
+
+    let pass_ids: Vec<String> = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .map(|rs| {
+            rs.iter()
+                .filter(|r| r.get("kind").and_then(Value::as_str) == Some("pass"))
+                .filter_map(|r| r.get("ruleId").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        pass_ids.is_empty(),
+        "a profile-filtered fired check must NOT be re-listed as kind:\"pass\"; \
+         got passes {pass_ids:?}\n{stdout}"
+    );
+    // Specifically: the fired code must never be attested as passed.
+    assert!(
+        !pass_ids.contains(&"fapd-W03".to_string()),
+        "the fired fapd-W03 must not be attested as passed; got {pass_ids:?}"
+    );
+    // The tool.driver.rules[] coverage list must likewise be suppressed.
+    let rules_len = v
+        .pointer("/runs/0/tool/driver/rules")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    assert_eq!(
+        rules_len, 0,
+        "the coverage attestation (rules[]) must be suppressed under the no_op filter; \
+         stdout:\n{stdout}"
+    );
+}

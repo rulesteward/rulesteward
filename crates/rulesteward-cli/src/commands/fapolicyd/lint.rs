@@ -195,6 +195,11 @@ fn run_lint_resolved(
     // policy maps to the requested framework).
     let no_op = crate::profile::apply_profile(&mut all_diags, profile);
 
+    // `.filter(|_| !no_op)`: when the `--profile` filter emptied a non-empty set,
+    // suppress the SARIF pass attestation entirely (#506). `sarif_pass_info`
+    // computes `fired` from the POST-filter `all_diags`, so a fired-then-filtered
+    // check (e.g. fapd-W03 under `--profile stig`) would otherwise be re-listed as
+    // `kind:"pass"` - the coverage overstatement #137 forbids.
     let pass_info = sarif_pass_info(
         args,
         target,
@@ -203,7 +208,8 @@ fn run_lint_resolved(
         &parsed,
         tool_err,
         &all_diags,
-    );
+    )
+    .filter(|_| !no_op);
 
     let rendered = match output::render(args.format, &all_diags, &sources, pass_info.as_ref()) {
         Ok(s) => s,
@@ -228,6 +234,11 @@ fn run_lint_resolved(
 /// `--check-identities`, `--against-trustdb` + `--report-orphans`, single-file vs
 /// directory); the clean subset (evaluated minus the codes that fired) is emitted
 /// as `kind:"pass"`.
+///
+/// Callers additionally suppress the result under the global `--profile` no-op
+/// (issue #506) - see the call site - because `fired` here is computed from the
+/// POST-filter `all_diags`, so a fired-then-filtered check must not be re-listed
+/// as a pass.
 fn sarif_pass_info(
     args: &LintArgs,
     target: Option<TargetVersionArg>,
