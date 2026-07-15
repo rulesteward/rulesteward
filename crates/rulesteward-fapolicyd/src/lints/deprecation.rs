@@ -610,7 +610,9 @@ mod tests {
             // itself exclude a per-member COMPARISON shortcut (e.g. a
             // per-member `starts_with("untrusted")` still checks every
             // member and so still passes this positive fixture); that axis
-            // is pinned separately by the negative prefix fixture in
+            // is pinned separately by the CONTAINS / SUFFIX / PREFIX
+            // negative fixtures ("set member", "set member, no trailing
+            // slash", "set member, prefix (not suffix)") in
             // `w12_detect_silent_on_untrusted_as_a_path_substring`.
             vec!["/a/", "untrusted", "/b/"],
         ] {
@@ -737,21 +739,36 @@ mod tests {
 
     #[test]
     fn w12_detect_silent_on_untrusted_as_a_path_substring() {
-        // THE anti-substring pin, covering BOTH comparison-shortcut
-        // directions: SUFFIX (a member ending in "untrusted", e.g.
-        // `/opt/untrusted/` or `/opt/untrusted`) and PREFIX (a member
-        // starting with "untrusted", e.g. `untrusted/`). All of these are
-        // real directory paths that happen to embed or start with the word.
-        // Upstream's membership test is an avl_search over plain `strcmp`
-        // (rules.c:90 -> attr-sets.c:412-422 -> attr-sets.c:71-74), which is
-        // exact whole-member equality - upstream even ships a SEPARATE
-        // `attr_set_check_pstr` ("check if any set entry PREFIXES a string",
-        // attr-sets.c:424) that the warner deliberately does NOT call - so a
-        // `value.contains(...)`, `value.ends_with(...)`, or
-        // `value.starts_with(...)` impl fires a false fapd-W12 on one of
-        // these. Covered on both sides, and through a `%set`, because each
-        // is a separate code path in the detection template.
-        let cases: [(&str, Vec<Entry>); 6] = [
+        // THE anti-substring pin, covering THREE comparison-shortcut
+        // directions against a member that merely EMBEDS the word
+        // "untrusted" rather than EQUALLING it:
+        //   - CONTAINS: the word sits in the middle of a longer member,
+        //     neither a prefix nor a suffix, e.g. `/opt/untrusted/` (kills
+        //     `value.contains("untrusted")`);
+        //   - SUFFIX: a member ENDING in "untrusted" with no trailing
+        //     slash, e.g. `/opt/untrusted` (kills
+        //     `value.ends_with("untrusted")`) -- `/opt/untrusted/` above is
+        //     NOT a suffix example, since it ends in `/`, not `untrusted`;
+        //     an earlier round mislabeled that fixture as covering the
+        //     SUFFIX direction on the `%set` path too, which left the set
+        //     path's suffix direction untested until the "set member, no
+        //     trailing slash" case below was added;
+        //   - PREFIX: a member STARTING WITH "untrusted", e.g. `untrusted/`
+        //     (kills `value.starts_with("untrusted")`).
+        // All of these are real directory paths that happen to embed, end
+        // with, or start with the word. Upstream's membership test is an
+        // avl_search over plain `strcmp` (rules.c:90 -> attr-sets.c:412-422
+        // -> attr-sets.c:71-74), which is exact whole-member equality --
+        // upstream even ships a SEPARATE `attr_set_check_pstr` ("check if
+        // any set entry PREFIXES a string", attr-sets.c:424) that the
+        // warner deliberately does NOT call -- so any of the three
+        // shortcuts above fires a false fapd-W12 on one of these fixtures.
+        // Each direction is pinned on BOTH the literal path and the `%set`
+        // path: CONTAINS via "subject literal" + "object literal" + "set
+        // member"; SUFFIX via "subject literal, no trailing slash" + "set
+        // member, no trailing slash"; PREFIX via "subject literal, prefix
+        // (not suffix)" + "set member, prefix (not suffix)".
+        let cases: [(&str, Vec<Entry>); 7] = [
             (
                 "subject literal",
                 vec![modern_rule(
@@ -777,6 +794,30 @@ mod tests {
                     vec![kv("dir", "/opt/untrusted")],
                     vec![Attr::All],
                 )],
+            ),
+            (
+                // Set-path mirror of "subject literal, no trailing slash"
+                // above (SUFFIX direction), added round 7. Before this
+                // fixture, the set path's only suffix-ish member was
+                // `/opt/untrusted/` (the CONTAINS case, below), which does
+                // NOT exercise `ends_with("untrusted")` since it ends in
+                // `/`. This member's LAST path-segment is exactly
+                // "untrusted" with no trailing slash, so a `SetRef` impl
+                // computing `member.ends_with("untrusted")` fires a false
+                // fapd-W12 here. Upstream's strcmp still sees the whole
+                // member "/opt/untrusted" != "untrusted", so it stays
+                // silent.
+                "set member, no trailing slash",
+                vec![
+                    set_def(1, "dirs", &["/opt/untrusted", "/usr/bin/"]),
+                    modern_rule(
+                        2,
+                        Decision::Allow,
+                        None,
+                        vec![kv_int("uid", 0)],
+                        vec![kv_ref("dir", "dirs")],
+                    ),
+                ],
             ),
             (
                 "object literal",
@@ -844,9 +885,10 @@ mod tests {
             let diags = w12_detect(&entries, &p());
             assert!(
                 diags.is_empty(),
-                "`/opt/untrusted/` merely CONTAINS the word; upstream matches \
-                 whole members via strcmp, so fapd-W12 must not fire \
-                 ({label}): {diags:?}",
+                "a member that only embeds, ends with, or starts with the \
+                 word \"untrusted\" is not an EXACT member; upstream \
+                 matches whole members via strcmp, so fapd-W12 must not \
+                 fire ({label}): {diags:?}",
             );
         }
     }
@@ -871,6 +913,39 @@ mod tests {
                 diags.is_empty(),
                 "fapolicyd matches `untrusted` with strcmp, so `dir={value}` is \
                  NOT the deprecated construct: {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_is_case_sensitive_on_the_value_via_set_membership() {
+        // Set-path mirror of `w12_detect_is_case_sensitive_on_the_value`
+        // above, added round 7. Upstream's per-member search
+        // (`attr_set_check_str` -> `avl_search` over `strcmp_cb` = plain
+        // `strcmp`, attr-sets.c:71-74/412-422) is the SAME case-sensitive
+        // comparison regardless of whether the member came from a literal
+        // `dir=` value or a `%set` definition, so a set member spelled
+        // `UNTRUSTED` / `Untrusted` / `unTrusted` must stay silent exactly
+        // like the literal. Before this fixture, the set path's case
+        // handling was entirely unpinned: a `SetRef` impl comparing
+        // members with `eq_ignore_ascii_case("untrusted")` passed the
+        // whole suite up to this point.
+        for value in ["UNTRUSTED", "Untrusted", "unTrusted"] {
+            let entries = vec![
+                set_def(1, "dirs", &[value]),
+                modern_rule(
+                    2,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv_ref("dir", "dirs")],
+                ),
+            ];
+            let diags = w12_detect(&entries, &p());
+            assert!(
+                diags.is_empty(),
+                "fapolicyd matches `untrusted` with strcmp, so a set member \
+                 `{value}` is NOT the deprecated construct: {diags:?}",
             );
         }
     }
