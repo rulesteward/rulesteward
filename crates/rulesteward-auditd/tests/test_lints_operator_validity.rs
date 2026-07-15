@@ -1289,15 +1289,18 @@ fn op_str_ne_exact_token_in_message() {
 // el9/el10 and caught by NEITHER code today, exactly like the other nine --
 // only this comment's prose was wrong, and the follow-up issue's scope must
 // be drawn from the corrected TEN-field list, not the original nine.
-// The 14-field negative-control set below (all clean for BITMASK ops --
-// au-E05's only in-scope operator class -- at every target) is the union of
-// the 4 au-E02-double-report fields (arch/fstype/perm/exe) and the TEN
-// residual-gap fields above (subj_user, subj_role, subj_type, obj_user,
-// obj_role, obj_type, path, dir, key, filetype). Section 9's negative-control
-// test below (`e05_fields_outside_the_kernel_reject_table_...`) pins the
-// CURRENT, deliberately-narrow contract: all 14 fields stay au-E05-CLEAN for
-// bitmask ops at every target, and must NOT be "fixed" to fire without the
-// follow-up issue doing the full-arm job properly.
+// The negative-control set below (all clean for BITMASK ops -- au-E05's only
+// in-scope operator class -- at every target) is the union of the 4
+// au-E02-double-report fields (arch/fstype/perm/exe), the TEN residual-gap
+// fields above (subj_user, subj_role, subj_type, obj_user, obj_role,
+// obj_type, path, dir, key, filetype), and a 15th field, `field_compare`,
+// documented separately at its `cases` entry below (it fell outside this
+// survey entirely -- it was mistakenly believed unreachable via `-F` --
+// rather than being a member of either group above). Section 9's
+// negative-control test below (`e05_fields_outside_the_kernel_reject_table_...`)
+// pins the CURRENT, deliberately-narrow contract: all 15 fields stay
+// au-E05-CLEAN for bitmask ops at every target, and must NOT be "fixed" to
+// fire without the follow-up issue doing the full-arm job properly.
 // ---------------------------------------------------------------------------
 
 /// Run `e05` on one or more inline rule strings against `target` and return
@@ -1541,13 +1544,16 @@ fn e05_arg_registers_never_reject_bitand_under_any_target() {
     }
 }
 
-/// The 14 fields that sit OUTSIDE the kernel's bitmask-reject table
+/// The 15 fields that sit OUTSIDE the kernel's bitmask-reject table
 /// entirely, at EVERY examined kernel version, and are pinned by NOTHING
 /// else in this suite: `path`, `dir`, `key`, `subj_user`, `subj_role`,
 /// `subj_type`, `obj_user`, `obj_role`, `obj_type`, `exe`, `arch`, `perm`,
-/// `filetype`, `fstype`. See the Section 9 grounding doc comment's
-/// "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph for the exact citation
-/// and the au-E02-double-report-avoidance rationale.
+/// `filetype`, `fstype`, `field_compare`. See the Section 9 grounding doc
+/// comment's "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph for the exact
+/// citation and the au-E02-double-report-avoidance rationale for the first
+/// 14; `field_compare` is documented separately just below the `cases` array
+/// since it fell through the cracks of that original 14-field survey (it was
+/// mistakenly believed unreachable via `-F`).
 ///
 /// This is the DEMONSTRATED-failure negative control: an impl that rejects
 /// bitmask on "every field except arg0-3 (with `pers`/`devminor`/`subj_sen`/
@@ -1559,7 +1565,7 @@ fn e05_arg_registers_never_reject_bitand_under_any_target() {
 /// lines 389-406) genuinely accepts.
 ///
 /// Both bitmask forms (`&` and `&=`) are checked, at all four targets, so
-/// neither operator nor target can hide a false positive on any of these 14
+/// neither operator nor target can hide a false positive on any of these 15
 /// fields.
 #[test]
 fn e05_fields_outside_the_kernel_reject_table_stay_clean_at_every_target() {
@@ -1578,6 +1584,30 @@ fn e05_fields_outside_the_kernel_reject_table_stay_clean_at_every_target() {
         "-a always,exit -S openat -F perm&r",
         "-a always,exit -S openat -F filetype&0x1",
         "-a always,filesystem -F fstype&0x1",
+        // field_compare: pinned separately from the 14 fields above because
+        // its story is genuinely distinct, not just an omission. Reachable
+        // via -F (parser.rs:641 `"field_compare" => Some(AuditField::FieldCompare)`)
+        // despite the unrelated `-C`-only doc claim elsewhere; libaudit's
+        // userspace parser accepts any operator for it (AUDIT_FIELD_COMPARE
+        // is absent from audit_rule_fieldpair_data's named cases, so it
+        // falls to the `default:` arm -- isdigit + strtol, no op guard --
+        // which is also why au-E02 is silent: field_type.rs maps it to
+        // FieldType::Numeric, unrestricted). At the KERNEL:
+        //   - el8 (v4.18 auditfilter.c): `case AUDIT_FIELD_COMPARE` has only
+        //     a VALUE check (`if (f->val > AUDIT_MAX_FIELD_COMPARE)`), no
+        //     operator guard at all -- el8 silence here is correct ON THE
+        //     MERITS, not merely locked scope.
+        //   - el9/el10 (v5.14 auditfilter.c): `case AUDIT_FIELD_COMPARE` sits
+        //     INSIDE the `/* only equal and not equal valid ops */` arm
+        //     alongside subj_user/subj_role/.../filetype -- the kernel DOES
+        //     reject a bitmask op on it there. au-E05 stays silent anyway
+        //     because that whole arm is the documented out-of-scope residual
+        //     gap (see the "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph
+        //     above) -- a real false negative, tracked by the same follow-up
+        //     issue, not a bug in this test.
+        // Measured (2026-07-15): `-F field_compare&1` -> au-E02 silent,
+        // au-E05 silent at all four targets (None/Rhel8/Rhel9/Rhel10).
+        "-a always,exit -S execve -F field_compare&0x1",
     ];
     let targets: [Option<TargetVersion>; 4] = [
         None,
