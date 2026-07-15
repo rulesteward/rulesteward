@@ -2122,4 +2122,97 @@ mod tests {
             );
         }
     }
+
+    /// PIN (#485, frozen): the fix's LOCATION discriminator. A DIRECTORY target
+    /// whose only drop-in is byte-empty must resolve to ZERO files and fire NO
+    /// sudo-W04 -- the #485 zero-result synthesis is scoped to
+    /// `resolve_target_with_host`'s single-FILE branch ONLY; it must NOT reach
+    /// into the per-drop-in resolution a DIRECTORY target performs. Firing here
+    /// would reintroduce exactly the per-fragment false positive the
+    /// merged-required design exists to avoid (module doc above,
+    /// "Missing-required (merged, #347, #363)"): a `sudoers.d` drop-in flagged on
+    /// its own is precisely the FP #347 exists to prevent, and a directory target
+    /// has no singular top-level FILE to anchor a merged finding against in the
+    /// first place. Distinct from `resolve::tests::empty_directory_resolves_to_no_files`
+    /// (a dir with ZERO eligible entries): this fixture has ONE eligible drop-in
+    /// whose CONTENT is empty, exercising the per-file zero-result fork itself
+    /// rather than the eligible-entries enumeration.
+    ///
+    /// Kills a wrong impl that places the #485 zero-result check inside
+    /// `resolve_parsed` (fires once per FILE processed, including each directory
+    /// drop-in) instead of `resolve_target_with_host`'s FILE branch (fires once,
+    /// only for a single top-level FILE target): that wrong impl synthesizes a
+    /// phantom for the empty drop-in itself, producing `files.len() == 1` and
+    /// THREE spurious sudo-W04 findings anchored at the drop-in's own path.
+    /// EMPIRICALLY VERIFIED: with the wrong impl in place this assertion fails
+    /// (`files.len()` is 1, not 0, and `diags` is non-empty); with the intended
+    /// BROAD fix scoped to the FILE branch this test passes.
+    #[test]
+    fn directory_target_with_only_a_byte_empty_dropin_resolves_to_no_files_and_fires_no_w04() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = root.path().join("sudoers.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sudoers.d");
+        std::fs::write(dropin_dir.join("10-empty"), "").expect("write byte-empty dropin");
+
+        let files = resolve::resolve_target(&dropin_dir).expect("resolve directory target");
+        assert_eq!(
+            files.len(),
+            0,
+            "a DIRECTORY target whose only drop-in is byte-empty must resolve to \
+             ZERO files: the #485 fix applies only to a top-level FILE target, \
+             never to a per-drop-in resolution inside a directory target; got \
+             {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        assert!(
+            diags.is_empty(),
+            "an empty resolved slice (no top-level FILE to anchor a \
+             merged-absence finding against) fires NO sudo-W04, matching \
+             `w04_absence_empty_slice_no_findings`; got {diags:?}"
+        );
+    }
+
+    /// PIN (#485, frozen): the fix's SCOPE discriminator (companion to the
+    /// directory-target guard above). A parent file with a real rule of its own
+    /// PLUS an `@include` of a byte-empty child must resolve to EXACTLY ONE
+    /// segment (the parent's own content) -- the empty child contributes NOTHING,
+    /// because the #485 zero-result synthesis fires only when resolving the WHOLE
+    /// top-level FILE target ends with `out` EMPTY overall, not on each individual
+    /// `resolve_parsed` call made along the way.
+    ///
+    /// Kills the same wrong impl as the directory-target guard above, from a
+    /// different angle: a per-call fork (checking `out.len() == before` inside
+    /// `resolve_parsed` itself) sees the NESTED child's resolution contribute zero
+    /// of its OWN segments and synthesizes a phantom for the child anyway, even
+    /// though the parent already pushed a real segment into `out` -- producing
+    /// `files.len() == 2` (`[parent, phantom-child]`) instead of the correct 1.
+    /// EMPIRICALLY VERIFIED: with the wrong impl in place `files.len()` is 2, not
+    /// 1; with the intended BROAD fix scoped to the FILE branch this test passes.
+    #[test]
+    fn parent_rule_with_byte_empty_include_resolves_to_exactly_one_segment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("parent"),
+            "root ALL=(ALL:ALL) ALL\n@include child\n",
+        )
+        .expect("w parent");
+        std::fs::write(dir.path().join("child"), "").expect("w byte-empty child");
+
+        let files = resolve::resolve_target(&dir.path().join("parent")).expect("resolve");
+        assert_eq!(
+            files.len(),
+            1,
+            "a parent with a real rule plus an @include of a byte-empty child \
+             resolves to EXACTLY the parent's own segment; the byte-empty child \
+             contributes no phantom (the #485 fix is scoped to the WHOLE \
+             top-level FILE target ending empty, not to each individual \
+             resolve_parsed call); got {files:?}"
+        );
+        assert!(
+            files[0].path.ends_with("parent"),
+            "the one resolved segment is the parent's own content, not a \
+             phantom for the empty child; got {files:?}"
+        );
+    }
 }
