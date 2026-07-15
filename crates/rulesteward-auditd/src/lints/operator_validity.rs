@@ -151,43 +151,81 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
 ///   specific; that separate restriction is a distinct kernel-vs-userspace
 ///   gap tracked by a follow-up issue, not modeled here).
 fn kernel_rejects_bitmask(field: &AuditField, target: Option<TargetVersion>) -> bool {
-    let stable19 = matches!(
-        field,
+    match field {
+        // 19-field version-STABLE intersection: rejected at every examined
+        // kernel, including `target == None`.
         AuditField::Uid
-            | AuditField::Euid
-            | AuditField::Suid
-            | AuditField::Fsuid
-            | AuditField::Auid
-            | AuditField::ObjUid
-            | AuditField::Gid
-            | AuditField::Egid
-            | AuditField::Sgid
-            | AuditField::Fsgid
-            | AuditField::ObjGid
-            | AuditField::Pid
-            | AuditField::MsgType
-            | AuditField::Ppid
-            | AuditField::DevMajor
-            | AuditField::Exit
-            | AuditField::Success
-            | AuditField::Inode
-            | AuditField::SessionId
-    );
-    if stable19 {
-        return true;
+        | AuditField::Euid
+        | AuditField::Suid
+        | AuditField::Fsuid
+        | AuditField::Auid
+        | AuditField::ObjUid
+        | AuditField::Gid
+        | AuditField::Egid
+        | AuditField::Sgid
+        | AuditField::Fsgid
+        | AuditField::ObjGid
+        | AuditField::Pid
+        | AuditField::MsgType
+        | AuditField::Ppid
+        | AuditField::DevMajor
+        | AuditField::Exit
+        | AuditField::Success
+        | AuditField::Inode
+        | AuditField::SessionId => true,
+        // el8 (v4.18) only -- both moved to an unconditional "all ops valid"
+        // arm at el9/el10.
+        AuditField::Pers | AuditField::DevMinor => is_el8(target),
+        // el9/el10 (v5.14 through at least v6.16) only. `saddr_fam` is
+        // deliberately absent from the el8 arm above: vanilla v4.18 has no
+        // `AUDIT_SADDR_FAM` case at all (added upstream ~v5.4), and RHEL 8's
+        // backport status is unverified.
+        AuditField::SubjSen
+        | AuditField::SubjClr
+        | AuditField::ObjLevLow
+        | AuditField::ObjLevHigh
+        | AuditField::SaddrFam => is_el9_plus(target),
+        // No examined kernel rejects a bitmask op on these. Explicit, not
+        // `_`, so a 46th `AuditField` variant is a compile error here rather
+        // than a silent false negative on an Error-tier, load-aborting lint.
+        AuditField::A0
+        | AuditField::A1
+        | AuditField::A2
+        | AuditField::A3
+        | AuditField::Arch
+        | AuditField::Dir
+        | AuditField::Exe
+        | AuditField::FieldCompare
+        | AuditField::Filetype
+        | AuditField::Fstype
+        | AuditField::Key
+        | AuditField::ObjRole
+        | AuditField::ObjType
+        | AuditField::ObjUser
+        | AuditField::Path
+        | AuditField::Perm
+        | AuditField::SubjRole
+        | AuditField::SubjType
+        | AuditField::SubjUser => false,
     }
+}
 
+/// True only for the el8 kernel line (v4.18). Exhaustive over
+/// [`TargetVersion`] by design: a future RHEL major must be classified here,
+/// not silently defaulted.
+fn is_el8(target: Option<TargetVersion>) -> bool {
     match target {
-        None => false,
-        Some(TargetVersion::Rhel8) => matches!(field, AuditField::Pers | AuditField::DevMinor),
-        Some(TargetVersion::Rhel9 | TargetVersion::Rhel10) => matches!(
-            field,
-            AuditField::SubjSen
-                | AuditField::SubjClr
-                | AuditField::ObjLevLow
-                | AuditField::ObjLevHigh
-                | AuditField::SaddrFam
-        ),
+        Some(TargetVersion::Rhel8) => true,
+        Some(TargetVersion::Rhel9 | TargetVersion::Rhel10) | None => false,
+    }
+}
+
+/// True for the el9/el10 kernel line (v5.14 through at least v6.16).
+/// Exhaustive over [`TargetVersion`] for the same reason as [`is_el8`].
+fn is_el9_plus(target: Option<TargetVersion>) -> bool {
+    match target {
+        Some(TargetVersion::Rhel9 | TargetVersion::Rhel10) => true,
+        Some(TargetVersion::Rhel8) | None => false,
     }
 }
 
