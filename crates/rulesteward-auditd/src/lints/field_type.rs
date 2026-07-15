@@ -82,7 +82,15 @@ pub enum FieldType {
 /// - `DevMinor`: fieldtab.h:52 `AUDIT_DEVMINOR=101`; libaudit.c:1991 range, numeric
 /// - `Success`: fieldtab.h:55 `AUDIT_SUCCESS=104`; libaudit.c:1992 range fallthrough
 /// - `A0..A3`: fieldtab.h:65-68 `AUDIT_ARG0..AUDIT_ARG3`; libaudit.c:1954 ARG range
-/// - `FieldCompare`: fieldtab.h:63 `AUDIT_FIELD_COMPARE`; -C pseudo-field, unreachable in -F
+/// - `FieldCompare`: fieldtab.h:63 `AUDIT_FIELD_COMPARE`; the `-C` field, but ALSO
+///   reachable via `-F field_compare=...` (parser.rs:641 maps the name). libaudit does
+///   not name it in `audit_rule_fieldpair_data`, so it falls to that fn's `default:`
+///   arm (isdigit then strtol) with NO operator guard -- hence `Numeric` is correct
+///   here. The KERNEL is stricter: v5.14+ auditfilter.c places `AUDIT_FIELD_COMPARE`
+///   in the `= != only` arm (v4.18 has a value check only), so `-F field_compare&1`
+///   loads on el8 but is rejected on el9/el10. That kernel-side arm is modelled by
+///   neither au-E02 (userspace) nor au-E05 (the bitmask-reject arm only) -- a
+///   documented gap, tracked as a follow-up.
 /// - `Uid`: fieldtab.h:25 `AUDIT_UID=1`; libaudit.c:1721
 /// - `Euid`: fieldtab.h:26 `AUDIT_EUID=2`; libaudit.c:1722
 /// - `Suid`: fieldtab.h:27 `AUDIT_SUID=3`; libaudit.c:1723
@@ -121,7 +129,10 @@ pub fn field_type(field: &AuditField) -> FieldType {
     match field {
         // Numeric (full relational + bitmask): no op restriction in libaudit.c
         // fieldtab.h lines: Pid:24, Ppid:43, Pers:35, DevMajor:51,
-        //   DevMinor:52, Success:55, A0-A3:65-68, FieldCompare:63 (unreachable in -F)
+        //   DevMinor:52, Success:55, A0-A3:65-68, FieldCompare:63 (the `-C` field,
+        //   but ALSO reachable via `-F field_compare=...` per parser.rs:641; libaudit
+        //   applies no op guard to it, so `Numeric` is right -- see the per-arm note
+        //   above for the stricter KERNEL rule that neither au-E02 nor au-E05 models)
         AuditField::Pid
         | AuditField::Ppid
         | AuditField::Pers
