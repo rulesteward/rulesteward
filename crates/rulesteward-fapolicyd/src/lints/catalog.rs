@@ -294,7 +294,7 @@ mod tests {
         "fapd-C01", "fapd-C02", "fapd-E01", "fapd-E02", "fapd-E03", "fapd-E04", "fapd-E05",
         "fapd-E06", "fapd-E07", "fapd-F01", "fapd-F02", "fapd-F03", "fapd-S02", "fapd-W01",
         "fapd-W02", "fapd-W03", "fapd-W04", "fapd-W05", "fapd-W06", "fapd-W07", "fapd-W08",
-        "fapd-W09", "fapd-W10", "fapd-W11", "fapd-X01",
+        "fapd-W09", "fapd-W10", "fapd-W11", "fapd-W12", "fapd-X01",
     ];
 
     #[test]
@@ -466,6 +466,65 @@ mod tests {
             !codes(rhel8).contains("fapd-W07"),
             "W07 must be suppressed under --target rhel8",
         );
+    }
+
+    #[test]
+    fn w12_never_earns_a_pass_attestation_because_it_is_dormant() {
+        // fapd-W12 (`dir=untrusted` deprecation) is gated on fapolicyd >= 1.6,
+        // and NO TargetVersion reaches 1.6 (version.rs: Rhel8 -> 1.3.2,
+        // Rhel9/Rhel10 -> 1.4.5). The check therefore never evaluates, so it
+        // must never appear in `evaluated()` for ANY input combination.
+        //
+        // This is the #137 invariant, not a stylistic preference. `evaluated()`
+        // feeds BOTH `PassInfo.rules` and `PassInfo.passes`
+        // (cli/commands/fapolicyd/lint.rs:275-283), so a W12 entry whose
+        // condition ever holds would emit a SARIF `kind:"pass"` result claiming
+        // "we checked for dir=untrusted deprecation and found none" while the
+        // gate returned early without looking. That is a false coverage
+        // attestation - the exact defect the 8c/PR #508 senior review caught.
+        //
+        // Concretely: `Condition::RequiresTarget` (E06's condition) is WRONG for
+        // W12, because it holds under --target rhel8/rhel9/rhel10. W12 needs its
+        // OWN always-false condition variant.
+        //
+        // Precondition: W12 must actually BE in the catalog, otherwise every
+        // assertion below passes vacuously against a catalog that simply never
+        // heard of the code. (Paired with
+        // `catalog_covers_exactly_the_authoritative_code_set`, this brackets the
+        // implementer: catalogued, but never evaluated.)
+        assert!(
+            FAPD_CODES.iter().any(|c| c.code == "fapd-W12"),
+            "precondition: fapd-W12 must be catalogued in FAPD_CODES, else the \
+             dormancy sweep below is vacuous",
+        );
+        // Sweep every gate combination the CLI can produce.
+        for target in [
+            None,
+            Some(TargetVersion::Rhel8),
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+        ] {
+            for trustdb in [false, true] {
+                for check_identities in [false, true] {
+                    for report_orphans in [false, true] {
+                        for single_file in [false, true] {
+                            let inp = EvalInputs {
+                                trustdb,
+                                check_identities,
+                                report_orphans,
+                                target,
+                                single_file,
+                            };
+                            assert!(
+                                !codes(inp).contains("fapd-W12"),
+                                "fapd-W12 is dormant (no target reaches fapolicyd 1.6), so it \
+                                 must never be attested as evaluated: {inp:?}",
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

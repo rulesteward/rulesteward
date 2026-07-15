@@ -1,6 +1,9 @@
-//! Deprecated-attribute-name lint passes. Currently fapd-W07 (`sha256hash=`
-//! is deprecated; use `filehash=` instead). Future deprecated-attr-name
+//! Deprecation lint passes: fapd-W07 (`sha256hash=` is deprecated; use
+//! `filehash=` instead) and fapd-W12 (`dir=untrusted` is deprecated upstream;
+//! currently DORMANT, see [`deprecates_untrusted_dir`]). Future deprecation
 //! warnings land here.
+//!
+//! Every lint here gates ITSELF inside its own helper; see [`walk`].
 
 use std::path::Path;
 
@@ -22,10 +25,13 @@ pub(crate) fn walk(
     file: &Path,
     target: Option<TargetVersion>,
 ) -> Vec<Diagnostic> {
-    // The rhel8 suppression is W07-SPECIFIC (sha256hash= is canonical there), so
-    // it is gated inside w07, NOT here: a future deprecation lint added to this
-    // dispatcher must not be silently suppressed under --target rhel8.
-    w07(entries, file, target)
+    // Each lint gates ITSELF, never here. The rhel8 suppression is W07-SPECIFIC
+    // (sha256hash= is canonical there) and the >= 1.6 gate is W12-SPECIFIC, so a
+    // lint added to this dispatcher is never silently suppressed by a SIBLING
+    // lint's gate. Do not hoist a `target` check into this function.
+    let mut diags = w07(entries, file, target);
+    diags.extend(w12(entries, file, target));
+    diags
 }
 
 /// fapd-W07 - deprecated `sha256hash=` attribute name. fapolicyd 1.4.2
@@ -72,11 +78,109 @@ fn w07(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Dia
     diags
 }
 
+/// fapd-W12 - `dir=untrusted` is deprecated upstream. VERSION-GATED, and
+/// currently DORMANT for every target: see [`deprecates_untrusted_dir`].
+///
+/// Grounded in the TAGGED upstream v1.6 tree (`refs/tags/v1.6` = a303c4a,
+/// deref `v1.6^{}` = 2edb7ae). Every claim below was read from that tree:
+///
+/// * `src/library/rules.c:86-95` - `warn_deprecated_untrusted_dir` fires iff
+///   `(type == EXE_DIR || type == ODIR) && attr_set_check_str(set, "untrusted")`.
+///   It keys off the `dir=` attribute TYPE, not the raw value text: a non-`dir`
+///   attribute whose value happens to be `untrusted` does NOT warn.
+/// * BOTH sides warn: called at `rules.c:597` with side `"subject"`
+///   (`EXE_DIR`) and `rules.c:748` with side `"object"` (`ODIR`), each at the shared
+///   `finalize:` label that every value-assignment path falls through.
+/// * `%set` MEMBERSHIP counts, exactly like a literal: the set-reference
+///   branches (`rules.c:394-395` subject, `rules.c:666-667` object) assign the
+///   named set (`n->s[i].set = set`) then `goto finalize`, and
+///   `attr_set_check_str` (`src/library/attr-sets.c:412-422`) searches THE
+///   SET'S tree for a member equal to `"untrusted"`. So `dir=%s` where `%s`
+///   lists `untrusted` warns.
+/// * Matching SEMANTICS are unchanged: the helper is a `static void` whose only
+///   effect is `msg(LOG_WARNING, ...)`. It never touches `n->s[i].set` /
+///   `n->o[i].set`, so the shipped `dir=untrusted` parity (#136) and the pinned
+///   absent-path behavior (#142) remain correct.
+/// * `doc/fapolicyd.rules.5:83-92` - `untrusted` is "deprecated in favor of
+///   using object trust with execute permission when writing rules"; rules that
+///   use `dir=untrusted` "emit a deprecation warning when parsed, and this
+///   compatibility option will be removed in a future release".
+///
+/// The gate lives INSIDE this helper, never in [`walk`], per the dispatcher
+/// contract documented there.
+fn w12(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
+    if !deprecates_untrusted_dir(target) {
+        return Vec::new();
+    }
+    w12_detect(entries, file)
+}
+
+/// Whether the targeted fapolicyd deprecates `dir=untrusted` (upstream >= 1.6).
+///
+/// DORMANT BY CONSTRUCTION - this is `false` for EVERY input today, so fapd-W12
+/// never fires. [`TargetVersion`] is RHEL-keyed and its newest variant
+/// (`Rhel10`) maps to fapolicyd 1.4.5 (`version.rs::fapolicyd_version`), so no
+/// target reaches 1.6; `None` is the implicit 1.4.x dialect and is older still.
+/// fapd-W12 is therefore correct-but-inert until a 1.6-capable target variant
+/// lands. Adding that variant now is deliberately OUT OF SCOPE (no speculative
+/// future variants); when it lands, this predicate is the single place to
+/// change, and the frozen `w12_is_dormant_*` tests are the thing to revisit.
+fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
+    false
+}
+
+/// Detection seam for fapd-W12, deliberately SEPARATE from [`w12`]'s version
+/// gate so the detection logic is directly testable while the lint is dormant.
+/// Routing detection through the gate would make every fapd-W12 test vacuous
+/// (a "no finding" assertion passes against an empty implementation), so the
+/// frozen tests drive this function directly.
+///
+/// Contract (mirrors upstream's scope exactly; see [`w12`] for citations):
+/// emit one `Severity::Warning` fapd-W12 per offending `dir=` ATTRIBUTE, on
+/// either side, anchored at the rule.
+///
+/// A `dir=` attribute is offending iff `untrusted` is an EXACT member of the
+/// value's MEMBER SET. Upstream is set-backed on BOTH paths, so there are three
+/// surface forms and all three reduce to the same membership test:
+///
+/// 1. the literal `dir=untrusted` (a one-member set);
+/// 2. an inline comma list, `dir=/usr/bin/,untrusted` -- upstream treats `dir=`
+///    (`EXE_DIR` at rules.c:565, `ODIR` at rules.c:711) as "regular strings ->
+///    multiple value" (rules.c:562) and splits the raw value with
+///    `strtok_r(tmp, ",", &saved)` (rules.c:572-578 subject / 721-727 object),
+///    appending each comma token to a STRING set. This crate's parser does NOT
+///    split on `,` (grammar.rs:86-95 filters only whitespace and `:`), so
+///    `/usr/bin/,untrusted` arrives as ONE [`AttrValue::Str`] and this function
+///    owns the split. Matching the whole VALUE instead of each member is a
+///    FALSE NEGATIVE against upstream;
+/// 3. a `%set` reference whose definition contains `untrusted` as a member.
+///
+/// Membership is EXACT, case-sensitive, whole-member: upstream's
+/// `attr_set_check_str(set, "untrusted")` (rules.c:90) is an `avl_search`
+/// (attr-sets.c:412-422) over a tree ordered by `strcmp_cb` = plain `strcmp`
+/// (attr-sets.c:71-74). So `dir=/opt/untrusted/` (substring) and `dir=UNTRUSTED`
+/// (case) do NOT warn. The set's NAME is never consulted -- only its members --
+/// so `dir=%untrusted` does not warn unless the set DEFINES an `untrusted`
+/// member. The attribute KEY is case-sensitive too (`subj_name_to_val` is a
+/// `strcmp` table scan, subject-attr.c:71/78), so `Dir=` is not `EXE_DIR`;
+/// fapd-E01 owns unknown attribute names (same division as fapd-W07 above).
+///
+/// An undefined `%set` emits nothing (fapd-E03 owns undefined-macro reporting).
+fn w12_detect(_entries: &[Entry], _file: &Path) -> Vec<Diagnostic> {
+    // NOT IMPLEMENTED. The frozen fapd-W12 detection tests are RED against this
+    // stub; the implementer replaces this body. `dir_slash::walk` is the
+    // structural template: iterate subject+object, match `AttrValue::Str` for
+    // the literal/comma-list and `AttrValue::SetRef` expanded through
+    // `subsume::build_macro_map`. Note the deprecation module does not expand
+    // sets today, so set expansion is NEW behavior here.
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::{AttrValue, Decision};
-    use crate::lints::testkit::{legacy_rule, modern_rule, p};
+    use crate::lints::testkit::{kv, kv_int, kv_ref, legacy_rule, modern_rule, p, set_def};
 
     // -----------------------------------------------------------------
     // fapd-W07 helper-level unit tests. Pin the per-attribute walker so
@@ -318,5 +422,764 @@ mod tests {
             diags.is_empty(),
             "SetDefinition entries are never fapd-W07's concern: {diags:?}",
         );
+    }
+
+    // ===================================================================
+    // fapd-W12 - `dir=untrusted` deprecation (upstream v1.6 = 2edb7ae).
+    //
+    // The lint is DORMANT: no TargetVersion maps to fapolicyd >= 1.6, so it
+    // fires for no target today. That makes any "no finding" assertion through
+    // the public path VACUOUS on its own (it holds against an empty impl), so
+    // these tests pin DETECTION and the GATE separately:
+    //
+    //   * `w12_detect_*` drive the detection seam DIRECTLY, bypassing the gate.
+    //     These carry the RED: they fail against the `w12_detect` stub.
+    //   * `w12_is_dormant_*` assert detection FIRES and the gate then suppresses
+    //     it, so dormancy is proven to be the gate's doing rather than a missing
+    //     detector. These are RED pre-impl too (the precondition fails).
+    //   * `walk_gates_each_lint_independently` pins the dispatcher contract.
+    //
+    // Upstream scope being mirrored (see `w12_detect` for full file:line
+    // citations): fires on `dir=` (EXE_DIR/ODIR) on EITHER side iff `untrusted`
+    // is an EXACT member of the value's member set. Upstream is set-backed on
+    // BOTH paths -- a raw `dir=` value is comma-split by `strtok_r` into a
+    // STRING set (rules.c:562/572-578/721-727) and then searched with
+    // `attr_set_check_str` -> `avl_search` over plain `strcmp` (rules.c:90,
+    // attr-sets.c:412-422, attr-sets.c:71-74). Three consequences the negative
+    // fixtures below pin, because each one is a plausible wrong impl that the
+    // positive fixtures alone do NOT exclude:
+    //
+    //   * `contains("untrusted")` is WRONG   -> `dir=/opt/untrusted/` must NOT fire
+    //   * case-insensitive matching is WRONG -> `dir=UNTRUSTED` must NOT fire
+    //   * whole-VALUE matching is WRONG      -> `dir=/usr/bin/,untrusted` MUST fire
+    //   * keying off the set NAME is WRONG   -> `dir=%untrusted` (members exclude
+    //                                            `untrusted`) must NOT fire
+    // ===================================================================
+
+    /// Every `--target` the CLI can produce today, plus the implicit `None`
+    /// dialect. fapd-W12 must be dormant under EVERY one. Mirrors
+    /// `snapshot_test::version_target_matrix`.
+    ///
+    /// This is hand-written, so it cannot itself notice a NEW `TargetVersion`
+    /// variant -- a future `Rhel11` would simply be skipped by every dormancy
+    /// sweep below, silently. `all_targets_is_exhaustive` closes that: it is an
+    /// exhaustive `match`, so adding a variant is a COMPILE error here rather
+    /// than a quietly-narrowed test matrix.
+    const ALL_TARGETS: [Option<TargetVersion>; 4] = [
+        None,
+        Some(TargetVersion::Rhel8),
+        Some(TargetVersion::Rhel9),
+        Some(TargetVersion::Rhel10),
+    ];
+
+    #[test]
+    fn all_targets_is_exhaustive() {
+        // The `match` is the assertion: it does not compile if a `TargetVersion`
+        // variant exists that `ALL_TARGETS` omits. When a 1.6-capable variant
+        // lands, this fails to build and forces both `ALL_TARGETS` and the
+        // `deprecates_untrusted_dir` gate to be revisited together -- which is
+        // exactly the moment fapd-W12 stops being dormant.
+        for target in ALL_TARGETS {
+            let Some(t) = target else { continue };
+            let listed = match t {
+                TargetVersion::Rhel8 | TargetVersion::Rhel9 | TargetVersion::Rhel10 => true,
+            };
+            assert!(listed, "unreachable while the match above is exhaustive");
+        }
+        assert_eq!(
+            ALL_TARGETS.iter().filter(|t| t.is_some()).count(),
+            3,
+            "ALL_TARGETS must list every TargetVersion variant; if a new variant \
+             landed, add it here AND revisit fapd-W12's dormancy gate",
+        );
+    }
+
+    /// A rule whose SUBJECT carries `dir=untrusted` (upstream `EXE_DIR`).
+    fn subject_dir_untrusted() -> Vec<Entry> {
+        vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv("dir", "untrusted")],
+            vec![Attr::All],
+        )]
+    }
+
+    /// A rule whose OBJECT carries `dir=untrusted` (upstream `ODIR`).
+    fn object_dir_untrusted() -> Vec<Entry> {
+        vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", 0)],
+            vec![kv("dir", "untrusted")],
+        )]
+    }
+
+    fn w12_codes(diags: &[Diagnostic]) -> Vec<&str> {
+        diags.iter().map(|d| d.code.as_ref()).collect()
+    }
+
+    #[test]
+    fn w12_detect_fires_on_subject_dir_untrusted() {
+        // upstream rules.c:597 calls the warner with side="subject" (EXE_DIR).
+        let entries = subject_dir_untrusted();
+        let diags = w12_detect(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "subject `dir=untrusted` must produce exactly one fapd-W12: {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-W12");
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "fapd-W12 must be Severity::Warning (not Error/Fatal/Info/Hint)",
+        );
+        assert_eq!(diags[0].line, 1, "fapd-W12 must anchor at the rule's line");
+        assert_eq!(diags[0].source_id, Some("/tmp/test.rules".to_string()));
+    }
+
+    #[test]
+    fn w12_detect_fires_on_object_dir_untrusted() {
+        // upstream rules.c:748 calls the warner with side="object" (ODIR). A
+        // subject-only implementation dies here.
+        let entries = object_dir_untrusted();
+        let diags = w12_detect(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "object `dir=untrusted` must produce exactly one fapd-W12: {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-W12");
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn w12_detect_message_names_the_construct_and_the_replacement() {
+        // Mirrors the fapd-W07 message contract (names the deprecated thing and
+        // its replacement). Upstream's own LOG_WARNING text (rules.c:91-94) is
+        // "dir=untrusted is deprecated and will be removed in a future release"
+        // - it does NOT name an alternative; fapolicyd.rules(5):85-86 does:
+        // `untrusted` is "deprecated in favor of using object trust with
+        // execute permission". Assertions are on substrings, not the whole
+        // sentence, so the implementer keeps wording latitude.
+        let diags = w12_detect(&subject_dir_untrusted(), &p());
+        assert_eq!(diags.len(), 1, "precondition: detection must fire");
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("untrusted"),
+            "message must name the deprecated construct: {msg}",
+        );
+        assert!(
+            msg.contains("deprecated"),
+            "message must say the construct is deprecated: {msg}",
+        );
+        assert!(
+            msg.contains("remov"),
+            "message must mirror upstream's scheduled-for-removal framing \
+             (rules.c:93 'will be removed in a future release'): {msg}",
+        );
+        // NOTE: a bare `msg.contains("trust")` would be VACUOUS - the word
+        // "untrusted", asserted above, already contains "trust". Strip every
+        // occurrence of the deprecated keyword first, so this can only pass if
+        // the replacement is named INDEPENDENTLY of the construct's own name.
+        assert!(
+            msg.replace("untrusted", "").contains("trust"),
+            "message must point at the object `trust` replacement, in words \
+             other than `untrusted` itself: {msg}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_fires_via_set_membership() {
+        // upstream checks the SET's tree for a member "untrusted"
+        // (attr-sets.c:412-422), reached from the set-reference branches at
+        // rules.c:394-395 / 666-667. So `dir=%dirs` where %dirs lists
+        // `untrusted` warns exactly like the literal. An implementation that
+        // only matches AttrValue::Str dies here.
+        let entries = vec![
+            set_def(1, "dirs", &["/usr/bin/", "untrusted"]),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv_ref("dir", "dirs")],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "a `dir=%set` whose members include `untrusted` must fire one fapd-W12: {diags:?}",
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-W12");
+        assert_eq!(
+            diags[0].line, 2,
+            "fapd-W12 must anchor at the referencing RULE, not the set definition",
+        );
+    }
+
+    #[test]
+    fn w12_detect_fires_on_inline_comma_list_member() {
+        // Upstream comma-splits a raw `dir=` value into a STRING set before the
+        // membership test: `dir=` is EXE_DIR (rules.c:565) / ODIR (rules.c:711),
+        // both in the "regular strings -> multiple value" case (rules.c:562)
+        // whose body is `strtok_r(tmp, ",", &saved)` appending each token
+        // (rules.c:572-578 subject, 721-727 object). `attr_set_check_str` then
+        // finds the `untrusted` MEMBER, so upstream WARNS on this line.
+        //
+        // RuleSteward's parser does not split on `,` (grammar.rs:86-95 filters
+        // only whitespace and `:`), so this arrives as ONE AttrValue::Str
+        // "/usr/bin/,untrusted". An impl that compares the whole VALUE to
+        // "untrusted" is therefore a FALSE NEGATIVE and dies here.
+        for entries in [
+            vec![modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv("dir", "/usr/bin/,untrusted")],
+                vec![Attr::All],
+            )],
+            vec![modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv("dir", "/usr/bin/,untrusted")],
+            )],
+        ] {
+            let diags = w12_detect(&entries, &p());
+            assert_eq!(
+                diags.len(),
+                1,
+                "`untrusted` as an inline comma-list MEMBER must fire one \
+                 fapd-W12, as upstream does after strtok_r: {diags:?}",
+            );
+            assert_eq!(diags[0].code.as_ref(), "fapd-W12");
+            assert_eq!(diags[0].line, 3);
+        }
+    }
+
+    #[test]
+    fn w12_detect_silent_on_comma_list_without_an_untrusted_member() {
+        // The comma split must not degrade into a substring search. Every member
+        // here is a path; none is an exact `untrusted`, so no token matches and
+        // upstream stays silent -- even though the raw value contains the
+        // substring twice.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv("dir", "/opt/untrusted/,/srv/untrusted-cache/")],
+            vec![Attr::All],
+        )];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "no comma-list member is an exact `untrusted`, so fapd-W12 must \
+             stay silent: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_untrusted_as_a_path_substring() {
+        // THE anti-`contains` pin. `/opt/untrusted/` is a real directory path
+        // that happens to embed the word. Upstream's membership test is an
+        // avl_search over plain `strcmp` (rules.c:90 -> attr-sets.c:412-422 ->
+        // attr-sets.c:71-74), which is whole-member, so it does NOT warn.
+        // A `value.contains("untrusted")` impl fires a false fapd-W12 here.
+        // Covered on both sides, and through a `%set`, because each is a
+        // separate code path in the detection template.
+        let cases: [(&str, Vec<Entry>); 3] = [
+            (
+                "subject literal",
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv("dir", "/opt/untrusted/")],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                "object literal",
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv("dir", "/opt/untrusted/")],
+                )],
+            ),
+            (
+                "set member",
+                vec![
+                    set_def(1, "dirs", &["/opt/untrusted/", "/usr/bin/"]),
+                    modern_rule(
+                        2,
+                        Decision::Allow,
+                        None,
+                        vec![kv_int("uid", 0)],
+                        vec![kv_ref("dir", "dirs")],
+                    ),
+                ],
+            ),
+        ];
+        for (label, entries) in cases {
+            let diags = w12_detect(&entries, &p());
+            assert!(
+                diags.is_empty(),
+                "`/opt/untrusted/` merely CONTAINS the word; upstream matches \
+                 whole members via strcmp, so fapd-W12 must not fire \
+                 ({label}): {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_is_case_sensitive_on_the_value() {
+        // Upstream orders the set's tree with `strcmp_cb` = plain `strcmp`
+        // (attr-sets.c:71-74), so the search is case-SENSITIVE: only the exact
+        // lowercase `untrusted` is deprecated. An impl that lowercases the value
+        // before comparing fires false positives here. Same defect class as #262
+        // (auditd arch-coverage), where a case-insensitivity miss was caught.
+        for value in ["UNTRUSTED", "Untrusted", "unTrusted"] {
+            let entries = vec![modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![kv("dir", value)],
+                vec![Attr::All],
+            )];
+            let diags = w12_detect(&entries, &p());
+            assert!(
+                diags.is_empty(),
+                "fapolicyd matches `untrusted` with strcmp, so `dir={value}` is \
+                 NOT the deprecated construct: {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_is_case_sensitive_on_the_attribute_key() {
+        // The attribute NAME is resolved by a `strcmp` table scan
+        // (`subj_name_to_val`, subject-attr.c:71/78), so `Dir=` never resolves
+        // to EXE_DIR and cannot be the deprecated construct. fapd-E01 owns
+        // unknown attribute names -- the same division fapd-W07 documents for
+        // `Sha256Hash=` above.
+        for key in ["Dir", "DIR"] {
+            let entries = vec![modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![kv(key, "untrusted")],
+                vec![Attr::All],
+            )];
+            let diags = w12_detect(&entries, &p());
+            assert!(
+                diags.is_empty(),
+                "`{key}=` is not fapolicyd's case-sensitive `dir=` keyword, so \
+                 fapd-W12 must not fire (fapd-E01 owns unknown attrs): {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_silent_on_set_named_untrusted_whose_members_exclude_it() {
+        // Upstream keys PURELY on set MEMBERSHIP: `attr_set_check_str` searches
+        // the set's tree (rules.c:90 -> attr-sets.c:412-422). The set's NAME is
+        // never consulted. So a set merely CALLED `untrusted`, whose members are
+        // ordinary paths, is not the deprecated construct. Kills an impl that
+        // matches `SetRef(name) => name == "untrusted" || members.contains(..)`.
+        let entries = vec![
+            set_def(1, "untrusted", &["/usr/bin/"]),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv_ref("dir", "untrusted")],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "fapd-W12 keys on set MEMBERSHIP, never the set's name; `%untrusted` \
+             expands to `/usr/bin/` and must not fire: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_fires_once_per_offending_attr_on_the_same_side() {
+        // Sibling of `w12_detect_fires_once_per_offending_attr`, which puts one
+        // offending attr on EACH side and so cannot distinguish per-ATTRIBUTE
+        // from per-SIDE: an impl doing `.any()` per side and pushing once passes
+        // it with 2 diagnostics. Upstream calls the warner from each side's
+        // `finalize:` label (rules.c:597 subject / rules.c:748 object), i.e.
+        // once per assign_subject/assign_object CALL = once per ATTRIBUTE. Two
+        // offending attrs on ONE side must therefore yield 2 diagnostics.
+        let entries = vec![modern_rule(
+            5,
+            Decision::Allow,
+            None,
+            vec![kv("dir", "untrusted"), kv("dir", "untrusted")],
+            vec![Attr::All],
+        )];
+        let diags = w12_detect(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            2,
+            "upstream warns once per offending `dir=` ATTRIBUTE, not once per \
+             side: two on the subject must give two fapd-W12: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-W12"));
+        assert!(diags.iter().all(|d| d.line == 5));
+    }
+
+    #[test]
+    fn w12_detect_fires_once_per_offending_attr() {
+        // Both sides offending in ONE rule -> 2 diagnostics: upstream warns
+        // once per assigned attribute (the warner sits at each side's
+        // `finalize:` label), not once per rule. Kills a mutation that
+        // deduplicates by rule or short-circuits after the first hit.
+        let entries = vec![modern_rule(
+            7,
+            Decision::Allow,
+            None,
+            vec![kv("dir", "untrusted")],
+            vec![kv("dir", "untrusted")],
+        )];
+        let diags = w12_detect(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected one fapd-W12 per offending `dir=` attr in the rule: {diags:?}",
+        );
+        assert!(diags.iter().all(|d| d.code.as_ref() == "fapd-W12"));
+        assert!(diags.iter().all(|d| d.line == 7));
+    }
+
+    #[test]
+    fn w12_detect_silent_on_plain_dir_path() {
+        // The overwhelmingly common case. Kills an always-fire implementation.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", 0)],
+            vec![kv("dir", "/usr/bin/")],
+        )];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "a plain `dir=` path is not deprecated: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_other_dir_keywords() {
+        // fapolicyd.rules(5) documents THREE dir= keywords; upstream deprecates
+        // ONLY `untrusted` (rules.c:90 compares against the literal). Kills an
+        // implementation that fires on any non-path dir= keyword (e.g. one that
+        // reuses dir_slash's DIR_KEYWORDS list as the trigger).
+        let entries = vec![
+            modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv("dir", "execdirs")],
+            ),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv("dir", "systemdirs")],
+                vec![Attr::All],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "only `untrusted` is deprecated; execdirs/systemdirs are not: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_non_dir_attr_with_untrusted_value() {
+        // upstream gates on the attribute TYPE (`type == EXE_DIR || type ==
+        // ODIR`, rules.c:89) BEFORE inspecting the value, so `untrusted` as the
+        // value of some OTHER attribute is not deprecated. Kills an
+        // implementation that greps any attribute value for "untrusted".
+        let entries = vec![
+            modern_rule(
+                1,
+                Decision::Allow,
+                None,
+                vec![kv("exe", "untrusted")],
+                vec![Attr::All],
+            ),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv("ftype", "untrusted")],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "fapd-W12 keys off the `dir=` attribute, not the value text: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_set_without_untrusted() {
+        // Kills an implementation that fires on ANY `dir=%set` reference
+        // without inspecting the members.
+        let entries = vec![
+            set_def(1, "dirs", &["/usr/bin/", "/usr/sbin/"]),
+            modern_rule(
+                2,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv_ref("dir", "dirs")],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "a dir set with no `untrusted` member must not fire fapd-W12: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_undefined_set() {
+        // Mirrors dir_slash: an undefined macro emits nothing here; fapd-E03
+        // owns undefined-macro reporting. Also pins that the lookup does not
+        // panic on a missing key.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![kv_int("uid", 0)],
+            vec![kv_ref("dir", "nosuchset")],
+        )];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "an undefined `dir=%set` is fapd-E03's concern, not fapd-W12's: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_silent_on_int_dir_value_and_setdefinition() {
+        // An `AttrValue::Int` dir value is not the `untrusted` keyword, and a
+        // SetDefinition entry is never a rule: neither fires. Kills an
+        // implementation that fires on any Entry mentioning `untrusted` (here a
+        // set literally NAMED `untrusted`, and one whose member is `untrusted`
+        // but which no rule references from a `dir=`).
+        let entries = vec![
+            set_def(1, "untrusted", &["/usr/bin/"]),
+            set_def(2, "other", &["untrusted"]),
+            modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv_int("dir", 5)],
+            ),
+        ];
+        let diags = w12_detect(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "fapd-W12 only inspects `dir=` attrs on rules: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn w12_detect_identical_for_legacy_and_modern_flavor() {
+        // fapd-W12 keys off attributes, never `Rule.syntax` (mirrors the #295
+        // fapd-W07 flavor-invariance pin). The legacy grammar predates the
+        // deprecation, but the LINT is gated by `--target`, not by flavor.
+        let subj = || vec![kv("dir", "untrusted")];
+        let obj = || vec![Attr::All];
+        let modern = w12_detect(
+            &[modern_rule(1, Decision::Allow, None, subj(), obj())],
+            &p(),
+        );
+        let legacy = w12_detect(
+            &[legacy_rule(1, Decision::Allow, None, subj(), obj())],
+            &p(),
+        );
+        assert_eq!(
+            legacy.len(),
+            1,
+            "legacy dir=untrusted must fire one fapd-W12"
+        );
+        assert_eq!(legacy[0].code.as_ref(), "fapd-W12");
+        assert_eq!(
+            modern, legacy,
+            "fapd-W12 diagnostics must not depend on SyntaxFlavor",
+        );
+    }
+
+    #[test]
+    fn deprecates_untrusted_dir_is_false_for_every_current_target() {
+        // The dormancy gate itself. No TargetVersion maps to fapolicyd >= 1.6
+        // (version.rs: Rhel8 -> 1.3.2, Rhel9/Rhel10 -> 1.4.5), and `None` is the
+        // implicit 1.4.x dialect, so the predicate is false everywhere. When a
+        // 1.6-capable variant lands this test is the thing to revisit.
+        for target in ALL_TARGETS {
+            assert!(
+                !deprecates_untrusted_dir(target),
+                "no current target reaches fapolicyd 1.6, so fapd-W12's gate \
+                 must be closed for {target:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_is_dormant_for_every_current_target() {
+        // THE dormancy pin. The precondition below is what keeps it honest: it
+        // asserts detection ACTUALLY fires on the fixture, so the emptiness
+        // assertions prove the GATE suppressed a real finding rather than the
+        // detector simply not existing.
+        for entries in [subject_dir_untrusted(), object_dir_untrusted()] {
+            assert_eq!(
+                w12_detect(&entries, &p()).len(),
+                1,
+                "precondition: fapd-W12 detection must fire on this fixture, \
+                 otherwise the dormancy assertion below is vacuous",
+            );
+            for target in ALL_TARGETS {
+                let diags = w12(&entries, &p(), target);
+                assert!(
+                    diags.is_empty(),
+                    "fapd-W12 is dormant until a fapolicyd >= 1.6 target exists; \
+                     it must not fire under {target:?}: {diags:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn walk_gates_each_lint_independently() {
+        // The dispatcher contract: `walk` applies NO gate of its own; each lint
+        // gates itself. One rule trips both W07 (`sha256hash=`) and W12
+        // (`dir=untrusted`), so a `target` check hoisted into `walk` would be
+        // visible here -- e.g. hoisting W07's rhel8 suppression would also
+        // suppress W07 nowhere-else, and hoisting W12's always-closed gate would
+        // silence W07 entirely.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "sha256hash".into(),
+                value: AttrValue::Str(HEX64.into()),
+                span: 0..0,
+            }],
+            vec![kv("dir", "untrusted")],
+        )];
+        for target in ALL_TARGETS {
+            let diags = walk(&entries, &p(), target);
+            let codes = w12_codes(&diags);
+            assert!(
+                !codes.contains(&"fapd-W12"),
+                "fapd-W12 is dormant and must never reach `walk`'s output \
+                 under {target:?}: {codes:?}",
+            );
+            let want_w07 = target != Some(TargetVersion::Rhel8);
+            assert_eq!(
+                codes.contains(&"fapd-W07"),
+                want_w07,
+                "adding fapd-W12 must not disturb fapd-W07's own rhel8 gate \
+                 under {target:?}: {codes:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_span_slices_back_to_the_offending_rule() {
+        // Spans must be BYTE offsets into the source. Nothing else in this file
+        // pins fapd-W12's span, and a byte-vs-char span bug is INVISIBLE to
+        // tests built from `testkit` (its builders hard-code `span: 0..0`) and
+        // to any all-ASCII fixture (where the two offsets coincide). #340
+        // (sysctld) shipped exactly that bug for this reason.
+        //
+        // The header comment below carries multi-byte UTF-8 (written as ASCII
+        // `\u{..}` escapes), so byte offsets run AHEAD of char offsets by the
+        // time the rule starts. A char-indexed span slices short and lands
+        // mid-rule; a byte span slices the rule exactly.
+        const SOURCE: &str = concat!(
+            "# caf\u{00e9} na\u{00ef}ve header: multi-byte chars shift byte offsets\n",
+            "allow uid=0 dir=untrusted : all\n",
+        );
+        const RULE: &str = "allow uid=0 dir=untrusted : all";
+        // Precondition: the header really does desynchronize the two offsets,
+        // otherwise this test cannot distinguish byte from char indexing.
+        assert_ne!(
+            SOURCE.len(),
+            SOURCE.chars().count(),
+            "fixture must contain multi-byte UTF-8 for the span check to bite",
+        );
+
+        let file = p();
+        let entries = crate::parser::parse_rules_file(SOURCE, &file).expect("source must parse");
+        let diags = w12_detect(&entries, &file);
+        assert_eq!(
+            diags.len(),
+            1,
+            "precondition: the offending rule must be detected: {diags:?}",
+        );
+        let span = &diags[0].span;
+        assert_eq!(
+            SOURCE.get(span.start..span.end),
+            Some(RULE),
+            "fapd-W12's span must be BYTE offsets slicing the offending rule \
+             exactly; got {:?} which slices {:?}",
+            span,
+            SOURCE.get(span.start..span.end),
+        );
+    }
+
+    #[test]
+    fn lint_with_context_never_emits_w12_for_any_target() {
+        // The PUBLIC lint path, end to end from real source through the parser.
+        // Covers all three offending shapes (subject literal, object literal,
+        // set membership) under every target. The precondition keeps it
+        // non-vacuous for the same reason as `w12_is_dormant_for_every_current_target`.
+        const SOURCE: &str = concat!(
+            "%dirs=/usr/bin/,untrusted\n",
+            "allow uid=0 dir=untrusted : all\n",
+            "allow uid=1 : dir=untrusted\n",
+            "allow uid=2 : dir=%dirs\n",
+        );
+        let file = p();
+        let entries = crate::parser::parse_rules_file(SOURCE, &file).expect("source must parse");
+        assert_eq!(
+            w12_detect(&entries, &file).len(),
+            3,
+            "precondition: all three offending shapes must be detected, \
+             otherwise the dormancy assertion below is vacuous",
+        );
+        for target in ALL_TARGETS {
+            let ctx = crate::lints::LintContext {
+                target,
+                ..Default::default()
+            };
+            let diags = crate::lints::lint_with_context(&entries, SOURCE, &file, &ctx);
+            let codes = w12_codes(&diags);
+            assert!(
+                !codes.contains(&"fapd-W12"),
+                "fapd-W12 must be dormant through the public lint path \
+                 under {target:?}: {codes:?}",
+            );
+        }
     }
 }
