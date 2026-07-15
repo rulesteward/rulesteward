@@ -4137,4 +4137,102 @@ mod w07_tests {
              are disjoint -> no W07"
         );
     }
+
+    // ---- GROUP axis stays case-sensitive too (#495 round 3) ----
+    //
+    // The round-2 barrier landed User-axis counter-guards but left the Group axis
+    // UNGUARDED: a wrong impl that gates the fold on `kind == "host" || kind ==
+    // "group"` (instead of host only) passes the whole pre-round-3 suite. The
+    // three tests below are the Group mirrors of the User counter-axis guards
+    // above, closing that hole.
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // `Group` reaches the SAME case-sensitive comparison as `User`, through a
+    // different dispatch path:
+    // - `servconf.c:1127` - the `group` attrib dispatches to
+    //   `match_cfg_line_group(ci->user, ci->groups, ci->ngroups, arg)`.
+    // - `groupaccess.c:117-118` - `ga_match_pattern_list()` (called from
+    //   `match_cfg_line_group` for each of the connection's groups) calls
+    //   `match_usergroup_pattern_list(value, group)`.
+    // - `match.c:177-186` - `match_usergroup_pattern_list()` calls
+    //   `match_pattern_list(string, pattern, 0)` (`dolower=0`) under the explicit
+    //   comment `/* Case sensitive match */` - the IDENTICAL call User goes
+    //   through, just reached via group membership instead of `ci->user`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+    // `Match Group runner` + `PermitTTY no`, probed with `user=runner` (a real
+    // member of the local `runner` group, gid 1000):
+    // - Lowercase pattern `Match Group runner` -> `permittty no` (the block
+    //   APPLIES: the group criterion matches).
+    // - Uppercase pattern `Match Group RUNNER` -> `permittty yes` (the block does
+    //   NOT apply: `Match all` wins instead) - proving `RUNNER` and `runner` are
+    //   DIFFERENT group patterns to sshd, exactly mirroring the User-axis oracle
+    //   already cited above.
+
+    #[test]
+    fn mixed_case_group_patterns_stay_disjoint_w07() {
+        // #495 counter-axis guard (GROUP), FP direction. The Group mirror of
+        // `mixed_case_user_patterns_stay_disjoint_w07`. No connection's groups can
+        // be simultaneously named `DEVS` and `devs` (case-sensitive per the
+        // grounding above), so the two blocks are provably disjoint and nothing is
+        // shadowed. A wrong impl folding `kind == "host" || kind == "group"` would
+        // make them co-satisfy and manufacture a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Group DEVS\n    X11Forwarding yes\n\
+                 Match Group devs\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "group axis does not fold: `DEVS` and `devs` are disjoint -> no W07"
+        );
+    }
+
+    #[test]
+    fn mixed_case_group_self_negation_stays_satisfiable_w07() {
+        // #495 counter-axis guard (GROUP), FN direction. The Group mirror of
+        // `mixed_case_user_self_negation_stays_satisfiable_w07`. Group is
+        // case-SENSITIVE (dolower=0, per the grounding above), so `DEVS` stays a
+        // distinct positive from `devs` and `!devs,DEVS` is SATISFIABLE (a member
+        // of group `DEVS` is not vetoed by `!devs`). The block therefore
+        // co-satisfies `Group *` and line 4 IS a shadow. A wrong impl folding
+        // `kind == "host" || kind == "group"` would fold `DEVS` onto `devs`,
+        // declare the list self-negated (nobody), and MISS this finding.
+        let d = w07_diags(
+            "Match Group *\n    X11Forwarding yes\n\
+             Match Group !devs,DEVS\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "group axis is case-SENSITIVE: `!devs,DEVS` still admits DEVS -> one W07"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "the satisfiable mixed-case group block is the shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_group_stays_disjoint_across_the_multitype_path_w07() {
+        // #495 counter-axis guard (GROUP) on the MULTI-TYPE route. The mirror of
+        // `mixed_case_user_stays_disjoint_across_the_multitype_path_w07`. The two
+        // Group guards above only cover the single-type route
+        // ([`names_region_shadow`]); a wrong impl that folds `kind == "host" ||
+        // kind == "group"` only at the multi-type sites
+        // ([`type_co_satisfiable`]'s selection gate, [`multitype_names_axis_shadow`]'s
+        // `member`, [`exact_name_set`]) would pass the single-type guards above but
+        // still fold `DEVS` onto `devs` here and manufacture a false W07. Group
+        // stays case-sensitive on this route too (same `match_usergroup_pattern_list`
+        // dolower=0 call, independent of which comparison SITE reaches it), so no
+        // connection is a member of both `DEVS` and `devs` and nothing is shadowed.
+        assert!(
+            w07_diags(
+                "Match Group DEVS Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match Group devs Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "group axis does not fold on the multi-type route either: `DEVS` vs \
+             `devs` are disjoint -> no W07"
+        );
+    }
 }
