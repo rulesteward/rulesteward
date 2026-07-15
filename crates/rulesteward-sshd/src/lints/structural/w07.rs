@@ -3889,4 +3889,123 @@ mod w07_tests {
             "Match all wins every rdomain; the RDomain block's `no` on line 4 is dead"
         );
     }
+
+    // ---- HOST axis case folding (#495): host folds, user/group do NOT ----
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // The `Host` axis folds BOTH sides of the comparison, not just the incoming
+    // hostname:
+    // - `servconf.c:1134-1141` - the `host` attrib dispatches to
+    //   `match_hostname(ci->host, arg)`.
+    // - `match.c:196-203` - `match_hostname()` lowercases the incoming host
+    //   (`lowercase(hostcopy)`) AND passes `dolower=1`:
+    //   `r = match_pattern_list(hostcopy, pattern, 1);`
+    // - `match.c:141-146` - with `dolower=1`, `match_pattern_list()` lowercases the
+    //   CONFIG PATTERN too while extracting each subpattern:
+    //   `sub[subi] = dolower && isupper((u_char)pattern[i]) ? tolower(...) : pattern[i];`
+    // So `Match Host WEB.CORP` and `Match Host web.corp` denote the IDENTICAL host
+    // set: both sides normalize to `web.corp`.
+    //
+    // The counter-axis is case-SENSITIVE, from the same source:
+    // - `servconf.c:1108-1115` - `user` dispatches to
+    //   `match_usergroup_pattern_list(ci->user, arg)`.
+    // - `match.c:177-186` - that calls `match_pattern_list(string, pattern, 0)`
+    //   (`dolower=0`) under the explicit comment `/* Case sensitive match */`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
+    // - `Match Host WEB.CORP` + `PermitTTY no`: host=web.corp -> `permittty no`,
+    //   host=WEB.CORP -> `permittty no`, host=other.corp -> `permittty yes`. The
+    //   uppercase PATTERN matches the lowercase host, proving the pattern folds.
+    // - `Match Host !web.corp,WEB.CORP` + `PermitTTY no`: host=web.corp -> `yes`,
+    //   host=WEB.CORP -> `yes`, host=other.corp -> `yes`. The block applies to NO
+    //   host: `WEB.CORP` folds onto `web.corp`, which its own `!web.corp` vetoes.
+    // - `Match User !alice,ALICE` + `PermitTTY no`: user=alice -> `yes`,
+    //   user=ALICE -> `no`, user=bob -> `yes`. `ALICE` survives as a distinct
+    //   positive, so the user list stays SATISFIABLE - the host fold must not
+    //   reach the user axis.
+
+    #[test]
+    fn mixed_case_host_self_negation_matches_nobody_and_is_not_a_shadow_victim_w07() {
+        // #495 FP direction. Under sshd's host fold, `!web.corp,WEB.CORP` positively
+        // admits nothing: `WEB.CORP` normalizes to `web.corp` and is then vetoed by
+        // its own `!web.corp` (oracle: every host probe falls through to the global
+        // default). A block that matches nobody can never be shadowed, so W07 must
+        // stay silent. A case-SENSITIVE reading sees `WEB.CORP` as a live positive
+        // that `Host *` also admits, and wrongly reports line 4 as a shadow victim.
+        assert!(
+            w07_diags(
+                "Match Host *\n    X11Forwarding yes\n\
+                 Match Host !web.corp,WEB.CORP\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "`Host !web.corp,WEB.CORP` self-negates to nobody under sshd's host fold, \
+             so it is not a shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_host_patterns_co_satisfy_and_shadow_w07() {
+        // #495 FN direction. `WEB.CORP` and `web.corp` fold to the SAME host set
+        // (match.c dolower=1 lowercases the pattern as well as the host), so a
+        // `web.corp` connection satisfies BOTH blocks and the later X11Forwarding is
+        // silently dropped. A case-SENSITIVE reading treats the two as disjoint and
+        // misses the shadow entirely.
+        let d = w07_diags(
+            "Match Host WEB.CORP\n    X11Forwarding yes\n\
+             Match Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "mixed-case host patterns denote one host set -> exactly one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn mixed_case_user_self_negation_stays_satisfiable_w07() {
+        // #495 counter-axis guard: the fold is host-ONLY. `match_usergroup_pattern_list`
+        // passes dolower=0, so `ALICE` stays a distinct positive from `alice` and the
+        // list is SATISFIABLE (oracle: user=ALICE -> `permittty no`, i.e. the block
+        // APPLIES). The block therefore co-satisfies `User *` and line 4 IS a shadow.
+        // A blanket `to_ascii_lowercase()` applied to ALL name axes would fold `ALICE`
+        // onto `alice`, declare the list nobody, and drop this finding - this test
+        // fails such an impl. Expected to PASS before the fix (regression guard).
+        let d = w07_diags(
+            "Match User *\n    X11Forwarding yes\n\
+             Match User !alice,ALICE\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "user axis is case-SENSITIVE: `!alice,ALICE` still admits ALICE -> one W07"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "the satisfiable mixed-case user block is the shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_user_patterns_stay_disjoint_w07() {
+        // #495 counter-axis guard, FN direction: the mirror of
+        // `mixed_case_host_patterns_co_satisfy_and_shadow_w07` on the case-SENSITIVE
+        // axis. No single connection is both `ALICE` and `alice`, so the two blocks
+        // are provably disjoint and nothing is shadowed. A blanket lowercase across
+        // all name axes would make them overlap and manufacture a false W07 here.
+        // Expected to PASS before the fix (regression guard).
+        assert!(
+            w07_diags(
+                "Match User ALICE\n    X11Forwarding yes\n\
+                 Match User alice\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "user axis does not fold: `ALICE` and `alice` are disjoint -> no W07"
+        );
+    }
 }
