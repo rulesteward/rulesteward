@@ -598,27 +598,40 @@ mod tests {
         // rules.c:394-395 / 666-667. So `dir=%dirs` where %dirs lists
         // `untrusted` warns exactly like the literal. An implementation that
         // only matches AttrValue::Str dies here.
-        let entries = vec![
-            set_def(1, "dirs", &["/usr/bin/", "untrusted"]),
-            modern_rule(
-                2,
-                Decision::Allow,
-                None,
-                vec![kv_int("uid", 0)],
-                vec![kv_ref("dir", "dirs")],
-            ),
-        ];
-        let diags = w12_detect(&entries, &p());
-        assert_eq!(
-            diags.len(),
-            1,
-            "a `dir=%set` whose members include `untrusted` must fire one fapd-W12: {diags:?}",
-        );
-        assert_eq!(diags[0].code.as_ref(), "fapd-W12");
-        assert_eq!(
-            diags[0].line, 2,
-            "fapd-W12 must anchor at the referencing RULE, not the set definition",
-        );
+        for values in [
+            // Last position (2 members).
+            vec!["/usr/bin/", "untrusted"],
+            // Middle position (>=3 members, `untrusted` neither first nor
+            // last). This is the fixture that closes the whole
+            // not-whole-member defect family on the set path too: it kills
+            // every positional shortcut - first-only, last-only,
+            // first-or-last-only - leaving "check every member" as the only
+            // impl that survives, the same `avl_search` whole-membership
+            // test the literal path exercises (attr-sets.c:412-422).
+            vec!["/a/", "untrusted", "/b/"],
+        ] {
+            let entries = vec![
+                set_def(1, "dirs", &values),
+                modern_rule(
+                    2,
+                    Decision::Allow,
+                    None,
+                    vec![kv_int("uid", 0)],
+                    vec![kv_ref("dir", "dirs")],
+                ),
+            ];
+            let diags = w12_detect(&entries, &p());
+            assert_eq!(
+                diags.len(),
+                1,
+                "a `dir=%set` whose members include `untrusted` must fire one fapd-W12: {diags:?}",
+            );
+            assert_eq!(diags[0].code.as_ref(), "fapd-W12");
+            assert_eq!(
+                diags[0].line, 2,
+                "fapd-W12 must anchor at the referencing RULE, not the set definition",
+            );
+        }
     }
 
     #[test]
@@ -653,12 +666,26 @@ mod tests {
             // last. Kills any impl that only inspects the final comma
             // segment (e.g. `split(',').next_back()`) or the whole-value
             // tail (`ends_with("untrusted")`) instead of splitting on `,`
-            // and checking every member (rules.c:572-578 strtok_r).
+            // and checking members.
             vec![modern_rule(
                 3,
                 Decision::Allow,
                 None,
                 vec![kv("dir", "untrusted,/usr/bin/")],
+                vec![Attr::All],
+            )],
+            // Middle position (>=3 members, `untrusted` neither first nor
+            // last). This is the fixture that closes the whole
+            // not-whole-member defect family at once: it kills every
+            // positional shortcut - contains, ends_with, starts_with,
+            // next_back-only, first-or-last-only - leaving "split on `,`
+            // and check every member" (rules.c:572-578 strtok_r) as the only
+            // impl that survives.
+            vec![modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv("dir", "/a/,untrusted,/b/")],
                 vec![Attr::All],
             )],
         ] {
