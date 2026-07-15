@@ -4235,4 +4235,80 @@ mod w07_tests {
              `devs` are disjoint -> no W07"
         );
     }
+
+    // ---- HOST fold fidelity: ASCII-only, not full Unicode (#495 round 4) ----
+    //
+    // The round-1..3 suite pins WHICH axis folds (host, not user/group) and THAT
+    // both sides of the comparison fold, but never HOW FAR the fold reaches. A
+    // wrong impl that uses Rust's full-Unicode `str::to_lowercase()` instead of
+    // `to_ascii_lowercase()` passes the entire pre-round-4 suite (507/507):
+    // every existing fixture's mixed-case pairs differ only in the ASCII a-z/A-Z
+    // range, where the two functions agree.
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // As already cited above (match.c:141-146), the fold is:
+    //   `sub[subi] = dolower && isupper((u_char)pattern[i]) ? tolower((u_char)pattern[i]) : pattern[i];`
+    // - BYTE-WISE C `isupper()`/`tolower()`, operating one `u_char` at a time.
+    // UTF-8 continuation and lead bytes for any non-ASCII codepoint are all
+    // `>= 0x80`, so C `isupper()` (locale "C") is false for every one of them and
+    // they pass through completely unchanged. `match_hostname()` (match.c:196-203)
+    // reaches the identical byte-wise loop for the incoming host value via
+    // `lowercase(hostcopy)`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
+    // - `Match Host k` + `PermitTTY no`: host=`K` (ASCII 0x4B) -> `permittty no`
+    //   (block APPLIES: the ASCII fold is real). host=U+212A KELVIN SIGN (UTF-8
+    //   `e2 84 aa`) -> `permittty yes` (block does NOT apply: no Unicode fold).
+    // - `Match Host cafe-acute` (lowercase e-acute, U+00E9) + `PermitTTY no`:
+    //   host=`cafe-acute` -> `permittty no` (APPLIES). host=`CAFE-ACUTE` (uppercase
+    //   E-acute, U+00C9) -> `permittty yes` (does NOT apply): the byte-wise
+    //   `tolower` leaves `c3 89` (U+00C9) alone, so it never becomes `c3 a9`
+    //   (U+00E9).
+    //
+    // Rust's `char::to_lowercase()` / `str::to_lowercase()` instead follow full
+    // Unicode simple case mapping, where U+212A KELVIN SIGN has a documented
+    // simple-lowercase mapping to U+006B (`k`) and U+00C9 maps to U+00E9 - both
+    // WOULD fold under a `to_lowercase()` impl, collapsing patterns the daemon
+    // treats as disjoint and manufacturing a false W07.
+
+    #[test]
+    fn kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07() {
+        // #495 round-4 FIDELITY guard, FP direction. `k` (U+006B) and U+212A
+        // KELVIN SIGN are wholly distinct host patterns under sshd's byte-wise
+        // ASCII fold (the oracle above), so the two blocks are disjoint and
+        // nothing is shadowed. A wrong impl using `str::to_lowercase()` maps
+        // KELVIN SIGN onto ASCII `k` (Unicode's documented simple-lowercase
+        // mapping for U+212A), collapsing the two into one host set and
+        // manufacturing a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Host k\n    X11Forwarding yes\n\
+                 Match Host \u{212A}\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "the host fold is ASCII-only: `k` and U+212A KELVIN SIGN are disjoint \
+             -> no W07"
+        );
+    }
+
+    #[test]
+    fn accented_e_host_pattern_does_not_fold_across_case_w07() {
+        // #495 round-4 FIDELITY guard, FP direction, operator-facing mirror of the
+        // KELVIN SIGN guard above. U+00C9 (LATIN CAPITAL LETTER E WITH ACUTE) and
+        // U+00E9 (LATIN SMALL LETTER E WITH ACUTE) are both non-ASCII bytes in
+        // UTF-8 (`c3 89` / `c3 a9`), so sshd's byte-wise fold never touches them
+        // and `CAF\u{C9}` / `caf\u{E9}` stay disjoint host patterns (the oracle
+        // above). A wrong impl using `str::to_lowercase()` performs full Unicode
+        // case mapping and lowercases U+00C9 onto U+00E9, collapsing the two into
+        // one host set and manufacturing a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Host CAF\u{C9}\n    X11Forwarding yes\n\
+                 Match Host caf\u{E9}\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "the host fold is ASCII-only: accented E case is untouched -> \
+             `CAF\u{C9}` and `caf\u{E9}` are disjoint -> no W07"
+        );
+    }
 }
