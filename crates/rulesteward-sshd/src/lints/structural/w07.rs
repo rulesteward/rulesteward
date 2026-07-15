@@ -4008,4 +4008,133 @@ mod w07_tests {
             "user axis does not fold: `ALICE` and `alice` are disjoint -> no W07"
         );
     }
+
+    // ---- HOST fold: both SIDES, and at EVERY comparison site (#495) ----
+    //
+    // The tests above are carried by a lowercase TWIN present among the config
+    // literals (`web.corp` appears in both fixtures), so they are also satisfied by
+    // a HALF-fix that lowercases only the config PATTERN (match.c:145-146's
+    // `dolower=1`) and skips `match_hostname`'s `lowercase(hostcopy)` on the
+    // incoming VALUE (match.c:199). The witness search draws candidates from config
+    // literals ([`collect_name_literals`]), so the twin alone satisfies both sides
+    // and the value axis is never forced to fold. The fixtures below remove the twin
+    // and cross the multi-type path, pinning the fold at every host-comparison site.
+
+    #[test]
+    fn uppercase_only_host_literal_folds_onto_lowercase_glob_w07() {
+        // #495 FN direction with NO lowercase twin among the literals: `WEB.CORP` is
+        // the ONLY host literal here (`*.corp` is a glob, so it contributes no
+        // witness candidate). The sole witness is therefore uppercase, and it can
+        // only satisfy the earlier `*.corp` if the incoming VALUE folds
+        // (match.c:199 `lowercase(hostcopy)`) - lowercasing just the pattern leaves
+        // `glob_match("*.corp", "WEB.CORP")` false and the shadow unfound. A
+        // `web.corp` connection satisfies both blocks, so line 4's `no` is dead.
+        let d = w07_diags(
+            "Match Host *.corp\n    X11Forwarding yes\n\
+             Match Host WEB.CORP\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the incoming host folds too: `WEB.CORP` is admitted by `*.corp` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn identical_uppercase_host_blocks_stay_a_shadow_w07() {
+        // #495 REGRESSION guard on the fold's value side. Two byte-identical
+        // uppercase headers are a shadow under ANY consistent reading - the
+        // case-SENSITIVE impl already flags this. It is here because a half-fix that
+        // folds only the pattern BREAKS it: the pattern becomes `web.corp` while the
+        // witness stays `WEB.CORP`, so the block stops matching ITSELF and the
+        // finding silently disappears. Expected to PASS before the fix; it fails only
+        // for an impl that folds one side.
+        let d = w07_diags(
+            "Match Host WEB.CORP\n    X11Forwarding yes\n\
+             Match Host WEB.CORP\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "identical uppercase host headers denote one host set -> exactly one W07"
+        );
+        assert_eq!(d[0].line, 4, "the later duplicate is the shadow victim");
+    }
+
+    #[test]
+    fn mixed_case_host_shadows_across_the_multitype_path_w07() {
+        // #495 FN direction on the MULTI-TYPE route. The tests above are all
+        // single-criterion-type, so [`single_region_type`] routes them exclusively
+        // through [`names_region_shadow`]; adding an `Address` sends the identical
+        // host question through [`multitype_shadow`] instead, whose own host
+        // comparisons ([`type_co_satisfiable`]'s selection gate,
+        // [`multitype_names_axis_shadow`]'s `member`, [`exact_name_set`]) are
+        // INDEPENDENT sites. Folding only the single-type site leaves this fixture
+        // silent: the earlier block is never even selected as a setter, because
+        // `WEB.CORP` and `web.corp` look disjoint to the gate.
+        let d = w07_diags(
+            "Match Host WEB.CORP Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match Host web.corp Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the host fold must reach the multi-type route: same host set, same net -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn repeated_mixed_case_host_is_satisfiable_not_nobody_w07() {
+        // #495 FN direction at the nobody guard. `sshd_config(5)` AND-s repeated
+        // criteria, so `Host WEB.CORP Host web.corp` needs ONE host satisfying both
+        // occurrences: under the fold that host is `web.corp`, so the block is
+        // SATISFIABLE and IS shadowed by the earlier `Host *`. A case-SENSITIVE
+        // reading finds no common witness, declares the block NOBODY
+        // ([`block_matches_nobody`] via [`name_instances_have_common_witness`]) and
+        // returns early - a site no other fixture reaches, and one that suppresses
+        // the finding no matter how many other sites are folded.
+        let d = w07_diags(
+            "Match Host *\n    X11Forwarding yes\n\
+             Match Host WEB.CORP Host web.corp Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "repeated mixed-case host instances share the witness `web.corp` -> satisfiable, \
+             and shadowed by `Host *` -> one W07"
+        );
+        assert_eq!(d[0].line, 4, "the shadowed repeated-host block is flagged");
+    }
+
+    #[test]
+    fn mixed_case_user_stays_disjoint_across_the_multitype_path_w07() {
+        // #495 counter-axis guard on the MULTI-TYPE route: the mirror of
+        // `mixed_case_host_shadows_across_the_multitype_path_w07` on the
+        // case-SENSITIVE axis. The user guards above only cover the single-type
+        // route, so a blanket `to_ascii_lowercase()` confined to the multi-type
+        // sites would pass them; here it would make `ALICE` and `alice` co-satisfy
+        // and manufacture a false W07. `match_usergroup_pattern_list` passes
+        // dolower=0 (match.c:177-186), so no connection is both users and nothing is
+        // shadowed. Expected to PASS before the fix (regression guard).
+        assert!(
+            w07_diags(
+                "Match User ALICE Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "user axis does not fold on the multi-type route either: `ALICE` vs `alice` \
+             are disjoint -> no W07"
+        );
+    }
 }
