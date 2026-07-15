@@ -84,6 +84,8 @@ mod lint_shell_tests {
     use super::lint;
     use crate::cli::{HumanJsonFormat, SudoersLintArgs};
     use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
+    use crate::output::json;
+    use rulesteward_sudoers::{SudoersLintContext, lints, resolve};
 
     fn args(path: &std::path::Path, format: HumanJsonFormat) -> SudoersLintArgs {
         SudoersLintArgs {
@@ -188,5 +190,52 @@ root ALL=(ALL:ALL) ALL
         std::fs::write(dir.path().join("20-bob"), "bob ALL=(ALL) ALL\n").expect("w");
         let a = args(dir.path(), HumanJsonFormat::Human);
         assert_eq!(lint(&a, None), EXIT_CLEAN);
+    }
+
+    /// CLI-level pin for #485 (sudo-W04 silent on an empty linted FILE): an
+    /// empty top-level file must exit `EXIT_WARNINGS` (the resolver's phantom
+    /// segment carries the three sudo-W04 merged-absence findings, all
+    /// Warnings) AND those findings must actually RENDER through the same
+    /// pipeline `lint()` drives -- not just be produced by the resolver/lint
+    /// layer already pinned in `rulesteward_sudoers`. Cheap insurance given
+    /// #401's history in this crate (an empty synthetic `source` clobbering a
+    /// real source in this file's `BTreeMap` staging, guarded by `if
+    /// !file.source.is_empty()` at line 64 above) -- a synthesized empty file
+    /// is exactly that shape again. Verified the guard degrades gracefully
+    /// (a missing `sources` entry falls back to plain-format rendering in
+    /// `output::human::render`, it does not drop the finding), but this pins
+    /// the end-to-end outcome so a future refactor of either layer cannot
+    /// silently regress it.
+    #[test]
+    fn empty_file_exits_warnings_and_renders_absence_findings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        std::fs::write(&f, "").expect("write byte-empty file");
+
+        let a = args(&f, HumanJsonFormat::Json);
+        assert_eq!(
+            lint(&a, None),
+            EXIT_WARNINGS,
+            "an empty linted file must exit EXIT_WARNINGS (the three sudo-W04 \
+             merged-absence findings are Warnings), not EXIT_CLEAN"
+        );
+
+        // Drive the SAME resolve -> lint -> render pipeline `lint()` uses
+        // internally, so the rendered TEXT is actually asserted (not just the
+        // exit code above).
+        let files = resolve::resolve_target(&f).expect("resolve a byte-empty file");
+        let diags = lints::lint(&files, &SudoersLintContext::default());
+        let rendered =
+            json::render_lint_envelope("sudoers-lint", super::SUDOERS_LINT_SCHEMA_VERSION, &diags);
+        assert!(
+            rendered.contains("sudo-W04"),
+            "the rendered JSON envelope must actually carry the sudo-W04 \
+             findings, not just an empty diagnostics array; got {rendered}"
+        );
+        assert!(
+            rendered.contains("use_pty"),
+            "the rendered JSON envelope must name the use_pty absence \
+             finding; got {rendered}"
+        );
     }
 }

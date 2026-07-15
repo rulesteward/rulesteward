@@ -87,7 +87,29 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
         // nested @include (which becomes a Malformed line).
         let source = std::fs::read_to_string(path)?;
         let mut chain: Vec<PathBuf> = vec![canonical_or_as_is(path)];
-        resolve_parsed(&parse(&source, path), path, host, &mut chain, &mut out);
+        let parsed = parse(&source, path);
+        resolve_parsed(&parsed, path, host, &mut chain, &mut out);
+        // #485: a linted FILE target whose resolution produces ZERO segments
+        // (byte-empty, whitespace-only, or a file whose only content is an
+        // @include/@includedir chain that itself contributes nothing) still needs
+        // a top-level SudoersFile for `check_merged_required` to anchor its
+        // absence findings against. An empty merged config is not "nothing to
+        // check" -- it is the STRONGEST case, definitionally lacking every
+        // hardening requirement. BROAD (locked decision): fires whenever the
+        // WHOLE top-level FILE target ends up empty, regardless of why -- not
+        // narrowly scoped to a byte-empty/whitespace-only source. Scoped ONLY to
+        // this single-FILE branch: a directory target's per-drop-in resolution
+        // (the `if path.is_dir()` branch above) must stay silent on an
+        // individually-empty drop-in (that would reintroduce the per-fragment
+        // false positive #347 exists to avoid), and this check must run once
+        // here -- after the WHOLE top-level resolution completes -- not inside
+        // `resolve_parsed`/`resolve_file`, where it would fire on a nested
+        // @include that contributes nothing whenever nothing has been emitted
+        // yet: an ordering-dependent phantom that also mis-anchors the finding
+        // to the child instead of the parent.
+        if out.is_empty() {
+            out.push(parsed);
+        }
     }
     Ok(out)
 }
@@ -433,6 +455,50 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let files = resolve_target(dir.path()).expect("resolve empty dir");
         assert!(files.is_empty());
+    }
+
+    /// Regression guard for the `flush` closure inside `resolve_parsed` (this
+    /// module): it must stay CONDITIONAL (`if pending.iter().any(|l|
+    /// !matches!(l.kind, LineKind::Blank))`), never an unconditional push. A
+    /// parent file carries one real rule AND an `@includedir` pointing at an
+    /// EMPTY directory (so the includedir contributes no drop-ins). `flush`
+    /// runs TWICE while resolving this file: once for the parent's own rule
+    /// (before the directive; `pending` is non-empty, correctly pushes one
+    /// segment), and once for the trailing empty `pending` after the
+    /// directive is processed (correctly a no-op). An "always-push" mutant of
+    /// `flush` -- one that drops the `if` guard and pushes on every call --
+    /// would push a SECOND, spurious empty segment on that trailing call,
+    /// inflating the resolved slice to two files instead of one.
+    ///
+    /// This fixture's `out` is NEVER empty at the point where #485's BROAD
+    /// top-level-zero-result fix would run (the parent's real rule guarantees
+    /// at least one segment), so this test does NOT exercise that fork; it is
+    /// pinned separately by `crate::lints::stig::tests::
+    /// file_with_only_empty_includedir_fires_all_three_absence_findings_via_resolver`,
+    /// whose fixture has no content besides the `@includedir`.
+    #[test]
+    fn empty_includedir_directive_synthesizes_no_phantom_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let empty_inc = root.path().join("empty.d");
+        std::fs::create_dir_all(&empty_inc).expect("mkdir empty.d");
+        std::fs::write(
+            root.path().join("parent"),
+            "root ALL=(ALL:ALL) ALL\n@includedir empty.d\n",
+        )
+        .expect("w parent");
+
+        let files = resolve_target(&root.path().join("parent")).expect("resolve");
+        assert_eq!(
+            files.len(),
+            1,
+            "an empty @includedir contributes NO entry (no phantom synthesized \
+             for it); only the parent's own content segment appears; got {files:?}"
+        );
+        assert_eq!(
+            names(&files),
+            vec!["parent".to_string()],
+            "only the parent's own content segment should appear; got {files:?}"
+        );
     }
 
     // ---- #334: @include directive following + ordering --------------------
