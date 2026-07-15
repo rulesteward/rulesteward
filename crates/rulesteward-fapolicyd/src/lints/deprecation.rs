@@ -649,6 +649,18 @@ mod tests {
                 vec![kv_int("uid", 0)],
                 vec![kv("dir", "/usr/bin/,untrusted")],
             )],
+            // Non-final position: `untrusted` is the FIRST member, not the
+            // last. Kills any impl that only inspects the final comma
+            // segment (e.g. `split(',').next_back()`) or the whole-value
+            // tail (`ends_with("untrusted")`) instead of splitting on `,`
+            // and checking every member (rules.c:572-578 strtok_r).
+            vec![modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv("dir", "untrusted,/usr/bin/")],
+                vec![Attr::All],
+            )],
         ] {
             let diags = w12_detect(&entries, &p());
             assert_eq!(
@@ -692,7 +704,7 @@ mod tests {
         // A `value.contains("untrusted")` impl fires a false fapd-W12 here.
         // Covered on both sides, and through a `%set`, because each is a
         // separate code path in the detection template.
-        let cases: [(&str, Vec<Entry>); 3] = [
+        let cases: [(&str, Vec<Entry>); 4] = [
             (
                 "subject literal",
                 vec![modern_rule(
@@ -700,6 +712,22 @@ mod tests {
                     Decision::Allow,
                     None,
                     vec![kv("dir", "/opt/untrusted/")],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                // No trailing slash: the path's LAST path-segment is exactly
+                // "untrusted", so a `value.ends_with("untrusted")` impl fires
+                // a false fapd-W12 here even though it correctly avoided the
+                // simpler `contains` mistake. Same defect family, one notch
+                // narrower. Upstream's strcmp still sees the whole member
+                // "/opt/untrusted" != "untrusted", so it stays silent.
+                "subject literal, no trailing slash",
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv("dir", "/opt/untrusted")],
                     vec![Attr::All],
                 )],
             ),
