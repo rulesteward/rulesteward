@@ -1459,4 +1459,112 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn w12_detect_resolves_sets_first_wins_and_define_before_use() {
+        // `w12_detect` resolves `%set` members through `build_macro_map`
+        // (subsume.rs:19-27), which is an order-blind, LAST-DEFINITION-WINS
+        // `HashMap` (`map.insert`). fapolicyd's real set registry is
+        // order-sensitive and FIRST-WINS-THEN-HARD-ERROR:
+        //
+        // * a duplicate name is rejected BEFORE the second set is created -
+        //   `if (attr_sets_find(sets, name)) { msg(LOG_ERR, ...
+        //   "set %s was already defined!"); goto free_and_error; }` - v1.6
+        //   rules.c:855-858, and the SAME check exists in v1.3.2
+        //   rules.c:731-734 and v1.4.5 rules.c:807-810 (not a 1.6-only
+        //   check). The FIRST definition is the one that would be in effect,
+        //   not the last.
+        // * `rules_append` returning non-zero ABORTS the entire policy load
+        //   (policy.c:654-660), so `warn_deprecated_untrusted_dir`
+        //   (rules.c:597 subject / rules.c:748 object, both reached only at
+        //   the shared `finalize:` label) never runs for such a file.
+        // * a FORWARD reference is `set '%s' was not defined before` ->
+        //   `goto free_and_error` (subject rules.c:348-353, object
+        //   rules.c:640-645); `finalize:` is unreachable on that path too.
+        //
+        // So `%dirs` never contains `untrusted` in ANY fapolicyd version for
+        // either scenario below - not because the surviving definition lacks
+        // `untrusted`, but because the whole FILE fails to load. (NOTE:
+        // subsume.rs:15-18's doc comment currently claims last-wins
+        // "mirror[s] fapolicyd's behavior"; that claim is factually wrong per
+        // the citations above. This test does not edit subsume.rs - W12 owns
+        // its own in-scope, first-wins resolution instead.)
+
+        // Non-vacuity precondition: a single, correctly in-scope `%set`
+        // definition that DOES contain `untrusted` must still fire. Without
+        // this, the emptiness assertions below would also pass against a
+        // detector that stopped resolving `%set` references at all - the
+        // same trap `w12_is_dormant_for_every_current_target` guards against
+        // for the dormancy gate.
+        {
+            let src = "%dirs=untrusted\nallow uid=0 : dir=%dirs\n";
+            let file = p();
+            let entries = crate::parser::parse_rules_file(src, &file).expect("must parse");
+            let diags = w12_detect(&entries, &file);
+            assert_eq!(
+                diags.len(),
+                1,
+                "precondition: a single, correctly-scoped `%set` containing \
+                 `untrusted` must fire fapd-W12, otherwise the negative \
+                 cases below are vacuous: {diags:?}",
+            );
+        }
+
+        for (label, src) in [
+            (
+                "redefinition (upstream: the FIRST definition wins; the \
+                 second `%dirs=` line is a hard duplicate-name parse error \
+                 that aborts the whole file's load)",
+                "%dirs=/usr/bin/\n%dirs=untrusted\nallow uid=0 : dir=%dirs\n",
+            ),
+            (
+                "within-file forward reference (`%dirs` is not yet in scope \
+                 at the rule; upstream: a hard 'not defined before' parse \
+                 error that aborts the whole file's load)",
+                "allow uid=0 : dir=%dirs\n%dirs=untrusted\n",
+            ),
+        ] {
+            let file = p();
+            let entries = crate::parser::parse_rules_file(src, &file).expect("must parse");
+            let diags = w12_detect(&entries, &file);
+            assert!(
+                diags.is_empty(),
+                "fapd-W12 must resolve `%set` membership the way fapolicyd \
+                 does - in-scope, first-wins, with a duplicate name or a \
+                 forward reference being a hard load error - not via an \
+                 order-blind last-wins `HashMap` ({label}): {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn w12_detect_silent_on_mirrored_redefinition_regardless_of_which_definition_wins() {
+        // Mirror of the redefinition case above, with the offending member on
+        // the FIRST definition instead of the second: `%dirs=untrusted` then
+        // `%dirs=/usr/bin/`. This is NOT "first-wins means the detector
+        // should resolve `%dirs` to the FIRST definition's members and
+        // therefore fire here" - a duplicate set name is a hard parse error
+        // on every fapolicyd version (`set %s was already defined!`, v1.6
+        // rules.c:855-858, same in 1.3.2:731-734 / 1.4.5:807-810), so
+        // upstream rejects the WHOLE FILE before the `finalize:` label
+        // (rules.c:597/748) ever runs and the warner never fires - exactly
+        // like the sibling redefinition case above, and for the identical
+        // reason (the file never loads), not because "the surviving
+        // definition happens to lack `untrusted`". A fix that merely flips
+        // `build_macro_map` from last-wins to first-wins-among-VALUES
+        // (instead of treating a duplicate name as "this set can never
+        // resolve for W12 purposes") would make this fixture WRONGLY fire -
+        // this test exists to kill exactly that shortcut.
+        let src = "%dirs=untrusted\n%dirs=/usr/bin/\nallow uid=0 : dir=%dirs\n";
+        let file = p();
+        let entries = crate::parser::parse_rules_file(src, &file).expect("must parse");
+        let diags = w12_detect(&entries, &file);
+        assert!(
+            diags.is_empty(),
+            "a duplicate `%set` definition must never resolve to `untrusted` \
+             membership regardless of which definition holds the offending \
+             member - upstream fails to load the whole file on either \
+             direction of the redefinition: {diags:?}",
+        );
+    }
 }
