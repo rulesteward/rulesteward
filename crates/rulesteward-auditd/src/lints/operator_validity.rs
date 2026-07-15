@@ -14,6 +14,7 @@
 use rulesteward_core::{Diagnostic, Severity};
 
 use crate::ast::{AuditRule, CompareOp, LocatedRule};
+use crate::lints::TargetVersion;
 use crate::lints::anchored;
 use crate::lints::field_name::field_name;
 use crate::lints::field_type::{FieldType, field_type};
@@ -100,6 +101,42 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
     }
 
     diags
+}
+
+/// au-E05: KERNEL rejects bitmask ops (`&`/`&=`) beyond libaudit's userspace
+/// validation (issue #490).
+///
+/// Sibling code to au-E02: au-E02 models `audit_rule_fieldpair_data`
+/// (libaudit USERSPACE, `auditctl`'s own parser); this pass models
+/// `audit_field_valid` (the KERNEL's rule-insert validator,
+/// `kernel/auditfilter.c`), which separately rejects `Audit_bitmask`
+/// (`&`) / `Audit_bittest` (`&=`) for a field group libaudit's parser has no
+/// opinion on. A rule like `-F msgtype&0x100` therefore PARSES under
+/// `auditctl` (au-E02 stays silent -- correctly, per the userspace model) but
+/// is REJECTED AT LOAD by the running kernel: a load-aborting false negative
+/// that au-E02 alone cannot catch. au-E02's existing behavior and tests are
+/// UNCHANGED by this addition.
+///
+/// STUB ONLY (test-author barrier, 9a-v0_8-wave1 lane-c-auditd-e05): the
+/// frozen signature per the locked Option-B decision (`target:
+/// Option<TargetVersion>`, mirroring `stig_required::w06`). The grounded
+/// reject table -- a 19-field version-STABLE intersection fired for every
+/// `target` including `None`, plus an el8-only extension under
+/// `Some(TargetVersion::Rhel8)` and a distinct el9/el10-only extension under
+/// `Some(TargetVersion::Rhel9) | Some(TargetVersion::Rhel10)` -- and the
+/// dispatcher wiring into `lints::lint` (beside `e02`) are the IMPLEMENTER's
+/// job, driven by the frozen RED tests in
+/// `tests/test_lints_operator_validity.rs` (Section 9 onward: the grounding
+/// doc comment there cites the exact kernel refs and per-target field lists,
+/// including the deliberate conservative omission of `saddr_fam` from the
+/// el8 table -- unverified against a real RHEL8 kernel tree).
+#[must_use]
+pub fn e05(_rules: &[LocatedRule], _target: Option<TargetVersion>) -> Vec<Diagnostic> {
+    todo!(
+        "au-E05 kernel-bitmask-rejection lint body -- issue #490; \
+         see tests/test_lints_operator_validity.rs Section 9+ for the frozen \
+         grounded reject table this must implement"
+    )
 }
 
 /// Map a [`CompareOp`] to its string form as written in rules files.

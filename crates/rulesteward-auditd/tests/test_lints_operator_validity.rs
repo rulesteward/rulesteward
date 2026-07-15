@@ -36,9 +36,9 @@
 use std::path::Path;
 
 use rulesteward_auditd::{
-    AuditField,
+    AuditField, TargetVersion,
     lints::field_type::{FieldType, field_type},
-    lints::operator_validity::e02,
+    lints::operator_validity::{e02, e05},
     parse_rules_str_located,
 };
 use rulesteward_core::Severity;
@@ -1168,6 +1168,704 @@ fn op_str_ne_exact_token_in_message() {
         msg.contains("`!=`"),
         "expected backtick-delimited `!=` in message, got: {msg:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 9. au-E05: KERNEL rejects bitmask ops (`&` / `&=`) beyond libaudit's
+//    userspace validation -- issue #490.
+//
+// Sibling code to au-E02: au-E02 above models libaudit USERSPACE validation
+// (`audit_rule_fieldpair_data`). This section grounds and pins the KERNEL's
+// SEPARATE rule-insert validator, `audit_field_valid` in
+// `kernel/auditfilter.c`, which rejects `Audit_bitmask` (`&`) /
+// `Audit_bittest` (`&=`) for a field group libaudit's own parser has no
+// opinion on. A rule such as `-F msgtype&0x100` therefore PARSES cleanly
+// under `auditctl` (au-E02 correctly stays silent) but is REJECTED AT LOAD
+// by the running kernel: a load-aborting false negative that au-E02 alone
+// cannot catch. au-E02's own behavior is UNCHANGED by this addition: Section
+// 3 above calls `e02()` directly (never the merged `lints::lint` dispatcher),
+// so none of those `assert_clean` cases are affected by au-E05 existing.
+//
+// # Grounding (primary source, fetched directly at each pinned tag from
+// `https://raw.githubusercontent.com/torvalds/linux/<tag>/kernel/auditfilter.c`)
+//
+// el8 (RHEL 8 kernel baseline, vanilla v4.18, `audit_field_valid` at
+// auditfilter.c:336-435, the reject-bitmask switch arm at lines 361-388):
+// 21 `AuditField` variants reject `&`/`&=`:
+//   uid euid suid fsuid auid(AUDIT_LOGINUID) obj_uid
+//   gid egid sgid fsgid obj_gid
+//   pid pers msgtype ppid devmajor devminor exit success inode sessionid
+// Everything else (arg0-3, subj_user/role/type/sen/clr, obj_user/role/type/
+// lev_low/lev_high, watch/dir, filterkey) falls into the SAME switch's
+// unconditional `break` arm (lines 389-406): every operator, including
+// bitmask, is accepted. `AUDIT_SADDR_FAM` is not a recognized field constant
+// in vanilla v4.18 at all (added upstream ~v5.4); see the SaddrFam note
+// below.
+//
+// el9/el10 (RHEL 9/10 kernel baseline, v5.14 through at least v6.16 --
+// `audit_field_valid` at auditfilter.c:323-437 (v5.14) / :327-441 (v6.6);
+// the reject-bitmask arm is BYTE-IDENTICAL across v5.14, v6.6, v6.12, v6.16
+// -- confirmed by direct diff of all four fetched sources, the only
+// difference anywhere in the function being an unrelated
+// AUDIT_FILTER_URING_EXIT guard added to AUDIT_PERM's VALUE check at v6.6+,
+// which does not touch this field list):
+// 24 `AuditField` variants reject `&`/`&=`:
+//   uid euid suid fsuid auid obj_uid gid egid sgid fsgid obj_gid
+//   pid msgtype ppid devmajor exit success inode sessionid
+//   subj_sen subj_clr obj_lev_low obj_lev_high saddr_fam
+// `pers` and `devminor` moved OUT of the reject arm and into a NEW,
+// explicit "all ops are valid" arm alongside arg0-3 (v5.14
+// auditfilter.c:350-357).
+//
+// # The 19-field version-STABLE intersection (`target == None`, the
+// portable default -- fires regardless of `--target`, zero false positives
+// AND zero false negatives on ANY of the examined kernel versions):
+//   uid euid suid fsuid auid obj_uid gid egid sgid fsgid obj_gid
+//   pid msgtype ppid devmajor exit success inode sessionid
+//
+// # EL8-ONLY additions (reject on el8, NOT on el9/el10): pers, devminor.
+// # EL9/EL10-ONLY additions (reject on el9/el10, NOT on el8): subj_sen,
+//   subj_clr, obj_lev_low, obj_lev_high, saddr_fam.
+//
+// # SaddrFam / el8 (DELIBERATE, DOCUMENTED gap -- orchestrator-locked):
+// vanilla v4.18 has NO `AUDIT_SADDR_FAM` case at all (upstream added the
+// constant/case ~v5.4); whether RHEL 8's backported/vendor kernel carries a
+// backport of this specific case is UNVERIFIED against a real RHEL8 kernel
+// tree. The el8 table in this test suite (and the implementation it drives)
+// therefore OMITS saddr_fam: a false NEGATIVE here is acceptable, a false
+// POSITIVE in a security linter is not. A follow-up issue tracks the
+// empirical RHEL8 check; this is not guessed at here.
+//
+// # ARG0-3: unconditionally in the "all ops valid" arm at EVERY examined
+// kernel version (el8 AND el9/el10 alike) -- the sharpest negative control:
+// an impl that fires au-E05 for every field (a constant-true / "reject
+// everything" regression) fails Section 9's arg-register tests at every
+// target, including `None`.
+//
+// # Scope: bitmask operators ONLY (`&` Audit_bitmask / `&=` Audit_bittest).
+// A SEPARATE, much larger kernel-vs-userspace divergence was also spotted
+// during this grounding -- on el9/el10, `audit_field_valid` additionally
+// restricts subj_user/subj_role/subj_type/obj_user/obj_role/obj_type/watch/
+// dir/filterkey to `=`/`!=` only (v5.14 auditfilter.c:386-405), which
+// libaudit's userspace parser does NOT restrict for these fields either.
+// That is OUT OF SCOPE for au-E05 (issue #490's title and grounding request
+// are bitmask-operator-specific) and is NOT modeled by any test below.
+//
+// # ORCHESTRATOR-LOCKED DECISION (NARROW, option (a)): au-E05 stays SILENT
+// for a bitmask op on every field in that `=`/`!=`-only arm, at EVERY
+// target, including `None`. Rationale, spelled out because it is
+// non-obvious: that arm is a DIFFERENT kernel restriction (an operator
+// allow-list, not a bitmask-specific reject), and modeling only its bitmask
+// corner would be a half-measure -- `-F path>5` (a non-bitmask relational
+// op) would STILL be a false negative even after that half-fix. Splitting
+// the arm's fields by whether au-E02 ALREADY covers them (verified against
+// `field_type()`, `src/lints/field_type.rs`):
+//   - arch, fstype, perm, exe (`FieldType::Arch`/`FsType`/`Perm`/`StringEqNe`)
+//     map to `true` in au-E02's operator-restriction table for a non-Eq/Ne
+//     op -- au-E05 firing here too would be a DOUBLE-report of the same
+//     load-abort, not a new finding.
+//   - subj_user, subj_role, subj_type, obj_user, obj_role, obj_type, path,
+//     dir (`FieldType::String`) and key (`FieldType::Key`) map to `false` in
+//     au-E02 -- these NINE fields are the genuine residual gap: today
+//     NEITHER au-E02 nor au-E05 catches a relational/non-bitmask op rejected
+//     by this kernel arm on el9/el10. A follow-up issue (filed by the
+//     orchestrator, out of scope here) will model the WHOLE arm -- every
+//     kernel-disallowed op, not just bitmask -- as its own lint pass rather
+//     than bolting a half-measure onto au-E05.
+// `filetype` is NOT a member of this particular `=`/`!=`-only arm at all (it
+// has no kernel-side operator guard of any kind); it is simply an additional
+// unrestricted field, included in the 14-field negative-control set below
+// for completeness alongside the above 9 residual-gap fields + the 4
+// au-E02-double-report fields (arch/fstype/perm/exe). Section 9's
+// negative-control test below (`e05_fields_outside_the_kernel_reject_table_...`)
+// pins the CURRENT, deliberately-narrow contract: all 14 fields stay
+// au-E05-CLEAN for bitmask ops at every target, and must NOT be "fixed" to
+// fire without the follow-up issue doing the full-arm job properly.
+// ---------------------------------------------------------------------------
+
+/// Run `e05` on one or more inline rule strings against `target` and return
+/// the diagnostics. Mirrors the `lint()` helper for `e02` above.
+fn lint05(input: &str, target: Option<TargetVersion>) -> Vec<rulesteward_core::Diagnostic> {
+    e05(&located(input), target)
+}
+
+/// Run `e05` and assert no au-E05 findings for `target` (clean pass).
+fn assert_e05_clean(input: &str, target: Option<TargetVersion>) {
+    let diags = lint05(input, target);
+    assert!(
+        diags.is_empty(),
+        "expected no au-E05 for:\n  {input}\n  target={target:?}\ngot: {diags:#?}"
+    );
+}
+
+/// Run `e05` and assert exactly one finding with code "au-E05" and
+/// `Severity::Error`, naming `field` and `op` in the message. Also asserts
+/// the message names the KERNEL specifically (case-insensitive): the whole
+/// point of a sibling code (rather than folding this into au-E02) is that
+/// operators can tell a KERNEL-rejected op from a USERSPACE-rejected one.
+fn assert_e05(input: &str, target: Option<TargetVersion>, field: &str, op: &str) {
+    let diags = lint05(input, target);
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 au-E05 for:\n  {input}\n  target={target:?}\ngot: {diags:#?}"
+    );
+    let d = &diags[0];
+    assert_eq!(d.severity, Severity::Error, "severity must be Error");
+    assert_eq!(d.code, "au-E05", "code must be au-E05");
+    assert!(
+        d.message.contains(field),
+        "message must name the field '{field}': '{}'",
+        d.message
+    );
+    assert!(
+        d.message.contains(op),
+        "message must name the operator '{op}': '{}'",
+        d.message
+    );
+    assert!(
+        d.message.to_lowercase().contains("kernel"),
+        "au-E05 message must attribute the rejection to the KERNEL layer \
+         (distinct from au-E02's auditctl/userspace wording): '{}'",
+        d.message
+    );
+}
+
+/// The 19-field version-STABLE intersection: (field name, sample rule)
+/// pairs. See the Section 9 grounding doc comment above for the citation.
+const STABLE_19: &[(&str, &str)] = &[
+    ("uid", "-a always,exit -F uid&500"),
+    ("euid", "-a always,exit -F euid&500"),
+    ("suid", "-a always,exit -F suid&500"),
+    ("fsuid", "-a always,exit -F fsuid&500"),
+    ("auid", "-a always,exit -F auid&1000"),
+    ("obj_uid", "-a always,exit -F obj_uid&500"),
+    ("gid", "-a always,exit -F gid&500"),
+    ("egid", "-a always,exit -F egid&500"),
+    ("sgid", "-a always,exit -F sgid&500"),
+    ("fsgid", "-a always,exit -F fsgid&500"),
+    ("obj_gid", "-a always,exit -F obj_gid&500"),
+    ("pid", "-a always,exit -F pid&100"),
+    ("msgtype", "-a never,exclude -F msgtype&0x100"),
+    ("ppid", "-a always,exit -F ppid&1"),
+    ("devmajor", "-a always,exit -F devmajor&8"),
+    ("exit", "-a always,exit -F exit&1"),
+    ("success", "-a always,exit -F success&1"),
+    ("inode", "-a always,exit -S openat -F inode&131"),
+    ("sessionid", "-a always,exit -F sessionid&5"),
+];
+
+/// Every one of the 19 version-stable fields fires au-E05 for `&` under the
+/// portable `target == None` default. This is the CENTRAL adversarial
+/// property: `None` is NOT "fully silent like au-W06" -- it is the
+/// conservative, always-on subset.
+#[test]
+fn e05_stable_19_fields_reject_bitand_when_target_is_none() {
+    assert_eq!(
+        STABLE_19.len(),
+        19,
+        "the version-stable intersection must have exactly 19 fields"
+    );
+    for (field, rule) in STABLE_19 {
+        assert_e05(rule, None, field, "&");
+    }
+}
+
+/// Same 19 fields, `&=` (`Audit_bittest`) instead of `&` (`Audit_bitmask`) --
+/// both kernel-rejected bitmask forms, pinned separately per the au-E02
+/// Section 8 precedent (`contains("&")` is satisfied by both `"&"` and
+/// `"&="`, so a mutation collapsing `BitAndEq` handling into `BitAnd` would
+/// slip past a `&`-only test suite).
+#[test]
+fn e05_stable_19_fields_reject_bitandeq_when_target_is_none() {
+    assert_eq!(
+        STABLE_19.len(),
+        19,
+        "the version-stable intersection must have exactly 19 fields"
+    );
+    for (field, rule) in STABLE_19 {
+        let bitandeq_rule = rule.replacen('&', "&=", 1);
+        assert_e05(&bitandeq_rule, None, field, "&=");
+    }
+}
+
+/// The stable fields must ALSO fire when a specific `--target` is given, not
+/// just under the portable `None` default. Kills an impl that (wrongly)
+/// gates the ENTIRE au-E05 pass behind `target.is_some()` and forgets the
+/// always-on stable check for `Some(t)`.
+#[test]
+fn e05_stable_fields_still_reject_under_every_specific_target_too() {
+    let cases = [
+        ("uid", "-a always,exit -F uid&500"),
+        ("msgtype", "-a never,exclude -F msgtype&0x100"),
+        ("inode", "-a always,exit -S openat -F inode&131"),
+    ];
+    for target in [
+        TargetVersion::Rhel8,
+        TargetVersion::Rhel9,
+        TargetVersion::Rhel10,
+    ] {
+        for (field, rule) in &cases {
+            assert_e05(rule, Some(target), field, "&");
+        }
+    }
+}
+
+/// El8-only additions: `pers` and `devminor` reject bitmask ops ONLY under
+/// `Some(TargetVersion::Rhel8)`; el9/el10 moved both into the "all ops
+/// valid" arm, and the portable `None` default (the 19-field stable set)
+/// never included them.
+///
+/// Grounding: v4.18 auditfilter.c:375-376 lists `case AUDIT_PERS:` and
+/// `case AUDIT_DEVMINOR:` inside the SAME bitmask-reject arm as
+/// pid/msgtype/etc (lines 361-388). v5.14 auditfilter.c:350-357 moves BOTH
+/// into a NEW arm explicitly commented `/* all ops are valid */`.
+#[test]
+fn e05_pers_and_devminor_reject_bitand_only_under_rhel8() {
+    let cases = [
+        ("pers", "-a always,exit -F pers&1"),
+        ("devminor", "-a always,exit -F devminor&0"),
+    ];
+    for (field, rule) in &cases {
+        assert_e05(rule, Some(TargetVersion::Rhel8), field, "&");
+        assert_e05_clean(rule, None);
+        assert_e05_clean(rule, Some(TargetVersion::Rhel9));
+        assert_e05_clean(rule, Some(TargetVersion::Rhel10));
+    }
+}
+
+/// El9/el10-only additions (excluding `saddr_fam`, covered separately below):
+/// `subj_sen`, `subj_clr`, `obj_lev_low`, `obj_lev_high` reject bitmask ops
+/// ONLY under `Some(Rhel9)` / `Some(Rhel10)`; el8 groups all four in the
+/// unconditional "all ops valid" arm (v4.18 auditfilter.c:393-402), and the
+/// portable `None` default never included them.
+///
+/// Grounding: v5.14 auditfilter.c:377-381 (confirmed byte-identical at
+/// v6.6/v6.12/v6.16) lists these 4 cases inside the bitmask-reject arm.
+#[test]
+fn e05_el9_el10_only_fields_reject_bitand_only_under_rhel9_and_rhel10() {
+    let cases = [
+        ("subj_sen", "-a always,exit -F subj_sen&1"),
+        ("subj_clr", "-a always,exit -F subj_clr&1"),
+        ("obj_lev_low", "-a always,exit -F obj_lev_low&1"),
+        ("obj_lev_high", "-a always,exit -F obj_lev_high&1"),
+    ];
+    for (field, rule) in &cases {
+        assert_e05(rule, Some(TargetVersion::Rhel9), field, "&");
+        assert_e05(rule, Some(TargetVersion::Rhel10), field, "&");
+        assert_e05_clean(rule, None);
+        assert_e05_clean(rule, Some(TargetVersion::Rhel8));
+    }
+}
+
+/// `saddr_fam`: rejects bitmask ops under `Some(Rhel9)` / `Some(Rhel10)`
+/// (confirmed: v5.14 auditfilter.c:381 `case AUDIT_SADDR_FAM:` sits inside
+/// the bitmask-reject arm, byte-identical at v6.6/v6.12/v6.16).
+///
+/// El8 is a DELIBERATE, DOCUMENTED gap, not an oversight: vanilla v4.18 has
+/// NO `AUDIT_SADDR_FAM` case at all (the constant/case was added upstream
+/// around v5.4); whether RHEL 8's backported kernel carries a backport of
+/// this specific case is UNVERIFIED against a real RHEL8 kernel tree. Per
+/// the orchestrator's locked decision, the el8 table OMITS `saddr_fam`
+/// (conservative: a false NEGATIVE here is acceptable, a false POSITIVE in a
+/// security linter is not). A follow-up issue tracks the empirical el8
+/// check -- this test pins the current, deliberately-conservative contract;
+/// it must NOT be "fixed" to fire on el8 without that empirical check.
+#[test]
+fn e05_saddr_fam_rejects_under_el9_el10_but_is_conservatively_omitted_on_el8() {
+    let rule = "-a always,exit -F saddr_fam&2";
+    assert_e05(rule, Some(TargetVersion::Rhel9), "saddr_fam", "&");
+    assert_e05(rule, Some(TargetVersion::Rhel10), "saddr_fam", "&");
+    // Conservative, documented omission (see doc comment above): el8 AND the
+    // portable None default both stay clean for saddr_fam, even though a
+    // REAL RHEL8 kernel backport MIGHT reject it -- unverified, not claimed.
+    assert_e05_clean(rule, Some(TargetVersion::Rhel8));
+    assert_e05_clean(rule, None);
+}
+
+/// arg0..arg3: unconditionally in the "all ops valid" arm at EVERY examined
+/// kernel version (el8 AND el9/el10 alike). The sharpest negative control:
+/// an impl that fires au-E05 for every field (a constant-true / "reject
+/// everything" bug) fails this test at every target, including `None`.
+///
+/// Grounding: v4.18 auditfilter.c:389-406 (`case AUDIT_ARG0:` through
+/// `AUDIT_ARG3:` fall to `break`, no op guard at all); v5.14
+/// auditfilter.c:350-357 (`case AUDIT_ARG0:` through `AUDIT_ARG3:`
+/// explicitly commented `/* all ops are valid */`), byte-identical at
+/// v6.6/v6.12/v6.16.
+#[test]
+fn e05_arg_registers_never_reject_bitand_under_any_target() {
+    let cases = [
+        "-a always,exit -F a0&0xff",
+        "-a always,exit -F a1&0xff",
+        "-a always,exit -F a2&0xff",
+        "-a always,exit -F a3&0xff",
+    ];
+    let targets: [Option<TargetVersion>; 4] = [
+        None,
+        Some(TargetVersion::Rhel8),
+        Some(TargetVersion::Rhel9),
+        Some(TargetVersion::Rhel10),
+    ];
+    for target in targets {
+        for rule in &cases {
+            assert_e05_clean(rule, target);
+        }
+    }
+}
+
+/// The 14 fields that sit OUTSIDE the kernel's bitmask-reject table
+/// entirely, at EVERY examined kernel version, and are pinned by NOTHING
+/// else in this suite: `path`, `dir`, `key`, `subj_user`, `subj_role`,
+/// `subj_type`, `obj_user`, `obj_role`, `obj_type`, `exe`, `arch`, `perm`,
+/// `filetype`, `fstype`. See the Section 9 grounding doc comment's
+/// "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph for the exact citation
+/// and the au-E02-double-report-avoidance rationale.
+///
+/// This is the DEMONSTRATED-failure negative control: an impl that rejects
+/// bitmask on "every field except arg0-3 (with `pers`/`devminor`/`subj_sen`/
+/// `subj_clr`/`obj_lev_low`/`obj_lev_high`/`saddr_fam` gated by target)"
+/// passes every OTHER Section 9 test above but ships real false positives --
+/// `-F path&0x1`, `-F dir&0x1`, `-F subj_user&0x1`, `-F obj_type&0x1`,
+/// `-F key&0x1` (among others) all firing under the portable `None` default,
+/// which the el8 kernel (v4.18 auditfilter.c's unconditional `break` arm at
+/// lines 389-406) genuinely accepts.
+///
+/// Both bitmask forms (`&` and `&=`) are checked, at all four targets, so
+/// neither operator nor target can hide a false positive on any of these 14
+/// fields.
+#[test]
+fn e05_fields_outside_the_kernel_reject_table_stay_clean_at_every_target() {
+    let cases = [
+        "-a always,exit -S openat -F path&0x1",
+        "-a always,exit -S openat -F dir&0x1",
+        "-a always,exit -S execve -F key&0x1",
+        "-a always,exit -S execve -F subj_user&0x1",
+        "-a always,exit -S execve -F subj_role&0x1",
+        "-a always,exit -S execve -F subj_type&0x1",
+        "-a always,exit -S openat -F obj_user&0x1",
+        "-a always,exit -S openat -F obj_role&0x1",
+        "-a always,exit -S openat -F obj_type&0x1",
+        "-a always,exit -S execve -F exe&0x1",
+        "-a always,exit -F arch&0xff -S execve",
+        "-a always,exit -S openat -F perm&r",
+        "-a always,exit -S openat -F filetype&0x1",
+        "-a always,filesystem -F fstype&0x1",
+    ];
+    let targets: [Option<TargetVersion>; 4] = [
+        None,
+        Some(TargetVersion::Rhel8),
+        Some(TargetVersion::Rhel9),
+        Some(TargetVersion::Rhel10),
+    ];
+    for target in targets {
+        for rule in &cases {
+            assert_e05_clean(rule, target);
+            let bitandeq_rule = rule.replacen('&', "&=", 1);
+            assert_e05_clean(&bitandeq_rule, target);
+        }
+    }
+}
+
+/// Pin the PRECISE backtick-delimited operator token in the au-E05 message,
+/// mirroring the au-E02 Section 8 precedent. `assert_e05`'s
+/// `d.message.contains(op)` check is satisfied by both `"&"` and `"&="`
+/// (`"&=".contains("&")` is true), so a mutation that returns `"&="` for
+/// `CompareOp::BitAnd` would slip past every `assert_e05(..., "&")` call
+/// above. Today that swap is caught only TRANSITIVELY, via Section 8's
+/// `op_str_bitand_is_plain_not_bitand_eq` -- which pins au-E02's SHARED
+/// `op_str()`. If au-E05 instead uses its own, LOCAL `op_str`-equivalent,
+/// the transitive coverage does not apply and the swap goes uncaught. This
+/// test pins it directly against au-E05's own diagnostic output, so au-E05
+/// does not depend on reusing au-E02's helper to stay correct. (The reverse
+/// swap -- `BitAndEq => "&"` -- is already caught: `d.message.contains("&=")`
+/// in `e05_stable_19_fields_reject_bitandeq_when_target_is_none` would fail
+/// outright, since `"&".contains("&=")` is false.)
+#[test]
+fn e05_bitand_message_is_backtick_delimited_plain_not_bitand_eq() {
+    let diags = lint05("-a always,exit -F uid&500", None);
+    assert_eq!(diags.len(), 1, "expected exactly 1 au-E05: {diags:#?}");
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("`&`"),
+        "expected backtick-delimited `&` in message, got: {msg:?}"
+    );
+    assert!(
+        !msg.contains("`&=`"),
+        "message must not contain `&=` when the op is plain `&`: {msg:?}"
+    );
+}
+
+/// The kernel-side bitmask restriction applies ONLY to `&` (`Audit_bitmask`)
+/// and `&=` (`Audit_bittest`); every OTHER operator on the same fields is
+/// unrestricted at the kernel layer. An impl that (wrongly) fires au-E05 for
+/// ANY operator on a listed field -- not just the two bitmask forms -- fails
+/// this test.
+///
+/// Grounding: v5.14/v6.x auditfilter.c `if (f->op == Audit_bitmask ||
+/// f->op == Audit_bittest) return -EINVAL;` -- an explicit two-value check,
+/// not a blanket rejection of the field.
+#[test]
+fn e05_relational_and_equality_ops_never_fire_on_stable_fields() {
+    let rules = [
+        "-a always,exit -F uid=500",
+        "-a always,exit -F uid!=500",
+        "-a always,exit -F uid<500",
+        "-a always,exit -F uid>500",
+        "-a always,exit -F uid<=500",
+        "-a always,exit -F uid>=500",
+        "-a never,exclude -F msgtype=1300",
+        "-a never,exclude -F msgtype!=1300",
+        "-a never,exclude -F msgtype>1300",
+        "-a always,exit -F pid<100",
+        "-a always,exit -F pid>=100",
+    ];
+    for rule in rules {
+        assert_e05_clean(rule, None);
+        assert_e05_clean(rule, Some(TargetVersion::Rhel9));
+    }
+}
+
+/// THE central issue #490 gap: `-F msgtype&0x100` PARSES cleanly under
+/// libaudit userspace (au-E02 stays silent -- `FieldType::MsgType` has no
+/// operator restriction, `field_type.rs` `MsgType` arm) but the KERNEL rejects
+/// it at rule-LOAD time. au-E02 must remain silent (unchanged, userspace is
+/// correctly modeled); au-E05 must be the ONLY code that catches this.
+#[test]
+fn e05_catches_the_e02_false_negative_on_userspace_unrestricted_stable_fields() {
+    let cases = [
+        ("-a always,exit -F uid&500", "uid"),
+        ("-a never,exclude -F msgtype&0x100", "msgtype"),
+        ("-a always,exit -F pid&100", "pid"),
+        ("-a always,exit -F sessionid&5", "sessionid"),
+    ];
+    for (rule, field) in cases {
+        let e02_diags = lint(rule);
+        assert!(
+            e02_diags.is_empty(),
+            "au-E02 must stay silent for '{rule}' (userspace has no operator \
+             restriction on this field): {e02_diags:#?}"
+        );
+        assert_e05(rule, None, field, "&");
+    }
+}
+
+/// The documented OVERLAP case: `inode` is userspace-restricted to `=`/`!=`
+/// (au-E02, `FieldType::NumericEqNe`, libaudit.c `EAU_OPEQNOTEQ`) AND
+/// kernel-restricted against bitmask ops (au-E05, v4.18/v5.14+ both list
+/// `AUDIT_INODE` in the bitmask-reject arm). `-F inode&131` is rejected by
+/// BOTH layers, so a single rule legitimately carries BOTH codes.
+#[test]
+fn e05_and_e02_both_fire_on_inode_bitand_the_documented_overlap_case() {
+    let rule = "-a always,exit -S openat -F inode&131";
+    let e02_diags = lint(rule);
+    assert_eq!(
+        e02_diags.len(),
+        1,
+        "au-E02 must still fire for inode& (userspace EAU_OPEQNOTEQ, \
+         unchanged by this addition): {e02_diags:#?}"
+    );
+    assert_eq!(e02_diags[0].code, "au-E02");
+    assert_e05(rule, None, "inode", "&");
+}
+
+// ---------------------------------------------------------------------------
+// 10. au-E05 diagnostic shape + multi-predicate behavior (mirrors the au-E02
+//    Sections 5/6 precedent above).
+// ---------------------------------------------------------------------------
+
+/// Verify the full diagnostic shape for a known kernel-rejection case.
+#[test]
+fn e05_diagnostic_shape() {
+    let file = Path::new("/etc/audit/rules.d/40-e05.rules");
+    let input = "-a always,exit -F uid&500";
+    let rules = parse_rules_str_located(input, file).expect("must parse");
+    let diags = e05(&rules, None);
+
+    assert_eq!(diags.len(), 1);
+    let d = &diags[0];
+
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "must be Error (the kernel rejects the rule load)"
+    );
+    assert_eq!(d.code, "au-E05");
+    assert_eq!(d.file, file);
+    assert_eq!(d.line, 1, "anchored at the rule's 1-based line number");
+    assert_eq!(d.column, 1, "column 1 per auditd anchoring convention");
+    assert_eq!(
+        d.span,
+        0..input.len(),
+        "span must cover the whole raw rule line"
+    );
+    assert_eq!(
+        d.source_id.as_deref(),
+        Some(file.display().to_string().as_str()),
+        "source_id must be the file path's display string"
+    );
+    assert!(
+        d.message.contains("uid") && d.message.contains('&'),
+        "message must name field 'uid' and operator '&': '{}'",
+        d.message
+    );
+    assert!(
+        d.message.to_lowercase().contains("kernel"),
+        "message must attribute the rejection to the KERNEL layer \
+         (distinct from au-E02's auditctl/userspace wording): '{}'",
+        d.message
+    );
+}
+
+/// A rule with two kernel-rejected predicates emits exactly two au-E05
+/// diagnostics.
+#[test]
+fn e05_two_kernel_rejected_predicates_produce_two_findings() {
+    let input = "-a always,exit -F uid&500 -F pid&100";
+    let diags = lint05(input, None);
+    assert_eq!(
+        diags.len(),
+        2,
+        "two kernel-rejected predicates must produce exactly 2 au-E05 \
+         findings\ngot: {diags:#?}"
+    );
+    for d in &diags {
+        assert_eq!(d.code, "au-E05");
+        assert_eq!(d.severity, Severity::Error);
+    }
+    let msgs: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("uid")),
+        "expected one finding naming uid: {msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("pid")),
+        "expected one finding naming pid: {msgs:?}"
+    );
+}
+
+/// A rule with one kernel-rejected and one kernel-accepted predicate emits
+/// exactly one au-E05 (the arg0-3 negative control paired with a stable
+/// field in the SAME rule).
+#[test]
+fn e05_one_rejected_one_accepted_predicate_produces_one_finding() {
+    let input = "-a always,exit -F uid&500 -F a0&0xff";
+    let diags = lint05(input, None);
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the kernel-rejected predicate must fire: {diags:#?}"
+    );
+    assert!(diags[0].message.contains("uid"));
+}
+
+/// `-C` is already parser-restricted to `=`/`!=` (see `parse_field_compare`),
+/// so it never reaches au-E05's `-F`-only scan; a `-C` predicate alongside a
+/// genuinely kernel-rejected `-F` predicate must not add or remove findings.
+#[test]
+fn e05_c_field_compare_contributes_nothing_beyond_the_f_predicate() {
+    let rules = located("-a always,exit -F uid&500 -C uid!=euid");
+    let diags = e05(&rules, None);
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the -F uid& predicate should fire; -C is untouched: {diags:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 11. Dispatcher wiring: `lints::lint` must route au-E05 findings, both for
+//    the portable None default AND under an explicit --target (mirrors the
+//    au-E04 T16 precedent in test_lints_field_filter.rs).
+// ---------------------------------------------------------------------------
+
+/// `lints::lint` must include au-E05 findings for a stable-19 field even
+/// with `target = None` -- the 19-field stable set is NOT gated behind
+/// `--target` (unlike au-W06, which stays fully silent under `None`).
+#[test]
+fn dispatcher_includes_e05_findings_for_stable_field_even_with_target_none() {
+    let rules = located("-a always,exit -F uid&500");
+    let all_diags = rulesteward_auditd::lints::lint(
+        &rules,
+        rulesteward_auditd::lints::LintOptions::default(),
+        None,
+    );
+    let e05_diags: Vec<_> = all_diags.iter().filter(|d| d.code == "au-E05").collect();
+    assert!(
+        !e05_diags.is_empty(),
+        "lints::lint must include au-E05 findings for uid& even with \
+         target=None; got codes: {:?}",
+        all_diags.iter().map(|d| &d.code).collect::<Vec<_>>()
+    );
+}
+
+/// `lints::lint` must include au-E05 findings for a target-gated field
+/// (`saddr_fam`) under an explicit `--target rhel9`.
+#[test]
+fn dispatcher_includes_e05_findings_for_target_gated_field_under_rhel9() {
+    let rules = located("-a always,exit -F saddr_fam&2");
+    let all_diags = rulesteward_auditd::lints::lint(
+        &rules,
+        rulesteward_auditd::lints::LintOptions::default(),
+        Some(TargetVersion::Rhel9),
+    );
+    let e05_diags: Vec<_> = all_diags.iter().filter(|d| d.code == "au-E05").collect();
+    assert!(
+        !e05_diags.is_empty(),
+        "lints::lint must include au-E05 findings for saddr_fam& under \
+         --target rhel9; got codes: {:?}",
+        all_diags.iter().map(|d| &d.code).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 12. Clean-corpus regression: zero au-E05 findings across ALL corpus
+//    scenarios under the portable (target=None) default -- every corpus
+//    file was loaded on a real host, so any firing here (a bitmask op on a
+//    kernel-rejected field that somehow made it past that host's OWN
+//    kernel) would indicate a linter false positive.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e05_zero_findings_across_all_corpus_scenarios_under_target_none() {
+    use std::fs;
+
+    let corpus_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/auditd");
+
+    let scenarios: Vec<_> = fs::read_dir(&corpus_root)
+        .expect("corpus root must be readable")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+        .collect();
+
+    assert!(
+        !scenarios.is_empty(),
+        "expected at least one corpus scenario under {corpus_root:?}"
+    );
+
+    for entry in &scenarios {
+        let scenario_name = entry.file_name();
+        let scenario_dir = entry.path();
+
+        let rules_files = collect_rules_files(&scenario_dir);
+        assert!(
+            !rules_files.is_empty(),
+            "scenario {scenario_name:?} has no .rules files"
+        );
+
+        for rules_path in &rules_files {
+            let content = fs::read_to_string(rules_path)
+                .unwrap_or_else(|e| panic!("failed to read corpus file {rules_path:?}: {e}"));
+            let Ok(rules) = parse_rules_str_located(&content, rules_path) else {
+                continue; // parse errors are a different pass
+            };
+            let diags = e05(&rules, None);
+            assert!(
+                diags.is_empty(),
+                "au-E05 false positive in corpus {scenario_name:?} file {rules_path:?}:\n{diags:#?}",
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

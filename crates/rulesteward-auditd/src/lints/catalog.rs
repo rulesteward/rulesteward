@@ -76,10 +76,13 @@ mod tests {
 
     /// The authoritative emitted set. au-W04, originally the cut `-D` stretch
     /// lint (decision D6), was revived for issue #261 as the missing-ABI
-    /// coverage warning, so the code number is now live again.
+    /// coverage warning, so the code number is now live again. au-E05
+    /// (issue #490) is the KERNEL-side bitmask-operator-rejection sibling to
+    /// au-E02's userspace model; pinned here ahead of the implementation so
+    /// this test is RED until `AU_CODES` carries the matching entry.
     const ALL_CODES: &[&str] = &[
-        "au-E01", "au-E02", "au-E03", "au-E04", "au-F01", "au-W01", "au-W02", "au-W03", "au-W04",
-        "au-W06",
+        "au-E01", "au-E02", "au-E03", "au-E04", "au-E05", "au-F01", "au-W01", "au-W02", "au-W03",
+        "au-W04", "au-W06",
     ];
 
     #[test]
