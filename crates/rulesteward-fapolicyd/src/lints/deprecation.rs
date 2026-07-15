@@ -602,12 +602,16 @@ mod tests {
             // Last position (2 members).
             vec!["/usr/bin/", "untrusted"],
             // Middle position (>=3 members, `untrusted` neither first nor
-            // last). This is the fixture that closes the whole
+            // last). This fixture closes the POSITIONAL axis of the
             // not-whole-member defect family on the set path too: it kills
             // every positional shortcut - first-only, last-only,
-            // first-or-last-only - leaving "check every member" as the only
-            // impl that survives, the same `avl_search` whole-membership
-            // test the literal path exercises (attr-sets.c:412-422).
+            // first-or-last-only - forcing "check every member" like
+            // upstream's `avl_search` (attr-sets.c:412-422). It does NOT by
+            // itself exclude a per-member COMPARISON shortcut (e.g. a
+            // per-member `starts_with("untrusted")` still checks every
+            // member and so still passes this positive fixture); that axis
+            // is pinned separately by the negative prefix fixture in
+            // `w12_detect_silent_on_untrusted_as_a_path_substring`.
             vec!["/a/", "untrusted", "/b/"],
         ] {
             let entries = vec![
@@ -675,12 +679,21 @@ mod tests {
                 vec![Attr::All],
             )],
             // Middle position (>=3 members, `untrusted` neither first nor
-            // last). This is the fixture that closes the whole
-            // not-whole-member defect family at once: it kills every
-            // positional shortcut - contains, ends_with, starts_with,
-            // next_back-only, first-or-last-only - leaving "split on `,`
-            // and check every member" (rules.c:572-578 strtok_r) as the only
-            // impl that survives.
+            // last). This fixture closes the POSITIONAL axis of the
+            // not-whole-member defect family: it kills every positional
+            // shortcut - whole-value ends_with, whole-value starts_with,
+            // next_back-only, first-or-last-only - forcing "split on `,`
+            // and check every member" (rules.c:572-578 strtok_r). (Whole-
+            // value `contains` also happens to fire correctly here since
+            // the substring IS present in "/a/,untrusted,/b/"; that
+            // shortcut is killed instead by
+            // `w12_detect_silent_on_comma_list_without_an_untrusted_member`
+            // and `w12_detect_silent_on_untrusted_as_a_path_substring`.) It
+            // does NOT by itself exclude a per-member COMPARISON shortcut
+            // (e.g. per-member `starts_with("untrusted")` also checks every
+            // member and so also passes this positive fixture); that axis
+            // is pinned separately by the negative prefix fixture in
+            // `w12_detect_silent_on_untrusted_as_a_path_substring`.
             vec![modern_rule(
                 3,
                 Decision::Allow,
@@ -724,14 +737,21 @@ mod tests {
 
     #[test]
     fn w12_detect_silent_on_untrusted_as_a_path_substring() {
-        // THE anti-`contains` pin. `/opt/untrusted/` is a real directory path
-        // that happens to embed the word. Upstream's membership test is an
-        // avl_search over plain `strcmp` (rules.c:90 -> attr-sets.c:412-422 ->
-        // attr-sets.c:71-74), which is whole-member, so it does NOT warn.
-        // A `value.contains("untrusted")` impl fires a false fapd-W12 here.
-        // Covered on both sides, and through a `%set`, because each is a
-        // separate code path in the detection template.
-        let cases: [(&str, Vec<Entry>); 4] = [
+        // THE anti-substring pin, covering BOTH comparison-shortcut
+        // directions: SUFFIX (a member ending in "untrusted", e.g.
+        // `/opt/untrusted/` or `/opt/untrusted`) and PREFIX (a member
+        // starting with "untrusted", e.g. `untrusted/`). All of these are
+        // real directory paths that happen to embed or start with the word.
+        // Upstream's membership test is an avl_search over plain `strcmp`
+        // (rules.c:90 -> attr-sets.c:412-422 -> attr-sets.c:71-74), which is
+        // exact whole-member equality - upstream even ships a SEPARATE
+        // `attr_set_check_pstr` ("check if any set entry PREFIXES a string",
+        // attr-sets.c:424) that the warner deliberately does NOT call - so a
+        // `value.contains(...)`, `value.ends_with(...)`, or
+        // `value.starts_with(...)` impl fires a false fapd-W12 on one of
+        // these. Covered on both sides, and through a `%set`, because each
+        // is a separate code path in the detection template.
+        let cases: [(&str, Vec<Entry>); 6] = [
             (
                 "subject literal",
                 vec![modern_rule(
@@ -772,6 +792,44 @@ mod tests {
                 "set member",
                 vec![
                     set_def(1, "dirs", &["/opt/untrusted/", "/usr/bin/"]),
+                    modern_rule(
+                        2,
+                        Decision::Allow,
+                        None,
+                        vec![kv_int("uid", 0)],
+                        vec![kv_ref("dir", "dirs")],
+                    ),
+                ],
+            ),
+            (
+                // PREFIX direction: `untrusted/` is a member that STARTS WITH
+                // `untrusted` without EQUALLING it - `dir=untrusted` plus the
+                // trailing slash this very tool's fapd-W08 advice pushes
+                // everywhere else. A `value.starts_with("untrusted")` impl
+                // fires a false fapd-W12 here even though it correctly
+                // avoided the `ends_with`/`contains` mistakes above. rules.c
+                // has no `dir=` path validation (a grep of rules.c for
+                // `must start` / `absolute` / `[0] != '/'` returns nothing),
+                // so this is a realistic operator value, not an unreachable
+                // one. Upstream's strcmp still sees the whole member
+                // "untrusted/" != "untrusted", so it stays silent.
+                "subject literal, prefix (not suffix)",
+                vec![modern_rule(
+                    1,
+                    Decision::Allow,
+                    None,
+                    vec![kv("dir", "untrusted/")],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                // Same PREFIX direction as above, through a `%set` member
+                // instead of a literal. Kills a `SetRef` impl that compares
+                // each member with `starts_with("untrusted")` instead of the
+                // upstream-exact `attr_set_check_str` equality.
+                "set member, prefix (not suffix)",
+                vec![
+                    set_def(1, "dirs", &["untrusted/", "/usr/bin/"]),
                     modern_rule(
                         2,
                         Decision::Allow,
