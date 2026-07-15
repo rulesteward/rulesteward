@@ -39,6 +39,11 @@ pub const AU_CODES: &[LintCode] = &[
         description: "field used on an illegal filter list: auditctl aborts the rule load because the kernel rejects this field on the specified list",
     },
     LintCode {
+        code: "au-E05",
+        severity: Severity::Error,
+        description: "bitmask operator (& or &=) is rejected by the kernel for this field at rule-load time, even though auditctl's own parser accepts it",
+    },
+    LintCode {
         code: "au-F01",
         severity: Severity::Fatal,
         description: "rules file does not parse",

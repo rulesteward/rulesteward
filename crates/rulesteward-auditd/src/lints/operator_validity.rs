@@ -13,7 +13,7 @@
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::{AuditRule, CompareOp, LocatedRule};
+use crate::ast::{AuditField, AuditRule, CompareOp, LocatedRule};
 use crate::lints::TargetVersion;
 use crate::lints::anchored;
 use crate::lints::field_name::field_name;
@@ -117,26 +117,125 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
 /// that au-E02 alone cannot catch. au-E02's existing behavior and tests are
 /// UNCHANGED by this addition.
 ///
-/// STUB ONLY (test-author barrier, 9a-v0_8-wave1 lane-c-auditd-e05): the
-/// frozen signature per the locked Option-B decision (`target:
-/// Option<TargetVersion>`, mirroring `stig_required::w06`). The grounded
-/// reject table -- a 19-field version-STABLE intersection fired for every
-/// `target` including `None`, plus an el8-only extension under
-/// `Some(TargetVersion::Rhel8)` and a distinct el9/el10-only extension under
-/// `Some(TargetVersion::Rhel9) | Some(TargetVersion::Rhel10)` -- and the
-/// dispatcher wiring into `lints::lint` (beside `e02`) are the IMPLEMENTER's
-/// job, driven by the frozen RED tests in
-/// `tests/test_lints_operator_validity.rs` (Section 9 onward: the grounding
-/// doc comment there cites the exact kernel refs and per-target field lists,
-/// including the deliberate conservative omission of `saddr_fam` from the
-/// el8 table -- unverified against a real RHEL8 kernel tree).
+/// Grounded reject table, keyed on [`AuditField`] (NOT [`FieldType`] -- au-E02's
+/// `FieldType` groups are misaligned with the kernel's own groupings, e.g.
+/// `Numeric` bundles `a0`-`a3` with `pid`/`ppid`, which the kernel treats
+/// differently). Primary source: `kernel/auditfilter.c` `audit_field_valid`,
+/// fetched directly at each pinned tag; see the grounding doc comment on
+/// Section 9 of `tests/test_lints_operator_validity.rs` for the full citation.
+///
+/// Returns `true` when the running kernel at `target` rejects a bitmask
+/// operator (`&`/`&=`) on `field` at rule-insert time.
+///
+/// - The 19-field version-STABLE intersection fires for every `target`,
+///   including `None` (zero false positives AND zero false negatives at any
+///   examined kernel version): `uid`/`euid`/`suid`/`fsuid`/`auid`/`obj_uid`,
+///   `gid`/`egid`/`sgid`/`fsgid`/`obj_gid`, `pid`/`msgtype`/`ppid`/`devmajor`/
+///   `exit`/`success`/`inode`/`sessionid`.
+/// - `Some(Rhel8)` (vanilla v4.18) additionally rejects `pers` and
+///   `devminor` -- both moved to an unconditional "all ops valid" arm at
+///   el9/el10.
+/// - `Some(Rhel9) | Some(Rhel10)` (v5.14 through at least v6.16, byte-
+///   identical bitmask-reject arm) additionally rejects `subj_sen`,
+///   `subj_clr`, `obj_lev_low`, `obj_lev_high`, and `saddr_fam`.
+/// - `saddr_fam` is deliberately OMITTED from the el8 arm: vanilla v4.18 has
+///   no `AUDIT_SADDR_FAM` case at all (added upstream ~v5.4), and RHEL 8's
+///   backport status is unverified. A false negative here is acceptable; a
+///   false positive in a security linter is not.
+/// - `arg0`-`arg3` are unconditionally in the "all ops valid" arm at every
+///   examined kernel version and never appear below.
+/// - Fields the kernel restricts to `=`/`!=` only on el9/el10 (`arch`,
+///   `fstype`, `perm`, `exe`, the `subj_user`/`subj_role`/`subj_type`/
+///   `obj_user`/`obj_role`/`obj_type`/`path`/`dir`/`key`/`filetype` group) are
+///   deliberately OUT OF SCOPE for au-E05 (issue #490 is bitmask-operator-
+///   specific; that separate restriction is a distinct kernel-vs-userspace
+///   gap tracked by a follow-up issue, not modeled here).
+fn kernel_rejects_bitmask(field: &AuditField, target: Option<TargetVersion>) -> bool {
+    let stable19 = matches!(
+        field,
+        AuditField::Uid
+            | AuditField::Euid
+            | AuditField::Suid
+            | AuditField::Fsuid
+            | AuditField::Auid
+            | AuditField::ObjUid
+            | AuditField::Gid
+            | AuditField::Egid
+            | AuditField::Sgid
+            | AuditField::Fsgid
+            | AuditField::ObjGid
+            | AuditField::Pid
+            | AuditField::MsgType
+            | AuditField::Ppid
+            | AuditField::DevMajor
+            | AuditField::Exit
+            | AuditField::Success
+            | AuditField::Inode
+            | AuditField::SessionId
+    );
+    if stable19 {
+        return true;
+    }
+
+    match target {
+        None => false,
+        Some(TargetVersion::Rhel8) => matches!(field, AuditField::Pers | AuditField::DevMinor),
+        Some(TargetVersion::Rhel9 | TargetVersion::Rhel10) => matches!(
+            field,
+            AuditField::SubjSen
+                | AuditField::SubjClr
+                | AuditField::ObjLevLow
+                | AuditField::ObjLevHigh
+                | AuditField::SaddrFam
+        ),
+    }
+}
+
+/// au-E05 pass body. Walks every `-F` predicate in every Syscall rule; for a
+/// bitmask operator (`&`/`&=`) on a kernel-rejected field (per
+/// [`kernel_rejects_bitmask`]), emits one au-E05 Error anchored at the
+/// firing rule's own line and span. Mirrors `e02`'s walk shape and reuses
+/// its `op_str`/`field_name` helpers (issue #458: do not reintroduce a
+/// local copy of either).
 #[must_use]
-pub fn e05(_rules: &[LocatedRule], _target: Option<TargetVersion>) -> Vec<Diagnostic> {
-    todo!(
-        "au-E05 kernel-bitmask-rejection lint body -- issue #490; \
-         see tests/test_lints_operator_validity.rs Section 9+ for the frozen \
-         grounded reject table this must implement"
-    )
+pub fn e05(rules: &[LocatedRule], target: Option<TargetVersion>) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+
+    for located in rules {
+        let AuditRule::Syscall { fields, .. } = &located.rule else {
+            // Control rules and Watch rules carry no -F predicates.
+            continue;
+        };
+
+        for filter in fields {
+            let op = &filter.op;
+            if !matches!(op, CompareOp::BitAnd | CompareOp::BitAndEq) {
+                continue;
+            }
+
+            if kernel_rejects_bitmask(&filter.field, target) {
+                let field_name = field_name(&filter.field);
+                let op_str = op_str(op);
+                // Do NOT self-prefix the code: the renderer already prints the
+                // `[au-E05]` tag. Message must say "kernel" (case-insensitive),
+                // distinct from au-E02's "auditctl"/userspace wording.
+                let msg = format!(
+                    "invalid operator `{op_str}` for field `{field_name}` \
+                     -- the kernel rejects this bitmask operator for this field at rule-load time"
+                );
+                diags.push(anchored(
+                    Severity::Error,
+                    "au-E05",
+                    located.span.clone(),
+                    msg,
+                    &located.file,
+                    located.line,
+                ));
+            }
+        }
+    }
+
+    diags
 }
 
 /// Map a [`CompareOp`] to its string form as written in rules files.

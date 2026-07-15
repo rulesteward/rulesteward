@@ -4,7 +4,9 @@
 //! * `duplicate` - au-W01 normalized-equal duplicate rules (pipeline P1).
 //! * `ordering` - au-W02 shadow/subsumption, au-E01 post-`-e 2` unreachable,
 //!   au-W03 exclude/never suppression conflict (pipeline P2).
-//! * `operator_validity` - au-E02 operator invalid for field type (pipeline P3).
+//! * `operator_validity` - au-E02 operator invalid for field type (pipeline P3);
+//!   au-E05 KERNEL-side bitmask-operator (`&`/`&=`) rejection, a sibling
+//!   check beyond au-E02's libaudit-userspace model (#490).
 //! * `arch_coverage` - au-W04 a syscall rule pins one ABI (`arch=b32`/`b64`)
 //!   with no companion on the opposite ABI, so its syscalls go unaudited on the
 //!   other ABI (#261).
@@ -107,6 +109,7 @@ pub fn lint(
     diags.extend(ordering::e01(rules));
     diags.extend(ordering::w03(rules, opts));
     diags.extend(operator_validity::e02(rules));
+    diags.extend(operator_validity::e05(rules, target));
     diags.extend(arch_coverage::w04(rules));
     diags.extend(field_filter::e04(rules));
     diags.extend(stig_required::w06(rules, opts, target));
