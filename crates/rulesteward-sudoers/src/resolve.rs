@@ -88,6 +88,26 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
         let source = std::fs::read_to_string(path)?;
         let mut chain: Vec<PathBuf> = vec![canonical_or_as_is(path)];
         resolve_parsed(&parse(&source, path), path, host, &mut chain, &mut out);
+        // #485: a linted FILE target whose resolution produces ZERO segments
+        // (byte-empty, whitespace-only, or a file whose only content is an
+        // @include/@includedir chain that itself contributes nothing) still needs
+        // a top-level SudoersFile for `check_merged_required` to anchor its
+        // absence findings against. An empty merged config is not "nothing to
+        // check" -- it is the STRONGEST case, definitionally lacking every
+        // hardening requirement. BROAD (locked decision): fires whenever the
+        // WHOLE top-level FILE target ends up empty, regardless of why -- not
+        // narrowly scoped to a byte-empty/whitespace-only source. Scoped ONLY to
+        // this single-FILE branch: a directory target's per-drop-in resolution
+        // (the `if path.is_dir()` branch above) must stay silent on an
+        // individually-empty drop-in (that would reintroduce the per-fragment
+        // false positive #347 exists to avoid), and this check must run once
+        // here -- after the WHOLE top-level resolution completes -- not inside
+        // `resolve_parsed`/`resolve_file` (which would also wrongly fire per
+        // nested @include that happens to contribute nothing on its own, even
+        // when the parent already produced real content).
+        if out.is_empty() {
+            out.push(parse(&source, path));
+        }
     }
     Ok(out)
 }
