@@ -5,18 +5,50 @@
 //!
 //! Every lint here gates ITSELF inside its own helper; see [`walk`].
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
 use crate::ast::{Attr, AttrValue, Entry};
-use crate::lints::subsume::{MacroMap, build_macro_map};
 use crate::version::TargetVersion;
 
 /// The one deprecated `dir=` member. Upstream compares against this exact
 /// literal: `attr_set_check_str(set, "untrusted")` (`rules.c:90`).
 const UNTRUSTED: &str = "untrusted";
+
+/// fapd-W12's OWN file-scoped `%set` registry, built IN FILE ORDER as
+/// [`w12_detect`] walks the entries. `Some(members)` is the single definition in
+/// scope; `None` marks a name defined MORE THAN ONCE, which never resolves.
+///
+/// Deliberately NOT `subsume::build_macro_map` (`subsume.rs:19-27`): that map is
+/// order-blind and LAST-definition-wins (`map.insert`), so it resolves both a
+/// redefined and a forward-referenced set. fapolicyd's registry is
+/// order-sensitive and first-wins-then-hard-error instead:
+///
+/// * A DUPLICATE set name is a hard error caught BEFORE the second set is
+///   created: `if (attr_sets_find(sets, name)) { msg(LOG_ERR, ... "set %s was
+///   already defined!"); goto free_and_error; }` (v1.6 `rules.c:855-858`; the
+///   same check exists at v1.3.2 `rules.c:731-734` and v1.4.5 `rules.c:807-810`,
+///   so this is not 1.6-only). A non-zero `rules_append` ABORTS the whole policy
+///   load (`policy.c:654-660`), and `warn_deprecated_untrusted_dir` is reached
+///   only from the `finalize:` label (`rules.c:597` subject / `rules.c:748`
+///   object), so the warner never runs for such a file. Hence `None`, in EITHER
+///   redefinition direction: the file does not load, so upstream is silent
+///   whichever definition holds the offending member - NOT "the surviving
+///   definition happens to lack `untrusted`".
+/// * A FORWARD reference is `set '%s' was not defined before` ->
+///   `goto free_and_error` (subject `rules.c:348-353`, object
+///   `rules.c:640-645`), so `finalize:` is unreachable there too. Hence a
+///   reference resolves only against definitions already recorded, i.e. those
+///   appearing EARLIER in the file than the referencing rule.
+///
+/// LIMITATION (deliberate): resolution is per-REFERENCE, not whole-file. Since a
+/// duplicate set aborts the ENTIRE load, upstream would also silence an
+/// unrelated literal `dir=untrusted` elsewhere in such a file, where this pass
+/// still fires on it. Modelling whole-file abort is out of scope here.
+type SetScope<'a> = HashMap<&'a str, Option<&'a [String]>>;
 
 /// Run every deprecation lint pass over `entries` and return the merged
 /// diagnostics.
@@ -158,7 +190,8 @@ fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
 ///    `/usr/bin/,untrusted` arrives as ONE [`AttrValue::Str`] and this function
 ///    owns the split. Matching the whole VALUE instead of each member is a
 ///    FALSE NEGATIVE against upstream;
-/// 3. a `%set` reference whose definition contains `untrusted` as a member.
+/// 3. a `%set` reference whose IN-SCOPE definition (see [`SetScope`], and the
+///    resolution paragraph below) contains `untrusted` as a member.
 ///
 /// Membership is EXACT, case-sensitive, whole-member: upstream's
 /// `attr_set_check_str(set, "untrusted")` (rules.c:90) is an `avl_search`
@@ -170,38 +203,59 @@ fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
 /// `strcmp` table scan, subject-attr.c:75/81), so `Dir=` is not `EXE_DIR`;
 /// fapd-E01 owns unknown attribute names (same division as fapd-W07 above).
 ///
-/// An undefined `%set` emits nothing (fapd-E03 owns undefined-macro reporting).
+/// A `%set` reference resolves against [`SetScope`] - fapd-W12's own in-scope,
+/// first-wins registry - so a redefined or forward-referenced set never resolves
+/// (upstream rejects the whole file in both cases; see [`SetScope`] for the
+/// citations). An unresolved `%set` emits nothing, as does an undefined one
+/// (fapd-E03 owns undefined-macro reporting).
 fn w12_detect(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
-    let macro_map = build_macro_map(entries);
+    let mut sets = SetScope::new();
     let mut diags = Vec::new();
     for entry in entries {
-        // SetDefinition entries are never inspected: upstream warns from
-        // assign_subject/assign_object, which only run for rules.
-        let Entry::Rule(r) = entry else { continue };
-        for attr in r.subject.iter().chain(r.object.iter()) {
-            let Attr::Kv { key, value, .. } = attr else {
-                continue;
-            };
-            // EXACT, case-sensitive key. `subj_name_to_val` is a `strcmp` table
-            // scan (subject-attr.c:75/81), so only `dir` resolves to
-            // EXE_DIR/ODIR and rules.c:89's `type ==` guard can fire; `Dir=` and
-            // `dirfoo=` are fapd-E01's concern, not this lint's.
-            if key != "dir" {
-                continue;
+        match entry {
+            // Scope-building ONLY - a SetDefinition never emits a diagnostic
+            // itself, since upstream warns from assign_subject/assign_object,
+            // which only run for rules. Recording here, mid-walk, is what makes
+            // resolution define-before-use: a definition is visible to later
+            // rules and invisible to earlier ones. A second definition of the
+            // same name poisons it to `None` rather than overwriting the first
+            // (`build_macro_map`'s last-wins `insert` is the defect this
+            // replaces).
+            Entry::SetDefinition { name, values, .. } => {
+                sets.entry(name.as_str())
+                    .and_modify(|members| *members = None)
+                    .or_insert(Some(values.as_slice()));
             }
-            // One diagnostic per offending ATTRIBUTE (not per side, not per
-            // rule): upstream warns from each side's `finalize:` label, i.e.
-            // once per assign_subject/assign_object CALL (rules.c:597 / 748).
-            if has_untrusted_member(value, &macro_map) {
-                diags.push(anchored(
-                    Severity::Warning,
-                    "fapd-W12",
-                    r.span.clone(),
-                    "deprecated `dir=` member `untrusted`; it will be removed in a future fapolicyd release - use object trust with execute permission instead",
-                    file,
-                    r.line,
-                ));
+            Entry::Rule(r) => {
+                for attr in r.subject.iter().chain(r.object.iter()) {
+                    let Attr::Kv { key, value, .. } = attr else {
+                        continue;
+                    };
+                    // EXACT, case-sensitive key. `subj_name_to_val` is a
+                    // `strcmp` table scan (subject-attr.c:75/81), so only `dir`
+                    // resolves to EXE_DIR/ODIR and rules.c:89's `type ==` guard
+                    // can fire; `Dir=` and `dirfoo=` are fapd-E01's concern, not
+                    // this lint's.
+                    if key != "dir" {
+                        continue;
+                    }
+                    // One diagnostic per offending ATTRIBUTE (not per side, not
+                    // per rule): upstream warns from each side's `finalize:`
+                    // label, i.e. once per assign_subject/assign_object CALL
+                    // (rules.c:597 / 748).
+                    if has_untrusted_member(value, &sets) {
+                        diags.push(anchored(
+                            Severity::Warning,
+                            "fapd-W12",
+                            r.span.clone(),
+                            "deprecated `dir=` member `untrusted`; it will be removed in a future fapolicyd release - use object trust with execute permission instead",
+                            file,
+                            r.line,
+                        ));
+                    }
+                }
             }
+            Entry::Comment { .. } | Entry::Blank { .. } => {}
         }
     }
     diags
@@ -218,7 +272,7 @@ fn w12_detect(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 /// that merely embeds, starts with, or ends with the word (`/opt/untrusted/`,
 /// `untrusted/`, `/opt/untrusted`) is not the deprecated construct, and neither
 /// is `UNTRUSTED`.
-fn has_untrusted_member(value: &AttrValue, macro_map: &MacroMap) -> bool {
+fn has_untrusted_member(value: &AttrValue, sets: &SetScope<'_>) -> bool {
     match value {
         // Upstream comma-splits a raw `dir=` value into a STRING set
         // (`strtok_r(tmp, ",", &saved)`, rules.c:572-578 subject / 721-727
@@ -228,13 +282,20 @@ fn has_untrusted_member(value: &AttrValue, macro_map: &MacroMap) -> bool {
         AttrValue::Str(s) => s.split(',').any(|member| member == UNTRUSTED),
         // Set MEMBERSHIP only - the set's NAME is never consulted, so
         // `dir=%untrusted` fires only if the set DEFINES an `untrusted` member.
-        // An undefined set emits nothing (fapd-E03 owns undefined macros).
         // Members arrive already comma-split, and upstream does no nested `%`
         // expansion (`parse_set_line` appends comma tokens verbatim,
         // rules.c:911-919), so a flat exact scan is exact.
-        AttrValue::SetRef(name) => macro_map
-            .get(name)
-            .is_some_and(|values| values.iter().any(|v| v == UNTRUSTED)),
+        //
+        // The two `None`s collapse to the same "emits nothing" answer for
+        // DIFFERENT upstream reasons: an absent key is a set that is undefined
+        // or not yet in scope at this rule (fapd-E03 owns undefined macros; a
+        // forward reference is a hard load error), while a `Some(None)` is a
+        // duplicated name, which is also a hard load error. See [`SetScope`].
+        AttrValue::SetRef(name) => sets
+            .get(name.as_str())
+            .copied()
+            .flatten()
+            .is_some_and(|members| members.iter().any(|v| v == UNTRUSTED)),
         // An integer `dir=` value is never the `untrusted` keyword.
         AttrValue::Int(_) => false,
     }
