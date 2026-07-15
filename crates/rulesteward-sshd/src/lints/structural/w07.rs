@@ -4311,4 +4311,112 @@ mod w07_tests {
              `CAF\u{C9}` and `caf\u{E9}` are disjoint -> no W07"
         );
     }
+
+    // ---- HOST fold on a GLOB, and full multi-site Unicode fidelity (#495 round 5) ----
+    //
+    // DEFERRAL NOTE: #495 is being taken out of the v0.8 Wave-1 milestone for a
+    // dedicated future session. These are the last two fixtures landed before the
+    // hand-off; see the issue for the full implementation map (call-site surface,
+    // signature-preserving fold routes, and the exact fold semantics) so the next
+    // session does not have to re-derive it from the five review rounds' history.
+    //
+    // Every host GLOB in the suite above is already lowercase (`*.corp`, `a*`, `*`);
+    // the only UPPERCASE host tokens are LITERALS (`WEB.CORP`, `CAF\u{C9}`, `K`). So
+    // pattern-folding is never exercised on a glob, and an impl that folds the
+    // incoming VALUE always but folds the PATTERN only when it contains no `*`/`?`
+    // passes the whole pre-round-5 suite (509/509): it never meets an uppercase glob
+    // to skip.
+    //
+    // Separately, the round-4 Unicode guards above
+    // (`kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07`,
+    // `accented_e_host_pattern_does_not_fold_across_case_w07`) are both
+    // SINGLE-criterion-type fixtures (no `Address`), so they route exclusively
+    // through [`member_of_type`] / [`match_pattern_list`] on the single-type path. A
+    // `to_lowercase()` (full Unicode) confined to any OTHER fold site therefore
+    // passes them too - the same structural hole that let a User-axis-only fold
+    // survive earlier rounds recurred here because the new guards were single-type.
+
+    #[test]
+    fn uppercase_host_glob_folds_onto_lowercase_literal_w07() {
+        // #495 round-5 FIDELITY guard, FN direction. The earlier block's glob is
+        // uppercase (`*.CORP`) and the later block is the lowercase literal
+        // `web.corp`. An impl that folds the pattern only when it has no `*`/`?`
+        // (`wrongGLOB`) leaves `*.CORP` un-folded (it contains `*`), so
+        // `glob_match("*.CORP", "web.corp")` stays false and the shadow goes unfound
+        // even though it correctly folds every literal-vs-literal and
+        // literal-vs-lowercase-glob pair the rest of the suite exercises.
+        //
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // `Match Host *.CORP` + `PermitTTY no`, probed against the global default
+        // `PermitTTY yes`:
+        // - host=`web.corp` -> `permittty no` (the block APPLIES: the pattern folds).
+        // - host=`web.example` -> `permittty yes` (control: does not match `*.corp`).
+        //
+        // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+        // match.c:141-146's fold loop is byte-wise over EVERY pattern character with
+        // no wildcard special-casing - `*` and `?` are not exempted from `dolower`,
+        // so an uppercase glob folds exactly like an uppercase literal.
+        let d = w07_diags(
+            "Match Host *.CORP\n    X11Forwarding yes\n\
+             Match Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the uppercase glob `*.CORP` folds too: it admits `web.corp` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn kelvin_sign_shadow_reaches_nobody_guard_and_multitype_member_w07() {
+        // #495 round-5 FIDELITY guard, FN direction. Adding `Address` forces the
+        // multi-type route: the LATER block's `Host !k,\u{212A}` list first passes
+        // through [`block_matches_nobody`]'s self-negation check, then (once past
+        // that guard) through [`multitype_names_axis_shadow`]'s `member` closure -
+        // two independent host-comparison sites a single-type fixture never reaches.
+        //
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // `Match Host !k,\u{212A}` + `PermitTTY no`, probed against the global
+        // default `PermitTTY yes`:
+        // - host=`\u{212A}` (KELVIN SIGN) -> `permittty no` (the block APPLIES:
+        //   KELVIN is a live positive the ASCII fold does not touch, so the
+        //   self-negation `!k` never vetoes it).
+        // - host=`k` -> `permittty yes` (vetoed by `!k`).
+        // - host=`K` (ASCII) -> `permittty yes` (folds onto `k`, also vetoed).
+        // So the block is SATISFIABLE (a real host, KELVIN SIGN, gets `no`) and is a
+        // genuine shadow victim of the earlier unconditional `Match Host *`.
+        //
+        // A wrong impl using full-Unicode `to_lowercase()` at EITHER site instead of
+        // the ASCII-only fold misses this: at `block_matches_nobody`, KELVIN folds
+        // onto `k` (Unicode's documented simple-lowercase mapping for U+212A), making
+        // `!k,\u{212A}` look self-negated (nobody) and suppressing the finding
+        // entirely before the axis walk ever runs. At
+        // `multitype_names_axis_shadow`'s `member` closure, the same Unicode fold
+        // collapses the KELVIN witness candidate onto `k`, which the block's own
+        // `!k` negation then excludes, so no candidate satisfies membership and the
+        // walk finds no shadow either. Both are proven survivors of the round-4
+        // guards; this fixture kills both.
+        let d = w07_diags(
+            "Match Host *\n    X11Forwarding yes\n\
+             Match Host !k,\u{212A} Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "KELVIN SIGN is a live positive under the ASCII-only fold: the block is \
+             satisfiable and shadowed by `Host *` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
 }
