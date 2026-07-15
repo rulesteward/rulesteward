@@ -1207,8 +1207,9 @@ fn op_str_ne_exact_token_in_message() {
 // the reject-bitmask arm is BYTE-IDENTICAL across v5.14, v6.6, v6.12, v6.16
 // -- confirmed by direct diff of all four fetched sources, the only
 // difference anywhere in the function being an unrelated
-// AUDIT_FILTER_URING_EXIT guard added to AUDIT_PERM's VALUE check at v6.6+,
-// which does not touch this field list):
+// AUDIT_FILTER_URING_EXIT guard added to the FIRST switch (the
+// field-vs-listnr validity guard) at v6.6+, which does not touch this
+// bitmask-reject field list):
 // 24 `AuditField` variants reject `&`/`&=`:
 //   uid euid suid fsuid auid obj_uid gid egid sgid fsgid obj_gid
 //   pid msgtype ppid devmajor exit success inode sessionid
@@ -1265,22 +1266,38 @@ fn op_str_ne_exact_token_in_message() {
 //     op -- au-E05 firing here too would be a DOUBLE-report of the same
 //     load-abort, not a new finding.
 //   - subj_user, subj_role, subj_type, obj_user, obj_role, obj_type, path,
-//     dir (`FieldType::String`) and key (`FieldType::Key`) map to `false` in
-//     au-E02 -- these NINE fields are the genuine residual gap: today
-//     NEITHER au-E02 nor au-E05 catches a relational/non-bitmask op rejected
-//     by this kernel arm on el9/el10. A follow-up issue (filed by the
-//     orchestrator, out of scope here) will model the WHOLE arm -- every
-//     kernel-disallowed op, not just bitmask -- as its own lint pass rather
-//     than bolting a half-measure onto au-E05.
-// `filetype` is NOT a member of this particular `=`/`!=`-only arm at all (it
-// has no kernel-side operator guard of any kind); it is simply an additional
-// unrestricted field, included in the 14-field negative-control set below
-// for completeness alongside the above 9 residual-gap fields + the 4
-// au-E02-double-report fields (arch/fstype/perm/exe). Section 9's
-// negative-control test below (`e05_fields_outside_the_kernel_reject_table_...`)
-// pins the CURRENT, deliberately-narrow contract: all 14 fields stay
-// au-E05-CLEAN for bitmask ops at every target, and must NOT be "fixed" to
-// fire without the follow-up issue doing the full-arm job properly.
+//     dir (`FieldType::String`), key (`FieldType::Key`), and filetype
+//     (`FieldType::Filetype`) map to `false` in au-E02 -- these TEN fields
+//     are the genuine residual gap: today NEITHER au-E02 nor au-E05 catches
+//     a relational/non-bitmask op rejected by this kernel arm on el9/el10.
+//     A follow-up issue (filed by the orchestrator, out of scope here) will
+//     model the WHOLE arm -- every kernel-disallowed op, not just bitmask --
+//     as its own lint pass rather than bolting a half-measure onto au-E05.
+// CORRECTION (round 3): an earlier draft of this comment claimed `filetype`
+// "is NOT a member of this particular `=`/`!=`-only arm at all". That claim
+// is TRUE only at the el8 (v4.18) kernel baseline -- v4.18 auditfilter.c:420
+// handles `AUDIT_FILETYPE` with a VALUE check only
+// (`if (f->val & ~S_IFMT) return -EINVAL;`), no operator guard of any kind.
+// It is FALSE at el9/el10: v5.14 auditfilter.c places `case AUDIT_FILETYPE:`
+// INSIDE the `/* only equal and not equal valid ops */` arm, alongside
+// subj_user/subj_role/subj_type/obj_user/obj_role/obj_type/watch/dir/
+// filterkey (byte-identical placement at v6.6/v6.12/v6.16). `filetype`
+// therefore belongs in the TEN-field residual-gap list above, not as a
+// separately-described "additional unrestricted field". No test assertion
+// here was ever wrong -- au-E02 already maps `FieldType::Filetype => false`
+// (`operator_validity.rs:76`), so `-F filetype>5` is kernel-rejected at
+// el9/el10 and caught by NEITHER code today, exactly like the other nine --
+// only this comment's prose was wrong, and the follow-up issue's scope must
+// be drawn from the corrected TEN-field list, not the original nine.
+// The 14-field negative-control set below (all clean for BITMASK ops --
+// au-E05's only in-scope operator class -- at every target) is the union of
+// the 4 au-E02-double-report fields (arch/fstype/perm/exe) and the TEN
+// residual-gap fields above (subj_user, subj_role, subj_type, obj_user,
+// obj_role, obj_type, path, dir, key, filetype). Section 9's negative-control
+// test below (`e05_fields_outside_the_kernel_reject_table_...`) pins the
+// CURRENT, deliberately-narrow contract: all 14 fields stay au-E05-CLEAN for
+// bitmask ops at every target, and must NOT be "fixed" to fire without the
+// follow-up issue doing the full-arm job properly.
 // ---------------------------------------------------------------------------
 
 /// Run `e05` on one or more inline rule strings against `target` and return
@@ -1313,9 +1330,17 @@ fn assert_e05(input: &str, target: Option<TargetVersion>, field: &str, op: &str)
     let d = &diags[0];
     assert_eq!(d.severity, Severity::Error, "severity must be Error");
     assert_eq!(d.code, "au-E05", "code must be au-E05");
+    // Backtick-delimited (round 3 fix): a plain `contains(field)` is a
+    // substring check, so `uid` is satisfied by `euid`/`suid`/`fsuid`/
+    // `auid`/`obj_uid`, and `gid` by `egid`/`sgid`/`fsgid`/`obj_gid`, and
+    // `pid` by `ppid`. A wrong impl with a local field-name map that returns
+    // the WRONG-but-superstring name (e.g. `Uid => "euid"`) would still pass
+    // every plain-substring assertion. Mirrors the au-E02 Section 8
+    // backtick-delimited op_str precedent, applied symmetrically to field.
     assert!(
-        d.message.contains(field),
-        "message must name the field '{field}': '{}'",
+        d.message.contains(&format!("`{field}`")),
+        "message must name the field '{field}' backtick-delimited (not a \
+         substring collision with a related field like euid/obj_uid/ppid): '{}'",
         d.message
     );
     assert!(
@@ -1416,10 +1441,12 @@ fn e05_stable_fields_still_reject_under_every_specific_target_too() {
 /// valid" arm, and the portable `None` default (the 19-field stable set)
 /// never included them.
 ///
-/// Grounding: v4.18 auditfilter.c:375-376 lists `case AUDIT_PERS:` and
-/// `case AUDIT_DEVMINOR:` inside the SAME bitmask-reject arm as
-/// pid/msgtype/etc (lines 361-388). v5.14 auditfilter.c:350-357 moves BOTH
-/// into a NEW arm explicitly commented `/* all ops are valid */`.
+/// Grounding: v4.18 auditfilter.c:376 lists `case AUDIT_PERS:` and
+/// auditfilter.c:380 lists `case AUDIT_DEVMINOR:`, both inside the SAME
+/// bitmask-reject arm as pid/msgtype/etc (lines 361-388; line 375 is
+/// `case AUDIT_PID:`, not PERS -- corrected citation, round 3). v5.14
+/// auditfilter.c:350-357 moves BOTH into a NEW arm explicitly commented
+/// `/* all ops are valid */`.
 #[test]
 fn e05_pers_and_devminor_reject_bitand_only_under_rhel8() {
     let cases = [
@@ -1717,6 +1744,66 @@ fn e05_diagnostic_shape() {
     );
 }
 
+/// Anchoring must point at the rule that actually FIRED, not always at rule
+/// 1 / line 1 (round-3 fix).
+///
+/// Every other au-E05 fixture in this suite is a single rule on line 1, so
+/// `d.line` / `d.span` / `d.file` are indistinguishable from constants there
+/// -- an impl that hardcodes `line = 1` and anchors every finding at
+/// `rules[0]`'s span would still pass every other test in this file (all
+/// 79+ of them). This fixture is a 3-rule file where ONLY line 3 fires
+/// (line 1 is the arg-register negative control, line 2 is a
+/// negative-control field outside the kernel reject table); it pins BOTH
+/// the line number AND that `span` slices back to the FIRING rule's exact
+/// raw source text, not rule 1's -- so neither a wrong-rule-index bug nor a
+/// byte-vs-char span bug can pass silently.
+///
+/// Precedent: sysctld PR #338 ("senior caught wrong-line") and PR #340
+/// ("byte-vs-char span INVISIBLE to tests") are recorded repo incidents of
+/// exactly this class of anchoring bug.
+#[test]
+fn e05_anchors_the_firing_rule_when_it_is_not_the_first_rule_in_the_file() {
+    let file = Path::new("/etc/audit/rules.d/40-e05-multi.rules");
+    let input = concat!(
+        "-a always,exit -F a0&0xff\n",
+        "-a always,exit -S openat -F path&0x1\n",
+        "-a always,exit -F pid&100\n",
+    );
+    let rules = parse_rules_str_located(input, file).expect("fixture must parse");
+    assert_eq!(rules.len(), 3, "fixture must have exactly 3 rules");
+
+    let diags = e05(&rules, None);
+    assert_eq!(
+        diags.len(),
+        1,
+        "only line 3 (pid&100, a stable-19 field) is kernel-rejected; \
+         line 1 (a0, arg-register negative control) and line 2 (path, \
+         outside-the-reject-table negative control) must stay clean: \
+         {diags:#?}"
+    );
+
+    let d = &diags[0];
+    assert_eq!(
+        d.line, 3,
+        "must anchor at line 3 -- the FIRING rule -- not line 1"
+    );
+
+    let firing_line = "-a always,exit -F pid&100";
+    let rule1_line = "-a always,exit -F a0&0xff";
+    let sliced = &input[d.span.clone()];
+    assert_eq!(
+        sliced, firing_line,
+        "span must slice back to the firing rule's exact raw source text \
+         (a byte-vs-char span bug or a wrong-rule-index bug both fail this)"
+    );
+    assert_ne!(
+        sliced, rule1_line,
+        "span must not point at rule 1's text when rule 3 is the one that \
+         fired -- the classic wrong-impl failure mode of anchoring every \
+         finding at rules[0]"
+    );
+}
+
 /// A rule with two kernel-rejected predicates emits exactly two au-E05
 /// diagnostics.
 #[test]
@@ -1843,6 +1930,14 @@ fn e05_zero_findings_across_all_corpus_scenarios_under_target_none() {
         "expected at least one corpus scenario under {corpus_root:?}"
     );
 
+    // Round-3 fix: `let Ok(rules) = ... else { continue; }` below silently
+    // skips any file that fails to parse, so a corpus where EVERY file fails
+    // to parse would still report "0 findings" and pass vacuously. Count how
+    // many files actually parsed and assert it is nonzero after the loop, so
+    // a corpus-wide parse regression fails loudly here instead of masquerading
+    // as a clean au-E05 pass.
+    let mut parsed_count = 0usize;
+
     for entry in &scenarios {
         let scenario_name = entry.file_name();
         let scenario_dir = entry.path();
@@ -1859,6 +1954,7 @@ fn e05_zero_findings_across_all_corpus_scenarios_under_target_none() {
             let Ok(rules) = parse_rules_str_located(&content, rules_path) else {
                 continue; // parse errors are a different pass
             };
+            parsed_count += 1;
             let diags = e05(&rules, None);
             assert!(
                 diags.is_empty(),
@@ -1866,6 +1962,13 @@ fn e05_zero_findings_across_all_corpus_scenarios_under_target_none() {
             );
         }
     }
+
+    assert!(
+        parsed_count > 0,
+        "no corpus file parsed successfully -- a corpus-wide parse failure \
+         would otherwise pass this test vacuously (0 findings from 0 parsed \
+         files looks identical to a genuine clean pass)"
+    );
 }
 
 // ---------------------------------------------------------------------------
