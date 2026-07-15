@@ -38,6 +38,18 @@ pub enum Condition {
     RequiresOrphans,
     /// Runs only with an explicit `--target` (a fully version-gated check).
     RequiresTarget,
+    /// Runs only against a fapolicyd >= 1.6 target. DORMANT BY CONSTRUCTION:
+    /// [`TargetVersion`] is RHEL-keyed and its newest variant maps to fapolicyd
+    /// 1.4.5 (`version.rs::fapolicyd_version`: Rhel8 -> 1.3.2, Rhel9/Rhel10 ->
+    /// 1.4.5), so nothing reaches 1.6 and this condition holds for NO input.
+    ///
+    /// This variant exists precisely so a dormant check cannot be attested as
+    /// having run: `RequiresTarget` would hold under every `--target` and make
+    /// [`evaluated`] emit a SARIF `kind:"pass"` for a check whose gate returned
+    /// early without looking (a false coverage attestation, issue #137). When a
+    /// real 1.6-capable target variant lands, this arm in `condition_holds` is
+    /// the ONE honest place to flip.
+    RequiresFapolicyd16Plus,
     /// Runs on every target EXCEPT `--target rhel8`, where it is disabled.
     SuppressedUnderRhel8,
     /// Runs only in single-file (`--file`) mode.
@@ -105,6 +117,10 @@ fn condition_holds(cond: Condition, inp: EvalInputs) -> bool {
         Condition::RequiresIdentities => inp.check_identities,
         Condition::RequiresOrphans => inp.report_orphans && inp.trustdb,
         Condition::RequiresTarget => inp.target.is_some(),
+        // Always false: no TargetVersion reaches fapolicyd 1.6, so a check
+        // gated this way never runs and never earns a pass attestation. Flip
+        // this when a 1.6-capable target variant lands (see the variant doc).
+        Condition::RequiresFapolicyd16Plus => false,
         Condition::SuppressedUnderRhel8 => inp.target != Some(TargetVersion::Rhel8),
         Condition::SingleFileOnly => inp.single_file,
         Condition::DirectoryOnly => !inp.single_file,
@@ -266,6 +282,13 @@ pub const FAPD_CODES: &[LintCode] = &[
         // Because the per-rule emitter always runs, the W11 *check* is always
         // evaluated - it is NOT RequiresTrustdb (see `w11_is_always_evaluated_*`).
         condition: Condition::Always,
+    },
+    LintCode {
+        code: "fapd-W12",
+        severity: Severity::Warning,
+        description: "deprecated dir=untrusted; will be removed in a future fapolicyd release",
+        // Dormant: gated on fapolicyd >= 1.6, which no TargetVersion reaches.
+        condition: Condition::RequiresFapolicyd16Plus,
     },
     LintCode {
         code: "fapd-X01",

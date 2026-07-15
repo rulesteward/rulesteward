@@ -10,8 +10,13 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
-use crate::ast::{Attr, Entry};
+use crate::ast::{Attr, AttrValue, Entry};
+use crate::lints::subsume::{MacroMap, build_macro_map};
 use crate::version::TargetVersion;
+
+/// The one deprecated `dir=` member. Upstream compares against this exact
+/// literal: `attr_set_check_str(set, "untrusted")` (`rules.c:90`).
+const UNTRUSTED: &str = "untrusted";
 
 /// Run every deprecation lint pass over `entries` and return the merged
 /// diagnostics.
@@ -166,14 +171,73 @@ fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
 /// fapd-E01 owns unknown attribute names (same division as fapd-W07 above).
 ///
 /// An undefined `%set` emits nothing (fapd-E03 owns undefined-macro reporting).
-fn w12_detect(_entries: &[Entry], _file: &Path) -> Vec<Diagnostic> {
-    // NOT IMPLEMENTED. The frozen fapd-W12 detection tests are RED against this
-    // stub; the implementer replaces this body. `dir_slash::walk` is the
-    // structural template: iterate subject+object, match `AttrValue::Str` for
-    // the literal/comma-list and `AttrValue::SetRef` expanded through
-    // `subsume::build_macro_map`. Note the deprecation module does not expand
-    // sets today, so set expansion is NEW behavior here.
-    Vec::new()
+fn w12_detect(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
+    let macro_map = build_macro_map(entries);
+    let mut diags = Vec::new();
+    for entry in entries {
+        // SetDefinition entries are never inspected: upstream warns from
+        // assign_subject/assign_object, which only run for rules.
+        let Entry::Rule(r) = entry else { continue };
+        for attr in r.subject.iter().chain(r.object.iter()) {
+            let Attr::Kv { key, value, .. } = attr else {
+                continue;
+            };
+            // EXACT, case-sensitive key. `subj_name_to_val` is a `strcmp` table
+            // scan (subject-attr.c:75/81), so only `dir` resolves to
+            // EXE_DIR/ODIR and rules.c:89's `type ==` guard can fire; `Dir=` and
+            // `dirfoo=` are fapd-E01's concern, not this lint's.
+            if key != "dir" {
+                continue;
+            }
+            // One diagnostic per offending ATTRIBUTE (not per side, not per
+            // rule): upstream warns from each side's `finalize:` label, i.e.
+            // once per assign_subject/assign_object CALL (rules.c:597 / 748).
+            if has_untrusted_member(value, &macro_map) {
+                diags.push(anchored(
+                    Severity::Warning,
+                    "fapd-W12",
+                    r.span.clone(),
+                    "deprecated `dir=` member `untrusted`; it will be removed in a future fapolicyd release - use object trust with execute permission instead",
+                    file,
+                    r.line,
+                ));
+            }
+        }
+    }
+    diags
+}
+
+/// Whether a `dir=` value's MEMBER SET contains an exact `untrusted`.
+///
+/// Upstream is set-backed on both surface forms, and the membership test is the
+/// same either way: `attr_set_check_str` (`rules.c:90`) is an `avl_search`
+/// (`attr-sets.c:412-422`) over a tree ordered by `strcmp_cb` = plain `strcmp`
+/// (`attr-sets.c:71-74`). That is EXACT, case-sensitive, whole-member equality -
+/// upstream ships a separate `attr_set_check_pstr` for prefix matching
+/// (`attr-sets.c:424`) that the warner deliberately does NOT call. So a member
+/// that merely embeds, starts with, or ends with the word (`/opt/untrusted/`,
+/// `untrusted/`, `/opt/untrusted`) is not the deprecated construct, and neither
+/// is `UNTRUSTED`.
+fn has_untrusted_member(value: &AttrValue, macro_map: &MacroMap) -> bool {
+    match value {
+        // Upstream comma-splits a raw `dir=` value into a STRING set
+        // (`strtok_r(tmp, ",", &saved)`, rules.c:572-578 subject / 721-727
+        // object) BEFORE the membership test, and this crate's parser does not
+        // split on `,` (grammar.rs:86-95), so the split is owned here. Comparing
+        // the whole VALUE instead would be a false negative against upstream.
+        AttrValue::Str(s) => s.split(',').any(|member| member == UNTRUSTED),
+        // Set MEMBERSHIP only - the set's NAME is never consulted, so
+        // `dir=%untrusted` fires only if the set DEFINES an `untrusted` member.
+        // An undefined set emits nothing (fapd-E03 owns undefined macros).
+        // Members arrive already comma-split, and upstream does no nested `%`
+        // expansion (`parse_set_line` appends comma tokens verbatim,
+        // rules.c:911-919), so a flat exact scan is exact.
+        AttrValue::SetRef(name) => macro_map
+            .get(name)
+            .is_some_and(|values| values.iter().any(|v| v == UNTRUSTED)),
+        // An integer `dir=` value is never the `untrusted` keyword.
+        AttrValue::Int(_) => false,
+    }
 }
 
 #[cfg(test)]
