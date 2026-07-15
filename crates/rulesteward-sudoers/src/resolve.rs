@@ -87,7 +87,8 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
         // nested @include (which becomes a Malformed line).
         let source = std::fs::read_to_string(path)?;
         let mut chain: Vec<PathBuf> = vec![canonical_or_as_is(path)];
-        resolve_parsed(&parse(&source, path), path, host, &mut chain, &mut out);
+        let parsed = parse(&source, path);
+        resolve_parsed(&parsed, path, host, &mut chain, &mut out);
         // #485: a linted FILE target whose resolution produces ZERO segments
         // (byte-empty, whitespace-only, or a file whose only content is an
         // @include/@includedir chain that itself contributes nothing) still needs
@@ -102,11 +103,12 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
         // individually-empty drop-in (that would reintroduce the per-fragment
         // false positive #347 exists to avoid), and this check must run once
         // here -- after the WHOLE top-level resolution completes -- not inside
-        // `resolve_parsed`/`resolve_file` (which would also wrongly fire per
-        // nested @include that happens to contribute nothing on its own, even
-        // when the parent already produced real content).
+        // `resolve_parsed`/`resolve_file`, where it would fire on a nested
+        // @include that contributes nothing whenever nothing has been emitted
+        // yet: an ordering-dependent phantom that also mis-anchors the finding
+        // to the child instead of the parent.
         if out.is_empty() {
-            out.push(parse(&source, path));
+            out.push(parsed);
         }
     }
     Ok(out)
