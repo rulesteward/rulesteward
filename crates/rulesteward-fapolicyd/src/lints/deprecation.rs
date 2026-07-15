@@ -162,7 +162,7 @@ fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
 /// (case) do NOT warn. The set's NAME is never consulted -- only its members --
 /// so `dir=%untrusted` does not warn unless the set DEFINES an `untrusted`
 /// member. The attribute KEY is case-sensitive too (`subj_name_to_val` is a
-/// `strcmp` table scan, subject-attr.c:71/78), so `Dir=` is not `EXE_DIR`;
+/// `strcmp` table scan, subject-attr.c:75/81), so `Dir=` is not `EXE_DIR`;
 /// fapd-E01 owns unknown attribute names (same division as fapd-W07 above).
 ///
 /// An undefined `%set` emits nothing (fapd-E03 owns undefined-macro reporting).
@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn w12_detect_is_case_sensitive_on_the_attribute_key() {
         // The attribute NAME is resolved by a `strcmp` table scan
-        // (`subj_name_to_val`, subject-attr.c:71/78), so `Dir=` never resolves
+        // (`subj_name_to_val`, subject-attr.c:75/81), so `Dir=` never resolves
         // to EXE_DIR and cannot be the deprecated construct. fapd-E01 owns
         // unknown attribute names -- the same division fapd-W07 documents for
         // `Sha256Hash=` above.
@@ -913,6 +913,14 @@ mod tests {
         // ODIR`, rules.c:89) BEFORE inspecting the value, so `untrusted` as the
         // value of some OTHER attribute is not deprecated. Kills an
         // implementation that greps any attribute value for "untrusted".
+        //
+        // `dirfoo=untrusted` (rule 3) additionally kills a key-PREFIX match
+        // (`key.starts_with("dir")` substituted for `key == "dir"`): `dirfoo`
+        // is absent from subject-attr.c's table2 (v1.6:53-65) and from
+        // object-attr.c (v1.6:35-41), so it never resolves to EXE_DIR/ODIR and
+        // rules.c:89's `type ==` guard cannot fire. The rule IS parseable and
+        // fapd-E01 owns the unknown attribute (same division the
+        // case-sensitivity test above documents for `Dir=`/`DIR=`).
         let entries = vec![
             modern_rule(
                 1,
@@ -928,11 +936,19 @@ mod tests {
                 vec![kv_int("uid", 0)],
                 vec![kv("ftype", "untrusted")],
             ),
+            modern_rule(
+                3,
+                Decision::Allow,
+                None,
+                vec![kv_int("uid", 0)],
+                vec![kv("dirfoo", "untrusted")],
+            ),
         ];
         let diags = w12_detect(&entries, &p());
         assert!(
             diags.is_empty(),
-            "fapd-W12 keys off the `dir=` attribute, not the value text: {diags:?}",
+            "fapd-W12 keys off the exact `dir=` attribute, not a value-text \
+             grep or a key PREFIX match: {diags:?}",
         );
     }
 
@@ -1071,10 +1087,19 @@ mod tests {
     fn walk_gates_each_lint_independently() {
         // The dispatcher contract: `walk` applies NO gate of its own; each lint
         // gates itself. One rule trips both W07 (`sha256hash=`) and W12
-        // (`dir=untrusted`), so a `target` check hoisted into `walk` would be
-        // visible here -- e.g. hoisting W07's rhel8 suppression would also
-        // suppress W07 nowhere-else, and hoisting W12's always-closed gate would
-        // silence W07 entirely.
+        // (`dir=untrusted`). This test enforces two things: (1) fapd-W12 must
+        // never leak into `walk`'s output under ANY target -- a wrong impl
+        // that hoists W12's always-closed gate OUT of the per-lint dispatch
+        // and INTO `walk` in a way that stops it being applied is KILLED here
+        // (verified empirically); and (2) adding fapd-W12 to the dispatcher
+        // must not disturb fapd-W07's existing per-target (rhel8) gate on the
+        // SAME rule.
+        //
+        // NOT enforced here: whether fapd-W07's rhel8 check lives inside
+        // `w07()` or is hoisted into `walk` instead. That refactor is
+        // behaviourally a no-op against this fixture (both land on the same
+        // per-target codes set), so this test does not distinguish the two
+        // (verified empirically -- the hoisted-W07 variant still passes).
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
