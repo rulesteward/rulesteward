@@ -2140,6 +2140,39 @@ mod w06_tests {
             "the runas group is 'wheel', not the reserved ALL; must not fire"
         );
     }
+
+    /// `ALL ALL=(ALL) /bin/ls : ALL = ALL` (visudo -c -f rc 0, sudo 1.9.17p2;
+    /// `cvtsudoers -f json` confirms TWO separate `User_Specs` entries, one
+    /// per `:`-separated host-group: the first has `runasusers=[ALL]` scoped
+    /// to `/bin/ls` only; the second (`ALL = ALL`, no leading `(...)`) has NO
+    /// `runasusers`/`runasgroups` key at all, i.e. it defaults to `root` at
+    /// runtime -- narrower than either grounded DISA pattern -- so W06 must
+    /// NOT fire on the second segment's bare `ALL` command. This pins the
+    /// PER-SEGMENT reset the "Forward `Runas_Spec` inheritance" doc section on
+    /// [`w06`] above already claims (each `:`-separated host-group is an
+    /// INDEPENDENT `Cmnd_Spec_List`, #345): every existing forward-
+    /// inheritance fixture above (`w06_fires_when_runas_inherits_forward_
+    /// to_all_command` et al.) keeps its explicit `Runas_Spec` in the SAME
+    /// `:`-segment as the `ALL` command it grants, so none of them would
+    /// notice a wrong impl that hoists `effective_runas` out of the
+    /// per-host-group closure (tags.rs: `let mut effective_runas` inside
+    /// `spec.host_groups.iter().any(...)`) and lets it leak across `:`
+    /// boundaries -- that wrong impl would carry the first segment's `(ALL)`
+    /// into the second segment's bare `ALL` and false-positive-fire here
+    /// (round-2 impl-aware adversary finding: the impl itself is already
+    /// correct -- the reset is declared fresh inside the closure -- this test
+    /// only locks that shape in).
+    #[test]
+    fn w06_does_not_fire_when_runas_does_not_cross_host_group_segments() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL) /bin/ls : ALL = ALL\n"),
+            0,
+            "the second :-segment's bare ALL command has no Runas_Spec of its \
+             own and must NOT inherit (ALL) from the first segment's /bin/ls \
+             grant; each :-separated host-group resets forward-inheritance \
+             state independently"
+        );
+    }
 }
 
 #[cfg(test)]
