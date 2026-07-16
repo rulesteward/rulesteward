@@ -69,6 +69,11 @@ pub const SUDO_CODES: &[LintCode] = &[
         severity: Severity::Warning,
         description: "NOPASSWD grants passwordless sudo on a specific (non-ALL) command; STIG requires removing NOPASSWD entirely",
     },
+    LintCode {
+        code: "sudo-W06",
+        severity: Severity::Warning,
+        description: "a UserSpec grants the literal ALL user unrestricted sudo access to run ALL commands as ALL users/groups",
+    },
 ];
 
 #[cfg(test)]
@@ -81,7 +86,7 @@ mod tests {
     /// list ONLY when the taxonomy itself changes.
     const FROZEN_CODES: &[&str] = &[
         "sudo-E01", "sudo-F01", "sudo-F02", "sudo-W01", "sudo-W02", "sudo-W03", "sudo-W04",
-        "sudo-W05",
+        "sudo-W05", "sudo-W06",
     ];
 
     #[test]

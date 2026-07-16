@@ -5,7 +5,10 @@
 //! * `aliases` - sudo-E01 (undefined-alias reference), sudo-W03 (dead alias)
 //!   (#331).
 //! * `tags` - sudo-W01 (NOPASSWD on ALL; #330), sudo-W02 (`Cmnd_Alias`
-//!   transitively expands to ALL under NOPASSWD; #332).
+//!   transitively expands to ALL under NOPASSWD; #332), sudo-W05 (NOPASSWD in
+//!   effect on any specific command; #370), sudo-W06 (literal ALL user granted
+//!   unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation; #522 -- currently a
+//!   `Vec::new()` stub, NOT yet wired into [`lint`]).
 //! * `stig` - sudo-W04 (Defaults setting weaker than the sudo STIG baseline)
 //!   (#333).
 //! * `catalog` - the machine-readable `sudo-` code catalog (frozen Phase 0).
@@ -347,6 +350,43 @@ mod tests {
             diags.iter().filter(|d| d.code == "sudo-W05").count(),
             0,
             "the NOPASSWD-on-ALL line must NOT also raise sudo-W05 (dedup); got {diags:?}"
+        );
+    }
+
+    /// Dispatcher wiring guard for sudo-W06 (#522, v0.8 Wave 2 lane 2d, the
+    /// literal-`ALL`-user unrestricted-privilege-elevation check): the public
+    /// `lint()` must emit exactly one `sudo-W06` (Warning) for the DISA literal
+    /// fixture `ALL ALL=(ALL) ALL` (verified `visudo -c -f` rc 0, sudo
+    /// 1.9.17p2; DISA STIG RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520).
+    ///
+    /// This is RED for the SAME two-part reason as the sibling F02/W05 wiring
+    /// guards above: `tags::w06` is currently a `Vec::new()` stub AND it is NOT
+    /// wired into the `lint()` dispatcher (see `lints::mod`'s module doc and
+    /// `tags::w06`'s doc comment). It goes GREEN ONLY when the implementer BOTH
+    /// fills `w06()` per the `tags::w06_tests` fire/no-fire contract AND adds
+    /// `diags.extend(tags::w06(files, ctx))` to `lint()`.
+    ///
+    /// Fixture: `root ALL=(ALL:ALL) ALL` is a clean anchor line (also
+    /// satisfies W04's merged absence checks, so this test filters to
+    /// `sudo-W06` specifically rather than the total count); `ALL
+    /// ALL=(ALL) ALL` is the hazard.
+    #[test]
+    fn lint_dispatcher_routes_w06_for_literal_all_user_grant() {
+        let files = parse_one("root ALL=(ALL:ALL) ALL\nALL ALL=(ALL) ALL\n");
+        let diags = lint(&files, &SudoersLintContext::default());
+        let w06: Vec<_> = diags.iter().filter(|d| d.code == "sudo-W06").collect();
+        assert_eq!(
+            w06.len(),
+            1,
+            "the dispatcher must route exactly one sudo-W06 (Warning) via lint(); got \
+             {diags:?} -- RED until w06 is both filled AND wired into lint() with \
+             diags.extend(tags::w06(files, ctx))"
+        );
+        assert_eq!(
+            w06[0].severity,
+            rulesteward_core::Severity::Warning,
+            "sudo-W06 must be Warning; got {:?}",
+            w06[0].severity
         );
     }
 }

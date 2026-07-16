@@ -13,6 +13,17 @@
 //! on a `Cmnd_Alias` that expands to ALL, and W05 on any non-ALL command. The AST
 //! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
 //! machine lives here and the passes only EMIT - they never re-parse.
+//!
+//! Also carries [`w06`] (#522, v0.8 Wave 2 lane 2d): the reserved literal `ALL`
+//! user granted unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation over `ALL`
+//! commands. Unlike W01/W02/W05 this is NOT part of the NOPASSWD tag-state
+//! family (it fires independent of any tag), but it is a `UserSpec`-shaped
+//! "who is granted what" hazard like the rest of this module, so it lives here
+//! rather than in `stig.rs` (which owns `Defaults`-entry findings only). `w06`
+//! is a STUB (`Vec::new()`) as of the v0.8 Wave 2 lane 2d test-author phase;
+//! see `w06_tests` below for the frozen fire/no-fire contract every fixture in
+//! this module was verified against (`visudo -c -f` / `cvtsudoers -f json`,
+//! sudo 1.9.17p2).
 
 use rulesteward_core::{Diagnostic, Framework, Severity};
 
@@ -247,6 +258,55 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
         }
     });
     diags
+}
+
+/// sudo-W06 (#522, v0.8 Wave 2 lane 2d): a `UserSpec` grants the reserved
+/// literal `ALL` user unrestricted sudo access to run the reserved `ALL`
+/// command as `ALL` run-as users (and, optionally, `ALL` run-as groups).
+///
+/// # Grounding
+///
+/// DISA STIG RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520 ("RHEL must
+/// restrict privilege elevation to authorized personnel"), pinned against the
+/// same three DISA XCCDF revisions `tools/sshd-stig-update` and
+/// `tools/auditd-stig-update` pin (RHEL 8 STIG V2R4 / RHEL 9 STIG V2R7 /
+/// RHEL 10 STIG V1R1). Check-content (byte-identical fire condition across all
+/// three revisions):
+///
+/// ```text
+/// $ sudo grep -iwR 'ALL' /etc/sudoers /etc/sudoers.d/ | grep -v '#'
+/// ```
+///
+/// "If either of the following entries are returned, this is a finding:
+/// `ALL     ALL=(ALL) ALL` / `ALL     ALL=(ALL:ALL) ALL`" -- i.e. the subject
+/// `User_List` is the reserved keyword `ALL` (not a specific user / group /
+/// `User_Alias` reference), the `Host_List` is `ALL`, the command is the
+/// reserved `ALL`, and the `Runas_Spec` is exactly `(ALL)`
+/// (`RunasSpec { users: ["ALL"], groups: [] }`) or `(ALL:ALL)`
+/// (`RunasSpec { users: ["ALL"], groups: ["ALL"] }`). Every literal in this
+/// doc comment (`ALL` reserved-word case sensitivity, the two exact Runas
+/// shapes) is verified against `visudo -c -f` + `cvtsudoers -f json`
+/// (sudo 1.9.17p2) in `w06_tests` below.
+///
+/// # Scope boundary (documented, not a bug)
+///
+/// A `User_Alias` whose members transitively expand to `ALL` (e.g.
+/// `User_Alias ADMINS = ALL` then `ADMINS ALL=(ALL) ALL`) is a documented
+/// v1 false-negative: DISA's own check-content is a literal-string grep, not
+/// an alias-aware walk, so this pass does not chase alias expansion either
+/// (the same kind of scope boundary W01 documents for `Cmnd_Alias`-expands-
+/// to-ALL, which W02 exists to cover separately).
+///
+/// # STUB
+///
+/// This is a test-author-phase stub (v0.8 Wave 2 lane 2d): it returns no
+/// diagnostics. The dispatcher in `lints::mod` does NOT call it yet either --
+/// both are filled by the implementer per the RED contract `w06_tests` and
+/// `lints::mod::tests::lint_dispatcher_routes_w06_for_literal_all_user_grant`
+/// pin below.
+#[must_use]
+pub fn w06(_files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -1509,6 +1569,272 @@ mod w05_tests {
             d.message.contains("RHEL-09-611085"),
             "W05 message must cite RHEL-09-611085; got {:?}",
             d.message
+        );
+    }
+}
+
+#[cfg(test)]
+mod w06_tests {
+    //! sudo-W06 (#522, v0.8 Wave 2 lane 2d): the literal-`ALL`-user unrestricted
+    //! privilege-elevation check.
+    //!
+    //! Grounding: DISA STIG RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520
+    //! ("RHEL must restrict privilege elevation to authorized personnel"),
+    //! pinned XCCDF revisions RHEL 8 STIG V2R4 / RHEL 9 STIG V2R7 / RHEL 10
+    //! STIG V1R1 (`dl.dod.cyber.mil/wp-content/uploads/stigs/zip/`, fetched
+    //! 2026-07-15 -- same revisions `tools/sshd-stig-update` and
+    //! `tools/auditd-stig-update` pin). Check-content across all three
+    //! revisions: `sudo grep -iwR 'ALL' /etc/sudoers /etc/sudoers.d/ | grep -v
+    //! '#'`; a finding if either literal entry `ALL ALL=(ALL) ALL` or
+    //! `ALL ALL=(ALL:ALL) ALL` is present.
+    //!
+    //! Every fixture below is verified `visudo -c -f` rc 0 (sudo 1.9.17p2,
+    //! `sudo-1.9.17-8.p2.fc44`), and the `RunasSpec` / `UserSpec` shape each
+    //! positive fixture is expected to parse into is cross-checked against
+    //! `cvtsudoers -f json` on the same sudo build:
+    //! * `ALL ALL=(ALL) ALL` -> `User_List=[ALL]`, `Host_List=[ALL]`,
+    //!   `runasusers=[ALL]`, NO `runasgroups` key, `Commands=[ALL]`.
+    //! * `ALL ALL=(ALL:ALL) ALL` -> as above plus `runasgroups=[ALL]`.
+    //! * `ALL ALL=(root) ALL` -> `runasusers=[root]` (no `runasgroups`) -- a
+    //!   narrower grant than either literal DISA pattern, so it must NOT fire.
+    //!
+    //! This crate's OWN parser is not re-verified against `cvtsudoers` line by
+    //! line here (that grounding already lives in `ast.rs` / `parser.rs`'s own
+    //! test suite, and `aliases.rs` already relies on the same "ALL" reserved-
+    //! word literal-match semantics for its own checks); these fixtures instead
+    //! pin the W06-specific fire/no-fire CONTRACT this module's future
+    //! implementation must satisfy.
+
+    use super::{w01, w06};
+    use crate::lints::SudoersLintContext;
+    use crate::parser::parse;
+    use std::path::Path;
+
+    /// Parse one source string into the single-element file slice the passes take.
+    fn files(src: &str) -> Vec<crate::ast::SudoersFile> {
+        vec![parse(src, Path::new("/etc/sudoers"))]
+    }
+
+    /// Parse several `(path, source)` pairs into a merged slice, in evaluation
+    /// order -- the shape `resolve_target` produces for a main file plus its
+    /// `@include`/`@includedir` drop-ins (mirrors `stig.rs::tests::parse_files`).
+    fn parse_files(parts: &[(&str, &str)]) -> Vec<crate::ast::SudoersFile> {
+        parts.iter().map(|(p, s)| parse(s, Path::new(p))).collect()
+    }
+
+    /// Run W06 over `src` and return the diagnostics.
+    fn lint_w06(src: &str) -> Vec<rulesteward_core::Diagnostic> {
+        w06(&files(src), &SudoersLintContext::default())
+    }
+
+    /// Count the `sudo-W06` diagnostics over `src`.
+    fn w06_count(src: &str) -> usize {
+        lint_w06(src)
+            .iter()
+            .filter(|d| d.code == "sudo-W06")
+            .count()
+    }
+
+    // ---- POSITIVE: the two literal DISA-grounded patterns ----
+
+    /// `ALL ALL=(ALL) ALL` (visudo -c -f rc 0): the subject is the reserved
+    /// literal `ALL`, granted the reserved `ALL` command as run-as `ALL`. This
+    /// is DISA's first literal example verbatim. Anchoring is also pinned here
+    /// (line / span / file / `source_id`), matching the W01/W05 anchoring
+    /// convention: a user-spec is exactly one logical line, so the diagnostic
+    /// anchors at that line.
+    #[test]
+    fn w06_fires_for_all_all_paren_all_paren_all() {
+        // A clean anchor line (`root ALL=(ALL:ALL) ALL`, the file's line 1)
+        // precedes the hazard on line 2, so the anchoring assertions below pin
+        // the OFFENDING line, not line 1.
+        let src = "root ALL=(ALL:ALL) ALL\nALL ALL=(ALL) ALL\n";
+        let diags = lint_w06(src);
+        assert_eq!(
+            diags.len(),
+            1,
+            "'ALL ALL=(ALL) ALL' is DISA's first literal finding pattern; got {diags:?}"
+        );
+        let d = &diags[0];
+        assert_eq!(d.code, "sudo-W06");
+        assert_eq!(d.severity, rulesteward_core::Severity::Warning);
+        assert_eq!(
+            d.line, 2,
+            "the hazard sits on line 2, not the clean anchor line 1"
+        );
+        assert_eq!(d.file, Path::new("/etc/sudoers"));
+        assert!(
+            d.source_id.is_some(),
+            "an anchored W06 carries the file source_id for ariadne rendering"
+        );
+        assert!(
+            !d.span.is_empty(),
+            "an anchored W06 carries a real (non-empty) byte span; got {d:?}"
+        );
+    }
+
+    /// `ALL ALL=(ALL:ALL) ALL` (visudo -c -f rc 0): DISA's second literal
+    /// pattern -- the run-as GROUP is also explicitly `ALL`.
+    #[test]
+    fn w06_fires_for_all_all_paren_all_colon_all_paren_all() {
+        assert_eq!(
+            w06_count("root ALL=(ALL:ALL) ALL\nALL ALL=(ALL:ALL) ALL\n"),
+            1,
+            "'ALL ALL=(ALL:ALL) ALL' is DISA's second literal finding pattern"
+        );
+    }
+
+    // ---- Typed ControlRef (mirrors the W04/W05 #503 backfill convention) ----
+
+    /// The W06 finding cites all three DISA STIG revisions this control was
+    /// pinned against, in RHEL-08 / RHEL-09 / RHEL-10 order.
+    #[test]
+    fn w06_finding_carries_three_stig_controls() {
+        use rulesteward_core::Framework;
+
+        let diags = lint_w06("ALL ALL=(ALL) ALL\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W06")
+            .expect("W06 fires for the literal ALL/ALL/(ALL)/ALL fixture");
+        assert_eq!(
+            d.controls.len(),
+            3,
+            "W06 must cite all three pinned RHEL-08/09/10 STIG ids; got {:?}",
+            d.controls
+        );
+        assert_eq!(d.controls[0].framework, Framework::Stig);
+        assert_eq!(d.controls[0].id, "RHEL-08-010382");
+        assert_eq!(d.controls[1].framework, Framework::Stig);
+        assert_eq!(d.controls[1].id, "RHEL-09-432030");
+        assert_eq!(d.controls[2].framework, Framework::Stig);
+        assert_eq!(d.controls[2].id, "RHEL-10-600520");
+    }
+
+    // ---- merged-slice / multi-host-group shape ----
+
+    /// DISA's check-content greps BOTH `/etc/sudoers` AND `/etc/sudoers.d/`;
+    /// W06 must fire on a hazard that lives in an included drop-in, not only
+    /// the top-level file. Anchors to the drop-in's OWN path (not the parent),
+    /// matching the sshd-W01 / sudo-W04 merged-config anchoring convention for
+    /// a per-file (not per-tree) finding.
+    #[test]
+    fn w06_fires_in_a_sudoers_d_dropin_not_only_the_top_level_file() {
+        let files = parse_files(&[
+            (
+                "/etc/sudoers",
+                "root ALL=(ALL:ALL) ALL\n#includedir /etc/sudoers.d\n",
+            ),
+            ("/etc/sudoers.d/00-all", "ALL ALL=(ALL) ALL\n"),
+        ]);
+        let diags = w06(&files, &SudoersLintContext::default());
+        assert_eq!(
+            diags.len(),
+            1,
+            "the hazard in the drop-in must fire exactly once; got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].file,
+            Path::new("/etc/sudoers.d/00-all"),
+            "must anchor to the drop-in file that actually contains the hazard"
+        );
+        assert_eq!(diags[0].line, 1);
+    }
+
+    /// `ALL ALL=(ALL) ALL : host2 = /bin/ls` (visudo -c -f rc 0): TWO
+    /// `:`-separated host-groups sharing one subject `ALL`. Only the FIRST
+    /// host-group matches the literal DISA pattern (host `ALL`, cmnd `ALL`,
+    /// runas `(ALL)`); the second grants a specific command to a specific
+    /// host and must not itself count as a second finding. Exactly one W06.
+    #[test]
+    fn w06_fires_once_when_only_one_host_group_matches() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL) ALL : host2 = /bin/ls\n"),
+            1,
+            "only the first host-group matches the literal pattern; exactly one W06"
+        );
+    }
+
+    /// `ALL ALL=(ALL) NOPASSWD: ALL` (visudo -c -f rc 0): the SAME line is
+    /// simultaneously a W01 hazard (NOPASSWD on the reserved ALL command) and
+    /// a W06 hazard (literal ALL user granted (ALL) ALL). These are TWO
+    /// DISTINCT DISA controls (010380/611085/600560 vs 010382/432030/600520),
+    /// so BOTH must fire -- this is NOT a W01/W06 dedup boundary (unlike the
+    /// W01/W05 dedup, which exists because those two share ONE citation).
+    #[test]
+    fn w06_coexists_with_w01_when_nopasswd_also_applies() {
+        let src = "ALL ALL=(ALL) NOPASSWD: ALL\n";
+        assert_eq!(
+            w06_count(src),
+            1,
+            "W06 must still fire alongside W01, not be deduped against it"
+        );
+        let w01_diags = w01(&files(src), &SudoersLintContext::default());
+        assert_eq!(
+            w01_diags.iter().filter(|d| d.code == "sudo-W01").count(),
+            1,
+            "W01 must ALSO fire: NOPASSWD is in effect on the reserved ALL command"
+        );
+    }
+
+    // ---- NEGATIVE: discriminating fixtures that must NOT fire ----
+
+    /// `root ALL=(ALL:ALL) ALL` alone (no second line): the single most common
+    /// sudoers line in existence (present in EVERY default `/etc/sudoers`).
+    /// The subject is the NAMED user `root`, not the reserved `ALL` -- an
+    /// over-broad implementation that keys off the `(ALL:ALL) ALL` Runas/Cmnd
+    /// shape alone (ignoring the subject) would false-positive on every
+    /// unmodified RHEL install. Must NOT fire.
+    #[test]
+    fn w06_does_not_fire_for_the_default_root_line_alone() {
+        assert_eq!(
+            w06_count("root ALL=(ALL:ALL) ALL\n"),
+            0,
+            "the ubiquitous default root line's subject is 'root', not the \
+             reserved literal ALL; must not fire"
+        );
+    }
+
+    /// `%wheel ALL=(ALL) ALL` (visudo -c -f rc 0): the subject is the `wheel`
+    /// GROUP (`%wheel`), a distinct raw token from the bare reserved word
+    /// `ALL`. Must NOT fire -- this is the second half of `clean_file_
+    /// produces_no_diagnostics` (lints/mod.rs), which must stay diagnostic-free.
+    #[test]
+    fn w06_does_not_fire_for_the_wheel_group_line() {
+        assert_eq!(
+            w06_count("%wheel ALL=(ALL) ALL\n"),
+            0,
+            "'%wheel' is a group token, not the literal reserved ALL; must not fire"
+        );
+    }
+
+    /// `ALL ALL=(root) ALL` (visudo -c -f rc 0, `cvtsudoers -f json` confirms
+    /// `runasusers=[root]`, no `runasgroups` key): the subject and command ARE
+    /// the hazardous literals, but the `Runas_Spec` is narrower than either
+    /// grounded pattern (`(ALL)` or `(ALL:ALL)`) -- every user can only run as
+    /// root, not as ANY user. DISA's two literal patterns do not cover this
+    /// string, so a compliant implementation must NOT fire on it (guards
+    /// against an over-broad "any runas, any user" impl).
+    #[test]
+    fn w06_does_not_fire_when_runas_is_narrower_than_all() {
+        assert_eq!(
+            w06_count("ALL ALL=(root) ALL\n"),
+            0,
+            "runas (root) is narrower than the grounded (ALL)/(ALL:ALL) patterns; \
+             must not fire"
+        );
+    }
+
+    /// `ALL ALL=(ALL) /bin/ls` (visudo -c -f rc 0): subject and runas ARE the
+    /// hazardous literals, but the command is a specific path, not the
+    /// reserved `ALL`. Neither DISA literal pattern matches a non-ALL command;
+    /// must NOT fire (guards against an impl that ignores the `Cmnd_Spec`).
+    #[test]
+    fn w06_does_not_fire_when_command_is_not_all() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL) /bin/ls\n"),
+            0,
+            "the command is a specific path, not the reserved ALL; must not fire"
         );
     }
 }
