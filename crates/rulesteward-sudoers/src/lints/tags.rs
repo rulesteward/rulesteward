@@ -1904,6 +1904,102 @@ mod w06_tests {
         );
     }
 
+    // ---- ADVERSARIAL STRENGTHENING (#522, post-GREEN Adversarial Testing Loop):
+    // forward Runas_Spec inheritance + list-membership misses the impl-aware
+    // adversary found. All four fixtures below are re-verified `visudo -c -f`
+    // rc 0 (sudo 1.9.17p2) and cross-checked against `cvtsudoers -f json`. ----
+
+    /// `ALL ALL=(ALL) /bin/ls, ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
+    /// confirms ONE `Cmnd_Specs` group with `runasusers=[ALL]` covering BOTH
+    /// `Commands=[/bin/ls, ALL]`): `sudoers(5)` (sudo 1.9.17p2) states "A
+    /// `Runas_Spec` sets the default for the commands that follow it" -- the
+    /// trailing `ALL` command carries no `(...)` group of its own, so it
+    /// INHERITS the `(ALL)` `Runas_Spec` set by the preceding command in the
+    /// same `Cmnd_Spec_List`. Every user may therefore run ANY command as
+    /// ANY user via the trailing bare `ALL`. This is the same forward-
+    /// inheritance shape `for_each_nopasswd_command` already models for tags
+    /// (tags.rs:58-94: `NOPASSWD`/`PASSWD` inherit across a `Cmnd_Spec_List`
+    /// until the opposite tag overrides); `Runas_Spec` inheritance is the
+    /// analogous rule for the run-as clause.
+    ///
+    /// RED against the current impl: `is_unrestricted_privilege_elevation`
+    /// early-returns `false` when `cmnd_spec.runas` is `None` (tags.rs:372-
+    /// 374), and the parser only records an explicit LEADING `(...)` on the
+    /// command it directly precedes (`CmndSpec::runas`, ast.rs:261: "The
+    /// run-as spec, if a `(...)` group preceded THIS command") -- it does
+    /// not forward-resolve `Runas_Spec` inheritance across the list. So the
+    /// trailing `ALL`'s `CmndSpec.runas` is `None` here and `w06` misses
+    /// this hazard entirely (adversarial-impl-reviewer finding, ATL round).
+    #[test]
+    fn w06_fires_when_runas_inherits_forward_to_all_command() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL) /bin/ls, ALL\n"),
+            1,
+            "the trailing ALL command inherits the (ALL) Runas_Spec set by the \
+             preceding command in the same Cmnd_Spec_List; must fire"
+        );
+    }
+
+    /// `ALL ALL=(ALL:ALL) /bin/ls, ALL` (visudo -c -f rc 0; `cvtsudoers -f
+    /// json` confirms ONE `Cmnd_Specs` group with `runasusers=[ALL]`,
+    /// `runasgroups=[ALL]` covering BOTH `Commands=[/bin/ls, ALL]`): the same
+    /// forward `Runas_Spec` inheritance as
+    /// `w06_fires_when_runas_inherits_forward_to_all_command` above, but for
+    /// the `(ALL:ALL)` grant shape (W06's second DISA-literal pattern). Must
+    /// also fire.
+    #[test]
+    fn w06_fires_when_runas_all_all_inherits_forward_to_all_command() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL:ALL) /bin/ls, ALL\n"),
+            1,
+            "the trailing ALL command inherits the (ALL:ALL) Runas_Spec set by \
+             the preceding command in the same Cmnd_Spec_List; must fire"
+        );
+    }
+
+    /// `ALL host1,ALL=(ALL) ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
+    /// confirms `Host_List=[host1, ALL]`): the reserved `ALL` host is a
+    /// MEMBER of a multi-host list alongside a specific hostname. DISA's
+    /// check-content is the SAME unanchored whole-word grep
+    /// (`grep -iwR 'ALL' ...`) that `w06_fires_for_multi_subject_line_
+    /// containing_all` above already grounds for the subject `User_List`;
+    /// the reserved `ALL` host means "every host" regardless of what else
+    /// shares the list, so membership (not exact list equality) is the
+    /// DISA-faithful reading for `Host_List` too. RED against the current
+    /// impl: `host_group.hosts == ["ALL"]` (tags.rs:328) is an EXACT-
+    /// equality check, so a `[host1, ALL]` list misses (adversarial-impl-
+    /// reviewer finding, ATL round).
+    #[test]
+    fn w06_fires_when_host_list_contains_all_among_others() {
+        assert_eq!(
+            w06_count("ALL host1,ALL=(ALL) ALL\n"),
+            1,
+            "the reserved ALL host is a MEMBER of a multi-host Host_List; \
+             membership (not exact list equality) must fire, mirroring the \
+             User_List membership reading above"
+        );
+    }
+
+    /// `ALL ALL=(ALL, root) ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
+    /// confirms `runasusers=[ALL, root]`): the reserved `ALL` run-as user is
+    /// a MEMBER of a multi-user `Runas_Spec` alongside the named user `root`.
+    /// Same membership grounding as
+    /// `w06_fires_when_host_list_contains_all_among_others` above -- the
+    /// reserved `ALL` run-as user subsumes any co-members, so every subject
+    /// may run as `root` (or literally any user). RED against the current
+    /// impl: `is_unrestricted_privilege_elevation`'s `runas.users ==
+    /// ["ALL"]` (tags.rs:376) is EXACT-equality, so a `[ALL, root]` list
+    /// misses (adversarial-impl-reviewer finding, ATL round).
+    #[test]
+    fn w06_fires_when_runas_user_list_contains_all_among_others() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL, root) ALL\n"),
+            1,
+            "the reserved ALL run-as user is a MEMBER of a multi-user Runas_Spec; \
+             membership (not exact list equality) must fire"
+        );
+    }
+
     // ---- NEGATIVE: discriminating fixtures that must NOT fire ----
 
     /// `root ALL=(ALL:ALL) ALL` alone (no second line): the single most common
