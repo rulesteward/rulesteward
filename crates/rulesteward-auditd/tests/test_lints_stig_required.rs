@@ -1013,6 +1013,136 @@ fn rhel10_f2_panic_control_deepening_v281103() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Deepening cont'd (#523, session 9b-v0_8-wave2 lane 2e, additive round 2):
+// `--loginuid-immutable` (auditctl(8): "make loginuids unchangeable once set,
+// requires CAP_AUDIT_CONTROL"). Unlike "-e 2"/"-f 2" above, this is a BRAND
+// NEW `ControlRule::LoginuidImmutable` variant (crates/rulesteward-auditd/
+// src/ast.rs) -- the parser does not recognize the flag at all yet (still
+// hits the "unknown flag" error path, see
+// crates/rulesteward-auditd/tests/test_ast_parser.rs's
+// `control_loginuid_immutable_parses`), so `w06_with_baseline`'s
+// `parse_single_rule` call on a "--loginuid-immutable" BaselineRule line
+// PANICS today (not merely "reports missing" like the -e2/-f2 cases) --
+// still a genuine RED failure (a panic IS a test failure), it just fails at
+// an earlier step than the -e2/-f2 deepening above.
+//
+// USER-APPROVED IDs (2026-07-15, via the orchestrator): RHEL8 V-230403
+// (RHEL-08-030122), RHEL9 V-258228 (RHEL-09-654270). RHEL10's XCCDF was
+// checked and contains no "loginuid" occurrence anywhere -- RHEL10 must NOT
+// carry this requirement; see `rhel10_loginuid_immutable_control_absent_
+// from_baseline` below (a discriminating-negative GUARD, not a RED test: it
+// already passes today because nothing has been added for RHEL10 yet, and
+// it is designed to keep passing after the implementer lands RHEL8/RHEL9 --
+// it exists to catch a future copy-paste mistake that also adds a RHEL10
+// entry, not to record a currently-broken behavior).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rhel8_loginuid_immutable_control_deepening_v230403() {
+    // RHEL-08-030122 (V-230403): the loginuid-immutable requirement.
+    let baseline = vec![bl("V-230403", "RHEL-08-030122", "--loginuid-immutable")];
+
+    // Compliant: the ruleset carries the literal required control line.
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n--loginuid-immutable\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a ruleset carrying the literal \"--loginuid-immutable\" control line must satisfy \
+         RHEL-08-030122: {diags:?}"
+    );
+
+    // Discriminating negative: a DIFFERENT control ("-e 2") must NOT satisfy
+    // a "--loginuid-immutable" requirement. Unlike the -e2/-f2 deepening
+    // above (which varies the INTEGER value of the same Control variant),
+    // LoginuidImmutable carries no value at all -- the meaningful wrong-impl
+    // this guards against is one that treats "any Control rule present" as
+    // satisfying, ignoring which specific variant is required (the derived
+    // `PartialEq` on `ControlRule` is what must actually be consulted).
+    let wrong_control = parse("-w /etc/passwd -p wa -k identity\n-e 2\n");
+    let diags = w06_with_baseline(&wrong_control, LintOptions::default(), &baseline);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a \"-e 2\" rule must NOT satisfy a \"--loginuid-immutable\" requirement: {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("RHEL-08-030122"),
+        "{:?}",
+        diags[0].message
+    );
+
+    // Absent entirely; also spot-checks the typed ControlRef attaches.
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    let d = &diags[0];
+    assert!(d.message.contains("RHEL-08-030122"), "{:?}", d.message);
+    assert_eq!(d.controls.len(), 1, "{d:?}");
+    assert_eq!(d.controls[0].framework, Framework::Stig);
+    assert_eq!(d.controls[0].id, "RHEL-08-030122");
+    assert_eq!(d.controls[0].alias.as_deref(), Some("V-230403"));
+}
+
+#[test]
+fn rhel9_loginuid_immutable_control_deepening_v258228() {
+    // RHEL-09-654270 (V-258228): RHEL9's own STIG id/V-number for the same
+    // loginuid-immutable requirement.
+    let baseline = vec![bl("V-258228", "RHEL-09-654270", "--loginuid-immutable")];
+
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n--loginuid-immutable\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    // Discriminating negative: a DIFFERENT control ("-f 2") must NOT satisfy.
+    let wrong_control = parse("-w /etc/passwd -p wa -k identity\n-f 2\n");
+    let diags = w06_with_baseline(&wrong_control, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-09-654270"),
+        "{:?}",
+        diags[0].message
+    );
+
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    let d = &diags[0];
+    assert!(d.message.contains("RHEL-09-654270"), "{:?}", d.message);
+    assert_eq!(d.controls.len(), 1, "{d:?}");
+    assert_eq!(d.controls[0].framework, Framework::Stig);
+    assert_eq!(d.controls[0].id, "RHEL-09-654270");
+    assert_eq!(d.controls[0].alias.as_deref(), Some("V-258228"));
+}
+
+#[test]
+fn rhel10_loginuid_immutable_control_absent_from_baseline() {
+    // Verified (2026-07-15) against the pinned RHEL10 DISA XCCDF
+    // (tools/auditd-stig-update/stig-refs.toml's U_RHEL_10_STIG.zip, V1R1):
+    // no Group/Rule's check-content mentions "loginuid" anywhere -- unlike
+    // RHEL8 (V-230403/RHEL-08-030122) and RHEL9 (V-258228/RHEL-09-654270),
+    // RHEL10 genuinely drops this control. This is a discriminating-negative
+    // GUARD (not a RED test -- see the section doc comment above): it
+    // catches a future implementer mistakenly copy-pasting the RHEL8/RHEL9
+    // loginuid-immutable entry into the shipped `RHEL10_REQUIRED` table too.
+    let rhel10 = stig_baseline(TargetVersion::Rhel10);
+    assert!(
+        !rhel10.iter().any(|r| r.line == "--loginuid-immutable"),
+        "RHEL10's DISA XCCDF has no loginuid-immutable control; the shipped \
+         table must never carry one: {rhel10:?}"
+    );
+
+    // Same property end to end: a RHEL10-targeted au-W06 pass over a ruleset
+    // that lacks "--loginuid-immutable" entirely must never fabricate a
+    // finding naming it.
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06(&absent, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("loginuid")),
+        "a RHEL10-targeted au-W06 pass must never mention loginuid-immutable: {diags:?}"
+    );
+}
+
 #[test]
 fn non_w06_finding_has_empty_controls() {
     // Empty-controls guard (issue #502): this milestone wires a typed

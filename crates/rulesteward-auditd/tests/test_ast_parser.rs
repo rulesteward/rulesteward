@@ -86,6 +86,24 @@ fn control_enable_lock_parses() {
     assert_eq!(rules[0], AuditRule::Control(ControlRule::Enable(2)));
 }
 
+/// `--loginuid-immutable` must parse as `Control(LoginuidImmutable)`. Takes
+/// NO value argument (unlike `-b`/`-f`/`-e`/`-r` above).
+/// Grounded: `auditctl --help` / `man auditctl(8)`: "--loginuid-immutable
+/// This option tells the kernel to make loginuids unchangeable once they are
+/// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." (verified against
+/// the installed `auditctl(8)` man page, 2026-07-15).
+///
+/// RED today (#523, session 9b-v0_8-wave2 lane 2e): `parser.rs`'s
+/// `parse_line` match has no `"--loginuid-immutable"` arm, so this line
+/// falls into the trailing `other => Err(...)` unknown-flag branch instead
+/// of producing `Ok`.
+#[test]
+fn control_loginuid_immutable_parses() {
+    let rules = parse_ok("--loginuid-immutable");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0], AuditRule::Control(ControlRule::LoginuidImmutable));
+}
+
 /// `stock_control.rules` fixture: the full shipped bootstrap block parses to 4 control rules.
 /// Grounded: \[VM\] Rocky 9 `/etc/audit/rules.d/audit.rules` (same on el8/el10).
 #[test]
