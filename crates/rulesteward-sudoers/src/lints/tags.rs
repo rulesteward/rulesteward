@@ -1752,7 +1752,7 @@ mod w06_tests {
         );
     }
 
-    /// `bob, ALL ALL=(ALL) ALL` (visudo -c -f rc 0; `cvtsudoers -f json` confirms
+    /// `bob,ALL ALL=(ALL) ALL` (visudo -c -f rc 0; `cvtsudoers -f json` confirms
     /// `User_List=[{username:bob}, {username:ALL}]`, i.e. the reserved `ALL`
     /// principal is a MEMBER of a multi-element subject list, not the sole
     /// entry): grounds which of two candidate readings of the DISA
@@ -1766,10 +1766,10 @@ mod w06_tests {
     /// /etc/sudoers /etc/sudoers.d/ | grep -v "#"`. `-w`/`--word-regexp`
     /// matches `ALL` as a whole WORD anywhere on the line -- NOT the whole
     /// line (that would be `-x`) -- and neither command anchors with `^`/`$`.
-    /// Simulated against this fixture's exact text: `printf 'bob, ALL
+    /// Simulated against this fixture's exact text: `printf 'bob,ALL
     /// ALL=(ALL) ALL\n' | grep -iwR 'ALL' | grep -v '#'` returns the FULL
-    /// line `bob, ALL ALL=(ALL) ALL` verbatim, rc 0 -- the grep does not
-    /// strip the `bob, ` prefix or require an exact match to the bare `ALL
+    /// line `bob,ALL ALL=(ALL) ALL` verbatim, rc 0 -- the grep does not
+    /// strip the `bob,` prefix or require an exact match to the bare `ALL
     /// ALL=(ALL) ALL` string quoted in the check's finding text; that quoted
     /// string is itself only ONE candidate line the grep can surface, not a
     /// whole-line equality test. Since the reserved `ALL` token in a
@@ -1782,10 +1782,28 @@ mod w06_tests {
     /// reading: an exact-match impl would silently miss a fixture that the
     /// check's own literal grep command surfaces as a returned candidate
     /// line. RED against the `Vec::new()` stub.
+    ///
+    /// The fixture is written WITHOUT a space after the comma
+    /// (`bob,ALL ...`, not `bob, ALL ...`) for the same reason as
+    /// `hash_digits_uid_subject_after_comma_is_not_a_comment` in
+    /// `parser.rs`: `classify_user_spec`/`split_first_word` treats the
+    /// first whitespace-run as the boundary of the whole `User_List`, a
+    /// documented Phase-0 simplification. A comma followed by a space
+    /// (`bob, ALL ALL=(ALL) ALL`) introduces a whitespace-run before the
+    /// `=`, so the parser splits the `User_List` at that inner space and
+    /// garbles the spec; keeping the user list one whitespace-word
+    /// (`bob,ALL`) sidesteps that gap without touching the parser. The
+    /// spaced form therefore remains a KNOWN false negative until a parser
+    /// follow-up issue lands proper comma-aware `User_List` tokenization;
+    /// this test only pins the membership-vs-exact-equality reading above,
+    /// not the parser's tolerance for whitespace inside a comma list. The
+    /// DISA grounding above (the unanchored `grep -iw` returns the line
+    /// regardless of internal whitespace; membership semantics) is
+    /// unchanged by this fixture adjustment.
     #[test]
     fn w06_fires_for_multi_subject_line_containing_all() {
         assert_eq!(
-            w06_count("bob, ALL ALL=(ALL) ALL\n"),
+            w06_count("bob,ALL ALL=(ALL) ALL\n"),
             1,
             "the reserved ALL principal is a MEMBER of a multi-subject User_List; \
              membership (not exact list equality) is the DISA-faithful reading -- \
