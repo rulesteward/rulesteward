@@ -115,6 +115,26 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     Ok(out)
 }
 
+/// Surface directive controls that carry a runtime check (`sshd -T | grep -i <kw>`)
+/// but NO file-grep idiom (`grep -iH '^\s*<kw>'`) for that SAME keyword within the
+/// SAME `<Group>` `<check-content>` block (issue #468).
+///
+/// [`parse_controls`] keys on the file-grep idiom, so a control checked ONLY at
+/// runtime is silently SKIPPED today. This guard returns those skipped directives so
+/// the caller can fail loud instead of dropping a required control. The keywords are
+/// the lowercase word grepped after `sshd -T | grep -i`, sorted ascending. An empty
+/// result means every runtime check is duplicated by a file grep for the same
+/// keyword in the same Group - the current state across the pinned RHEL 8/9/10
+/// benchmarks (0 / 1 / 16 runtime checks, all duplicated), so the guard must not fire
+/// on any of them.
+pub fn runtime_only_directives(_xccdf: &str) -> Vec<String> {
+    // Signature freeze (test-author, lane-2c): the RED tests below pin this contract;
+    // the implementer replaces this body. A `todo!()` (not an empty `Vec`) so EVERY
+    // authored test - the positive AND the negative ones - fails until the guard is
+    // genuinely implemented, per the RED-barrier discipline.
+    todo!("#468: runtime-only directive guard - implemented by lane-2c")
+}
+
 /// Classify one selected Rule's value assertion from its fixtext + check-content.
 ///
 /// Fail-closed: a selected Rule with no canonical `<Keyword> <args>` fixtext config
@@ -478,5 +498,134 @@ mod tests {
         let err = parse_controls(doc).expect_err("missing <version> must fail closed");
         assert!(err.contains("V-98"), "{err}");
         assert!(err.contains("version"), "{err}");
+    }
+
+    // --- #468 runtime-only directive guard ------------------------------------
+    // `parse_controls` selects on the FILE-grep idiom (`grep -iH '^\s*<kw>'`). DISA
+    // is adding RUNTIME checks (`sshd -T | grep -i <kw>`); today every controlled
+    // directive ALSO carries the file grep, so all are captured. A directive checked
+    // ONLY at runtime would be silently dropped. `runtime_only_directives` surfaces
+    // those so the caller can fail loud (issue #468). Every assertion below is
+    // grounded in the real `sshd -T | grep -i <kw>` idiom used verbatim across the
+    // pinned RHEL 9 (V-257996) and RHEL 10 (V-281254..V-281296) benchmarks.
+
+    /// A Group whose check-content carries ONLY the runtime idiom
+    /// (`sshd -T | grep -i x11forwarding`) and NO file grep for that keyword is a
+    /// runtime-only directive: it must be surfaced (else it is silently skipped).
+    #[test]
+    fn runtime_only_single_directive_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800001\"><Rule><version>RHEL-09-800001</version>\
+            <check><check-content>Verify the runtime configuration with the following command:\n\
+            $ sudo sshd -T | grep -i x11forwarding\nx11forwarding no\n\
+            If \"X11Forwarding\" is not set to \"no\", this is a finding.</check-content></check>\
+            <fixtext>Add the following line to sshd_config:\nX11Forwarding no</fixtext>\
+            </Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["x11forwarding".to_string()],
+            "a directive checked only via `sshd -T | grep` must be surfaced"
+        );
+    }
+
+    /// A Group carrying BOTH the file grep AND the runtime check for the same
+    /// keyword (the real "duplicated" shape - e.g. RHEL 10 V-281265 permitrootlogin)
+    /// is fully captured by `parse_controls`, so the guard must NOT surface it.
+    #[test]
+    fn duplicated_runtime_and_file_grep_same_group_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800002\"><Rule><version>RHEL-09-800002</version>\
+            <check><check-content>$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | \
+            xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\n\
+            permitrootlogin no\nVerify the runtime setting with the following command:\n\
+            $ sudo sshd -T | grep -i permitrootlogin\npermitrootlogin no\n\
+            If not set to \"no\", this is a finding.</check-content></check>\
+            <fixtext>PermitRootLogin no</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a runtime check duplicated by a same-group file grep is NOT runtime-only"
+        );
+    }
+
+    /// The exact #468 acceptance requirement: the three pinned DISA benchmarks carry
+    /// 0 / 1 / 16 runtime checks respectively, and (verified mechanically against the
+    /// fixtures) EVERY one is duplicated by a same-Group file grep. The guard must
+    /// return empty for all three - zero false positives on shipping data.
+    #[test]
+    fn real_pinned_benchmarks_have_zero_runtime_only_directives() {
+        assert!(
+            runtime_only_directives(RHEL8_FIXTURE).is_empty(),
+            "RHEL 8 (0 runtime checks) must not trip the guard"
+        );
+        assert!(
+            runtime_only_directives(RHEL9_FIXTURE).is_empty(),
+            "RHEL 9 (1 runtime check, duplicated) must not trip the guard"
+        );
+        assert!(
+            runtime_only_directives(RHEL10_FIXTURE).is_empty(),
+            "RHEL 10 (16 runtime checks, all duplicated) must not trip the guard"
+        );
+    }
+
+    /// The guard is scoped PER check-content block: a runtime-only directive in one
+    /// Group must be surfaced even when a DIFFERENT Group in the same document carries
+    /// a file grep. A document-wide "is there any file grep at all" check would wrongly
+    /// treat this as clean; the per-Group scoping forbids that.
+    #[test]
+    fn runtime_only_scoped_per_group_not_document() {
+        let doc = "<Benchmark>\
+            <Group id=\"V-800003\"><Rule><version>RHEL-09-800003</version>\
+            <check><check-content>$ sudo sshd -T | grep -i maxauthtries\nmaxauthtries 3\n\
+            If not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group>\
+            <Group id=\"V-800004\"><Rule><version>RHEL-09-800004</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>PermitRootLogin no</fixtext></Rule></Group>\
+            </Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a runtime-only Group is surfaced regardless of a file grep in another Group"
+        );
+    }
+
+    /// The guard keys specifically on the `sshd -T | grep` runtime idiom, NOT on a
+    /// bare `grep -i <kw>`. A rule that greps a file WITHOUT the anchored file-grep
+    /// idiom and WITHOUT `sshd -T` is not a runtime directive check and must not be
+    /// surfaced (guards against an over-broad "any grep" selector).
+    #[test]
+    fn bare_grep_without_sshd_dash_t_is_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800005\"><Rule><version>RHEL-09-800005</version>\
+            <check><check-content>Run the following command:\n\
+            $ sudo grep -i maxsessions /etc/ssh/sshd_config\nmaxsessions 10\n\
+            If not set, this is a finding.</check-content></check>\
+            <fixtext>MaxSessions 10</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a bare `grep -i <kw>` without `sshd -T` is not a runtime directive check"
+        );
+    }
+
+    /// Two distinct runtime-only directives are BOTH surfaced, sorted ascending. The
+    /// Groups are authored in reverse-sorted order (pubkey before hostbased) so a
+    /// non-sorting or first-only implementation fails this test.
+    #[test]
+    fn multiple_runtime_only_directives_all_surfaced_sorted() {
+        let doc = "<Benchmark>\
+            <Group id=\"V-800006\"><Rule><version>RHEL-09-800006</version>\
+            <check><check-content>$ sudo sshd -T | grep -i pubkeyauthentication\n\
+            pubkeyauthentication yes\nIf not \"yes\", this is a finding.</check-content></check>\
+            <fixtext>PubkeyAuthentication yes</fixtext></Rule></Group>\
+            <Group id=\"V-800007\"><Rule><version>RHEL-09-800007</version>\
+            <check><check-content>$ sudo sshd -T | grep -i hostbasedauthentication\n\
+            hostbasedauthentication no\nIf not \"no\", this is a finding.</check-content></check>\
+            <fixtext>HostbasedAuthentication no</fixtext></Rule></Group>\
+            </Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec![
+                "hostbasedauthentication".to_string(),
+                "pubkeyauthentication".to_string()
+            ],
+            "all runtime-only directives are surfaced, sorted ascending"
+        );
     }
 }
