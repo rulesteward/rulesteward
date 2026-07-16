@@ -361,25 +361,98 @@ mod tests {
     // this test-author's own fixture-generation script producing the SAME
     // 45/61, 51/67, 50/75 counts before this file was written) ---------------
 
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): each fixture gained new
+    // real Groups whose ENTIRE requirement is a bare Control-rule line
+    // ("-e 2" / "-f 2") -- fetched live 2026-07-15 against the pinned DISA
+    // zips. `RULE_LINE_RE` (this module) does not recognize "-e"/"-f" leading
+    // tokens today, so these Groups are currently DROPPED by the selector
+    // (zero extracted lines each): the three tests below are RED until the
+    // implementer widens `RULE_LINE_RE` to also select them (see
+    // `control_rule_check_content_e_flag_is_selected_as_a_required_line` /
+    // `..._f_flag_...` below, which pin the mechanism directly).
+
     #[test]
     fn rhel8_known_answer_counts() {
         let derived = parse_requirements(RHEL8_FIXTURE).expect("fixture must parse");
-        assert_eq!(distinct_v_numbers(&derived), 45, "rhel8 requirement count");
-        assert_eq!(derived.len(), 61, "rhel8 total extracted line count");
+        assert_eq!(distinct_v_numbers(&derived), 46, "rhel8 requirement count");
+        assert_eq!(derived.len(), 62, "rhel8 total extracted line count");
     }
 
     #[test]
     fn rhel9_known_answer_counts() {
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
-        assert_eq!(distinct_v_numbers(&derived), 51, "rhel9 requirement count");
-        assert_eq!(derived.len(), 67, "rhel9 total extracted line count");
+        assert_eq!(distinct_v_numbers(&derived), 53, "rhel9 requirement count");
+        assert_eq!(derived.len(), 69, "rhel9 total extracted line count");
     }
 
     #[test]
     fn rhel10_known_answer_counts() {
         let derived = parse_requirements(RHEL10_FIXTURE).expect("fixture must parse");
-        assert_eq!(distinct_v_numbers(&derived), 50, "rhel10 requirement count");
-        assert_eq!(derived.len(), 75, "rhel10 total extracted line count");
+        assert_eq!(distinct_v_numbers(&derived), 52, "rhel10 requirement count");
+        assert_eq!(derived.len(), 77, "rhel10 total extracted line count");
+    }
+
+    // --- deepening (#523): the selector-widening mechanism, pinned directly
+    // against minimal synthetic fixtures (independent of the real-fixture
+    // known-answer counts above) ------------------------------------------
+
+    #[test]
+    fn control_rule_check_content_e_flag_is_selected_as_a_required_line() {
+        // SV-230402r1017208_rule (RHEL-08-030121): a real DISA requirement
+        // whose ENTIRE requirement is a bare Control-rule line ("-e 2", the
+        // immutable-audit-config flag) -- never a "-a"/"-A"/"-w" line at all.
+        // `RULE_LINE_RE` today only recognizes "-A"/"-a"/"-w" leading tokens,
+        // so this Group is currently DROPPED entirely (zero extracted lines),
+        // even though "-e 2" is a real, parser-recognized
+        // `AuditRule::Control(ControlRule::Enable(2))` line
+        // (`crates/rulesteward-auditd/src/parser.rs`'s "-e" arm). Verified
+        // live 2026-07-15: widening the selector to also recognize "-e"/"-f"
+        // leading tokens against the REAL pinned rhel8/9/10 XCCDF benchmarks
+        // selects EXACTLY the five new Groups this deepening adds
+        // (V-230402, V-258227, V-258229, V-281103, V-281365) and introduces
+        // ZERO false positives elsewhere in any of the three benchmarks
+        // (mechanically re-verified against the live XCCDF text, not merely
+        // asserted).
+        let doc = r#"<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1">
+            <Group id="V-230402"><Rule severity="medium"><version>RHEL-08-030121</version>
+            <check><check-content>Verify the audit system prevents unauthorized changes with the following command:
+
+$ sudo grep "^\s*[^#]" /etc/audit/audit.rules | tail -1
+
+-e 2
+
+If the audit system is not set to be immutable by adding the "-e 2" option to the "/etc/audit/audit.rules", this is a finding.</check-content></check>
+            </Rule></Group></Benchmark>"#;
+        let derived = parse_requirements(doc).expect("parses");
+        assert_eq!(
+            derived.len(),
+            1,
+            "the bare \"-e 2\" Control-rule line must be selected as a required line: {derived:?}"
+        );
+        assert_eq!(derived[0].v_number, "V-230402");
+        assert_eq!(derived[0].stig_id, "RHEL-08-030121");
+        assert_eq!(derived[0].line, "-e 2");
+    }
+
+    #[test]
+    fn control_rule_check_content_f_flag_is_selected_as_a_required_line() {
+        // SV-258227r1014992_rule (RHEL-09-654265): companion to the "-e" test
+        // above -- a bare "-f 2" Control-rule line (panic-on-critical-failure).
+        let doc = r#"<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1">
+            <Group id="V-258227"><Rule severity="medium"><version>RHEL-09-654265</version>
+            <check><check-content>Verify the audit service is configured to panic on a critical error with the following command:
+
+$ sudo grep "\-f" /etc/audit/audit.rules
+
+-f 2
+
+If the value for "-f" is not "2", and availability is not documented as an overriding concern, this is a finding.</check-content></check>
+            </Rule></Group></Benchmark>"#;
+        let derived = parse_requirements(doc).expect("parses");
+        assert_eq!(derived.len(), 1, "{derived:?}");
+        assert_eq!(derived[0].v_number, "V-258227");
+        assert_eq!(derived[0].stig_id, "RHEL-09-654265");
+        assert_eq!(derived[0].line, "-f 2");
     }
 
     // --- pinned spot-checks (cite appendix.txt ids; each line copied verbatim
@@ -505,7 +578,7 @@ mod tests {
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
         assert_eq!(
             distinct_v_numbers(&derived),
-            51,
+            53,
             "the 2 decoy Groups in the fixture must be excluded, not counted"
         );
     }

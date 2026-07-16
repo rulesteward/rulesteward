@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL8_STIG_TEST_FIXTURE">
-<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 audit-rule Groups (45) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant).</title>
+<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 audit-rule Groups (46) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant). Group V-230402 (RHEL-08-030121, "-e 2" immutable-mode) added session 9b-v0_8-wave2 lane 2e (#523), fetched live 2026-07-15 against the pinned U_RHEL_8_V2R4_STIG.zip.</title>
 <Group id="V-230386"><Rule severity="medium"><version>RHEL-08-030000</version><title>The RHEL 8 audit system must be configured to audit the execution of privileged functions and prevent all software from executing at higher privilege levels than users executing the software.</title><check system="C-x"><check-content>Verify RHEL 8 audits the execution of privileged functions.
 
 Check if RHEL 8 is configured to audit the execution of the "execve" system call, by running the following command:
@@ -612,4 +612,15 @@ If the audit service is not "active" and "running", this is a finding.</check-co
 $ sudo systemctl enable auditd.service
 
 $ sudo systemctl start auditd.service</fixtext></Rule></Group>
+<Group id="V-230402"><Rule severity="medium"><version>RHEL-08-030121</version><title>RHEL 8 audit system must protect auditing rules from unauthorized change.</title><check system="C-x"><check-content>Verify the audit system prevents unauthorized changes with the following command:
+
+$ sudo grep "^\s*[^#]" /etc/audit/audit.rules | tail -1
+
+-e 2
+
+If the audit system is not set to be immutable by adding the "-e 2" option to the "/etc/audit/audit.rules", this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to set the audit rules to be immutable by adding the following line to "/etc/audit/rules.d/audit.rules"
+
+-e 2
+
+Note: Once set, the system must be rebooted for auditing to be changed.  It is recommended to add this option as the last step in securing the system.</fixtext></Rule></Group>
 </Benchmark>

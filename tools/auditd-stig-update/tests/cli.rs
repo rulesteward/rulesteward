@@ -70,6 +70,10 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
     // the zero-selection -> drift -> exit-1 path (the mirror-image case of
     // the "both sides empty" wiring pin this test used to be, before
     // population inverted its premise).
+    //
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped table grows
+    // from 67 to 69 rows (two new Control-shaped deepening entries; see
+    // `src/xccdf.rs`'s known-answer tests). RED today.
     let f = temp_xccdf("empty", EMPTY_SELECTION_XCCDF);
     let (code, stdout, err) = run(&[
         "check",
@@ -84,7 +88,7 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
         "an empty-selection file must drift against the populated shipped table; \
          stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("DRIFT (67 change(s))"), "stdout={stdout}");
+    assert!(stdout.contains("DRIFT (69 change(s))"), "stdout={stdout}");
 }
 
 // --- exit-code contract: 1 drift ---------------------------------------------
@@ -93,9 +97,12 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
 fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
     // The shipped RHEL9_REQUIRED table is now populated from this same
     // fixture's derived output (issue #474), so the real, non-empty rhel9
-    // fixture matches it exactly: 0 drift, 67 rules - mirrors
+    // fixture matches it exactly: 0 drift, 67 rows - mirrors
     // `xccdf.rs`'s `rhel9_fixture_reproduces_code_table_exactly` through the
     // CLI's `check` subcommand.
+    //
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the fixture (and, once
+    // implemented, the shipped table) grows from 67 to 69 rows. RED today.
     let f = temp_xccdf("rhel9-full", RHEL9_FIXTURE);
     let (code, stdout, err) = run(&[
         "check",
@@ -110,7 +117,7 @@ fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
         "the real rhel9 fixture must be in sync with the populated table; \
          stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("OK (0 drift, 67 rules)"), "stdout={stdout}");
+    assert!(stdout.contains("OK (0 drift, 69 rules)"), "stdout={stdout}");
 }
 
 #[test]

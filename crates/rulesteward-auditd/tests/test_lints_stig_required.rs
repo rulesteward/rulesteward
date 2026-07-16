@@ -126,9 +126,16 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
     // proves the dispatch fires + names RHEL-09-654010 but does not pin the
     // exact count or that EVERY finding is severity=Warning): this adds the
     // count precision that test lacks.
+    //
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped RHEL9_REQUIRED
+    // table grows from 67 to 69 rows once the implementer adds the two new
+    // Control-shaped deepening entries this session grounds live against the
+    // pinned RHEL 9 STIG V2R7 XCCDF (V-258227/RHEL-09-654265 "-f 2" and
+    // V-258229/RHEL-09-654275 "-e 2"; see the "Deepening (#523)" block below).
+    // RED today: the shipped table is still 67 rows.
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
-    assert_eq!(diags.len(), 67, "{diags:?}");
+    assert_eq!(diags.len(), 69, "{diags:?}");
     assert!(
         diags.iter().all(|d| d.severity == Severity::Warning),
         "every au-W06 finding must be severity=Warning: {diags:?}"
@@ -540,26 +547,54 @@ fn catalog_lists_au_w06_as_warning() {
 #[test]
 fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     // Length + a known control id per product, mirroring the tool crate's own
-    // rhel{8,9,10}_known_answer_counts pins (61/67/75 total extracted lines).
+    // rhel{8,9,10}_known_answer_counts pins.
+    //
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): counts bumped from the
+    // prior 61/67/75 to 62/69/77 -- one new Control-shaped deepening entry on
+    // RHEL8 (V-230402/RHEL-08-030121, "-e 2") and two each on RHEL9
+    // (V-258227/RHEL-09-654265 "-f 2", V-258229/RHEL-09-654275 "-e 2") and
+    // RHEL10 (V-281103/RHEL-10-500035 "-f 2", V-281365/RHEL-10-900100 "-e 2"),
+    // all grounded live against the pinned DISA XCCDF (see the "Deepening
+    // (#523)" block below). RED today: the shipped tables are still 61/67/75.
     let rhel8 = stig_baseline(TargetVersion::Rhel8);
-    assert_eq!(rhel8.len(), 61, "{rhel8:?}");
+    assert_eq!(rhel8.len(), 62, "{rhel8:?}");
     assert!(
         rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),
         "RHEL8 baseline must contain RHEL-08-030000: {rhel8:?}"
     );
+    assert!(
+        rhel8.iter().any(|r| r.stig_id == "RHEL-08-030121"),
+        "RHEL8 baseline must contain the new RHEL-08-030121 (\"-e 2\") deepening entry: {rhel8:?}"
+    );
 
     let rhel9 = stig_baseline(TargetVersion::Rhel9);
-    assert_eq!(rhel9.len(), 67, "{rhel9:?}");
+    assert_eq!(rhel9.len(), 69, "{rhel9:?}");
     assert!(
         rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
         "RHEL9 baseline must contain RHEL-09-654010: {rhel9:?}"
     );
+    assert!(
+        rhel9.iter().any(|r| r.stig_id == "RHEL-09-654265"),
+        "RHEL9 baseline must contain the new RHEL-09-654265 (\"-f 2\") deepening entry: {rhel9:?}"
+    );
+    assert!(
+        rhel9.iter().any(|r| r.stig_id == "RHEL-09-654275"),
+        "RHEL9 baseline must contain the new RHEL-09-654275 (\"-e 2\") deepening entry: {rhel9:?}"
+    );
 
     let rhel10 = stig_baseline(TargetVersion::Rhel10);
-    assert_eq!(rhel10.len(), 75, "{rhel10:?}");
+    assert_eq!(rhel10.len(), 77, "{rhel10:?}");
     assert!(
         rhel10.iter().any(|r| r.stig_id == "RHEL-10-500300"),
         "RHEL10 baseline must contain RHEL-10-500300: {rhel10:?}"
+    );
+    assert!(
+        rhel10.iter().any(|r| r.stig_id == "RHEL-10-500035"),
+        "RHEL10 baseline must contain the new RHEL-10-500035 (\"-f 2\") deepening entry: {rhel10:?}"
+    );
+    assert!(
+        rhel10.iter().any(|r| r.stig_id == "RHEL-10-900100"),
+        "RHEL10 baseline must contain the new RHEL-10-900100 (\"-e 2\") deepening entry: {rhel10:?}"
     );
 }
 
@@ -777,6 +812,205 @@ fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
     assert_eq!(d.controls[0].framework, Framework::Stig);
     assert_eq!(d.controls[0].id, "RHEL-09-654030");
     assert_eq!(d.controls[0].alias.as_deref(), Some("V-258180"));
+}
+
+// ---------------------------------------------------------------------------
+// Deepening (#523, session 9b-v0_8-wave2 lane 2e): Control-shaped STIG
+// requirements ("-e 2" immutable-audit-config, "-f 2" panic-on-critical-
+// failure). `rules_match`'s `axes_match` match (stig_required.rs) has
+// explicit arms ONLY for (Watch, Watch) and (Syscall, Syscall); every other
+// pairing (including Control, Control) falls through to `_ => false`, so a
+// Control-shaped BaselineRule can NEVER be satisfied today, regardless of the
+// ruleset's real content -- each "compliant" sub-case below is what turns
+// RED: a ruleset carrying the literal required Control line still reports
+// "missing" until the implementer adds a
+// `(AuditRule::Control(a), AuditRule::Control(b)) => a == b` arm (no new type
+// needed: `ControlRule` already derives `PartialEq`, and the parser already
+// recognizes both "-e" and "-f" -- `crates/rulesteward-auditd/src/parser.rs`'s
+// "-e"/"-f" arms, `ControlRule::Enable`/`ControlRule::FailureMode`).
+//
+// All five controls below were fetched LIVE (2026-07-15) against the exact
+// pinned DISA zips `tools/auditd-stig-update/stig-refs.toml` names
+// (U_RHEL_{8,9,10}_STIG.zip @ V2R4/V2R7/V1R1) via
+// `dl.dod.cyber.mil/wp-content/uploads/stigs/zip/...`. `auditd-stig-update
+// check --product {rhel8,rhel9,rhel10}` against those same live pinned zips
+// confirms 0 drift for the CURRENT 45/51/50-requirement (61/67/75-line)
+// baseline, so these five are genuinely beyond it, not a mis-grounded
+// rediscovery of something already shipped. A companion selector-widening
+// gap lives in `tools/auditd-stig-update/src/xccdf.rs` (its `RULE_LINE_RE`
+// does not recognize "-e"/"-f" leading tokens either, so it never even
+// DERIVES these lines from the XCCDF today) -- see that file's new
+// `control_rule_check_content_{e,f}_flag_is_selected_as_a_required_line`
+// tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rhel8_e2_immutable_control_deepening_v230402() {
+    // SV-230402r1017208_rule (RHEL-08-030121): "RHEL 8 audit system must
+    // protect auditing rules from unauthorized change." check-content:
+    // `sudo grep "^\s*[^#]" /etc/audit/audit.rules | tail -1` must equal
+    // "-e 2" (audit-userspace: -e 2 = AUDIT_STATUS lock/immutable mode).
+    let baseline = vec![bl("V-230402", "RHEL-08-030121", "-e 2")];
+
+    // Compliant: the ruleset carries the literal required "-e 2" line.
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n-e 2\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a ruleset carrying the literal \"-e 2\" control line must satisfy \
+         RHEL-08-030121: {diags:?}"
+    );
+
+    // Discriminating negative: "-e 1" (audit ENABLED but not immutable) is a
+    // DIFFERENT control value -- must NOT satisfy. Guards against a naive
+    // impl treating "any Control::Enable variant" as satisfying, ignoring
+    // the locked value.
+    let wrong_value = parse("-w /etc/passwd -p wa -k identity\n-e 1\n");
+    let diags = w06_with_baseline(&wrong_value, LintOptions::default(), &baseline);
+    assert_eq!(
+        diags.len(),
+        1,
+        "-e 1 must NOT satisfy a -e 2 (immutable) requirement: {diags:?}"
+    );
+    assert!(
+        diags[0].message.contains("RHEL-08-030121"),
+        "{:?}",
+        diags[0].message
+    );
+
+    // Absent entirely. Also spot-checks the typed ControlRef attaches to a
+    // Control-shaped finding exactly as it does for Watch/Syscall-shaped
+    // ones (issue #502's contract is variant-agnostic in the shared
+    // diagnostic-construction code, but this is the only place in this
+    // deepening block that re-confirms it end to end).
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    let d = &diags[0];
+    assert!(d.message.contains("RHEL-08-030121"), "{:?}", d.message);
+    assert_eq!(d.controls.len(), 1, "{d:?}");
+    assert_eq!(d.controls[0].framework, Framework::Stig);
+    assert_eq!(d.controls[0].id, "RHEL-08-030121");
+    assert_eq!(d.controls[0].alias.as_deref(), Some("V-230402"));
+}
+
+#[test]
+fn rhel9_e2_immutable_control_deepening_v258229() {
+    // SV-258229r958434_rule (RHEL-09-654275): same "-e 2" immutable-mode
+    // requirement, RHEL9's own STIG id/V-number.
+    let baseline = vec![bl("V-258229", "RHEL-09-654275", "-e 2")];
+
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n-e 2\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    // Discriminating negative: "-e 0" (audit disabled entirely).
+    let wrong_value = parse("-w /etc/passwd -p wa -k identity\n-e 0\n");
+    let diags = w06_with_baseline(&wrong_value, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-09-654275"),
+        "{:?}",
+        diags[0].message
+    );
+
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-09-654275"),
+        "{:?}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn rhel9_f2_panic_control_deepening_v258227() {
+    // SV-258227r1014992_rule (RHEL-09-654265): "RHEL 9 must take appropriate
+    // action when a critical audit processing failure occurs." check-content:
+    // `sudo grep "\-f" /etc/audit/audit.rules` must show "-f 2" (audit-
+    // userspace: -f 2 = panic on critical error).
+    let baseline = vec![bl("V-258227", "RHEL-09-654265", "-f 2")];
+
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n-f 2\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    // Discriminating negative: "-f 1" (printk, not panic).
+    let wrong_value = parse("-w /etc/passwd -p wa -k identity\n-f 1\n");
+    let diags = w06_with_baseline(&wrong_value, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-09-654265"),
+        "{:?}",
+        diags[0].message
+    );
+
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-09-654265"),
+        "{:?}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn rhel10_e2_immutable_control_deepening_v281365() {
+    // SV-281365r1167245_rule (RHEL-10-900100): "RHEL 10 must prevent
+    // unauthorized changes to the audit system" -- the RHEL10 "-e 2" analogue.
+    let baseline = vec![bl("V-281365", "RHEL-10-900100", "-e 2")];
+
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n-e 2\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let wrong_value = parse("-w /etc/passwd -p wa -k identity\n-e 1\n");
+    let diags = w06_with_baseline(&wrong_value, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-10-900100"),
+        "{:?}",
+        diags[0].message
+    );
+
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-10-900100"),
+        "{:?}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn rhel10_f2_panic_control_deepening_v281103() {
+    // SV-281103r1166261_rule (RHEL-10-500035): the RHEL10 "-f 2" analogue.
+    let baseline = vec![bl("V-281103", "RHEL-10-500035", "-f 2")];
+
+    let compliant = parse("-w /etc/passwd -p wa -k identity\n-f 2\n");
+    let diags = w06_with_baseline(&compliant, LintOptions::default(), &baseline);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let wrong_value = parse("-w /etc/passwd -p wa -k identity\n-f 0\n");
+    let diags = w06_with_baseline(&wrong_value, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-10-500035"),
+        "{:?}",
+        diags[0].message
+    );
+
+    let absent = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06_with_baseline(&absent, LintOptions::default(), &baseline);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("RHEL-10-500035"),
+        "{:?}",
+        diags[0].message
+    );
 }
 
 #[test]
