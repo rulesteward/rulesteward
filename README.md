@@ -191,7 +191,7 @@ rulesteward completions bash    # also: zsh, fish, elvish, powershell, tcsh
 Lint codes follow a SELint-style scheme: the letter after the backend prefix is the
 severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X` extra).
 
-### fapolicyd (`fapd-`, 25 codes)
+### fapolicyd (`fapd-`, 26 codes)
 
 | Code | Severity | Checks | Gate |
 | --- | --- | --- | --- |
@@ -219,9 +219,10 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `fapd-W09` | Warning | macro may be defined in an unseen sibling file | `--file` mode |
 | `fapd-W10` | Warning | cross-file decision shadow: an earlier-loading allow shadows a later rule | directory mode |
 | `fapd-W11` | Warning | weak hash digest (MD5/SHA1); prefer SHA-256 | always |
+| `fapd-W12` | Warning | deprecated `dir=untrusted` member (use object trust with execute permission instead; fapolicyd 1.6+) | fapolicyd 1.6+ target: dormant, no current target qualifies |
 | `fapd-X01` | Extra | trust-DB orphan: a trusted path absent from the loaded rules | `--report-orphans` + `--against-trustdb` |
 
-### auditd (`au-`, 10 codes)
+### auditd (`au-`, 11 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
@@ -229,6 +230,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-E02` | Error | comparison operator invalid for the field's type (auditctl rejects the rule at load) |
 | `au-E03` | Error | load-aborting duplicate: an identical earlier rule makes `auditctl -R` abort |
 | `au-E04` | Error | field used on a filter list the kernel rejects for that field (`auditctl -R` aborts the load) |
+| `au-E05` | Error | bitmask operator (`&`/`&=`) on a field the kernel rejects it for (`auditctl -R` aborts the load); the version-stable field set fires always, version-divergent fields only under `--target` |
 | `au-F01` | Fatal | rules file does not parse |
 | `au-W01` | Warning | duplicate rule (normalized-equal to an earlier rule in load order) |
 | `au-W02` | Warning | shadowed rule: an earlier, broader rule subsumes it |

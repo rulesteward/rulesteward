@@ -616,6 +616,7 @@ mod tests {
     use super::*;
     use crate::lints::SudoersLintContext;
     use crate::parser::parse;
+    use crate::resolve;
     use std::path::Path;
 
     const CTX: SudoersLintContext = SudoersLintContext {};
@@ -1481,6 +1482,21 @@ mod tests {
 
     /// An empty resolved slice yields no findings (guard against indexing
     /// `files[0]` on an empty input).
+    ///
+    /// NOT the #485 bug: this pins `w04`'s defensive handling of a genuinely
+    /// empty `Vec<SudoersFile>`, which still occurs for a top-level DIRECTORY
+    /// target with zero eligible drop-ins (`resolve::tests::
+    /// empty_directory_resolves_to_no_files` -- there is no singular top-level
+    /// file to anchor a line-0 finding against). #485 is specifically about a
+    /// top-level FILE target that resolves to zero entries; the orchestrator's
+    /// locked decision is BROAD -- ANY top-level FILE that resolves to zero
+    /// entries synthesizes one phantom segment, not just a byte-empty or
+    /// whitespace-only source (see `byte_empty_file_fires_all_three_absence_findings_via_resolver`
+    /// / `whitespace_only_file_fires_all_three_absence_findings_via_resolver` /
+    /// `file_with_only_empty_includedir_fires_all_three_absence_findings_via_resolver`
+    /// below). Post-fix, this artificial empty-slice input is no longer
+    /// reachable from ANY top-level FILE target -- only from an empty
+    /// top-level DIRECTORY, or a caller constructing `&[]` by hand.
     #[test]
     fn w04_absence_empty_slice_no_findings() {
         let diags = w04(&[], &CTX);
@@ -1822,6 +1838,381 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("timestamp_timeout")),
             "one absence finding must name timestamp_timeout; got {absent:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #485: sudo-W04 silent on an empty/whitespace-only linted FILE.
+    //
+    // `parse_one`/`lint_w04` above call `parser::parse` directly and BYPASS
+    // `resolve::resolve_target`, so they cannot observe this bug: the resolver's
+    // blank-only-segment drop (resolve.rs, the `flush` closure around line 146)
+    // is what collapses an empty/whitespace-only top-level FILE to a zero-length
+    // `Vec<SudoersFile>`, at which point `check_merged_required`'s
+    // `files.first()` guard (line ~488) silently returns no findings. Every test
+    // in this block drives the REAL `resolve::resolve_target` path so the bug
+    // (and its fix) is actually observable.
+    // -----------------------------------------------------------------------
+
+    /// REGRESSION GUARD (verified via `resolve::resolve_target`, not the
+    /// `parse_one`/`lint_w04` unit helpers which cannot see this): a
+    /// comment-only file is NOT dropped by the resolver -- `LineKind::Comment`
+    /// is distinct from `LineKind::Blank`, so the file's one logical line
+    /// survives the blank-only-segment flush and the resolved slice carries
+    /// ONE `SudoersFile`. Today this ALREADY fires all three merged-absence
+    /// findings (use_pty, I/O logging, timestamp_timeout), matching the unit-level
+    /// count pinned by `w04_absence_fires_three_times_when_all_missing`. This
+    /// test must keep passing UNCHANGED after #485's fix lands (only the
+    /// byte-empty / whitespace-only case is currently broken).
+    #[test]
+    fn comment_only_file_already_fires_all_three_absence_findings_via_resolver() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        std::fs::write(&f, "# just a comment\n").expect("write comment-only file");
+
+        let files = resolve::resolve_target(&f).expect("resolve a comment-only file");
+        assert_eq!(
+            files.len(),
+            1,
+            "a comment-only file retains its one resolved segment (LineKind::Comment \
+             survives the resolver's blank-only-segment drop); got {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            3,
+            "a comment-only file already fires all three merged-absence findings \
+             (use_pty, I/O logging, timestamp_timeout) via the real resolver path; \
+             got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "one absence finding must name use_pty; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("logging")),
+            "one absence finding must name I/O logging; got {absent:?}"
+        );
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")),
+            "one absence finding must name timestamp_timeout; got {absent:?}"
+        );
+        for d in &absent {
+            assert_eq!(d.line, 0, "absence findings anchor at line 0");
+            assert_eq!(
+                d.file, f,
+                "absence findings anchor at the linted file's own path"
+            );
+        }
+    }
+
+    /// RED (#485, frozen): a byte-empty (0-byte) linted FILE must fire all three
+    /// merged-absence findings (use_pty, I/O logging, timestamp_timeout), exactly
+    /// matching the comment-only case above -- the orchestrator's locked decision
+    /// is that empty is not a special "nothing to require against" case, it is the
+    /// STRONGEST case (a merged config that is empty definitionally lacks every
+    /// requirement). Today this is silent: the resolver's blank-only-segment drop
+    /// (resolve.rs's `flush` closure) collapses a byte-empty top-level file to a
+    /// zero-length `Vec<SudoersFile>`, and `check_merged_required`'s `files.first()`
+    /// guard then returns no findings at all. That is the bug this test pins the
+    /// fix for.
+    #[test]
+    fn byte_empty_file_fires_all_three_absence_findings_via_resolver() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        std::fs::write(&f, "").expect("write byte-empty file");
+
+        let files = resolve::resolve_target(&f).expect("resolve a byte-empty file");
+        assert_eq!(
+            files.len(),
+            1,
+            "a byte-empty top-level file must resolve to ONE (synthesized) segment \
+             so the merged-absence check has a top-level file to anchor findings \
+             against, matching the comment-only case above; got {files:?}"
+        );
+        assert_eq!(
+            files[0],
+            parse("", &f),
+            "the synthesized phantom segment must be EXACTLY what `parse()` \
+             produces for the file's own (byte-empty) raw source text, not a \
+             hand-fabricated `SudoersFile {{ source: String::new(), lines: \
+             Vec::new(), .. }}` that happens to also carry zero settings; \
+             pins the phantom's `source`/`lines` fields, not just its count; \
+             got {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            3,
+            "a byte-empty file must fire all three merged-absence findings \
+             (use_pty, I/O logging, timestamp_timeout), matching the comment-only \
+             case; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "one absence finding must name use_pty; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("logging")),
+            "one absence finding must name I/O logging; got {absent:?}"
+        );
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")),
+            "one absence finding must name timestamp_timeout; got {absent:?}"
+        );
+        for d in &absent {
+            assert_eq!(d.line, 0, "absence findings anchor at line 0");
+            assert_eq!(
+                d.file, f,
+                "absence findings anchor at the linted file's own path"
+            );
+        }
+    }
+
+    /// RED (#485, frozen): a whitespace-only linted FILE (spaces/tabs/blank
+    /// lines, no byte content that trims to non-empty) must fire the same three
+    /// merged-absence findings as the byte-empty case above. `classify_logical_line`
+    /// (parser.rs) treats a line whose trimmed text is empty as `LineKind::Blank`
+    /// exactly like a truly empty line, so a whitespace-only file hits the SAME
+    /// resolver blank-only-segment drop as the byte-empty case -- this is not a
+    /// distinct code path, but pinned separately since #485 names it explicitly
+    /// alongside byte-empty.
+    #[test]
+    fn whitespace_only_file_fires_all_three_absence_findings_via_resolver() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = dir.path().join("sudoers");
+        let source = "   \n\t\n\n  \t  \n";
+        std::fs::write(&f, source).expect("write whitespace-only file");
+
+        let files = resolve::resolve_target(&f).expect("resolve a whitespace-only file");
+        assert_eq!(
+            files.len(),
+            1,
+            "a whitespace-only top-level file must resolve to ONE (synthesized) \
+             segment so the merged-absence check has a top-level file to anchor \
+             findings against, matching the comment-only case above; got {files:?}"
+        );
+        assert_eq!(
+            files[0],
+            parse(source, &f),
+            "the synthesized phantom segment must be EXACTLY what `parse()` \
+             produces for the file's own (whitespace-only) raw source text -- \
+             its real `Blank`-classified lines, not a hand-fabricated \
+             `SudoersFile {{ source: String::new(), lines: Vec::new(), .. }}` \
+             that happens to also carry zero settings; pins the phantom's \
+             `source`/`lines` fields, not just its count; got {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            3,
+            "a whitespace-only file must fire all three merged-absence findings \
+             (use_pty, I/O logging, timestamp_timeout), matching the comment-only \
+             case; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "one absence finding must name use_pty; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("logging")),
+            "one absence finding must name I/O logging; got {absent:?}"
+        );
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")),
+            "one absence finding must name timestamp_timeout; got {absent:?}"
+        );
+        for d in &absent {
+            assert_eq!(d.line, 0, "absence findings anchor at line 0");
+            assert_eq!(
+                d.file, f,
+                "absence findings anchor at the linted file's own path"
+            );
+        }
+    }
+
+    /// PIN (#485, frozen): the BROAD-vs-NARROW discriminator. The orchestrator's
+    /// locked decision is BROAD: sudo-W04 fires whenever a linted FILE resolves to
+    /// ZERO files, regardless of WHY -- not narrowly scoped to a byte-empty or
+    /// whitespace-only SOURCE. A non-empty top-level FILE whose ONLY content is an
+    /// `@includedir` directive pointing at an EMPTY directory resolves to zero
+    /// entries from `resolve_parsed`'s own perspective: the file's own lines are
+    /// entirely the include directive (flushed as an empty pending, nothing
+    /// pushed), and the `@includedir` itself contributes no drop-ins (the target
+    /// directory is empty). A NARROW fix gated on `source.trim().is_empty()` would
+    /// NOT catch this -- the raw source is NOT blank, it has real directive text
+    /// (`@includedir empty.d`) -- so it would stay silent here even though this
+    /// test's byte-empty/whitespace-only siblings above pass under EITHER
+    /// candidate impl. This is the ONE fixture that separates them: BROAD passes,
+    /// NARROW fails.
+    #[test]
+    fn file_with_only_empty_includedir_fires_all_three_absence_findings_via_resolver() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty_inc = dir.path().join("empty.d");
+        std::fs::create_dir_all(&empty_inc).expect("mkdir empty.d");
+        let f = dir.path().join("sudoers");
+        let source = "@includedir empty.d\n";
+        std::fs::write(&f, source).expect("write includedir-only file");
+
+        let files =
+            resolve::resolve_target(&f).expect("resolve a file with only an empty includedir");
+        assert_eq!(
+            files.len(),
+            1,
+            "a top-level file whose ONLY content is an @includedir at an EMPTY \
+             directory resolves to zero entries from resolve_parsed's own \
+             perspective (the file's own lines are entirely the include \
+             directive; the includedir contributes no drop-ins) -- the BROAD \
+             fix must synthesize ONE phantom segment for the whole target \
+             whenever resolution produces zero files, regardless of why (a \
+             NARROW `source.trim().is_empty()` gate would leave this at 0, \
+             since the raw source is NOT blank); got {files:?}"
+        );
+        assert_eq!(
+            files[0],
+            parse(source, &f),
+            "the synthesized phantom segment must be EXACTLY what `parse()` \
+             produces for the file's own raw source text (including its real \
+             `Include` line), not a hand-fabricated `SudoersFile {{ source: \
+             String::new(), lines: Vec::new(), .. }}`; got {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        let absent = w04_absence(&diags);
+        assert_eq!(
+            absent.len(),
+            3,
+            "an @includedir-only file pointing at an empty directory must fire \
+             all three merged-absence findings (use_pty, I/O logging, \
+             timestamp_timeout) -- this is the case a NARROW \
+             `source.trim().is_empty()` fix would wrongly leave silent; got \
+             {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("use_pty")),
+            "one absence finding must name use_pty; got {absent:?}"
+        );
+        assert!(
+            absent.iter().any(|d| d.message.contains("logging")),
+            "one absence finding must name I/O logging; got {absent:?}"
+        );
+        assert!(
+            absent
+                .iter()
+                .any(|d| d.message.contains("timestamp_timeout")),
+            "one absence finding must name timestamp_timeout; got {absent:?}"
+        );
+        for d in &absent {
+            assert_eq!(d.line, 0, "absence findings anchor at line 0");
+            assert_eq!(
+                d.file, f,
+                "absence findings anchor at the linted file's own path"
+            );
+        }
+    }
+
+    /// PIN (#485, frozen): the fix's LOCATION discriminator. A DIRECTORY target
+    /// whose only drop-in is byte-empty must resolve to ZERO files and fire NO
+    /// sudo-W04 -- the #485 zero-result synthesis is scoped to
+    /// `resolve_target_with_host`'s single-FILE branch ONLY; it must NOT reach
+    /// into the per-drop-in resolution a DIRECTORY target performs. Firing here
+    /// would reintroduce exactly the per-fragment false positive the
+    /// merged-required design exists to avoid (module doc above,
+    /// "Missing-required (merged, #347, #363)"): a `sudoers.d` drop-in flagged on
+    /// its own is precisely the FP #347 exists to prevent, and a directory target
+    /// has no singular top-level FILE to anchor a merged finding against in the
+    /// first place. Distinct from `resolve::tests::empty_directory_resolves_to_no_files`
+    /// (a dir with ZERO eligible entries): this fixture has ONE eligible drop-in
+    /// whose CONTENT is empty, exercising the per-file zero-result fork itself
+    /// rather than the eligible-entries enumeration.
+    ///
+    /// Kills a wrong impl that places the #485 zero-result check inside
+    /// `resolve_parsed` (fires once per FILE processed, including each directory
+    /// drop-in) instead of `resolve_target_with_host`'s FILE branch (fires once,
+    /// only for a single top-level FILE target): that wrong impl synthesizes a
+    /// phantom for the empty drop-in itself, producing `files.len() == 1` and
+    /// THREE spurious sudo-W04 findings anchored at the drop-in's own path.
+    /// EMPIRICALLY VERIFIED: with the wrong impl in place this assertion fails
+    /// (`files.len()` is 1, not 0, and `diags` is non-empty); with the intended
+    /// BROAD fix scoped to the FILE branch this test passes.
+    #[test]
+    fn directory_target_with_only_a_byte_empty_dropin_resolves_to_no_files_and_fires_no_w04() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dropin_dir = root.path().join("sudoers.d");
+        std::fs::create_dir_all(&dropin_dir).expect("mkdir sudoers.d");
+        std::fs::write(dropin_dir.join("10-empty"), "").expect("write byte-empty dropin");
+
+        let files = resolve::resolve_target(&dropin_dir).expect("resolve directory target");
+        assert_eq!(
+            files.len(),
+            0,
+            "a DIRECTORY target whose only drop-in is byte-empty must resolve to \
+             ZERO files: the #485 fix applies only to a top-level FILE target, \
+             never to a per-drop-in resolution inside a directory target; got \
+             {files:?}"
+        );
+
+        let diags = w04(&files, &CTX);
+        assert!(
+            diags.is_empty(),
+            "an empty resolved slice (no top-level FILE to anchor a \
+             merged-absence finding against) fires NO sudo-W04, matching \
+             `w04_absence_empty_slice_no_findings`; got {diags:?}"
+        );
+    }
+
+    /// PIN (#485, frozen): the fix's SCOPE discriminator (companion to the
+    /// directory-target guard above). A parent file with a real rule of its own
+    /// PLUS an `@include` of a byte-empty child must resolve to EXACTLY ONE
+    /// segment (the parent's own content) -- the empty child contributes NOTHING,
+    /// because the #485 zero-result synthesis fires only when resolving the WHOLE
+    /// top-level FILE target ends with `out` EMPTY overall, not on each individual
+    /// `resolve_parsed` call made along the way.
+    ///
+    /// Kills the same wrong impl as the directory-target guard above, from a
+    /// different angle: a per-call fork (checking `out.len() == before` inside
+    /// `resolve_parsed` itself) sees the NESTED child's resolution contribute zero
+    /// of its OWN segments and synthesizes a phantom for the child anyway, even
+    /// though the parent already pushed a real segment into `out` -- producing
+    /// `files.len() == 2` (`[parent, phantom-child]`) instead of the correct 1.
+    /// EMPIRICALLY VERIFIED: with the wrong impl in place `files.len()` is 2, not
+    /// 1; with the intended BROAD fix scoped to the FILE branch this test passes.
+    #[test]
+    fn parent_rule_with_byte_empty_include_resolves_to_exactly_one_segment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("parent"),
+            "root ALL=(ALL:ALL) ALL\n@include child\n",
+        )
+        .expect("w parent");
+        std::fs::write(dir.path().join("child"), "").expect("w byte-empty child");
+
+        let files = resolve::resolve_target(&dir.path().join("parent")).expect("resolve");
+        assert_eq!(
+            files.len(),
+            1,
+            "a parent with a real rule plus an @include of a byte-empty child \
+             resolves to EXACTLY the parent's own segment; the byte-empty child \
+             contributes no phantom (the #485 fix is scoped to the WHOLE \
+             top-level FILE target ending empty, not to each individual \
+             resolve_parsed call); got {files:?}"
+        );
+        assert!(
+            files[0].path.ends_with("parent"),
+            "the one resolved segment is the parent's own content, not a \
+             phantom for the empty child; got {files:?}"
         );
     }
 }
