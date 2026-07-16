@@ -142,8 +142,9 @@ pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
 ///   no `AUDIT_SADDR_FAM` case at all (added upstream ~v5.4), and RHEL 8's
 ///   backport status is unverified. A false negative here is acceptable; a
 ///   false positive in a security linter is not.
-/// - `arg0`-`arg3` are unconditionally in the "all ops valid" arm at every
-///   examined kernel version and never appear below.
+/// - `arg0`-`arg3` have all operators valid on the merits at every examined
+///   kernel version. They are listed explicitly (not via `_`) in the
+///   `=> false` arm below.
 /// - Fields the kernel restricts to `=`/`!=` only on el9/el10 (`arch`,
 ///   `fstype`, `perm`, `exe`, the `subj_user`/`subj_role`/`subj_type`/
 ///   `obj_user`/`obj_role`/`obj_type`/`path`/`dir`/`key`/`filetype` group) are
@@ -185,9 +186,20 @@ fn kernel_rejects_bitmask(field: &AuditField, target: Option<TargetVersion>) -> 
         | AuditField::ObjLevLow
         | AuditField::ObjLevHigh
         | AuditField::SaddrFam => is_el9_plus(target),
-        // No examined kernel rejects a bitmask op on these. Explicit, not
-        // `_`, so a 46th `AuditField` variant is a compile error here rather
-        // than a silent false negative on an Error-tier, load-aborting lint.
+        // arg0-arg3 have all operators valid on the merits at every
+        // examined kernel version. The `=`/`!=`-only group named in this
+        // function's doc comment above, plus `field_compare`, are NOT
+        // silent on the merits: the kernel DOES reject a bitmask op on all
+        // of them at el9/el10 (`field_compare` sits inside the very same
+        // `/* only equal and not equal valid ops */` kernel arm as the rest
+        // of that group there; see the field_compare grounding comment in
+        // tests/test_lints_operator_validity.rs). au-E05 stays silent on
+        // that el9/el10 restriction because it is out of scope for issue
+        // #490 (bitmask-operator-specific) -- a known false negative,
+        // tracked by a separate follow-up issue, not modeled here.
+        // Explicit, not `_`, so a 46th `AuditField` variant is a compile
+        // error here rather than a silent false negative on an Error-tier,
+        // load-aborting lint.
         AuditField::A0
         | AuditField::A1
         | AuditField::A2
