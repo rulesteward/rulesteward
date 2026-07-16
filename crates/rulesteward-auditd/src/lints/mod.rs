@@ -4,7 +4,9 @@
 //! * `duplicate` - au-W01 normalized-equal duplicate rules (pipeline P1).
 //! * `ordering` - au-W02 shadow/subsumption, au-E01 post-`-e 2` unreachable,
 //!   au-W03 exclude/never suppression conflict (pipeline P2).
-//! * `operator_validity` - au-E02 operator invalid for field type (pipeline P3).
+//! * `operator_validity` - au-E02 operator invalid for field type (pipeline P3);
+//!   au-E05 KERNEL-side bitmask-operator (`&`/`&=`) rejection, a sibling
+//!   check beyond au-E02's libaudit-userspace model (#490).
 //! * `arch_coverage` - au-W04 a syscall rule pins one ABI (`arch=b32`/`b64`)
 //!   with no companion on the opposite ABI, so its syscalls go unaudited on the
 //!   other ABI (#261).
@@ -86,16 +88,22 @@ pub fn parse_error_to_diagnostic(err: &crate::parser::LocatedParseError) -> Diag
 /// `rules` is the full `rules.d/` stream in `augenrules(8)` load order (the
 /// output of [`crate::parser::parse_target_located`]). Pass ordering is
 /// load-bearing for byte-stable output and MUST be preserved: duplicates
-/// (P1), then ordering/shadowing (P2), then operator validity (P3), then
-/// ABI coverage (au-W04), then STIG baseline (au-W06), appended last so
-/// existing output is unchanged.
+/// (P1), then ordering/shadowing (P2), then operator validity (P3: au-E02,
+/// then au-E05), then ABI coverage (au-W04), then filter-list legality
+/// (au-E04), then STIG baseline (au-W06), appended last so existing output
+/// is unchanged.
 ///
 /// `opts` controls opt-in folding behaviour (e.g. `include_apparmor`).
 /// `LintOptions::default()` restores the pre-#230 behaviour exactly.
 ///
-/// `target` selects the RHEL release whose STIG baseline au-W06 checks
-/// against; `None` (the portable default) keeps every version-aware pass
-/// silent, mirroring the fapolicyd `--target` precedent.
+/// `target` selects the RHEL release two version-aware passes consume, with
+/// two different gating shapes. au-W06 stays silent at `None` (the portable
+/// default) and only checks the STIG baseline once `--target` is given.
+/// au-E05 is HYBRID, mirroring the fapd-E07 precedent: its 19-field
+/// version-stable intersection fires at every `target`, including `None`;
+/// its el8-only (`pers`/`devminor`) and el9/el10-only (`subj_sen`/
+/// `subj_clr`/`obj_lev_low`/`obj_lev_high`/`saddr_fam`) rows fire only
+/// under the matching `--target`.
 #[must_use]
 pub fn lint(
     rules: &[LocatedRule],
@@ -107,6 +115,7 @@ pub fn lint(
     diags.extend(ordering::e01(rules));
     diags.extend(ordering::w03(rules, opts));
     diags.extend(operator_validity::e02(rules));
+    diags.extend(operator_validity::e05(rules, target));
     diags.extend(arch_coverage::w04(rules));
     diags.extend(field_filter::e04(rules));
     diags.extend(stig_required::w06(rules, opts, target));
