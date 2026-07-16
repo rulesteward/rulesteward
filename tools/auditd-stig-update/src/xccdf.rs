@@ -29,13 +29,15 @@
 //!
 //! A `<Group>`/`<Rule>` is an audit-rule requirement IFF its `check-content`
 //! contains at least one line (after trimming whitespace) matching
-//! `^(-A|-a|-w)\s+\S` -- a literal `auditctl`-syntax rule line. This is a
-//! CHECK-CONTENT GATE, not a keyword/domain pre-check (grounding Part B.2): in
-//! practice every Rule carrying such a line is already an audit-domain check, and
-//! the explicit EXCLUDE classes (auditd.conf `key = value` checks, service/package
-//! checks, rules-file permission checks, narrative-only checks) never contain a
-//! literal `-a`/`-A`/`-w` line, so they are naturally excluded by the line gate
-//! alone with no additional domain check needed.
+//! `^(-A|-a|-w|-e|-f)\s+\S` -- a literal `auditctl`-syntax rule line
+//! (widened #523 to also select a bare Control-rule requirement like "-e 2"/
+//! "-f 2"; see [`RULE_LINE_RE`]'s doc comment). This is a CHECK-CONTENT GATE,
+//! not a keyword/domain pre-check (grounding Part B.2): in practice every Rule
+//! carrying such a line is already an audit-domain check, and the explicit
+//! EXCLUDE classes (auditd.conf `key = value` checks, service/package checks,
+//! rules-file permission checks, narrative-only checks) never contain a
+//! literal `-a`/`-A`/`-w`/`-e`/`-f` line, so they are naturally excluded by
+//! the line gate alone with no additional domain check needed.
 //!
 //! Extraction, per selected Rule (grounding Part B.3):
 //! 1. Parse with a real, namespace-aware XML parser (NOT a regex/homegrown
@@ -48,10 +50,10 @@
 //! 2. Read `<Group id>` (the V-number), `Rule/version` (`RHEL-XX-NNNNNN`), and the
 //!    full `.//check-content` text.
 //! 3. Split check-content on `\n`, trim each line, keep lines matching
-//!    `^(-A\s+\S.*|-a\s+\S.*|-w\s+\S.*)$` in document order, deduped (a line
-//!    repeated verbatim collapses to one -- mirrors the sshd tool's fixtext dedup
-//!    discipline; grounding Part B.3.3 -- not observed in the corpus but defended
-//!    for a future DISA reformat, same "fail closed for the unknown future case"
+//!    [`RULE_LINE_RE`] in document order, deduped (a line repeated verbatim
+//!    collapses to one -- mirrors the sshd tool's fixtext dedup discipline;
+//!    grounding Part B.3.3 -- not observed in the corpus but defended for a
+//!    future DISA reformat, same "fail closed for the unknown future case"
 //!    spirit as the sshd tool's known-limitation doc comment).
 //! 4. Emit ONE [`DerivedRule`] row PER EXTRACTED LINE (not one row per Group): a
 //!    multi-line requirement (an arch=b32/b64 pair, a 2x2 Cartesian product, or
@@ -94,8 +96,19 @@ use crate::derive::DerivedRule;
 /// `auditctl`-syntax rule line, never the shell-invocation preamble (which
 /// starts with `$` or `auditctl`/`cat`/`grep`, never with the rule flag as the
 /// first token).
-static RULE_LINE_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^(-A|-a|-w)\s+\S").expect("valid regex"));
+///
+/// Widened (#523, session 9b-v0_8-wave2 lane 2e): `-e`/`-f` also select a bare
+/// Control-rule requirement ("-e 2" immutable-audit-config, "-f 2"
+/// panic-on-critical-failure) - real DISA requirements whose ENTIRE
+/// requirement is a bare control line, never a `-a`/`-A`/`-w` line at all.
+/// Verified live 2026-07-15: widening to also recognize `-e`/`-f` against the
+/// real pinned rhel8/9/10 XCCDF benchmarks selects EXACTLY the five new
+/// Groups this deepening adds (V-230402, V-258227, V-258229, V-281103,
+/// V-281365) and introduces zero false positives elsewhere in any of the
+/// three benchmarks.
+static RULE_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(-A|-a|-w|-e|-f)\s+\S").expect("valid regex")
+});
 
 /// Parse a full DISA XCCDF benchmark into the normalized au-W06 required-rules
 /// table, in document order. Returns an error on any selected Rule the parser
