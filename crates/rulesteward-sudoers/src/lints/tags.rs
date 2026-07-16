@@ -20,10 +20,10 @@
 //! family (it fires independent of any tag), but it is a `UserSpec`-shaped
 //! "who is granted what" hazard like the rest of this module, so it lives here
 //! rather than in `stig.rs` (which owns `Defaults`-entry findings only). `w06`
-//! is a STUB (`Vec::new()`) as of the v0.8 Wave 2 lane 2d test-author phase;
-//! see `w06_tests` below for the frozen fire/no-fire contract every fixture in
-//! this module was verified against (`visudo -c -f` / `cvtsudoers -f json`,
-//! sudo 1.9.17p2).
+//! walks each user-spec directly (no tag-state machine involved) and fires at
+//! most once per logical line; see `w06_tests` below for the frozen fire/
+//! no-fire contract every fixture in this module was verified against
+//! (`visudo -c -f` / `cvtsudoers -f json`, sudo 1.9.17p2).
 
 use rulesteward_core::{Diagnostic, Framework, Severity};
 
@@ -297,16 +297,84 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 /// (the same kind of scope boundary W01 documents for `Cmnd_Alias`-expands-
 /// to-ALL, which W02 exists to cover separately).
 ///
-/// # STUB
+/// # Algorithm
 ///
-/// This is a test-author-phase stub (v0.8 Wave 2 lane 2d): it returns no
-/// diagnostics. The dispatcher in `lints::mod` does NOT call it yet either --
-/// both are filled by the implementer per the RED contract `w06_tests` and
-/// `lints::mod::tests::lint_dispatcher_routes_w06_for_literal_all_user_grant`
-/// pin below.
+/// Unlike W01/W02/W05 this pass does not walk a NOPASSWD tag-state machine --
+/// it fires independent of any tag. For each `UserSpec`: the subject
+/// `User_List` must CONTAIN the reserved `ALL` (membership, not exact list
+/// equality -- see `w06_fires_for_multi_subject_line_containing_all` in
+/// `w06_tests`); then each `:`-separated host-group is checked for an EXACT
+/// `Host_List` of `[ALL]` with at least one `Cmnd_Spec` whose command is the
+/// reserved `ALL` and whose `Runas_Spec` is exactly `(ALL)`
+/// (`users=[ALL]`, no groups) or `(ALL:ALL)` (`users=[ALL]`,
+/// `groups=[ALL]`). The diagnostic fires AT MOST ONCE per user-spec logical
+/// line even when more than one host-group or `Cmnd_Spec` on that line
+/// matches (`w06_fires_once_when_only_one_host_group_matches`).
 #[must_use]
-pub fn w06(_files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
-    Vec::new()
+pub fn w06(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for file in files {
+        for logical in &file.lines {
+            let LineKind::UserSpec(spec) = &logical.kind else {
+                continue;
+            };
+            // Membership, not exact list equality: DISA's check-content is an
+            // unanchored whole-word grep, so a multi-subject line naming ALL
+            // alongside another user still returns the hazardous line.
+            if !spec.users.iter().any(|user| user == "ALL") {
+                continue;
+            }
+            let hazard = spec.host_groups.iter().any(|host_group| {
+                host_group.hosts == ["ALL"]
+                    && host_group
+                        .cmnd_specs
+                        .iter()
+                        .any(is_unrestricted_privilege_elevation)
+            });
+            if hazard {
+                diags.push(
+                    anchored(
+                        Severity::Warning,
+                        "sudo-W06",
+                        logical.span.clone(),
+                        "the reserved ALL user is granted unrestricted sudo access \
+                         to run the reserved ALL command as ALL run-as users: DISA \
+                         STIG requires restricting privilege elevation to \
+                         authorized personnel (DISA STIG RHEL-08-010382 / \
+                         RHEL-09-432030 / RHEL-10-600520)"
+                            .to_string(),
+                        file.path.clone(),
+                        logical.line,
+                    )
+                    .with_controls(crate::lints::stig::controls(
+                        &PRIVILEGE_ELEVATION_STIG_CONTROLS,
+                    )),
+                );
+            }
+        }
+    }
+    diags
+}
+
+/// The DISA STIG privilege-elevation control triple sudo-W06 cites, in
+/// RHEL-08/09/10 order (mirrors the [`NOPASSWD_STIG_CONTROLS`] convention
+/// above).
+const PRIVILEGE_ELEVATION_STIG_CONTROLS: [(Framework, &str); 3] = [
+    (Framework::Stig, "RHEL-08-010382"),
+    (Framework::Stig, "RHEL-09-432030"),
+    (Framework::Stig, "RHEL-10-600520"),
+];
+
+/// Whether a `Cmnd_Spec` matches sudo-W06's literal DISA pattern: the
+/// reserved `ALL` command with a `Runas_Spec` of exactly `(ALL)`
+/// (`users=[ALL]`, no groups) or `(ALL:ALL)` (`users=[ALL]`, `groups=[ALL]`).
+fn is_unrestricted_privilege_elevation(cmnd_spec: &CmndSpec) -> bool {
+    let Some(runas) = &cmnd_spec.runas else {
+        return false;
+    };
+    cmnd_spec.cmnd == CmndItem::All
+        && runas.users == ["ALL"]
+        && (runas.groups.is_empty() || runas.groups == ["ALL"])
 }
 
 #[cfg(test)]

@@ -7,8 +7,7 @@
 //! * `tags` - sudo-W01 (NOPASSWD on ALL; #330), sudo-W02 (`Cmnd_Alias`
 //!   transitively expands to ALL under NOPASSWD; #332), sudo-W05 (NOPASSWD in
 //!   effect on any specific command; #370), sudo-W06 (literal ALL user granted
-//!   unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation; #522 -- currently a
-//!   `Vec::new()` stub, NOT yet wired into [`lint`]).
+//!   unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation; #522).
 //! * `stig` - sudo-W04 (Defaults setting weaker than the sudo STIG baseline)
 //!   (#333).
 //! * `catalog` - the machine-readable `sudo-` code catalog (frozen Phase 0).
@@ -69,6 +68,7 @@ pub fn lint(files: &[SudoersFile], ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags.extend(aliases::w03(files, ctx));
     diags.extend(stig::w04(files, ctx));
     diags.extend(tags::w05(files, ctx));
+    diags.extend(tags::w06(files, ctx));
     diags
 }
 
