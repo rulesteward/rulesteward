@@ -1837,6 +1837,41 @@ mod w06_tests {
             "the command is a specific path, not the reserved ALL; must not fire"
         );
     }
+
+    /// `ALL somehost=(ALL) ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
+    /// confirms `Host_List=[somehost]`, not `[ALL]`): subject, runas, and
+    /// command are all the hazardous literals, but the HOST is a specific
+    /// hostname, not the reserved `ALL`. Neither DISA literal pattern
+    /// (`ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`) matches a non-ALL
+    /// host, so `grep`-equivalent matching would not return this line. Kills
+    /// an impl that omits the `Host_List == [ALL]` check and keys only off
+    /// subject/runas/command (adversarial-test-reviewer BLOCKER finding).
+    #[test]
+    fn w06_does_not_fire_when_host_is_not_all() {
+        assert_eq!(
+            w06_count("ALL somehost=(ALL) ALL\n"),
+            0,
+            "the host is a specific hostname, not the reserved ALL; must not fire"
+        );
+    }
+
+    /// `ALL ALL=(ALL:wheel) ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
+    /// confirms `runasgroups=[wheel]`, not `[ALL]`): subject, host, and
+    /// command are all the hazardous literals, and the runas USER is `ALL`,
+    /// but the runas GROUP is the specific group `wheel`, not the reserved
+    /// `ALL`. Neither grounded literal pattern's runas clause -- `(ALL)`
+    /// (users=[ALL], no groups key) or `(ALL:ALL)` (users=[ALL],
+    /// groups=[ALL]) -- matches `(ALL:wheel)`. Kills an impl that checks
+    /// only `runasusers == [ALL]` (or a bare `.contains("ALL")` scan) while
+    /// ignoring the runas GROUP (adversarial-test-reviewer CONCERN finding).
+    #[test]
+    fn w06_does_not_fire_when_runas_group_is_not_all() {
+        assert_eq!(
+            w06_count("ALL ALL=(ALL:wheel) ALL\n"),
+            0,
+            "the runas group is 'wheel', not the reserved ALL; must not fire"
+        );
+    }
 }
 
 #[cfg(test)]
