@@ -388,6 +388,14 @@ const RHEL8_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-08-030655",
         line: "-w /var/spool/cron -p wa -k cronjobs",
     },
+    // Deepening (#523): SV-230402r1017208_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_8_STIG.zip (V2R4).
+    BaselineRule {
+        v_number: "V-230402",
+        stig_id: "RHEL-08-030121",
+        line: "-e 2",
+    },
 ];
 const RHEL9_REQUIRED: &[BaselineRule] = &[
     BaselineRule {
@@ -724,6 +732,21 @@ const RHEL9_REQUIRED: &[BaselineRule] = &[
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
         line: "-w /var/spool/cron -p wa -k cronjobs",
+    },
+    // Deepening (#523): SV-258227r1014992_rule, a bare Control-rule
+    // requirement (panic on critical audit failure). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_9_STIG.zip (V2R7).
+    BaselineRule {
+        v_number: "V-258227",
+        stig_id: "RHEL-09-654265",
+        line: "-f 2",
+    },
+    // Deepening (#523): SV-258229r958434_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable).
+    BaselineRule {
+        v_number: "V-258229",
+        stig_id: "RHEL-09-654275",
+        line: "-e 2",
     },
 ];
 const RHEL10_REQUIRED: &[BaselineRule] = &[
@@ -1102,6 +1125,21 @@ const RHEL10_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-10-500810",
         line: "-a always,exit -F arch=b64 -S rename,unlink,rmdir,renameat,renameat2,unlinkat -F auid>=1000 -F auid!=unset -k delete",
     },
+    // Deepening (#523): SV-281103r1166261_rule, a bare Control-rule
+    // requirement (panic on critical audit failure). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_10_STIG.zip (V1R1).
+    BaselineRule {
+        v_number: "V-281103",
+        stig_id: "RHEL-10-500035",
+        line: "-f 2",
+    },
+    // Deepening (#523): SV-281365r1167245_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable).
+    BaselineRule {
+        v_number: "V-281365",
+        stig_id: "RHEL-10-900100",
+        line: "-e 2",
+    },
 ];
 
 fn baseline_for(target: TargetVersion) -> &'static [BaselineRule] {
@@ -1309,6 +1347,14 @@ fn rules_match(
                 ..
             },
         ) => normalize_watch_path(rp) == normalize_watch_path(cp) && rpe == cpe,
+        // Control-shaped requirements (STIG deepening, #523): "-e 2"
+        // (immutable audit config), "-f 2" (panic on critical failure),
+        // "--loginuid-immutable". `ControlRule` derives `PartialEq`, so exact
+        // variant+value equality is the whole axis - no path/perms/key
+        // concept applies to a Control rule (`effective_key` already returns
+        // `None` for both sides, so the key-inclusion check below is a no-op
+        // for this arm).
+        (AuditRule::Control(rc), AuditRule::Control(cc)) => rc == cc,
         (
             AuditRule::Syscall {
                 list: rl,
