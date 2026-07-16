@@ -1684,6 +1684,47 @@ mod w06_tests {
         );
     }
 
+    /// `bob, ALL ALL=(ALL) ALL` (visudo -c -f rc 0; `cvtsudoers -f json` confirms
+    /// `User_List=[{username:bob}, {username:ALL}]`, i.e. the reserved `ALL`
+    /// principal is a MEMBER of a multi-element subject list, not the sole
+    /// entry): grounds which of two candidate readings of the DISA
+    /// check-content is faithful once the `User_List` is not exactly `[ALL]`
+    /// (adversarial re-review finding, ground-and-pin micro-round).
+    ///
+    /// All three pinned check-contents share the same unanchored, whole-word
+    /// grep. RHEL-08-010382 / RHEL-09-432030: `sudo grep -iwR 'ALL'
+    /// /etc/sudoers /etc/sudoers.d/ | grep -v '#'`. RHEL-10-600520
+    /// (functionally identical, flags reordered): `sudo grep -riw ALL
+    /// /etc/sudoers /etc/sudoers.d/ | grep -v "#"`. `-w`/`--word-regexp`
+    /// matches `ALL` as a whole WORD anywhere on the line -- NOT the whole
+    /// line (that would be `-x`) -- and neither command anchors with `^`/`$`.
+    /// Simulated against this fixture's exact text: `printf 'bob, ALL
+    /// ALL=(ALL) ALL\n' | grep -iwR 'ALL' | grep -v '#'` returns the FULL
+    /// line `bob, ALL ALL=(ALL) ALL` verbatim, rc 0 -- the grep does not
+    /// strip the `bob, ` prefix or require an exact match to the bare `ALL
+    /// ALL=(ALL) ALL` string quoted in the check's finding text; that quoted
+    /// string is itself only ONE candidate line the grep can surface, not a
+    /// whole-line equality test. Since the reserved `ALL` token in a
+    /// `User_List` already means "every user" regardless of what else shares
+    /// the list, a multi-subject line naming `ALL` alongside `bob` grants the
+    /// identical unrestricted-personnel hazard DISA's `VulnDiscussion`
+    /// describes ("any user defined on the system can initiate privileged
+    /// actions") -- MEMBERSHIP (`user_list.contains(&"ALL")`), not exact list
+    /// equality (`user_list == ["ALL"]`), is therefore the DISA-faithful
+    /// reading: an exact-match impl would silently miss a fixture that the
+    /// check's own literal grep command surfaces as a returned candidate
+    /// line. RED against the `Vec::new()` stub.
+    #[test]
+    fn w06_fires_for_multi_subject_line_containing_all() {
+        assert_eq!(
+            w06_count("bob, ALL ALL=(ALL) ALL\n"),
+            1,
+            "the reserved ALL principal is a MEMBER of a multi-subject User_List; \
+             membership (not exact list equality) is the DISA-faithful reading -- \
+             see this test's doc comment for the grep simulation that grounds this"
+        );
+    }
+
     // ---- Typed ControlRef (mirrors the W04/W05 #503 backfill convention) ----
 
     /// The W06 finding cites all three DISA STIG revisions this control was
