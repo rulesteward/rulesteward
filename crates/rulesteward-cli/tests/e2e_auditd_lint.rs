@@ -322,7 +322,12 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped table grows
     // from 67 to 69 rows (two new Control-shaped deepening entries, neither
     // satisfied by this fixture), so 68 (not 66) of the 69 required lines are
-    // now missing. RED today.
+    // now missing. That bump already landed and is GREEN.
+    //
+    // SECOND, additive bump (also #523, additive round 2): the
+    // "--loginuid-immutable" deepening entry grows the shipped table from 69
+    // to 70 rows (also unsatisfied by this fixture), so 69 (not 68) of the
+    // 70 required lines are now missing.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -340,8 +345,8 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     let diags = v["diagnostics"].as_array().expect("diagnostics array");
     assert_eq!(
         diags.len(),
-        68,
-        "68 of the 69 required lines are missing (RHEL-09-654240 is satisfied): {out}"
+        69,
+        "69 of the 70 required lines are missing (RHEL-09-654240 is satisfied): {out}"
     );
     assert!(
         diags

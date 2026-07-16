@@ -114,12 +114,20 @@ mod tests {
         // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): counts bumped from
         // 61/67/75 to 62/69/77 (one new Control-shaped deepening entry on
         // RHEL8, two each on RHEL9/RHEL10 -- see `xccdf.rs`'s known-answer
-        // tests for the full grounding). RED today.
+        // tests for the full grounding). That bump already landed and is
+        // GREEN.
+        //
+        // SECOND, additive bump (also #523, additive round 2): the
+        // "--loginuid-immutable" deepening entry adds one more row each to
+        // RHEL8 (62 -> 63) and RHEL9 (69 -> 70); RHEL10 has no
+        // loginuid-immutable control and stays at 77. Mirrors the same bump
+        // already applied to `xccdf.rs`'s `rhelN_known_answer_counts` (this
+        // test's own doc comment above says its lengths track those).
         let rhel8 = code_table(TargetVersion::Rhel8);
         let rhel9 = code_table(TargetVersion::Rhel9);
         let rhel10 = code_table(TargetVersion::Rhel10);
-        assert_eq!(rhel8.len(), 62, "{rhel8:?}");
-        assert_eq!(rhel9.len(), 69, "{rhel9:?}");
+        assert_eq!(rhel8.len(), 63, "{rhel8:?}");
+        assert_eq!(rhel9.len(), 70, "{rhel9:?}");
         assert_eq!(rhel10.len(), 77, "{rhel10:?}");
         assert!(
             rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),

@@ -14,7 +14,8 @@
 //! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
 //! [`w06_with_baseline`] are the shipped shapes.
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
-//! per-RHEL-major required-rules tables (61/67/75 rules.d lines respectively),
+//! per-RHEL-major required-rules tables (63/70/77 rules.d lines respectively
+//! as of the #523 loginuid-immutable deepening; originally 61/67/75),
 //! transcribed verbatim from `tools/auditd-stig-update derive`'s paste-ready
 //! output and kept drift-tethered to the DISA XCCDF by that tool's `check`
 //! gate (re-derive on a STIG bump; do not hand-edit). The matching algorithm
@@ -396,6 +397,15 @@ const RHEL8_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-08-030121",
         line: "-e 2",
     },
+    // Deepening cont'd (#523, additive round 2): SV-230403r1017209_rule, a
+    // bare Control-rule requirement (make the audit loginuid unchangeable
+    // once set). Fetched live 2026-07-15 against the pinned DISA
+    // U_RHEL_8_STIG.zip (V2R4).
+    BaselineRule {
+        v_number: "V-230403",
+        stig_id: "RHEL-08-030122",
+        line: "--loginuid-immutable",
+    },
 ];
 const RHEL9_REQUIRED: &[BaselineRule] = &[
     BaselineRule {
@@ -747,6 +757,15 @@ const RHEL9_REQUIRED: &[BaselineRule] = &[
         v_number: "V-258229",
         stig_id: "RHEL-09-654275",
         line: "-e 2",
+    },
+    // Deepening cont'd (#523, additive round 2): SV-258228r991572_rule, a
+    // bare Control-rule requirement (make the audit loginuid unchangeable
+    // once set). Fetched live 2026-07-15 against the pinned DISA
+    // U_RHEL_9_STIG.zip (V2R7).
+    BaselineRule {
+        v_number: "V-258228",
+        stig_id: "RHEL-09-654270",
+        line: "--loginuid-immutable",
     },
 ];
 const RHEL10_REQUIRED: &[BaselineRule] = &[
