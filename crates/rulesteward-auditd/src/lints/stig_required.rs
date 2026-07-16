@@ -14,7 +14,8 @@
 //! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
 //! [`w06_with_baseline`] are the shipped shapes.
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
-//! per-RHEL-major required-rules tables (61/67/75 rules.d lines respectively),
+//! per-RHEL-major required-rules tables (63/70/77 rules.d lines respectively
+//! as of the #523 loginuid-immutable deepening; originally 61/67/75),
 //! transcribed verbatim from `tools/auditd-stig-update derive`'s paste-ready
 //! output and kept drift-tethered to the DISA XCCDF by that tool's `check`
 //! gate (re-derive on a STIG bump; do not hand-edit). The matching algorithm
@@ -388,6 +389,23 @@ const RHEL8_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-08-030655",
         line: "-w /var/spool/cron -p wa -k cronjobs",
     },
+    // Deepening (#523): SV-230402r1017208_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_8_STIG.zip (V2R4).
+    BaselineRule {
+        v_number: "V-230402",
+        stig_id: "RHEL-08-030121",
+        line: "-e 2",
+    },
+    // Deepening cont'd (#523, additive round 2): SV-230403r1017209_rule, a
+    // bare Control-rule requirement (make the audit loginuid unchangeable
+    // once set). Fetched live 2026-07-15 against the pinned DISA
+    // U_RHEL_8_STIG.zip (V2R4).
+    BaselineRule {
+        v_number: "V-230403",
+        stig_id: "RHEL-08-030122",
+        line: "--loginuid-immutable",
+    },
 ];
 const RHEL9_REQUIRED: &[BaselineRule] = &[
     BaselineRule {
@@ -724,6 +742,30 @@ const RHEL9_REQUIRED: &[BaselineRule] = &[
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
         line: "-w /var/spool/cron -p wa -k cronjobs",
+    },
+    // Deepening (#523): SV-258227r1014992_rule, a bare Control-rule
+    // requirement (panic on critical audit failure). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_9_STIG.zip (V2R7).
+    BaselineRule {
+        v_number: "V-258227",
+        stig_id: "RHEL-09-654265",
+        line: "-f 2",
+    },
+    // Deepening (#523): SV-258229r958434_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable).
+    BaselineRule {
+        v_number: "V-258229",
+        stig_id: "RHEL-09-654275",
+        line: "-e 2",
+    },
+    // Deepening cont'd (#523, additive round 2): SV-258228r991572_rule, a
+    // bare Control-rule requirement (make the audit loginuid unchangeable
+    // once set). Fetched live 2026-07-15 against the pinned DISA
+    // U_RHEL_9_STIG.zip (V2R7).
+    BaselineRule {
+        v_number: "V-258228",
+        stig_id: "RHEL-09-654270",
+        line: "--loginuid-immutable",
     },
 ];
 const RHEL10_REQUIRED: &[BaselineRule] = &[
@@ -1102,6 +1144,21 @@ const RHEL10_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-10-500810",
         line: "-a always,exit -F arch=b64 -S rename,unlink,rmdir,renameat,renameat2,unlinkat -F auid>=1000 -F auid!=unset -k delete",
     },
+    // Deepening (#523): SV-281103r1166261_rule, a bare Control-rule
+    // requirement (panic on critical audit failure). Fetched live
+    // 2026-07-15 against the pinned DISA U_RHEL_10_STIG.zip (V1R1).
+    BaselineRule {
+        v_number: "V-281103",
+        stig_id: "RHEL-10-500035",
+        line: "-f 2",
+    },
+    // Deepening (#523): SV-281365r1167245_rule, a bare Control-rule
+    // requirement (the audit system must be set immutable).
+    BaselineRule {
+        v_number: "V-281365",
+        stig_id: "RHEL-10-900100",
+        line: "-e 2",
+    },
 ];
 
 fn baseline_for(target: TargetVersion) -> &'static [BaselineRule] {
@@ -1309,6 +1366,14 @@ fn rules_match(
                 ..
             },
         ) => normalize_watch_path(rp) == normalize_watch_path(cp) && rpe == cpe,
+        // Control-shaped requirements (STIG deepening, #523): "-e 2"
+        // (immutable audit config), "-f 2" (panic on critical failure),
+        // "--loginuid-immutable". `ControlRule` derives `PartialEq`, so exact
+        // variant+value equality is the whole axis - no path/perms/key
+        // concept applies to a Control rule (`effective_key` already returns
+        // `None` for both sides, so the key-inclusion check below is a no-op
+        // for this arm).
+        (AuditRule::Control(rc), AuditRule::Control(cc)) => rc == cc,
         (
             AuditRule::Syscall {
                 list: rl,

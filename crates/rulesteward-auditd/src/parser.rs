@@ -348,6 +348,11 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
             Ok(AuditRule::Control(ControlRule::RateLimit(v)))
         }
 
+        // `--loginuid-immutable` takes NO value argument, unlike the other
+        // control flags above (STIG deepening, #523; see ast.rs's
+        // ControlRule::LoginuidImmutable doc comment for the grounding).
+        "--loginuid-immutable" => Ok(AuditRule::Control(ControlRule::LoginuidImmutable)),
+
         "-w" => parse_watch_rule(&tokens, lineno),
 
         "-a" | "-A" => parse_syscall_rule(&tokens, lineno),
