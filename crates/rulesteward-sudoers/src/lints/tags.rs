@@ -1838,3 +1838,249 @@ mod w06_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod w06_stig_drift_tests {
+    //! Hermetic drift guard for the sudo-W06 STIG grounding (#522, v0.8 Wave 2
+    //! lane 2d). ADDITIVE to `w06_tests` above: this module adds NOTHING to the
+    //! frozen fire/no-fire RED contract (that contract stands as-is; see this
+    //! crate's Wave 2 lane 2d history). It instead pins the SOURCE-GROUNDING
+    //! text itself.
+    //!
+    //! # Tooling decision (locked 2026-07-15)
+    //!
+    //! Unlike the sshd / auditd baselines (`tools/sshd-stig-update`,
+    //! `tools/auditd-stig-update`), there is no standalone `sudoers-stig-update`
+    //! derive tool: a single-control family did not justify a whole derive-tool
+    //! crate (no-speculative-abstraction). Instead this module pins the
+    //! grounding INLINE, hermetically (no network at test time -- the DISA
+    //! source was fetched once at test-authoring time; see Provenance below),
+    //! with the SAME kind of "0 drift" guarantee the derive tools give their own
+    //! backends, achieved two ways:
+    //!
+    //! 1. `w06_control_family_benchmark_pins_match_sshd_and_auditd`: `w06`'s doc
+    //!    comment (above, in this file) claims this control family is pinned
+    //!    against "the same three DISA XCCDF revisions `tools/sshd-stig-update`
+    //!    and `tools/auditd-stig-update` pin". This test makes that claim
+    //!    MECHANICAL: it reads both tools' real, independently-maintained
+    //!    `stig-refs.toml` files via `include_str!` and asserts each pinned
+    //!    `benchmark` string still contains this module's short revision label.
+    //!    If a future sshd/auditd lane bumps a product's STIG revision (editing
+    //!    ONLY that tool's `stig-refs.toml`) without a matching sudoers update,
+    //!    THIS test fails -- the sudo-W06 grounding would otherwise silently go
+    //!    stale relative to the shared revision the other two backends moved to.
+    //! 2. `w06_grounding_fixtures_are_well_formed`: pins the actual DISA
+    //!    check-content excerpt text (fetched once, see Provenance below) as a
+    //!    committed fixture fragment, so a reviewer -- or a future re-fetch --
+    //!    has real ground truth to diff against, not only the short prose in
+    //!    `w06`'s doc comment.
+    //!
+    //! No separate `tests/fixtures/` directory or file is used: this crate has
+    //! no existing `tests/` integration-test convention (every sudoers lint test
+    //! is an inline `#[cfg(test)]` module), so the fixture fragments are
+    //! committed as `&'static str` constants in this module instead of new
+    //! files, keeping the drift guard co-located with the code it grounds.
+    //!
+    //! # Bump-time re-verify recipe
+    //!
+    //! When either `tools/sshd-stig-update/stig-refs.toml` or
+    //! `tools/auditd-stig-update/stig-refs.toml` bumps a product's pinned `zip`
+    //! / `benchmark` (e.g. RHEL 8 STIG V2R4 -> V2R5):
+    //! 1. Update this module's `W06_GROUNDING` entry for that product's short
+    //!    revision label to match (this test will otherwise fail immediately,
+    //!    which is the intended signal to do so).
+    //! 2. Re-fetch the DISA XCCDF for that product (the zip URL is
+    //!    `stig-refs.toml`'s `base_url` + `/` + the pinned `zip`; DISA's own
+    //!    `public.cyber.mil` is a JS SPA that cannot be curled, so use
+    //!    `dl.dod.cyber.mil` per that file's own comment), locate the `<Rule>`
+    //!    whose STIG-ID matches this control family (RHEL-08-010382 /
+    //!    RHEL-09-432030 / RHEL-10-600520), and diff its `check-content` against
+    //!    `W06_GROUNDING`'s `check_content_excerpt` for that product.
+    //! 3. If the check-content text changed in a way that affects the fire
+    //!    condition (not just cosmetic rewording), update the excerpt here.
+    //! 4. If a control was RENUMBERED (not just reworded) or the fire condition
+    //!    itself changed, that is a `[QUESTION FOR USER]` addressed to the
+    //!    frozen contract's author, never a silent edit to `w06_tests` above or
+    //!    to `w06`'s implementation once it lands.
+    //!
+    //! # Provenance
+    //!
+    //! Fetched 2026-07-15: the RHEL 8 (RHEL-08-010382) and RHEL 9
+    //! (RHEL-09-432030) excerpts are cross-checked against TWO independent
+    //! queries of `stigviewer.com`'s mirror of the DISA XCCDF; the RHEL 10
+    //! (RHEL-10-600520) excerpt is from a single `stigaview.com` mirror query
+    //! (no independent second source was found for RHEL 10 in-session). The raw
+    //! `dl.dod.cyber.mil` zip is not fetchable from this session's sandboxed
+    //! tool surface, so these mirrors are the best available primary-source
+    //! excerpt for this pass; a bump-time re-verify should prefer the raw zip
+    //! per the recipe above. The RHEL 10 mirror's grep invocation differs
+    //! cosmetically from RHEL 8/9's (`-riw` + double-quoted `'#'` vs `-iwR` +
+    //! single-quoted `'#'`); this is recorded verbatim rather than silently
+    //! normalized, since `w06`'s doc comment claims a "byte-identical fire
+    //! condition" and this module's job is to surface exactly this kind of
+    //! discrepancy, not paper over it.
+
+    /// One control's pinned grounding.
+    struct Grounding {
+        /// The DISA STIG-ID this excerpt grounds.
+        control_id: &'static str,
+        /// `stig-refs.toml`'s `[products.<product>]` key.
+        product: &'static str,
+        /// The short revision label that must remain a SUBSTRING of
+        /// `stig-refs.toml`'s `benchmark = "..."` value for `product`.
+        short_benchmark: &'static str,
+        /// A verbatim excerpt of the DISA check-content (see the module-level
+        /// Provenance note). Kept as the full sentence rather than only the
+        /// bare grant-pattern substring, so a future diff against the raw
+        /// XCCDF has real prose to compare, not just two already-well-known
+        /// literal strings.
+        check_content_excerpt: &'static str,
+    }
+
+    const W06_GROUNDING: [Grounding; 3] = [
+        Grounding {
+            control_id: "RHEL-08-010382",
+            product: "rhel8",
+            short_benchmark: "RHEL 8 STIG V2R4",
+            check_content_excerpt: "Verify the sudoers file restricts sudo access to \
+                authorized personnel. $ sudo grep -iwR 'ALL' /etc/sudoers \
+                /etc/sudoers.d/ | grep -v '#' If the either of the following entries \
+                are returned, this is a finding: ALL ALL=(ALL) ALL ALL ALL=(ALL:ALL) ALL",
+        },
+        Grounding {
+            control_id: "RHEL-09-432030",
+            product: "rhel9",
+            short_benchmark: "RHEL 9 STIG V2R7",
+            check_content_excerpt: "Verify RHEL 9 restricts privilege elevation to \
+                authorized personnel with the following command: $ sudo grep -iwR \
+                'ALL' /etc/sudoers /etc/sudoers.d/ | grep -v '#' If the either of the \
+                following entries are returned, this is a finding: ALL ALL=(ALL) ALL \
+                ALL ALL=(ALL:ALL) ALL",
+        },
+        Grounding {
+            control_id: "RHEL-10-600520",
+            product: "rhel10",
+            short_benchmark: "RHEL 10 STIG V1R1",
+            check_content_excerpt: "Verify RHEL 10 restricts privilege elevation to \
+                authorized personnel with the following command: $ sudo grep -riw \
+                ALL /etc/sudoers /etc/sudoers.d/ | grep -v \"#\" -- this mirror \
+                renders the grep invocation as -riw with a double-quoted '#' rather \
+                than RHEL 8/9's -iwR with a single-quoted '#'; functionally \
+                equivalent (same flags, same predicate), recorded verbatim per \
+                source rather than silently normalized to match RHEL 8/9's wording. \
+                If the either of the following entries are returned, this is a \
+                finding: ALL ALL=(ALL) ALL ALL ALL=(ALL:ALL) ALL",
+        },
+    ];
+
+    /// The sshd baseline's pinned STIG revisions -- the shared source `w06`'s
+    /// doc comment claims this control family is ALSO pinned against.
+    const SSHD_STIG_REFS: &str = include_str!("../../../../tools/sshd-stig-update/stig-refs.toml");
+    /// The auditd baseline's pinned STIG revisions -- carries its own comment
+    /// that it pins "the same three revisions tools/sshd-stig-update/
+    /// stig-refs.toml pins"; `sshd_and_auditd_stig_refs_pin_the_same_three_
+    /// benchmarks` below makes that cross-tool claim mechanical.
+    const AUDITD_STIG_REFS: &str =
+        include_str!("../../../../tools/auditd-stig-update/stig-refs.toml");
+
+    /// Extract the `benchmark = "..."` value under a `[products.<product>]`
+    /// section of a `stig-refs.toml`'s text. A minimal string search rather
+    /// than a TOML parse: this crate carries no `toml` dependency, and a
+    /// three-line section lookup does not need one.
+    fn pinned_benchmark(refs_toml: &str, product: &str) -> String {
+        let header = format!("[products.{product}]");
+        let after = refs_toml
+            .split_once(&header)
+            .unwrap_or_else(|| panic!("no [products.{product}] section found in stig-refs.toml"))
+            .1;
+        let line = after
+            .lines()
+            .find(|l| l.trim_start().starts_with("benchmark"))
+            .unwrap_or_else(|| panic!("no benchmark= line under [products.{product}]"));
+        let (_, rest) = line
+            .split_once('"')
+            .unwrap_or_else(|| panic!("benchmark line has no opening quote: {line:?}"));
+        let (value, _) = rest
+            .split_once('"')
+            .unwrap_or_else(|| panic!("benchmark line has no closing quote: {line:?}"));
+        value.to_string()
+    }
+
+    #[test]
+    fn sshd_and_auditd_stig_refs_pin_the_same_three_benchmarks() {
+        // auditd-stig-update's own file comment claims it pins "the same
+        // three revisions tools/sshd-stig-update/stig-refs.toml pins"; this
+        // makes that cross-tool claim mechanical rather than only prose.
+        for product in ["rhel8", "rhel9", "rhel10"] {
+            let sshd = pinned_benchmark(SSHD_STIG_REFS, product);
+            let auditd = pinned_benchmark(AUDITD_STIG_REFS, product);
+            assert_eq!(
+                sshd, auditd,
+                "sshd-stig-update and auditd-stig-update must pin the SAME \
+                 {product} benchmark; got sshd={sshd:?} auditd={auditd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn w06_control_family_benchmark_pins_match_sshd_and_auditd() {
+        // The actual drift guard: if a future sshd/auditd lane bumps a
+        // product's pinned STIG revision without a matching sudoers update,
+        // this fails -- the sudo-W06 grounding would otherwise silently be
+        // pinned to a STALE revision relative to the shared source the other
+        // two backends moved to.
+        for g in &W06_GROUNDING {
+            let live = pinned_benchmark(SSHD_STIG_REFS, g.product);
+            assert!(
+                live.contains(g.short_benchmark),
+                "{}'s pinned benchmark in tools/sshd-stig-update/stig-refs.toml is \
+                 {live:?}, which no longer contains the sudo-W06 grounding's short \
+                 label {:?} -- re-verify per this module's bump-time recipe",
+                g.product,
+                g.short_benchmark
+            );
+        }
+    }
+
+    #[test]
+    fn w06_grounding_fixtures_are_well_formed() {
+        for g in &W06_GROUNDING {
+            assert!(
+                !g.check_content_excerpt.trim().is_empty(),
+                "{}'s check-content excerpt must not be empty",
+                g.control_id
+            );
+            assert!(
+                g.check_content_excerpt.contains("ALL ALL=(ALL) ALL"),
+                "{}'s check-content excerpt must carry the first DISA literal \
+                 finding pattern; got {:?}",
+                g.control_id,
+                g.check_content_excerpt
+            );
+            assert!(
+                g.check_content_excerpt.contains("ALL ALL=(ALL:ALL) ALL"),
+                "{}'s check-content excerpt must carry the second DISA literal \
+                 finding pattern; got {:?}",
+                g.control_id,
+                g.check_content_excerpt
+            );
+            assert!(
+                g.control_id.starts_with("RHEL-"),
+                "control id must be a RHEL-NN-NNNNNN STIG id; got {:?}",
+                g.control_id
+            );
+        }
+        // The three ids are exactly the ones the FROZEN
+        // `w06_tests::w06_finding_carries_three_stig_controls` contract pins on
+        // `Diagnostic::controls`, in the same RHEL-08/09/10 order. This is a
+        // SECOND, independent listing (not an import of that test's literals),
+        // so a reviewer sees two disagreeing sources rather than a single one
+        // nobody re-checks.
+        let ids: Vec<&str> = W06_GROUNDING.iter().map(|g| g.control_id).collect();
+        assert_eq!(
+            ids,
+            ["RHEL-08-010382", "RHEL-09-432030", "RHEL-10-600520"],
+            "the pinned control-id order must match the frozen w06_tests contract"
+        );
+    }
+}
