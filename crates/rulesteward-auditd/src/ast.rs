@@ -70,10 +70,12 @@ pub enum ControlRule {
     /// other `ControlRule` variant above (`-b`/`-f`/`-e`/`-r` all take one):
     /// grounded verbatim in `auditctl --help` / `man auditctl(8)`: "This
     /// option tells the kernel to make loginuids unchangeable once they are
-    /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." The parser does
-    /// not recognize this flag yet (issue #523; still falls into the
-    /// `parser.rs` unknown-flag error path) -- this variant is the frozen
-    /// AST shape the future parser arm will construct.
+    /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." `parser.rs`
+    /// recognizes `--loginuid-immutable` as a valueless control flag
+    /// (following the `-D` precedent: the match is on the flag token alone,
+    /// so any trailing tokens on the line are ignored) and constructs this
+    /// variant. STIG-required per RHEL8 V-230403 / RHEL-08-030122 and RHEL9
+    /// V-258228 / RHEL-09-654270.
     LoginuidImmutable,
 }
 
