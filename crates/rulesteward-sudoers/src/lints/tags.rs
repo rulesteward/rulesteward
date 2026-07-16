@@ -323,8 +323,8 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 /// SAME host-group's `Cmnd_Spec_List` (e.g. `ALL ALL=(ALL) /bin/ls, ALL`: the
 /// trailing bare `ALL` command inherits `(ALL)` from `/bin/ls`'s explicit
 /// group). This mirrors the forward NOPASSWD/PASSWD tag-state machine
-/// [`for_each_nopasswd_command`] already runs above (tags.rs:58-94): a simple
-/// explicit forward walk, carrying the last-seen `Runas_Spec` as state that
+/// [`for_each_nopasswd_command`] already runs above: a simple explicit
+/// forward walk, carrying the last-seen `Runas_Spec` as state that
 /// resets per host-group (each `:`-separated segment is an INDEPENDENT
 /// `Cmnd_Spec_List`; #345) and updates BEFORE the command is evaluated. A
 /// command with no `Runas_Spec` anywhere before it in the group has no
@@ -357,12 +357,15 @@ pub fn w06(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                 // Cmnd_Spec_List (see the "Forward Runas_Spec inheritance"
                 // doc section above); resets fresh per host-group.
                 let mut effective_runas: Option<&RunasSpec> = None;
-                host_group.cmnd_specs.iter().any(|cmnd_spec| {
+                for cmnd_spec in &host_group.cmnd_specs {
                     if let Some(runas) = &cmnd_spec.runas {
                         effective_runas = Some(runas);
                     }
-                    is_unrestricted_privilege_elevation(&cmnd_spec.cmnd, effective_runas)
-                })
+                    if is_unrestricted_privilege_elevation(&cmnd_spec.cmnd, effective_runas) {
+                        return true;
+                    }
+                }
+                false
             });
             if hazard {
                 diags.push(
