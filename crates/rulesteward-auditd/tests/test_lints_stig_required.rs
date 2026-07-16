@@ -128,14 +128,18 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
     // count precision that test lacks.
     //
     // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped RHEL9_REQUIRED
-    // table grows from 67 to 69 rows once the implementer adds the two new
-    // Control-shaped deepening entries this session grounds live against the
-    // pinned RHEL 9 STIG V2R7 XCCDF (V-258227/RHEL-09-654265 "-f 2" and
-    // V-258229/RHEL-09-654275 "-e 2"; see the "Deepening (#523)" block below).
-    // RED today: the shipped table is still 67 rows.
+    // table grew from 67 to 69 rows for the two Control-shaped deepening
+    // entries grounded live against the pinned RHEL 9 STIG V2R7 XCCDF
+    // (V-258227/RHEL-09-654265 "-f 2" and V-258229/RHEL-09-654275 "-e 2"; see
+    // the "Deepening (#523)" block below) -- that bump already landed and is
+    // GREEN. This is the SECOND, additive bump (also #523, additive round 2):
+    // 69 -> 70 rows for the "--loginuid-immutable" deepening entry
+    // (V-258228/RHEL-09-654270; see the "Deepening cont'd (#523)" block
+    // further below). RED today: the shipped table is still 69 rows (has no
+    // loginuid row yet).
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
-    assert_eq!(diags.len(), 69, "{diags:?}");
+    assert_eq!(diags.len(), 70, "{diags:?}");
     assert!(
         diags.iter().all(|d| d.severity == Severity::Warning),
         "every au-W06 finding must be severity=Warning: {diags:?}"
@@ -555,9 +559,19 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     // (V-258227/RHEL-09-654265 "-f 2", V-258229/RHEL-09-654275 "-e 2") and
     // RHEL10 (V-281103/RHEL-10-500035 "-f 2", V-281365/RHEL-10-900100 "-e 2"),
     // all grounded live against the pinned DISA XCCDF (see the "Deepening
-    // (#523)" block below). RED today: the shipped tables are still 61/67/75.
+    // (#523)" block below). That bump already landed and is GREEN.
+    //
+    // SECOND, additive bump (also #523, additive round 2, "Deepening cont'd"
+    // block further below): "--loginuid-immutable" adds ONE MORE entry each to
+    // RHEL8 (62 -> 63: V-230403/RHEL-08-030122) and RHEL9 (69 -> 70:
+    // V-258228/RHEL-09-654270). RHEL10's XCCDF has no loginuid-immutable
+    // control at all (verified live 2026-07-15 -- no Group/Rule mentions
+    // "loginuid" anywhere in the pinned U_RHEL_10_V1R1_STIG.zip), so RHEL10
+    // stays at 77 (see `rhel10_loginuid_immutable_control_absent_from_baseline`
+    // below for that discriminating-negative guard). RED today: the RHEL8 and
+    // RHEL9 shipped tables are still 62/69 rows (no loginuid row yet).
     let rhel8 = stig_baseline(TargetVersion::Rhel8);
-    assert_eq!(rhel8.len(), 62, "{rhel8:?}");
+    assert_eq!(rhel8.len(), 63, "{rhel8:?}");
     assert!(
         rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),
         "RHEL8 baseline must contain RHEL-08-030000: {rhel8:?}"
@@ -566,9 +580,16 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
         rhel8.iter().any(|r| r.stig_id == "RHEL-08-030121"),
         "RHEL8 baseline must contain the new RHEL-08-030121 (\"-e 2\") deepening entry: {rhel8:?}"
     );
+    assert!(
+        rhel8.iter().any(|r| r.stig_id == "RHEL-08-030122"
+            && r.v_number == "V-230403"
+            && r.line == "--loginuid-immutable"),
+        "RHEL8 baseline must contain the new RHEL-08-030122 (V-230403, \
+         \"--loginuid-immutable\") deepening entry: {rhel8:?}"
+    );
 
     let rhel9 = stig_baseline(TargetVersion::Rhel9);
-    assert_eq!(rhel9.len(), 69, "{rhel9:?}");
+    assert_eq!(rhel9.len(), 70, "{rhel9:?}");
     assert!(
         rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
         "RHEL9 baseline must contain RHEL-09-654010: {rhel9:?}"
@@ -580,6 +601,13 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     assert!(
         rhel9.iter().any(|r| r.stig_id == "RHEL-09-654275"),
         "RHEL9 baseline must contain the new RHEL-09-654275 (\"-e 2\") deepening entry: {rhel9:?}"
+    );
+    assert!(
+        rhel9.iter().any(|r| r.stig_id == "RHEL-09-654270"
+            && r.v_number == "V-258228"
+            && r.line == "--loginuid-immutable"),
+        "RHEL9 baseline must contain the new RHEL-09-654270 (V-258228, \
+         \"--loginuid-immutable\") deepening entry: {rhel9:?}"
     );
 
     let rhel10 = stig_baseline(TargetVersion::Rhel10);
@@ -1140,6 +1168,91 @@ fn rhel10_loginuid_immutable_control_absent_from_baseline() {
     assert!(
         !diags.iter().any(|d| d.message.contains("loginuid")),
         "a RHEL10-targeted au-W06 pass must never mention loginuid-immutable: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Barrier-style real-entrypoint proof, loginuid variant (#523, session
+// 9b-v0_8-wave2 lane 2e): mirrors
+// `w06_real_entrypoint_fires_on_a_bare_ruleset_against_the_shipped_rhel9_table`
+// above -- every loginuid-immutable scenario test so far
+// (`rhel{8,9}_loginuid_immutable_control_deepening_v2*`) injects a small
+// test-local baseline straight into `w06_with_baseline`, so NONE of them fail
+// if the SHIPPED `RHEL8_REQUIRED`/`RHEL9_REQUIRED` tables never actually gain
+// a loginuid row at all -- only these two tests go through the REAL dispatch
+// chain (`w06` -> `baseline_for` -> `w06_with_baseline`) against the shipped
+// tables. RED today: `RHEL8_REQUIRED`/`RHEL9_REQUIRED` have no
+// "--loginuid-immutable" row yet, so the real `--target rhel8`/`--target
+// rhel9` path never reports RHEL-08-030122/RHEL-09-654270 missing, no matter
+// how non-compliant the ruleset is.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w06_real_entrypoint_names_rhel8_loginuid_immutable_control() {
+    // RHEL-08-030122 (V-230403): the real RHEL8 dispatch, against a ruleset
+    // that never sets "--loginuid-immutable" at all, must report it missing
+    // once the shipped table carries the row.
+    let rules = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags.iter().any(|d| d.message.contains("RHEL-08-030122")),
+        "the real RHEL8 dispatch must report the loginuid-immutable control \
+         missing once the shipped table carries it: {diags:?}"
+    );
+}
+
+#[test]
+fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
+    // RHEL-09-654270 (V-258228): RHEL9's own STIG id, same proof.
+    let rules = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        diags.iter().any(|d| d.message.contains("RHEL-09-654270")),
+        "the real RHEL9 dispatch must report the loginuid-immutable control \
+         missing once the shipped table carries it: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Presence-only decision pin (#523, session 9b-v0_8-wave2 lane 2e; USER
+// DECISION 2026-07-16, via the orchestrator): au-W06 Control matching stays
+// PRESENCE-based this wave -- it asks "does ANY parsed rule match the
+// required Control variant+value", never "what is the LAST
+// (auditctl-effective) value for this control flag". Real `auditctl`/the
+// audit daemon applies `-e`/`-f` (and other control) directives in FILE ORDER
+// with LAST-WINS semantics at load time (a `-f 1` line after a `-f 2` line
+// overrides the running daemon's effective failure mode to 1), but this
+// lint's static, parse-only matcher does NOT model that: two directives with
+// CONFLICTING values both remain "present" candidates in the ruleset, and a
+// required value satisfied by EITHER one alone passes, regardless of file
+// order. This is a DELIBERATE, tracked scope decision for this wave -- not an
+// oversight discovered later -- so it is pinned here as a passing test (not a
+// RED one) precisely so a future implementer cannot "fix" this into
+// last-wins modeling by accident without first breaking a named, documented
+// contract. Last-wins effective-state modeling is tracked as a follow-up
+// issue. The complementary "does a rule change after an `-e 2` lock line look
+// suspicious" concern is separately covered by the ordering lint (au-E01,
+// `lints::ordering`'s post-lock unreachable-rule pass -- `auditctl(8)`: "-e 2"
+// makes the config immutable until reboot, so anything loaded after it never
+// takes effect), not by au-W06.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_matching_is_presence_only_last_wins_modeling_is_out_of_scope() {
+    let baseline = vec![bl("V-258227", "RHEL-09-654265", "-f 2")];
+    // "-f 1" AFTER "-f 2" would auditctl-effectively DISABLE panic-on-failure
+    // (last-wins), but au-W06's static matcher only asks whether a "-f 2"
+    // rule is present ANYWHERE in the parsed ruleset -- it is, so this must
+    // NOT report a missing finding for RHEL-09-654265, even though a
+    // last-wins-aware checker would flag it.
+    let rules = parse("-f 2\n-f 1\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "presence-only matching: a required \"-f 2\" line present anywhere in \
+         the ruleset satisfies the requirement, regardless of a later \
+         conflicting \"-f 1\" directive (last-wins effective-state modeling \
+         is out of scope this wave, tracked as a follow-up issue): {diags:?}"
     );
 }
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL8_STIG_TEST_FIXTURE">
-<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 audit-rule Groups (46) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant). Group V-230402 (RHEL-08-030121, "-e 2" immutable-mode) added session 9b-v0_8-wave2 lane 2e (#523), fetched live 2026-07-15 against the pinned U_RHEL_8_V2R4_STIG.zip.</title>
+<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 audit-rule Groups (47) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant). Group V-230402 (RHEL-08-030121, "-e 2" immutable-mode) added session 9b-v0_8-wave2 lane 2e (#523), fetched live 2026-07-15 against the pinned U_RHEL_8_V2R4_STIG.zip. Group V-230403 (RHEL-08-030122, "--loginuid-immutable") added the same session, additive round 2, fetched live 2026-07-15 against the same pinned zip.</title>
 <Group id="V-230386"><Rule severity="medium"><version>RHEL-08-030000</version><title>The RHEL 8 audit system must be configured to audit the execution of privileged functions and prevent all software from executing at higher privilege levels than users executing the software.</title><check system="C-x"><check-content>Verify RHEL 8 audits the execution of privileged functions.
 
 Check if RHEL 8 is configured to audit the execution of the "execve" system call, by running the following command:
@@ -623,4 +623,13 @@ If the audit system is not set to be immutable by adding the "-e 2" option to th
 -e 2
 
 Note: Once set, the system must be rebooted for auditing to be changed.  It is recommended to add this option as the last step in securing the system.</fixtext></Rule></Group>
+<Group id="V-230403"><Rule severity="medium"><version>RHEL-08-030122</version><title>RHEL 8 audit system must protect logon UIDs from unauthorized change.</title><check system="C-x"><check-content>Verify the audit system prevents unauthorized changes to logon UIDs with the following command:
+
+$ sudo grep -i immutable /etc/audit/audit.rules
+
+--loginuid-immutable
+
+If the login UIDs are not set to be immutable by adding the "--loginuid-immutable" option to the "/etc/audit/audit.rules", this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to set the logon UIDs to be immutable by adding the following line to "/etc/audit/rules.d/audit.rules"
+
+--loginuid-immutable</fixtext></Rule></Group>
 </Benchmark>
