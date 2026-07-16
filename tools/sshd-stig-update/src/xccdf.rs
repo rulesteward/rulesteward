@@ -28,30 +28,46 @@
 //! illustrative/old value before the canonical one - the parser refuses to guess);
 //! and a duplicate keyword across Rules.
 //!
-//! # Known limitation: runtime-only checks (tracked for v0.6)
+//! # Runtime-only checks
 //!
-//! The selector keys on the FILE-grep idiom. DISA is trending toward additional
-//! runtime checks (`sshd -T | grep -i <kw>`); today every controlled directive across
-//! RHEL 8/9/10 ALSO carries the file grep, so all are captured. A hypothetical FUTURE
-//! control that used ONLY a runtime check (no file grep) would be skipped. An existing
-//! control going runtime-only still surfaces as `- <dir>` drift (a human reviews it);
-//! only a brand-new runtime-only control would go unseen. Not guarded here (no current
-//! benchmark exercises it; per no-speculative-abstraction) - tracked as issue #468.
+//! [`parse_controls`]'s selector keys on the FILE-grep idiom. DISA is trending toward
+//! additional runtime checks (`sshd -T | grep -i <kw>`); today every controlled
+//! directive across RHEL 8/9/10 ALSO carries the file grep, so `parse_controls`
+//! captures all of them. [`runtime_only_directives`] independently scans every
+//! `<Group>` for a directive checked ONLY at runtime with no matching file grep in that
+//! same Group, and returns its keywords. The `check` subcommand calls it and fails loud
+//! (process exit 2) the moment it returns a non-empty list, instead of silently
+//! omitting that control from the derived table.
 
 use regex::Regex;
 
 use crate::derive::{DerivedControl, OwnedValueRule};
+
+/// DISA's `<Group id="V-...">...</Group>` element; captures the V-number in group 1.
+/// Shared by [`parse_controls`] and [`runtime_only_directives`], both of which scope
+/// their extraction to one Group at a time.
+const GROUP_PATTERN: &str = r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>";
+
+/// The `<check-content>...</check-content>` element inside a `<Group>`; captures the
+/// raw, still-XML-encoded body in group 1. Shared by [`parse_controls`] and
+/// [`runtime_only_directives`].
+const CHECK_CONTENT_PATTERN: &str = r"(?s)<check-content[^>]*>(.*?)</check-content>";
+
+/// DISA's canonical FILE-grep check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`;
+/// captures the lowercase directive keyword in group 1. Shared by [`parse_controls`]
+/// (the selector) and [`runtime_only_directives`] (the same-Group duplicate check).
+const FILE_GREP_PATTERN: &str = r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'";
 
 /// Parse a full DISA XCCDF benchmark into the normalized sshd STIG control table,
 /// sorted by keyword. Returns an error on any Rule the parser cannot confidently
 /// classify (fail-closed).
 pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     // Fixed regexes, compiled once. `unwrap` on a literal pattern is an invariant.
-    let group_re = Regex::new(r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>").unwrap();
-    let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
+    let group_re = Regex::new(GROUP_PATTERN).unwrap();
+    let check_re = Regex::new(CHECK_CONTENT_PATTERN).unwrap();
     let fixtext_re = Regex::new(r"(?s)<fixtext[^>]*>(.*?)</fixtext>").unwrap();
     // DISA canonical check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`.
-    let grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
+    let grep_re = Regex::new(FILE_GREP_PATTERN).unwrap();
     // The Rule id (STIG Rule id, e.g. `RHEL-09-255045`), carried in the FIRST
     // `<version>` element inside the Rule (#507). Applied to the still-encoded
     // block (not the decoded check/fixtext), so the search is scoped to the raw
@@ -113,6 +129,69 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
         }
     }
     Ok(out)
+}
+
+/// Surface directive controls that carry a runtime check (`sshd -T | grep -i <kw>`)
+/// but NO file-grep idiom (`grep -iH '^\s*<kw>'`) for that SAME keyword within the
+/// SAME `<Group>` `<check-content>` block (issue #468).
+///
+/// [`parse_controls`] keys on the file-grep idiom, so a control checked ONLY at
+/// runtime is silently SKIPPED today. This guard returns those skipped directives so
+/// the caller can fail loud instead of dropping a required control. The keywords are
+/// the lowercase word grepped after `sshd -T | grep -i`, sorted ascending. An empty
+/// result means every runtime check is duplicated by a file grep for the same
+/// keyword in the same Group - the current state across the pinned RHEL 8/9/10
+/// benchmarks (0 / 1 / 16 runtime checks, all duplicated), so the guard must not fire
+/// on any of them.
+#[must_use]
+pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
+    let group_re = Regex::new(GROUP_PATTERN).unwrap();
+    let check_re = Regex::new(CHECK_CONTENT_PATTERN).unwrap();
+    // DISA's runtime idiom: `sshd -T | grep -i <keyword>`. Anchored on the pipe from
+    // `sshd -T`, so a bare `grep -i <kw>` elsewhere in the block (e.g. against a file)
+    // does not match this pattern. Hardened (#468 adversarial round 2) to tolerate
+    // DISA-plausible phrasing variants not yet seen in any pinned benchmark:
+    // - intervening redirection between `-T` and the pipe (`-T 2>/dev/null |`), via
+    //   `[^|\n]*` instead of requiring only whitespace before the pipe;
+    // - `-i` anywhere in the flag cluster, not just first (`-qi`, `-iE`), via
+    //   `-[A-Za-z]*i[A-Za-z]*` instead of anchoring `-i` at the start;
+    // - the keyword optionally single- or double-quoted (`-i "kw"` / `-i 'kw'`), via
+    //   an independently-optional leading/trailing quote around the capture;
+    // - the keyword in any case (`MaxAuthTries`), via `[A-Za-z]` instead of `[a-z]` -
+    //   the caller folds the capture to lowercase before the file-grep pairing check
+    //   below, so case never affects the runtime/file-grep duplicate match.
+    let runtime_re = Regex::new(
+        r#"sshd\s+-T[^|\n]*\|\s*grep\s+-[A-Za-z]*i[A-Za-z]*\s+["']?([A-Za-z][A-Za-z0-9]+)["']?"#,
+    )
+    .unwrap();
+    // The same canonical file-grep idiom `parse_controls` selects on, scoped to this
+    // Group's own check-content so duplication is judged per-Group, not document-wide.
+    let file_grep_re = Regex::new(FILE_GREP_PATTERN).unwrap();
+
+    let mut out: Vec<String> = Vec::new();
+    for caps in group_re.captures_iter(xccdf) {
+        let block = caps.get(0).map_or("", |m| m.as_str());
+        let check = check_re
+            .captures(block)
+            .map_or_else(String::new, |c| decode_entities(&c[1]));
+
+        let file_grepped: Vec<&str> = file_grep_re
+            .captures_iter(&check)
+            .map(|c| c.get(1).map_or("", |m| m.as_str()))
+            .collect();
+        for rcaps in runtime_re.captures_iter(&check) {
+            // Fold to lowercase BEFORE the membership check: the file-grep idiom is
+            // always lowercase, so a mixed-case runtime keyword must compare equal to
+            // its same-keyword lowercase file grep rather than falsely appear unpaired.
+            let keyword = rcaps[1].to_ascii_lowercase();
+            if !file_grepped.contains(&keyword.as_str()) {
+                out.push(keyword);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Classify one selected Rule's value assertion from its fixtext + check-content.
@@ -478,5 +557,304 @@ mod tests {
         let err = parse_controls(doc).expect_err("missing <version> must fail closed");
         assert!(err.contains("V-98"), "{err}");
         assert!(err.contains("version"), "{err}");
+    }
+
+    // --- #468 runtime-only directive guard ------------------------------------
+    // `parse_controls` selects on the FILE-grep idiom (`grep -iH '^\s*<kw>'`). DISA
+    // is adding RUNTIME checks (`sshd -T | grep -i <kw>`); today every controlled
+    // directive ALSO carries the file grep, so all are captured. A directive checked
+    // ONLY at runtime would be silently dropped. `runtime_only_directives` surfaces
+    // those so the caller can fail loud (issue #468). Every assertion below is
+    // grounded in the real `sshd -T | grep -i <kw>` idiom used verbatim across the
+    // pinned RHEL 9 (V-257996) and RHEL 10 (V-281254..V-281296) benchmarks.
+
+    /// A Group whose check-content carries ONLY the runtime idiom
+    /// (`sshd -T | grep -i x11forwarding`) and NO file grep for that keyword is a
+    /// runtime-only directive: it must be surfaced (else it is silently skipped).
+    #[test]
+    fn runtime_only_single_directive_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800001\"><Rule><version>RHEL-09-800001</version>\
+            <check><check-content>Verify the runtime configuration with the following command:\n\
+            $ sudo sshd -T | grep -i x11forwarding\nx11forwarding no\n\
+            If \"X11Forwarding\" is not set to \"no\", this is a finding.</check-content></check>\
+            <fixtext>Add the following line to sshd_config:\nX11Forwarding no</fixtext>\
+            </Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["x11forwarding".to_string()],
+            "a directive checked only via `sshd -T | grep` must be surfaced"
+        );
+    }
+
+    /// A Group carrying BOTH the file grep AND the runtime check for the same
+    /// keyword (the real "duplicated" shape - e.g. RHEL 10 V-281265 permitrootlogin)
+    /// is fully captured by `parse_controls`, so the guard must NOT surface it.
+    #[test]
+    fn duplicated_runtime_and_file_grep_same_group_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800002\"><Rule><version>RHEL-09-800002</version>\
+            <check><check-content>$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | \
+            xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\n\
+            permitrootlogin no\nVerify the runtime setting with the following command:\n\
+            $ sudo sshd -T | grep -i permitrootlogin\npermitrootlogin no\n\
+            If not set to \"no\", this is a finding.</check-content></check>\
+            <fixtext>PermitRootLogin no</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a runtime check duplicated by a same-group file grep is NOT runtime-only"
+        );
+    }
+
+    /// The exact #468 acceptance requirement: the three pinned DISA benchmarks carry
+    /// 0 / 1 / 16 runtime checks respectively, and (verified mechanically against the
+    /// fixtures) EVERY one is duplicated by a same-Group file grep. The guard must
+    /// return empty for all three - zero false positives on shipping data.
+    #[test]
+    fn real_pinned_benchmarks_have_zero_runtime_only_directives() {
+        assert!(
+            runtime_only_directives(RHEL8_FIXTURE).is_empty(),
+            "RHEL 8 (0 runtime checks) must not trip the guard"
+        );
+        assert!(
+            runtime_only_directives(RHEL9_FIXTURE).is_empty(),
+            "RHEL 9 (1 runtime check, duplicated) must not trip the guard"
+        );
+        assert!(
+            runtime_only_directives(RHEL10_FIXTURE).is_empty(),
+            "RHEL 10 (16 runtime checks, all duplicated) must not trip the guard"
+        );
+    }
+
+    /// The guard is scoped PER check-content block: a runtime-only directive in one
+    /// Group must be surfaced even when a DIFFERENT Group in the same document carries
+    /// a file grep. A document-wide "is there any file grep at all" check would wrongly
+    /// treat this as clean; the per-Group scoping forbids that.
+    #[test]
+    fn runtime_only_scoped_per_group_not_document() {
+        let doc = "<Benchmark>\
+            <Group id=\"V-800003\"><Rule><version>RHEL-09-800003</version>\
+            <check><check-content>$ sudo sshd -T | grep -i maxauthtries\nmaxauthtries 3\n\
+            If not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group>\
+            <Group id=\"V-800004\"><Rule><version>RHEL-09-800004</version>\
+            <check><check-content>xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\
+            </check-content></check><fixtext>PermitRootLogin no</fixtext></Rule></Group>\
+            </Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a runtime-only Group is surfaced regardless of a file grep in another Group"
+        );
+    }
+
+    /// The guard keys specifically on the `sshd -T | grep` runtime idiom, NOT on a
+    /// bare `grep -i <kw>`. A rule that greps a file WITHOUT the anchored file-grep
+    /// idiom and WITHOUT `sshd -T` is not a runtime directive check and must not be
+    /// surfaced (guards against an over-broad "any grep" selector).
+    #[test]
+    fn bare_grep_without_sshd_dash_t_is_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-800005\"><Rule><version>RHEL-09-800005</version>\
+            <check><check-content>Run the following command:\n\
+            $ sudo grep -i maxsessions /etc/ssh/sshd_config\nmaxsessions 10\n\
+            If not set, this is a finding.</check-content></check>\
+            <fixtext>MaxSessions 10</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a bare `grep -i <kw>` without `sshd -T` is not a runtime directive check"
+        );
+    }
+
+    /// Two distinct runtime-only directives are BOTH surfaced, sorted ascending. The
+    /// Groups are authored in reverse-sorted order (pubkey before hostbased) so a
+    /// non-sorting or first-only implementation fails this test.
+    #[test]
+    fn multiple_runtime_only_directives_all_surfaced_sorted() {
+        let doc = "<Benchmark>\
+            <Group id=\"V-800006\"><Rule><version>RHEL-09-800006</version>\
+            <check><check-content>$ sudo sshd -T | grep -i pubkeyauthentication\n\
+            pubkeyauthentication yes\nIf not \"yes\", this is a finding.</check-content></check>\
+            <fixtext>PubkeyAuthentication yes</fixtext></Rule></Group>\
+            <Group id=\"V-800007\"><Rule><version>RHEL-09-800007</version>\
+            <check><check-content>$ sudo sshd -T | grep -i hostbasedauthentication\n\
+            hostbasedauthentication no\nIf not \"no\", this is a finding.</check-content></check>\
+            <fixtext>HostbasedAuthentication no</fixtext></Rule></Group>\
+            </Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec![
+                "hostbasedauthentication".to_string(),
+                "pubkeyauthentication".to_string()
+            ],
+            "all runtime-only directives are surfaced, sorted ascending"
+        );
+    }
+
+    // --- #468 adversarial round 2: DISA-plausible runtime idiom variants -------
+    // (2026-07-16, post-GREEN impl-aware adversarial review, USER DECISION: harden
+    // `runtime_only_directives`'s runtime regex to tolerate these). The regex
+    // `sshd\s+-T\s*\|\s*grep\s+-i[A-Za-z]*\s+([a-z][a-z0-9]+)` goes SILENT (returns
+    // empty, i.e. the guard does NOT fire) on phrasing variants that appear in no
+    // CURRENT pinned RHEL 8/9/10 benchmark but are DISA-plausible: the pinned RHEL9
+    // fixture itself already shows DISA quoting a grep keyword and using a combined
+    // flag elsewhere in the SAME document (`$ sudo grep -i Ciphers
+    // /etc/crypto-policies/back-ends/opensshserver.config`, V-257989 /
+    // RHEL-09-255065 - a bare grep, not the `sshd -T |` runtime idiom, but proof DISA
+    // does quote/combine grep invocations in this XCCDF family). These tests are RED
+    // against the unhardened regex; they must turn GREEN once the regex is widened.
+
+    /// Variant 1a: the runtime keyword wrapped in double quotes
+    /// (`grep -i "maxauthtries"`). DISA-plausible because DISA already quotes grep
+    /// keywords elsewhere in this XCCDF (see module note above); the unhardened regex
+    /// requires the keyword to start immediately after whitespace with no quote, so
+    /// this is currently silently skipped.
+    #[test]
+    fn runtime_only_double_quoted_keyword_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900001\"><Rule><version>RHEL-09-900001</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T | grep -i \"maxauthtries\"\nmaxauthtries 3\n\
+            If the value is not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a double-quoted runtime grep keyword must still be surfaced as runtime-only"
+        );
+    }
+
+    /// Variant 1b: the runtime keyword wrapped in single quotes
+    /// (`grep -i 'maxauthtries'`). Same DISA-plausible quoting concern as 1a, the
+    /// other common shell-quoting style.
+    #[test]
+    fn runtime_only_single_quoted_keyword_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900002\"><Rule><version>RHEL-09-900002</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T | grep -i 'maxauthtries'\nmaxauthtries 3\n\
+            If the value is not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a single-quoted runtime grep keyword must still be surfaced as runtime-only"
+        );
+    }
+
+    /// Variant 1c: a quoted keyword combined with the `-iE` flag spelling
+    /// (`grep -iE 'ciphers'`), mirroring the exact flag+quote style DISA uses for the
+    /// bare (non-runtime) crypto-policies grep in this same RHEL9 XCCDF
+    /// (`grep -i Ciphers ...`, V-257989) - plausible DISA would reuse that style for
+    /// a future runtime cipher check.
+    #[test]
+    fn runtime_only_quoted_keyword_with_ie_flag_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900003\"><Rule><version>RHEL-09-900003</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T | grep -iE 'ciphers'\nciphers aes256-gcm@openssh.com\n\
+            If the cipher entries are not as specified, this is a finding.\
+            </check-content></check>\
+            <fixtext>Ciphers aes256-gcm@openssh.com</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["ciphers".to_string()],
+            "a quoted keyword after the combined -iE flag must still be surfaced"
+        );
+    }
+
+    /// Variant 2: output redirection between `sshd -T` and the pipe
+    /// (`sshd -T 2>/dev/null | grep -i maxauthtries`). DISA-plausible because
+    /// suppressing stderr before piping is a common shell idiom; the unhardened
+    /// regex requires the pipe immediately (only whitespace) after `-T`, so any
+    /// intervening redirection breaks the match today.
+    #[test]
+    fn runtime_only_redirected_before_pipe_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900004\"><Rule><version>RHEL-09-900004</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T 2&gt;/dev/null | grep -i maxauthtries\nmaxauthtries 3\n\
+            If the value is not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a `sshd -T 2>/dev/null | grep` redirection must still be surfaced as runtime-only"
+        );
+    }
+
+    /// Variant 3: combined/reordered grep flags (`grep -qi maxauthtries`, `-i` NOT
+    /// first). DISA-plausible because `-q`/`-i` combine in either order in real shell
+    /// usage; the unhardened regex requires the literal substring `-i` to start
+    /// immediately after `grep\s+`, so a leading `-q` breaks the match today.
+    #[test]
+    fn runtime_only_combined_flag_order_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900005\"><Rule><version>RHEL-09-900005</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T | grep -qi maxauthtries\nmaxauthtries 3\n\
+            If the value is not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a reordered/combined grep flag set (-qi, -i not first) must still be surfaced"
+        );
+    }
+
+    /// Variant 4: a mixed-case runtime keyword (`grep -i MaxAuthTries`). DISA already
+    /// mixes case in the analogous bare crypto grep in this same RHEL9 XCCDF
+    /// (`grep -i Ciphers ...`, V-257989), so a future runtime check plausibly does
+    /// too. The surfaced keyword must be FOLDED to lowercase (matching the lowercase
+    /// convention `parse_controls`/the file-grep idiom use), not the mixed-case
+    /// literal, or it could never pair with a same-keyword file grep.
+    #[test]
+    fn runtime_only_mixed_case_keyword_is_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900006\"><Rule><version>RHEL-09-900006</version>\
+            <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+            $ sudo sshd -T | grep -i MaxAuthTries\nmaxauthtries 3\n\
+            If the value is not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert_eq!(
+            runtime_only_directives(doc),
+            vec!["maxauthtries".to_string()],
+            "a mixed-case runtime grep keyword must be surfaced folded to lowercase"
+        );
+    }
+
+    /// Negative preservation (quoted variant): a quoted runtime check
+    /// (`grep -i "permitrootlogin"`) DUPLICATED by a same-Group file grep for the
+    /// SAME keyword must stay silent, exactly like the unquoted case in
+    /// `duplicated_runtime_and_file_grep_same_group_not_surfaced` above. Pins that
+    /// hardening the runtime regex to tolerate quoting must not break the
+    /// file-grep/runtime pairing logic - a quoted-but-duplicated directive is still
+    /// fully captured by `parse_controls` and must not be reported as dropped.
+    #[test]
+    fn duplicated_quoted_runtime_and_file_grep_same_group_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900007\"><Rule><version>RHEL-09-900007</version>\
+            <check><check-content>$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | \
+            xargs sudo grep -iH '^\\s*permitrootlogin' /etc/ssh/sshd_config\n\
+            permitrootlogin no\nVerify the runtime setting with the following command:\n\
+            $ sudo sshd -T | grep -i \"permitrootlogin\"\npermitrootlogin no\n\
+            If not set to \"no\", this is a finding.</check-content></check>\
+            <fixtext>PermitRootLogin no</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a quoted runtime check duplicated by a same-group file grep is NOT runtime-only"
+        );
+    }
+
+    /// Negative preservation (case-fold pairing): a MIXED-CASE runtime check
+    /// (`grep -i MaxAuthTries`) paired with a LOWERCASE same-Group file grep (the
+    /// real DISA file-grep convention is always lowercase) for the same keyword must
+    /// stay silent. Pins that the hardened regex's lowercase-folding of the runtime
+    /// keyword (variant 4 above) is applied BEFORE the file-grep membership check, so
+    /// case differences alone never cause a false "runtime-only" report.
+    #[test]
+    fn duplicated_mixedcase_runtime_and_lowercase_file_grep_same_group_not_surfaced() {
+        let doc = "<Benchmark><Group id=\"V-900008\"><Rule><version>RHEL-09-900008</version>\
+            <check><check-content>$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | \
+            xargs sudo grep -iH '^\\s*maxauthtries' /etc/ssh/sshd_config\n\
+            maxauthtries 3\nVerify the runtime setting with the following command:\n\
+            $ sudo sshd -T | grep -i MaxAuthTries\nmaxauthtries 3\n\
+            If not \"3\" or less, this is a finding.</check-content></check>\
+            <fixtext>MaxAuthTries 3</fixtext></Rule></Group></Benchmark>";
+        assert!(
+            runtime_only_directives(doc).is_empty(),
+            "a mixed-case runtime check duplicated by a lowercase same-group file grep \
+             is NOT runtime-only (case folding must happen before the pairing check)"
+        );
     }
 }

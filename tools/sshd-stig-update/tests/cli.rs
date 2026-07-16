@@ -157,6 +157,51 @@ fn derive_file_exits_0_and_reproduces_table() {
     );
 }
 
+/// #468 fail-loud guard, end to end: a benchmark carrying a directive checked ONLY
+/// at runtime (`sshd -T | grep -i maxauthtries`, with NO file-grep idiom) is silently
+/// skipped by the file-grep selector today, so `check` would report 0 drift and exit
+/// 0 while quietly dropping a required control. The guard must instead FAIL LOUD -
+/// exit 2 (the tool's fail-closed code, as for an unclassifiable rule) and name the
+/// dropped directive on stderr. `maxauthtries` is absent from the rhel9 fixture, so
+/// the injected Group is unambiguously the only runtime-only control.
+#[test]
+fn check_runtime_only_directive_fails_loud_exits_2() {
+    let injected = "<Group id=\"V-800042\"><Rule><version>RHEL-09-800042</version>\
+        <check><check-content>Verify the runtime configuration of the SSH daemon:\n\
+        $ sudo sshd -T | grep -i maxauthtries\nmaxauthtries 3\n\
+        If the value is not set to \"3\" or less, this is a finding.</check-content></check>\
+        <fixtext>Add or edit the following line in /etc/ssh/sshd_config:\nMaxAuthTries 3</fixtext>\
+        </Rule></Group></Benchmark>";
+    let doc = GOOD_RHEL9.replace("</Benchmark>", injected);
+    assert!(
+        doc.contains("sshd -T | grep -i maxauthtries"),
+        "the injected runtime-only Group must be present"
+    );
+
+    let f = temp_xccdf("runtimeonly", &doc);
+    let (code, stdout, err) = run(&[
+        "check",
+        "--product",
+        "rhel9",
+        "--file",
+        &f.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "a runtime-only directive must fail loud (exit 2), not be silently skipped; \
+         stdout={stdout} err={err}"
+    );
+    assert!(
+        err.contains("maxauthtries"),
+        "the fail-loud message must name the dropped directive; err={err}"
+    );
+    assert!(
+        err.to_lowercase().contains("runtime"),
+        "the fail-loud message must explain it is a runtime-only check; err={err}"
+    );
+}
+
 #[test]
 fn unknown_subcommand_exits_2() {
     let (code, _out, err) = run(&["frobnicate"]);
