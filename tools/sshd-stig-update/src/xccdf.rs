@@ -28,30 +28,46 @@
 //! illustrative/old value before the canonical one - the parser refuses to guess);
 //! and a duplicate keyword across Rules.
 //!
-//! # Known limitation: runtime-only checks (tracked for v0.6)
+//! # Runtime-only checks
 //!
-//! The selector keys on the FILE-grep idiom. DISA is trending toward additional
-//! runtime checks (`sshd -T | grep -i <kw>`); today every controlled directive across
-//! RHEL 8/9/10 ALSO carries the file grep, so all are captured. A hypothetical FUTURE
-//! control that used ONLY a runtime check (no file grep) would be skipped. An existing
-//! control going runtime-only still surfaces as `- <dir>` drift (a human reviews it);
-//! only a brand-new runtime-only control would go unseen. Not guarded here (no current
-//! benchmark exercises it; per no-speculative-abstraction) - tracked as issue #468.
+//! [`parse_controls`]'s selector keys on the FILE-grep idiom. DISA is trending toward
+//! additional runtime checks (`sshd -T | grep -i <kw>`); today every controlled
+//! directive across RHEL 8/9/10 ALSO carries the file grep, so `parse_controls`
+//! captures all of them. [`runtime_only_directives`] independently scans every
+//! `<Group>` for a directive checked ONLY at runtime with no matching file grep in that
+//! same Group, and returns its keywords. The `check` subcommand calls it and fails loud
+//! (process exit 2) the moment it returns a non-empty list, instead of silently
+//! omitting that control from the derived table.
 
 use regex::Regex;
 
 use crate::derive::{DerivedControl, OwnedValueRule};
+
+/// DISA's `<Group id="V-...">...</Group>` element; captures the V-number in group 1.
+/// Shared by [`parse_controls`] and [`runtime_only_directives`], both of which scope
+/// their extraction to one Group at a time.
+const GROUP_PATTERN: &str = r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>";
+
+/// The `<check-content>...</check-content>` element inside a `<Group>`; captures the
+/// raw, still-XML-encoded body in group 1. Shared by [`parse_controls`] and
+/// [`runtime_only_directives`].
+const CHECK_CONTENT_PATTERN: &str = r"(?s)<check-content[^>]*>(.*?)</check-content>";
+
+/// DISA's canonical FILE-grep check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`;
+/// captures the lowercase directive keyword in group 1. Shared by [`parse_controls`]
+/// (the selector) and [`runtime_only_directives`] (the same-Group duplicate check).
+const FILE_GREP_PATTERN: &str = r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'";
 
 /// Parse a full DISA XCCDF benchmark into the normalized sshd STIG control table,
 /// sorted by keyword. Returns an error on any Rule the parser cannot confidently
 /// classify (fail-closed).
 pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     // Fixed regexes, compiled once. `unwrap` on a literal pattern is an invariant.
-    let group_re = Regex::new(r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>").unwrap();
-    let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
+    let group_re = Regex::new(GROUP_PATTERN).unwrap();
+    let check_re = Regex::new(CHECK_CONTENT_PATTERN).unwrap();
     let fixtext_re = Regex::new(r"(?s)<fixtext[^>]*>(.*?)</fixtext>").unwrap();
     // DISA canonical check idiom: `... | xargs sudo grep -iH '^\s*<keyword>'`.
-    let grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
+    let grep_re = Regex::new(FILE_GREP_PATTERN).unwrap();
     // The Rule id (STIG Rule id, e.g. `RHEL-09-255045`), carried in the FIRST
     // `<version>` element inside the Rule (#507). Applied to the still-encoded
     // block (not the decoded check/fixtext), so the search is scoped to the raw
@@ -127,9 +143,10 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
 /// keyword in the same Group - the current state across the pinned RHEL 8/9/10
 /// benchmarks (0 / 1 / 16 runtime checks, all duplicated), so the guard must not fire
 /// on any of them.
+#[must_use]
 pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
-    let group_re = Regex::new(r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>").unwrap();
-    let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
+    let group_re = Regex::new(GROUP_PATTERN).unwrap();
+    let check_re = Regex::new(CHECK_CONTENT_PATTERN).unwrap();
     // DISA's runtime idiom: `sshd -T | grep -i <keyword>`. Anchored on the pipe from
     // `sshd -T`, so a bare `grep -i <kw>` elsewhere in the block (e.g. against a file)
     // does not match this pattern. Hardened (#468 adversarial round 2) to tolerate
@@ -149,7 +166,7 @@ pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
     .unwrap();
     // The same canonical file-grep idiom `parse_controls` selects on, scoped to this
     // Group's own check-content so duplication is judged per-Group, not document-wide.
-    let file_grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
+    let file_grep_re = Regex::new(FILE_GREP_PATTERN).unwrap();
 
     let mut out: Vec<String> = Vec::new();
     for caps in group_re.captures_iter(xccdf) {
