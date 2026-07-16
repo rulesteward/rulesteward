@@ -27,7 +27,7 @@
 
 use rulesteward_core::{Diagnostic, Framework, Severity};
 
-use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, SudoersFile, Tag};
+use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, RunasSpec, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
 
 /// The DISA STIG NOPASSWD control pair (RHEL-08-010380 + RHEL-09-611085) cited by
@@ -303,13 +303,35 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 /// it fires independent of any tag. For each `UserSpec`: the subject
 /// `User_List` must CONTAIN the reserved `ALL` (membership, not exact list
 /// equality -- see `w06_fires_for_multi_subject_line_containing_all` in
-/// `w06_tests`); then each `:`-separated host-group is checked for an EXACT
-/// `Host_List` of `[ALL]` with at least one `Cmnd_Spec` whose command is the
-/// reserved `ALL` and whose `Runas_Spec` is exactly `(ALL)`
-/// (`users=[ALL]`, no groups) or `(ALL:ALL)` (`users=[ALL]`,
-/// `groups=[ALL]`). The diagnostic fires AT MOST ONCE per user-spec logical
-/// line even when more than one host-group or `Cmnd_Spec` on that line
-/// matches (`w06_fires_once_when_only_one_host_group_matches`).
+/// `w06_tests`); then each `:`-separated host-group is checked for a
+/// `Host_List` that CONTAINS the reserved `ALL` (membership, not exact list
+/// equality -- `w06_fires_when_host_list_contains_all_among_others`) with at
+/// least one `Cmnd_Spec` whose command is the reserved `ALL` and whose
+/// EFFECTIVE `Runas_Spec` (see below) has a run-as `users` list that
+/// CONTAINS `ALL` and a run-as `groups` list that is either empty or
+/// CONTAINS `ALL` (`w06_fires_when_runas_user_list_contains_all_among_others`;
+/// again membership, not exact equality). The diagnostic fires AT MOST ONCE
+/// per user-spec logical line even when more than one host-group or
+/// `Cmnd_Spec` on that line matches
+/// (`w06_fires_once_when_only_one_host_group_matches`).
+///
+/// ## Forward `Runas_Spec` inheritance
+///
+/// `sudoers(5)` (sudo 1.9.17p2): "A `Runas_Spec` sets the default for the
+/// commands that follow it" -- a `Cmnd_Spec` with no leading `(...)` group of
+/// its own inherits the last EXPLICIT `Runas_Spec` written earlier in the
+/// SAME host-group's `Cmnd_Spec_List` (e.g. `ALL ALL=(ALL) /bin/ls, ALL`: the
+/// trailing bare `ALL` command inherits `(ALL)` from `/bin/ls`'s explicit
+/// group). This mirrors the forward NOPASSWD/PASSWD tag-state machine
+/// [`for_each_nopasswd_command`] already runs above (tags.rs:58-94): a simple
+/// explicit forward walk, carrying the last-seen `Runas_Spec` as state that
+/// resets per host-group (each `:`-separated segment is an INDEPENDENT
+/// `Cmnd_Spec_List`; #345) and updates BEFORE the command is evaluated. A
+/// command with no `Runas_Spec` anywhere before it in the group has no
+/// effective runas at all (sudo defaults it to root at runtime, which is
+/// narrower than either DISA literal) and cannot fire
+/// (`w06_fires_when_runas_inherits_forward_to_all_command`,
+/// `w06_fires_when_runas_all_all_inherits_forward_to_all_command`).
 #[must_use]
 pub fn w06(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -325,11 +347,22 @@ pub fn w06(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                 continue;
             }
             let hazard = spec.host_groups.iter().any(|host_group| {
-                host_group.hosts == ["ALL"]
-                    && host_group
-                        .cmnd_specs
-                        .iter()
-                        .any(is_unrestricted_privilege_elevation)
+                // Reserved-ALL Host_List membership: CONTAINS "ALL", not an
+                // exact-equality check (see the doc comment above and
+                // `w06_fires_when_host_list_contains_all_among_others`).
+                if !host_group.hosts.iter().any(|host| host == "ALL") {
+                    return false;
+                }
+                // Forward Runas_Spec inheritance state for this host-group's
+                // Cmnd_Spec_List (see the "Forward Runas_Spec inheritance"
+                // doc section above); resets fresh per host-group.
+                let mut effective_runas: Option<&RunasSpec> = None;
+                host_group.cmnd_specs.iter().any(|cmnd_spec| {
+                    if let Some(runas) = &cmnd_spec.runas {
+                        effective_runas = Some(runas);
+                    }
+                    is_unrestricted_privilege_elevation(&cmnd_spec.cmnd, effective_runas)
+                })
             });
             if hazard {
                 diags.push(
@@ -365,16 +398,28 @@ const PRIVILEGE_ELEVATION_STIG_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-10-600520"),
 ];
 
-/// Whether a `Cmnd_Spec` matches sudo-W06's literal DISA pattern: the
-/// reserved `ALL` command with a `Runas_Spec` of exactly `(ALL)`
-/// (`users=[ALL]`, no groups) or `(ALL:ALL)` (`users=[ALL]`, `groups=[ALL]`).
-fn is_unrestricted_privilege_elevation(cmnd_spec: &CmndSpec) -> bool {
-    let Some(runas) = &cmnd_spec.runas else {
+/// Whether a command and its EFFECTIVE `Runas_Spec` (after forward
+/// inheritance is resolved by the caller; see the "Forward `Runas_Spec`
+/// inheritance" doc section on [`w06`] above) match sudo-W06's DISA pattern:
+/// the reserved `ALL` command with a run-as `users` list that CONTAINS `ALL`
+/// and a run-as `groups` list that is either empty or CONTAINS `ALL`
+/// (membership, not exact list equality -- a bare `(ALL)` grant has
+/// `groups=[]`; `(ALL:ALL)` has `groups=[ALL]`; both are DISA-literal
+/// patterns, but `(ALL, root)` and `(ALL:wheel)` also fire/don't-fire per the
+/// membership rule -- see `w06_fires_when_runas_user_list_contains_all_
+/// among_others` and `w06_does_not_fire_when_runas_group_is_not_all` in
+/// `w06_tests`). `effective_runas` is `None` when no `Runas_Spec` has been
+/// written anywhere before this command in its host-group's `Cmnd_Spec_List`.
+fn is_unrestricted_privilege_elevation(
+    cmnd: &CmndItem,
+    effective_runas: Option<&RunasSpec>,
+) -> bool {
+    let Some(runas) = effective_runas else {
         return false;
     };
-    cmnd_spec.cmnd == CmndItem::All
-        && runas.users == ["ALL"]
-        && (runas.groups.is_empty() || runas.groups == ["ALL"])
+    *cmnd == CmndItem::All
+        && runas.users.iter().any(|user| user == "ALL")
+        && (runas.groups.is_empty() || runas.groups.iter().any(|group| group == "ALL"))
 }
 
 #[cfg(test)]
