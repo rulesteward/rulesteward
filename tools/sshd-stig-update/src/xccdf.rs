@@ -132,8 +132,21 @@ pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
     let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
     // DISA's runtime idiom: `sshd -T | grep -i <keyword>`. Anchored on the pipe from
     // `sshd -T`, so a bare `grep -i <kw>` elsewhere in the block (e.g. against a file)
-    // does not match this pattern.
-    let runtime_re = Regex::new(r"sshd\s+-T\s*\|\s*grep\s+-i[A-Za-z]*\s+([a-z][a-z0-9]+)").unwrap();
+    // does not match this pattern. Hardened (#468 adversarial round 2) to tolerate
+    // DISA-plausible phrasing variants not yet seen in any pinned benchmark:
+    // - intervening redirection between `-T` and the pipe (`-T 2>/dev/null |`), via
+    //   `[^|\n]*` instead of requiring only whitespace before the pipe;
+    // - `-i` anywhere in the flag cluster, not just first (`-qi`, `-iE`), via
+    //   `-[A-Za-z]*i[A-Za-z]*` instead of anchoring `-i` at the start;
+    // - the keyword optionally single- or double-quoted (`-i "kw"` / `-i 'kw'`), via
+    //   an independently-optional leading/trailing quote around the capture;
+    // - the keyword in any case (`MaxAuthTries`), via `[A-Za-z]` instead of `[a-z]` -
+    //   the caller folds the capture to lowercase before the file-grep pairing check
+    //   below, so case never affects the runtime/file-grep duplicate match.
+    let runtime_re = Regex::new(
+        r#"sshd\s+-T[^|\n]*\|\s*grep\s+-[A-Za-z]*i[A-Za-z]*\s+["']?([A-Za-z][A-Za-z0-9]+)["']?"#,
+    )
+    .unwrap();
     // The same canonical file-grep idiom `parse_controls` selects on, scoped to this
     // Group's own check-content so duplication is judged per-Group, not document-wide.
     let file_grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
@@ -150,9 +163,12 @@ pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
             .map(|c| c.get(1).map_or("", |m| m.as_str()))
             .collect();
         for rcaps in runtime_re.captures_iter(&check) {
-            let keyword = &rcaps[1];
-            if !file_grepped.contains(&keyword) {
-                out.push(keyword.to_string());
+            // Fold to lowercase BEFORE the membership check: the file-grep idiom is
+            // always lowercase, so a mixed-case runtime keyword must compare equal to
+            // its same-keyword lowercase file grep rather than falsely appear unpaired.
+            let keyword = rcaps[1].to_ascii_lowercase();
+            if !file_grepped.contains(&keyword.as_str()) {
+                out.push(keyword);
             }
         }
     }
