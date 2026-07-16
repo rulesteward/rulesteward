@@ -29,9 +29,10 @@
 //!
 //! A `<Group>`/`<Rule>` is an audit-rule requirement IFF its `check-content`
 //! contains at least one line (after trimming whitespace) matching
-//! `^(-A|-a|-w|-e|-f)\s+\S` -- a literal `auditctl`-syntax rule line
-//! (widened #523 to also select a bare Control-rule requirement like "-e 2"/
-//! "-f 2"; see [`RULE_LINE_RE`]'s doc comment). This is a CHECK-CONTENT GATE,
+//! `^((-A|-a|-w|-e|-f)\s+\S|--loginuid-immutable\b)` -- a literal
+//! `auditctl`-syntax rule line (widened #523 to also select a bare
+//! Control-rule requirement like "-e 2"/"-f 2"/"--loginuid-immutable"; see
+//! [`RULE_LINE_RE`]'s doc comment). This is a CHECK-CONTENT GATE,
 //! not a keyword/domain pre-check (grounding Part B.2): in practice every Rule
 //! carrying such a line is already an audit-domain check, and the explicit
 //! EXCLUDE classes (auditd.conf `key = value` checks, service/package checks,
@@ -106,8 +107,19 @@ use crate::derive::DerivedRule;
 /// Groups this deepening adds (V-230402, V-258227, V-258229, V-281103,
 /// V-281365) and introduces zero false positives elsewhere in any of the
 /// three benchmarks.
+///
+/// Widened again (#523, additive round 2): `--loginuid-immutable` also
+/// selects a bare Control-rule requirement (make the audit loginuid
+/// unchangeable once set), a DISTINCT selector gap from the `-e`/`-f` case
+/// above - unlike `-e 2`/`-f 2`, this flag takes no value argument at all
+/// (`\s+\S` never matches after it), and it starts with a DOUBLE dash, so it
+/// matches none of the `-A|-a|-w|-e|-f` alternatives either. Verified live
+/// 2026-07-15: this is the ONLY occurrence of "loginuid" in either the RHEL8
+/// or RHEL9 pinned XCCDF (absent from RHEL10 entirely), so the added
+/// alternative selects exactly one new Group per fixture (V-230403,
+/// V-258228) and introduces zero false positives.
 static RULE_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^(-A|-a|-w|-e|-f)\s+\S").expect("valid regex")
+    regex::Regex::new(r"^((-A|-a|-w|-e|-f)\s+\S|--loginuid-immutable\b)").expect("valid regex")
 });
 
 /// Parse a full DISA XCCDF benchmark into the normalized au-W06 required-rules
