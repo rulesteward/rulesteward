@@ -127,12 +127,38 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
 /// keyword in the same Group - the current state across the pinned RHEL 8/9/10
 /// benchmarks (0 / 1 / 16 runtime checks, all duplicated), so the guard must not fire
 /// on any of them.
-pub fn runtime_only_directives(_xccdf: &str) -> Vec<String> {
-    // Signature freeze (test-author, lane-2c): the RED tests below pin this contract;
-    // the implementer replaces this body. A `todo!()` (not an empty `Vec`) so EVERY
-    // authored test - the positive AND the negative ones - fails until the guard is
-    // genuinely implemented, per the RED-barrier discipline.
-    todo!("#468: runtime-only directive guard - implemented by lane-2c")
+pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
+    let group_re = Regex::new(r"(?s)<Group id=\x22(V-\d+)\x22.*?</Group>").unwrap();
+    let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
+    // DISA's runtime idiom: `sshd -T | grep -i <keyword>`. Anchored on the pipe from
+    // `sshd -T`, so a bare `grep -i <kw>` elsewhere in the block (e.g. against a file)
+    // does not match this pattern.
+    let runtime_re = Regex::new(r"sshd\s+-T\s*\|\s*grep\s+-i[A-Za-z]*\s+([a-z][a-z0-9]+)").unwrap();
+    // The same canonical file-grep idiom `parse_controls` selects on, scoped to this
+    // Group's own check-content so duplication is judged per-Group, not document-wide.
+    let file_grep_re = Regex::new(r"grep\s+-i[A-Za-z]*\s+'\^\\s\*([a-z][a-z0-9]+)'").unwrap();
+
+    let mut out: Vec<String> = Vec::new();
+    for caps in group_re.captures_iter(xccdf) {
+        let block = caps.get(0).map_or("", |m| m.as_str());
+        let check = check_re
+            .captures(block)
+            .map_or_else(String::new, |c| decode_entities(&c[1]));
+
+        let file_grepped: Vec<&str> = file_grep_re
+            .captures_iter(&check)
+            .map(|c| c.get(1).map_or("", |m| m.as_str()))
+            .collect();
+        for rcaps in runtime_re.captures_iter(&check) {
+            let keyword = &rcaps[1];
+            if !file_grepped.contains(&keyword) {
+                out.push(keyword.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Classify one selected Rule's value assertion from its fixtext + check-content.

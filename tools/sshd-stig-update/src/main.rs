@@ -76,6 +76,19 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
             }
         };
         let derived = xccdf::parse_controls(&xml)?;
+        // #468 fail-loud guard: `parse_controls` selects on the file-grep idiom, so a
+        // directive checked ONLY at runtime (`sshd -T | grep -i <kw>`) is silently
+        // dropped from `derived` rather than causing a diff. Fail closed instead of
+        // reporting a false "0 drift".
+        let runtime_only = xccdf::runtime_only_directives(&xml);
+        if !runtime_only.is_empty() {
+            return Err(format!(
+                "{name}: runtime-only directive check(s) (`sshd -T | grep`) with no matching \
+                 file-grep form in the same Group - would be silently dropped by the file-grep \
+                 selector: {}",
+                runtime_only.join(", ")
+            ));
+        }
         let diff = diff_controls(&derived, &code_table(target));
         if diff.is_empty() {
             println!("{name}: OK (0 drift, {} controls)", derived.len());
