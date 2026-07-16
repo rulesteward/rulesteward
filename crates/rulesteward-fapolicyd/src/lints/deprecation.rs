@@ -160,8 +160,17 @@ fn w12(entries: &[Entry], file: &Path, target: Option<TargetVersion>) -> Vec<Dia
 /// target reaches 1.6; `None` is the implicit 1.4.x dialect and is older still.
 /// fapd-W12 is therefore correct-but-inert until a 1.6-capable target variant
 /// lands. Adding that variant now is deliberately OUT OF SCOPE (no speculative
-/// future variants); when it lands, this predicate is the single place to
-/// change, and the frozen `w12_is_dormant_*` tests are the thing to revisit.
+/// future variants); when it lands, this predicate is one of TWO places that
+/// must flip together, NOT the single place to change - the other is
+/// `Condition::RequiresFapolicyd16Plus` in `catalog.rs` (gates whether the
+/// SARIF pass attestation, issue #137, considers the check evaluated).
+/// Flipping only this predicate makes the lint fire while the catalog still
+/// attests it as never-evaluated (breaks `w12_is_dormant_for_every_current_target`
+/// below); flipping only the catalog condition attests evaluation while the
+/// lint still never fires (breaks
+/// `w12_never_earns_a_pass_attestation_because_it_is_dormant` in
+/// `catalog.rs`). Both frozen tests are the thing to revisit alongside the
+/// code.
 fn deprecates_untrusted_dir(_target: Option<TargetVersion>) -> bool {
     false
 }
@@ -1523,10 +1532,10 @@ mod tests {
 
     #[test]
     fn w12_detect_resolves_sets_first_wins_and_define_before_use() {
-        // `w12_detect` resolves `%set` members through `build_macro_map`
-        // (subsume.rs:19-27), which is an order-blind, LAST-DEFINITION-WINS
-        // `HashMap` (`map.insert`). fapolicyd's real set registry is
-        // order-sensitive and FIRST-WINS-THEN-HARD-ERROR:
+        // W12 must NOT resolve `%set` through `build_macro_map`
+        // (subsume.rs:19-27), which is order-blind and LAST-DEFINITION-WINS
+        // (`map.insert`). fapolicyd's real set registry is order-sensitive
+        // and FIRST-WINS-THEN-HARD-ERROR:
         //
         // * a duplicate name is rejected BEFORE the second set is created -
         //   `if (attr_sets_find(sets, name)) { msg(LOG_ERR, ...

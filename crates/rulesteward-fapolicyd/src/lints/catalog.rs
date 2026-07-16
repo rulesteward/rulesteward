@@ -48,7 +48,15 @@ pub enum Condition {
     /// [`evaluated`] emit a SARIF `kind:"pass"` for a check whose gate returned
     /// early without looking (a false coverage attestation, issue #137). When a
     /// real 1.6-capable target variant lands, this arm in `condition_holds` is
-    /// the ONE honest place to flip.
+    /// one of TWO places that must flip together, NOT the one honest place -
+    /// the other is `deprecates_untrusted_dir` in `deprecation.rs` (the actual
+    /// fapd-W12 firing gate). Flipping only this arm attests the check as
+    /// evaluated while it still never fires (breaks
+    /// `w12_never_earns_a_pass_attestation_because_it_is_dormant` below);
+    /// flipping only `deprecates_untrusted_dir` makes the lint fire while this
+    /// arm still attests it as never-evaluated (breaks
+    /// `w12_is_dormant_for_every_current_target` in `deprecation.rs`). Both
+    /// frozen tests are the thing to revisit alongside the code.
     RequiresFapolicyd16Plus,
     /// Runs on every target EXCEPT `--target rhel8`, where it is disabled.
     SuppressedUnderRhel8,
