@@ -493,6 +493,27 @@ mod tests {
         );
     }
 
+    // --- mutation-hardening: distinguish the right-trim `||` from `&&` -----
+    // (mutation round 1 survivor, config.rs:135:62). `\r`/`\n` satisfy BOTH
+    // `is_ascii_whitespace()` AND `is_ascii_control()`, so g4_14 above can't
+    // tell the two operators apart. A plain trailing SPACE satisfies ONLY
+    // `is_ascii_whitespace()` (a space is not a control byte), so it is the
+    // assertion that actually distinguishes the disjunction (G4 Q2: "Right-
+    // trim loop removes trailing isspace OR iscntrl bytes").
+
+    #[test]
+    fn g4_2_selinuxtype_trailing_plain_spaces_are_trimmed() {
+        let cfg = parse_selinux_config("SELINUXTYPE=targeted   \n");
+        assert_eq!(
+            selinuxtype_value(&cfg),
+            Some("targeted"),
+            "plain trailing spaces (whitespace but NOT control bytes) must \
+             be trimmed too - an `&&`-only trim (whitespace AND control) \
+             would leave them in place since a space is never a control \
+             byte, unlike \\r/\\n which satisfy both halves of the OR"
+        );
+    }
+
     // --- malformed / junk lines are silently skipped, never fatal ----------
 
     #[test]
