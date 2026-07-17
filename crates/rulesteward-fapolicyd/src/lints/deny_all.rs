@@ -115,8 +115,8 @@ pub fn w13(files: &[(PathBuf, Vec<Entry>)], target: Option<TargetVersion>) -> Ve
 ///
 /// Sibling predicate: `rulesteward-cli`'s
 /// `commands/doctor/checks.rs::is_deny_all_final_rule` implements the SAME
-/// G1.4 verdict over the raw (already-tokenized) `compiled.rules` text
-/// instead of a parsed `Rule`. Keep both in sync.
+/// G1.4 verdict over the raw `compiled.rules` text (which it tokenizes on
+/// runs of spaces itself) instead of a parsed `Rule`. Keep both in sync.
 fn is_deny_all_family(rule: &Rule) -> bool {
     matches!(
         rule.decision,
