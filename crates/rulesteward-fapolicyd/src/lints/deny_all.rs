@@ -128,6 +128,51 @@ mod tests {
         assert!(w13(&files, Some(TargetVersion::Rhel9)).is_empty());
     }
 
+    #[test]
+    fn deny_syslog_perm_any_all_all_last_is_clean() {
+        // Adversarial round 1 (Finding 1): `deny_syslog` is the THIRD member
+        // of the man-page DECISION deny family (G1.3, identical on 1.3.2 and
+        // 1.4.5; "any rule with a deny in the keyword will deny access"). A
+        // wrong impl accepting only {deny, deny_audit} passes every other
+        // test yet wrongly fires on this compliant final rule.
+        let files = vec![(
+            PathBuf::from("rules.d/95-final.rules"),
+            vec![modern_rule(
+                1,
+                Decision::DenySyslog,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            )],
+        )];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert!(
+            diags.is_empty(),
+            "deny_syslog perm=any all : all is a compliant deny-all family match: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn deny_log_perm_any_all_all_last_is_clean() {
+        // Adversarial round 1 (Finding 1): `deny_log` is the FOURTH family
+        // member (G1.3/G1.4) - same kill as deny_syslog above.
+        let files = vec![(
+            PathBuf::from("rules.d/95-final.rules"),
+            vec![modern_rule(
+                1,
+                Decision::DenyLog,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![Attr::All],
+            )],
+        )];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert!(
+            diags.is_empty(),
+            "deny_log perm=any all : all is a compliant deny-all family match: {diags:?}"
+        );
+    }
+
     // ---------------------------------------------------------------------
     // perm=execute is NOT perm=any - the wrong-impl killer named in the plan
     // (the shipped 90-deny-execute.rules rule).
@@ -317,6 +362,101 @@ mod tests {
             ),
         ];
         assert!(w13(&files, Some(TargetVersion::Rhel9)).is_empty());
+    }
+
+    #[test]
+    fn multi_file_rule_free_last_file_does_not_hide_an_earlier_clean_deny_all() {
+        // Adversarial round 1 (Finding 2): the LAST-loading file contains NO
+        // Entry::Rule at all - only Comment/Blank entries, realizable as a
+        // trailing all-comment 99-*.rules - and the merged stream's TRUE last
+        // rule (the EARLIER file's final rule) is a clean deny-all. A wrong
+        // impl inspecting only `files.last()` (that file's own last rule, or
+        // its zero-rules file-level branch) wrongly fires here; the correct
+        // merged-stream impl is clean.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/90-deny.rules"),
+                vec![modern_rule(
+                    1,
+                    Decision::Deny,
+                    Some(Perm::Any),
+                    vec![Attr::All],
+                    vec![Attr::All],
+                )],
+            ),
+            (
+                PathBuf::from("rules.d/99-comments-only.rules"),
+                vec![
+                    Entry::Comment {
+                        text: "site-local notes, no rules".to_string(),
+                        line: 1,
+                    },
+                    Entry::Blank { line: 2 },
+                ],
+            ),
+        ];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert!(
+            diags.is_empty(),
+            "a rule-free last-loading file must not hide the earlier file's \
+             clean deny-all (the merged stream's true last rule): {diags:?}"
+        );
+    }
+
+    #[test]
+    fn multi_file_rule_free_last_file_anchors_at_the_earlier_files_last_rule() {
+        // Mirror of the test above (adversarial round 1, Finding 2): the
+        // last-loading file is rule-free, and the merged stream's true last
+        // rule - the EARLIER file's final rule - is NOT a deny-all. Exactly
+        // one fapd-W13 must fire, anchored at that EARLIER file's last rule
+        // (file + line), never a file-level finding at the empty last file
+        // and never at the earlier file's FIRST rule.
+        let files = vec![
+            (
+                PathBuf::from("rules.d/10-a.rules"),
+                vec![
+                    modern_rule(
+                        1,
+                        Decision::Deny,
+                        Some(Perm::Any),
+                        vec![Attr::All],
+                        vec![Attr::All],
+                    ),
+                    modern_rule(
+                        3,
+                        Decision::Allow,
+                        Some(Perm::Open),
+                        vec![Attr::All],
+                        vec![Attr::All],
+                    ),
+                ],
+            ),
+            (
+                PathBuf::from("rules.d/99-comments-only.rules"),
+                vec![
+                    Entry::Comment {
+                        text: "site-local notes, no rules".to_string(),
+                        line: 1,
+                    },
+                    Entry::Blank { line: 2 },
+                ],
+            ),
+        ];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.code, "fapd-W13");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(
+            d.file.ends_with("10-a.rules"),
+            "must anchor at the EARLIER file holding the merged stream's true \
+             last rule, not the rule-free last-loading file: {:?}",
+            d.file
+        );
+        assert_eq!(
+            d.line, 3,
+            "anchored at the earlier file's LAST rule (line 3), not its first"
+        );
     }
 
     #[test]

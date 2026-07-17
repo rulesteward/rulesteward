@@ -1439,6 +1439,23 @@ mod tests {
     }
 
     #[test]
+    fn is_deny_all_final_rule_accepts_the_deny_syslog_family_member() {
+        // Adversarial round 1 (Finding 1): `deny_syslog` is the THIRD member
+        // of the man-page DECISION deny family (G1.3, identical on 1.3.2 and
+        // 1.4.5; "any rule with a deny in the keyword will deny access"). A
+        // wrong impl accepting only {deny, deny_audit} passes every other
+        // predicate test yet wrongly rejects this compliant final rule.
+        assert!(is_deny_all_final_rule("deny_syslog perm=any all : all"));
+    }
+
+    #[test]
+    fn is_deny_all_final_rule_accepts_the_deny_log_family_member() {
+        // Adversarial round 1 (Finding 1): `deny_log` is the FOURTH family
+        // member (G1.3/G1.4) - same kill as deny_syslog above.
+        assert!(is_deny_all_final_rule("deny_log perm=any all : all"));
+    }
+
+    #[test]
     fn is_deny_all_final_rule_accepts_a_multi_space_variant() {
         // The daemon tolerates runs of SPACES as one separator (G1 round 3);
         // fagenrules copies rule bytes verbatim, so this variant can reach

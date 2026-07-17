@@ -140,6 +140,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inline_hash_is_part_of_the_value_not_a_comment() {
+        // Adversarial round 1 (Finding 3): pins the module doc's "a trailing
+        // `#` is not stripped". Mirrors
+        // `commands/conf.rs::conf_value_does_not_strip_inline_comment`:
+        // fapolicyd's own `nv_split` (daemon-config.c) honors ONLY whole-line
+        // `#` comments, so the raw resolved value here is `"1 # note"`, which
+        // is NOT exactly `"1"` -> clean. An impl that strips inline comments
+        // (reading the value as `"1"`) would wrongly fire.
+        let diags = lint_conf("permissive = 1 # note\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "raw value \"1 # note\" is not \"1\"; the inline `#` must not be \
+             stripped: {diags:?}"
+        );
+
+        // And the inline-`#` line must not shadow a LATER bare occurrence:
+        // last-wins resolves line 2's `permissive = 1` to exactly "1" ->
+        // fires, anchored at that later WINNING line.
+        let diags = lint_conf("permissive = 1 # note\npermissive = 1\n", &p(), None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(
+            diags[0].line, 2,
+            "must anchor at the later uncommented winning line, not the \
+             inline-comment line"
+        );
+    }
+
     // ---------------------------------------------------------------------
     // ControlRefs: DenyAll family, ONLY when target resolves.
     // ---------------------------------------------------------------------
