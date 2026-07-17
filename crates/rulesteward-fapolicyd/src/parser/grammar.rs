@@ -558,11 +558,23 @@ mod tests {
                 span: 0..0,
             },
         ];
-        assert!(
-            positional_split(&attrs_flat).is_err(),
+        let err = positional_split(&attrs_flat).expect_err(
             "`all uid=0` must still fail: both tokens route to subject (all: \
              s_count==0; uid: subject-only), leaving zero object attrs - \
-             matching upstream's 'Object is missing' rejection"
+             matching upstream's 'Object is missing' rejection",
+        );
+        // Adversarial review Concern 5: pin the ROUTING REASON, not just
+        // is_err(), so a wrong impl that rejects this input for the WRONG
+        // reason (e.g. reports a missing-subject error, or a generic
+        // parse-failure unrelated to the object side) is still caught. Every
+        // existing error message in this module already names "subject" or
+        // "object" explicitly (see the sibling messages above), so this is a
+        // structural pin, not a hardcoded exact-string match.
+        assert!(
+            err.to_lowercase().contains("object"),
+            "the rejection reason must name the OBJECT side as missing (both \
+             `all` and `uid` classify subject, leaving object empty), not \
+             some other cause; got error: {err:?}"
         );
     }
 

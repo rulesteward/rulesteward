@@ -200,9 +200,15 @@ mod generators {
     ///    could legally be classified onto either side, which would cause a
     ///    round-trip mismatch.
     /// 2. The Display impl renders subject first, then object, with no
-    ///    colon. The classifier reads subject-only tokens until it hits the
-    ///    first object-only token, then switches. Strict-only keys make this
-    ///    unambiguous.
+    ///    colon. Post-#546, the classifier (`legacy_classify` +
+    ///    `positional_split`) classifies each token INDEPENDENTLY by name,
+    ///    mirroring upstream `nv_split` (rules.c) - there is no positional
+    ///    "switch point" at all. This generator still emits subject-attrs
+    ///    before object-attrs purely so the rendered text reads naturally
+    ///    for debugging a shrunk failure, not because the classifier
+    ///    requires that order. Strict-only keys (drawn only from
+    ///    `SUBJECT_ONLY` / `OBJECT_ONLY`, never `BOTH_SIDES`) keep the
+    ///    round-trip unambiguous regardless of ordering.
     /// 3. `perm` is ALWAYS `None` for legacy rules. fapolicyd rules.c:957-965
     ///    gates perm on `RULE_FMT_COLON`; the no-colon format rejects `perm=`.
     ///    Using `arb_perm_opt()` here would generate round-trip inputs that the

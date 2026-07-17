@@ -656,6 +656,53 @@ mod tests {
         );
     }
 
+    // Adversarial review strengthening (2026-07-17), Finding 3 [BLOCKER]: the
+    // original two RED fixtures ("2" and "01") let a wrong impl pass via
+    // `matches!(v, "1" | "2" | "01")` (an exact-set overfit) instead of the
+    // real daemon-matching predicate. These two use DIFFERENT literal values
+    // - both cited verbatim in `is_effectively_permissive`'s own doc comment
+    // (`rulesteward-fapolicyd/src/lints/conf.rs` ~lines 100-101: "the daemon
+    // runs permissive for `\"1\"`, `\"2\"`, `\"10\"`, `\"01\"` ... `\"007\"`,
+    // and so on") - to force a real digit-based predicate, not a hardcoded
+    // literal set.
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_ten_returns_permissive() {
+        // strtoul("10", ...) = 10, clamped to 1 by unsigned_int_parser's
+        // range check -> the real daemon runs permissive. RED: the probe's
+        // exact `== "1"` compare treats "10" as not-"1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 10\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=10 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567, adversarial-review Finding 3)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_multi_digit_leading_zeros_007_returns_permissive() {
+        // strtoul("007", ...) = 7, clamped to 1 -> the real daemon runs
+        // permissive. RED: the probe's exact `== "1"` compare treats "007"
+        // as not-"1". Distinct in SHAPE from "01" (already tested above):
+        // multiple leading zeros AND a multi-digit nonzero tail, defeating a
+        // wrong impl that special-cases only single-leading-zero or
+        // single-nonzero-digit values.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 007\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=007 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567, adversarial-review Finding 3)"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // read_compiled_final_rule_from (#519, G1/G2 grounding).
     // -------------------------------------------------------------------------

@@ -442,6 +442,165 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Adversarial review strengthening (2026-07-17), Finding 1 [BLOCKER]:
+    // the original 5 fixtures above (mode/uid/path/exe/pattern) are all a
+    // wrong impl could hardcode by NAME and still pass every assertion.
+    // These two use DIFFERENT attribute names, both confirmed
+    // version-invariant in side via a fresh live differential this round
+    // (fapolicyd8 1.3.2 AND fapolicyd9 1.4.5, 2026-07-17): `gid=100` on the
+    // object side -> both versions "Field type (gid) is unknown in line 2"
+    // + "Object is missing"; `sha256hash=<hex>` on the subject side -> both
+    // versions "Field type (sha256hash) is unknown in line 2" + "Subject is
+    // missing".
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn e01_fires_on_gid_placed_on_object_side() {
+        // `gid` is SUBJECT_ONLY (attrs.rs:43). Live-differential grounded
+        // 2026-07-17: `allow perm=any all : gid=100` -> fapolicyd8 (1.3.2)
+        // AND fapolicyd9 (1.4.5) both reject with "Field type (gid) is
+        // unknown in line 2" + "Object is missing in line 2" - confirming
+        // gid's side is version-invariant (unlike `device`, see the
+        // exclusion tests below).
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "gid".into(),
+                value: AttrValue::Int(100),
+                span: 0..0,
+            }],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "gid= (subject-only) on the object side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_fires_on_sha256hash_placed_on_subject_side() {
+        // `sha256hash` is OBJECT_ONLY (attrs.rs:55). Live-differential
+        // grounded 2026-07-17: `allow perm=any sha256hash=<64 hex> : all`
+        // -> fapolicyd8 (1.3.2) AND fapolicyd9 (1.4.5) both reject with
+        // "Field type (sha256hash) is unknown in line 2" + "Subject is
+        // missing in line 2" - confirming sha256hash's side is
+        // version-invariant, unlike `filehash`'s EXISTENCE (rhel8-only,
+        // see the exclusion tests below).
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "sha256hash".into(),
+                value: AttrValue::Str(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                ),
+                span: 0..0,
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "sha256hash= (object-only) on the subject side must fire fapd-E01; \
+             got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    // ------------------------------------------------------------------
+    // Adversarial review strengthening (2026-07-17), Finding 2 [BLOCKER]:
+    // `device` and `filehash` are version-DIVERGENT (in side for `device`,
+    // in existence for `filehash` - see `version_target.rs::
+    // check_subject_device` / `check_filehash`), so they must be EXCLUDED
+    // from fapd-E01's general version-invariant side check entirely,
+    // deferring wholly to fapd-E06. These are PASSING controls today (E01
+    // has no side check yet) that must KEEP PASSING after the #545 fix -
+    // they pin the exclusion boundary, not a RED regression.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn e01_negative_control_device_on_subject_side_is_e06_exclusive() {
+        // `device` is classified OBJECT_ONLY in attrs.rs's flavor-agnostic
+        // baseline table, but `version_target.rs::check_subject_device`
+        // documents (and the audit lane report's live confirmation shows:
+        // `allow perm=any device=/dev/sda : all` -> fapolicyd8 1.3.2
+        // "Loaded 1 rules" clean) that `device=` is valid on EITHER side on
+        // rhel8 and object-only only from rhel9/1.4.x onward. The frozen
+        // snapshots `version-target__device-subject-side__{none,rhel8}.snap`
+        // both pin `diagnostics=0` for this exact fixture - a general E01
+        // side check that did not exclude `device` would break both.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "device".into(),
+                value: AttrValue::Str("/dev/sda".into()),
+                span: 0..0,
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e01(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "device= on the subject side must stay fapd-E06-exclusive (it is \
+             version-divergent in side, valid on rhel8), never fapd-E01; \
+             got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e01_negative_control_filehash_on_subject_side_is_e06_exclusive() {
+        // `filehash` is classified OBJECT_ONLY in attrs.rs's baseline
+        // table. `version_target.rs::check_filehash` documents that
+        // `filehash=` does not exist at all on fapolicyd 1.3.2 (rhel8) -
+        // confirmed live 2026-07-17: `filehash=<hex>` on EITHER side
+        // rejects "Field type (filehash) is unknown" on fapolicyd8. Per the
+        // review's directed exclusion set (mirroring `device`'s ownership
+        // boundary), E01 defers filehash's wrong-side placement entirely to
+        // `version_target.rs` rather than double-reporting alongside
+        // check_filehash.
+        //
+        // FLAGGED GAP (out of #545/#546/#567 scope, not fixed by this
+        // test): live differential also showed fapolicyd9 (1.4.5) rejects
+        // subject-side filehash too ("Field type (filehash) is unknown" +
+        // "Subject is missing"), meaning filehash's SIDE is actually
+        // version-INVARIANT once it exists at all (unlike device's SIDE,
+        // which truly flips across versions) - only its EXISTENCE is
+        // version-divergent (rhel8-only). Under this blanket exclusion, a
+        // subject-side filehash on rhel9/rhel10/None is not flagged by ANY
+        // check today (check_filehash only fires under --target rhel8).
+        // Recorded here rather than silently fixed, since closing that gap
+        // is a version_target.rs / fapd-E06 change, not part of #545/#546/#567.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "filehash".into(),
+                value: AttrValue::Str(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                ),
+                span: 0..0,
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e01(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "filehash= on the subject side must stay fapd-E06-exclusive \
+             (existence-check ownership), never fapd-E01; got {diags:?}"
+        );
+    }
+
     #[test]
     fn w02_fires_on_canonical_allow_execute_all_all() {
         let entries = vec![modern_rule(
