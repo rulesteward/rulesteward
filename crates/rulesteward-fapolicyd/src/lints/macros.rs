@@ -391,9 +391,40 @@ fn e05_with_target(
         Some(version) => overflow_set_definitions(entries)
             .into_iter()
             .filter(|(name, ..)| referenced_by_non_str_attr(entries, name, version))
-            .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+            .map(|(name, line, span, bad)| {
+                e05_diagnostic_target_aware(name, bad, span, file, line, version)
+            })
             .collect(),
     }
+}
+
+/// Build the fapd-E05 diagnostic for the `--target rhel9`/`rhel10` arm of
+/// [`e05_with_target`] (issue #487). At those targets the 1.4.5 daemon types
+/// the overflowing set STRING (never i64), so the message must not repeat
+/// [`e05_diagnostic`]'s 1.3.2-model framing ("integer-typed" / "stores set
+/// integers as i64") - that phrasing is simply wrong at rhel9+. The
+/// portable-default / `--target rhel8` arm keeps calling [`e05_diagnostic`]
+/// unchanged (1.3.2 really does type + store the set that way there).
+fn e05_diagnostic_target_aware(
+    name: &str,
+    bad: &str,
+    span: Span,
+    file: &Path,
+    line: usize,
+    version: TargetVersion,
+) -> Diagnostic {
+    anchored(
+        Severity::Error,
+        "fapd-E05",
+        span,
+        format!(
+            "set `%{name}` contains value `{bad}` that overflows fapolicyd's numeric range \
+             and is treated as a string on --target {version} (fapolicyd {})",
+            version.fapolicyd_version()
+        ),
+        file,
+        line,
+    )
 }
 
 /// Whether `name` (a `%macro`) is referenced by at least one attribute in

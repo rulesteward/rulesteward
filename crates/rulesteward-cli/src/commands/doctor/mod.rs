@@ -12,20 +12,18 @@
 //! Dependency injection via a trait object (`&dyn SystemProbe`) keeps `run_checks`
 //! decoupled from the OS: swap in `FakeProbe` in tests, `LiveProbe` in production.
 //!
-//! `--target` -> STIG control attachment (#519) is NOT YET WIRED here: `run()`
-//! always passes `stig: None` to `run_checks`, so `DoctorArgs.target` is
-//! currently accepted (parsed) but has no effect. Wiring
-//! `target_probe::resolve_doctor_target` + `FapolicydStigRefs::for_target`
-//! into this `run()` is the #519 implementation's job (deliberately deferred:
-//! `FapolicydStigRefs::for_target` transitively calls the not-yet-implemented
-//! `lints::stig::control_refs`, and this `run()` is exercised by the
-//! distro-matrix CI containers, which really do match a RHEL-family
-//! `/etc/os-release`. Wiring it prematurely would turn `--target auto`'s
-//! default resolution into a panic on exactly those runners.
+//! `--target` -> STIG control attachment (#519): `run()` resolves the doctor
+//! target (`target_probe::resolve_doctor_target` - omitted defaults to
+//! `auto`, doctor always examines the host it runs on) and, when it resolves,
+//! builds `FapolicydStigRefs::for_target` and threads it through
+//! `run_checks`. An unresolvable `auto` (or a non-EL host) degrades to `stig:
+//! None` - byte-identical to pre-#519 output - with a one-line stderr note,
+//! never an error (read-only tool).
 
 use std::path::Path;
 
 use crate::cli::{DoctorArgs, HumanJsonFormat};
+use crate::commands::target_probe::{LiveTargetProbe, resolve_doctor_target};
 
 mod checks;
 mod model;
@@ -39,6 +37,7 @@ pub use model::{
 };
 pub use probe::{LiveProbe, parse_fanotify_denials};
 
+use model::FapolicydStigRefs;
 use render::{render_human, render_json};
 
 const DEFAULT_RULES_DIR: &str = "/etc/fapolicyd/rules.d/";
@@ -65,9 +64,18 @@ pub fn run(args: &DoctorArgs) -> anyhow::Result<i32> {
     let container_report =
         crate::commands::container_check::classify(&container_probe, rules_dir, false);
 
-    // `stig: None` - see the module doc: --target -> STIG control attachment
-    // wiring (#519) is deferred to the implementation pipeline.
-    let results = run_checks(&probe, rules_dir, Some(&container_report), None);
+    // #519: resolve the doctor's STIG benchmark target and build the
+    // per-family ControlRef projections (see the module doc).
+    let resolved_target = resolve_doctor_target(args.target, &LiveTargetProbe);
+    let stig = resolved_target.map(|t| FapolicydStigRefs::for_target(t.into()));
+    if stig.is_none() {
+        eprintln!(
+            "fapolicyd doctor: running checks without STIG control attachment \
+             (--target could not be resolved)"
+        );
+    }
+
+    let results = run_checks(&probe, rules_dir, Some(&container_report), stig.as_ref());
 
     let output = match args.format {
         HumanJsonFormat::Human => render_human("fapolicyd doctor report", &results),

@@ -28,27 +28,39 @@ use crate::commands::container_check::{
 
 /// Check 1: fapolicyd service status.
 ///
-/// Fail if not running; Warn if permissive; Ok if running + enforcing.
+/// Fail if not running; Warn if running-but-not-enabled OR permissive; Ok if
+/// running + enabled + enforcing.
 ///
-/// STIG (#519): the `--target`-gated `Enabled`-family control should attach
-/// regardless of status (see the module doc); NOT YET WIRED - `stig` is
-/// currently unused, so this check attaches no controls (pre-#519 behavior)
-/// and does not yet distinguish `running && !enabled` from `running &&
-/// enabled` (both currently resolve via the permissive/enforcing mode branch
-/// below). Wiring both is the #519 implementation's job.
-fn check_service(probe: &dyn SystemProbe, _stig: Option<&FapolicydStigRefs>) -> CheckResult {
+/// STIG (#519): the `Enabled`-family control attaches whenever `stig` is
+/// given, regardless of status (a compliant host must still report its
+/// coverage - see the `CheckResult.controls` doc in `model.rs`).
+fn check_service(probe: &dyn SystemProbe, stig: Option<&FapolicydStigRefs>) -> CheckResult {
+    let controls = stig.map(|s| s.enabled.clone()).unwrap_or_default();
     match probe.service_state() {
         Err(e) => CheckResult::unknown(
             "service-status",
             format!("could not query service state: {e}"),
-        ),
+        )
+        .with_controls(controls),
         Ok(state) => {
             if !state.running {
                 return CheckResult::fail(
                     "service-status",
                     "fapolicyd is not running",
                     "systemctl start fapolicyd",
-                );
+                )
+                .with_controls(controls);
+            }
+            // #519: running-but-not-enabled is independent of the
+            // permissive/enforcing mode branch below - a host can be
+            // correctly enforcing right now yet not persist across reboot.
+            if !state.enabled {
+                return CheckResult::warn(
+                    "service-status",
+                    "fapolicyd is running but not enabled (will not start on boot)",
+                    "systemctl enable fapolicyd",
+                )
+                .with_controls(controls);
             }
             let mode = state.mode.as_deref().unwrap_or("enforcing");
             if mode == "permissive" {
@@ -57,6 +69,7 @@ fn check_service(probe: &dyn SystemProbe, _stig: Option<&FapolicydStigRefs>) -> 
                     "fapolicyd is running in permissive mode (permissive=1)",
                     "Set permissive=0 in /etc/fapolicyd/fapolicyd.conf and restart the service",
                 )
+                .with_controls(controls)
             } else {
                 // Surface the ACTUAL mode string rather than hard-coding
                 // "enforcing": `read_fapolicyd_mode` defaults an absent
@@ -70,6 +83,7 @@ fn check_service(probe: &dyn SystemProbe, _stig: Option<&FapolicydStigRefs>) -> 
                         state.enabled
                     ),
                 )
+                .with_controls(controls)
             }
         }
     }
@@ -415,47 +429,50 @@ fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
 /// EXACTLY `any` (STRICT: `perm=execute`, the shipped `90-deny-execute.rules`
 /// default, is NOT a deny-all - opens are still wide open), subject exactly
 /// `all`, and object exactly `all` (after the `:` separator).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "#519: only this file's own unit tests call it so far; check_misconfig \
-                  wires it in when the deny-all sub-condition lands (implementer's job). \
-                  `expect` (not `allow`) trips the moment a real caller lands, forcing this \
-                  attribute's removal instead of lingering."
-    )
-)]
 fn is_deny_all_final_rule(line: &str) -> bool {
-    let _ = line;
-    todo!(
-        "tokenize on runs of ASCII whitespace; decision in {{deny, deny_audit, deny_syslog, \
-         deny_log}} (family, not just the literal); perm == \"any\" STRICT; subject == \"all\"; \
-         object (after ':') == \"all\" (G1.4 verdict)"
-    )
+    // Tokenize on RUNS OF SPACES ONLY (G1.4: the daemon's own separator
+    // tolerance; a tab is a daemon PARSE ERROR, never a valid rule, so a
+    // tab-separated line must not satisfy this predicate). `str::split(' ')`
+    // yields empty strings between consecutive spaces; filtering them out
+    // collapses any run of spaces to one separator.
+    let tokens: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
+    let [decision, perm, subject, colon, object] = tokens.as_slice() else {
+        return false;
+    };
+    matches!(
+        *decision,
+        "deny" | "deny_audit" | "deny_syslog" | "deny_log"
+    ) && *perm == "perm=any"
+        && *subject == "all"
+        && *colon == ":"
+        && *object == "all"
 }
 
 /// Check 13: misconfiguration warnings.
 ///
 /// Each condition that is true -> Warn with specific detail. All false -> Ok.
 ///
-/// STIG (#519): `stig`'s `DenyAll` family control should attach whenever a
-/// `--target` resolves, regardless of status (see the module doc), and a
-/// failing [`is_deny_all_final_rule`] predicate over
-/// `conf.compiled_final_rule` should add a fourth Warn sub-condition (G1.4);
-/// `None` (the file was unreadable - G2's common EACCES case) must add NO new
-/// issue. NOT YET WIRED - `stig` and `conf.compiled_final_rule` are currently
-/// unused; this check attaches no controls and evaluates only the original
-/// three conditions (pre-#519 behavior).
+/// STIG (#519): `stig`'s `DenyAll` family control attaches whenever `stig` is
+/// given, regardless of status. `conf.compiled_final_rule` (the last
+/// non-empty non-comment line of `/etc/fapolicyd/compiled.rules`) adds a
+/// fourth sub-condition via [`is_deny_all_final_rule`] (G1.4): a failing
+/// predicate is a Warn issue; a passing predicate that is not byte-equal to
+/// the literal DISA string is an informational note on the clean detail (a
+/// literal DISA scanner may still flag a functional-but-non-literal variant);
+/// `None` (the common EACCES case - G2) adds NO new issue, never a false
+/// "rule missing".
 fn check_misconfig(
     probe: &dyn SystemProbe,
     rules_dir: &Path,
-    _stig: Option<&FapolicydStigRefs>,
+    stig: Option<&FapolicydStigRefs>,
 ) -> CheckResult {
+    let controls = stig.map(|s| s.deny_all.clone()).unwrap_or_default();
     match probe.fapolicyd_conf(rules_dir) {
         Err(e) => CheckResult::unknown(
             "misconfiguration",
             format!("could not read fapolicyd configuration: {e}"),
-        ),
+        )
+        .with_controls(controls),
         Ok(conf) => {
             let mut issues: Vec<String> = Vec::new();
             if conf.permissive_set {
@@ -472,14 +489,38 @@ fn check_misconfig(
                     "both legacy fapolicyd.rules AND rules.d/ are present (fapd-F02)".to_string(),
                 );
             }
+            let mut clean_note: Option<String> = None;
+            if let Some(final_rule) = &conf.compiled_final_rule {
+                if is_deny_all_final_rule(final_rule) {
+                    const DISA_LITERAL: &str = "deny perm=any all : all";
+                    if final_rule != DISA_LITERAL {
+                        clean_note = Some(format!(
+                            "final rule is a functional deny-all variant (`{final_rule}`); a \
+                             literal DISA STIG scan of RHEL-08-040137/RHEL-09-433016/\
+                             RHEL-10-200602 may still flag it (expected literal: \
+                             `{DISA_LITERAL}`)"
+                        ));
+                    }
+                } else {
+                    issues.push(format!(
+                        "compiled.rules' final rule (`{final_rule}`) is not a deny-all, \
+                         permit-by-exception default (expected e.g. `deny perm=any all : all`)"
+                    ));
+                }
+            }
             if issues.is_empty() {
-                CheckResult::ok("misconfiguration", "no misconfiguration detected")
+                let detail = match &clean_note {
+                    Some(note) => format!("no misconfiguration detected; {note}"),
+                    None => "no misconfiguration detected".to_string(),
+                };
+                CheckResult::ok("misconfiguration", detail).with_controls(controls)
             } else {
                 CheckResult::warn(
                     "misconfiguration",
                     issues.join("; "),
                     "Review the listed configuration items and correct them",
                 )
+                .with_controls(controls)
             }
         }
     }
@@ -488,22 +529,28 @@ fn check_misconfig(
 /// Check 14: `fapolicyd` package installed (#519, STIG `Installed` family).
 ///
 /// Ok(true) -> Ok; Ok(false) -> Fail (`dnf install fapolicyd` remediation);
-/// Err -> Unknown. The `Installed`-family control should attach whenever a
-/// `--target` resolves, regardless of status.
-///
-/// NOT YET IMPLEMENTED: this placeholder always returns `Unknown` with no
-/// controls, regardless of `probe`/`stig` - a genuine implementation is the
-/// #519 pipeline's job. A plain `todo!()` here is deliberately AVOIDED: this
-/// fn is invoked unconditionally from [`run_checks`]'s `vec![]` literal, which
-/// every pre-existing `run_checks` caller (e.g.
-/// `run_checks_container_check_at_index_8_uses_report`) already exercises, so
-/// a panicking stub would break tests that have nothing to do with #519.
+/// Err -> Unknown. The `Installed`-family control attaches whenever `stig` is
+/// given, regardless of status.
 fn check_fapolicyd_package(
     probe: &dyn SystemProbe,
     stig: Option<&FapolicydStigRefs>,
 ) -> CheckResult {
-    let _ = (probe, stig);
-    CheckResult::unknown("fapolicyd-package", "not yet implemented")
+    let controls = stig.map(|s| s.installed.clone()).unwrap_or_default();
+    match probe.fapolicyd_installed() {
+        Err(e) => CheckResult::unknown(
+            "fapolicyd-package",
+            format!("could not query fapolicyd package: {e}"),
+        )
+        .with_controls(controls),
+        Ok(true) => CheckResult::ok("fapolicyd-package", "fapolicyd package is installed")
+            .with_controls(controls),
+        Ok(false) => CheckResult::fail(
+            "fapolicyd-package",
+            "fapolicyd package is not installed",
+            "dnf install fapolicyd",
+        )
+        .with_controls(controls),
+    }
 }
 
 // ---------------------------------------------------------------------------

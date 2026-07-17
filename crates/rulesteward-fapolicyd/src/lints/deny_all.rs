@@ -29,9 +29,10 @@
 
 use std::path::PathBuf;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::Entry;
+use crate::ast::{Attr, Decision, Entry, Perm, Rule};
+use crate::lints::stig::ControlFamily;
 use crate::version::TargetVersion;
 
 /// fapd-W13: the merged rules.d/ policy's last effective rule is not a
@@ -45,13 +46,81 @@ use crate::version::TargetVersion;
 /// `lints::catalog`).
 #[must_use]
 pub fn w13(files: &[(PathBuf, Vec<Entry>)], target: Option<TargetVersion>) -> Vec<Diagnostic> {
-    let _ = (files, target);
-    todo!(
-        "find the LAST Entry::Rule across the merged `files` stream (in the given order); \
-         if none exists, emit ONE file-level fapd-W13 anchored at the LAST file; else emit \
-         ONE fapd-W13 anchored at that rule's (file, line, span) iff it fails the G1.4 \
-         deny-all predicate; attach lints::stig::control_refs(ControlFamily::DenyAll, target)"
-    )
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    let controls = crate::lints::stig::control_refs(ControlFamily::DenyAll, target);
+
+    // Scan the WHOLE merged stream, file by file (in the given fagenrules load
+    // order) and, within each file, entry by entry: each Entry::Rule found
+    // overwrites `last`, so after the scan `last` holds the merged stream's
+    // TRUE final rule - a rule-free trailing file cannot mask an earlier
+    // file's final rule (adversarial round 1, Finding 2).
+    let mut last: Option<(&PathBuf, &Rule)> = None;
+    for (path, entries) in files {
+        for entry in entries {
+            if let Entry::Rule(r) = entry {
+                last = Some((path, r));
+            }
+        }
+    }
+
+    match last {
+        None => {
+            // No rule anywhere in the merged stream: a file-level finding
+            // anchored at the LAST file (mirrors fapd-C01/F02's unanchored shape).
+            let Some((last_path, _)) = files.last() else {
+                return Vec::new();
+            };
+            vec![
+                super::file_level(
+                    Severity::Warning,
+                    "fapd-W13",
+                    "the merged rules.d/ policy contains no rules at all; a deny-all, \
+                     permit-by-exception default is required",
+                    last_path.clone(),
+                )
+                .with_controls(controls),
+            ]
+        }
+        Some((path, rule)) => {
+            if is_deny_all_family(rule) {
+                Vec::new()
+            } else {
+                vec![
+                    super::anchored(
+                        Severity::Warning,
+                        "fapd-W13",
+                        rule.span.clone(),
+                        "the merged rules.d/ policy's last effective rule is not a deny-all, \
+                         permit-by-exception default (e.g. `deny perm=any all : all`)",
+                        path,
+                        rule.line,
+                    )
+                    .with_controls(controls),
+                ]
+            }
+        }
+    }
+}
+
+/// The G1.4 deny-all predicate over a STRUCTURED (already-parsed) rule:
+/// decision in the deny family (`deny`/`deny_audit`/`deny_syslog`/`deny_log` -
+/// not just the bare literal), `perm` EXACTLY `any` (STRICT - `perm=execute`
+/// is the shipped `90-deny-execute.rules` default and is NOT a deny-all),
+/// subject exactly `all`, and object exactly `all`.
+fn is_deny_all_family(rule: &Rule) -> bool {
+    matches!(
+        rule.decision,
+        Decision::Deny | Decision::DenyAudit | Decision::DenySyslog | Decision::DenyLog
+    ) && rule.perm == Some(Perm::Any)
+        && is_all_only(&rule.subject)
+        && is_all_only(&rule.object)
+}
+
+/// Whether an attribute list is exactly the single `all` wildcard (`Attr::All`).
+fn is_all_only(attrs: &[Attr]) -> bool {
+    matches!(attrs, [Attr::All])
 }
 
 #[cfg(test)]

@@ -23,8 +23,9 @@
 
 use std::path::Path;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity};
 
+use crate::lints::stig::ControlFamily;
 use crate::version::TargetVersion;
 
 /// fapd-W14: `permissive=1` set in the `fapolicyd.conf` text at `path`.
@@ -37,13 +38,49 @@ use crate::version::TargetVersion;
 /// is clean.
 #[must_use]
 pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
-    let _ = (text, path, target);
-    todo!(
-        "last-wins scan for `permissive` (whole-line `#` comments only, whitespace-tolerant \
-         around `=`, mirroring commands/conf.rs::conf_value); == \"1\" -> one fapd-W14 anchored \
-         at the WINNING line; attach lints::stig::control_refs(ControlFamily::DenyAll, target) \
-         only when target is Some"
-    )
+    // Last-wins scan, mirroring `commands/conf.rs::conf_value` exactly (whole-line
+    // `#` comments only; whitespace-tolerant around `=`; a trailing `#` is part of
+    // the literal value, never stripped). Tracked separately here (rather than
+    // calling into that CLI helper) because this crate must not depend on
+    // `rulesteward-cli` - the dependency runs the other way.
+    let mut winner: Option<(usize, std::ops::Range<usize>, &str)> = None;
+    let mut offset = 0usize;
+    for (idx, line) in text.split('\n').enumerate() {
+        let start = offset;
+        let end = start + line.len();
+        offset = end + 1; // account for the consumed '\n' separator.
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == "permissive"
+        {
+            winner = Some((idx + 1, start..end, v.trim()));
+        }
+    }
+
+    let Some((line, span, value)) = winner else {
+        return Vec::new();
+    };
+    if value != "1" {
+        return Vec::new();
+    }
+
+    let controls = target
+        .map(|t| crate::lints::stig::control_refs(ControlFamily::DenyAll, t))
+        .unwrap_or_default();
+
+    vec![
+        super::anchored(
+            Severity::Warning,
+            "fapd-W14",
+            span,
+            "fapolicyd.conf sets `permissive = 1` (fail-open instead of enforcing)",
+            path,
+            line,
+        )
+        .with_controls(controls),
+    ]
 }
 
 #[cfg(test)]

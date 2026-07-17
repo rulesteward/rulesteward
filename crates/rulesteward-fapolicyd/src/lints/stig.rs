@@ -20,7 +20,7 @@
 //! (RHEL-09-431010 high, RHEL-08-010171 low) belong to selinux lane 2b, not
 //! fapolicyd.
 
-use rulesteward_core::ControlRef;
+use rulesteward_core::{ControlRef, Framework};
 
 use crate::version::TargetVersion;
 
@@ -71,8 +71,85 @@ pub struct StigControl {
 /// never hand-invent a V-number (session `.wolf/cerebrum.md` standing rule).
 #[must_use]
 pub fn stig_controls(target: TargetVersion) -> &'static [StigControl] {
-    let _ = target;
-    todo!("populate from g7-g8-xccdf-vnumbers.md section 2 (3 rows/target, all severity medium)")
+    const RHEL8: &[StigControl] = &[
+        StigControl {
+            family: ControlFamily::Installed,
+            stig_id: "RHEL-08-040135",
+            v_number: "V-230523",
+            severity: StigSeverity::Medium,
+            title: "The RHEL 8 fapolicy module must be installed.",
+        },
+        StigControl {
+            family: ControlFamily::Enabled,
+            stig_id: "RHEL-08-040136",
+            v_number: "V-244545",
+            severity: StigSeverity::Medium,
+            title: "The RHEL 8 fapolicy module must be enabled.",
+        },
+        StigControl {
+            family: ControlFamily::DenyAll,
+            stig_id: "RHEL-08-040137",
+            v_number: "V-244546",
+            severity: StigSeverity::Medium,
+            title: "The RHEL 8 fapolicy module must be configured to employ a deny-all, \
+                    permit-by-exception policy to allow the execution of authorized \
+                    software programs.",
+        },
+    ];
+    const RHEL9: &[StigControl] = &[
+        StigControl {
+            family: ControlFamily::Installed,
+            stig_id: "RHEL-09-433010",
+            v_number: "V-258089",
+            severity: StigSeverity::Medium,
+            title: "RHEL 9 fapolicy module must be installed.",
+        },
+        StigControl {
+            family: ControlFamily::Enabled,
+            stig_id: "RHEL-09-433015",
+            v_number: "V-258090",
+            severity: StigSeverity::Medium,
+            title: "RHEL 9 fapolicy module must be enabled.",
+        },
+        StigControl {
+            family: ControlFamily::DenyAll,
+            stig_id: "RHEL-09-433016",
+            v_number: "V-270180",
+            severity: StigSeverity::Medium,
+            title: "The RHEL 9 fapolicy module must be configured to employ a deny-all, \
+                    permit-by-exception policy to allow the execution of authorized \
+                    software programs.",
+        },
+    ];
+    const RHEL10: &[StigControl] = &[
+        StigControl {
+            family: ControlFamily::Installed,
+            stig_id: "RHEL-10-200600",
+            v_number: "V-280969",
+            severity: StigSeverity::Medium,
+            title: "RHEL 10 must have the \"fapolicy\" module installed.",
+        },
+        StigControl {
+            family: ControlFamily::Enabled,
+            stig_id: "RHEL-10-200601",
+            v_number: "V-280970",
+            severity: StigSeverity::Medium,
+            title: "RHEL 10 must enable the \"fapolicy\" module.",
+        },
+        StigControl {
+            family: ControlFamily::DenyAll,
+            stig_id: "RHEL-10-200602",
+            v_number: "V-280971",
+            severity: StigSeverity::Medium,
+            title: "RHEL 10 must be configured to employ a deny-all, permit-by-exception \
+                    policy to allow the execution of authorized software programs.",
+        },
+    ];
+    match target {
+        TargetVersion::Rhel8 => RHEL8,
+        TargetVersion::Rhel9 => RHEL9,
+        TargetVersion::Rhel10 => RHEL10,
+    }
 }
 
 /// The typed [`ControlRef`]s a check for `family` should attach when running
@@ -84,8 +161,11 @@ pub fn stig_controls(target: TargetVersion) -> &'static [StigControl] {
 /// row per family per target).
 #[must_use]
 pub fn control_refs(family: ControlFamily, target: TargetVersion) -> Vec<ControlRef> {
-    let _ = (family, target);
-    todo!("ControlRef::new(Framework::Stig, row.stig_id).with_alias(row.v_number)")
+    stig_controls(target)
+        .iter()
+        .filter(|c| c.family == family)
+        .map(|c| ControlRef::new(Framework::Stig, c.stig_id).with_alias(c.v_number))
+        .collect()
 }
 
 #[cfg(test)]
