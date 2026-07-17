@@ -6,19 +6,20 @@
 //! Phase-0 stub (session 7c): the entrypoint signature and the
 //! [`TargetVersion`] enum are frozen here so the fan-out pipeline fills only
 //! this file's body. The pinned per-RHEL-major required-rules tables are
-//! derived from the DISA XCCDF benchmarks (RHEL 8 V2R4 / RHEL 9 V2R7 /
-//! RHEL 10 V1R1) by `tools/auditd-stig-update`; matching is KEY-SENSITIVE
+//! derived from the DISA XCCDF benchmarks (RHEL 8 V2R8 / RHEL 9 V2R9 /
+//! RHEL 10 V1R2) by `tools/auditd-stig-update`; matching is KEY-SENSITIVE
 //! with a distinct present-but-key-differs message (locked decisions,
 //! 2026-07-10).
 //!
 //! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
 //! [`w06_with_baseline`] are the shipped shapes.
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
-//! per-RHEL-major required-rules tables (63/70/77 rules.d lines respectively
-//! as of the #523 loginuid-immutable deepening; originally 61/67/75),
-//! transcribed verbatim from `tools/auditd-stig-update derive`'s paste-ready
-//! output and kept drift-tethered to the DISA XCCDF by that tool's `check`
-//! gate (re-derive on a STIG bump; do not hand-edit). The matching algorithm
+//! per-RHEL-major required-rules tables (63/81/77 rules.d lines respectively
+//! as of the #549 RHEL9 V2R7->V2R9 pin bump, session 9e-wave2c pipeline P2;
+//! originally 61/67/75), transcribed verbatim from
+//! `tools/auditd-stig-update derive`'s paste-ready output and kept
+//! drift-tethered to the DISA XCCDF by that tool's `check` gate (re-derive on
+//! a STIG bump; do not hand-edit). The matching algorithm
 //! (`w06_with_baseline`'s body) is implemented per the grounded matcher spec
 //! on that function's doc comment (sourced from the P2 grounding doc Part
 //! C.5). [`w06_with_baseline`] is `pub` (not `pub(crate)`) specifically so the
@@ -688,60 +689,127 @@ const RHEL9_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-09-654210",
         line: "-a always,exit -F arch=b32 -S umount2 -F auid>=1000 -F auid!=-1 -F key=privileged-umount",
     },
+    // #549 (session 9e-wave2c pipeline P2, 2026-07-17): DISA RHEL 9 STIG V2R9
+    // (confirmed via U_RHEL_9_V2R9_STIG.zip) rewrote the 9 identity/login
+    // rules below from single-line watch form (`-w PATH -p wa -k KEY`) into
+    // dual-arch (b32/b64) syscall form, and added a brand-new required rule,
+    // V-279936 (RHEL-09-654097), replacing the two old cron watch lines with
+    // 4 new dual-arch execve/subj_type=crond_t syscall lines. Every line below
+    // is pasted VERBATIM from `auditd-stig-update derive --product rhel9`
+    // against the real V2R9 XCCDF (transcribed from check-content, not
+    // fixtext); V-258225's b64 line carries a genuine double space before
+    // `-F perm=wa` in DISA's own check-content text (not a transcription
+    // error - see the pinned content test in
+    // crates/rulesteward-auditd/tests/test_lints_stig_required.rs).
     BaselineRule {
         v_number: "V-258217",
         stig_id: "RHEL-09-654215",
-        line: "-w /etc/sudoers -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258217",
+        stig_id: "RHEL-09-654215",
+        line: "-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258218",
         stig_id: "RHEL-09-654220",
-        line: "-w /etc/sudoers.d/ -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/sudoers.d -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258218",
+        stig_id: "RHEL-09-654220",
+        line: "-a always,exit -F arch=b64 -F path=/etc/sudoers.d -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258219",
         stig_id: "RHEL-09-654225",
-        line: "-w /etc/group -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/group -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258219",
+        stig_id: "RHEL-09-654225",
+        line: "-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258220",
         stig_id: "RHEL-09-654230",
-        line: "-w /etc/gshadow -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/gshadow -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258220",
+        stig_id: "RHEL-09-654230",
+        line: "-a always,exit -F arch=b64 -F path=/etc/gshadow -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258221",
         stig_id: "RHEL-09-654235",
-        line: "-w /etc/security/opasswd -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/security/opasswd -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258221",
+        stig_id: "RHEL-09-654235",
+        line: "-a always,exit -F arch=b64 -F path=/etc/security/opasswd -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258222",
         stig_id: "RHEL-09-654240",
-        line: "-w /etc/passwd -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258222",
+        stig_id: "RHEL-09-654240",
+        line: "-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258223",
         stig_id: "RHEL-09-654245",
-        line: "-w /etc/shadow -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258223",
+        stig_id: "RHEL-09-654245",
+        line: "-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258224",
         stig_id: "RHEL-09-654250",
-        line: "-w /var/log/faillock -p wa -k logins",
+        line: "-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+    },
+    BaselineRule {
+        v_number: "V-258224",
+        stig_id: "RHEL-09-654250",
+        line: "-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
     },
     BaselineRule {
         v_number: "V-258225",
         stig_id: "RHEL-09-654255",
-        line: "-w /var/log/lastlog -p wa -k logins",
+        line: "-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+    },
+    BaselineRule {
+        v_number: "V-258225",
+        stig_id: "RHEL-09-654255",
+        line: "-a always,exit -F arch=b64 -F path=/var/log/lastlog  -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
     },
     BaselineRule {
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
-        line: "-w /etc/cron.d -p wa -k cronjobs",
+        line: "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
     },
     BaselineRule {
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
-        line: "-w /var/spool/cron -p wa -k cronjobs",
+        line: "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+    },
+    BaselineRule {
+        v_number: "V-279936",
+        stig_id: "RHEL-09-654097",
+        line: "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+    },
+    BaselineRule {
+        v_number: "V-279936",
+        stig_id: "RHEL-09-654097",
+        line: "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
     },
     // Deepening (#523): SV-258227r1014992_rule, a bare Control-rule
     // requirement (panic on critical audit failure). Fetched live

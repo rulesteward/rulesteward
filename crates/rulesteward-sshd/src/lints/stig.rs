@@ -40,15 +40,17 @@ use crate::lints::{SshdLintContext, TargetVersion, anchored};
 // The RHEL 9 set is the "spine"; RHEL 8 and RHEL 10 sets are derived from it.
 // ---------------------------------------------------------------------------
 
-/// RHEL 9 V2R7 required directives (20 total, V-257981..V-258011 SSH set).
+/// RHEL 9 V2R9 required directives (19 total, V-257981..V-258011 SSH set
+/// minus Compression, dropped in V2R9).
 ///
-/// Grounded in DISA XCCDF `U_RHEL_9_V2R7_STIG.zip`, benchmark 05 Jan 2026.
-/// STIG-IDs: RHEL-09-255025..255175.
+/// Grounded in DISA XCCDF `U_RHEL_9_V2R9_STIG.zip`, confirmed 2026-07-17
+/// (#549, session 9e-wave2c pipeline P2). Compression (V-258002 /
+/// RHEL-09-255130) was REMOVED from the STIG in V2R9 (was present in V2R7).
+/// STIG-IDs: RHEL-09-255025..255175 (minus 255130).
 const RHEL9_REQUIRED: &[&str] = &[
     "banner",                  // RHEL-09-255025 V-257981
     "clientalivecountmax",     // RHEL-09-255095 V-257995
     "clientaliveinterval",     // RHEL-09-255100 V-257996
-    "compression",             // RHEL-09-255130 V-258002
     "gssapiauthentication",    // RHEL-09-255135 V-258003
     "hostbasedauthentication", // RHEL-09-255080 V-257992
     "ignorerhosts",            // RHEL-09-255145 V-258005
@@ -69,9 +71,12 @@ const RHEL9_REQUIRED: &[&str] = &[
 
 /// RHEL 8 V2R4 required directives (14 total).
 ///
-/// Absent vs RHEL9: LogLevel, PubkeyAuthentication, UsePAM, IgnoreRhosts,
-/// HostbasedAuthentication, Compression. (RHEL 8 has no sshd_config controls
-/// for those six; grounded in DISA XCCDF `U_RHEL_8_V2R4_STIG.zip`, 02 Jul 2025.)
+/// Absent vs RHEL9 (V2R9): LogLevel, PubkeyAuthentication, UsePAM,
+/// IgnoreRhosts, HostbasedAuthentication. (RHEL 8 has no sshd_config controls
+/// for those five; grounded in DISA XCCDF `U_RHEL_8_V2R4_STIG.zip`, 02 Jul 2025.
+/// #549: Compression, formerly the sixth absent-vs-RHEL9 directive, was
+/// dropped from RHEL9 too in V2R9, so it is no longer part of this
+/// comparison at all.)
 ///
 /// STIG-IDs: V-230225 Banner, V-230244 ClientAliveCountMax, V-244525
 /// ClientAliveInterval, V-230288 StrictModes, V-230290 IgnoreUserKnownHosts,
@@ -96,10 +101,12 @@ const RHEL8_REQUIRED: &[&str] = &[
     "x11uselocalhost",        // V-230556
 ];
 
-/// RHEL 10 V1R1 required directives (19 total, the RHEL9 set minus Compression).
+/// RHEL 10 V1R1 required directives (19 total, the same set as RHEL9 V2R9).
 ///
 /// Compression was dropped from the RHEL 10 V1R1 STIG (not a controlled
-/// directive in `U_RHEL_10_V1R1_STIG.zip`, benchmark 26 Feb 2026).
+/// directive in `U_RHEL_10_V1R1_STIG.zip`, benchmark 26 Feb 2026) -- RHEL9
+/// V2R9 subsequently dropped it too (#549), so RHEL9 and RHEL10 now require
+/// the identical 19-directive set.
 ///
 /// STIG-IDs: V-281115 LogLevel, V-281216 UsePAM, V-281224 Banner,
 /// V-281254 GSSAPIAuthentication, V-281255 KerberosAuthentication,
@@ -207,12 +214,6 @@ pub(crate) fn baseline_check(
                 .map_or_else(String::new, |s| s.to_ascii_lowercase());
             (actual0 != tok0 || actual1 != tok1).then(|| format!("'{tok0} {tok1}'"))
         }
-        W02Rule::AnyOf(accepted) => {
-            let actual = args.first().map_or("", String::as_str);
-            let actual_lower = actual.to_ascii_lowercase();
-            (!accepted.contains(&actual_lower.as_str()))
-                .then(|| format!("one of: {}", accepted.join(", ")))
-        }
         W02Rule::NumericCeiling(ceiling) => {
             let actual = args.first().map_or("", String::as_str);
             match actual.parse::<u64>() {
@@ -250,8 +251,6 @@ enum W02Rule {
     /// Exact two-token match: first arg and second arg must both match exactly
     /// (case-insensitive). Used for `RekeyLimit 1G 1h`.
     TwoTokenExact(&'static str, &'static str),
-    /// Accept any of the listed lowercase values (for Compression: "delayed" or "no").
-    AnyOf(&'static [&'static str]),
     /// Numeric ceiling: value must parse as u64 and be <= the ceiling.
     NumericCeiling(u64),
     /// Numeric exact: must parse as u64 and equal the required value exactly.
@@ -262,14 +261,12 @@ enum W02Rule {
 /// directive is not a W02-controlled value check for the given target.
 ///
 /// Banner is a presence-only check (W01); it has no W02 rule.
-/// Compression is RHEL8/9 only (V1R1 dropped it).
+/// Compression is not a W02 value check on any target as of RHEL9 V2R9 (#549:
+/// DISA dropped the control entirely; it was never RHEL10-controlled either).
 /// LogLevel is RHEL9/10 only.
 /// Several yes/no directives are RHEL9/10 only.
 fn w02_rule(keyword: &str, target: Option<TargetVersion>) -> Option<W02Rule> {
     let is_rhel9_or_10 = matches!(target, Some(TargetVersion::Rhel9 | TargetVersion::Rhel10));
-    let is_rhel8_or_9 = matches!(target, Some(TargetVersion::Rhel8 | TargetVersion::Rhel9));
-    // target=None behaves as the conservative floor = RHEL8 set.
-    let target_is_none = target.is_none();
 
     match keyword {
         // ---- universal (all targets, floor included) ----
@@ -297,12 +294,8 @@ fn w02_rule(keyword: &str, target: Option<TargetVersion>) -> Option<W02Rule> {
         // RHEL9/10 "no" controls:
         "hostbasedauthentication" if is_rhel9_or_10 => Some(W02Rule::ExactLower("no")),
 
-        // ---- Compression: RHEL8/9 only; RHEL10 V1R1 dropped this control ----
-        // target=None uses the floor (RHEL8), so Compression is controlled there too.
-        "compression" if is_rhel8_or_9 || target_is_none => {
-            Some(W02Rule::AnyOf(&["delayed", "no"]))
-        }
-
+        // ---- Compression: #549, DISA RHEL 9 STIG V2R9 dropped this control
+        // (V-258002/RHEL-09-255130 removed); no target value-checks it.
         // ---- Banner: presence-only (W01); not a W02 value check ----
         // ---- Everything else: not a W02 concern for this target ----
         _ => None,
@@ -336,8 +329,6 @@ pub enum StigValueRule {
     ExactLower(&'static str),
     /// Exact two-token match (RekeyLimit `1g 1h`).
     TwoTokenExact(&'static str, &'static str),
-    /// Any of the listed lowercase values (Compression: `delayed` or `no`).
-    AnyOf(&'static [&'static str]),
     /// Numeric ceiling: value must be `> 0` and `<= N` (ClientAliveInterval `<= 600`).
     NumericCeiling(u64),
     /// Numeric exact: value must equal N exactly (ClientAliveCountMax `1`).
@@ -380,7 +371,6 @@ const RHEL9_VNUM: &[(&str, &str)] = &[
     ("banner", "V-257981"),
     ("clientalivecountmax", "V-257995"),
     ("clientaliveinterval", "V-257996"),
-    ("compression", "V-258002"),
     ("gssapiauthentication", "V-258003"),
     ("hostbasedauthentication", "V-257992"),
     ("ignorerhosts", "V-258005"),
@@ -467,7 +457,6 @@ const RHEL9_RULE_ID: &[(&str, &str)] = &[
     ("banner", "RHEL-09-255025"),
     ("clientalivecountmax", "RHEL-09-255095"),
     ("clientaliveinterval", "RHEL-09-255100"),
-    ("compression", "RHEL-09-255130"),
     ("gssapiauthentication", "RHEL-09-255135"),
     ("hostbasedauthentication", "RHEL-09-255080"),
     ("ignorerhosts", "RHEL-09-255145"),
@@ -529,8 +518,10 @@ fn lookup(table: &[(&'static str, &'static str)], key: &str) -> Option<&'static 
 /// Returns `None` when the keyword has no STIG Rule id for the target, so the
 /// emit sites attach a control only for a genuinely STIG-controlled directive and
 /// never fabricate one. (The W01 emit path iterates `required_set`, so every W01
-/// keyword resolves; W02's one out-of-required-set control - Compression on the
-/// RHEL 8 floor - has no Rule id and correctly gets no control.)
+/// keyword resolves. #549: every W02-checked keyword is also within
+/// `required_set` for the target it is checked under, so W02 resolves too --
+/// Compression, the sole prior out-of-required-set W02 control, is no longer
+/// checked at all as of RHEL9 V2R9.)
 fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Option<ControlRef> {
     let concrete = target.unwrap_or(TargetVersion::Rhel8);
     let rule_id = lookup(rule_id_map(concrete), keyword_lower)?;
@@ -559,7 +550,6 @@ fn value_rule_of(rule: Option<W02Rule>) -> StigValueRule {
         None => StigValueRule::PresenceOnly,
         Some(W02Rule::ExactLower(s)) => StigValueRule::ExactLower(s),
         Some(W02Rule::TwoTokenExact(a, b)) => StigValueRule::TwoTokenExact(a, b),
-        Some(W02Rule::AnyOf(v)) => StigValueRule::AnyOf(v),
         Some(W02Rule::NumericCeiling(n)) => StigValueRule::NumericCeiling(n),
         Some(W02Rule::NumericExact(n)) => StigValueRule::NumericExact(n),
     }
@@ -629,9 +619,8 @@ fn effective_global_directives(blocks: &[Block]) -> Vec<&crate::ast::Directive> 
 /// 14-directive RHEL 8 V2R4 intersection).
 ///
 /// # Per-target required sets (grounded in official DISA XCCDF, 2026-06-14;
-/// RHEL9 count REFRESHED 2026-07-17 for issue #549 -- see the "#549
-/// RE-GROUNDED" comments on `RHEL9_REQUIRED` below for the pending array
-/// update this doc anticipates)
+/// RHEL9 count REFRESHED 2026-07-17 for issue #549, session 9e-wave2c
+/// pipeline P2 -- `RHEL9_REQUIRED` below dropped Compression)
 ///
 /// - RHEL 8 V2R4 (`U_RHEL_8_V2R4_STIG.zip`, 02 Jul 2025): 14 directives.
 /// - RHEL 9 V2R9 (`U_RHEL_9_V2R9_STIG.zip`, confirmed 2026-07-17): 19

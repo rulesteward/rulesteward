@@ -123,11 +123,18 @@ mod tests {
         // loginuid-immutable control and stays at 77. Mirrors the same bump
         // already applied to `xccdf.rs`'s `rhelN_known_answer_counts` (this
         // test's own doc comment above says its lengths track those).
+        //
+        // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+        // V2R7 -> V2R9 rewrote 9 identity/login rules from single-line watch
+        // form into dual-arch syscall form (net +9) and added V-279936
+        // (cron_exec, 4 dual-arch lines replacing 2 old watch lines, net +2).
+        // RHEL9: 70 -> 81. RHEL8/RHEL10 are zero-content-drift bumps (V2R8/
+        // V1R2), unchanged at 63/77.
         let rhel8 = code_table(TargetVersion::Rhel8);
         let rhel9 = code_table(TargetVersion::Rhel9);
         let rhel10 = code_table(TargetVersion::Rhel10);
         assert_eq!(rhel8.len(), 63, "{rhel8:?}");
-        assert_eq!(rhel9.len(), 70, "{rhel9:?}");
+        assert_eq!(rhel9.len(), 81, "{rhel9:?}");
         assert_eq!(rhel10.len(), 77, "{rhel10:?}");
         assert!(
             rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),

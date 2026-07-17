@@ -79,6 +79,11 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
     // SECOND, additive bump (also #523, additive round 2): the
     // "--loginuid-immutable" deepening entry grows the shipped table from 69
     // to 70 rows.
+    //
+    // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // V2R7 -> V2R9 rewrote 9 identity/login rules into dual-arch syscall form
+    // (net +9) and added V-279936 cron_exec (net +2), growing the shipped
+    // table from 70 to 81 rows.
     let f = temp_xccdf("empty", EMPTY_SELECTION_XCCDF);
     let (code, stdout, err) = run(&[
         "check",
@@ -93,7 +98,7 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
         "an empty-selection file must drift against the populated shipped table; \
          stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("DRIFT (70 change(s))"), "stdout={stdout}");
+    assert!(stdout.contains("DRIFT (81 change(s))"), "stdout={stdout}");
 }
 
 // --- exit-code contract: 1 drift ---------------------------------------------
@@ -113,6 +118,11 @@ fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
     // SECOND, additive bump (also #523, additive round 2): the
     // "--loginuid-immutable" deepening entry grows both sides from 69 to 70
     // rows, staying in sync.
+    //
+    // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // V2R7 -> V2R9 rewrote 9 identity/login rules into dual-arch syscall form
+    // (net +9) and added V-279936 cron_exec (net +2), growing both the
+    // fixture and the shipped table from 70 to 81 rows, staying in sync.
     let f = temp_xccdf("rhel9-full", RHEL9_FIXTURE);
     let (code, stdout, err) = run(&[
         "check",
@@ -127,7 +137,7 @@ fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
         "the real rhel9 fixture must be in sync with the populated table; \
          stdout={stdout} stderr={err}"
     );
-    assert!(stdout.contains("OK (0 drift, 70 rules)"), "stdout={stdout}");
+    assert!(stdout.contains("OK (0 drift, 81 rules)"), "stdout={stdout}");
 }
 
 #[test]

@@ -419,11 +419,18 @@ mod tests {
         assert_eq!(derived.len(), 63, "rhel8 total extracted line count");
     }
 
+    // FOURTH bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // V2R7 -> V2R9 rewrote 9 identity/login rules from single-line watch form
+    // into dual-arch syscall form (net +9 lines, same 9 V-numbers) and added
+    // V-279936 (cron_exec, 4 dual-arch lines replacing 2 old watch lines --
+    // same V-number, net +2 lines). Distinct V-number count is UNCHANGED (54:
+    // no V-number was added or removed, only line content/count per existing
+    // V-number); total extracted line count grows 70 -> 81.
     #[test]
     fn rhel9_known_answer_counts() {
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
         assert_eq!(distinct_v_numbers(&derived), 54, "rhel9 requirement count");
-        assert_eq!(derived.len(), 70, "rhel9 total extracted line count");
+        assert_eq!(derived.len(), 81, "rhel9 total extracted line count");
     }
 
     #[test]
@@ -605,24 +612,30 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
     }
 
     #[test]
-    fn rhel9_multi_path_watch_cronjobs_two_lines_one_v_number() {
-        // SV-279936r1156361_rule (RHEL-09-654097): TWO distinct watched paths
-        // required simultaneously under one V-number (grounding Part B.5.7),
-        // distinct from an arch b32/b64 pair.
+    fn rhel9_cron_exec_four_lines_one_v_number() {
+        // #549 RE-GROUNDED (was `rhel9_multi_path_watch_cronjobs_two_lines_
+        // one_v_number`, which pinned SV-279936r1156361_rule as two distinct
+        // watched paths under one V-number). DISA RHEL 9 STIG V2R9 replaced
+        // the two old cron watch lines with FOUR dual-arch (b32/b64) execve/
+        // subj_type=crond_t syscall lines (euid=0 and auid>=1000 variants),
+        // still one V-number (RHEL-09-654097, cron_exec key).
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
         let rows: Vec<&DerivedRule> = derived
             .iter()
             .filter(|d| d.v_number == "V-279936")
             .collect();
-        assert_eq!(rows.len(), 2, "{rows:?}");
-        assert!(
-            rows.iter()
-                .any(|r| r.line == "-w /etc/cron.d -p wa -k cronjobs")
-        );
-        assert!(
-            rows.iter()
-                .any(|r| r.line == "-w /var/spool/cron -p wa -k cronjobs")
-        );
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        for line in [
+            "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+            "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+            "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+            "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+        ] {
+            assert!(
+                rows.iter().any(|r| r.line == line),
+                "missing line {line:?} in {rows:?}"
+            );
+        }
     }
 
     #[test]
@@ -662,16 +675,26 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
     }
 
     #[test]
-    fn rhel9_watch_single_path_identity_key_shared_across_distinct_v_numbers() {
-        // SV-258217r1045436_rule (RHEL-09-654215): a plain single-path watch. The
-        // `identity` key is shared by SEVEN separate V-numbers in rhel9
-        // (grounding Part B.5.8) - the table must NOT dedupe/merge them by key.
+    fn rhel9_identity_key_shared_across_distinct_v_numbers() {
+        // #549 RE-GROUNDED (was `rhel9_watch_single_path_identity_key_shared_
+        // across_distinct_v_numbers`, which pinned SV-258217r1045436_rule as a
+        // plain single-path watch). DISA RHEL 9 STIG V2R9 rewrote V-258217
+        // (RHEL-09-654215) from single-line watch form into dual-arch (b32/b64)
+        // syscall form, so `parse_requirements` now emits TWO rows for it, not
+        // one; the FIRST in document order is the b32 line. The `identity` key
+        // is still shared by SEVEN separate V-numbers in rhel9 (grounding Part
+        // B.5.8, unaffected by the V2R9 rewrite -- only the LINE FORM changed,
+        // not which V-numbers carry the `identity` key) - the table must NOT
+        // dedupe/merge them by key.
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
         let sudoers_watch = derived
             .iter()
             .find(|d| d.v_number == "V-258217")
             .expect("V-258217 present");
-        assert_eq!(sudoers_watch.line, "-w /etc/sudoers -p wa -k identity");
+        assert_eq!(
+            sudoers_watch.line,
+            "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity"
+        );
         let identity_v_numbers: std::collections::HashSet<&str> = derived
             .iter()
             .filter(|d| d.line.ends_with("-k identity"))

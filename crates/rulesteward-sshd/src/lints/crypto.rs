@@ -74,9 +74,17 @@ const WEAK_KEX_EXACT: &[&str] = &[
 ///
 /// Only the -sha1 gss variants are weak. The -sha256 variants (RFC 8732) are
 /// strong and MUST NOT match. Using a prefix test keyed on the SHA-1 suffix in
-/// the name ("group1-sha1", "gex-sha1") rather than a bare "gss-" prefix prevents
-/// over-firing on gss-curve25519-sha256-* and gss-group14-sha256-*.
-const WEAK_KEX_GSS_PREFIXES: &[&str] = &["gss-gex-sha1-", "gss-group1-sha1-"];
+/// the name ("group1-sha1", "group14-sha1", "gex-sha1") rather than a bare
+/// "gss-" prefix prevents over-firing on gss-curve25519-sha256-* and
+/// gss-group14-sha256-*.
+///
+/// #548: gss- names are daemon-VALID only under `GSSAPIKexAlgorithms` (a
+/// gss- name under `KexAlgorithms` is rejected by sshd outright, rc 255 --
+/// overnight audit 2026-07-17, lane1-sshd.md F-02), so this denylist is
+/// scoped to `GSSAPIKexAlgorithms` only (see `weak_exact_list`), not
+/// `KexAlgorithms`. `gss-group14-sha1-` was previously omitted despite being
+/// a real SHA-1 gss-KEX shipped in rocky8's DEFAULT `gssapikexalgorithms`.
+const WEAK_KEX_GSS_PREFIXES: &[&str] = &["gss-gex-sha1-", "gss-group1-sha1-", "gss-group14-sha1-"];
 
 /// Weak `HostKeyAlgorithms`, `PubkeyAcceptedAlgorithms`, and
 /// `CASignatureAlgorithms` names: SHA-1 RSA signatures and DSA.
@@ -100,17 +108,22 @@ const WEAK_HOSTKEY: &[&str] = &[
 // Algorithm-list directive families
 // ---------------------------------------------------------------------------
 
-/// Returns the denylist slice for a lowercased directive keyword, or `None` if
-/// the keyword is not an algorithm-list directive that W03 checks.
+/// Returns the denylist slice (and its match [`Weak03Kind`]) for a lowercased
+/// directive keyword, or `None` if the keyword is not an algorithm-list
+/// directive that W03 checks.
 ///
-/// `KexAlgorithms` uses a combined check (exact + prefix) handled separately in
-/// [`is_weak_kex`]; this function returns the exact-only slice for KEX to support
-/// the uniform iteration in `w03_directive`.
+/// #548: gss- algorithm names are daemon-valid ONLY under
+/// `GSSAPIKexAlgorithms` (a gss- name under `KexAlgorithms` is rejected by
+/// sshd outright, rc 255), so the two directives are scoped to disjoint
+/// tables: `kexalgorithms` gets the exact (non-gss) KEX denylist, and
+/// `gssapikexalgorithms` gets the gss- SHA-1 prefix denylist, matched via
+/// [`Weak03Kind::GssPrefix`].
 fn weak_exact_list(keyword: &str) -> Option<(&'static [&'static str], Weak03Kind)> {
     match keyword {
         "ciphers" => Some((WEAK_CIPHERS, Weak03Kind::Exact)),
         "macs" => Some((WEAK_MACS, Weak03Kind::Exact)),
-        "kexalgorithms" => Some((WEAK_KEX_EXACT, Weak03Kind::Kex)),
+        "kexalgorithms" => Some((WEAK_KEX_EXACT, Weak03Kind::Exact)),
+        "gssapikexalgorithms" => Some((WEAK_KEX_GSS_PREFIXES, Weak03Kind::GssPrefix)),
         "hostkeyalgorithms"
         | "hostbasedacceptedalgorithms"
         | "pubkeyacceptedalgorithms"
@@ -123,8 +136,9 @@ fn weak_exact_list(keyword: &str) -> Option<(&'static [&'static str], Weak03Kind
 enum Weak03Kind {
     /// Simple exact-match denylist only.
     Exact,
-    /// KEX: exact-match denylist PLUS gss-prefix pattern matching.
-    Kex,
+    /// gss- SHA-1 KEX prefix pattern matching (`GSSAPIKexAlgorithms` only;
+    /// suffix is a base64 OID token, so a `starts_with` test is required).
+    GssPrefix,
 }
 
 /// The effective algorithm-list value for a directive's `args`, with any inline
@@ -326,16 +340,6 @@ fn leading_operator(token: &str) -> Option<char> {
     }
 }
 
-/// Return `true` when the lowercased token is a weak KEX algorithm.
-fn is_weak_kex(token: &str) -> bool {
-    if WEAK_KEX_EXACT.contains(&token) {
-        return true;
-    }
-    WEAK_KEX_GSS_PREFIXES
-        .iter()
-        .any(|pfx| token.starts_with(pfx))
-}
-
 /// Emit one W03 diagnostic per weak algorithm token found in a directive's args.
 ///
 /// [`algo_list_value`] strips a whitespace-delimited inline `#` comment and
@@ -381,7 +385,7 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
         }
         let is_weak = match kind {
             Weak03Kind::Exact => exact_list.contains(&token.as_str()),
-            Weak03Kind::Kex => is_weak_kex(&token),
+            Weak03Kind::GssPrefix => exact_list.iter().any(|pfx| token.starts_with(pfx)),
         };
         if is_weak {
             diags.push(anchored(
@@ -402,12 +406,15 @@ fn w03_directive(directive: &Directive, file: &Path, diags: &mut Vec<Diagnostic>
 }
 
 /// sshd-W03: a weak algorithm appears in an algorithm-list directive (`Ciphers`,
-/// `MACs`, `KexAlgorithms`, `HostKeyAlgorithms`, `PubkeyAcceptedAlgorithms`, or
-/// `CASignatureAlgorithms`).
+/// `MACs`, `KexAlgorithms`, `GSSAPIKexAlgorithms`, `HostKeyAlgorithms`,
+/// `PubkeyAcceptedAlgorithms`, or `CASignatureAlgorithms`).
 ///
 /// Fires on any of: CBC-mode ciphers, RC4/3DES, HMAC-MD5 and HMAC-SHA-1
-/// variants, DH-group1-sha1 / DH-group14-sha1 / DH-gex-sha1 (and the gss- SHA-1
-/// KEX variants), or SHA-1 RSA signatures (`ssh-rsa`) / DSA (`ssh-dss`).
+/// variants, DH-group1-sha1 / DH-group14-sha1 / DH-gex-sha1 under
+/// `KexAlgorithms` (the gss- SHA-1 KEX variants are checked under
+/// `GSSAPIKexAlgorithms` instead -- gss- names are daemon-invalid under
+/// `KexAlgorithms`, #548), or SHA-1 RSA signatures (`ssh-rsa`) / DSA
+/// (`ssh-dss`).
 ///
 /// The denylist is version-independent: an explicitly written weak algorithm is a
 /// finding regardless of `--target` (W03 fires with `target=None`). W06 (prefix-
@@ -514,7 +521,7 @@ pub fn w06(blocks: &[Block], file: &Path, _ctx: &SshdLintContext) -> Vec<Diagnos
                 }
                 let is_weak = match kind {
                     Weak03Kind::Exact => denylist.contains(&tok.as_str()),
-                    Weak03Kind::Kex => is_weak_kex(&tok),
+                    Weak03Kind::GssPrefix => denylist.iter().any(|pfx| tok.starts_with(pfx)),
                 };
                 if is_weak {
                     diags.push(anchored(
