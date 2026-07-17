@@ -1,0 +1,25 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the selinux crate purely to import the shipped STIG control-family
+# table (`stig::control_refs` / `stig::ControlFamily`) for a future `check` drift
+# gate, and to reuse the crate's `TargetVersion` model; that crate resolves its
+# own workspace inheritance against the repo root (cargo finds a package's
+# workspace by walking up from the package's OWN location), so the path-dep
+# builds cleanly from here. Mirrors `tools/auditd-stig-update`'s Cargo.toml shape.
+[workspace]
+
+[package]
+name = "selinux-stig-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the selinux se-W01/se-W02 STIG control table from the official DISA XCCDF."
+
+[dependencies]
+rulesteward-selinux = { path = "../../crates/rulesteward-selinux", default-features = false }
+toml = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (mirrors
+# tools/auditd-stig-update's deliberate deviation from the sshd tool's
+# homegrown regex+entity-decode approach; see src/xccdf.rs's module doc).
+quick-xml = "0.41"

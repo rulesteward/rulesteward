@@ -1288,3 +1288,139 @@ fn against_trustdb_not_a_directory_exits_3() {
         // is_dir() check lands as the "not a directory" arm.
         .code(3);
 }
+
+// --- #519: fapd-W13 (merged deny-all) + fapd-W14 (--conf permissive) -------
+
+/// `--target rhel9` on a rules.d/ whose fagenrules-order LAST rule is not a
+/// deny-all must fire `[fapd-W13]` (exit 1); the mirror-image clean ruleset
+/// (last rule IS a deny-all family match) must stay exit 0 with no
+/// `[fapd-W13]`. Combined into one test (the firing case runs first) so a
+/// not-yet-wired `run_lint_resolved` (w13 is never called today) fails
+/// immediately rather than the clean half passing vacuously on its own.
+#[test]
+fn lint_target_rhel9_w13_fires_on_trailing_allow_clean_on_trailing_deny_all() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(rules_d.join("10-deny.rules"), "deny perm=any all : all\n").expect("write");
+    std::fs::write(
+        rules_d.join("90-allow.rules"),
+        "allow perm=open all : all\n",
+    )
+    .expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--target", "rhel9"])
+        .arg(&rules_d)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W13]"));
+
+    let clean_dir = tempfile::tempdir().expect("tempdir");
+    let clean_rules_d = clean_dir.path().join("rules.d");
+    std::fs::create_dir(&clean_rules_d).expect("mkdir");
+    std::fs::write(clean_rules_d.join("10-allow.rules"), "allow uid=0 : all\n").expect("write");
+    std::fs::write(
+        clean_rules_d.join("90-deny.rules"),
+        "deny_audit perm=any all : all\n",
+    )
+    .expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--target", "rhel9"])
+        .arg(&clean_rules_d)
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("[fapd-W13]").not());
+
+    // fapd-W13 requires an explicit --target: the SAME non-compliant ruleset
+    // as the firing case above must NOT fire it when --target is omitted.
+    // Bundled into this test (rather than standalone) because on its own it
+    // is indistinguishable from the pre-#519 (nothing ever fires fapd-W13)
+    // behavior and would pass vacuously.
+    let no_target_dir = tempfile::tempdir().expect("tempdir");
+    let no_target_rules_d = no_target_dir.path().join("rules.d");
+    std::fs::create_dir(&no_target_rules_d).expect("mkdir");
+    std::fs::write(
+        no_target_rules_d.join("90-allow.rules"),
+        "allow perm=open all : all\n",
+    )
+    .expect("write");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint"])
+        .arg(&no_target_rules_d)
+        .assert()
+        .stdout(predicate::str::contains("[fapd-W13]").not());
+}
+
+/// `--conf <path>` pointing at a `permissive=1` fapolicyd.conf must fire
+/// `[fapd-W14]` and exit 1; without `--conf`, no fapd-W14 finding is ever
+/// produced (the check is entirely opt-in).
+#[test]
+fn lint_conf_permissive_one_fires_w14_exits_one_absent_conf_never_fires_it() {
+    let f = write_tmp("allow uid=0 : all\n");
+    let conf = tempfile::NamedTempFile::new().expect("conf tempfile");
+    std::fs::write(conf.path(), "permissive = 1\n").expect("write conf");
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .arg("--conf")
+        .arg(conf.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("[fapd-W14]"));
+
+    // Without --conf on the same fixture: never fires. Bundled into this test
+    // (rather than standalone) because on its own it is indistinguishable
+    // from the pre-#519 (--conf does nothing) behavior and would pass
+    // vacuously.
+    Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "lint", "--file"])
+        .arg(f.path())
+        .assert()
+        .stdout(predicate::str::contains("[fapd-W14]").not());
+}
+
+/// `--profile stig` on a ruleset that fires fapd-W13 (STIG-controlled, #519)
+/// must NOT empty the finding set: unlike every other today's fapolicyd
+/// finding (which carries no controls and is always dropped by any
+/// `--profile`), a W13 finding under `--target rhel9` carries the `DenyAll`
+/// STIG control and must survive the filter with non-empty output.
+#[test]
+fn lint_profile_stig_on_w13_firing_ruleset_is_non_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = dir.path().join("rules.d");
+    std::fs::create_dir(&rules_d).expect("mkdir");
+    std::fs::write(
+        rules_d.join("90-allow.rules"),
+        "allow perm=open all : all\n",
+    )
+    .expect("write");
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args([
+            "fapolicyd",
+            "lint",
+            "--target",
+            "rhel9",
+            "--profile",
+            "stig",
+        ])
+        .arg(&rules_d)
+        .output()
+        .expect("binary ran");
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        !stdout.trim().is_empty(),
+        "a STIG-controlled fapd-W13 finding must survive --profile stig \
+         (non-empty output), got exit={:?} stdout={stdout:?}",
+        out.status.code()
+    );
+    assert!(
+        stdout.contains("fapd-W13"),
+        "the surviving finding must be fapd-W13: {stdout}"
+    );
+}

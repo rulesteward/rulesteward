@@ -172,7 +172,7 @@ fn severity_word(s: Severity) -> &'static str {
 /// ` (<FW> <id>/<alias>)` when a secondary id is present), joining multiple
 /// controls with `, `. The LEADING space is what makes the empty case add
 /// nothing to the line.
-fn format_controls(controls: &[ControlRef]) -> String {
+pub(crate) fn format_controls(controls: &[ControlRef]) -> String {
     if controls.is_empty() {
         return String::new();
     }

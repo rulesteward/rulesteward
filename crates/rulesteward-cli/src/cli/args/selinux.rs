@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::HumanJsonFormat;
+use crate::cli::{HumanJsonFormat, TargetSelector};
 
 /// Arguments for `rulesteward selinux triage` (#94).
 ///
@@ -65,4 +65,48 @@ pub struct TriageArgs {
     #[cfg(feature = "authoritative-categorizer")]
     #[arg(long, value_name = "FILE")]
     pub policy: Option<PathBuf>,
+}
+
+/// Arguments for `rulesteward selinux lint` (#520).
+///
+/// Lints `/etc/selinux/config` (or a supplied file) for STIG
+/// boot-configuration gaps: `se-W01` (`SELINUX=` not enforcing at boot;
+/// requires `--target rhel9|rhel10`) and `se-W02` (`SELINUXTYPE=` not
+/// targeted; requires `--target rhel8`). An omitted `--target` stays
+/// version-agnostic (no findings) - mirrors `sysctl lint`'s `sysctld-W02`
+/// gating shape.
+#[derive(Debug, Parser)]
+pub struct SelinuxLintArgs {
+    /// Path to the `SELinux` config file to lint (defaults to
+    /// `/etc/selinux/config`).
+    #[arg(value_name = "PATH")]
+    pub path: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Target RHEL release for the version-aware STIG baseline
+    /// (auto|rhel8|rhel9|rhel10). Omit `--target` to lint version-agnostically
+    /// (no `se-W01`/`se-W02` findings).
+    #[arg(long, value_enum)]
+    pub target: Option<TargetSelector>,
+}
+
+/// Arguments for `rulesteward selinux doctor` (#520).
+///
+/// Runs 5 read-only `SELinux` deployment health checks and reports a
+/// pass/warn/fail scorecard.
+#[derive(Debug, Parser)]
+pub struct SelinuxDoctorArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
+    pub format: HumanJsonFormat,
+
+    /// Target RHEL release for STIG control attachment
+    /// (auto|rhel8|rhel9|rhel10). Defaults to auto-detect (doctor examines
+    /// the host it runs on); a failed or unresolvable auto-detect degrades
+    /// silently to running the checks without control attachment.
+    #[arg(long, value_enum)]
+    pub target: Option<TargetSelector>,
 }

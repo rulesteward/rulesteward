@@ -348,6 +348,21 @@ impl From<TargetVersionArg> for rulesteward_auditd::TargetVersion {
     }
 }
 
+/// The same `--target` value-enum maps to the selinux domain's `TargetVersion`
+/// (the version-aware `se-W01`/`se-W02` STIG boot-configuration baseline
+/// selector, issue #520). One CLI surface, one `From` per backend domain, so
+/// each domain crate stays clap-free. The 5th copy of this pattern
+/// (fapolicyd, sshd, sysctld, auditd, selinux).
+impl From<TargetVersionArg> for rulesteward_selinux::TargetVersion {
+    fn from(arg: TargetVersionArg) -> Self {
+        match arg {
+            TargetVersionArg::Rhel8 => rulesteward_selinux::TargetVersion::Rhel8,
+            TargetVersionArg::Rhel9 => rulesteward_selinux::TargetVersion::Rhel9,
+            TargetVersionArg::Rhel10 => rulesteward_selinux::TargetVersion::Rhel10,
+        }
+    }
+}
+
 /// CLI value-enum for `--target` on the version-aware lint verbs: `auto` triggers
 /// host detection from `/etc/os-release`, the explicit values pin a baseline. The
 /// command layer resolves this to a concrete `TargetVersionArg` (or the
@@ -393,6 +408,22 @@ pub enum SelinuxCommand {
     /// with a caveat banner and a suggested allow, but the suggestion is never
     /// auto-applied (triage is read-only).
     Triage(TriageArgs),
+
+    /// Lint `/etc/selinux/config` for STIG boot-configuration gaps (#520)
+    ///
+    /// `se-W01`: `SELINUX=` not enforcing at boot (requires `--target
+    /// rhel9|rhel10`). `se-W02`: `SELINUXTYPE=` not targeted (requires
+    /// `--target rhel8`). An omitted `--target` stays version-agnostic (no
+    /// findings).
+    ///
+    /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings.
+    Lint(SelinuxLintArgs),
+
+    /// Run a composite `SELinux` health check (#520)
+    ///
+    /// Runs 5 read-only checks and reports a pass/warn/fail scorecard.
+    /// Exit 0 = all checks pass; 1 = warnings present; 2 = failures present.
+    Doctor(SelinuxDoctorArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -660,6 +691,26 @@ mod tests {
     #[test]
     fn target_arg_converts_to_auditd_domain_version() {
         use rulesteward_auditd::TargetVersion;
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel8),
+            TargetVersion::Rhel8
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel9),
+            TargetVersion::Rhel9
+        );
+        assert_eq!(
+            TargetVersion::from(TargetVersionArg::Rhel10),
+            TargetVersion::Rhel10
+        );
+    }
+
+    /// The CLI value-enum converts to the selinux domain `TargetVersion`
+    /// (#520). Keeps the domain crate clap-free (the 5th copy of this test
+    /// shape: fapolicyd, sshd, sysctld, auditd, selinux).
+    #[test]
+    fn target_arg_converts_to_selinux_domain_version() {
+        use rulesteward_selinux::TargetVersion;
         assert_eq!(
             TargetVersion::from(TargetVersionArg::Rhel8),
             TargetVersion::Rhel8

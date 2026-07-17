@@ -80,22 +80,25 @@ rulesteward fapolicyd lint --format sarif /etc/fapolicyd/rules.d/   # SARIF 2.1.
 rulesteward fapolicyd simulate --rules /etc/fapolicyd/rules.d/ --workload access.json
 rulesteward fapolicyd explain --record denial.log --ruleset /etc/fapolicyd/rules.d/
 rulesteward fapolicyd report /etc/fapolicyd/rules.d/ --format csv   # exception register of every allow grant
-rulesteward fapolicyd doctor                           # 13-check health scorecard on a live deployment
+rulesteward fapolicyd doctor                           # 14-check health scorecard on a live deployment
+rulesteward fapolicyd doctor --target rhel9            # same scorecard with DISA STIG control ids attached
 rulesteward fapolicyd container-check                  # detect container runtimes + namespace-limit risk
 rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd   # legacy -> rules.d/ (dry-run; --apply to write)
 rulesteward fapolicyd trustdb list /var/lib/fapolicyd  # read the trust DB (also: check, diff, stale)
 ```
 
-- **lint** - static-analyze rule files (25 `fapd-` codes; see Lint coverage). Optional
-  cross-checks: `--against-trustdb`, `--check-identities`, `--target rhel8|rhel9|rhel10`.
+- **lint** - static-analyze rule files (28 `fapd-` codes; see Lint coverage). Optional
+  cross-checks: `--against-trustdb`, `--check-identities`, `--target rhel8|rhel9|rhel10`,
+  `--conf /etc/fapolicyd/fapolicyd.conf` (fail-open `permissive` detection, `fapd-W14`).
 - **simulate** - statically replay a workload of access attempts and report which rule
   decides each (verdicts: `DECISIVE` / `POSSIBLE` / `NO MATCH`).
 - **explain** - replay a FANOTIFY denial (bare record or `ausearch` block) against a
   ruleset and name the rule that caused it.
 - **report** - build the exception register; `--diff-against` a prior snapshot and
   `--fail-on-drift` for CI gating.
-- **doctor** - read-only deployment health check (service state, kernel FANOTIFY support,
-  config, rule lint, trust-DB consistency, denial rate, and more).
+- **doctor** - read-only deployment health check (service state, package presence, kernel
+  FANOTIFY support, config, rule lint, trust-DB consistency, denial rate, and more). With
+  `--target` (or on an auto-detected RHEL host) each check carries its DISA STIG control ids.
 - **container-check** - detect podman / Docker / containerd / CRI-O / Kubernetes / RHCOS
   and flag the fapolicyd namespace-awareness limitation.
 - **migrate** - move a legacy single-file `fapolicyd.rules` into `rules.d/` and rewrite
@@ -170,6 +173,8 @@ rulesteward selinux triage --record denial.log         # classify an AVC denial 
 rulesteward selinux triage --audit-log /var/log/audit/audit.log
 rulesteward selinux triage --record denial.log --emit-te --module-name mymod   # emit a .te policy module
 rulesteward selinux triage --record denial.log --policy /etc/selinux/targeted/policy/policy.33   # authoritative
+rulesteward selinux lint --target rhel9 /etc/selinux/config   # boot-config STIG lint (se-W01/se-W02)
+rulesteward selinux doctor --target rhel9                     # 5-check live scorecard with DISA STIG ids
 ```
 
 - **triage** - parse AVC denials, classify each by kind, and suggest the narrowest fix.
@@ -179,6 +184,11 @@ rulesteward selinux triage --record denial.log --policy /etc/selinux/targeted/po
   suggested `allow` is never auto-applied. (Only plain type-enforcement denials are
   `allow`-fixable; MLS/MCS constraint, RBAC, and typebounds denials are reported but not
   auto-fixable.)
+- **lint** - static-analyze `/etc/selinux/config` (2 `se-` codes; version-aware via
+  `--target`, defaults to `/etc/selinux/config` when the path is omitted).
+- **doctor** - read-only host health check (enforce status, loaded policy name,
+  policycoreutils packages, faillock tally-directory context). With `--target` (or on an
+  auto-detected RHEL host) each check carries its DISA STIG control ids.
 
 ### Shell completions
 
@@ -191,7 +201,7 @@ rulesteward completions bash    # also: zsh, fish, elvish, powershell, tcsh
 Lint codes follow a SELint-style scheme: the letter after the backend prefix is the
 severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X` extra).
 
-### fapolicyd (`fapd-`, 26 codes)
+### fapolicyd (`fapd-`, 28 codes)
 
 | Code | Severity | Checks | Gate |
 | --- | --- | --- | --- |
@@ -220,6 +230,8 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `fapd-W10` | Warning | cross-file decision shadow: an earlier-loading allow shadows a later rule | directory mode |
 | `fapd-W11` | Warning | weak hash digest (MD5/SHA1); prefer SHA-256 | always |
 | `fapd-W12` | Warning | deprecated `dir=untrusted` member (use object trust with execute permission instead; fapolicyd 1.6+) | fapolicyd 1.6+ target: dormant, no current target qualifies |
+| `fapd-W13` | Warning | the merged ruleset's final rule is not a catch-all deny (`deny perm=any all : all` family; DISA STIG) | `--target` |
+| `fapd-W14` | Warning | `fapolicyd.conf` sets a permissive (fail-open) value | `--conf` |
 | `fapd-X01` | Extra | trust-DB orphan: a trusted path absent from the loaded rules | `--report-orphans` + `--against-trustdb` |
 
 ### auditd (`au-`, 11 codes)
@@ -279,8 +291,15 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sysctld-W02` | Warning | STIG-required kernel-hardening key is unset or set to an insecure value (version-aware) | `--target` |
 | `sysctld-W03` | Warning | cross-directory precedence surprise: a lower-precedence directory wins (W03-a), the procps and systemd appliers disagree on `/etc/sysctl.conf` (W03-b), or a masked same-basename drop-in silently drops a key (W03-c) | `--system` |
 
-SELinux `triage` is denial analysis rather than file linting, so it has no `se-` lint
-codes: it categorizes each AVC denial by kind (floor classifier always; authoritative
+### SELinux (`se-`, 2 codes)
+
+| Code | Severity | Checks | Gate |
+| --- | --- | --- | --- |
+| `se-W01` | Warning | `SELINUX=` in `/etc/selinux/config` does not resolve to `enforcing` at boot (missing, commented out, or another value) | `--target rhel9`/`rhel10` |
+| `se-W02` | Warning | `SELINUXTYPE=` is not `targeted` (missing or another policy type) | `--target rhel8` |
+
+SELinux `triage` is denial analysis rather than file linting and has no lint codes of
+its own: it categorizes each AVC denial by kind (floor classifier always; authoritative
 libsepol categorizer with `--policy`) and can emit a `.te` module.
 
 ## Exit codes
@@ -295,9 +314,10 @@ The lint and analysis verbs share one contract:
 | `3` | tool failure (I/O, bad arguments) |
 | `5` | input could not be parsed |
 
-Two commands report their scorecard through the exit code instead:
+Three commands report their scorecard through the exit code instead:
 
 - `fapolicyd doctor`: `0` all checks pass, `1` warnings, `2` one or more failures.
+- `selinux doctor`: same contract (`0` pass, `1` warnings, `2` failures).
 - `fapolicyd container-check`: `0` no risk, `1` WARN, `2` HIGH, `3` RHCOS (unsupported).
 
 ## Output formats

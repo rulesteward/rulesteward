@@ -21,7 +21,7 @@ fn bin() -> Command {
 ///   - Not panic (exit code != 101).
 ///   - Emit stdout that parses as a JSON object (not an error message).
 ///   - Carry `kind: "doctor-report"` and `schemaVersion: 1` in the envelope.
-///   - Carry a `checks` array with exactly 13 entries.
+///   - Carry a `checks` array with exactly 14 entries (#519 adds `fapolicyd-package`).
 ///   - Carry a `summary` object.
 ///   - End with a trailing newline (machine-readable output contract).
 ///   - Exit with 0, 1, or 2 (never 3, which would indicate a tool-level crash).
@@ -62,12 +62,12 @@ fn doctor_json_graceful_degradation_on_bare_host() {
         "schemaVersion must be 1; got: {stdout}"
     );
 
-    // Checks array must have exactly 13 entries.
+    // Checks array must have exactly 14 entries (#519 adds fapolicyd-package).
     let checks = v["checks"].as_array().expect("checks must be a JSON array");
     assert_eq!(
         checks.len(),
-        13,
-        "doctor must produce exactly 13 checks; got {}",
+        14,
+        "doctor must produce exactly 14 checks; got {}",
         checks.len()
     );
 
@@ -157,4 +157,168 @@ fn doctor_help_renders_expected_flags() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--format"));
+}
+
+/// `fapolicyd doctor --help` must additionally advertise the new `--target`
+/// flag (#519).
+#[test]
+fn doctor_help_renders_target_flag() {
+    bin()
+        .args(["fapolicyd", "doctor", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--target"));
+}
+
+/// The RHEL-family major (8/9/10) the live probe would resolve for this host's
+/// `/etc/os-release` under the default `--target auto`, or `None` when auto
+/// degrades. Mirrors the family + major signals of `commands::target_probe`
+/// (family `ID`, an `ID_LIKE` containing `rhel`, or `PLATFORM_ID=platform:elN`;
+/// major from `PLATFORM_ID` first, then the integer prefix of `VERSION_ID`) -
+/// the same accepted mirror trade-off as `e2e_selinux_lint.rs`'s host guard.
+/// Used to branch the omitted-target assertions: the distro-CI containers
+/// (Rocky/Alma/Oracle 8/9/10) resolve; ubuntu CI runners and dev sandboxes
+/// degrade.
+fn host_resolvable_el_major() -> Option<u32> {
+    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let field = |key: &str| {
+        text.lines().map(str::trim).find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k == key).then(|| v.trim_matches(|c| c == '"' || c == '\'').to_owned())
+        })
+    };
+    let (id, id_like) = (field("ID"), field("ID_LIKE"));
+    let (platform_id, version_id) = (field("PLATFORM_ID"), field("VERSION_ID"));
+    let family = id
+        .as_deref()
+        .is_some_and(|id| matches!(id, "rhel" | "rocky" | "almalinux" | "centos"))
+        || id_like
+            .as_deref()
+            .is_some_and(|like| like.split_whitespace().any(|t| t == "rhel"))
+        || platform_id
+            .as_deref()
+            .is_some_and(|p| p.starts_with("platform:el"));
+    if !family {
+        return None;
+    }
+    let major = platform_id
+        .as_deref()
+        .and_then(|p| p.strip_prefix("platform:el"))
+        .and_then(|n| n.parse::<u32>().ok())
+        .or_else(|| {
+            version_id
+                .as_deref()
+                .and_then(|v| v.split('.').next())
+                .and_then(|maj| maj.parse::<u32>().ok())
+        })?;
+    matches!(major, 8..=10).then_some(major)
+}
+
+/// #519: `--target rhel9` must attach exact STIG `ControlRef`s to the
+/// `service-status`, `fapolicyd-package`, and `misconfiguration` checks.
+/// Omitting `--target` (the default `auto`) is HOST-DEPENDENT and both arms
+/// are asserted: on a resolvable EL host (the distro-CI containers) the three
+/// STIG-family checks must auto-attach controls keyed to the host's major and
+/// every other check must still carry none; on any other host auto degrades
+/// and NO check may carry a `controls` key at all. Combined into one test
+/// (the target-explicit assertions run first) so a not-yet-wired
+/// implementation fails immediately rather than passing vacuously on the
+/// omitted-target half alone.
+#[test]
+fn doctor_target_rhel9_attaches_exact_stig_controls_and_omitted_target_follows_host() {
+    let with_target = bin()
+        .args([
+            "fapolicyd",
+            "doctor",
+            "--target",
+            "rhel9",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("binary ran");
+    let stdout = String::from_utf8(with_target.stdout).expect("utf8");
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let checks = v["checks"].as_array().expect("checks array");
+
+    let find = |name: &str| -> &serde_json::Value {
+        checks
+            .iter()
+            .find(|c| c["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("missing check {name:?} in {stdout}"))
+    };
+
+    let service = find("service-status");
+    assert_eq!(
+        service["controls"][0]["id"].as_str(),
+        Some("RHEL-09-433015"),
+        "service-status must carry the Enabled STIG control under --target rhel9; \
+         full output: {stdout}"
+    );
+    assert_eq!(service["controls"][0]["alias"].as_str(), Some("V-258090"));
+
+    let package = find("fapolicyd-package");
+    assert_eq!(
+        package["controls"][0]["id"].as_str(),
+        Some("RHEL-09-433010"),
+        "fapolicyd-package must carry the Installed STIG control under --target rhel9; \
+         full output: {stdout}"
+    );
+
+    let misconfig = find("misconfiguration");
+    assert_eq!(
+        misconfig["controls"][0]["id"].as_str(),
+        Some("RHEL-09-433016"),
+        "misconfiguration must carry the DenyAll STIG control under --target rhel9; \
+         full output: {stdout}"
+    );
+
+    // Without --target the default `auto` consults this host's
+    // /etc/os-release (#519: doctor auto-detects). Host-dependent, so assert
+    // both arms honestly instead of assuming a non-EL host (the assumption
+    // that broke on the distro-CI containers, where auto RESOLVES).
+    let without_target = bin()
+        .args(["fapolicyd", "doctor", "--format", "json"])
+        .output()
+        .expect("binary ran");
+    let stdout2 = String::from_utf8(without_target.stdout).expect("utf8");
+    let v2: serde_json::Value = serde_json::from_str(&stdout2).expect("valid JSON");
+    let checks2 = v2["checks"].as_array().expect("checks array");
+    let stig_checks = ["service-status", "fapolicyd-package", "misconfiguration"];
+    match host_resolvable_el_major() {
+        Some(major) => {
+            let prefix = format!("RHEL-{major:02}-");
+            for c in checks2 {
+                let name = c["name"].as_str().expect("check name");
+                if stig_checks.contains(&name) {
+                    let id = c["controls"][0]["id"].as_str().unwrap_or_else(|| {
+                        panic!(
+                            "on a resolvable EL{major} host, omitted --target must \
+                             auto-attach a STIG control to {name}; got {c} in {stdout2}"
+                        )
+                    });
+                    assert!(
+                        id.starts_with(&prefix),
+                        "auto-detected controls on {name} must be keyed to this \
+                         host's major ({prefix}*), got {id} in {stdout2}"
+                    );
+                } else {
+                    assert!(
+                        c.get("controls").is_none(),
+                        "non-STIG check {name} must carry no controls even when \
+                         auto resolves, got {c} in {stdout2}"
+                    );
+                }
+            }
+        }
+        None => {
+            for c in checks2 {
+                assert!(
+                    c.get("controls").is_none(),
+                    "omitted --target must carry no controls key on any check \
+                     when auto degrades, got {c} in {stdout2}"
+                );
+            }
+        }
+    }
 }

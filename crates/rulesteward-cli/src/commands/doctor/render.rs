@@ -1,15 +1,16 @@
-//! JSON and human renderers for the doctor report.
+//! JSON and human renderers for doctor reports.
+//!
+//! Parameterized over the report title (human) and envelope kind + schema
+//! version (JSON) so every backend's doctor verb (fapolicyd today, selinux
+//! #520, sshd #536) shares one renderer pair; each caller owns its constants.
 
 use std::fmt::Write as _;
 
 use serde::Serialize;
 
 use super::model::{CheckResult, CheckStatus};
+use crate::output::human::format_controls;
 use crate::output::json::render_envelope;
-
-/// Schema version for the `doctor-report` kind.
-/// Bumps only on a breaking change (field removal, rename, retype).
-const DOCTOR_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // JSON payload
@@ -57,23 +58,23 @@ struct DoctorPayload<'a> {
     checks: &'a [CheckResult],
 }
 
-pub(super) fn render_json(results: &[CheckResult]) -> String {
+pub(crate) fn render_json(kind: &str, schema_version: u32, results: &[CheckResult]) -> String {
     let payload = DoctorPayload {
         summary: status_counts(results),
         checks: results,
     };
-    render_envelope("doctor-report", DOCTOR_SCHEMA_VERSION, &payload)
+    render_envelope(kind, schema_version, &payload)
 }
 
 // ---------------------------------------------------------------------------
 // Human renderer
 // ---------------------------------------------------------------------------
 
-pub(super) fn render_human(results: &[CheckResult]) -> String {
+pub(crate) fn render_human(title: &str, results: &[CheckResult]) -> String {
     // `writeln!` into a `String` (via `fmt::Write`) is infallible -- the buffer
     // never returns Err -- so the `let _ =` discards the impossible error.
     let mut out = String::new();
-    let _ = writeln!(out, "fapolicyd doctor report");
+    let _ = writeln!(out, "{title}");
     let _ = writeln!(out, "{}", "-".repeat(60));
     for r in results {
         let status_label = match r.status {
@@ -83,7 +84,13 @@ pub(super) fn render_human(results: &[CheckResult]) -> String {
             CheckStatus::Skip => "SKIP ",
             CheckStatus::Unknown => " ?? ",
         };
-        let _ = writeln!(out, "[{status_label}] {}: {}", r.name, r.detail);
+        let _ = writeln!(
+            out,
+            "[{status_label}] {}: {}{}",
+            r.name,
+            r.detail,
+            format_controls(&r.controls)
+        );
         if let Some(ref rem) = r.remediation {
             let _ = writeln!(out, "       -> {rem}");
         }
@@ -110,7 +117,58 @@ mod tests {
             status,
             detail: String::new(),
             remediation: None,
+            controls: Vec::new(),
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameterized renderer contract (multi-backend doctor: fapolicyd today,
+    // selinux #520, sshd #536)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn render_human_uses_given_title() {
+        let out = render_human("selinux doctor report", &[result(CheckStatus::Ok)]);
+        assert!(
+            out.starts_with("selinux doctor report\n"),
+            "title parameter must become the heading line, got: {out}"
+        );
+    }
+
+    #[test]
+    fn render_json_uses_given_kind_and_schema_version() {
+        let out = render_json("selinux-doctor-report", 1, &[result(CheckStatus::Ok)]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["kind"], "selinux-doctor-report");
+        assert_eq!(v["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn render_human_appends_controls_suffix_after_detail() {
+        use rulesteward_core::{ControlRef, Framework};
+
+        let with = CheckResult {
+            name: "misconfiguration",
+            status: CheckStatus::Warn,
+            detail: "permissive = 1".to_string(),
+            remediation: None,
+            controls: vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433016").with_alias("V-270180"),
+            ],
+        };
+        let out = render_human("fapolicyd doctor report", &[with]);
+        assert!(
+            out.contains("misconfiguration: permissive = 1 (STIG RHEL-09-433016/V-270180)"),
+            "controls suffix must follow the detail, got: {out}"
+        );
+
+        // No controls -> byte-identical line (empty suffix).
+        let without = result(CheckStatus::Ok);
+        let out = render_human("fapolicyd doctor report", &[without]);
+        assert!(
+            out.contains("[ OK  ] test: \n"),
+            "empty suffix adds nothing, got: {out}"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -125,15 +183,17 @@ mod tests {
                 status: CheckStatus::Ok,
                 detail: "ok".to_string(),
                 remediation: None,
+                controls: Vec::new(),
             },
             CheckResult {
                 name: "kernel-version",
                 status: CheckStatus::Fail,
                 detail: "old kernel".to_string(),
                 remediation: Some("upgrade".to_string()),
+                controls: Vec::new(),
             },
         ];
-        let out = render_json(&results);
+        let out = render_json("doctor-report", 1, &results);
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v["kind"], "doctor-report");
         assert_eq!(v["schemaVersion"], 1);
@@ -153,7 +213,7 @@ mod tests {
             result(CheckStatus::Skip),
             result(CheckStatus::Unknown),
         ];
-        let out = render_json(&results);
+        let out = render_json("doctor-report", 1, &results);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let statuses: Vec<&str> = v["checks"]
             .as_array()
@@ -209,7 +269,7 @@ mod tests {
             result(CheckStatus::Skip),
             result(CheckStatus::Unknown),
         ];
-        let out = render_json(&results);
+        let out = render_json("doctor-report", 1, &results);
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v["summary"]["total"], 8);
         assert_eq!(v["summary"]["ok"], 2);

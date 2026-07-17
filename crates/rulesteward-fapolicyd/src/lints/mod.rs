@@ -16,10 +16,16 @@
 //! * `trust_path` - trust-DB-aware per-file pass (fapd-W06).
 //! * `cross_db` - trust-DB cross-pass (fapd-X01), CLI-invoked.
 //! * `trust_hash` - trust-DB weak-digest surfacing (fapd-W11), CLI-invoked.
+//! * `deny_all` - merged-ruleset last-effective-rule deny-all check (fapd-W13), CLI-invoked.
+//! * `conf` - `fapolicyd.conf` `--conf` misconfiguration check (fapd-W14), CLI-invoked.
+//! * `stig` - fapolicyd DISA STIG control table (#519), consumed by both the
+//!   doctor verb and the deny-all lints above.
 
 pub mod catalog;
+pub mod conf;
 pub(crate) mod cross_db;
 mod cross_file;
+pub mod deny_all;
 mod deprecation;
 mod dir_slash;
 mod identity;
@@ -27,6 +33,7 @@ mod layout;
 mod macros;
 mod reachability;
 mod source_scan;
+pub mod stig;
 mod subsume;
 #[cfg(test)]
 pub(crate) mod testkit;

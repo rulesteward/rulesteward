@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use rulesteward_core::ControlRef;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,14 @@ pub struct CheckResult {
     pub detail: String,
     /// Remediation hint shown for Warn / Fail; None for Ok / Skip / Unknown.
     pub remediation: Option<String>,
+    /// Typed compliance controls this check evaluates evidence for (attached
+    /// whenever the benchmark target is resolved, regardless of status: on the
+    /// doctor surface a check IS the control's assessment, so a compliant host
+    /// must still report its coverage). Omitted from JSON when empty, so the
+    /// field is additive under the tolerant-reader contract (same as
+    /// `Diagnostic.controls`: no schemaVersion bump).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlRef>,
 }
 
 impl CheckResult {
@@ -47,6 +56,7 @@ impl CheckResult {
             status: CheckStatus::Ok,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
 
@@ -61,6 +71,7 @@ impl CheckResult {
             status: CheckStatus::Warn,
             detail: detail.into(),
             remediation: Some(remediation.into()),
+            controls: Vec::new(),
         }
     }
 
@@ -75,6 +86,7 @@ impl CheckResult {
             status: CheckStatus::Fail,
             detail: detail.into(),
             remediation: Some(remediation.into()),
+            controls: Vec::new(),
         }
     }
 
@@ -86,6 +98,7 @@ impl CheckResult {
             status: CheckStatus::Skip,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
 
@@ -97,8 +110,40 @@ impl CheckResult {
             status: CheckStatus::Unknown,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
+
+    /// Attach typed compliance controls, mirroring `Diagnostic::with_controls`.
+    #[must_use]
+    pub fn with_controls(mut self, controls: Vec<ControlRef>) -> Self {
+        self.controls = controls;
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exit code computation (worst-status-wins, design decision #3)
+// ---------------------------------------------------------------------------
+
+/// Compute the overall exit code from a list of check results.
+///
+/// Any `Fail` -> `EXIT_ERRORS` (2); else any `Warn` -> `EXIT_WARNINGS` (1);
+/// else `EXIT_CLEAN` (0). `Skip` and `Unknown` never escalate.
+///
+/// Lives on the model (not in the fapolicyd `checks` module) because it is
+/// pure over the result types and every backend's doctor verb shares it.
+#[must_use]
+pub fn worst_exit_code(results: &[CheckResult]) -> i32 {
+    use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
+
+    if results.iter().any(|r| r.status == CheckStatus::Fail) {
+        return EXIT_ERRORS;
+    }
+    if results.iter().any(|r| r.status == CheckStatus::Warn) {
+        return EXIT_WARNINGS;
+    }
+    EXIT_CLEAN
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +198,50 @@ pub struct FapolicydConf {
     pub deprecated_sha256hash: bool,
     /// True if both `/etc/fapolicyd/fapolicyd.rules` AND `rules.d/` exist.
     pub both_layouts_present: bool,
+    /// The last non-empty, non-comment line of `/etc/fapolicyd/compiled.rules`
+    /// (the daemon-loaded final rule), if the file could be read. `None` when
+    /// the file is absent OR unreadable (e.g. the common EACCES case: the
+    /// unprivileged doctor lacks group `fapolicyd` membership - G2 verdict) -
+    /// distinct from `Some(String::new())`, which would wrongly imply an
+    /// empty-but-readable file. `None` must add NO new misconfiguration issue
+    /// (honest degradation, not a false "rule missing").
+    pub compiled_final_rule: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// STIG control refs (#519): precomputed per-family projections for the
+// resolved doctor --target, threaded through `run_checks` so each check
+// attaches its own family's controls without re-deriving the target mapping.
+// ---------------------------------------------------------------------------
+
+/// The three fapolicyd STIG control families' [`ControlRef`]s for a single
+/// resolved doctor `--target`, built once per run via [`FapolicydStigRefs::for_target`]
+/// and threaded through [`super::checks::run_checks`] as `Option<&Self>` (`None`
+/// when no target resolved - see `resolve_doctor_target` in `target_probe.rs`).
+#[derive(Debug, Clone)]
+pub struct FapolicydStigRefs {
+    /// Attached to the `fapolicyd-package` check (installed/absent).
+    pub installed: Vec<ControlRef>,
+    /// Attached to the `service-status` check (enabled/not-enabled).
+    pub enabled: Vec<ControlRef>,
+    /// Attached to the `misconfiguration` check's deny-all sub-condition.
+    pub deny_all: Vec<ControlRef>,
+}
+
+impl FapolicydStigRefs {
+    /// Build the per-family control projections for `target` via
+    /// `rulesteward_fapolicyd::lints::stig::control_refs`. Pure aggregation
+    /// (no branching of its own): the STIG data itself lives in that crate's
+    /// `stig_controls`/`control_refs` table, not here.
+    #[must_use]
+    pub fn for_target(target: rulesteward_fapolicyd::TargetVersion) -> Self {
+        use rulesteward_fapolicyd::lints::stig::{ControlFamily, control_refs};
+        Self {
+            installed: control_refs(ControlFamily::Installed, target),
+            enabled: control_refs(ControlFamily::Enabled, target),
+            deny_all: control_refs(ControlFamily::DenyAll, target),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +250,7 @@ pub struct FapolicydConf {
 
 /// Trait for all environment I/O used by the doctor checks.
 ///
-/// Each method returns plain data (structs / Result). The 13 check functions
+/// Each method returns plain data (structs / Result). The 14 check functions
 /// contain ONLY classification logic over that data, making them testable with
 /// `FakeProbe` without any real OS access. The real [`LiveProbe`](super::probe::LiveProbe) shells out.
 pub trait SystemProbe {
@@ -193,6 +282,12 @@ pub trait SystemProbe {
     /// Check whether the `rpm-plugin-fapolicyd` RPM package is installed.
     fn rpm_plugin_installed(&self) -> Result<bool, String>;
 
+    /// Check whether the `fapolicyd` package itself is installed (#519, the
+    /// STIG-required `fapolicyd-package` check - distinct from
+    /// [`Self::rpm_plugin_installed`], which checks the RPM live-update
+    /// plugin, not the daemon package).
+    fn fapolicyd_installed(&self) -> Result<bool, String>;
+
     /// Return free bytes in /var/lib/fapolicyd/.
     fn fapolicyd_db_space(&self) -> Result<FsSpace, String>;
 
@@ -205,7 +300,94 @@ pub trait SystemProbe {
 
 #[cfg(test)]
 mod tests {
-    use super::{CheckResult, CheckStatus};
+    use rulesteward_core::{ControlRef, Framework};
+
+    use super::{CheckResult, CheckStatus, FapolicydStigRefs, worst_exit_code};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
+
+    fn result(status: CheckStatus) -> CheckResult {
+        CheckResult {
+            name: "test",
+            status,
+            detail: String::new(),
+            remediation: None,
+            controls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn worst_exit_code_all_ok_is_clean() {
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Ok)]),
+            EXIT_CLEAN
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_warn_only_is_warnings() {
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Warn)]),
+            EXIT_WARNINGS
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_fail_overrides_warn() {
+        assert_eq!(
+            worst_exit_code(&[
+                result(CheckStatus::Warn),
+                result(CheckStatus::Fail),
+                result(CheckStatus::Ok)
+            ]),
+            EXIT_ERRORS
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_skip_unknown_do_not_escalate() {
+        // Skip and Unknown alone must not escalate above clean.
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Skip), result(CheckStatus::Unknown)]),
+            EXIT_CLEAN
+        );
+    }
+
+    #[test]
+    fn with_controls_sets_controls_and_constructors_default_empty() {
+        // Every constructor starts with no controls; the builder attaches them.
+        let plain = CheckResult::ok("svc", "running");
+        assert!(plain.controls.is_empty(), "constructors default to empty");
+
+        let attached =
+            CheckResult::warn("misconfiguration", "permissive", "fix it").with_controls(vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433016").with_alias("V-270180"),
+            ]);
+        assert_eq!(attached.controls.len(), 1);
+        assert_eq!(attached.controls[0].id, "RHEL-09-433016");
+        assert_eq!(attached.controls[0].alias.as_deref(), Some("V-270180"));
+        // The builder must not disturb the underlying result fields.
+        assert_eq!(attached.status, CheckStatus::Warn);
+        assert_eq!(attached.remediation.as_deref(), Some("fix it"));
+    }
+
+    #[test]
+    fn controls_omitted_from_json_when_empty_present_when_set() {
+        // Additive field contract (same as Diagnostic.controls): empty vec is
+        // omitted entirely so existing doctor-report consumers see no new key.
+        let plain = serde_json::to_value(CheckResult::ok("svc", "running")).unwrap();
+        assert!(
+            plain.get("controls").is_none(),
+            "empty controls must be omitted from JSON, got {plain}"
+        );
+
+        let attached = serde_json::to_value(
+            CheckResult::ok("svc", "running")
+                .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040136")]),
+        )
+        .unwrap();
+        assert_eq!(attached["controls"][0]["id"], "RHEL-08-040136");
+        assert_eq!(attached["controls"][0]["framework"], "stig");
+    }
 
     #[test]
     fn constructors_set_status_detail_and_remediation() {
@@ -230,5 +412,20 @@ mod tests {
         let unknown = CheckResult::unknown("svc", "probe failed");
         assert_eq!(unknown.status, CheckStatus::Unknown);
         assert_eq!(unknown.remediation, None);
+    }
+
+    // -------------------------------------------------------------------------
+    // FapolicydStigRefs::for_target (#519)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn for_target_builds_exactly_one_ref_per_family() {
+        let refs = FapolicydStigRefs::for_target(rulesteward_fapolicyd::TargetVersion::Rhel9);
+        assert_eq!(refs.installed.len(), 1, "installed: {:?}", refs.installed);
+        assert_eq!(refs.enabled.len(), 1, "enabled: {:?}", refs.enabled);
+        assert_eq!(refs.deny_all.len(), 1, "deny_all: {:?}", refs.deny_all);
+        assert_eq!(refs.installed[0].id, "RHEL-09-433010");
+        assert_eq!(refs.enabled[0].id, "RHEL-09-433015");
+        assert_eq!(refs.deny_all[0].id, "RHEL-09-433016");
     }
 }
