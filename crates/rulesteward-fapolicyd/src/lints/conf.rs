@@ -62,7 +62,7 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
     let Some((line, span, value)) = winner else {
         return Vec::new();
     };
-    if value != "1" {
+    if !is_effectively_permissive(value) {
         return Vec::new();
     }
 
@@ -81,6 +81,35 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
         )
         .with_controls(controls),
     ]
+}
+
+/// True iff `value` is fapolicyd's on-wire representation of a permissive
+/// (fail-open) `permissive=` setting.
+///
+/// Adversarial round 2 (impl-aware, grounded on upstream
+/// `src/library/daemon-config.c`): the daemon's `permissive_parser`
+/// delegates to `unsigned_int_parser` - a base-10 `strtoul` of the WHOLE
+/// value - then CLAMPS any parsed value greater than 1 down to 1. So the
+/// daemon runs permissive for `"1"`, `"2"`, `"10"`, `"01"` (leading zeros
+/// are valid decimal syntax to `strtoul`), `"007"`, and so on: any string
+/// that is non-empty, entirely ASCII digits, and contains at least one
+/// nonzero digit. A non-numeric value (trailing garbage after the digits,
+/// e.g. `"1x"`) is a parse error and leaves the enforcing default in
+/// place; an all-zero digit string (`"0"`, `"00"`) parses to 0
+/// (enforcing).
+///
+/// Deliberately NOT `value.parse::<u64>().is_ok_and(|n| n >= 1)`: an
+/// absurdly long all-digit string (more digits than fit in a `u64`) would
+/// overflow `parse` and return `Err`, wrongly reporting "clean" even
+/// though the real daemon's `strtoul` saturates such a value to
+/// `ULONG_MAX` on overflow and still clamps it to permissive. Checking
+/// "all digits and at least one nonzero digit" needs no integer parse at
+/// all, so it matches `strtoul`'s clamped behavior regardless of the
+/// input's length.
+fn is_effectively_permissive(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value.bytes().any(|b| b != b'0')
 }
 
 #[cfg(test)]
@@ -241,6 +270,85 @@ mod tests {
             "span must be the EXACT byte range of `permissive=1` on line 2 \
              (bytes 0..7 are `foo=bar`, byte 7 is the consumed `\\n`): {:?}",
             diags[0].span
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Adversarial round 2 (impl-aware, grounded on upstream
+    // src/library/daemon-config.c): the daemon's `permissive_parser`
+    // delegates to `unsigned_int_parser` - a base-10 `strtoul` of the WHOLE
+    // value - then CLAMPS any parsed value > 1 down to 1. So the daemon
+    // runs permissive (fail-open) for ANY non-empty all-ASCII-digit value
+    // that isn't all zeros: "1", "2", "10", "01" (leading zeros are valid
+    // decimal syntax to `strtoul`), not just the exact string "1". A
+    // non-numeric value (trailing garbage after the digits, e.g. "1x") is
+    // a parse error and leaves the enforcing default; an all-zero digit
+    // string parses to 0 (enforcing). The old exact-string `value != "1"`
+    // guard was a false negative on every nonzero-numeric-but-not-"1"
+    // value.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn permissive_two_fires() {
+        // strtoul("2", ...) = 2, clamped to 1 by unsigned_int_parser's
+        // range check in daemon-config.c -> the daemon runs permissive.
+        let diags = lint_conf("permissive = 2\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "permissive=2 clamps to permissive-mode in the real daemon; must fire: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn permissive_leading_zero_one_fires() {
+        // strtoul("01", ...) = 1 (leading zeros are valid decimal syntax to
+        // strtoul) -> the daemon runs permissive.
+        let diags = lint_conf("permissive = 01\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "permissive=01 parses to 1 in the real daemon; must fire: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn permissive_ten_fires() {
+        // strtoul("10", ...) = 10, clamped to 1 by the same range check ->
+        // the daemon runs permissive.
+        let diags = lint_conf("permissive = 10\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "permissive=10 clamps to permissive-mode in the real daemon; must fire: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn permissive_all_zeros_is_clean() {
+        // strtoul("00", ...) = 0 -> the daemon stays enforcing.
+        let diags = lint_conf("permissive = 00\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "permissive=00 parses to 0 (enforcing) in the real daemon: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn permissive_non_numeric_is_clean() {
+        // "1x" has trailing non-digit garbage after the leading digit, a
+        // parse error in the real daemon's config-value parsing -> the
+        // enforcing default is left in place.
+        let diags = lint_conf("permissive = 1x\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "permissive=1x is a parse error in the real daemon (stays enforcing): {diags:?}"
         );
     }
 
