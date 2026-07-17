@@ -272,25 +272,77 @@ fn legacy_classify(name: &str) -> Option<AttrSide> {
 }
 
 /// Split a flat legacy-syntax attribute list into `(subject, object)` using
-/// the legacy-specific attribute classifier. The first object-only attribute
-/// marks the switch point.
+/// the legacy-specific attribute classifier, one token at a time and
+/// order-INDEPENDENT (issue #546) - matching upstream fapolicyd's `nv_split`
+/// (`rules.c:922-1027` v1.4.5 / `rules.c:784-892` v1.3.2): each `key=value`
+/// token is classified individually via a name->side lookup with no
+/// positional ordering constraint, and a legacy-illegal or unknown name (e.g.
+/// `gid`) errors immediately regardless of what follows.
+///
+/// A bare `all` token (`Attr::All`, never `Attr::Kv` - see `attr()`'s
+/// `attr_all` branch) is not itself named, so it routes by the RUNNING
+/// subject/object counts at the point it is encountered, exactly like
+/// upstream: subject if nothing has been classified subject yet, else object
+/// if nothing has been classified object yet, else an error (both sides
+/// already populated). `legacy_classify`'s `Either` case (only ever "all",
+/// which the parser never produces as a `Kv`) is routed the same way for
+/// defense in depth, though it is unreachable in practice.
 ///
 /// Uses `legacy_classify` (not `attrs::classify`) so that `dir`, `ftype`, and
-/// `trust` correctly serve as object-side anchors in the legacy dialect.
+/// `trust` correctly serve as object-side anchors in the legacy dialect. Does
+/// NOT change `legacy_classify`'s truth table.
 fn positional_split(attrs_flat: &[Attr]) -> Result<(Vec<Attr>, Vec<Attr>), String> {
-    let switch_at = attrs_flat
-        .iter()
-        .position(|a| {
-            matches!(a, Attr::Kv { key, .. } if matches!(legacy_classify(key), Some(AttrSide::Object)))
-        })
-        .ok_or_else(|| "legacy rule has no object-only attribute to split on".to_string())?;
+    let mut subject: Vec<Attr> = Vec::new();
+    let mut object: Vec<Attr> = Vec::new();
 
-    let subject: Vec<Attr> = attrs_flat[..switch_at].to_vec();
-    let object: Vec<Attr> = attrs_flat[switch_at..].to_vec();
+    for a in attrs_flat {
+        match a {
+            Attr::Kv { key, .. } => match legacy_classify(key) {
+                Some(AttrSide::Subject) => subject.push(a.clone()),
+                Some(AttrSide::Object) => object.push(a.clone()),
+                Some(AttrSide::Either) => route_by_running_count(a, &mut subject, &mut object)?,
+                None => {
+                    return Err(format!(
+                        "legacy rule references unknown or legacy-illegal attribute `{key}`"
+                    ));
+                }
+            },
+            Attr::All => route_by_running_count(a, &mut subject, &mut object)?,
+        }
+    }
+
     if subject.is_empty() {
-        return Err("legacy rule has no subject attributes before the object split".to_string());
+        return Err("legacy rule has no subject attribute".to_string());
+    }
+    if object.is_empty() {
+        return Err("legacy rule has no object attribute".to_string());
     }
     Ok((subject, object))
+}
+
+/// Route an unnamed-side token (`Attr::All`, or in principle `Either`) to
+/// whichever side is still empty, matching upstream `nv_split`'s
+/// `s_count == 0` / `o_count == 0` running-count check: subject if the
+/// subject side has nothing yet, else object if the object side has nothing
+/// yet, else an error (both sides already populated - a case no frozen test
+/// exercises, since it requires three-plus unnamed tokens in one rule).
+fn route_by_running_count(
+    a: &Attr,
+    subject: &mut Vec<Attr>,
+    object: &mut Vec<Attr>,
+) -> Result<(), String> {
+    if subject.is_empty() {
+        subject.push(a.clone());
+    } else if object.is_empty() {
+        object.push(a.clone());
+    } else {
+        return Err(
+            "legacy rule has a bare `all` attribute that cannot be classified: \
+             both subject and object sides are already populated"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

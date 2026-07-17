@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use rulesteward_core::extract_audit_field;
+use rulesteward_fapolicyd::is_effectively_permissive;
 
 use super::model::{
     CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts, ServiceState, SystemProbe,
@@ -214,7 +215,8 @@ impl SystemProbe for LiveProbe {
         let conf_path = Path::new("/etc/fapolicyd/fapolicyd.conf");
         let conf_text = std::fs::read_to_string(conf_path)
             .map_err(|e| format!("cannot read {}: {e}", conf_path.display()))?;
-        let permissive_set = conf_value(&conf_text, "permissive") == Some("1");
+        let permissive_set =
+            conf_value(&conf_text, "permissive").is_some_and(is_effectively_permissive);
 
         // Check for sha256hash= in any rules file.
         let deprecated_sha256hash = check_sha256hash_in_dir(rules_dir);
@@ -255,14 +257,20 @@ fn read_fapolicyd_mode() -> Option<String> {
 /// Inner implementation of `read_fapolicyd_mode` that accepts an explicit path
 /// so that unit tests can supply a temp file without touching the real system.
 ///
-/// Returns `Some("permissive")` if `permissive` is set to `1` (tolerant of any
-/// whitespace around `=`), `Some("enforcing")` if the file is readable but the
-/// key is absent or set to anything other than `1`, and `None` if the file cannot
-/// be read. Shares the `conf_value` reader with the misconfiguration check so the
-/// two cannot disagree on a line like `permissive =1` (issue #192, D2).
+/// Returns `Some("permissive")` if `permissive` resolves to an effectively-
+/// permissive value per the daemon's `strtoul`-then-clamp semantics (issue
+/// #567; see `rulesteward_fapolicyd::is_effectively_permissive`'s doc for the
+/// exact predicate - not just the literal `"1"`), `Some("enforcing")` if the
+/// file is readable but the key is absent or resolves to a non-permissive
+/// value, and `None` if the file cannot be read. Shares the `conf_value`
+/// reader with the misconfiguration check so the two cannot disagree on a
+/// line like `permissive =1` (issue #192, D2), and shares
+/// `is_effectively_permissive` with `LiveProbe::fapolicyd_conf`'s
+/// `permissive_set` so the two probe sites cannot drift on the fail-open
+/// predicate itself.
 fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(conf_path).ok()?;
-    if conf_value(&text, "permissive") == Some("1") {
+    if conf_value(&text, "permissive").is_some_and(is_effectively_permissive) {
         Some("permissive".to_string())
     } else {
         Some("enforcing".to_string())

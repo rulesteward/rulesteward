@@ -67,20 +67,47 @@ fn f03<'e>(entries: &'e [Entry], file: &Path) -> Option<Diagnostic> {
     }
 }
 
-/// fapd-E01 - attribute key not in `attrs::is_known`. Emitted once per offending
-/// attribute (so a rule with two unknown keys yields two diagnostics).
+/// Attribute names excluded from fapd-E01's general SIDE check (issue #545).
+/// `device`'s side-validity and `filehash`'s existence are both
+/// version-DIVERGENT, so their wrong-side reporting is owned exclusively by
+/// fapd-E06 (`version_target.rs::check_subject_device` / `check_filehash`);
+/// flagging them here version-invariantly would false-positive on rhel8. See
+/// #568 for the tracked filehash-side follow-up.
+const SIDE_CHECK_EXCLUDED: &[&str] = &["device", "filehash"];
+
+/// Human-readable name for an `AttrSide`, used in fapd-E01's wrong-side message.
+fn side_name(side: attrs::AttrSide) -> &'static str {
+    match side {
+        attrs::AttrSide::Subject => "subject",
+        attrs::AttrSide::Object => "object",
+        attrs::AttrSide::Either => "either",
+    }
+}
+
+/// fapd-E01 - attribute key not in `attrs::is_known`, OR a known attribute
+/// placed on the wrong side (issue #545: `attrs::classify` disagrees with the
+/// side the `Attr::Kv` was actually parsed on). Emitted once per offending
+/// attribute (so a rule with two unknown keys yields two diagnostics). The
+/// side check is version-INVARIANT (no `--target` gating): `attrs::AttrSide`
+/// has no per-version variant, unlike fapd-E06's genuinely version-divergent
+/// checks.
 fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for entry in entries {
         if let Entry::Rule(r) = entry {
-            for attr in r.subject.iter().chain(r.object.iter()) {
-                if let Attr::Kv {
-                    key,
-                    span: attr_span,
-                    ..
-                } = attr
-                    && !attrs::is_known(key)
-                {
+            for (side, side_attrs) in [
+                (attrs::AttrSide::Subject, &r.subject),
+                (attrs::AttrSide::Object, &r.object),
+            ] {
+                for attr in side_attrs {
+                    let Attr::Kv {
+                        key,
+                        span: attr_span,
+                        ..
+                    } = attr
+                    else {
+                        continue;
+                    };
                     // Point the caret at the offending `key=value` attribute,
                     // not at the whole rule. Column is 1-based: byte offset of
                     // the attribute from the start of the rule line, plus 1.
@@ -92,15 +119,40 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // any future caller that skips fill_columns); retained so
                     // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
-                    diags.push(super::anchored_at(
-                        Severity::Error,
-                        "fapd-E01",
-                        attr_span.clone(),
-                        format!("unknown attribute `{key}`"),
-                        file,
-                        r.line,
-                        col,
-                    ));
+                    if !attrs::is_known(key) {
+                        diags.push(super::anchored_at(
+                            Severity::Error,
+                            "fapd-E01",
+                            attr_span.clone(),
+                            format!("unknown attribute `{key}`"),
+                            file,
+                            r.line,
+                            col,
+                        ));
+                        continue;
+                    }
+                    if SIDE_CHECK_EXCLUDED.contains(&key.as_str()) {
+                        continue;
+                    }
+                    if let Some(declared) = attrs::classify(key)
+                        && declared != attrs::AttrSide::Either
+                        && declared != side
+                    {
+                        diags.push(super::anchored_at(
+                            Severity::Error,
+                            "fapd-E01",
+                            attr_span.clone(),
+                            format!(
+                                "attribute `{key}` is not valid on the {} side \
+                                 (expected {})",
+                                side_name(side),
+                                side_name(declared),
+                            ),
+                            file,
+                            r.line,
+                            col,
+                        ));
+                    }
                 }
             }
         }
