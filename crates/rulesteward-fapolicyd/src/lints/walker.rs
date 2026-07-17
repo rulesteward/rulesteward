@@ -249,6 +249,199 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // fapd-E01 attribute-SIDE check (issue #545, CRITICAL fail-open).
+    //
+    // Grounded in the overnight audit lane report (2026-07-17,
+    // research-notes/overnight/2026-07-17/lane1-fapolicyd.md, Finding F1),
+    // which reproduced all five fixtures below LIVE against fapolicyd 1.3.2
+    // (rhel8) and 1.4.5 (rhel9/rhel10): the daemon rejects every wrong-side
+    // attribute with "Field type (X) is unknown in line N" plus a follow-up
+    // "Subject is missing" / "Object is missing", and the daemon PROCESS
+    // EXITS(1) - fapolicyd never starts, so the host loses all
+    // execution-control enforcement.
+    //
+    // Today `e01` only calls `attrs::is_known(key)` (side-blind: true for a
+    // name in ANY of SUBJECT_ONLY/OBJECT_ONLY/BOTH_SIDES regardless of which
+    // side it was found on), so every one of these fixtures is RED (e01
+    // returns zero diagnostics). After the fix (compare `attrs::classify(key)`
+    // against the side the `Attr::Kv` was actually found on - `r.subject` vs
+    // `r.object`), each must fire fapd-E01.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn e01_fires_on_mode_placed_on_subject_side() {
+        // `mode` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `allow perm=any mode=0755 : all` -> fapolicyd9 (1.4.5) "Field type
+        // (mode) is unknown in line 2" + "Subject is missing"; fapolicyd8
+        // (1.3.2) "Field type (mode) is unknown in line 2". RuleSteward today:
+        // exit 0, zero diagnostics on every --target (the bug).
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "mode".into(),
+                value: AttrValue::Str("0755".into()),
+                span: 0..0,
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "mode= (object-only) on the subject side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_fires_on_uid_placed_on_object_side() {
+        // `uid` is SUBJECT_ONLY (attrs.rs:41). Daemon fixture (grounded):
+        // `allow perm=any all : uid=0` -> fapolicyd9 "Field type (uid) is
+        // unknown in line 2" + "Object is missing". RuleSteward today: exit 0,
+        // zero diagnostics.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0,
+            }],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "uid= (subject-only) on the object side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_fires_on_path_placed_on_subject_side() {
+        // `path` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `allow perm=any path=/bin/sh : all` -> fapolicyd9 "Field type (path)
+        // is unknown in line 2" + "Subject is missing".
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::Kv {
+                key: "path".into(),
+                value: AttrValue::Str("/bin/sh".into()),
+                span: 0..0,
+            }],
+            vec![Attr::All],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "path= (object-only) on the subject side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_fires_on_exe_placed_on_object_side() {
+        // `exe` is SUBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
+        // `allow perm=any all : exe=/bin/sh` -> fapolicyd9 "Field type (exe)
+        // is unknown in line 2" + "Object is missing".
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "exe".into(),
+                value: AttrValue::Str("/bin/sh".into()),
+                span: 0..0,
+            }],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "exe= (subject-only) on the object side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_fires_on_pattern_placed_on_object_side() {
+        // `pattern` is SUBJECT_ONLY (attrs.rs:52). Daemon fixture (grounded):
+        // `allow perm=any all : pattern=ld_so` -> fapolicyd9 "Field type
+        // (pattern) is unknown in line 2" + "Object is missing". Distinct from
+        // fapd-E06's `check_pattern` (version_target.rs), which only scans
+        // `rule.subject` for an out-of-range pattern VALUE and only under an
+        // explicit --target; an object-side `pattern=` is invisible to it.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![Attr::All],
+            vec![Attr::Kv {
+                key: "pattern".into(),
+                value: AttrValue::Str("ld_so".into()),
+                span: 0..0,
+            }],
+        )];
+        let diags = e01(&entries, &p());
+        assert_eq!(
+            diags.len(),
+            1,
+            "pattern= (subject-only) on the object side must fire fapd-E01; got {diags:?}"
+        );
+        assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+    }
+
+    #[test]
+    fn e01_negative_control_correct_side_attributes_do_not_fire() {
+        // Every attribute on its CORRECT side: uid/comm (subject-only) on
+        // subject, path/trust (object-only / either) on object. Must NOT fire
+        // fapd-E01 - proves the side check is precise, not a blanket
+        // false-positive on every known attribute.
+        let entries = vec![modern_rule(
+            1,
+            Decision::Allow,
+            None,
+            vec![
+                Attr::Kv {
+                    key: "uid".into(),
+                    value: AttrValue::Int(0),
+                    span: 0..0,
+                },
+                Attr::Kv {
+                    key: "comm".into(),
+                    value: AttrValue::Str("bash".into()),
+                    span: 0..0,
+                },
+            ],
+            vec![
+                Attr::Kv {
+                    key: "path".into(),
+                    value: AttrValue::Str("/usr/bin/sh".into()),
+                    span: 0..0,
+                },
+                Attr::Kv {
+                    key: "trust".into(),
+                    value: AttrValue::Str("1".into()),
+                    span: 0..0,
+                },
+            ],
+        )];
+        let diags = e01(&entries, &p());
+        assert!(
+            diags.is_empty(),
+            "correct-side attributes must never fire fapd-E01; got {diags:?}"
+        );
+    }
+
     #[test]
     fn w02_fires_on_canonical_allow_execute_all_all() {
         let entries = vec![modern_rule(

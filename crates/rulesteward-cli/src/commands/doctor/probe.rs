@@ -571,6 +571,92 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // read_fapolicyd_mode_from: fail-open value parity (issue #567).
+    //
+    // Ground truth (fapolicyd `daemon-config.c`'s `permissive_parser`,
+    // already cited and grounded for the sibling fapd-W14 check at
+    // `rulesteward-fapolicyd/src/lints/conf.rs::is_effectively_permissive`):
+    // the daemon delegates to `unsigned_int_parser` - a base-10 `strtoul` of
+    // the WHOLE value - then CLAMPS any parsed value greater than 1 down to
+    // 1. So the real daemon runs permissive (fail-open) for ANY non-empty,
+    // all-ASCII-digit value that contains at least one nonzero digit: "1",
+    // "2", "10", "01" (leading zeros are valid decimal syntax to strtoul),
+    // not just the exact string "1". Today `read_fapolicyd_mode_from` (and
+    // the sibling `LiveProbe::fapolicyd_conf`'s `permissive_set` at line 217,
+    // which shares the identical `== Some("1")` bug but has no path-injection
+    // seam for a unit test) compares `conf_value(...) == Some("1")` -
+    // exact-string, so any nonzero-numeric-but-not-literal-"1" value is a
+    // false negative: doctor reports "enforcing" for a daemon that is
+    // actually fail-open.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_two_returns_permissive() {
+        // strtoul("2", ...) = 2, clamped to 1 by unsigned_int_parser's range
+        // check -> the real daemon runs permissive. RED: the probe's exact
+        // `== "1"` compare treats "2" as not-"1" and reports "enforcing".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 2\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=2 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_leading_zero_one_returns_permissive() {
+        // strtoul("01", ...) = 1 (leading zeros are valid decimal syntax to
+        // strtoul) -> the real daemon runs permissive. RED: the probe's
+        // exact `== "1"` string compare treats "01" as not-"1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 01\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=01 parses to 1 in the real daemon; the probe's exact \
+             `==\"1\"` compare misses the leading zero (#567)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_all_zeros_returns_enforcing() {
+        // strtoul("00", ...) = 0 -> the real daemon stays enforcing. Pinning
+        // control: must NOT flip to "permissive" as a side effect of fixing
+        // #567 (an all-digit predicate that forgets the "at least one
+        // nonzero digit" clause would wrongly fire here).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 00\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=00 parses to 0 (enforcing) in the real daemon"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_non_numeric_returns_enforcing() {
+        // "1x" has trailing non-digit garbage after the leading digit - a
+        // parse error in the real daemon's strtoul-based parser, leaving the
+        // enforcing default in place. Pinning control against an over-eager
+        // digit-PREFIX fix (e.g. one that only checks the first byte is a
+        // nonzero digit rather than every byte).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1x\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=1x is a parse error in the real daemon (stays enforcing)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // read_compiled_final_rule_from (#519, G1/G2 grounding).
     // -------------------------------------------------------------------------
 
