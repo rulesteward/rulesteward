@@ -1,0 +1,28 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the fapolicyd crate purely to import the shipped STIG control
+# table (`lints::stig::stig_controls`) for the `check` drift gate (#519); that
+# crate resolves its own workspace inheritance against the repo root (cargo
+# finds a package's workspace by walking up from the package's OWN location),
+# so the path-dep builds cleanly from here. Cloned from
+# `tools/auditd-stig-update/Cargo.toml` (names swapped); mirrors its dependency
+# shape exactly so the drift-derive implementation (SKELETON ONLY today - see
+# src/main.rs) can be filled in without a further Cargo.toml edit.
+[workspace]
+
+[package]
+name = "fapolicyd-stig-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the fapolicyd #519 STIG control table from the official DISA XCCDF."
+
+[dependencies]
+rulesteward-fapolicyd = { path = "../../crates/rulesteward-fapolicyd" }
+regex = "1"
+toml = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (matches
+# tools/auditd-stig-update's deliberate deviation from
+# tools/sshd-stig-update's homegrown regex+entity-decode approach).
+quick-xml = "0.41"

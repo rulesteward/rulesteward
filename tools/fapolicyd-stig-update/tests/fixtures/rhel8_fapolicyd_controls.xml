@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Trimmed slice of the official, publicly-releasable DISA RHEL 8 STIG V2R4
+  XCCDF benchmark (U_RHEL_8_V2R4_STIG.zip, 02 Jul 2025 benchmark date),
+  containing exactly the 3 fapolicyd Groups (#519 Installed/Enabled/DenyAll)
+  plus 2 decoy Groups (a Linux Security Module / SELinux check and a
+  policycoreutils package check - real DISA Groups that are NOT fapolicyd
+  controls, so the selector-exclusion tests have real, non-synthetic negative
+  fixtures). `check-content`/`fixtext` text is copied VERBATIM from the source
+  benchmark. See ../fixtures/README.md for provenance and the selector.
+-->
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" xmlns:dc="http://purl.org/dc/elements/1.1/" id="RHEL_8_FAPOLICYD_TEST_FIXTURE">
+<title>Trimmed RHEL 8 V2R4 fapolicyd + decoy Groups (test fixture, not the full benchmark).</title>
+<Group id="V-230523"><title>SRG-OS-000368-GPOS-00154</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-230523r958804_rule" weight="10.0" severity="medium"><version>RHEL-08-040135</version><title>The RHEL 8 fapolicy module must be installed.</title><description>&lt;VulnDiscussion&gt;The organization must identify authorized software programs and permit execution of authorized software. The process used to identify software programs that are authorized to execute on organizational information systems is commonly referred to as whitelisting.
+
+Utilizing a whitelist provides a configuration management method for allowing the execution of only authorized software. Using only authorized software decreases risk by limiting the number of potential vulnerabilities. Verification of whitelisted software occurs prior to execution or at system startup.
+
+User home directories/folders may contain information of a sensitive nature. Non-privileged users should coordinate any sharing of information with an SA through shared resources.
+
+RHEL 8 ships with many optional packages. One such package is a file access policy daemon called "fapolicyd". "fapolicyd" is a userspace daemon that determines access rights to files based on attributes of the process and file. It can be used to either blacklist or whitelist processes or file access.
+
+Proceed with caution with enforcing the use of this daemon. Improper configuration may render the system non-functional. The "fapolicyd" API is not namespace aware and can cause issues when launching or running containers.
+
+Satisfies: SRG-OS-000368-GPOS-00154, SRG-OS-000370-GPOS-00155, SRG-OS-000480-GPOS-00232&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 8</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 8</dc:subject><dc:identifier>2921</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001764</ident><fixtext fixref="F-33167r744022_fix">Install "fapolicyd" with the following command:
+
+$ sudo yum install fapolicyd.x86_64</fixtext><fix id="F-33167r744022_fix" /><check system="C-33192r744021_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_8_STIG.xml" name="M" /><check-content>Verify the RHEL 8 "fapolicyd" is installed.
+
+Check that "fapolicyd" is installed with the following command:
+
+$ sudo yum list installed fapolicyd
+
+Installed Packages
+fapolicyd.x86_64
+
+If fapolicyd is not installed, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-244545"><title>SRG-OS-000368-GPOS-00154</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-244545r958804_rule" weight="10.0" severity="medium"><version>RHEL-08-040136</version><title>The RHEL 8 fapolicy module must be enabled.</title><description>&lt;VulnDiscussion&gt;The organization must identify authorized software programs and permit execution of authorized software. The process used to identify software programs that are authorized to execute on organizational information systems is commonly referred to as whitelisting.
+
+Utilizing a whitelist provides a configuration management method for allowing the execution of only authorized software. Using only authorized software decreases risk by limiting the number of potential vulnerabilities. Verification of whitelisted software occurs prior to execution or at system startup.
+
+User home directories/folders may contain information of a sensitive nature. Non-privileged users should coordinate any sharing of information with an SA through shared resources.
+
+RHEL 8 ships with many optional packages. One such package is a file access policy daemon called "fapolicyd". "fapolicyd" is a userspace daemon that determines access rights to files based on attributes of the process and file. It can be used to either blacklist or whitelist processes or file access.
+
+Proceed with caution with enforcing the use of this daemon. Improper configuration may render the system non-functional. The "fapolicyd" API is not namespace aware and can cause issues when launching or running containers.
+
+Satisfies: SRG-OS-000368-GPOS-00154, SRG-OS-000370-GPOS-00155, SRG-OS-000480-GPOS-00232&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 8</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 8</dc:subject><dc:identifier>2921</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001764</ident><fixtext fixref="F-47777r743883_fix">Enable "fapolicyd" using the following command:
+
+$ sudo systemctl enable --now fapolicyd</fixtext><fix id="F-47777r743883_fix" /><check system="C-47820r743882_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_8_STIG.xml" name="M" /><check-content>Verify the RHEL 8 "fapolicyd" is enabled and running with the following command:
+
+$ sudo systemctl status fapolicyd.service
+
+fapolicyd.service - File Access Policy Daemon
+Loaded: loaded (/usr/lib/systemd/system/fapolicyd.service; enabled; vendor preset: disabled)
+Active: active (running)
+
+If fapolicyd is not enabled and running, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-244546"><title>SRG-OS-000368-GPOS-00154</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-244546r1017349_rule" weight="10.0" severity="medium"><version>RHEL-08-040137</version><title>The RHEL 8 fapolicy module must be configured to employ a deny-all, permit-by-exception policy to allow the execution of authorized software programs.</title><description>&lt;VulnDiscussion&gt;The organization must identify authorized software programs and permit execution of authorized software. The process used to identify software programs that are authorized to execute on organizational information systems is commonly referred to as whitelisting.
+
+Utilizing a whitelist provides a configuration management method for allowing the execution of only authorized software. Using only authorized software decreases risk by limiting the number of potential vulnerabilities. Verification of whitelisted software occurs prior to execution or at system startup.
+
+User home directories/folders may contain information of a sensitive nature. Non-privileged users should coordinate any sharing of information with an SA through shared resources.
+
+RHEL 8 ships with many optional packages. One such package is a file access policy daemon called "fapolicyd". "fapolicyd" is a userspace daemon that determines access rights to files based on attributes of the process and file. It can be used to either blacklist or whitelist processes or file access.
+
+Proceed with caution with enforcing the use of this daemon. Improper configuration may render the system non-functional. The "fapolicyd" API is not namespace aware and can cause issues when launching or running containers.
+
+Satisfies: SRG-OS-000368-GPOS-00154, SRG-OS-000370-GPOS-00155, SRG-OS-000480-GPOS-00232&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 8</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 8</dc:subject><dc:identifier>2921</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001764</ident><fixtext fixref="F-47778r858729_fix">Configure RHEL 8 to employ a deny-all, permit-by-exception application whitelisting policy with "fapolicyd".
+
+With the "fapolicyd" installed and enabled, configure the daemon to function in permissive mode until the whitelist is built correctly to avoid system lockout. Do this by editing the "/etc/fapolicyd/fapolicyd.conf" file with the following line:
+
+permissive = 1
+
+For RHEL 8.4 systems and older:
+Build the whitelist in the "/etc/fapolicyd/fapolicyd.rules" file ensuring the last rule is "deny perm=any all : all".
+
+For RHEL 8.5 systems and newer:
+Build the whitelist in a file within the "/etc/fapolicyd/rules.d" directory ensuring the last rule is "deny perm=any all : all".
+
+Once it is determined the whitelist is built correctly, set the fapolicyd to enforcing mode by editing the "permissive" line in the /etc/fapolicyd/fapolicyd.conf file.
+
+permissive = 0</fixtext><fix id="F-47778r858729_fix" /><check system="C-47821r858728_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_8_STIG.xml" name="M" /><check-content>Verify the RHEL 8 "fapolicyd" employs a deny-all, permit-by-exception policy.
+
+Check that "fapolicyd" is in enforcement mode with the following command:
+
+$ sudo grep permissive /etc/fapolicyd/fapolicyd.conf
+
+permissive = 0
+
+Check that fapolicyd employs a deny-all policy on system mounts with the following commands:
+
+For RHEL 8.4 systems and older:
+$ sudo tail /etc/fapolicyd/fapolicyd.rules
+
+For RHEL 8.5 systems and newer:
+$ sudo tail /etc/fapolicyd/compiled.rules
+
+allow exe=/usr/bin/python3.7 : ftype=text/x-python
+deny_audit perm=any pattern=ld_so : all
+deny perm=any all : all
+
+If fapolicyd is not running in enforcement mode with a deny-all, permit-by-exception policy, this is a finding.</check-content></check></Rule></Group>
+<!-- DECOY 1: a Linux Security Module / SELinux check - NOT a fapolicyd control. -->
+<Group id="V-230240"><title>SRG-OS-000134-GPOS-00068</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-230240r1017059_rule" weight="10.0" severity="medium"><version>RHEL-08-010170</version><title>RHEL 8 must use a Linux Security Module configured to enforce limits on system services.</title><description>&lt;VulnDiscussion&gt;Without verification of the security functions, security functions may not operate correctly and the failure may go unnoticed. Security function is defined as the hardware, software, and/or firmware of the information system responsible for enforcing the system security policy and supporting the isolation of code and data on which the protection is based. Security functionality includes, but is not limited to, establishing system accounts, configuring access authorizations (i.e., permissions, privileges), setting events to be audited, and setting intrusion detection parameters.
+
+This requirement applies to operating systems performing security function verification/testing and/or systems and environments that require this functionality.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 8</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 8</dc:subject><dc:identifier>2921</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001084</ident><fixtext fixref="F-32884r567467_fix">Configure the operating system to verify correct operation of all security functions.
+
+Set the "SELinux" status and the "Enforcing" mode by modifying the "/etc/selinux/config" file to have the following line:
+
+SELINUX=enforcing
+
+A reboot is required for the changes to take effect.</fixtext><fix id="F-32884r567467_fix" /><check system="C-32909r567466_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_8_STIG.xml" name="M" /><check-content>Verify the operating system verifies correct operation of all security functions.
+
+Check if "SELinux" is active and in "Enforcing" mode with the following command:
+
+$ sudo getenforce
+Enforcing
+
+If "SELinux" is not active and not in "Enforcing" mode, this is a finding.</check-content></check></Rule></Group>
+<!-- DECOY 2: a policycoreutils package check - NOT a fapolicyd control. -->
+<Group id="V-230241"><title>SRG-OS-000134-GPOS-00068</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-230241r1017060_rule" weight="10.0" severity="low"><version>RHEL-08-010171</version><title>RHEL 8 must have policycoreutils package installed.</title><description>&lt;VulnDiscussion&gt;Without verification of the security functions, security functions may not operate correctly and the failure may go unnoticed. Security function is defined as the hardware, software, and/or firmware of the information system responsible for enforcing the system security policy and supporting the isolation of code and data on which the protection is based. Security functionality includes, but is not limited to, establishing system accounts, configuring access authorizations (i.e., permissions, privileges), setting events to be audited, and setting intrusion detection parameters.
+
+Policycoreutils contains the policy core utilities that are required for basic operation of an SELinux-enabled system. These utilities include load_policy to load SELinux policies, setfile to label filesystems, newrole to switch roles, and run_init to run /etc/init.d scripts in the proper context.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 8</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 8</dc:subject><dc:identifier>2921</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001084</ident><fixtext fixref="F-32885r567470_fix">Configure the operating system to have the policycoreutils package installed with the following command:
+
+$ sudo yum install policycoreutils</fixtext><fix id="F-32885r567470_fix" /><check system="C-32910r567469_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_8_STIG.xml" name="M" /><check-content>Verify the operating system has the policycoreutils package installed with the following command:
+
+$ sudo yum list installed policycoreutils
+
+policycoreutils.x86_64                                              2.9-3.el8                                                  @anaconda
+
+If the policycoreutils package is not installed, this is a finding.</check-content></check></Rule></Group>
+</Benchmark>
