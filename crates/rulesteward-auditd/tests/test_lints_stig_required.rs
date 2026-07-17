@@ -599,7 +599,18 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     );
 
     let rhel9 = stig_baseline(TargetVersion::Rhel9);
-    assert_eq!(rhel9.len(), 70, "{rhel9:?}");
+    // #549 RE-GROUNDED (session 9e-wave2c pipeline P2, 2026-07-17;
+    // strengthened per adversarial review of commit bbcca23): was 70.
+    // DISA RHEL 9 STIG V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip;
+    // lane3-tooling.md T1 DRIFT-CHECK, "33 change(s)") rewrote 9
+    // identity/login audit rules from single-line watch form into dual-arch
+    // (b32/b64) syscall form (net +9: 9 old lines -> 18 new lines) and added a
+    // new required rule, V-279936 (RHEL-09-654097), for `execve` auditing
+    // scoped to `subj_type=crond_t` (`cron_exec` key), replacing the two old
+    // cron watch lines with 4 new dual-arch syscall lines (net +2). Net table
+    // growth: 70 + 9 + 2 = 81. RED today: the shipped table is still 70 rows
+    // (V2R7-grounded identity/cron content).
+    assert_eq!(rhel9.len(), 81, "{rhel9:?}");
     assert!(
         rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
         "RHEL9 baseline must contain RHEL-09-654010: {rhel9:?}"
@@ -634,6 +645,133 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
         rhel10.iter().any(|r| r.stig_id == "RHEL-10-900100"),
         "RHEL10 baseline must contain the new RHEL-10-900100 (\"-e 2\") deepening entry: {rhel10:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #549 content pins (adversarial-review finding 2a, split into its own test
+// function to keep `stig_baseline_returns_the_real_shipped_table_for_each_
+// target` under clippy's too_many_lines threshold): exact `line ==` pins for
+// ALL 10 V2R9-rewritten RHEL9 V-numbers (9 identity/login + V-279936
+// cron_exec), not just the aggregate count the sibling test above pins --
+// closes the gap where an impl could hit the count of 81 with wrong syscall
+// content, or where a typo'd new form for an already-scenario-tested row
+// (V-258222/V-258223/V-279936, see the real-entrypoint tests further below)
+// would still pass because the OLD form also fails to match a typo'd
+// requirement.
+//
+// Every line below is transcribed VERBATIM from this V-number's Group's
+// <check-content> in the real DISA RHEL 9 STIG V2R9 XCCDF (downloaded
+// 2026-07-17 from https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/
+// U_RHEL_9_V2R9_STIG.zip into /mnt/side-projects/9e-wave2c/scratch/
+// stig-v2r9/U_RHEL_9_V2R9_Manual_STIG/U_RHEL_9_STIG_V2R9_Manual-xccdf.xml,
+// outside the repo) -- check-content, NOT fixtext: this project's own
+// `tools/auditd-stig-update/src/xccdf.rs` module doc documents a DELIBERATE
+// deviation from the sshd-stig-update precedent specifically because fixtext
+// disagrees with check-content for 41/51 RHEL9 requirements (omits `-S all`,
+// wrong sentinel spelling, `-k` instead of `-F key=`). This project's OWN
+// choice of check-content as the authoritative source is independently
+// corroborated here: V-258221's fixtext literally has a typo (`-F
+// path=/etc/opasswd`, dropping `/security/`) that check-content does NOT
+// have (`-F path=/etc/security/opasswd`, matching the Group's own
+// title/description) -- verified directly against the raw XCCDF XML, not
+// assumed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stig_baseline_rhel9_v2r9_content_pins() {
+    let rhel9 = stig_baseline(TargetVersion::Rhel9);
+
+    let identity_pins: &[(&str, &str, &str)] = &[
+        (
+            "V-258217",
+            "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity",
+        ),
+        (
+            "V-258218",
+            "-a always,exit -F arch=b32 -F path=/etc/sudoers.d -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/sudoers.d -F perm=wa -k identity",
+        ),
+        (
+            "V-258219",
+            "-a always,exit -F arch=b32 -F path=/etc/group -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity",
+        ),
+        (
+            "V-258220",
+            "-a always,exit -F arch=b32 -F path=/etc/gshadow -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/gshadow -F perm=wa -k identity",
+        ),
+        (
+            "V-258221",
+            "-a always,exit -F arch=b32 -F path=/etc/security/opasswd -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/security/opasswd -F perm=wa -k identity",
+        ),
+        (
+            "V-258222",
+            "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity",
+        ),
+        (
+            "V-258223",
+            "-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity",
+            "-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity",
+        ),
+        (
+            "V-258224",
+            "-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+            "-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+        ),
+        // V-258225's b64 check-content line carries a stray DOUBLE space
+        // before `-F perm=wa` in the raw DISA XCCDF text
+        // ("/var/log/lastlog  -F perm=wa", verified against the raw XML, not
+        // an extraction artifact). Whitespace is not semantic to the rules.d
+        // grammar (the parser tokenizes on whitespace) and every OTHER
+        // hand-transcribed `BaselineRule.line` in this table uses single
+        // spaces, so the pin below normalizes to one space rather than
+        // encoding DISA's incidental formatting quirk as a byte-exact
+        // requirement.
+        (
+            "V-258225",
+            "-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+            "-a always,exit -F arch=b64 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+        ),
+    ];
+    for (v_number, b32_line, b64_line) in identity_pins {
+        assert!(
+            rhel9
+                .iter()
+                .any(|r| r.v_number == *v_number && r.line == *b32_line),
+            "RHEL9 baseline must contain {v_number}'s V2R9 b32 dual-arch \
+             syscall form exactly: {b32_line:?}; got {rhel9:?}"
+        );
+        assert!(
+            rhel9
+                .iter()
+                .any(|r| r.v_number == *v_number && r.line == *b64_line),
+            "RHEL9 baseline must contain {v_number}'s V2R9 b64 dual-arch \
+             syscall form exactly: {b64_line:?}; got {rhel9:?}"
+        );
+    }
+
+    // V-279936 (RHEL-09-654097): the new cron_exec rule, 4 lines (b32/b64 x
+    // auid-scoped/euid=0 variants), transcribed verbatim from its
+    // check-content in the same downloaded V2R9 XCCDF.
+    let v279936_lines: &[&str] = &[
+        "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+        "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+        "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+        "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+    ];
+    for line in v279936_lines {
+        assert!(
+            rhel9
+                .iter()
+                .any(|r| r.v_number == "V-279936" && r.line == *line),
+            "RHEL9 baseline must contain V-279936's V2R9 line exactly: \
+             {line:?}; got {rhel9:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1431,36 @@ fn w06_real_entrypoint_names_rhel9_identity_syscall_form_v258222_passwd() {
         "the old watch-form /etc/passwd line must no longer satisfy V-258222 \
          (RHEL-09-654240) once the shipped table requires the new dual-arch \
          syscall form: {diags:?}"
+    );
+}
+
+#[test]
+fn w06_real_entrypoint_v258222_new_syscall_form_satisfies_once_shipped() {
+    // Positive complement to
+    // `w06_real_entrypoint_names_rhel9_identity_syscall_form_v258222_passwd`
+    // above (adversarial-review finding 2b): feed the ruleset the EXACT V2R9
+    // dual-arch syscall form for V-258222 (transcribed verbatim from its
+    // check-content, same source as the content pins above) and confirm it
+    // does NOT get reported missing.
+    //
+    // RED today, and it lands RED for a DIFFERENT reason than the negative
+    // test above: the shipped RHEL9_REQUIRED table's V-258222 row is still
+    // the OLD single-line watch form (`Watch`-shaped in `rules_match`'s
+    // variant dispatch). A `Syscall`-shaped candidate NEVER matches a
+    // `Watch`-shaped requirement (the `_ => false` arm), so au-W06 currently
+    // reports V-258222 missing even though this ruleset already carries the
+    // (soon-to-be-)correct V2R9 form -- confirmed by actually running this
+    // assertion against the shipped table before adding it (see the
+    // RED-EVIDENCE report).
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-09-654240")),
+        "the V2R9 dual-arch syscall form for V-258222 (RHEL-09-654240) must \
+         satisfy the requirement once the shipped table requires it: {diags:?}"
     );
 }
 

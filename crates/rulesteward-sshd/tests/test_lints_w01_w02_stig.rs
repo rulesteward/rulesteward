@@ -81,8 +81,17 @@ fn codes(diags: &[Diagnostic]) -> Vec<&str> {
 // W01: a config containing ALL required directives => zero findings
 // ---------------------------------------------------------------------------
 
-/// RHEL 9 V2R7 complete set (20 directives) - one finding per MISSING required
-/// directive means supplying ALL of them must yield zero findings.
+/// RHEL 9 complete set: the 19 V2R9-required directives PLUS the legacy
+/// `Compression delayed` line (20 lines total). #549 REFRESHED (2026-07-17):
+/// DISA RHEL 9 STIG V2R9 dropped Compression (V-258002/RHEL-09-255130
+/// removed; was 20-of-20-required under V2R7), so this fixture now carries
+/// one directive (Compression) that is no longer STIG-required -- kept
+/// deliberately (not trimmed to 19) because several tests below derive a
+/// "missing one directive" fixture via `RHEL9_FULL.replace("<line>\n", "")`,
+/// including `.replace("Compression delayed\n", "")`; removing the line here
+/// would silently no-op that `.replace()` call. One finding per MISSING
+/// REQUIRED directive still means supplying all 19 required ones (plus this
+/// harmless extra) must yield zero findings.
 const RHEL9_FULL: &str = "\
 Banner /etc/issue\n\
 LogLevel VERBOSE\n\

@@ -628,12 +628,17 @@ fn effective_global_directives(blocks: &[Block]) -> Vec<&crate::ast::Directive> 
 /// on the `--target` RHEL version; `target=None` uses the conservative floor (the
 /// 14-directive RHEL 8 V2R4 intersection).
 ///
-/// # Per-target required sets (grounded in official DISA XCCDF, 2026-06-14)
+/// # Per-target required sets (grounded in official DISA XCCDF, 2026-06-14;
+/// RHEL9 count REFRESHED 2026-07-17 for issue #549 -- see the "#549
+/// RE-GROUNDED" comments on `RHEL9_REQUIRED` below for the pending array
+/// update this doc anticipates)
 ///
 /// - RHEL 8 V2R4 (`U_RHEL_8_V2R4_STIG.zip`, 02 Jul 2025): 14 directives.
-/// - RHEL 9 V2R7 (`U_RHEL_9_V2R7_STIG.zip`, 05 Jan 2026): 20 directives.
+/// - RHEL 9 V2R9 (`U_RHEL_9_V2R9_STIG.zip`, confirmed 2026-07-17): 19
+///   directives (was 20 under V2R7; DISA dropped Compression,
+///   V-258002/RHEL-09-255130 removed -- lane3-tooling.md T1).
 /// - RHEL 10 V1R1 (`U_RHEL_10_V1R1_STIG.zip`, 26 Feb 2026): 19 directives
-///   (RHEL9 minus Compression, which V1R1 dropped).
+///   (same set as RHEL9 V2R9; RHEL10 also never had Compression).
 ///
 /// # Not in scope
 ///
@@ -1097,6 +1102,18 @@ mod tests {
         // `AnyOf` was Compression's only consumer in `w02_rule`; no other
         // required directive uses it, so there is currently no other AnyOf
         // representative to substitute here.
+        //
+        // IMPLEMENTER NOTE (adversarial-review finding 5, no-speculative-
+        // abstraction project rule): once the `"compression"` arm is removed
+        // from `w02_rule` (line ~302-303), `W02Rule::AnyOf` (line ~254) and
+        // `StigValueRule::AnyOf` (line ~340, plus its `value_rule_of` mapping
+        // arm at line ~562) are constructed NOWHERE in this file and
+        // `clippy -D warnings` will flag the dead arms. Endpoint decision:
+        // DELETE both `AnyOf` variants and their `value_rule_of` mapping arm
+        // as part of the same change (do not keep them "for future use" --
+        // no other STIG control in any current target uses a
+        // multi-value-accepted rule; if one is added later, re-add the
+        // variant then, grounded in that control's real check-content).
     }
 
     /// Compression is dropped from RHEL10, so its projection must NOT include it,
@@ -1390,7 +1407,11 @@ mod tests {
 
     #[test]
     fn w01_completeness_all_required_carry_stig_control_rhel9() {
-        // RHEL9 V2R7: 20 required directives, every id under the `RHEL-09-` prefix.
+        // #549 REFRESHED: RHEL9 V2R9: 19 required directives (was 20 under
+        // V2R7; Compression dropped), every id under the `RHEL-09-` prefix.
+        // This assertion itself is unaffected either way (it reads
+        // `required_set(Some(target)).len()` dynamically, not a hardcoded
+        // count) -- only the comment was stale.
         assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-");
     }
 
