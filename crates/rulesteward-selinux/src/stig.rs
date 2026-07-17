@@ -36,7 +36,7 @@
 //! `tools/selinux-stig-update` for the drift-check gate (mirroring
 //! `rulesteward_sysctld::catalog::stig_baseline`'s consumer shape).
 
-use rulesteward_core::ControlRef;
+use rulesteward_core::{ControlRef, Framework};
 
 use crate::version::TargetVersion;
 
@@ -69,12 +69,37 @@ pub enum ControlFamily {
 /// `FaillockDirContext` at `Rhel8`).
 #[must_use]
 pub fn control_refs(family: ControlFamily, target: TargetVersion) -> Vec<ControlRef> {
-    let _ = (family, target);
-    todo!(
-        "return the grounded ControlRef{{framework: Stig, id: stig_id, alias: \
-         v_number}} row(s) for (family, target) per the module doc comment's \
-         table; see grounding/g7-g8-xccdf-vnumbers.md for the primary source"
-    )
+    use ControlFamily::{
+        Enforcing, FaillockDirContext, PolicyType, Policycoreutils, PolicycoreutilsPython,
+    };
+    use TargetVersion::{Rhel8, Rhel9, Rhel10};
+
+    let rows: &[(&str, &str)] = match (family, target) {
+        (Enforcing, Rhel8) => &[("RHEL-08-010170", "V-230240")],
+        (Enforcing, Rhel9) => &[("RHEL-09-431010", "V-258078")],
+        (Enforcing, Rhel10) => &[("RHEL-10-700420", "V-281251")],
+        (PolicyType, Rhel8) => &[("RHEL-08-010450", "V-230282")],
+        (PolicyType, Rhel9) => &[("RHEL-09-431015", "V-258079")],
+        (PolicyType, Rhel10) => &[("RHEL-10-700400", "V-281249")],
+        (Policycoreutils, Rhel8) => &[("RHEL-08-010171", "V-230241")],
+        (Policycoreutils, Rhel9) => &[("RHEL-09-431025", "V-258081")],
+        (Policycoreutils, Rhel10) => &[("RHEL-10-200570", "V-280966")],
+        // G7-confirmed: RHEL 8 V2R4 has NO policycoreutils-python-utils control.
+        (PolicycoreutilsPython, Rhel8) => &[],
+        (PolicycoreutilsPython, Rhel9) => &[("RHEL-09-431030", "V-258082")],
+        (PolicycoreutilsPython, Rhel10) => &[("RHEL-10-200580", "V-280967")],
+        // RHEL 8 carries BOTH the >=8.2 (V-250315) and <8.2 (V-250316) variants.
+        (FaillockDirContext, Rhel8) => &[
+            ("RHEL-08-020027", "V-250315"),
+            ("RHEL-08-020028", "V-250316"),
+        ],
+        (FaillockDirContext, Rhel9) => &[("RHEL-09-431020", "V-258080")],
+        (FaillockDirContext, Rhel10) => &[("RHEL-10-700430", "V-281252")],
+    };
+
+    rows.iter()
+        .map(|(id, alias)| ControlRef::new(Framework::Stig, *id).with_alias(*alias))
+        .collect()
 }
 
 #[cfg(test)]

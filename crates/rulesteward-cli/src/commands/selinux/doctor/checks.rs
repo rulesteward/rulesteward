@@ -4,8 +4,6 @@
 //! `probe`). `run_checks` drives all 5; the shared
 //! `crate::commands::doctor::worst_exit_code` folds the verdicts.
 
-use std::path::Path;
-
 use rulesteward_core::ControlRef;
 use rulesteward_selinux::TargetVersion;
 use rulesteward_selinux::stig::{ControlFamily, control_refs};
@@ -29,30 +27,53 @@ pub(super) fn check_enforcing(
     probe: &dyn SelinuxProbe,
     target: Option<TargetVersion>,
 ) -> CheckResult {
-    let _ = (
-        probe.enforce_status(),
-        controls_for(ControlFamily::Enforcing, target),
-    );
-    todo!(
-        "selinux-enforcing: Enforcing->Ok; Permissive/Disabled->Fail \
-         (remediation mentions `setenforce 1` + /etc/selinux/config \
-         persistence); Err->Unknown; attach \
-         controls_for(ControlFamily::Enforcing, target) at every target \
-         (G5.1)"
-    )
+    let controls = controls_for(ControlFamily::Enforcing, target);
+    match probe.enforce_status() {
+        Ok(mode) if mode == "Enforcing" => {
+            CheckResult::ok("selinux-enforcing", "SELinux is Enforcing").with_controls(controls)
+        }
+        Ok(mode) => CheckResult::fail(
+            "selinux-enforcing",
+            format!("SELinux is {mode}, not Enforcing"),
+            "run `setenforce 1` (immediate) and set SELINUX=enforcing in \
+             /etc/selinux/config (persistent across reboot)",
+        )
+        .with_controls(controls),
+        Err(e) => CheckResult::unknown(
+            "selinux-enforcing",
+            format!("could not determine SELinux enforcement status: {e}"),
+        )
+        .with_controls(controls),
+    }
 }
 
 /// Check 2: `selinux-policy` - the loaded policy is `targeted`.
 pub(super) fn check_policy(probe: &dyn SelinuxProbe, target: Option<TargetVersion>) -> CheckResult {
-    let _ = (
-        probe.loaded_policy_name(),
-        controls_for(ControlFamily::PolicyType, target),
-    );
-    todo!(
-        "selinux-policy: Some(\"targeted\")->Ok; Some(other)->Fail; \
-         None->Fail(\"no policy loaded (SELinux disabled)\"); Err->Unknown; \
-         attach controls_for(ControlFamily::PolicyType, target) (G5.2)"
-    )
+    let controls = controls_for(ControlFamily::PolicyType, target);
+    match probe.loaded_policy_name() {
+        Ok(Some(name)) if name == "targeted" => {
+            CheckResult::ok("selinux-policy", format!("loaded policy is {name}"))
+                .with_controls(controls)
+        }
+        Ok(Some(name)) => CheckResult::fail(
+            "selinux-policy",
+            format!("loaded policy is {name}, not targeted"),
+            "set SELINUXTYPE=targeted in /etc/selinux/config and reboot",
+        )
+        .with_controls(controls),
+        Ok(None) => CheckResult::fail(
+            "selinux-policy",
+            "no policy loaded (SELinux disabled)",
+            "enable SELinux: set SELINUX=enforcing and SELINUXTYPE=targeted \
+             in /etc/selinux/config, then reboot",
+        )
+        .with_controls(controls),
+        Err(e) => CheckResult::unknown(
+            "selinux-policy",
+            format!("could not determine the loaded SELinux policy: {e}"),
+        )
+        .with_controls(controls),
+    }
 }
 
 /// Check 3: `policycoreutils-package` installed.
@@ -60,15 +81,22 @@ pub(super) fn check_policycoreutils_package(
     probe: &dyn SelinuxProbe,
     target: Option<TargetVersion>,
 ) -> CheckResult {
-    let _ = (
-        probe.package_installed("policycoreutils"),
-        controls_for(ControlFamily::Policycoreutils, target),
-    );
-    todo!(
-        "policycoreutils-package: true->Ok; false->Fail(\"dnf install \
-         policycoreutils\"); Err->Unknown; attach \
-         controls_for(ControlFamily::Policycoreutils, target)"
-    )
+    let controls = controls_for(ControlFamily::Policycoreutils, target);
+    match probe.package_installed("policycoreutils") {
+        Ok(true) => CheckResult::ok("policycoreutils-package", "policycoreutils is installed")
+            .with_controls(controls),
+        Ok(false) => CheckResult::fail(
+            "policycoreutils-package",
+            "policycoreutils is not installed",
+            "dnf install policycoreutils",
+        )
+        .with_controls(controls),
+        Err(e) => CheckResult::unknown(
+            "policycoreutils-package",
+            format!("could not query the policycoreutils package status: {e}"),
+        )
+        .with_controls(controls),
+    }
 }
 
 /// Check 4: `policycoreutils-python-package` installed. Runs on EVERY target
@@ -80,15 +108,25 @@ pub(super) fn check_policycoreutils_python_package(
     probe: &dyn SelinuxProbe,
     target: Option<TargetVersion>,
 ) -> CheckResult {
-    let _ = (
-        probe.package_installed("policycoreutils-python-utils"),
-        controls_for(ControlFamily::PolicycoreutilsPython, target),
-    );
-    todo!(
-        "policycoreutils-python-package: SAME arms as check 3; attach \
-         controls_for(ControlFamily::PolicycoreutilsPython, target) - empty \
-         at Rhel8 by construction (no table row), non-empty at Rhel9/Rhel10"
-    )
+    let controls = controls_for(ControlFamily::PolicycoreutilsPython, target);
+    match probe.package_installed("policycoreutils-python-utils") {
+        Ok(true) => CheckResult::ok(
+            "policycoreutils-python-package",
+            "policycoreutils-python-utils is installed",
+        )
+        .with_controls(controls),
+        Ok(false) => CheckResult::fail(
+            "policycoreutils-python-package",
+            "policycoreutils-python-utils is not installed",
+            "dnf install policycoreutils-python-utils",
+        )
+        .with_controls(controls),
+        Err(e) => CheckResult::unknown(
+            "policycoreutils-python-package",
+            format!("could not query the policycoreutils-python-utils package status: {e}"),
+        )
+        .with_controls(controls),
+    }
 }
 
 /// Check 5: `faillock-dir-context` - the faillock tally directory carries the
@@ -97,19 +135,57 @@ pub(super) fn check_faillock_dir_context(
     probe: &dyn SelinuxProbe,
     target: Option<TargetVersion>,
 ) -> CheckResult {
-    let _ = (
-        probe.faillock_dir(),
-        probe.dir_context_type(Path::new("/")),
-        controls_for(ControlFamily::FaillockDirContext, target),
-    );
-    todo!(
-        "faillock-dir-context: locator Ok(None)->Skip(\"not applicable\"); \
-         Some(dir)+Ok(Some(\"faillog_t\"))->Ok; Ok(Some(other))->Fail \
-         (remediation mentions `semanage fcontext` + `restorecon`); \
-         Ok(None) dir-absent->Unknown; Err (either probe call)->Unknown; \
-         attach controls_for(ControlFamily::FaillockDirContext, target) - \
-         TWO refs at Rhel8 (G6)"
-    )
+    let controls = controls_for(ControlFamily::FaillockDirContext, target);
+
+    let dir = match probe.faillock_dir() {
+        Ok(Some(dir)) => dir,
+        Ok(None) => {
+            return CheckResult::skip(
+                "faillock-dir-context",
+                "not applicable: SELinux is not enabled and enforcing a \
+                 targeted policy, or pam_faillock is not configured for use",
+            )
+            .with_controls(controls);
+        }
+        Err(e) => {
+            return CheckResult::unknown(
+                "faillock-dir-context",
+                format!("could not locate the faillock tally directory: {e}"),
+            )
+            .with_controls(controls);
+        }
+    };
+
+    match probe.dir_context_type(&dir) {
+        Ok(Some(ty)) if ty == "faillog_t" => CheckResult::ok(
+            "faillock-dir-context",
+            format!("{} has SELinux type faillog_t", dir.display()),
+        )
+        .with_controls(controls),
+        Ok(Some(ty)) => CheckResult::fail(
+            "faillock-dir-context",
+            format!("{} has SELinux type {ty}, not faillog_t", dir.display()),
+            format!(
+                "semanage fcontext -a -t faillog_t \"{}(/.*)?\" && restorecon -R -v {}",
+                dir.display(),
+                dir.display()
+            ),
+        )
+        .with_controls(controls),
+        Ok(None) => CheckResult::unknown(
+            "faillock-dir-context",
+            format!("{} does not exist", dir.display()),
+        )
+        .with_controls(controls),
+        Err(e) => CheckResult::unknown(
+            "faillock-dir-context",
+            format!(
+                "could not determine the SELinux context of {}: {e}",
+                dir.display()
+            ),
+        )
+        .with_controls(controls),
+    }
 }
 
 /// Run all 5 selinux doctor checks in a fixed, pinned order.

@@ -58,14 +58,111 @@ pub struct SelinuxConfig {
 /// (G4 Q5) - there is no fatal/error code path for this reader.
 #[must_use]
 pub fn parse_selinux_config(text: &str) -> SelinuxConfig {
-    let _ = text;
-    todo!(
-        "G4-grounded per-key parser: SELINUX= is FIRST-recognized-wins with a \
-         PREFIX value match (selinux_getenforcemode); SELINUXTYPE= is \
-         LAST-wins with a verbatim right-trimmed value (init_selinux_config). \
-         See grounding/g4-g6-selinux-config.md section G4 for the full \
-         line-by-line semantics this must reproduce."
-    )
+    let lines = lines_with_spans(text);
+    SelinuxConfig {
+        selinux: find_selinux(&lines),
+        selinuxtype: find_selinuxtype(&lines),
+    }
+}
+
+/// One raw line of `text`: its 1-based line number, its byte span (excluding
+/// the trailing `\n`, but INCLUDING a trailing `\r` for a CRLF file - a raw
+/// `fgets`-style slice, not `str::lines()`, which would silently strip it),
+/// and the line's text.
+type RawLine<'a> = (usize, std::ops::Range<usize>, &'a str);
+
+/// Split `text` into 1-based-numbered, byte-spanned raw lines. A trailing
+/// `\n` produces one final empty "line" (harmless: it matches nothing).
+fn lines_with_spans(text: &str) -> Vec<RawLine<'_>> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    let mut line_no = 0usize;
+    for raw in text.split('\n') {
+        line_no += 1;
+        let start = offset;
+        let end = start + raw.len();
+        out.push((line_no, start..end, raw));
+        offset = end + 1;
+    }
+    out
+}
+
+/// The three `SELINUX=` values `selinux_getenforcemode()` recognizes (G4 Q7),
+/// each matched as a case-insensitive PREFIX of the line's value.
+const SELINUX_VALUE_WORDS: [&str; 3] = ["enforcing", "permissive", "disabled"];
+
+/// True when `value` starts with (case-insensitively) one of
+/// [`SELINUX_VALUE_WORDS`] - `strncasecmp(tag, word, word.len())` (G4 Q7). A
+/// value shorter than every word's length is never a match.
+fn is_recognized_selinux_value(value: &str) -> bool {
+    SELINUX_VALUE_WORDS.iter().any(|word| {
+        value
+            .get(..word.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(word))
+    })
+}
+
+/// `SELINUX=` per `selinux_getenforcemode()` (G4): key match at column 0,
+/// case-SENSITIVE (`strncmp`); FIRST line whose value is a recognized prefix
+/// wins (an unrecognized value does not stop the scan). The stored value is
+/// the tag with only LEADING whitespace skipped (models the rhel9/10 3.6+
+/// whitespace-skip-after-`=` behavior, per this module's own doc comment) -
+/// verbatim otherwise, case-preserved, comment text included.
+fn find_selinux(lines: &[RawLine<'_>]) -> Option<ConfigValue> {
+    for (line, span, raw) in lines {
+        let Some(tag) = raw.strip_prefix("SELINUX=") else {
+            continue;
+        };
+        let after_ws = tag.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if is_recognized_selinux_value(after_ws) {
+            return Some(ConfigValue {
+                value: after_ws.to_string(),
+                line: *line,
+                span: span.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// The `SELINUXTYPE=` tag, matched case-insensitively (G4 Q3).
+const SELINUXTYPE_TAG: &str = "SELINUXTYPE=";
+
+/// Strip trailing `isspace`/`iscntrl` bytes (G4 Q2/Q14) - the right-trim loop
+/// `init_selinux_config()` applies to the extracted value (removes CRLF's
+/// `\r` along with ordinary trailing whitespace).
+fn right_trim_selinuxtype_value(value: &str) -> &str {
+    value.trim_end_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control())
+}
+
+/// `SELINUXTYPE=` per `init_selinux_config()` (G4): leading whitespace before
+/// the key IS skipped; a line that is (after that skip) empty or starts with
+/// `#` is a whole-line comment and never matched; the key match is
+/// case-INSENSITIVE; the value is the literal remainder after the tag (NO
+/// post-`=` whitespace skip - models the rhel8 2.9 behavior, per this
+/// module's own doc comment), right-trimmed. The LAST matching line wins (the
+/// loop runs to EOF with no break - opposite of `find_selinux`).
+fn find_selinuxtype(lines: &[RawLine<'_>]) -> Option<ConfigValue> {
+    let mut winner: Option<ConfigValue> = None;
+    for (line, span, raw) in lines {
+        let trimmed = raw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(tag_region) = trimmed.get(..SELINUXTYPE_TAG.len()) else {
+            continue;
+        };
+        if !tag_region.eq_ignore_ascii_case(SELINUXTYPE_TAG) {
+            continue;
+        }
+        let raw_value = &trimmed[SELINUXTYPE_TAG.len()..];
+        winner = Some(ConfigValue {
+            value: right_trim_selinuxtype_value(raw_value).to_string(),
+            line: *line,
+            span: span.clone(),
+        });
+    }
+    winner
 }
 
 #[cfg(test)]

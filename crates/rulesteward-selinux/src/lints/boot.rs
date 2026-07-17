@@ -27,10 +27,20 @@
 
 use std::path::Path;
 
-use rulesteward_core::Diagnostic;
+use rulesteward_core::{Diagnostic, Severity, anchored};
 
 use crate::config::SelinuxConfig;
+use crate::stig::{ControlFamily, control_refs};
 use crate::version::TargetVersion;
+
+/// True when `value` is a case-insensitive PREFIX match of `"enforcing"`
+/// (the same libselinux prefix-match semantics `config::parse_selinux_config`
+/// models for the `SELINUX=` value - G4 Q7/Q9).
+fn is_enforcing_value(value: &str) -> bool {
+    value
+        .get(..9)
+        .is_some_and(|p| p.eq_ignore_ascii_case("enforcing"))
+}
 
 /// `se-W01`: `SELINUX=` is not `enforcing`. Fires only when `target` is
 /// `Some(Rhel9)` or `Some(Rhel10)`; silent at `Rhel8` and at `None`.
@@ -40,15 +50,51 @@ pub fn check_enforcing(
     target: Option<TargetVersion>,
     file: &Path,
 ) -> Vec<Diagnostic> {
-    let _ = (config, target, file);
-    todo!(
-        "se-W01: fire (Severity::Warning) at target Rhel9|Rhel10 ONLY when \
-         config.selinux is None (file-level 0..0 anchor) or Some(cv) whose \
-         value is not a case-insensitive `enforcing` PREFIX match (anchored \
-         at cv.line/cv.span); attach control_refs(ControlFamily::Enforcing, \
-         target). See grounding/g4-g6-selinux-config.md F4 and this module's \
-         doc comment."
-    )
+    let Some(t) = target else {
+        return Vec::new();
+    };
+    if !matches!(t, TargetVersion::Rhel9 | TargetVersion::Rhel10) {
+        return Vec::new();
+    }
+
+    let controls = control_refs(ControlFamily::Enforcing, t);
+    match &config.selinux {
+        None => vec![
+            Diagnostic::new(
+                Severity::Warning,
+                "se-W01",
+                0..0,
+                "SELinux is not configured to be enforcing at boot: SELINUX= \
+                 is missing, commented out, or unrecognized in \
+                 /etc/selinux/config",
+                file.to_path_buf(),
+                0,
+                0,
+            )
+            .with_controls(controls),
+        ],
+        Some(cv) => {
+            if is_enforcing_value(&cv.value) {
+                Vec::new()
+            } else {
+                vec![
+                    anchored(
+                        Severity::Warning,
+                        "se-W01",
+                        cv.span.clone(),
+                        format!(
+                            "SELinux is not configured to be enforcing at boot: \
+                             SELINUX={} in /etc/selinux/config",
+                            cv.value
+                        ),
+                        file.to_path_buf(),
+                        cv.line,
+                    )
+                    .with_controls(controls),
+                ]
+            }
+        }
+    }
 }
 
 /// `se-W02`: `SELINUXTYPE=` is not `targeted`. Fires only when `target` is
@@ -59,16 +105,47 @@ pub fn check_policy_type(
     target: Option<TargetVersion>,
     file: &Path,
 ) -> Vec<Diagnostic> {
-    let _ = (config, target, file);
-    todo!(
-        "se-W02: fire (Severity::Warning) at target Rhel8 ONLY when \
-         config.selinuxtype is None (file-level 0..0 anchor; the STIG \
-         check-content wins over libselinux's runtime targeted-default) or \
-         Some(cv) whose value != \"targeted\" exactly (anchored at \
-         cv.line/cv.span); attach control_refs(ControlFamily::PolicyType, \
-         target). See grounding/g4-g6-selinux-config.md F5 and this module's \
-         doc comment."
-    )
+    if target != Some(TargetVersion::Rhel8) {
+        return Vec::new();
+    }
+
+    let controls = control_refs(ControlFamily::PolicyType, TargetVersion::Rhel8);
+    match &config.selinuxtype {
+        None => vec![
+            Diagnostic::new(
+                Severity::Warning,
+                "se-W02",
+                0..0,
+                "SELinux is not configured to use the targeted policy: \
+                 SELINUXTYPE= is missing in /etc/selinux/config",
+                file.to_path_buf(),
+                0,
+                0,
+            )
+            .with_controls(controls),
+        ],
+        Some(cv) => {
+            if cv.value == "targeted" {
+                Vec::new()
+            } else {
+                vec![
+                    anchored(
+                        Severity::Warning,
+                        "se-W02",
+                        cv.span.clone(),
+                        format!(
+                            "SELinux is not configured to use the targeted \
+                             policy: SELINUXTYPE={} in /etc/selinux/config",
+                            cv.value
+                        ),
+                        file.to_path_buf(),
+                        cv.line,
+                    )
+                    .with_controls(controls),
+                ]
+            }
+        }
+    }
 }
 
 #[cfg(test)]
