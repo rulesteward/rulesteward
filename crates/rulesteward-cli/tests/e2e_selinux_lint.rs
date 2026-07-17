@@ -106,3 +106,52 @@ fn lint_help_mentions_the_verb_and_target_flag() {
         .stdout(predicate::str::contains("--target"))
         .stdout(predicate::str::contains("--format"));
 }
+
+/// True when this host's `/etc/os-release` identifies an EL-family distro the
+/// live probe would RESOLVE for `--target auto` (same family signals as
+/// `commands::target_probe`: family `ID`, an `ID_LIKE` containing `rhel`, or
+/// `PLATFORM_ID=platform:elN`). Used only to self-skip the degrade test on
+/// hosts (e.g. the Rocky distro-CI containers) where auto resolves instead of
+/// degrading.
+fn host_is_el_family() -> bool {
+    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    text.lines().map(str::trim).any(|line| {
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        let value = value.trim_matches(|c| c == '"' || c == '\'');
+        match key {
+            "ID" => matches!(value, "rhel" | "rocky" | "almalinux" | "centos"),
+            "ID_LIKE" => value.split_whitespace().any(|token| token == "rhel"),
+            "PLATFORM_ID" => value.starts_with("platform:el"),
+            _ => false,
+        }
+    })
+}
+
+/// `--target auto` on a host that maps to no supported RHEL target degrades to
+/// the version-agnostic dialect: the shared `resolve_target` warning reaches
+/// stderr (with this verb's `selinux lint:` prefix) and a clean config still
+/// exits 0. This is the stderr half of the unit test
+/// `commands::selinux::lint::tests::target_auto_degrade_lints_clean_and_does_not_error`,
+/// which cannot capture `eprintln!` output in-process. Self-skips on EL-family
+/// hosts, where auto RESOLVES and no warning is printed.
+#[test]
+fn lint_target_auto_degrade_warns_on_stderr_and_exits_0() {
+    if host_is_el_family() {
+        eprintln!("skipping: EL-family host resolves --target auto instead of degrading");
+        return;
+    }
+    let f = write_config("SELINUX=enforcing\nSELINUXTYPE=targeted\n");
+    bin()
+        .args(["selinux", "lint"])
+        .arg(f.path())
+        .args(["--target", "auto"])
+        .assert()
+        .code(0)
+        // Both degrade arms (unmappable host / unreadable os-release) share
+        // the "--target auto: ...; linting version-agnostic" wording pinned in
+        // commands/target_probe.rs; the verb prefixes it with "selinux lint:".
+        .stderr(predicate::str::contains("selinux lint: --target auto:"))
+        .stderr(predicate::str::contains("linting version-agnostic"));
+}

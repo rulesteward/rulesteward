@@ -196,6 +196,19 @@ mod tests {
             let rem = r.remediation.as_deref().unwrap_or("");
             assert!(rem.contains("setenforce 1"), "remediation={rem}");
             assert!(rem.contains("/etc/selinux/config"), "remediation={rem}");
+            // Controls attach whenever the target resolves, REGARDLESS of
+            // status (Phase-0 `CheckResult::controls` doc): the failing arm is
+            // the compliance case that most needs its STIG id. Kills a
+            // happy-path impl that only calls `.with_controls` on Ok.
+            assert_eq!(
+                r.controls.len(),
+                1,
+                "{mode}: Fail at a resolved target must still carry the \
+                 Enforcing control"
+            );
+            assert_eq!(r.controls[0].framework, Framework::Stig);
+            assert_eq!(r.controls[0].id, "RHEL-09-431010");
+            assert_eq!(r.controls[0].alias.as_deref(), Some("V-258078"));
         }
     }
 
@@ -207,6 +220,30 @@ mod tests {
         };
         let r = check_enforcing(&probe, Some(TargetVersion::Rhel9));
         assert_eq!(r.status, CheckStatus::Unknown);
+    }
+
+    #[test]
+    fn unknown_status_still_attaches_controls_at_resolved_target() {
+        // Contract (Phase-0 `CheckResult::controls` doc): "attached whenever
+        // the benchmark target is resolved, regardless of status" - Unknown
+        // included. An impl that attaches controls only when the probe
+        // succeeds drops the STIG ref exactly when the operator most needs to
+        // know which control went unassessed.
+        let probe = FakeProbe {
+            enforce: Err("getenforce not found".to_string()),
+            ..FakeProbe::default()
+        };
+        let r = check_enforcing(&probe, Some(TargetVersion::Rhel9));
+        assert_eq!(r.status, CheckStatus::Unknown);
+        assert_eq!(
+            r.controls.len(),
+            1,
+            "Unknown at a resolved target must still carry the Enforcing \
+             control"
+        );
+        assert_eq!(r.controls[0].framework, Framework::Stig);
+        assert_eq!(r.controls[0].id, "RHEL-09-431010");
+        assert_eq!(r.controls[0].alias.as_deref(), Some("V-258078"));
     }
 
     #[test]
@@ -243,6 +280,16 @@ mod tests {
         };
         let r = check_policy(&probe, Some(TargetVersion::Rhel8));
         assert_eq!(r.status, CheckStatus::Fail);
+        // Controls attach regardless of status (Phase-0 contract): the
+        // wrong-policy Fail must still cite the PolicyType control it fails.
+        assert_eq!(
+            r.controls.len(),
+            1,
+            "Fail at a resolved target must still carry the PolicyType control"
+        );
+        assert_eq!(r.controls[0].framework, Framework::Stig);
+        assert_eq!(r.controls[0].id, "RHEL-08-010450");
+        assert_eq!(r.controls[0].alias.as_deref(), Some("V-230282"));
     }
 
     #[test]
@@ -376,6 +423,39 @@ mod tests {
             "an NA locator must be Skip, never Fail"
         );
         assert!(r.detail.to_lowercase().contains("not applicable"));
+    }
+
+    #[test]
+    fn faillock_skip_still_attaches_both_rhel8_controls_at_resolved_target() {
+        // Contract (Phase-0 `CheckResult::controls` doc): "attached whenever
+        // the benchmark target is resolved, regardless of status" - Skip
+        // included. A not-applicable faillock dir must still report WHICH
+        // controls this check assesses: BOTH RHEL 8 rows (the >=8.2 and <8.2
+        // variants, G6/G8). Kills a happy-path impl that skips `.with_controls`
+        // on the Skip arm.
+        let probe = FakeProbe {
+            faillock_dir: Ok(None),
+            ..FakeProbe::default()
+        };
+        let r = check_faillock_dir_context(&probe, Some(TargetVersion::Rhel8));
+        assert_eq!(r.status, CheckStatus::Skip);
+        let ids: Vec<(&str, &str)> = r
+            .controls
+            .iter()
+            .map(|c| (c.id.as_str(), c.alias.as_deref().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("RHEL-08-020027", "V-250315"),
+                ("RHEL-08-020028", "V-250316"),
+            ],
+            "Skip at a resolved Rhel8 target must still carry BOTH \
+             FaillockDirContext controls"
+        );
+        for c in &r.controls {
+            assert_eq!(c.framework, Framework::Stig);
+        }
     }
 
     #[test]

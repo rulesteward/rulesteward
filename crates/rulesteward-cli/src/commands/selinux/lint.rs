@@ -117,10 +117,15 @@ mod tests {
     }
 
     /// `--target auto` on a host the probe cannot map degrades to the
-    /// version-agnostic dialect AND prints the operator warning, without
-    /// erroring (mirrors `commands::sysctl`'s analogous test).
+    /// version-agnostic dialect without erroring: a clean config lints clean
+    /// (exit 0), mirroring `commands::sysctl`'s
+    /// `target_auto_degrades_gracefully_when_unmappable`. The stderr half of
+    /// the degrade contract (the operator warning text) is asserted in
+    /// `tests/e2e_selinux_lint.rs::lint_target_auto_degrade_warns_on_stderr_and_exits_0`,
+    /// because `run_lint_with_probe` warns via `eprintln!`, which an
+    /// in-process unit test cannot capture with the current function shape.
     #[test]
-    fn target_auto_degrade_prints_warning_and_does_not_error() {
+    fn target_auto_degrade_lints_clean_and_does_not_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("config");
         std::fs::write(&f, "SELINUX=enforcing\nSELINUXTYPE=targeted\n").expect("write");
@@ -130,9 +135,12 @@ mod tests {
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));
-        // Not asserting a specific exit: the point of this test is the
-        // warning-print + auto-degrade wiring, exercised regardless of what
-        // the (currently todo!()'d) lint passes return.
-        let _ = run_lint_with_probe(&a, &probe, None);
+        let rc = run_lint_with_probe(&a, &probe, None);
+        assert_eq!(
+            rc,
+            crate::exit_code::EXIT_CLEAN,
+            "an enforcing/targeted config with target degraded to \
+             version-agnostic must lint clean, not error"
+        );
     }
 }
