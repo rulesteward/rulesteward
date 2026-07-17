@@ -256,7 +256,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default |
 | `sshd-W07` | Warning | cross-`Match` shadow: a first-value-wins directive set to different values in two simultaneously-satisfiable `Match` blocks (sshd applies only the first; the later value is silently dropped) |
 
-### sudoers (`sudo-`, 8 codes)
+### sudoers (`sudo-`, 9 codes)
 
 | Code | Severity | Checks |
 | --- | --- | --- |
@@ -268,6 +268,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sudo-W03` | Warning | alias defined but never referenced (dead alias) |
 | `sudo-W04` | Warning | `Defaults` setting weaker than, or required hardening absent from, the sudo security baseline (covers weakening settings such as `!authenticate`, `targetpw`, `rootpw`, `visiblepw`, `!use_pty`, and negative `timestamp_timeout`; and missing-required checks for `use_pty`, I/O logging, and `timestamp_timeout` over the merged config - DISA STIG RHEL-08-010384/RHEL-09-432015 and CIS Benchmark 1.3.2/1.3.3) |
 | `sudo-W05` | Warning | `NOPASSWD` grants passwordless sudo on a specific (non-ALL) command; STIG requires removing `NOPASSWD` entirely (DISA STIG RHEL-08-010380/RHEL-09-611085) |
+| `sudo-W06` | Warning | a user specification grants the literal `ALL` user unrestricted privilege elevation (`ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`, including `ALL` appearing among other list members and run-as specs inherited by later commands on the line) - DISA STIG RHEL-08-010382/RHEL-09-432030/RHEL-10-600520 |
 
 ### sysctl.d (`sysctld-`, 4 codes)
 
