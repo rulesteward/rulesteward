@@ -38,7 +38,7 @@ use crate::version::TargetVersion;
 /// models for the `SELINUX=` value - G4 Q7/Q9).
 fn is_enforcing_value(value: &str) -> bool {
     value
-        .get(..9)
+        .get(.."enforcing".len())
         .is_some_and(|p| p.eq_ignore_ascii_case("enforcing"))
 }
 

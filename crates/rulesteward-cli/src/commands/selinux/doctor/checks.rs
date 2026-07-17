@@ -142,8 +142,10 @@ pub(super) fn check_faillock_dir_context(
         Ok(None) => {
             return CheckResult::skip(
                 "faillock-dir-context",
-                "not applicable: SELinux is not enabled and enforcing a \
-                 targeted policy, or pam_faillock is not configured for use",
+                "not applicable: SELinux is not enforcing a targeted \
+                 policy, pam_faillock is not present in the auth stack, or \
+                 no nondefault tally directory is configured (the STIG \
+                 check targets nondefault directories)",
             )
             .with_controls(controls);
         }

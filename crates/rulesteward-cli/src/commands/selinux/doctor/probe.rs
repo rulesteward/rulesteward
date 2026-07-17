@@ -22,6 +22,12 @@
 //! could only be silenced via a new `.cargo/mutants.toml` `exclude_re` entry -
 //! out of scope for this lane. Inlining the hardcoded path removes that
 //! mutation surface entirely instead of asking for a new exclusion.
+//!
+//! `pam_faillock_is_configured` (review round 1, session 9d lane 2b) is a
+//! third pure free function of the same shape: it gates `faillock_dir` on
+//! the REAL "`pam_faillock` module is not configured for use" NA condition
+//! (RHEL-09-431020's check-content, G6.3) instead of the message-only claim
+//! the Skip detail used to make without checking it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -96,11 +102,19 @@ impl SelinuxProbe for LiveSelinuxProbe {
     }
 
     fn faillock_dir(&self) -> Result<Option<PathBuf>, String> {
-        // G6.3 NA condition: this whole family is Not Applicable unless
-        // SELinux is enabled, Enforcing, AND running the targeted policy.
+        // G6.3 NA condition (RHEL-09-431020 check-content): this whole family
+        // is Not Applicable unless SELinux is enabled, Enforcing, AND running
+        // the targeted policy.
         match (self.enforce_status(), self.loaded_policy_name()) {
             (Ok(mode), Ok(Some(policy))) if mode == "Enforcing" && policy == "targeted" => {}
             _ => return Ok(None),
+        }
+
+        // G6.3's OTHER NA clause: "...or if the pam_faillock module is not
+        // configured for use". Checked against the SAME password-auth file
+        // already read below for the RHEL8<8.2 fallback locator.
+        if !pam_faillock_is_configured(Path::new(PASSWORD_AUTH)) {
+            return Ok(None);
         }
 
         if let Some(dir) = read_faillock_conf_dir_from(Path::new(FAILLOCK_CONF)) {
@@ -194,6 +208,25 @@ fn read_password_auth_dir_from(pam_path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Whether `pam_faillock.so` is configured for use anywhere in the
+/// password-auth PAM stack (RHEL-09-431020 check-content / G6.3's second NA
+/// clause: "...or if the `pam_faillock` module is not configured for use, this
+/// requirement is Not Applicable"). A module line counts regardless of which
+/// PAM management group it is in (`auth`/`account`/`password`/`session`) and
+/// regardless of any trailing arguments (`preauth`/`deny=3`/`dir=...`/etc.);
+/// a line that is commented out (a `#` as the first non-whitespace
+/// character) does NOT count, mirroring how a commented `faillock.conf`
+/// `dir` line is likewise not "configured" (G6.1).
+fn pam_faillock_is_configured(pam_path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(pam_path) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with('#') && trimmed.contains("pam_faillock.so")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +408,85 @@ mod tests {
             read_password_auth_dir_from(&path),
             None,
             "a file with no pam_faillock.so line at all yields None"
+        );
+    }
+
+    // --- pam_faillock_is_configured (G6.3 / RHEL-09-431020) ----------------
+
+    #[test]
+    fn pam_faillock_present_on_an_auth_line_is_configured() {
+        let (_g, path) = write_temp("auth required pam_faillock.so preauth silent\n");
+        assert!(
+            pam_faillock_is_configured(&path),
+            "a pam_faillock.so module line in the auth stack IS \
+             \"configured for use\" (G6.3 / RHEL-09-431020)"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_present_with_arguments_is_configured() {
+        let (_g, path) = write_temp(
+            "auth [default=die] pam_faillock.so authfail deny=3 dir=/var/log/faillock\n",
+        );
+        assert!(
+            pam_faillock_is_configured(&path),
+            "trailing arguments (deny=/dir=/authfail/etc.) do not change \
+             whether the module line counts"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_present_on_a_non_auth_management_group_is_configured() {
+        // The NA wording is "the pam_faillock module is not configured for
+        // use", not "...in the auth group specifically" - a line in any of
+        // pam_faillock's other management groups (account/password/session)
+        // is equally "configured".
+        let (_g, path) = write_temp("account required pam_faillock.so\n");
+        assert!(
+            pam_faillock_is_configured(&path),
+            "a pam_faillock.so line counts regardless of PAM management \
+             group (G6.3)"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_only_commented_is_not_configured() {
+        let (_g, path) = write_temp("#auth required pam_faillock.so preauth silent\n");
+        assert!(
+            !pam_faillock_is_configured(&path),
+            "a commented-out pam_faillock.so line (leading `#`) must NOT \
+             count as configured - mirrors the commented `dir` handling \
+             in G6.1"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_commented_with_leading_whitespace_is_not_configured() {
+        let (_g, path) = write_temp("   # auth required pam_faillock.so preauth silent\n");
+        assert!(
+            !pam_faillock_is_configured(&path),
+            "leading whitespace before the `#` must not defeat the \
+             comment check"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_absent_is_not_configured() {
+        let (_g, path) = write_temp("auth required pam_unix.so\nauth required pam_deny.so\n");
+        assert!(
+            !pam_faillock_is_configured(&path),
+            "no pam_faillock.so line at all means the module is not \
+             configured for use"
+        );
+    }
+
+    #[test]
+    fn pam_faillock_missing_file_is_not_configured() {
+        let missing = std::path::Path::new("/nonexistent/9d-lane-2b/password-auth-pfc");
+        assert!(
+            !pam_faillock_is_configured(missing),
+            "an absent/unreadable pam file must not panic and must report \
+             \"not configured\", never a fatal"
         );
     }
 }

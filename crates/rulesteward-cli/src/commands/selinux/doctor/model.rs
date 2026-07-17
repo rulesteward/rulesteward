@@ -29,7 +29,11 @@ pub(super) trait SelinuxProbe {
     /// The faillock tally directory to inspect (G6.1/G6.2 locator:
     /// `faillock.conf`'s `dir=`, falling back to the RHEL8<8.2 `pam.d`
     /// inline form). `Ok(None)` means "not applicable" (the STIG NA
-    /// condition, G6.3) - maps to `CheckStatus::Skip`, NOT `Unknown`.
+    /// condition, G6.3 / RHEL-09-431020 check-content): `SELinux` is not
+    /// enforcing a targeted policy, `pam_faillock.so` is not present in the
+    /// auth stack, or no nondefault tally directory is configured (the STIG
+    /// check targets nondefault directories only) - maps to
+    /// `CheckStatus::Skip`, NOT `Unknown`.
     fn faillock_dir(&self) -> Result<Option<PathBuf>, String>;
 
     /// The `SELinux` type segment of `ls -Zd <dir>`'s context (G6.4: the
