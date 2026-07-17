@@ -722,19 +722,34 @@ fn stig_baseline_rhel9_v2r9_content_pins() {
             "-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
             "-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
         ),
-        // V-258225's b64 check-content line carries a stray DOUBLE space
-        // before `-F perm=wa` in the raw DISA XCCDF text
-        // ("/var/log/lastlog  -F perm=wa", verified against the raw XML, not
-        // an extraction artifact). Whitespace is not semantic to the rules.d
-        // grammar (the parser tokenizes on whitespace) and every OTHER
-        // hand-transcribed `BaselineRule.line` in this table uses single
-        // spaces, so the pin below normalizes to one space rather than
-        // encoding DISA's incidental formatting quirk as a byte-exact
-        // requirement.
+        // V-258225's b64 check-content line carries a genuine DOUBLE space
+        // before `-F perm=wa` in the real DISA V2R9 check-content
+        // ("/var/log/lastlog  -F perm=wa", verified against the raw XML; b32
+        // and every other line in this table is single-space). RE-GROUNDED
+        // (round-2 adversarial review of commit c633771): pinned VERBATIM
+        // here, not normalized to one space. The runtime matcher
+        // (`w06_with_baseline`'s `rules_match`) tokenizes on whitespace, so
+        // it would treat single- and double-space identically -- but
+        // `tools/auditd-stig-update`'s drift tooling does NOT: `derive.rs`'s
+        // `diff_rules` compares `DerivedRule.line` byte-exactly (a
+        // `BTreeSet` difference, not a normalized compare), `xccdf.rs`'s
+        // `extract_rule_lines` only trims LINE ENDS
+        // (`raw_line.trim()`, xccdf.rs:299) and preserves internal
+        // whitespace verbatim, the module doc mandates the `derive`
+        // paste-ready output be "pasted verbatim, not hand-edited", and
+        // `rhel9_fixture_reproduces_code_table_exactly` (xccdf.rs:339)
+        // asserts the fixture-derived table and the shipped code table are
+        // byte-exact via that same `diff_rules`. So once the implementer
+        // bumps the RHEL9 fixture+table to V2R9, the shipped
+        // `RHEL9_REQUIRED` table's V-258225 b64 row MUST carry the verbatim
+        // double-space line to keep BOTH `rhel9_fixture_reproduces_code_
+        // table_exactly` AND the `auditd-stig-check` CI drift gate green --
+        // a single-space pin here would make this content-pin test and
+        // those byte-exact tests mutually unsatisfiable.
         (
             "V-258225",
             "-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
-            "-a always,exit -F arch=b64 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+            "-a always,exit -F arch=b64 -F path=/var/log/lastlog  -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
         ),
     ];
     for (v_number, b32_line, b64_line) in identity_pins {
