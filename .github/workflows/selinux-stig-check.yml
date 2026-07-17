@@ -1,0 +1,75 @@
+name: selinux-stig-check
+
+# PR-time drift gate for the selinux se-W01/se-W02 STIG control-family table (issue
+# #520). Fail the build if crates/rulesteward-selinux/src/stig.rs no longer matches
+# the official DISA XCCDF content that grounds it.
+#
+# This gate runs OFFLINE, against the committed real-DISA fixtures under
+# tools/selinux-stig-update/tests/fixtures/ (the pinned DISA selinux control Groups).
+# That is a deliberate reliability choice: the DISA CDN (dl.dod.cyber.mil) is not a
+# dependency a PR should block on. The offline gate catches the common case - a human
+# edits stig.rs (or the tool's derivation logic) out of sync with the grounded DISA
+# content. The complementary weekly selinux-stig-drift.yml does the LIVE fetch against
+# the pinned DISA zips and opens an issue on drift (catching a DISA in-place
+# re-publish or a fixture that has itself drifted from real DISA).
+#
+# DISA versions each RHEL STIG by FILENAME (there is no releases/latest API like
+# ComplianceAsCode has), so there is no `--latest` mode here; `check` derives at the
+# pinned zips / fixtures.
+#
+# paths: is scoped to exactly the drift INPUTS so unrelated PRs never pay for this job:
+#   - crates/rulesteward-selinux/src/stig.rs   - the shipped se-W01/se-W02 control table
+#   - crates/rulesteward-selinux/src/stig/**   - in case stig.rs is later split into a
+#     directory (a backstop so this gate does not silently stop triggering; the weekly
+#     selinux-stig-drift.yml still catches drift independently on its own schedule)
+#   - tools/selinux-stig-update/**             - the tool + its fixtures + stig-refs.toml
+#   - .github/workflows/selinux-stig-check.yml - this workflow
+on:
+  pull_request:
+    paths:
+      - 'crates/rulesteward-selinux/src/stig.rs'
+      - 'crates/rulesteward-selinux/src/stig/**'
+      - 'tools/selinux-stig-update/**'
+      - '.github/workflows/selinux-stig-check.yml'
+
+# Least privilege: read the repo only. This job never writes back to GitHub (contrast
+# selinux-stig-drift.yml, which needs issues: write for its tracking issue).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: selinux STIG control table drift vs committed DISA fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/selinux-stig-update
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/selinux-stig-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/selinux-stig-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
+      - name: Tool tests (offline golden fixture drift + exit-code contract)
+        run: cargo test --manifest-path tools/selinux-stig-update/Cargo.toml --locked
+      - name: Offline drift gate (check --file vs committed DISA fixtures)
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool error; ALL non-zero
+        # exits must hard-fail this job. No error swallowing.
+        run: |
+          set -euo pipefail
+          for p in rhel8 rhel9 rhel10; do
+            cargo run --quiet --manifest-path tools/selinux-stig-update/Cargo.toml -- \
+              check --product "$p" \
+              --file "tools/selinux-stig-update/tests/fixtures/${p}_selinux_controls.xml"
+          done

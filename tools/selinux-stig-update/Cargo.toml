@@ -18,3 +18,8 @@ description = "Dev tool: derive + drift-check the selinux se-W01/se-W02 STIG con
 
 [dependencies]
 rulesteward-selinux = { path = "../../crates/rulesteward-selinux", default-features = false }
+toml = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (mirrors
+# tools/auditd-stig-update's deliberate deviation from the sshd tool's
+# homegrown regex+entity-decode approach; see src/xccdf.rs's module doc).
+quick-xml = "0.41"
