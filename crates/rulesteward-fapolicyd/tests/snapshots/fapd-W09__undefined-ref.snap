@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[fapd-W09] sev=Warning line=1 col=1 span=0..31 :: macro reference `%missingmacro` not defined in this file (may be defined in a sibling rules.d/ file; lint the directory to resolve)
+[fapd-W09] sev=Warning line=1 col=1 span=0..32 :: macro reference `%missingmacro` not defined in this file (may be defined in a sibling rules.d/ file; lint the directory to resolve)

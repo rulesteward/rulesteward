@@ -4,5 +4,5 @@ expression: rendered
 ---
 parse=ok
 diagnostics=2
-[fapd-W07] sev=Warning line=1 col=1 span=0..159 :: deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)
-[fapd-W07] sev=Warning line=1 col=1 span=0..159 :: deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)
+[fapd-W07] sev=Warning line=1 col=1 span=0..165 :: deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)
+[fapd-W07] sev=Warning line=1 col=1 span=0..165 :: deprecated attribute name `sha256hash=`; use `filehash=` instead (fapolicyd 1.4.2+)

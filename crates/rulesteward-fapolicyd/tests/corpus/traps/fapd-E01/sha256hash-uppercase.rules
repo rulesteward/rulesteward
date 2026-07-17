@@ -1,1 +1,1 @@
-allow Sha256Hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef : exe=/foo
+allow Sha256Hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef : path=/foo

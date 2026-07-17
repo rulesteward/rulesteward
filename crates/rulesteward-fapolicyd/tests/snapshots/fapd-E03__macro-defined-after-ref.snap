@@ -4,5 +4,5 @@ expression: rendered
 ---
 parse=ok
 diagnostics=2
-[fapd-E03] sev=Error line=1 col=1 span=0..24 :: undefined macro reference `%langs`
-[fapd-S02] sev=Style line=2 col=1 span=25..41 :: macro `%langs` defined after the first rule (move to file top)
+[fapd-E03] sev=Error line=1 col=1 span=0..25 :: undefined macro reference `%langs`
+[fapd-S02] sev=Style line=2 col=1 span=26..42 :: macro `%langs` defined after the first rule (move to file top)

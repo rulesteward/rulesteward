@@ -143,14 +143,39 @@ mod generators {
             })
     }
 
-    /// Strict subject keys (legacy positional classifier guarantees these
-    /// land on the subject side regardless of input order - see
-    /// `attrs::SUBJECT_ONLY`).
-    pub(super) fn arb_subject_only_attr() -> impl Strategy<Value = Attr> {
-        arb_kv_from(attrs::SUBJECT_ONLY)
+    /// Legacy-dialect-legal subject-only keys, mirroring `parser::grammar::
+    /// legacy_classify`'s `Subject` arm. `legacy_classify` is a module-
+    /// private (unexported) function, so this is a hand-maintained
+    /// duplicate for generator purposes only - it CANNOT be derived
+    /// programmatically from here. Deliberately EXCLUDES `gid` and `ppid`
+    /// from `attrs::SUBJECT_ONLY`: both are legal MODERN subject attrs but
+    /// legacy-ILLEGAL (`legacy_classify` returns `None` for them, matching
+    /// upstream fapolicyd's `subj_name_to_val(ptr, RULE_FMT_ORIG)` table,
+    /// which lacks gid/ppid). Grounded in `legacy_classify`'s own doc
+    /// comment and its frozen unit tests
+    /// `legacy_classify_gid_is_illegal_in_legacy` /
+    /// `legacy_classify_ppid_is_illegal_in_legacy` (`parser/grammar.rs`).
+    /// If `legacy_classify`'s truth table ever changes, this const must be
+    /// updated to match.
+    const LEGACY_SUBJECT_ONLY: &[&str] =
+        &["auid", "uid", "sessionid", "pid", "comm", "exe", "pattern"];
+
+    /// Legacy-dialect subject attr generator (see `LEGACY_SUBJECT_ONLY`).
+    /// Distinct from the full MODERN `attrs::SUBJECT_ONLY` table (used
+    /// directly by `arb_modern_attr()`) precisely because `gid`/`ppid` are
+    /// legacy-illegal - drawing them here previously produced a `Rule` whose
+    /// `Display` rendering the FIXED (#546) parser correctly rejects
+    /// (`fapd-F01`), breaking the round-trip property this generator exists
+    /// to test.
+    pub(super) fn arb_legacy_subject_only_attr() -> impl Strategy<Value = Attr> {
+        arb_kv_from(LEGACY_SUBJECT_ONLY)
     }
 
-    /// Strict object keys.
+    /// Strict object keys. Unlike the subject side, `attrs::OBJECT_ONLY` is
+    /// safe for legacy generation as-is: `legacy_classify`'s `Object` arm is
+    /// a SUPERSET of `attrs::OBJECT_ONLY` (it additionally accepts
+    /// `dir`/`ftype`/`trust`, which this generator never emits for legacy
+    /// rules at all - see `arb_legacy_rule`'s doc, constraint 1).
     pub(super) fn arb_object_only_attr() -> impl Strategy<Value = Attr> {
         arb_kv_from(attrs::OBJECT_ONLY)
     }
@@ -192,13 +217,20 @@ mod generators {
     }
 
     /// Generate a Legacy-syntax rule. Three hard constraints to keep the
-    /// positional classifier deterministic and match the corrected grammar:
+    /// generator producing only rules the real (post-#546) legacy grammar
+    /// accepts:
     ///
-    /// 1. Subject keys are drawn ONLY from `attrs::SUBJECT_ONLY`; object
+    /// 1. Subject keys are drawn ONLY from `LEGACY_SUBJECT_ONLY` (the
+    ///    legacy-legal subset of `attrs::SUBJECT_ONLY` - excludes `gid`/
+    ///    `ppid`, which are legacy-ILLEGAL per `legacy_classify`); object
     ///    keys ONLY from `attrs::OBJECT_ONLY`. `BOTH_SIDES` keys (including
-    ///    `Attr::All`) are excluded - without a `:` delimiter, a `dir=`
-    ///    could legally be classified onto either side, which would cause a
-    ///    round-trip mismatch.
+    ///    `Attr::All`) are excluded entirely - `legacy_classify` reclassifies
+    ///    `dir`/`ftype`/`trust` as legacy-object-only (not `Either`, unlike
+    ///    the modern dialect), and a bare `all` routes by the RUNNING
+    ///    subject/object counts (`positional_split`'s `route_by_running_count`),
+    ///    neither of which this generator models - excluding them keeps the
+    ///    round-trip unambiguous rather than attempting to replicate that
+    ///    routing here.
     /// 2. The Display impl renders subject first, then object, with no
     ///    colon. Post-#546, the classifier (`legacy_classify` +
     ///    `positional_split`) classifies each token INDEPENDENTLY by name,
@@ -206,9 +238,11 @@ mod generators {
     ///    "switch point" at all. This generator still emits subject-attrs
     ///    before object-attrs purely so the rendered text reads naturally
     ///    for debugging a shrunk failure, not because the classifier
-    ///    requires that order. Strict-only keys (drawn only from
-    ///    `SUBJECT_ONLY` / `OBJECT_ONLY`, never `BOTH_SIDES`) keep the
-    ///    round-trip unambiguous regardless of ordering.
+    ///    requires that order. Restricting to the legacy-LEGAL keysets (not
+    ///    merely `SUBJECT_ONLY`/`OBJECT_ONLY`, which include the legacy-
+    ///    illegal `gid`/`ppid` - see constraint 1) is what actually keeps the
+    ///    round-trip unambiguous; ordering itself no longer matters to the
+    ///    classifier.
     /// 3. `perm` is ALWAYS `None` for legacy rules. fapolicyd rules.c:957-965
     ///    gates perm on `RULE_FMT_COLON`; the no-colon format rejects `perm=`.
     ///    Using `arb_perm_opt()` here would generate round-trip inputs that the
@@ -217,7 +251,7 @@ mod generators {
         (
             arb_decision(),
             arb_perm_legacy(),
-            prop::collection::vec(arb_subject_only_attr(), 1..=4),
+            prop::collection::vec(arb_legacy_subject_only_attr(), 1..=4),
             prop::collection::vec(arb_object_only_attr(), 1..=4),
         )
             .prop_map(|(decision, perm, subject, object)| Rule {

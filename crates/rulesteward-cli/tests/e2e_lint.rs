@@ -1179,7 +1179,7 @@ fn lint_directory_cross_file_macro_no_e03() {
 /// and `e03` emits fapd-W09 instead of fapd-E03 for the undefined case.
 #[test]
 fn lint_single_file_undefined_macro_is_w09_exit_one() {
-    let f = write_tmp("allow uid=0 : exe=%missingmacro\n");
+    let f = write_tmp("allow uid=0 : path=%missingmacro\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
