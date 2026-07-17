@@ -274,6 +274,66 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // subject/object must be STRICTLY `all`, not just decision+perm family
+    // match - mutation-kill for `is_all_only` (survivor 4: forced to `true`
+    // unconditionally would bypass the subject/object strictness entirely).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn deny_perm_any_non_all_subject_last_fires() {
+        // `deny perm=any uid=0 : all` (G1.4): decision is in the deny family
+        // and perm is exactly `any`, but the SUBJECT is `uid=0`, not `all` -
+        // this is NOT a deny-all (it only denies uid 0, not everyone), so
+        // fapd-W13 must still fire. An `is_all_only` forced to always return
+        // `true` would wrongly call this clean.
+        let files = vec![(
+            PathBuf::from("rules.d/95-final.rules"),
+            vec![modern_rule(
+                1,
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![kv_int("uid", 0)],
+                vec![Attr::All],
+            )],
+        )];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert_eq!(
+            diags.len(),
+            1,
+            "deny perm=any uid=0 : all has a non-`all` SUBJECT and must fire \
+             fapd-W13: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W13");
+    }
+
+    #[test]
+    fn deny_perm_any_non_all_object_last_fires() {
+        // `deny perm=any all : /usr/bin/foo` (G1.4): decision and perm match,
+        // subject is `all`, but the OBJECT is a single path, not `all` - this
+        // denies access to one path only, not a deny-all default, so
+        // fapd-W13 must still fire. Kills the same `is_all_only` forced-`true`
+        // mutant from the object side (subject alone passing is not enough).
+        let files = vec![(
+            PathBuf::from("rules.d/95-final.rules"),
+            vec![modern_rule(
+                1,
+                Decision::Deny,
+                Some(Perm::Any),
+                vec![Attr::All],
+                vec![kv("path", "/usr/bin/foo")],
+            )],
+        )];
+        let diags = w13(&files, Some(TargetVersion::Rhel9));
+        assert_eq!(
+            diags.len(),
+            1,
+            "deny perm=any all : /usr/bin/foo has a non-`all` OBJECT and must \
+             fire fapd-W13: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W13");
+    }
+
+    // ---------------------------------------------------------------------
     // The shipped-default shape: last rule is `allow perm=open all : all`.
     // ---------------------------------------------------------------------
 

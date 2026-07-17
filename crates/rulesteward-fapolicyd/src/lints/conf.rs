@@ -207,6 +207,44 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // Byte-accurate span on a later line (mutation-kill: the scanner's
+    // `start`/`end`/`offset` arithmetic, round 2).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn span_and_line_are_byte_accurate_on_a_later_line() {
+        // Mutation round 2 (survivors 1-3): the scanner's byte-offset
+        // arithmetic - `end = start + line.len()` and the next line's
+        // `offset = end + 1` (skipping the consumed `\n`) - was never pinned
+        // by an exact-span assertion, only by `.line`. A `+` -> `*` or
+        // `+` -> `-` mutation in either expression drifts the computed span
+        // away from the real byte range while often leaving the winning
+        // LINE NUMBER unchanged (a same-line-index-0 winner can't
+        // distinguish them at all, since a `line`-only check never reads
+        // `.span`). Anchoring the winner on line 2 (not line 1) forces the
+        // `offset` carry-over from line 1 to matter, and asserting the
+        // exact byte range catches all three mutants:
+        //   - `start * line.len()` for line 1 (idx 0) collapses `end` to 0
+        //     (since `start == 0`), corrupting the carried `offset`.
+        //   - `end * 1` (the `*` mutant of `end + 1`) drops the `+1` for the
+        //     consumed `\n`, shifting every later line's `start` back by 1.
+        //   - `end - 1` shifts it back by 2.
+        // "foo=bar" is 7 bytes (indices 0..7), byte 7 is the consumed `\n`,
+        // so "permissive=1" (12 bytes) starts at byte 8 and ends at byte 20.
+        let text = "foo=bar\npermissive=1\n";
+        let diags = lint_conf(text, &p(), None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].line, 2, "permissive=1 is on line 2");
+        assert_eq!(
+            diags[0].span,
+            8..20,
+            "span must be the EXACT byte range of `permissive=1` on line 2 \
+             (bytes 0..7 are `foo=bar`, byte 7 is the consumed `\\n`): {:?}",
+            diags[0].span
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // ControlRefs: DenyAll family, ONLY when target resolves.
     // ---------------------------------------------------------------------
 
