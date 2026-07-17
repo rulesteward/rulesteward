@@ -153,6 +153,18 @@ impl SystemProbe for LiveProbe {
         Ok(status.success())
     }
 
+    fn fapolicyd_installed(&self) -> Result<bool, String> {
+        // Same shape as `rpm_plugin_installed` above, querying the `fapolicyd`
+        // package itself rather than the RPM live-update plugin (#519).
+        let status = std::process::Command::new("rpm")
+            .args(["-q", "fapolicyd"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("rpm not found: {e}"))?;
+        Ok(status.success())
+    }
+
     fn fapolicyd_db_space(&self) -> Result<FsSpace, String> {
         // Use statvfs via the `nix` crate path -- but we avoid extra deps.
         // Instead, parse `df -B1 /var/lib/fapolicyd/` output.
@@ -219,6 +231,13 @@ impl SystemProbe for LiveProbe {
             permissive_set,
             deprecated_sha256hash,
             both_layouts_present,
+            // Fixed path (G2 grounding): /etc/fapolicyd is 0750 root:fapolicyd,
+            // so an unprivileged doctor commonly hits EACCES here - degrade to
+            // None (never claim "rule missing") rather than erroring the whole
+            // check.
+            compiled_final_rule: read_compiled_final_rule_from(Path::new(
+                "/etc/fapolicyd/compiled.rules",
+            )),
         })
     }
 }
@@ -248,6 +267,23 @@ fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
     } else {
         Some("enforcing".to_string())
     }
+}
+
+/// The last non-empty, non-comment line of the `fapolicyd.conf`-style rules
+/// file at `path` (G1/G2 grounding: fagenrules-generated `compiled.rules`
+/// never has blank lines or comments, but a hand-edited file can, and the
+/// daemon tolerates comment lines - so "last non-empty non-comment line"
+/// remains the right defensive predicate). `None` when the file cannot be
+/// read at all (absent, or - the common case per G2 - EACCES because
+/// `/etc/fapolicyd` is 0750 `root:fapolicyd` and the caller is neither root
+/// nor a member of group `fapolicyd`): the caller must treat `None` as "could
+/// not assess", never as "no rule".
+fn read_compiled_final_rule_from(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        (!trimmed.is_empty() && !trimmed.starts_with('#')).then(|| trimmed.to_string())
+    })
 }
 
 /// Scan all `.rules` files in `rules_dir` for deprecated `sha256hash=`.
@@ -532,6 +568,58 @@ mod tests {
             read_fapolicyd_mode_from(&conf),
             Some("permissive".to_string())
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // read_compiled_final_rule_from (#519, G1/G2 grounding).
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_compiled_final_rule_from_returns_the_last_non_empty_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compiled.rules");
+        std::fs::write(
+            &path,
+            "allow perm=open all : ftype=%languages\n\
+             deny_audit perm=any all : ftype=%languages\n\
+             deny perm=any all : all\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_compiled_final_rule_from(&path),
+            Some("deny perm=any all : all".to_string())
+        );
+    }
+
+    #[test]
+    fn read_compiled_final_rule_from_skips_trailing_blank_and_comment_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compiled.rules");
+        std::fs::write(
+            &path,
+            "deny perm=any all : all\n\
+             # trailing note, not part of the ruleset\n\
+             \n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_compiled_final_rule_from(&path),
+            Some("deny perm=any all : all".to_string())
+        );
+    }
+
+    #[test]
+    fn read_compiled_final_rule_from_missing_file_returns_none() {
+        let path = Path::new("/nonexistent/path/to/compiled.rules");
+        assert_eq!(read_compiled_final_rule_from(path), None);
+    }
+
+    #[test]
+    fn read_compiled_final_rule_from_all_comments_and_blanks_returns_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compiled.rules");
+        std::fs::write(&path, "# header\n\n# another comment\n").unwrap();
+        assert_eq!(read_compiled_final_rule_from(&path), None);
     }
 
     #[test]

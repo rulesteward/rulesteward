@@ -391,9 +391,40 @@ fn e05_with_target(
         Some(version) => overflow_set_definitions(entries)
             .into_iter()
             .filter(|(name, ..)| referenced_by_non_str_attr(entries, name, version))
-            .map(|(name, line, span, bad)| e05_diagnostic(name, bad, span, file, line))
+            .map(|(name, line, span, bad)| {
+                e05_diagnostic_target_aware(name, bad, span, file, line, version)
+            })
             .collect(),
     }
+}
+
+/// Build the fapd-E05 diagnostic for the `--target rhel9`/`rhel10` arm of
+/// [`e05_with_target`] (issue #487). At those targets the 1.4.5 daemon types
+/// the overflowing set STRING (never i64), so the message must not repeat
+/// [`e05_diagnostic`]'s 1.3.2-model framing ("integer-typed" / "stores set
+/// integers as i64") - that phrasing is simply wrong at rhel9+. The
+/// portable-default / `--target rhel8` arm keeps calling [`e05_diagnostic`]
+/// unchanged (1.3.2 really does type + store the set that way there).
+fn e05_diagnostic_target_aware(
+    name: &str,
+    bad: &str,
+    span: Span,
+    file: &Path,
+    line: usize,
+    version: TargetVersion,
+) -> Diagnostic {
+    anchored(
+        Severity::Error,
+        "fapd-E05",
+        span,
+        format!(
+            "set `%{name}` contains value `{bad}` that overflows fapolicyd's numeric range \
+             and is treated as a string on --target {version} (fapolicyd {})",
+            version.fapolicyd_version()
+        ),
+        file,
+        line,
+    )
 }
 
 /// Whether `name` (a `%macro`) is referenced by at least one attribute in
@@ -1615,6 +1646,89 @@ mod tests {
                 "i64::MAX is a valid fapolicyd integer on every version; fapd-E05 \
                  must not fire under {ctx:?}: got codes={:?}",
                 diags.iter().map(|d| d.code.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // #487: fapd-E05 wording is 1.3.2-framed when co-firing with fapd-E07 at
+    // --target rhel9+ (github.com/rulesteward/rulesteward/issues/487).
+    //
+    // Reuses `e05_overflow_referenced_by_uid_fires_on_every_context`'s exact
+    // co-fire fixture (`uid=%s`, a non-STRING attribute, so BOTH fapd-E05 and
+    // fapd-E07 fire under every context - the issue's precise scenario). At
+    // rhel9/rhel10 the 1.4.5 daemon types the overflowing set STRING (the
+    // sibling fapd-E07 finding on the SAME rule already says so); fapd-E05's
+    // message must not contradict it by still calling the set
+    // "integer-typed" / claiming fapolicyd "stores set integers as i64" - a
+    // 1.3.2-model framing that is wrong at rhel9+. Portable/rhel8 keep the
+    // ORIGINAL wording verbatim (grounded correct there: 1.3.2 really does
+    // type + store the set that way). Both messages are pinned in ONE test so
+    // a wrong impl that reworks the WRONG arm (or both, or neither) fails
+    // immediately - a scan of every context lands on the first mismatch.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn e05_487_wording_is_target_aware_portable_rhel8_unchanged_rhel9_plus_reworded() {
+        let src = "%s=9223372036854775808\nallow uid=%s : all\n";
+        let portable_wording = "integer-typed set `%s` contains value `9223372036854775808` \
+                                 that exceeds the maximum integer (fapolicyd stores set \
+                                 integers as i64)";
+        for (ctx, expected) in [
+            (None, portable_wording),
+            (Some(crate::version::TargetVersion::Rhel8), portable_wording),
+            (
+                Some(crate::version::TargetVersion::Rhel9),
+                "set `%s` contains value `9223372036854775808` that overflows fapolicyd's \
+                 numeric range and is treated as a string on --target rhel9 (fapolicyd 1.4.5)",
+            ),
+            (
+                Some(crate::version::TargetVersion::Rhel10),
+                "set `%s` contains value `9223372036854775808` that overflows fapolicyd's \
+                 numeric range and is treated as a string on --target rhel10 (fapolicyd 1.4.5)",
+            ),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            let e05 = diags
+                .iter()
+                .find(|d| d.code.as_ref() == "fapd-E05")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fapd-E05 must still fire under {ctx:?} (issue #487 does not \
+                            change WHETHER it fires, only its rhel9+ wording): {diags:?}"
+                    )
+                });
+            assert_eq!(
+                e05.message, expected,
+                "fapd-E05 wording mismatch under {ctx:?} (issue #487)"
+            );
+        }
+    }
+
+    #[test]
+    fn e05_rhel9_plus_wording_never_says_integer_typed_or_i64() {
+        // Belt-and-braces substring guard (issue #487's literal complaint),
+        // independent of the exact-string pin above: whatever the rhel9+
+        // wording ends up being, it must never contain either banned token.
+        let src = "%s=9223372036854775808\nallow uid=%s : all\n";
+        for ctx in [
+            Some(crate::version::TargetVersion::Rhel9),
+            Some(crate::version::TargetVersion::Rhel10),
+        ] {
+            let diags = lint_src_e05(src, ctx);
+            let e05 = diags
+                .iter()
+                .find(|d| d.code.as_ref() == "fapd-E05")
+                .unwrap_or_else(|| panic!("fapd-E05 must still fire under {ctx:?}: {diags:?}"));
+            assert!(
+                !e05.message.contains("integer-typed"),
+                "rhel9+ fapd-E05 wording must drop 'integer-typed' (#487): {}",
+                e05.message
+            );
+            assert!(
+                !e05.message.contains("i64"),
+                "rhel9+ fapd-E05 wording must drop 'i64' (#487): {}",
+                e05.message
             );
         }
     }

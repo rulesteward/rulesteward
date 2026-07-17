@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 use rulesteward_core::{Diagnostic, Framework};
 use rulesteward_fapolicyd::{
-    Entry, LintContext, catalog, check_layout, collect_macro_names, lint_cross_file, lint_orphans,
-    lint_weak_digests, lint_with_context, open_trustdb_readonly, parse_rules_file,
+    Entry, LintContext, TrustDb, catalog, check_layout, collect_macro_names, lint_conf,
+    lint_cross_file, lint_orphans, lint_weak_digests, lint_with_context, open_trustdb_readonly,
+    parse_rules_file, w13,
 };
 use thiserror::Error;
 
@@ -73,21 +74,9 @@ fn run_lint_resolved(
     target: Option<TargetVersionArg>,
     profile: Option<Framework>,
 ) -> anyhow::Result<i32> {
-    let trustdb = match &args.against_trustdb {
-        Some(p) => {
-            if !p.is_dir() {
-                eprintln!("error: opening trust DB {}: not a directory", p.display());
-                return Ok(EXIT_TOOL_FAILURE);
-            }
-            match open_trustdb_readonly(p) {
-                Ok(db) => Some(db),
-                Err(e) => {
-                    eprintln!("error: opening trust DB {}: {e}", p.display());
-                    return Ok(EXIT_LMDB_ERROR);
-                }
-            }
-        }
-        None => None,
+    let trustdb = match open_trustdb_arg(args.against_trustdb.as_deref()) {
+        Ok(db) => db,
+        Err(code) => return Ok(code),
     };
 
     let (target_files, layout_diag) = resolve_targets(args).map_err(anyhow::Error::from)?;
@@ -175,6 +164,14 @@ fn run_lint_resolved(
         all_diags.extend(cross);
     }
 
+    // #519: fapd-W13 over the SAME merged stream, in both dir + single-file
+    // mode (see `lints::deny_all`'s module doc); fapd-W14 is opt-in via
+    // `--conf` (see `lints::conf`'s module doc).
+    all_diags.extend(w13(&parsed, target.map(Into::into)));
+    if let Some(conf_path) = &args.conf {
+        tool_err |= lint_conf_arg(conf_path, target, &mut all_diags);
+    }
+
     if args.report_orphans {
         match trustdb.as_ref() {
             Some(db) => all_diags.extend(lint_orphans(&parsed, db)),
@@ -227,6 +224,50 @@ fn run_lint_resolved(
     ))
 }
 
+/// Open the `--against-trustdb` path, if given. `Ok(None)` when the flag is
+/// absent; `Ok(Some(db))` on success; `Err(exit_code)` with the exit code the
+/// caller should return immediately on a directory/LMDB-open failure.
+fn open_trustdb_arg(path: Option<&Path>) -> Result<Option<TrustDb>, i32> {
+    let Some(p) = path else {
+        return Ok(None);
+    };
+    if !p.is_dir() {
+        eprintln!("error: opening trust DB {}: not a directory", p.display());
+        return Err(EXIT_TOOL_FAILURE);
+    }
+    match open_trustdb_readonly(p) {
+        Ok(db) => Ok(Some(db)),
+        Err(e) => {
+            eprintln!("error: opening trust DB {}: {e}", p.display());
+            Err(EXIT_LMDB_ERROR)
+        }
+    }
+}
+
+/// Lint the `--conf` fapolicyd.conf path (#519, fapd-W14), appending its
+/// findings to `all_diags`. A read failure is a per-invocation tool error
+/// (mirrors the per-file IO-failure handling in the staging loop above), not
+/// a lint finding; returns `true` in that case so the caller can fold it into
+/// its own `tool_err` flag.
+fn lint_conf_arg(
+    conf_path: &std::path::Path,
+    target: Option<TargetVersionArg>,
+    all_diags: &mut Vec<Diagnostic>,
+) -> bool {
+    match std::fs::read_to_string(conf_path) {
+        Ok(text) => {
+            all_diags.extend(lint_conf(&text, conf_path, target.map(Into::into)));
+            false
+        }
+        Err(io) => {
+            let err =
+                anyhow::Error::new(io).context(format!("reading --conf {}", conf_path.display()));
+            eprintln!("error: {err:#}");
+            true
+        }
+    }
+}
+
 /// Build the SARIF per-check coverage payload (#137) for a `--sarif-include-pass`
 /// SARIF run, or `None` for any other run (which keeps SARIF output byte-identical
 /// to the pre-#137 form). [`catalog::evaluated`] is the single source of truth for
@@ -271,6 +312,8 @@ fn sarif_pass_info(
         report_orphans: args.report_orphans,
         target: target.map(Into::into),
         single_file,
+        // #519: fapd-W14 evaluates whenever `--conf` is given (Condition::RequiresConf).
+        conf: args.conf.is_some(),
     };
     let rules = catalog::evaluated(inputs);
     let fired: std::collections::HashSet<&str> =
@@ -419,6 +462,7 @@ mod tests {
             target: None,
             check_identities: false,
             sarif_include_pass: false,
+            conf: None,
         }
     }
 

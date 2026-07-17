@@ -198,6 +198,50 @@ pub struct FapolicydConf {
     pub deprecated_sha256hash: bool,
     /// True if both `/etc/fapolicyd/fapolicyd.rules` AND `rules.d/` exist.
     pub both_layouts_present: bool,
+    /// The last non-empty, non-comment line of `/etc/fapolicyd/compiled.rules`
+    /// (the daemon-loaded final rule), if the file could be read. `None` when
+    /// the file is absent OR unreadable (e.g. the common EACCES case: the
+    /// unprivileged doctor lacks group `fapolicyd` membership - G2 verdict) -
+    /// distinct from `Some(String::new())`, which would wrongly imply an
+    /// empty-but-readable file. `None` must add NO new misconfiguration issue
+    /// (honest degradation, not a false "rule missing").
+    pub compiled_final_rule: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// STIG control refs (#519): precomputed per-family projections for the
+// resolved doctor --target, threaded through `run_checks` so each check
+// attaches its own family's controls without re-deriving the target mapping.
+// ---------------------------------------------------------------------------
+
+/// The three fapolicyd STIG control families' [`ControlRef`]s for a single
+/// resolved doctor `--target`, built once per run via [`FapolicydStigRefs::for_target`]
+/// and threaded through [`super::checks::run_checks`] as `Option<&Self>` (`None`
+/// when no target resolved - see `resolve_doctor_target` in `target_probe.rs`).
+#[derive(Debug, Clone)]
+pub struct FapolicydStigRefs {
+    /// Attached to the `fapolicyd-package` check (installed/absent).
+    pub installed: Vec<ControlRef>,
+    /// Attached to the `service-status` check (enabled/not-enabled).
+    pub enabled: Vec<ControlRef>,
+    /// Attached to the `misconfiguration` check's deny-all sub-condition.
+    pub deny_all: Vec<ControlRef>,
+}
+
+impl FapolicydStigRefs {
+    /// Build the per-family control projections for `target` via
+    /// `rulesteward_fapolicyd::lints::stig::control_refs`. Pure aggregation
+    /// (no branching of its own): the STIG data itself lives in that crate's
+    /// `stig_controls`/`control_refs` table, not here.
+    #[must_use]
+    pub fn for_target(target: rulesteward_fapolicyd::TargetVersion) -> Self {
+        use rulesteward_fapolicyd::lints::stig::{ControlFamily, control_refs};
+        Self {
+            installed: control_refs(ControlFamily::Installed, target),
+            enabled: control_refs(ControlFamily::Enabled, target),
+            deny_all: control_refs(ControlFamily::DenyAll, target),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +250,7 @@ pub struct FapolicydConf {
 
 /// Trait for all environment I/O used by the doctor checks.
 ///
-/// Each method returns plain data (structs / Result). The 13 check functions
+/// Each method returns plain data (structs / Result). The 14 check functions
 /// contain ONLY classification logic over that data, making them testable with
 /// `FakeProbe` without any real OS access. The real [`LiveProbe`](super::probe::LiveProbe) shells out.
 pub trait SystemProbe {
@@ -238,6 +282,12 @@ pub trait SystemProbe {
     /// Check whether the `rpm-plugin-fapolicyd` RPM package is installed.
     fn rpm_plugin_installed(&self) -> Result<bool, String>;
 
+    /// Check whether the `fapolicyd` package itself is installed (#519, the
+    /// STIG-required `fapolicyd-package` check - distinct from
+    /// [`Self::rpm_plugin_installed`], which checks the RPM live-update
+    /// plugin, not the daemon package).
+    fn fapolicyd_installed(&self) -> Result<bool, String>;
+
     /// Return free bytes in /var/lib/fapolicyd/.
     fn fapolicyd_db_space(&self) -> Result<FsSpace, String>;
 
@@ -252,7 +302,7 @@ pub trait SystemProbe {
 mod tests {
     use rulesteward_core::{ControlRef, Framework};
 
-    use super::{CheckResult, CheckStatus, worst_exit_code};
+    use super::{CheckResult, CheckStatus, FapolicydStigRefs, worst_exit_code};
     use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
 
     fn result(status: CheckStatus) -> CheckResult {
@@ -362,5 +412,20 @@ mod tests {
         let unknown = CheckResult::unknown("svc", "probe failed");
         assert_eq!(unknown.status, CheckStatus::Unknown);
         assert_eq!(unknown.remediation, None);
+    }
+
+    // -------------------------------------------------------------------------
+    // FapolicydStigRefs::for_target (#519)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn for_target_builds_exactly_one_ref_per_family() {
+        let refs = FapolicydStigRefs::for_target(rulesteward_fapolicyd::TargetVersion::Rhel9);
+        assert_eq!(refs.installed.len(), 1, "installed: {:?}", refs.installed);
+        assert_eq!(refs.enabled.len(), 1, "enabled: {:?}", refs.enabled);
+        assert_eq!(refs.deny_all.len(), 1, "deny_all: {:?}", refs.deny_all);
+        assert_eq!(refs.installed[0].id, "RHEL-09-433010");
+        assert_eq!(refs.enabled[0].id, "RHEL-09-433015");
+        assert_eq!(refs.deny_all[0].id, "RHEL-09-433016");
     }
 }

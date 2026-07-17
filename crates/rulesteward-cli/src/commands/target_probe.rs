@@ -196,17 +196,6 @@ pub(crate) fn resolve_target(
 /// doctor callers own their one-line stderr note ("running checks without
 /// STIG control attachment") rather than reusing lint's pinned warning
 /// wording.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "9d Phase-0 foundation: the doctor verbs (#519 fapolicyd, #520 selinux) wire \
-                  this in their lanes; `expect` (not `allow`) trips the moment the first \
-                  caller lands, forcing this attribute's removal instead of lingering. \
-                  cfg_attr(not(test)) because the unit tests already call it, so the \
-                  expectation would be unfulfilled in the --all-targets test build"
-    )
-)]
 pub(crate) fn resolve_doctor_target(
     sel: Option<TargetSelector>,
     probe: &dyn HostTargetProbe,
