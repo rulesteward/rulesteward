@@ -87,7 +87,7 @@ rulesteward fapolicyd migrate --from rhel8 --to rhel9 --rules-dir /etc/fapolicyd
 rulesteward fapolicyd trustdb list /var/lib/fapolicyd  # read the trust DB (also: check, diff, stale)
 ```
 
-- **lint** - static-analyze rule files (27 `fapd-` codes; see Lint coverage). Optional
+- **lint** - static-analyze rule files (28 `fapd-` codes; see Lint coverage). Optional
   cross-checks: `--against-trustdb`, `--check-identities`, `--target rhel8|rhel9|rhel10`,
   `--conf /etc/fapolicyd/fapolicyd.conf` (fail-open `permissive` detection, `fapd-W14`).
 - **simulate** - statically replay a workload of access attempts and report which rule

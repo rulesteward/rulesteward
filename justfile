@@ -320,6 +320,52 @@ fapolicyd-stig-derive product="all":
         cargo run --quiet --manifest-path tools/fapolicyd-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
+# (#520) Same nested-tool pattern for the selinux se-W01/se-W02 STIG table
+# (tools/selinux-stig-update, OUT of `just ci`); mirrors the fapolicyd-stig-*
+# triad above.
+#
+# selinux-stig-check           : LIVE - fetch the pinned DISA zips; exit 1 on any
+#                                 drift vs stig.rs (the weekly
+#                                 selinux-stig-drift workflow uses this).
+# selinux-stig-check-offline   : OFFLINE - drift-check stig.rs against the
+#                                 committed real DISA fixtures; no network (the
+#                                 PR-gate uses this).
+# selinux-stig-derive <p>      : print the derived table + diff + paste-ready
+#                                 lines for review (p = rhel8|rhel9|rhel10, or
+#                                 `all`).
+selinux-stig-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "selinux-stig-check: prerequisites missing - need curl + unzip + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/selinux-stig-update/Cargo.toml -- check
+
+selinux-stig-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed real-DISA fixtures and confirm
+    # stig.rs still matches. No network. Any product's drift (exit 1) or error (2)
+    # fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/selinux-stig-update/Cargo.toml -- \
+            check --product "$p" --file "tools/selinux-stig-update/tests/fixtures/${p}_selinux_controls.xml"
+    done
+
+selinux-stig-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "selinux-stig-derive: prerequisites missing - need curl + unzip + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/selinux-stig-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/selinux-stig-update/Cargo.toml -- derive --product "{{product}}"
+    fi
+
 # (#372) Drift-check the sshd E01/E04/W04 lint tables against a LIVE sshd daemon by
 # probing the Rocky 8/9/10 + openssh-server images. Same nested-tool pattern
 # (tools/sshd-probe-update, OUT of `just ci`). The LIVE recipes skip gracefully (exit 0)
