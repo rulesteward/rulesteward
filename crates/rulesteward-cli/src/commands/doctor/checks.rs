@@ -1,27 +1,42 @@
-//! The 13 pure check-classification functions plus the doctor orchestration.
+//! The 14 pure check-classification functions plus the doctor orchestration.
 //!
 //! Each `check_*` fn takes a `&dyn SystemProbe` and classifies its plain-data
 //! return into a `CheckResult` (no I/O here -- that lives behind the trait in
-//! `probe`). `run_checks` drives all 13; the shared `model::worst_exit_code`
+//! `probe`). `run_checks` drives all 14; the shared `model::worst_exit_code`
 //! folds the verdicts.
+//!
+//! Three checks (`service-status`, `misconfiguration`, `fapolicyd-package`)
+//! additionally accept `stig: Option<&FapolicydStigRefs>` (#519): when a
+//! doctor `--target` resolves, each attaches its family's typed STIG
+//! [`rulesteward_core::ControlRef`]s to the returned [`CheckResult`]
+//! REGARDLESS of status (a compliant host must still report its STIG
+//! coverage, matching the `CheckResult.controls` doc in `model.rs`); `None`
+//! (no target resolved) attaches nothing, byte-identical to pre-#519 output.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::model::{CheckResult, CheckStatus, CommandOutcome, SystemProbe};
+use super::model::{CheckResult, CheckStatus, CommandOutcome, FapolicydStigRefs, SystemProbe};
 use crate::commands::container_check::{
     Report as ContainerReport, Severity as ContainerSeverity,
     worst_severity as container_worst_severity,
 };
 
 // ---------------------------------------------------------------------------
-// The 13 check functions (pure classification over probe data)
+// The 14 check functions (pure classification over probe data)
 // ---------------------------------------------------------------------------
 
 /// Check 1: fapolicyd service status.
 ///
 /// Fail if not running; Warn if permissive; Ok if running + enforcing.
-fn check_service(probe: &dyn SystemProbe) -> CheckResult {
+///
+/// STIG (#519): the `--target`-gated `Enabled`-family control should attach
+/// regardless of status (see the module doc); NOT YET WIRED - `stig` is
+/// currently unused, so this check attaches no controls (pre-#519 behavior)
+/// and does not yet distinguish `running && !enabled` from `running &&
+/// enabled` (both currently resolve via the permissive/enforcing mode branch
+/// below). Wiring both is the #519 implementation's job.
+fn check_service(probe: &dyn SystemProbe, _stig: Option<&FapolicydStigRefs>) -> CheckResult {
     match probe.service_state() {
         Err(e) => CheckResult::unknown(
             "service-status",
@@ -391,10 +406,51 @@ fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
     }
 }
 
+/// Whether `line` is a deny-all, permit-by-exception final rule per the G1.4
+/// verdict (`/mnt/side-projects/9d-v0_8-wave2b/grounding/g1-g2-fapolicyd-denyall.md`):
+/// tokenize on RUNS OF SPACES (the daemon's own separator tolerance - a tab is
+/// a daemon PARSE ERROR, never a rule, per G1's round-3 probe), then require
+/// the decision to be one of the deny-FAMILY keywords (`deny`, `deny_audit`,
+/// `deny_syslog`, `deny_log` - not just the bare `deny` literal), `perm` to be
+/// EXACTLY `any` (STRICT: `perm=execute`, the shipped `90-deny-execute.rules`
+/// default, is NOT a deny-all - opens are still wide open), subject exactly
+/// `all`, and object exactly `all` (after the `:` separator).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "#519: only this file's own unit tests call it so far; check_misconfig \
+                  wires it in when the deny-all sub-condition lands (implementer's job). \
+                  `expect` (not `allow`) trips the moment a real caller lands, forcing this \
+                  attribute's removal instead of lingering."
+    )
+)]
+fn is_deny_all_final_rule(line: &str) -> bool {
+    let _ = line;
+    todo!(
+        "tokenize on runs of ASCII whitespace; decision in {{deny, deny_audit, deny_syslog, \
+         deny_log}} (family, not just the literal); perm == \"any\" STRICT; subject == \"all\"; \
+         object (after ':') == \"all\" (G1.4 verdict)"
+    )
+}
+
 /// Check 13: misconfiguration warnings.
 ///
 /// Each condition that is true -> Warn with specific detail. All false -> Ok.
-fn check_misconfig(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
+///
+/// STIG (#519): `stig`'s `DenyAll` family control should attach whenever a
+/// `--target` resolves, regardless of status (see the module doc), and a
+/// failing [`is_deny_all_final_rule`] predicate over
+/// `conf.compiled_final_rule` should add a fourth Warn sub-condition (G1.4);
+/// `None` (the file was unreadable - G2's common EACCES case) must add NO new
+/// issue. NOT YET WIRED - `stig` and `conf.compiled_final_rule` are currently
+/// unused; this check attaches no controls and evaluates only the original
+/// three conditions (pre-#519 behavior).
+fn check_misconfig(
+    probe: &dyn SystemProbe,
+    rules_dir: &Path,
+    _stig: Option<&FapolicydStigRefs>,
+) -> CheckResult {
     match probe.fapolicyd_conf(rules_dir) {
         Err(e) => CheckResult::unknown(
             "misconfiguration",
@@ -429,6 +485,27 @@ fn check_misconfig(probe: &dyn SystemProbe, rules_dir: &Path) -> CheckResult {
     }
 }
 
+/// Check 14: `fapolicyd` package installed (#519, STIG `Installed` family).
+///
+/// Ok(true) -> Ok; Ok(false) -> Fail (`dnf install fapolicyd` remediation);
+/// Err -> Unknown. The `Installed`-family control should attach whenever a
+/// `--target` resolves, regardless of status.
+///
+/// NOT YET IMPLEMENTED: this placeholder always returns `Unknown` with no
+/// controls, regardless of `probe`/`stig` - a genuine implementation is the
+/// #519 pipeline's job. A plain `todo!()` here is deliberately AVOIDED: this
+/// fn is invoked unconditionally from [`run_checks`]'s `vec![]` literal, which
+/// every pre-existing `run_checks` caller (e.g.
+/// `run_checks_container_check_at_index_8_uses_report`) already exercises, so
+/// a panicking stub would break tests that have nothing to do with #519.
+fn check_fapolicyd_package(
+    probe: &dyn SystemProbe,
+    stig: Option<&FapolicydStigRefs>,
+) -> CheckResult {
+    let _ = (probe, stig);
+    CheckResult::unknown("fapolicyd-package", "not yet implemented")
+}
+
 // ---------------------------------------------------------------------------
 // Shared helper
 // ---------------------------------------------------------------------------
@@ -451,17 +528,24 @@ fn cmd_outcome_to_result(
 }
 
 // ---------------------------------------------------------------------------
-// run_checks -- drives all 13 checks via &dyn SystemProbe
+// run_checks -- drives all 14 checks via &dyn SystemProbe
 // ---------------------------------------------------------------------------
 
-/// Run all 13 doctor checks, returning a Vec of results in declaration order.
+/// Run all 14 doctor checks, returning a Vec of results in declaration order.
+///
+/// `stig` (#519) is threaded through to the three checks whose STIG control
+/// family depends on the resolved `--target`: `service-status`,
+/// `fapolicyd-package`, and `misconfiguration`. The `container-check` index
+/// (8) is unaffected and MUST stay stable (append-only contract - see
+/// `checks.rs`'s barrier-gate note).
 pub fn run_checks(
     probe: &dyn SystemProbe,
     rules_dir: &Path,
     container: Option<&ContainerReport>,
+    stig: Option<&FapolicydStigRefs>,
 ) -> Vec<CheckResult> {
     vec![
-        check_service(probe),
+        check_service(probe, stig),
         check_kernel(probe),
         check_audit_rules(probe),
         check_config_cmd(probe),
@@ -473,7 +557,8 @@ pub fn run_checks(
         check_rpm_plugin(probe),
         check_disk_space(probe),
         check_denial_rate(probe),
-        check_misconfig(probe, rules_dir),
+        check_misconfig(probe, rules_dir, stig),
+        check_fapolicyd_package(probe, stig),
     ]
 }
 
@@ -514,6 +599,7 @@ mod tests {
         fs_space: Option<FsSpace>,
         denials: Option<DenialStats>,
         conf: Option<FapolicydConf>,
+        fapolicyd_installed: Option<bool>,
     }
 
     impl SystemProbe for FakeProbe {
@@ -558,6 +644,10 @@ mod tests {
         fn rpm_plugin_installed(&self) -> Result<bool, String> {
             self.rpm_plugin.ok_or_else(|| "not configured".to_string())
         }
+        fn fapolicyd_installed(&self) -> Result<bool, String> {
+            self.fapolicyd_installed
+                .ok_or_else(|| "not configured".to_string())
+        }
         fn fapolicyd_db_space(&self) -> Result<FsSpace, String> {
             self.fs_space
                 .clone()
@@ -592,7 +682,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = check_service(&probe);
+        let result = check_service(&probe, None);
         assert_eq!(result.status, CheckStatus::Fail);
         assert!(result.detail.contains("not running"), "{}", result.detail);
         assert!(result.remediation.is_some());
@@ -608,7 +698,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = check_service(&probe);
+        let result = check_service(&probe, None);
         assert_eq!(result.status, CheckStatus::Ok);
         assert!(result.remediation.is_none());
         // The Ok detail must report the ACTUAL mode, not a hard-coded literal.
@@ -632,7 +722,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = check_service(&probe);
+        let result = check_service(&probe, None);
         assert_eq!(result.status, CheckStatus::Ok);
         assert!(
             result.detail.contains("mode=disabled"),
@@ -656,7 +746,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let result = check_service(&probe);
+        let result = check_service(&probe, None);
         assert_eq!(result.status, CheckStatus::Warn);
         assert!(result.detail.contains("permissive"), "{}", result.detail);
         assert!(result.remediation.is_some());
@@ -665,9 +755,114 @@ mod tests {
     #[test]
     fn check_service_probe_error_is_unknown() {
         let probe = FakeProbe::default(); // no service configured
-        let result = check_service(&probe);
+        let result = check_service(&probe, None);
         assert_eq!(result.status, CheckStatus::Unknown);
         assert!(result.remediation.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Check 1 (#519): the new running&&!enabled Warn arm + STIG control
+    // attachment (Enabled family, regardless of status).
+    // -------------------------------------------------------------------------
+
+    /// A `FapolicydStigRefs` fixture built directly from hardcoded,
+    /// G7/G8-grounded rhel9 control data - NOT via
+    /// `FapolicydStigRefs::for_target` / `lints::stig::control_refs` (both
+    /// themselves not-yet-implemented), so this fixture's correctness does
+    /// not depend on the `lints::stig` table landing first.
+    fn stig_refs_fixture() -> FapolicydStigRefs {
+        use rulesteward_core::{ControlRef, Framework};
+        FapolicydStigRefs {
+            installed: vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433010").with_alias("V-258089"),
+            ],
+            enabled: vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433015").with_alias("V-258090"),
+            ],
+            deny_all: vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433016").with_alias("V-270180"),
+            ],
+        }
+    }
+
+    #[test]
+    fn check_service_running_not_enabled_is_warn_with_enable_remediation_and_controls() {
+        // New arm (#519): running && !enabled -> Warn, independent of the
+        // permissive/enforcing mode branch below it, remediation names
+        // `systemctl enable fapolicyd`. The Enabled-family STIG control
+        // attaches whenever `stig` is given, REGARDLESS of status
+        // (`CheckResult.controls` doc: "a compliant host must still report
+        // its coverage").
+        let probe = FakeProbe {
+            service: Some(ServiceState {
+                running: true,
+                enabled: false,
+                mode: Some("enforcing".to_string()),
+            }),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+
+        let result = check_service(&probe, Some(&stig));
+        assert_eq!(
+            result.status,
+            CheckStatus::Warn,
+            "running but not enabled must warn: {result:?}"
+        );
+        assert!(
+            result
+                .remediation
+                .as_deref()
+                .unwrap_or("")
+                .contains("systemctl enable fapolicyd"),
+            "remediation must name systemctl enable fapolicyd: {:?}",
+            result.remediation
+        );
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "Enabled control must attach when stig is given: {:?}",
+            result.controls
+        );
+        assert_eq!(result.controls[0].id, "RHEL-09-433015");
+        assert_eq!(result.controls[0].alias.as_deref(), Some("V-258090"));
+
+        // Same probe state, no stig -> controls stay empty.
+        let no_stig = check_service(&probe, None);
+        assert!(
+            no_stig.controls.is_empty(),
+            "controls must be empty without stig: {:?}",
+            no_stig.controls
+        );
+    }
+
+    #[test]
+    fn check_service_running_and_enabled_still_carries_enabled_control_when_stig_given() {
+        // running && enabled -> Ok (pre-existing behavior, unchanged), but the
+        // Enabled-family control must STILL attach when stig is given: control
+        // attachment is regardless-of-status, not Warn/Fail-only.
+        let probe = FakeProbe {
+            service: Some(ServiceState {
+                running: true,
+                enabled: true,
+                mode: Some("enforcing".to_string()),
+            }),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+        let result = check_service(&probe, Some(&stig));
+        assert_eq!(result.status, CheckStatus::Ok, "{result:?}");
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "an Ok status must still carry the Enabled control when stig is given: {:?}",
+            result.controls
+        );
+        assert_eq!(result.controls[0].id, "RHEL-09-433015");
+        assert_eq!(result.controls[0].alias.as_deref(), Some("V-258090"));
+
+        let no_stig = check_service(&probe, None);
+        assert!(no_stig.controls.is_empty(), "{:?}", no_stig.controls);
     }
 
     // -------------------------------------------------------------------------
@@ -966,6 +1161,83 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Check 14 (#519): fapolicyd-package installed - NEW, appended at index 13.
+    //
+    // Every assertion below asserts BOTH the classification AND the Installed
+    // STIG control attachment, so a placeholder that already happens to return
+    // the "right" status for one arm (see `check_fapolicyd_package`'s
+    // `CheckResult::unknown` stub) still fails on the controls check.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn check_fapolicyd_package_installed_true_is_ok_with_installed_control() {
+        let probe = FakeProbe {
+            fapolicyd_installed: Some(true),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+        let result = check_fapolicyd_package(&probe, Some(&stig));
+        assert_eq!(result.status, CheckStatus::Ok, "{result:?}");
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "Installed control must attach when stig is given: {:?}",
+            result.controls
+        );
+        assert_eq!(result.controls[0].id, "RHEL-09-433010");
+        assert_eq!(result.controls[0].alias.as_deref(), Some("V-258089"));
+
+        let no_stig = check_fapolicyd_package(&probe, None);
+        assert!(no_stig.controls.is_empty(), "{:?}", no_stig.controls);
+    }
+
+    #[test]
+    fn check_fapolicyd_package_installed_false_is_fail_with_dnf_remediation_and_control() {
+        let probe = FakeProbe {
+            fapolicyd_installed: Some(false),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+        let result = check_fapolicyd_package(&probe, Some(&stig));
+        assert_eq!(result.status, CheckStatus::Fail, "{result:?}");
+        assert!(
+            result
+                .remediation
+                .as_deref()
+                .unwrap_or("")
+                .contains("dnf install fapolicyd"),
+            "remediation must name dnf install fapolicyd: {:?}",
+            result.remediation
+        );
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "Installed control must attach on Fail too: {:?}",
+            result.controls
+        );
+        assert_eq!(result.controls[0].id, "RHEL-09-433010");
+    }
+
+    #[test]
+    fn check_fapolicyd_package_probe_error_is_unknown_with_control_when_stig_given() {
+        let probe = FakeProbe::default(); // fapolicyd_installed not configured -> Err
+        let stig = stig_refs_fixture();
+        let result = check_fapolicyd_package(&probe, Some(&stig));
+        assert_eq!(result.status, CheckStatus::Unknown, "{result:?}");
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "Unknown status must still carry the Installed control when stig is given \
+             (regardless-of-status attachment): {:?}",
+            result.controls
+        );
+
+        let no_stig = check_fapolicyd_package(&probe, None);
+        assert_eq!(no_stig.status, CheckStatus::Unknown);
+        assert!(no_stig.controls.is_empty(), "{:?}", no_stig.controls);
+    }
+
+    // -------------------------------------------------------------------------
     // Check 11: disk space
     // -------------------------------------------------------------------------
 
@@ -1047,11 +1319,12 @@ mod tests {
                 permissive_set: false,
                 deprecated_sha256hash: false,
                 both_layouts_present: false,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
         assert_eq!(
-            check_misconfig(&probe, &fake_path()).status,
+            check_misconfig(&probe, &fake_path(), None).status,
             CheckStatus::Ok
         );
     }
@@ -1063,10 +1336,11 @@ mod tests {
                 permissive_set: true,
                 deprecated_sha256hash: false,
                 both_layouts_present: false,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
-        let result = check_misconfig(&probe, &fake_path());
+        let result = check_misconfig(&probe, &fake_path(), None);
         assert_eq!(result.status, CheckStatus::Warn);
         assert!(result.detail.contains("permissive"), "{}", result.detail);
     }
@@ -1078,10 +1352,11 @@ mod tests {
                 permissive_set: false,
                 deprecated_sha256hash: true,
                 both_layouts_present: false,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
-        let result = check_misconfig(&probe, &fake_path());
+        let result = check_misconfig(&probe, &fake_path(), None);
         assert_eq!(result.status, CheckStatus::Warn);
         assert!(result.detail.contains("sha256hash"), "{}", result.detail);
     }
@@ -1093,10 +1368,11 @@ mod tests {
                 permissive_set: false,
                 deprecated_sha256hash: false,
                 both_layouts_present: true,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
-        let result = check_misconfig(&probe, &fake_path());
+        let result = check_misconfig(&probe, &fake_path(), None);
         assert_eq!(result.status, CheckStatus::Warn);
         assert!(result.detail.contains("fapd-F02"), "{}", result.detail);
     }
@@ -1108,10 +1384,11 @@ mod tests {
                 permissive_set: true,
                 deprecated_sha256hash: true,
                 both_layouts_present: false,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
-        let result = check_misconfig(&probe, &fake_path());
+        let result = check_misconfig(&probe, &fake_path(), None);
         assert_eq!(result.status, CheckStatus::Warn);
         // Both issues should appear in the detail.
         assert!(result.detail.contains("permissive"), "{}", result.detail);
@@ -1130,10 +1407,11 @@ mod tests {
                 permissive_set: true,
                 deprecated_sha256hash: true,
                 both_layouts_present: true,
+                compiled_final_rule: None,
             }),
             ..Default::default()
         };
-        let result = check_misconfig(&probe, &fake_path());
+        let result = check_misconfig(&probe, &fake_path(), None);
         assert_eq!(result.status, CheckStatus::Warn);
         assert!(result.detail.contains("permissive"), "{}", result.detail);
         assert!(result.detail.contains("sha256hash"), "{}", result.detail);
@@ -1145,23 +1423,191 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // run_checks emits 13 checks
+    // is_deny_all_final_rule (#519, G1.4 verdict) - standalone predicate tests.
     // -------------------------------------------------------------------------
 
     #[test]
-    fn run_checks_returns_exactly_13_results() {
+    fn is_deny_all_final_rule_accepts_the_literal_disa_string() {
+        assert!(is_deny_all_final_rule("deny perm=any all : all"));
+    }
+
+    #[test]
+    fn is_deny_all_final_rule_accepts_the_deny_audit_family_member() {
+        // deny_audit is a DECISION-family member (G1.3/G1.4), not just the
+        // bare `deny` literal.
+        assert!(is_deny_all_final_rule("deny_audit perm=any all : all"));
+    }
+
+    #[test]
+    fn is_deny_all_final_rule_accepts_a_multi_space_variant() {
+        // The daemon tolerates runs of SPACES as one separator (G1 round 3);
+        // fagenrules copies rule bytes verbatim, so this variant can reach
+        // compiled.rules unnormalized.
+        assert!(is_deny_all_final_rule("deny   perm=any   all  :  all"));
+    }
+
+    #[test]
+    fn is_deny_all_final_rule_rejects_perm_execute() {
+        // The shipped `90-deny-execute.rules` default - NOT a deny-all (opens
+        // remain wide open). Loosening `perm=any` to "any perm" is the
+        // specific wrong-impl this kills.
+        assert!(!is_deny_all_final_rule("deny_audit perm=execute all : all"));
+    }
+
+    #[test]
+    fn is_deny_all_final_rule_rejects_allow() {
+        // The shipped default's ACTUAL final rule (G1.1) - the headline "a
+        // default install is a true STIG finding" case.
+        assert!(!is_deny_all_final_rule("allow perm=any all : all"));
+    }
+
+    // -------------------------------------------------------------------------
+    // check_misconfig deny-all sub-condition wiring (#519).
+    //
+    // Every FapolicydConf literal below sets `compiled_final_rule` to
+    // something OTHER than `None` (the pre-existing 6 literals above all keep
+    // `None`, matching their unrelated pre-#519 conditions and staying
+    // unaffected by this addition).
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn check_misconfig_deny_all_failing_predicate_warns_mentioning_final_rule_with_control() {
+        let probe = FakeProbe {
+            conf: Some(FapolicydConf {
+                permissive_set: false,
+                deprecated_sha256hash: false,
+                both_layouts_present: false,
+                compiled_final_rule: Some("allow perm=open all : all".to_string()),
+            }),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+        let result = check_misconfig(&probe, &fake_path(), Some(&stig));
+        assert_eq!(result.status, CheckStatus::Warn, "{result:?}");
+        assert!(
+            result.detail.to_lowercase().contains("final rule"),
+            "detail must mention the deny-all final rule: {}",
+            result.detail
+        );
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "DenyAll control must attach when stig is given: {:?}",
+            result.controls
+        );
+        assert_eq!(result.controls[0].id, "RHEL-09-433016");
+        assert_eq!(result.controls[0].alias.as_deref(), Some("V-270180"));
+
+        // compiled.rules unreadable (G2's common EACCES case, or absent) -> NO
+        // new issue for the deny-all sub-condition; the other three conditions
+        // (all false here) determine the overall status -> Ok. Honest
+        // degradation, never a false "rule missing". Bundled into this test
+        // (rather than standalone) because it is otherwise indistinguishable
+        // from the pre-#519 behavior and would pass vacuously on its own.
+        let none_probe = FakeProbe {
+            conf: Some(FapolicydConf {
+                permissive_set: false,
+                deprecated_sha256hash: false,
+                both_layouts_present: false,
+                compiled_final_rule: None,
+            }),
+            ..Default::default()
+        };
+        let none_result = check_misconfig(&none_probe, &fake_path(), Some(&stig));
+        assert_eq!(
+            none_result.status,
+            CheckStatus::Ok,
+            "an unreadable compiled.rules must add no new issue: {none_result:?}"
+        );
+        assert!(
+            !none_result.detail.to_lowercase().contains("final rule"),
+            "must not mention the final rule when it could not be read: {}",
+            none_result.detail
+        );
+    }
+
+    #[test]
+    fn check_misconfig_deny_all_clean_family_match_notes_the_disa_literal() {
+        // The predicate PASSES via a family match (deny_audit), not the bare
+        // DISA literal -> the check stays Ok/clean (a real security posture
+        // has no misconfiguration), but the detail still notes the exact
+        // literal string a DISA scanner greps for (G1.4 verdict), plus the
+        // DenyAll control still attaches (regardless-of-status attachment).
+        let probe = FakeProbe {
+            conf: Some(FapolicydConf {
+                permissive_set: false,
+                deprecated_sha256hash: false,
+                both_layouts_present: false,
+                compiled_final_rule: Some("deny_audit perm=any all : all".to_string()),
+            }),
+            ..Default::default()
+        };
+        let stig = stig_refs_fixture();
+        let result = check_misconfig(&probe, &fake_path(), Some(&stig));
+        assert_eq!(
+            result.status,
+            CheckStatus::Ok,
+            "a functional (non-literal) deny-all is compliant, not a Warn: {result:?}"
+        );
+        assert!(
+            result.detail.contains("deny perm=any all : all"),
+            "a non-literal family match must note the DISA literal in the detail: {}",
+            result.detail
+        );
+        assert_eq!(
+            result.controls.len(),
+            1,
+            "DenyAll control must attach on the clean Ok path too when stig is given: {:?}",
+            result.controls
+        );
+
+        // Same clean-literal scenario, but with no `stig` supplied: controls
+        // must stay empty even though the check is otherwise fully evaluable.
+        // Bundled into this test (rather than standalone) because it is
+        // otherwise indistinguishable from the pre-#519 behavior and would
+        // pass vacuously on its own.
+        let no_stig_probe = FakeProbe {
+            conf: Some(FapolicydConf {
+                permissive_set: false,
+                deprecated_sha256hash: false,
+                both_layouts_present: false,
+                compiled_final_rule: Some("deny perm=any all : all".to_string()),
+            }),
+            ..Default::default()
+        };
+        let no_stig_result = check_misconfig(&no_stig_probe, &fake_path(), None);
+        assert_eq!(no_stig_result.status, CheckStatus::Ok, "{no_stig_result:?}");
+        assert!(
+            no_stig_result.controls.is_empty(),
+            "no stig -> no controls, even on the clean path: {:?}",
+            no_stig_result.controls
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_checks emits 14 checks
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn run_checks_returns_exactly_14_results() {
         // All probe methods unconfigured -- every check returns Unknown or Skip.
         let probe = FakeProbe::default();
-        let results = run_checks(&probe, &fake_path(), None);
-        assert_eq!(results.len(), 13, "doctor must run exactly 13 checks");
+        let results = run_checks(&probe, &fake_path(), None, None);
+        assert_eq!(
+            results.len(),
+            14,
+            "doctor must run exactly 14 checks (#519 adds fapolicyd-package)"
+        );
     }
 
     #[test]
     fn run_checks_container_check_at_index_8_uses_report() {
         // Container-check is #9 (index 8) and now reflects the classifier report.
+        // MUST survive unchanged (append-only contract): the new #519
+        // fapolicyd-package check is APPENDED at index 13, not inserted here.
         let probe = FakeProbe::default();
         let empty = container_report(false, vec![]);
-        let results = run_checks(&probe, &fake_path(), Some(&empty));
+        let results = run_checks(&probe, &fake_path(), Some(&empty), None);
         let cc = &results[8];
         assert_eq!(
             cc.name, "container-check",

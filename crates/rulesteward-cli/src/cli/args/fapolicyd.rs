@@ -55,6 +55,12 @@ pub struct LintArgs {
     /// unchanged unless this flag is set (#137).
     #[arg(long)]
     pub sarif_include_pass: bool,
+
+    /// Additionally lint this `fapolicyd.conf` file for fapd-W14
+    /// (`permissive=1`, #519). Read-only; off by default (a conf path is not
+    /// implied by the rules.d/ target).
+    #[arg(long, value_name = "PATH")]
+    pub conf: Option<PathBuf>,
 }
 
 /// Arguments for `rulesteward fapolicyd explain` (#72/#73/#74).
@@ -200,7 +206,7 @@ pub struct ReportArgs {
 
 /// Arguments for `rulesteward fapolicyd doctor` (#76/#77/#78).
 ///
-/// Runs 13 read-only deployment health checks and reports a scorecard.
+/// Runs 14 read-only deployment health checks and reports a scorecard.
 #[derive(Debug, Parser)]
 pub struct DoctorArgs {
     /// Output format.
@@ -211,6 +217,14 @@ pub struct DoctorArgs {
     /// (defaults to /etc/fapolicyd/rules.d/).
     #[arg(long, value_name = "DIR", hide = true)]
     pub rules_dir: Option<std::path::PathBuf>,
+
+    /// Target RHEL release for STIG control attachment (auto|rhel8|rhel9|rhel10).
+    /// Omitted defaults to `auto` (doctor always examines the host it runs
+    /// on - `resolve_doctor_target`); an unresolvable `auto` degrades to no
+    /// control attachment, with a one-line stderr note, rather than an error
+    /// (read-only tool; #519).
+    #[arg(long, value_enum)]
+    pub target: Option<TargetSelector>,
 }
 
 /// Arguments for `rulesteward fapolicyd container-check` (#175).

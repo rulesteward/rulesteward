@@ -153,6 +153,18 @@ impl SystemProbe for LiveProbe {
         Ok(status.success())
     }
 
+    fn fapolicyd_installed(&self) -> Result<bool, String> {
+        // Same shape as `rpm_plugin_installed` above, querying the `fapolicyd`
+        // package itself rather than the RPM live-update plugin (#519).
+        let status = std::process::Command::new("rpm")
+            .args(["-q", "fapolicyd"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("rpm not found: {e}"))?;
+        Ok(status.success())
+    }
+
     fn fapolicyd_db_space(&self) -> Result<FsSpace, String> {
         // Use statvfs via the `nix` crate path -- but we avoid extra deps.
         // Instead, parse `df -B1 /var/lib/fapolicyd/` output.
@@ -219,6 +231,12 @@ impl SystemProbe for LiveProbe {
             permissive_set,
             deprecated_sha256hash,
             both_layouts_present,
+            // Real /etc/fapolicyd/compiled.rules reading (last non-empty,
+            // non-comment line - G1/G2 grounding) is the #519 implementation's
+            // job; this placeholder keeps LiveProbe compiling and gracefully
+            // degrading (None -> no new misconfiguration issue) in the
+            // meantime.
+            compiled_final_rule: None,
         })
     }
 }

@@ -271,6 +271,11 @@ fn sarif_pass_info(
         report_orphans: args.report_orphans,
         target: target.map(Into::into),
         single_file,
+        // NOT YET WIRED (#519): should be `args.conf.is_some()` once
+        // `run_lint_resolved` actually invokes `lints::conf::lint_conf`; left
+        // `false` so fapd-W14 is never (falsely) attested as evaluated before
+        // the check actually runs.
+        conf: false,
     };
     let rules = catalog::evaluated(inputs);
     let fired: std::collections::HashSet<&str> =
@@ -419,6 +424,7 @@ mod tests {
             target: None,
             check_identities: false,
             sarif_include_pass: false,
+            conf: None,
         }
     }
 

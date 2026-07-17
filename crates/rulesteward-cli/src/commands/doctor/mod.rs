@@ -4,13 +4,24 @@
 //!
 //! All environment I/O (systemctl, uname, auditctl, fapolicyd-cli, rpm,
 //! statvfs, config-file reads) is routed through the [`SystemProbe`] trait.
-//! The 13 check functions contain ONLY classification logic over plain data, so
+//! The 14 check functions contain ONLY classification logic over plain data, so
 //! they are fully unit-testable with `FakeProbe` without touching the real OS.
 //! The real [`LiveProbe`] shells out and is NOT unit-tested directly -- it is
 //! exercised by the live VM smoke test and the graceful-degradation e2e test.
 //!
 //! Dependency injection via a trait object (`&dyn SystemProbe`) keeps `run_checks`
 //! decoupled from the OS: swap in `FakeProbe` in tests, `LiveProbe` in production.
+//!
+//! `--target` -> STIG control attachment (#519) is NOT YET WIRED here: `run()`
+//! always passes `stig: None` to `run_checks`, so `DoctorArgs.target` is
+//! currently accepted (parsed) but has no effect. Wiring
+//! `target_probe::resolve_doctor_target` + `FapolicydStigRefs::for_target`
+//! into this `run()` is the #519 implementation's job (deliberately deferred:
+//! `FapolicydStigRefs::for_target` transitively calls the not-yet-implemented
+//! `lints::stig::control_refs`, and this `run()` is exercised by the
+//! distro-matrix CI containers, which really do match a RHEL-family
+//! `/etc/os-release`. Wiring it prematurely would turn `--target auto`'s
+//! default resolution into a panic on exactly those runners.
 
 use std::path::Path;
 
@@ -54,7 +65,9 @@ pub fn run(args: &DoctorArgs) -> anyhow::Result<i32> {
     let container_report =
         crate::commands::container_check::classify(&container_probe, rules_dir, false);
 
-    let results = run_checks(&probe, rules_dir, Some(&container_report));
+    // `stig: None` - see the module doc: --target -> STIG control attachment
+    // wiring (#519) is deferred to the implementation pipeline.
+    let results = run_checks(&probe, rules_dir, Some(&container_report), None);
 
     let output = match args.format {
         HumanJsonFormat::Human => render_human("fapolicyd doctor report", &results),
