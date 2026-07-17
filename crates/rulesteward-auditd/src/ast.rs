@@ -65,6 +65,18 @@ pub enum ControlRule {
     Enable(u8),
     /// `-r N` -- rate limit in events/second.
     RateLimit(u64),
+    /// `--loginuid-immutable` -- make the audit loginuid unchangeable once
+    /// set (STIG deepening, #523). Takes NO value argument, unlike every
+    /// other `ControlRule` variant above (`-b`/`-f`/`-e`/`-r` all take one):
+    /// grounded verbatim in `auditctl --help` / `man auditctl(8)`: "This
+    /// option tells the kernel to make loginuids unchangeable once they are
+    /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." `parser.rs`
+    /// recognizes `--loginuid-immutable` as a valueless control flag
+    /// (following the `-D` precedent: the match is on the flag token alone,
+    /// so any trailing tokens on the line are ignored) and constructs this
+    /// variant. STIG-required per RHEL8 V-230403 / RHEL-08-030122 and RHEL9
+    /// V-258228 / RHEL-09-654270.
+    LoginuidImmutable,
 }
 
 /// Filter lists from `flagtab.h:25-29` (audit 3bfa048).

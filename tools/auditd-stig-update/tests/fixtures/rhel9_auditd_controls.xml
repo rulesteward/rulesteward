@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL9_STIG_TEST_FIXTURE">
-<title>Trimmed test fixture: real DISA rhel9 RHEL 9 STIG V2R7 audit-rule Groups (51) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant).</title>
+<title>Trimmed test fixture: real DISA rhel9 RHEL 9 STIG V2R7 audit-rule Groups (54) plus 2 non-audit-rule decoys. check-content and fixtext are verbatim; description/references stripped (the parser ignores them). Non-ASCII prose characters transliterated to ASCII (parser-irrelevant). Groups V-258227 (RHEL-09-654265, "-f 2" panic-on-critical) and V-258229 (RHEL-09-654275, "-e 2" immutable-mode) added session 9b-v0_8-wave2 lane 2e (#523), fetched live 2026-07-15 against the pinned U_RHEL_9_V2R7_STIG.zip. Group V-258228 (RHEL-09-654270, "--loginuid-immutable") added the same session, additive round 2, fetched live 2026-07-15 against the same pinned zip.</title>
 <Group id="V-258176"><Rule severity="medium"><version>RHEL-09-654010</version><title>RHEL 9 must audit uses of the "execve" system call.</title><check system="C-x"><check-content>Verify RHEL 9 is configured to audit the execution of the "execve" system call with the following command:
 
 $ sudo auditctl -l | grep execve
@@ -743,4 +743,37 @@ Add or update the following line (depending on configuration "disk_error_action"
 disk_error_action = HALT
 
 If availability has been determined to be more important, and this decision is documented with the information system security officer (ISSO), configure the operating system to notify SA staff and ISSO staff in the event of an audit processing failure by setting the "disk_error_action" to "SYSLOG".</fixtext></Rule></Group>
+<Group id="V-258227"><Rule severity="medium"><version>RHEL-09-654265</version><title>RHEL 9 must take appropriate action when a critical audit processing failure occurs.</title><check system="C-x"><check-content>Verify the audit service is configured to panic on a critical error with the following command:
+
+$ sudo grep "\-f" /etc/audit/audit.rules
+
+-f 2
+
+If the value for "-f" is not "2", and availability is not documented as an overriding concern, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to shut down when auditing failures occur.
+
+Add the following line to the bottom of the /etc/audit/rules.d/audit.rules file:
+
+-f 2</fixtext></Rule></Group>
+<Group id="V-258229"><Rule severity="medium"><version>RHEL-09-654275</version><title>RHEL 9 audit system must protect auditing rules from unauthorized change.</title><check system="C-x"><check-content>Verify the audit system prevents unauthorized changes with the following command:
+
+$ sudo grep "^\s*[^#]" /etc/audit/audit.rules | tail -1
+
+-e 2
+
+If the audit system is not set to be immutable by adding the "-e 2" option to the end of "/etc/audit/audit.rules", this is a finding.</check-content></check><fixtext fixref="F-x">Configure the audit system to set the audit rules to be immutable by adding the following line to end of "/etc/audit/rules.d/audit.rules"
+
+-e 2
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+<Group id="V-258228"><Rule severity="medium"><version>RHEL-09-654270</version><title>RHEL 9 audit system must protect logon UIDs from unauthorized change.</title><check system="C-x"><check-content>Verify the audit system prevents unauthorized changes to logon UIDs with the following command:
+
+$ sudo grep -i immutable /etc/audit/audit.rules
+
+--loginuid-immutable
+
+If the "--loginuid-immutable" option is not returned in the "/etc/audit/audit.rules", or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 auditing to prevent modification of login UIDs once they are set by adding the following line to /etc/audit/rules.d/audit.rules:
+
+--loginuid-immutable
+
+The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
 </Benchmark>

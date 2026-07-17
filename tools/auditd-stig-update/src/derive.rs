@@ -108,17 +108,33 @@ mod tests {
         // is a parity pin on the PROJECTION MECHANISM, not a content oracle -- the
         // lengths mirror the frozen per-product line counts pinned by
         // `xccdf.rs`'s `rhelN_fixture_reproduces_code_table_exactly` /
-        // `rhelN_known_answer_counts` tests (rhel8=61, rhel9=67, rhel10=75), and
-        // each spot-check id is one this test-author independently confirmed
-        // present in the shipped table.
+        // `rhelN_known_answer_counts` tests, and each spot-check id is one this
+        // test-author independently confirmed present in the shipped table.
+        //
+        // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): counts bumped from
+        // 61/67/75 to 62/69/77 (one new Control-shaped deepening entry on
+        // RHEL8, two each on RHEL9/RHEL10 -- see `xccdf.rs`'s known-answer
+        // tests for the full grounding). That bump already landed and is
+        // GREEN.
+        //
+        // SECOND, additive bump (also #523, additive round 2): the
+        // "--loginuid-immutable" deepening entry adds one more row each to
+        // RHEL8 (62 -> 63) and RHEL9 (69 -> 70); RHEL10 has no
+        // loginuid-immutable control and stays at 77. Mirrors the same bump
+        // already applied to `xccdf.rs`'s `rhelN_known_answer_counts` (this
+        // test's own doc comment above says its lengths track those).
         let rhel8 = code_table(TargetVersion::Rhel8);
         let rhel9 = code_table(TargetVersion::Rhel9);
         let rhel10 = code_table(TargetVersion::Rhel10);
-        assert_eq!(rhel8.len(), 61, "{rhel8:?}");
-        assert_eq!(rhel9.len(), 67, "{rhel9:?}");
-        assert_eq!(rhel10.len(), 75, "{rhel10:?}");
+        assert_eq!(rhel8.len(), 63, "{rhel8:?}");
+        assert_eq!(rhel9.len(), 70, "{rhel9:?}");
+        assert_eq!(rhel10.len(), 77, "{rhel10:?}");
         assert!(
             rhel8.iter().any(|r| r.stig_id == "RHEL-08-030000"),
+            "{rhel8:?}"
+        );
+        assert!(
+            rhel8.iter().any(|r| r.stig_id == "RHEL-08-030121"),
             "{rhel8:?}"
         );
         assert!(
@@ -126,7 +142,23 @@ mod tests {
             "{rhel9:?}"
         );
         assert!(
+            rhel9.iter().any(|r| r.stig_id == "RHEL-09-654265"),
+            "{rhel9:?}"
+        );
+        assert!(
+            rhel9.iter().any(|r| r.stig_id == "RHEL-09-654275"),
+            "{rhel9:?}"
+        );
+        assert!(
             rhel10.iter().any(|r| r.stig_id == "RHEL-10-500300"),
+            "{rhel10:?}"
+        );
+        assert!(
+            rhel10.iter().any(|r| r.stig_id == "RHEL-10-500035"),
+            "{rhel10:?}"
+        );
+        assert!(
+            rhel10.iter().any(|r| r.stig_id == "RHEL-10-900100"),
             "{rhel10:?}"
         );
     }

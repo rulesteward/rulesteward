@@ -313,11 +313,21 @@ fn help_lists_the_target_flag() {
 #[test]
 fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     // The shipped RHEL9_REQUIRED table is now populated (issue #474): this
-    // fixture satisfies only one of its 67 required lines
+    // fixture satisfies only one of its required lines
     // (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240), so --target rhel9
-    // now surfaces the other 66 as au-W06 warnings (exit 1) - the same
+    // surfaces every other one as au-W06 warnings (exit 1) - the same
     // FLAG-WIRING proof as before (the flag reaches the real matcher), just
     // with the outcome the populated table actually produces.
+    //
+    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped table grows
+    // from 67 to 69 rows (two new Control-shaped deepening entries, neither
+    // satisfied by this fixture), so 68 (not 66) of the 69 required lines are
+    // now missing. That bump already landed and is GREEN.
+    //
+    // SECOND, additive bump (also #523, additive round 2): the
+    // "--loginuid-immutable" deepening entry grows the shipped table from 69
+    // to 70 rows (also unsatisfied by this fixture), so 69 (not 68) of the
+    // 70 required lines are now missing.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -335,8 +345,8 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     let diags = v["diagnostics"].as_array().expect("diagnostics array");
     assert_eq!(
         diags.len(),
-        66,
-        "66 of the 67 required lines are missing (RHEL-09-654240 is satisfied): {out}"
+        69,
+        "69 of the 70 required lines are missing (RHEL-09-654240 is satisfied): {out}"
     );
     assert!(
         diags
