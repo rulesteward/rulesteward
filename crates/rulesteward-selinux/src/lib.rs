@@ -10,6 +10,17 @@ mod denial;
 mod te_emit;
 mod triage;
 
+// STIG boot-configuration surface (#520, session 9d lane 2b): the
+// /etc/selinux/config reader, the se-W01/se-W02 lint passes, the RHEL target
+// model, and the STIG control-family table. Feature-UNCONDITIONAL (the
+// apache-only --no-default-features build must compile them; unlike the
+// avc/denial/triage/te_emit/categorize modules above, none of this depends on
+// libsepol).
+pub mod config;
+pub mod lints;
+pub mod stig;
+pub mod version;
+
 #[cfg(test)]
 mod avc_tests;
 
@@ -20,6 +31,7 @@ pub use triage::{
     TriageReport, build_report, build_report_with_already_allows, policy_reclassification_hint,
     render_human,
 };
+pub use version::TargetVersion;
 
 // The authoritative libsepol categorizer (P5 / #105, now default-ON per #124):
 // it links libsepol statically (#106/#107), gated behind the

@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" xmlns:dc="http://purl.org/dc/elements/1.1/" id="RHEL10_SELINUX_STIG_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel10 RHEL 10 STIG V1R1 (26 Feb 2026) SELinux STIG Groups (5: Enforcing/PolicyType/Policycoreutils/PolicycoreutilsPython/FaillockDirContext family rows, see stig.rs) plus 2 non-SELinux decoys (banner-message controls). check-content and fixtext are verbatim; description/reference/ident elements are stripped (the parser never reads them). Non-ASCII typographic prose characters transliterated to ASCII.</title>
+<Group id="V-281251"><title>SRG-OS-000445-GPOS-00199</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-281251r1166705_rule" weight="10.0" severity="medium"><version>RHEL-10-700420</version><title>RHEL 10 must use a Linux Security Module configured to enforce limits on system services.</title><description>&lt;VulnDiscussion&gt;Without verification of the security functions, security functions may not operate correctly and the failure may go unnoticed. Security function is defined as the hardware, software, and/or firmware of the information system responsible for enforcing the system security policy and supporting the isolation of code and data on which the protection is based. 
+
+Security functionality includes, but is not limited to, establishing system accounts, configuring access authorizations (i.e., permissions, privileges), setting events to be audited, and setting intrusion detection parameters.
+
+This requirement applies to operating systems performing security function verification/testing and/or systems and environments that require this functionality.
+
+Satisfies: SRG-OS-000445-GPOS-00199, SRG-OS-000134-GPOS-00068&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-002696</ident><ident system="http://cyber.mil/cci">CCI-001084</ident><fixtext fixref="F-85717r1166704_fix">Configure RHEL 10 to enforce correct operation of security functions.
+
+Edit the file "/etc/selinux/config" and add or modify the following line:
+
+ SELINUX=enforcing
+
+A reboot is required for the changes to take effect.</fixtext><fix id="F-85717r1166704_fix" /><check system="C-85812r1166703_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Verify RHEL 10 enforces correct operation of security functions through the use of SELinux with the following command:
+
+$ getenforce
+Enforcing
+
+If SELINUX is not set to "Enforcing", this is a finding.
+
+Verify SELinux is configured to be enforcing at boot.
+
+$ sudo grep "SELINUX=" /etc/selinux/config | grep -v '#'
+SELINUX=enforcing
+
+If an uncommented SELinux line is missing or not set to "enforcing", this is a finding.</check-content></check></Rule></Group>
+<Group id="V-281249"><title>SRG-OS-000445-GPOS-00199</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-281249r1197242_rule" weight="10.0" severity="medium"><version>RHEL-10-700400</version><title>RHEL 10 must enable the SELinux targeted policy.</title><description>&lt;VulnDiscussion&gt;Setting the SELinux policy to "targeted" or a more specialized policy ensures the system will confine processes that are likely to be targeted for exploitation, such as network or system services.
+
+Note: During the development or debugging of SELinux modules, it is common to temporarily place nonproduction systems in "permissive" mode. In such temporary cases, SELinux policies should be developed, and once work is completed, the system should be reconfigured to "targeted".&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-002696</ident><fixtext fixref="F-85715r1197241_fix">Configure RHEL 10 to use the targeted SELINUX policy.
+
+Edit the file "/etc/selinux/config" and add or modify the following line:
+
+SELINUXTYPE=targeted
+
+A reboot is required for the changes to take effect.</fixtext><fix id="F-85715r1197241_fix" /><check system="C-85810r1166697_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Verify RHEL 10 SELINUX is using the targeted policy with the following command:
+
+$ sestatus | grep policy
+Loaded policy name:             targeted
+
+If the loaded policy name is not "targeted", this is a finding.</check-content></check></Rule></Group>
+<Group id="V-280966"><title>SRG-OS-000134-GPOS-00068</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-280966r1195352_rule" weight="10.0" severity="medium"><version>RHEL-10-200570</version><title>RHEL 10 must have the "policycoreutils" package installed.</title><description>&lt;VulnDiscussion&gt;Without verification of the security functions, security functions may not operate correctly and the failure may go unnoticed. Security function is defined as the hardware, software, and/or firmware of the information system responsible for enforcing the system security policy and supporting the isolation of code and data on which the protection is based. 
+
+Security functionality includes, but is not limited to, establishing system accounts, configuring access authorizations (i.e., permissions, privileges), setting events to be audited, and setting intrusion detection parameters.
+
+The "policycoreutils" package contains the policy core utilities that are required for basic operation of an SELinux-enabled system. These utilities include "load_policy" to load SELinux policies, "setfile" to label filesystems, "newrole" to switch roles, and "run_init" to run "/etc/init.d" scripts in the proper context.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001084</ident><fixtext fixref="F-85432r1165252_fix">Configure RHEL 10 to have the "policycoreutils" package installed with the following command:
+
+$ sudo dnf -y install policycoreutils</fixtext><fix id="F-85432r1165252_fix" /><check system="C-85527r1195351_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Verify RHEL 10 has the "policycoreutils" package installed with the following command:
+
+$ sudo dnf list --installed policycoreutils
+Installed Packages
+policycoreutils.x86_64                                       3.8-1.el10                                        @anaconda
+
+If the "policycoreutils" package is not installed, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-280967"><title>SRG-OS-000095-GPOS-00049</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-280967r1195354_rule" weight="10.0" severity="medium"><version>RHEL-10-200580</version><title>RHEL 10 must have the "policycoreutils-python-utils" package installed.</title><description>&lt;VulnDiscussion&gt;The "policycoreutils-python-utils" package is required to operate and manage an SELinux environment and its policies. It provides utilities such as "semanage", "audit2allow", "audit2why", "chcat", and "sandbox".&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000381</ident><fixtext fixref="F-85433r1165255_fix">Configure RHEL 10 to have the "policycoreutils-python-utils" service package installed with the following command:
+
+$ sudo dnf -y install policycoreutils-python-utils</fixtext><fix id="F-85433r1165255_fix" /><check system="C-85528r1195353_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Verify RHEL 10 has the "policycoreutils-python-utils" service package installed with the following command:
+
+$ sudo dnf list --installed policycoreutils-python-utils
+Installed Packages
+policycoreutils-python-utils.noarch                                3.8-1.el10                                 @AppStream
+
+If the "policycoreutils-python-utils" package is not installed, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-281252"><title>SRG-OS-000021-GPOS-00005</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-281252r1166708_rule" weight="10.0" severity="medium"><version>RHEL-10-700430</version><title>RHEL 10 must configure SELinux context type to allow the use of a nondefault faillock tally directory.</title><description>&lt;VulnDiscussion&gt;Not having the correct SELinux context on the faillock directory may lead to unauthorized access to the directory.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000044</ident><fixtext fixref="F-85718r1166707_fix">Configure RHEL 10 to allow the use of a nondefault faillock tally directory while SELinux enforces a targeted policy.
+
+Enable the feature using the following command:
+
+$ sudo authselect enable-feature with-faillock
+
+Create a nondefault faillock tally directory (if it does not already exist) with the following example:
+
+$ sudo mkdir /var/log/faillock
+
+Add/modify the "/etc/security/faillock.conf" file to match the following line:
+
+dir = /var/log/faillock
+
+Update "/etc/selinux/targeted/contexts/files/file_contexts.local" with "faillog_t" context type for the nondefault faillock tally directory with the following command:
+
+$ sudo semanage fcontext -a -t faillog_t "/var/log/faillock(/.*)?"
+
+Update the context type of the nondefault faillock directory/subdirectories and files with the following command:
+
+$ sudo restorecon -R -v /var/log/faillock</fixtext><fix id="F-85718r1166707_fix" /><check system="C-85813r1166706_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Note: If the system does not have SELinux enabled and enforcing a targeted policy, or if the pam_faillock module is not configured for use, this requirement is not applicable.
+
+Verify RHEL 10 SELinux context type allows the use of a nondefault faillock tally directory.
+
+Verify the location of the nondefault tally directory for the pam_faillock module with the following command:
+
+$ sudo grep -w dir /etc/security/faillock.conf
+dir = /var/log/faillock
+
+Check the security context type of the nondefault tally directory with the following command:
+
+$ ls -Zd /var/log/faillock
+unconfined_u:object_r:faillog_t:s0 /var/log/faillock
+
+If the security context type of the nondefault tally directory is not "faillog_t", this is a finding.</check-content></check></Rule></Group>
+<Group id="V-281224"><title>SRG-OS-000080-GPOS-00048</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-281224r1184753_rule" weight="10.0" severity="medium"><version>RHEL-10-700010</version><title>RHEL 10 must display the Standard Mandatory DOD Notice and Consent Banner before granting local or remote access to the system via a Secure Shell (SSH) login.</title><description>&lt;VulnDiscussion&gt;The warning message reinforces policy awareness during the login process and facilitates possible legal action against attackers. Alternatively, systems whose ownership should not be obvious should ensure use of a banner that does not provide easy attribution.
+
+OpenSSH uses the first occurrence of a keyword it sees, and drop-in files are read in lexicographical order at the start of the configuration. Red Hat recommends using drop-in files rather than changing base configuration files.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000213</ident><fixtext fixref="F-85690r1166623_fix">Configure RHEL 10 to display the Standard Mandatory DOD Notice and Consent Banner before granting access to the system via SSH.
+
+Edit a file in "/etc/ssh/sshd_config.d" to uncomment or add the banner keyword and configure it to point to a file that will contain the login banner (this file may be named differently or be in a different location if using a version of SSH that is provided by a third-party vendor).
+
+An example configuration line is:
+
+Banner /etc/issue</fixtext><fix id="F-85690r1166623_fix" /><check system="C-85785r1166622_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Verify RHEL 10 is configured so that any SSH connection to the operating system displays the Standard Mandatory DOD Notice and Consent Banner before granting access to the system.
+
+Check for the location of the banner file currently being used with the following command:
+
+$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*banner'
+/etc/ssh/sshd_config.d/10-stig.conf:Banner /etc/issue
+
+If the line is commented out or the file is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-281225"><title>SRG-OS-000023-GPOS-00006</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-281225r1166627_rule" weight="10.0" severity="medium"><version>RHEL-10-700020</version><title>RHEL 10 must display the Standard Mandatory DOD Notice and Consent Banner before granting local or remote access to the system via a graphical user login.</title><description>&lt;VulnDiscussion&gt;Display of a standardized and approved use notification before granting access to the operating system ensures privacy and security notification verbiage used is consistent with applicable federal laws, Executive Orders, directives, policies, regulations, standards, and guidance.
+
+System use notifications are required only for access via login interfaces with human users and are not required when such human interfaces do not exist.
+
+The banner must be formatted in accordance with applicable DOD policy. Use the following verbiage for operating systems that can accommodate banners of 1300 characters:
+
+"You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.
+
+By using this IS (which includes any device attached to this IS), you consent to the following conditions:
+
+-The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.
+
+-At any time, the USG may inspect and seize data stored on this IS.
+
+-Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.
+
+-This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.
+
+-Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants. Such communications and work product are private and confidential. See User Agreement for details."
+
+Satisfies: SRG-OS-000023-GPOS-00006, SRG-OS-000228-GPOS-00088&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 10</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 10</dc:subject><dc:identifier>5733</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000048</ident><ident system="http://cyber.mil/cci">CCI-001384</ident><ident system="http://cyber.mil/cci">CCI-001385</ident><ident system="http://cyber.mil/cci">CCI-001386</ident><ident system="http://cyber.mil/cci">CCI-001387</ident><ident system="http://cyber.mil/cci">CCI-001388</ident><fixtext fixref="F-85691r1166626_fix">Configure RHEL 10 to display the Standard Mandatory DOD Notice and Consent Banner before granting access to the system.
+
+Add the following lines to the [org/gnome/login-screen] section of the "/etc/dconf/db/local.d/01-banner-message":
+
+banner-message-text='You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.\nBy using this IS (which includes any device attached to this IS), you consent to the following conditions:\n-The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.\n-At any time, the USG may inspect and seize data stored on this IS.\n-Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.\n-This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.\n-Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants. Such communications and work product are private and confidential. See User Agreement for details. '
+
+Note: The "\n " characters are for formatting only. They will not be displayed on the graphical interface.
+
+Run the following command to update the database:
+
+$ sudo dconf update</fixtext><fix id="F-85691r1166626_fix" /><check system="C-85786r1166625_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_10_STIG.xml" name="M" /><check-content>Note: This requirement assumes the use of the RHEL 10 default graphical user interface, Gnome Shell. If the system does not have any graphical user interface installed, this requirement is not applicable.
+
+Verify RHEL 10 displays the Standard Mandatory DOD Notice and Consent Banner before granting access to the operating system via a graphical user login with the following command:
+
+$ gsettings get org.gnome.login-screen banner-message-text
+banner-message-text=
+'You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.\nBy using this IS (which includes any device attached to this IS), you consent to the following conditions:\n-The USG routinely intercepts and monitors communications on this IS for purposes including, but not limited to, penetration testing, COMSEC monitoring, network operations and defense, personnel misconduct (PM), law enforcement (LE), and counterintelligence (CI) investigations.\n-At any time, the USG may inspect and seize data stored on this IS.\n-Communications using, or data stored on, this IS are not private, are subject to routine monitoring, interception, and search, and may be disclosed or used for any USG-authorized purpose.\n-This IS includes security measures (e.g., authentication and access controls) to protect USG interests--not for your personal benefit or privacy.\n-Notwithstanding the above, using this IS does not constitute consent to PM, LE or CI investigative searching or monitoring of the content of privileged communications, or work product, related to personal representation or services by attorneys, psychotherapists, or clergy, and their assistants. Such communications and work product are private and confidential. See User Agreement for details. '
+
+Note: The "\n " characters are for formatting only. They will not be displayed on the graphical interface.
+
+If the banner does not match the Standard Mandatory DOD Notice and Consent Banner exactly, this is a finding.</check-content></check></Rule></Group>
+</Benchmark>

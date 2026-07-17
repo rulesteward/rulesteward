@@ -187,7 +187,8 @@ pub(crate) fn resolve_target(
 }
 
 /// Doctor-verb target resolution, shared by every backend's doctor command
-/// (fapolicyd today; selinux #520 and sshd #536 next).
+/// (fapolicyd; selinux #520, first wired in session 9d lane 2b; sshd #536
+/// next).
 ///
 /// Differs from [`resolve_target`] in exactly one place: an OMITTED `--target`
 /// defaults to `auto` because doctor always examines the host it runs on
@@ -196,17 +197,14 @@ pub(crate) fn resolve_target(
 /// doctor callers own their one-line stderr note ("running checks without
 /// STIG control attachment") rather than reusing lint's pinned warning
 /// wording.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "9d Phase-0 foundation: the doctor verbs (#519 fapolicyd, #520 selinux) wire \
-                  this in their lanes; `expect` (not `allow`) trips the moment the first \
-                  caller lands, forcing this attribute's removal instead of lingering. \
-                  cfg_attr(not(test)) because the unit tests already call it, so the \
-                  expectation would be unfulfilled in the --all-targets test build"
-    )
-)]
+///
+/// NOTE: the Phase-0 foundation landed this function with a
+/// `#[cfg_attr(not(test), expect(dead_code, ...))]` placeholder attribute (a
+/// forcing function: the FIRST doctor-verb caller to actually wire this in
+/// must remove it, per that attribute's own doc). Lane 2b's `selinux doctor`
+/// is that first caller; the attribute is removed here. If lane 2a's
+/// fapolicyd doctor `--target` wiring lands independently, expect a trivial
+/// merge overlap on this same removal - not an architecture conflict.
 pub(crate) fn resolve_doctor_target(
     sel: Option<TargetSelector>,
     probe: &dyn HostTargetProbe,
