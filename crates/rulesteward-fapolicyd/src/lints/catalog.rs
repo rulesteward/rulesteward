@@ -64,6 +64,10 @@ pub enum Condition {
     SingleFileOnly,
     /// Runs only in directory mode (the cross-file passes).
     DirectoryOnly,
+    /// Runs only when a `--conf` fapolicyd.conf path is supplied (fapd-W14,
+    /// #519). Version-independent (unlike `RequiresTarget`): the conf check
+    /// evaluates whenever the file is given, with or without `--target`.
+    RequiresConf,
 }
 
 /// One catalogued `fapd-` lint code: its stable id, severity tier, a short
@@ -102,6 +106,8 @@ pub struct EvalInputs {
     pub target: Option<TargetVersion>,
     /// True in single-file `--file` mode; false in directory mode.
     pub single_file: bool,
+    /// A `--conf` fapolicyd.conf path was supplied (gates fapd-W14, #519).
+    pub conf: bool,
 }
 
 /// The catalog entries whose checks actually evaluated for `inputs`, in
@@ -132,6 +138,7 @@ fn condition_holds(cond: Condition, inp: EvalInputs) -> bool {
         Condition::SuppressedUnderRhel8 => inp.target != Some(TargetVersion::Rhel8),
         Condition::SingleFileOnly => inp.single_file,
         Condition::DirectoryOnly => !inp.single_file,
+        Condition::RequiresConf => inp.conf,
     }
 }
 
@@ -299,6 +306,18 @@ pub const FAPD_CODES: &[LintCode] = &[
         condition: Condition::RequiresFapolicyd16Plus,
     },
     LintCode {
+        code: "fapd-W13",
+        severity: Severity::Warning,
+        description: "the merged rules.d/ policy's last effective rule is not a deny-all, permit-by-exception default",
+        condition: Condition::RequiresTarget,
+    },
+    LintCode {
+        code: "fapd-W14",
+        severity: Severity::Warning,
+        description: "fapolicyd.conf sets permissive=1 (fail-open instead of enforcing)",
+        condition: Condition::RequiresConf,
+    },
+    LintCode {
         code: "fapd-X01",
         severity: Severity::Extra,
         description: "trust-DB orphan: a trusted path is absent from the loaded rules",
@@ -325,7 +344,7 @@ mod tests {
         "fapd-C01", "fapd-C02", "fapd-E01", "fapd-E02", "fapd-E03", "fapd-E04", "fapd-E05",
         "fapd-E06", "fapd-E07", "fapd-F01", "fapd-F02", "fapd-F03", "fapd-S02", "fapd-W01",
         "fapd-W02", "fapd-W03", "fapd-W04", "fapd-W05", "fapd-W06", "fapd-W07", "fapd-W08",
-        "fapd-W09", "fapd-W10", "fapd-W11", "fapd-W12", "fapd-X01",
+        "fapd-W09", "fapd-W10", "fapd-W11", "fapd-W12", "fapd-W13", "fapd-W14", "fapd-X01",
     ];
 
     #[test]
@@ -539,23 +558,63 @@ mod tests {
                 for check_identities in [false, true] {
                     for report_orphans in [false, true] {
                         for single_file in [false, true] {
-                            let inp = EvalInputs {
-                                trustdb,
-                                check_identities,
-                                report_orphans,
-                                target,
-                                single_file,
-                            };
-                            assert!(
-                                !codes(inp).contains("fapd-W12"),
-                                "fapd-W12 is dormant (no target reaches fapolicyd 1.6), so it \
-                                 must never be attested as evaluated: {inp:?}",
-                            );
+                            for conf in [false, true] {
+                                let inp = EvalInputs {
+                                    trustdb,
+                                    check_identities,
+                                    report_orphans,
+                                    target,
+                                    single_file,
+                                    conf,
+                                };
+                                assert!(
+                                    !codes(inp).contains("fapd-W12"),
+                                    "fapd-W12 is dormant (no target reaches fapolicyd 1.6), so it \
+                                     must never be attested as evaluated: {inp:?}",
+                                );
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn w13_gate_matches_e06s_requires_target_gate() {
+        // fapd-W13 (#519) shares E06's `RequiresTarget` gate: never attested
+        // without --target, always attested with one.
+        assert!(!codes(EvalInputs::default()).contains("fapd-W13"));
+        let with_target = EvalInputs {
+            target: Some(TargetVersion::Rhel9),
+            ..Default::default()
+        };
+        assert!(codes(with_target).contains("fapd-W13"));
+    }
+
+    #[test]
+    fn conf_gate_controls_w14() {
+        // fapd-W14 (#519) is gated on `--conf` alone, independent of --target:
+        // never attested without `conf`, always attested with it, regardless
+        // of whether a target is also set.
+        assert!(
+            !codes(EvalInputs::default()).contains("fapd-W14"),
+            "W14 must NOT be attested without --conf"
+        );
+        let conf_only = EvalInputs {
+            conf: true,
+            ..Default::default()
+        };
+        assert!(codes(conf_only).contains("fapd-W14"), "W14 needs --conf");
+        let conf_and_target = EvalInputs {
+            conf: true,
+            target: Some(TargetVersion::Rhel8),
+            ..Default::default()
+        };
+        assert!(
+            codes(conf_and_target).contains("fapd-W14"),
+            "W14 is version-independent: --conf alone is sufficient even with --target set"
+        );
     }
 
     #[test]

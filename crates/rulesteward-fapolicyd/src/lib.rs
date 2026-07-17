@@ -31,7 +31,10 @@ pub use fanotify::{
     AuditEvent, FanotifyRecord, ParseError, TrustVal, parse_audit_event, parse_fanotify_record,
 };
 pub use lints::catalog;
+pub use lints::conf::lint_conf;
 pub use lints::cross_db::lint_orphans;
+pub use lints::deny_all::w13;
+pub use lints::stig;
 pub use lints::trust_hash::lint_weak_digests;
 pub use lints::{
     LintContext, check_layout, collect_macro_names, directory_has_nondotfile_entry,
