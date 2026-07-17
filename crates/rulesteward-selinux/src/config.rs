@@ -87,6 +87,18 @@ fn lines_with_spans(text: &str) -> Vec<RawLine<'_>> {
     out
 }
 
+/// True for a byte the C library's `isspace()` treats as whitespace that
+/// Rust's `char::is_ascii_whitespace()` does not: VERTICAL TAB (`\x0B`).
+/// libselinux's `isspace((unsigned char)*p)` calls in `selinux_config.c`
+/// (the post-`=` skip in `selinux_getenforcemode()` and the leading-key skip
+/// in `init_selinux_config()`) use the C-locale `isspace()`, whose set is
+/// `is_ascii_whitespace()`'s set (space/\t/\n/\x0C/\r) UNION `{\x0B}`.
+/// (Adversarial round 1: grounded on libselinux's `isspace()` including VT;
+/// do not widen beyond this single byte.)
+fn is_c_isspace(c: char) -> bool {
+    c.is_ascii_whitespace() || c == '\u{0B}'
+}
+
 /// The three `SELINUX=` values `selinux_getenforcemode()` recognizes (G4 Q7),
 /// each matched as a case-insensitive PREFIX of the line's value.
 const SELINUX_VALUE_WORDS: [&str; 3] = ["enforcing", "permissive", "disabled"];
@@ -113,7 +125,7 @@ fn find_selinux(lines: &[RawLine<'_>]) -> Option<ConfigValue> {
         let Some(tag) = raw.strip_prefix("SELINUX=") else {
             continue;
         };
-        let after_ws = tag.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let after_ws = tag.trim_start_matches(is_c_isspace);
         if is_recognized_selinux_value(after_ws) {
             return Some(ConfigValue {
                 value: after_ws.to_string(),
@@ -145,7 +157,7 @@ fn right_trim_selinuxtype_value(value: &str) -> &str {
 fn find_selinuxtype(lines: &[RawLine<'_>]) -> Option<ConfigValue> {
     let mut winner: Option<ConfigValue> = None;
     for (line, span, raw) in lines {
-        let trimmed = raw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let trimmed = raw.trim_start_matches(is_c_isspace);
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -511,6 +523,43 @@ mod tests {
              be trimmed too - an `&&`-only trim (whitespace AND control) \
              would leave them in place since a space is never a control \
              byte, unlike \\r/\\n which satisfy both halves of the OR"
+        );
+    }
+
+    // --- Adversarial round 1 (impl-aware review): libselinux's C `isspace()`
+    // includes VERTICAL TAB (0x0B, `\v`); Rust's `char::is_ascii_whitespace()`
+    // does NOT (it covers space/\t/\n/\x0C/\r only). `selinux_config.c`'s
+    // `isspace((unsigned char)*tag)` (post-`=` skip, line ~108) and
+    // `isspace((unsigned char)*buf_p)` (leading-whitespace skip, line ~174)
+    // both use the C-locale `isspace()`, so a VT byte in either position is
+    // real whitespace to libselinux but invisible to a naive
+    // `is_ascii_whitespace()`-only Rust port - a false-negative miss for
+    // se-W01/se-W02 (grounding G4 Q2, cross-referenced with libselinux's
+    // `isspace` call sites). ------------------------------------------------
+
+    #[test]
+    fn adversarial_1_selinux_post_equals_vt_is_treated_as_whitespace() {
+        let cfg = parse_selinux_config("SELINUX=\u{0B}enforcing\n");
+        assert_eq!(
+            selinux_value(&cfg),
+            Some("enforcing"),
+            "libselinux's isspace() (C locale) includes VERTICAL TAB \
+             (0x0B); a `SELINUX=\\x0benforcing` line is recognized by real \
+             libselinux (se-W01 would false-positive-miss it if this \
+             reader's post-`=` skip only used is_ascii_whitespace())"
+        );
+    }
+
+    #[test]
+    fn adversarial_2_selinuxtype_leading_vt_is_treated_as_whitespace() {
+        let cfg = parse_selinux_config("\u{0B}SELINUXTYPE=targeted\n");
+        assert_eq!(
+            selinuxtype_value(&cfg),
+            Some("targeted"),
+            "same isspace()-vs-is_ascii_whitespace() gap as above, this \
+             time on the LEADING whitespace skip before the SELINUXTYPE= \
+             key match (se-W02 would false-positive-miss a VT-indented \
+             directive)"
         );
     }
 
