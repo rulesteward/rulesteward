@@ -39,7 +39,7 @@ fn main() {
 
     let code = match cli.command {
         TopCommand::Fapolicyd(cmd) => report(commands::fapolicyd::run(cmd, profile)),
-        TopCommand::Selinux(cmd) => report(commands::selinux::run(cmd)),
+        TopCommand::Selinux(cmd) => report(commands::selinux::run(cmd, profile)),
         TopCommand::Auditd(cmd) => report(commands::auditd::run(cmd, profile)),
         TopCommand::Sshd(cmd) => report(commands::sshd::run(cmd, profile)),
         TopCommand::Sysctl(cmd) => report(commands::sysctl::run(cmd, profile)),

@@ -1,0 +1,31 @@
+# Pinned DISA STIG XCCDF zips for the se-W01/se-W02 selinux control-family
+# drift check.
+#
+# DISA versions each RHEL STIG by FILENAME (there is no releases/latest API
+# like ComplianceAsCode has), so a bump = edit the `zip` filename below, then
+# run `selinux-stig-update derive --product <p>`, review the diff, update
+# crates/rulesteward-selinux/src/stig.rs (the `control_refs` match arms),
+# re-gate (adversarial + mutation), and confirm `selinux-stig-update check`
+# reports 0 drift.
+#
+# The public, no-auth CDN. Full URL = base_url + "/" + products.<p>.zip.
+# (public.cyber.mil/stigs/downloads/ is a JavaScript SPA that curl cannot read;
+# dl.dod.cyber.mil is the machine-fetchable path.)
+base_url = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip"
+
+# Per-product pinned zip. The three RHEL STIGs version INDEPENDENTLY, so each
+# has its own pinned filename and can be bumped on its own. Same three
+# revisions tools/{sshd,auditd}-stig-update/stig-refs.toml pin (the sshd,
+# auditd, and selinux baselines are drawn from the same three benchmark
+# documents).
+[products.rhel8]
+zip = "U_RHEL_8_V2R4_STIG.zip"
+benchmark = "RHEL 8 STIG V2R4 (02 Jul 2025)"
+
+[products.rhel9]
+zip = "U_RHEL_9_V2R7_STIG.zip"
+benchmark = "RHEL 9 STIG V2R7 (05 Jan 2026)"
+
+[products.rhel10]
+zip = "U_RHEL_10_V1R1_STIG.zip"
+benchmark = "RHEL 10 STIG V1R1 (26 Feb 2026)"

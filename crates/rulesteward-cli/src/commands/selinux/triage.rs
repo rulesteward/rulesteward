@@ -46,6 +46,14 @@ const SELINUX_TRIAGE_SCHEMA_VERSION: u32 = 1;
 pub fn run(cmd: SelinuxCommand) -> anyhow::Result<i32> {
     match cmd {
         SelinuxCommand::Triage(args) => triage(&args),
+        // `commands::selinux::mod` (added #520, session 9d lane 2b) only ever
+        // reconstructs and dispatches a `SelinuxCommand::Triage` to this
+        // function; `Lint`/`Doctor` route to their own sibling modules and
+        // never reach here. This file's triage logic is otherwise unchanged
+        // from the single-file `commands/selinux.rs` it was moved out of.
+        SelinuxCommand::Lint(_) | SelinuxCommand::Doctor(_) => {
+            unreachable!("commands::selinux::mod only ever dispatches Triage to this fn")
+        }
     }
 }
 

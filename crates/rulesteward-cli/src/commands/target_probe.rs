@@ -187,7 +187,8 @@ pub(crate) fn resolve_target(
 }
 
 /// Doctor-verb target resolution, shared by every backend's doctor command
-/// (fapolicyd today; selinux #520 and sshd #536 next).
+/// (fapolicyd; selinux #520, first wired in session 9d lane 2b; sshd #536
+/// next).
 ///
 /// Differs from [`resolve_target`] in exactly one place: an OMITTED `--target`
 /// defaults to `auto` because doctor always examines the host it runs on
