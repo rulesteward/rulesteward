@@ -313,9 +313,11 @@ fn member_of_type(block: &MatchBlock, kind: &str, x: &str) -> bool {
     if is_unconditional_match_all(block) {
         return true;
     }
-    criteria_by_type(block)
-        .get(kind)
-        .is_some_and(|instances| instances.iter().all(|values| match_pattern_list(x, values)))
+    criteria_by_type(block).get(kind).is_some_and(|instances| {
+        instances
+            .iter()
+            .all(|values| match_pattern_list(kind, x, values))
+    })
 }
 
 /// Per-sub-population shadow for CIDR criteria (`Address`/`LocalAddress`). Walk the
@@ -718,7 +720,9 @@ fn multitype_names_axis_shadow(
             return true;
         }
         match criteria_by_type(block).get(kind) {
-            Some(instances) => instances.iter().all(|values| match_pattern_list(x, values)),
+            Some(instances) => instances
+                .iter()
+                .all(|values| match_pattern_list(kind, x, values)),
             // Doesn't constrain this axis at all: universe, a no-op setter here.
             None => true,
         }
@@ -933,12 +937,26 @@ fn name_list_matches_nobody(values: &[String]) -> bool {
 /// block.
 fn block_matches_nobody(block: &MatchBlock) -> bool {
     criteria_by_type(block).iter().any(|(kind, instances)| {
-        if matches!(kind.as_str(), "user" | "group" | "host")
-            && instances
-                .iter()
-                .any(|values| name_list_matches_nobody(values))
-        {
-            return true;
+        // `name_list_matches_nobody` is pure exact-string self-negation over the raw
+        // entries, so the host fold happens HERE, on the caller side: pre-folding the
+        // whole raw value (including any `!` prefix) is behavior-preserving because
+        // `to_ascii_lowercase` touches neither `!` nor bytes >= 0x80, and it makes
+        // `!web.corp,WEB.CORP` self-negate exactly as sshd resolves it (#495).
+        if matches!(kind.as_str(), "user" | "group" | "host") {
+            let nobody = if host_axis_folds(kind) {
+                instances.iter().any(|values| {
+                    let folded: Vec<String> =
+                        values.iter().map(|v| v.to_ascii_lowercase()).collect();
+                    name_list_matches_nobody(&folded)
+                })
+            } else {
+                instances
+                    .iter()
+                    .any(|values| name_list_matches_nobody(values))
+            };
+            if nobody {
+                return true;
+            }
         }
         instances.len() >= 2 && !criterion_instances_have_common_witness(kind, instances)
     })
@@ -950,7 +968,7 @@ fn block_matches_nobody(block: &MatchBlock) -> bool {
 /// instances rather than two blocks' value lists.
 fn criterion_instances_have_common_witness(kind: &str, instances: &[&[String]]) -> bool {
     match kind {
-        "user" | "group" | "host" => name_instances_have_common_witness(instances),
+        "user" | "group" | "host" => name_instances_have_common_witness(kind, instances),
         "address" | "localaddress" => cidr_instances_have_common_address(instances),
         "localport" => port_instances_have_common_port(instances),
         // Unmodeled type: assume satisfiable (never manufactures a finding).
@@ -962,8 +980,10 @@ fn criterion_instances_have_common_witness(kind: &str, instances: &[&[String]]) 
 /// the literals-plus-FRESH witness set of [`pattern_lists_overlap`]: a name admitted
 /// by all instances is either a listed literal or some fresh name, so testing every
 /// literal plus one sentinel decides it. (A witness that only a wildcard-vs-wildcard
-/// pairing would admit is the documented v0.3 accepted false negative.)
-fn name_instances_have_common_witness(instances: &[&[String]]) -> bool {
+/// pairing would admit is the documented v0.3 accepted false negative.) Candidates
+/// stay unfolded: `match_pattern_list` folds both sides on the host axis, so a
+/// mixed-case literal still witnesses the folded intersection (#495).
+fn name_instances_have_common_witness(kind: &str, instances: &[&[String]]) -> bool {
     const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
     let mut candidates: Vec<&str> = Vec::new();
     for values in instances {
@@ -978,7 +998,7 @@ fn name_instances_have_common_witness(instances: &[&[String]]) -> bool {
     candidates.iter().any(|name| {
         instances
             .iter()
-            .all(|values| match_pattern_list(name, values))
+            .all(|values| match_pattern_list(kind, name, values))
     })
 }
 
@@ -1033,7 +1053,7 @@ fn criteria_by_type(block: &MatchBlock) -> BTreeMap<String, Vec<&[String]>> {
 /// non-overlapping (conservative: an undecidable type never manufactures a finding).
 fn criterion_overlap(kind: &str, a_values: &[String], b_values: &[String]) -> bool {
     match kind {
-        "user" | "group" | "host" => pattern_lists_overlap(a_values, b_values),
+        "user" | "group" | "host" => pattern_lists_overlap(kind, a_values, b_values),
         "address" | "localaddress" => cidr_lists_overlap(a_values, b_values),
         "localport" => port_lists_overlap(a_values, b_values),
         _ => false,
@@ -1047,9 +1067,11 @@ fn criterion_overlap(kind: &str, a_values: &[String], b_values: &[String]) -> bo
 /// name distinct from all of them, so testing every literal plus one fresh sentinel
 /// decides overlap. (`!bob,*` vs `bob` is disjoint: bob is excluded by the negation
 /// and every other name fails the literal `bob`.)
-fn pattern_lists_overlap(a: &[String], b: &[String]) -> bool {
+fn pattern_lists_overlap(kind: &str, a: &[String], b: &[String]) -> bool {
     // A name matching none of the listed literals, to witness wildcard-only overlaps
     // (e.g. `*` vs `*`). The NUL bytes keep it distinct from any real criterion value.
+    // Candidates stay unfolded: `match_pattern_list` folds both sides on the host
+    // axis, so a mixed-case literal still witnesses the folded overlap (#495).
     const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
     let mut candidates: Vec<&str> = Vec::new();
     for value in a.iter().chain(b) {
@@ -1061,15 +1083,48 @@ fn pattern_lists_overlap(a: &[String], b: &[String]) -> bool {
     candidates.push(FRESH);
     candidates
         .iter()
-        .any(|name| match_pattern_list(name, a) && match_pattern_list(name, b))
+        .any(|name| match_pattern_list(kind, name, a) && match_pattern_list(kind, name, b))
+}
+
+/// Whether sshd case-folds this (lowercased) criterion kind before matching.
+///
+/// ONLY the host axis folds, and it folds BOTH sides: `match_hostname` lowercases
+/// the incoming host (`match.c:196-203`, `lowercase(hostcopy)`) and passes
+/// `dolower=1`, under which `match_pattern_list` lowercases the config pattern too
+/// (`match.c:141-146`). `User` (`servconf.c:1108-1115`) and `Group`
+/// (`servconf.c:1127` -> `groupaccess.c:117-118`) both reach the `dolower=0`
+/// comparison at `match.c:177-186` (`/* Case sensitive match */`). The fold is
+/// byte-wise `isupper`/`tolower` in the C locale - ASCII-only, bytes >= 0x80 pass
+/// through - so the faithful Rust fold is `to_ascii_lowercase`, never the full
+/// Unicode `to_lowercase` (#495; live oracles pinned in `w07_tests`).
+fn host_axis_folds(kind: &str) -> bool {
+    kind == "host"
 }
 
 /// OpenSSH `match_pattern_list`: a value matches iff some POSITIVE pattern matches
 /// AND no negated (`!`-prefixed) pattern matches. A negated match fails the whole
-/// list immediately, mirroring sshd's early return.
-fn match_pattern_list(value: &str, patterns: &[String]) -> bool {
+/// list immediately, mirroring sshd's early return. On the host axis
+/// ([`host_axis_folds`]) both the incoming value and every pattern are ASCII-folded
+/// first, mirroring `dolower=1`; callers therefore never pre-fold the values or
+/// witness candidates they pass in.
+fn match_pattern_list(kind: &str, value: &str, patterns: &[String]) -> bool {
+    let fold = host_axis_folds(kind);
+    let folded_value;
+    let value: &str = if fold {
+        folded_value = value.to_ascii_lowercase();
+        &folded_value
+    } else {
+        value
+    };
     let mut matched_positive = false;
     for pattern in patterns {
+        let folded_pattern;
+        let pattern: &str = if fold {
+            folded_pattern = pattern.to_ascii_lowercase();
+            &folded_pattern
+        } else {
+            pattern
+        };
         if let Some(negated) = pattern.strip_prefix('!') {
             if glob_match(negated, value) {
                 return false;
@@ -1289,13 +1344,16 @@ mod w07_tests {
     //!   `g3_earlier_type_outside_t_is_ignored_entirely` lock this, and
     //!   `ce6_match_all_agreeing_interleave_stays_correct_regression_lock` locks that
     //!   the pre-existing `Match all` interleave is undisturbed.
-    //! - HOST case-folding (#495): the impl's `Host` axis matching is case-SENSITIVE
-    //!   (`glob_match` compares chars exactly) but sshd lowercases the client
-    //!   hostname before Match evaluation, so a `Host` criterion differing from
-    //!   another only by case is treated as disjoint (accepted FN) and a mixed-case
-    //!   pattern that sshd would never match can still participate in overlap
-    //!   reasoning (accepted FP/FN on the host axis only). Parked as the tracked
-    //!   follow-up #495.
+    //! - HOST case-folding (#495): the `Host` axis folds case exactly as sshd does -
+    //!   [`match_pattern_list`] ASCII-folds BOTH the incoming value and every pattern
+    //!   when [`host_axis_folds`] (`dolower=1`, `match.c:141-146` + `:196-203`), and
+    //!   [`block_matches_nobody`] pre-folds raw host lists on the caller side so
+    //!   `!web.corp,WEB.CORP` self-negates. `User`/`Group` stay case-SENSITIVE
+    //!   (`dolower=0`) and `glob_match` itself stays char-exact. The fold is
+    //!   `to_ascii_lowercase` (bytes >= 0x80 untouched), never full Unicode. The
+    //!   exhaustive axis x shape x block x charset sweep lives in
+    //!   `tests/w07_case_fold_matrix.rs`; the wrong-impl kill fixtures below predate
+    //!   it and stay as targeted regression guards.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -3887,6 +3945,536 @@ mod w07_tests {
         assert_eq!(
             d[0].line, 4,
             "Match all wins every rdomain; the RDomain block's `no` on line 4 is dead"
+        );
+    }
+
+    // ---- HOST axis case folding (#495): host folds, user/group do NOT ----
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // The `Host` axis folds BOTH sides of the comparison, not just the incoming
+    // hostname:
+    // - `servconf.c:1134-1141` - the `host` attrib dispatches to
+    //   `match_hostname(ci->host, arg)`.
+    // - `match.c:196-203` - `match_hostname()` lowercases the incoming host
+    //   (`lowercase(hostcopy)`) AND passes `dolower=1`:
+    //   `r = match_pattern_list(hostcopy, pattern, 1);`
+    // - `match.c:141-146` - with `dolower=1`, `match_pattern_list()` lowercases the
+    //   CONFIG PATTERN too while extracting each subpattern:
+    //   `sub[subi] = dolower && isupper((u_char)pattern[i]) ? tolower(...) : pattern[i];`
+    // So `Match Host WEB.CORP` and `Match Host web.corp` denote the IDENTICAL host
+    // set: both sides normalize to `web.corp`.
+    //
+    // The counter-axis is case-SENSITIVE, from the same source:
+    // - `servconf.c:1108-1115` - `user` dispatches to
+    //   `match_usergroup_pattern_list(ci->user, arg)`.
+    // - `match.c:177-186` - that calls `match_pattern_list(string, pattern, 0)`
+    //   (`dolower=0`) under the explicit comment `/* Case sensitive match */`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
+    // - `Match Host WEB.CORP` + `PermitTTY no`: host=web.corp -> `permittty no`,
+    //   host=WEB.CORP -> `permittty no`, host=other.corp -> `permittty yes`. The
+    //   uppercase PATTERN matches the lowercase host, proving the pattern folds.
+    // - `Match Host !web.corp,WEB.CORP` + `PermitTTY no`: host=web.corp -> `yes`,
+    //   host=WEB.CORP -> `yes`, host=other.corp -> `yes`. The block applies to NO
+    //   host: `WEB.CORP` folds onto `web.corp`, which its own `!web.corp` vetoes.
+    // - `Match User !alice,ALICE` + `PermitTTY no`: user=alice -> `yes`,
+    //   user=ALICE -> `no`, user=bob -> `yes`. `ALICE` survives as a distinct
+    //   positive, so the user list stays SATISFIABLE - the host fold must not
+    //   reach the user axis.
+
+    #[test]
+    fn mixed_case_host_self_negation_matches_nobody_and_is_not_a_shadow_victim_w07() {
+        // #495 FP direction. Under sshd's host fold, `!web.corp,WEB.CORP` positively
+        // admits nothing: `WEB.CORP` normalizes to `web.corp` and is then vetoed by
+        // its own `!web.corp` (oracle: every host probe falls through to the global
+        // default). A block that matches nobody can never be shadowed, so W07 must
+        // stay silent. A case-SENSITIVE reading sees `WEB.CORP` as a live positive
+        // that `Host *` also admits, and wrongly reports line 4 as a shadow victim.
+        assert!(
+            w07_diags(
+                "Match Host *\n    X11Forwarding yes\n\
+                 Match Host !web.corp,WEB.CORP\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "`Host !web.corp,WEB.CORP` self-negates to nobody under sshd's host fold, \
+             so it is not a shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_host_patterns_co_satisfy_and_shadow_w07() {
+        // #495 FN direction. `WEB.CORP` and `web.corp` fold to the SAME host set
+        // (match.c dolower=1 lowercases the pattern as well as the host), so a
+        // `web.corp` connection satisfies BOTH blocks and the later X11Forwarding is
+        // silently dropped. A case-SENSITIVE reading treats the two as disjoint and
+        // misses the shadow entirely.
+        let d = w07_diags(
+            "Match Host WEB.CORP\n    X11Forwarding yes\n\
+             Match Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "mixed-case host patterns denote one host set -> exactly one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn mixed_case_user_self_negation_stays_satisfiable_w07() {
+        // #495 counter-axis guard: the fold is host-ONLY. `match_usergroup_pattern_list`
+        // passes dolower=0, so `ALICE` stays a distinct positive from `alice` and the
+        // list is SATISFIABLE (oracle: user=ALICE -> `permittty no`, i.e. the block
+        // APPLIES). The block therefore co-satisfies `User *` and line 4 IS a shadow.
+        // A blanket `to_ascii_lowercase()` applied to ALL name axes would fold `ALICE`
+        // onto `alice`, declare the list nobody, and drop this finding - this test
+        // fails such an impl. Expected to PASS before the fix (regression guard).
+        let d = w07_diags(
+            "Match User *\n    X11Forwarding yes\n\
+             Match User !alice,ALICE\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "user axis is case-SENSITIVE: `!alice,ALICE` still admits ALICE -> one W07"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "the satisfiable mixed-case user block is the shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_user_patterns_stay_disjoint_w07() {
+        // #495 counter-axis guard, FN direction: the mirror of
+        // `mixed_case_host_patterns_co_satisfy_and_shadow_w07` on the case-SENSITIVE
+        // axis. No single connection is both `ALICE` and `alice`, so the two blocks
+        // are provably disjoint and nothing is shadowed. A blanket lowercase across
+        // all name axes would make them overlap and manufacture a false W07 here.
+        // Expected to PASS before the fix (regression guard).
+        assert!(
+            w07_diags(
+                "Match User ALICE\n    X11Forwarding yes\n\
+                 Match User alice\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "user axis does not fold: `ALICE` and `alice` are disjoint -> no W07"
+        );
+    }
+
+    // ---- HOST fold: both SIDES, and at EVERY comparison site (#495) ----
+    //
+    // The tests above are carried by a lowercase TWIN present among the config
+    // literals (`web.corp` appears in both fixtures), so they are also satisfied by
+    // a HALF-fix that lowercases only the config PATTERN (match.c:145-146's
+    // `dolower=1`) and skips `match_hostname`'s `lowercase(hostcopy)` on the
+    // incoming VALUE (match.c:199). The witness search draws candidates from config
+    // literals ([`collect_name_literals`]), so the twin alone satisfies both sides
+    // and the value axis is never forced to fold. The fixtures below remove the twin
+    // and cross the multi-type path, pinning the fold at every host-comparison site.
+
+    #[test]
+    fn uppercase_only_host_literal_folds_onto_lowercase_glob_w07() {
+        // #495 FN direction with NO lowercase twin among the literals: `WEB.CORP` is
+        // the ONLY host literal here (`*.corp` is a glob, so it contributes no
+        // witness candidate). The sole witness is therefore uppercase, and it can
+        // only satisfy the earlier `*.corp` if the incoming VALUE folds
+        // (match.c:199 `lowercase(hostcopy)`) - lowercasing just the pattern leaves
+        // `glob_match("*.corp", "WEB.CORP")` false and the shadow unfound. A
+        // `web.corp` connection satisfies both blocks, so line 4's `no` is dead.
+        let d = w07_diags(
+            "Match Host *.corp\n    X11Forwarding yes\n\
+             Match Host WEB.CORP\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the incoming host folds too: `WEB.CORP` is admitted by `*.corp` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn identical_uppercase_host_blocks_stay_a_shadow_w07() {
+        // #495 REGRESSION guard on the fold's value side. Two byte-identical
+        // uppercase headers are a shadow under ANY consistent reading - the
+        // case-SENSITIVE impl already flags this. It is here because a half-fix that
+        // folds only the pattern BREAKS it: the pattern becomes `web.corp` while the
+        // witness stays `WEB.CORP`, so the block stops matching ITSELF and the
+        // finding silently disappears. Expected to PASS before the fix; it fails only
+        // for an impl that folds one side.
+        let d = w07_diags(
+            "Match Host WEB.CORP\n    X11Forwarding yes\n\
+             Match Host WEB.CORP\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "identical uppercase host headers denote one host set -> exactly one W07"
+        );
+        assert_eq!(d[0].line, 4, "the later duplicate is the shadow victim");
+    }
+
+    #[test]
+    fn mixed_case_host_shadows_across_the_multitype_path_w07() {
+        // #495 FN direction on the MULTI-TYPE route. The tests above are all
+        // single-criterion-type, so [`single_region_type`] routes them exclusively
+        // through [`names_region_shadow`]; adding an `Address` sends the identical
+        // host question through [`multitype_shadow`] instead, whose own host
+        // comparisons ([`type_co_satisfiable`]'s selection gate,
+        // [`multitype_names_axis_shadow`]'s `member`, [`exact_name_set`]) are
+        // INDEPENDENT sites. Folding only the single-type site leaves this fixture
+        // silent: the earlier block is never even selected as a setter, because
+        // `WEB.CORP` and `web.corp` look disjoint to the gate.
+        let d = w07_diags(
+            "Match Host WEB.CORP Address 10.0.0.0/8\n    X11Forwarding yes\n\
+             Match Host web.corp Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the host fold must reach the multi-type route: same host set, same net -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn repeated_mixed_case_host_is_satisfiable_not_nobody_w07() {
+        // #495 FN direction at the nobody guard. `sshd_config(5)` AND-s repeated
+        // criteria, so `Host WEB.CORP Host web.corp` needs ONE host satisfying both
+        // occurrences: under the fold that host is `web.corp`, so the block is
+        // SATISFIABLE and IS shadowed by the earlier `Host *`. A case-SENSITIVE
+        // reading finds no common witness, declares the block NOBODY
+        // ([`block_matches_nobody`] via [`name_instances_have_common_witness`]) and
+        // returns early - a site no other fixture reaches, and one that suppresses
+        // the finding no matter how many other sites are folded.
+        let d = w07_diags(
+            "Match Host *\n    X11Forwarding yes\n\
+             Match Host WEB.CORP Host web.corp Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "repeated mixed-case host instances share the witness `web.corp` -> satisfiable, \
+             and shadowed by `Host *` -> one W07"
+        );
+        assert_eq!(d[0].line, 4, "the shadowed repeated-host block is flagged");
+    }
+
+    #[test]
+    fn mixed_case_user_stays_disjoint_across_the_multitype_path_w07() {
+        // #495 counter-axis guard on the MULTI-TYPE route: the mirror of
+        // `mixed_case_host_shadows_across_the_multitype_path_w07` on the
+        // case-SENSITIVE axis. The user guards above only cover the single-type
+        // route, so a blanket `to_ascii_lowercase()` confined to the multi-type
+        // sites would pass them; here it would make `ALICE` and `alice` co-satisfy
+        // and manufacture a false W07. `match_usergroup_pattern_list` passes
+        // dolower=0 (match.c:177-186), so no connection is both users and nothing is
+        // shadowed. Expected to PASS before the fix (regression guard).
+        assert!(
+            w07_diags(
+                "Match User ALICE Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match User alice Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "user axis does not fold on the multi-type route either: `ALICE` vs `alice` \
+             are disjoint -> no W07"
+        );
+    }
+
+    // ---- GROUP axis stays case-sensitive too (#495 round 3) ----
+    //
+    // The round-2 barrier landed User-axis counter-guards but left the Group axis
+    // UNGUARDED: a wrong impl that gates the fold on `kind == "host" || kind ==
+    // "group"` (instead of host only) passes the whole pre-round-3 suite. The
+    // three tests below are the Group mirrors of the User counter-axis guards
+    // above, closing that hole.
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // `Group` reaches the SAME case-sensitive comparison as `User`, through a
+    // different dispatch path:
+    // - `servconf.c:1127` - the `group` attrib dispatches to
+    //   `match_cfg_line_group(ci->user, ci->groups, ci->ngroups, arg)`.
+    // - `groupaccess.c:117-118` - `ga_match_pattern_list()` (called from
+    //   `match_cfg_line_group` for each of the connection's groups) calls
+    //   `match_usergroup_pattern_list(value, group)`.
+    // - `match.c:177-186` - `match_usergroup_pattern_list()` calls
+    //   `match_pattern_list(string, pattern, 0)` (`dolower=0`) under the explicit
+    //   comment `/* Case sensitive match */` - the IDENTICAL call User goes
+    //   through, just reached via group membership instead of `ci->user`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+    // `Match Group runner` + `PermitTTY no`, probed with `user=runner` (a real
+    // member of the local `runner` group, gid 1000):
+    // - Lowercase pattern `Match Group runner` -> `permittty no` (the block
+    //   APPLIES: the group criterion matches).
+    // - Uppercase pattern `Match Group RUNNER` -> `permittty yes` (the block does
+    //   NOT apply: `Match all` wins instead) - proving `RUNNER` and `runner` are
+    //   DIFFERENT group patterns to sshd, exactly mirroring the User-axis oracle
+    //   already cited above.
+
+    #[test]
+    fn mixed_case_group_patterns_stay_disjoint_w07() {
+        // #495 counter-axis guard (GROUP), FP direction. The Group mirror of
+        // `mixed_case_user_patterns_stay_disjoint_w07`. No connection's groups can
+        // be simultaneously named `DEVS` and `devs` (case-sensitive per the
+        // grounding above), so the two blocks are provably disjoint and nothing is
+        // shadowed. A wrong impl folding `kind == "host" || kind == "group"` would
+        // make them co-satisfy and manufacture a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Group DEVS\n    X11Forwarding yes\n\
+                 Match Group devs\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "group axis does not fold: `DEVS` and `devs` are disjoint -> no W07"
+        );
+    }
+
+    #[test]
+    fn mixed_case_group_self_negation_stays_satisfiable_w07() {
+        // #495 counter-axis guard (GROUP), FN direction. The Group mirror of
+        // `mixed_case_user_self_negation_stays_satisfiable_w07`. Group is
+        // case-SENSITIVE (dolower=0, per the grounding above), so `DEVS` stays a
+        // distinct positive from `devs` and `!devs,DEVS` is SATISFIABLE (a member
+        // of group `DEVS` is not vetoed by `!devs`). The block therefore
+        // co-satisfies `Group *` and line 4 IS a shadow. A wrong impl folding
+        // `kind == "host" || kind == "group"` would fold `DEVS` onto `devs`,
+        // declare the list self-negated (nobody), and MISS this finding.
+        let d = w07_diags(
+            "Match Group *\n    X11Forwarding yes\n\
+             Match Group !devs,DEVS\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "group axis is case-SENSITIVE: `!devs,DEVS` still admits DEVS -> one W07"
+        );
+        assert_eq!(
+            d[0].line, 4,
+            "the satisfiable mixed-case group block is the shadow victim"
+        );
+    }
+
+    #[test]
+    fn mixed_case_group_stays_disjoint_across_the_multitype_path_w07() {
+        // #495 counter-axis guard (GROUP) on the MULTI-TYPE route. The mirror of
+        // `mixed_case_user_stays_disjoint_across_the_multitype_path_w07`. The two
+        // Group guards above only cover the single-type route
+        // ([`names_region_shadow`]); a wrong impl that folds `kind == "host" ||
+        // kind == "group"` only at the multi-type sites
+        // ([`type_co_satisfiable`]'s selection gate, [`multitype_names_axis_shadow`]'s
+        // `member`, [`exact_name_set`]) would pass the single-type guards above but
+        // still fold `DEVS` onto `devs` here and manufacture a false W07. Group
+        // stays case-sensitive on this route too (same `match_usergroup_pattern_list`
+        // dolower=0 call, independent of which comparison SITE reaches it), so no
+        // connection is a member of both `DEVS` and `devs` and nothing is shadowed.
+        assert!(
+            w07_diags(
+                "Match Group DEVS Address 10.0.0.0/8\n    X11Forwarding yes\n\
+                 Match Group devs Address 10.0.0.0/8\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "group axis does not fold on the multi-type route either: `DEVS` vs \
+             `devs` are disjoint -> no W07"
+        );
+    }
+
+    // ---- HOST fold fidelity: ASCII-only, not full Unicode (#495 round 4) ----
+    //
+    // The round-1..3 suite pins WHICH axis folds (host, not user/group) and THAT
+    // both sides of the comparison fold, but never HOW FAR the fold reaches. A
+    // wrong impl that uses Rust's full-Unicode `str::to_lowercase()` instead of
+    // `to_ascii_lowercase()` passes the entire pre-round-4 suite (507/507):
+    // every existing fixture's mixed-case pairs differ only in the ASCII a-z/A-Z
+    // range, where the two functions agree.
+    //
+    // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+    // As already cited above (match.c:141-146), the fold is:
+    //   `sub[subi] = dolower && isupper((u_char)pattern[i]) ? tolower((u_char)pattern[i]) : pattern[i];`
+    // - BYTE-WISE C `isupper()`/`tolower()`, operating one `u_char` at a time.
+    // UTF-8 continuation and lead bytes for any non-ASCII codepoint are all
+    // `>= 0x80`, so C `isupper()` (locale "C") is false for every one of them and
+    // they pass through completely unchanged. `match_hostname()` (match.c:196-203)
+    // reaches the identical byte-wise loop for the incoming host value via
+    // `lowercase(hostcopy)`.
+    //
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
+    // - `Match Host k` + `PermitTTY no`: host=`K` (ASCII 0x4B) -> `permittty no`
+    //   (block APPLIES: the ASCII fold is real). host=U+212A KELVIN SIGN (UTF-8
+    //   `e2 84 aa`) -> `permittty yes` (block does NOT apply: no Unicode fold).
+    // - `Match Host cafe-acute` (lowercase e-acute, U+00E9) + `PermitTTY no`:
+    //   host=`cafe-acute` -> `permittty no` (APPLIES). host=`CAFE-ACUTE` (uppercase
+    //   E-acute, U+00C9) -> `permittty yes` (does NOT apply): the byte-wise
+    //   `tolower` leaves `c3 89` (U+00C9) alone, so it never becomes `c3 a9`
+    //   (U+00E9).
+    //
+    // Rust's `char::to_lowercase()` / `str::to_lowercase()` instead follow full
+    // Unicode simple case mapping, where U+212A KELVIN SIGN has a documented
+    // simple-lowercase mapping to U+006B (`k`) and U+00C9 maps to U+00E9 - both
+    // WOULD fold under a `to_lowercase()` impl, collapsing patterns the daemon
+    // treats as disjoint and manufacturing a false W07.
+
+    #[test]
+    fn kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07() {
+        // #495 round-4 FIDELITY guard, FP direction. `k` (U+006B) and U+212A
+        // KELVIN SIGN are wholly distinct host patterns under sshd's byte-wise
+        // ASCII fold (the oracle above), so the two blocks are disjoint and
+        // nothing is shadowed. A wrong impl using `str::to_lowercase()` maps
+        // KELVIN SIGN onto ASCII `k` (Unicode's documented simple-lowercase
+        // mapping for U+212A), collapsing the two into one host set and
+        // manufacturing a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Host k\n    X11Forwarding yes\n\
+                 Match Host \u{212A}\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "the host fold is ASCII-only: `k` and U+212A KELVIN SIGN are disjoint \
+             -> no W07"
+        );
+    }
+
+    #[test]
+    fn accented_e_host_pattern_does_not_fold_across_case_w07() {
+        // #495 round-4 FIDELITY guard, FP direction, operator-facing mirror of the
+        // KELVIN SIGN guard above. U+00C9 (LATIN CAPITAL LETTER E WITH ACUTE) and
+        // U+00E9 (LATIN SMALL LETTER E WITH ACUTE) are both non-ASCII bytes in
+        // UTF-8 (`c3 89` / `c3 a9`), so sshd's byte-wise fold never touches them
+        // and `CAF\u{C9}` / `caf\u{E9}` stay disjoint host patterns (the oracle
+        // above). A wrong impl using `str::to_lowercase()` performs full Unicode
+        // case mapping and lowercases U+00C9 onto U+00E9, collapsing the two into
+        // one host set and manufacturing a false W07 here.
+        assert!(
+            w07_diags(
+                "Match Host CAF\u{C9}\n    X11Forwarding yes\n\
+                 Match Host caf\u{E9}\n    X11Forwarding no\n",
+            )
+            .is_empty(),
+            "the host fold is ASCII-only: accented E case is untouched -> \
+             `CAF\u{C9}` and `caf\u{E9}` are disjoint -> no W07"
+        );
+    }
+
+    // ---- HOST fold on a GLOB, and full multi-site Unicode fidelity (#495 round 5) ----
+    //
+    // These two fixtures closed the round-5 holes at the #495 barrier; the fold has
+    // since been implemented ([`host_axis_folds`] / [`match_pattern_list`]) and the
+    // exhaustive sweep over axis x shape x block x charset lives in
+    // `tests/w07_case_fold_matrix.rs`. The prose below records why these SPECIFIC
+    // shapes had to exist, in the pre-fix terms the suite was authored against.
+    //
+    // Every host GLOB in the suite above is already lowercase (`*.corp`, `a*`, `*`);
+    // the only UPPERCASE host tokens are LITERALS (`WEB.CORP`, `CAF\u{C9}`, `K`). So
+    // pattern-folding is never exercised on a glob, and an impl that folds the
+    // incoming VALUE always but folds the PATTERN only when it contains no `*`/`?`
+    // passes the whole pre-round-5 suite (509/509): it never meets an uppercase glob
+    // to skip.
+    //
+    // Separately, the round-4 Unicode guards above
+    // (`kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07`,
+    // `accented_e_host_pattern_does_not_fold_across_case_w07`) are both
+    // SINGLE-criterion-type fixtures (no `Address`), so they route exclusively
+    // through [`member_of_type`] / [`match_pattern_list`] on the single-type path. A
+    // `to_lowercase()` (full Unicode) confined to any OTHER fold site therefore
+    // passes them too - the same structural hole that let a User-axis-only fold
+    // survive earlier rounds recurred here because the new guards were single-type.
+
+    #[test]
+    fn uppercase_host_glob_folds_onto_lowercase_literal_w07() {
+        // #495 round-5 FIDELITY guard, FN direction. The earlier block's glob is
+        // uppercase (`*.CORP`) and the later block is the lowercase literal
+        // `web.corp`. An impl that folds the pattern only when it has no `*`/`?`
+        // (`wrongGLOB`) leaves `*.CORP` un-folded (it contains `*`), so
+        // `glob_match("*.CORP", "web.corp")` stays false and the shadow goes unfound
+        // even though it correctly folds every literal-vs-literal and
+        // literal-vs-lowercase-glob pair the rest of the suite exercises.
+        //
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // `Match Host *.CORP` + `PermitTTY no`, probed against the global default
+        // `PermitTTY yes`:
+        // - host=`web.corp` -> `permittty no` (the block APPLIES: the pattern folds).
+        // - host=`web.example` -> `permittty yes` (control: does not match `*.corp`).
+        //
+        // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
+        // match.c:141-146's fold loop is byte-wise over EVERY pattern character with
+        // no wildcard special-casing - `*` and `?` are not exempted from `dolower`,
+        // so an uppercase glob folds exactly like an uppercase literal.
+        let d = w07_diags(
+            "Match Host *.CORP\n    X11Forwarding yes\n\
+             Match Host web.corp\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "the uppercase glob `*.CORP` folds too: it admits `web.corp` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
+        );
+    }
+
+    #[test]
+    fn kelvin_sign_shadow_reaches_nobody_guard_and_multitype_member_w07() {
+        // #495 round-5 FIDELITY guard, FN direction. Adding `Address` forces the
+        // multi-type route: the LATER block's `Host !k,\u{212A}` list first passes
+        // through [`block_matches_nobody`]'s self-negation check, then (once past
+        // that guard) through [`multitype_names_axis_shadow`]'s `member` closure -
+        // two independent host-comparison sites a single-type fixture never reaches.
+        //
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // `Match Host !k,\u{212A}` + `PermitTTY no`, probed against the global
+        // default `PermitTTY yes`:
+        // - host=`\u{212A}` (KELVIN SIGN) -> `permittty no` (the block APPLIES:
+        //   KELVIN is a live positive the ASCII fold does not touch, so the
+        //   self-negation `!k` never vetoes it).
+        // - host=`k` -> `permittty yes` (vetoed by `!k`).
+        // - host=`K` (ASCII) -> `permittty yes` (folds onto `k`, also vetoed).
+        // So the block is SATISFIABLE (a real host, KELVIN SIGN, gets `no`) and is a
+        // genuine shadow victim of the earlier unconditional `Match Host *`.
+        //
+        // A wrong impl using full-Unicode `to_lowercase()` at EITHER site instead of
+        // the ASCII-only fold misses this: at `block_matches_nobody`, KELVIN folds
+        // onto `k` (Unicode's documented simple-lowercase mapping for U+212A), making
+        // `!k,\u{212A}` look self-negated (nobody) and suppressing the finding
+        // entirely before the axis walk ever runs. At
+        // `multitype_names_axis_shadow`'s `member` closure, the same Unicode fold
+        // collapses the KELVIN witness candidate onto `k`, which the block's own
+        // `!k` negation then excludes, so no candidate satisfies membership and the
+        // walk finds no shadow either. Both are proven survivors of the round-4
+        // guards; this fixture kills both.
+        let d = w07_diags(
+            "Match Host *\n    X11Forwarding yes\n\
+             Match Host !k,\u{212A} Address 10.0.0.0/8\n    X11Forwarding no\n",
+        );
+        assert_eq!(
+            d.len(),
+            1,
+            "KELVIN SIGN is a live positive under the ASCII-only fold: the block is \
+             satisfiable and shadowed by `Host *` -> one W07"
+        );
+        assert_eq!(d[0].code, "sshd-W07");
+        assert_eq!(d[0].severity, Severity::Warning);
+        assert_eq!(
+            d[0].line, 4,
+            "the LATER (shadowed) instance is flagged, not the winning first one"
         );
     }
 }
