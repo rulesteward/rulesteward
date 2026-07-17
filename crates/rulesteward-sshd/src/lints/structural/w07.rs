@@ -313,9 +313,11 @@ fn member_of_type(block: &MatchBlock, kind: &str, x: &str) -> bool {
     if is_unconditional_match_all(block) {
         return true;
     }
-    criteria_by_type(block)
-        .get(kind)
-        .is_some_and(|instances| instances.iter().all(|values| match_pattern_list(x, values)))
+    criteria_by_type(block).get(kind).is_some_and(|instances| {
+        instances
+            .iter()
+            .all(|values| match_pattern_list(kind, x, values))
+    })
 }
 
 /// Per-sub-population shadow for CIDR criteria (`Address`/`LocalAddress`). Walk the
@@ -718,7 +720,9 @@ fn multitype_names_axis_shadow(
             return true;
         }
         match criteria_by_type(block).get(kind) {
-            Some(instances) => instances.iter().all(|values| match_pattern_list(x, values)),
+            Some(instances) => instances
+                .iter()
+                .all(|values| match_pattern_list(kind, x, values)),
             // Doesn't constrain this axis at all: universe, a no-op setter here.
             None => true,
         }
@@ -933,12 +937,26 @@ fn name_list_matches_nobody(values: &[String]) -> bool {
 /// block.
 fn block_matches_nobody(block: &MatchBlock) -> bool {
     criteria_by_type(block).iter().any(|(kind, instances)| {
-        if matches!(kind.as_str(), "user" | "group" | "host")
-            && instances
-                .iter()
-                .any(|values| name_list_matches_nobody(values))
-        {
-            return true;
+        // `name_list_matches_nobody` is pure exact-string self-negation over the raw
+        // entries, so the host fold happens HERE, on the caller side: pre-folding the
+        // whole raw value (including any `!` prefix) is behavior-preserving because
+        // `to_ascii_lowercase` touches neither `!` nor bytes >= 0x80, and it makes
+        // `!web.corp,WEB.CORP` self-negate exactly as sshd resolves it (#495).
+        if matches!(kind.as_str(), "user" | "group" | "host") {
+            let nobody = if host_axis_folds(kind) {
+                instances.iter().any(|values| {
+                    let folded: Vec<String> =
+                        values.iter().map(|v| v.to_ascii_lowercase()).collect();
+                    name_list_matches_nobody(&folded)
+                })
+            } else {
+                instances
+                    .iter()
+                    .any(|values| name_list_matches_nobody(values))
+            };
+            if nobody {
+                return true;
+            }
         }
         instances.len() >= 2 && !criterion_instances_have_common_witness(kind, instances)
     })
@@ -950,7 +968,7 @@ fn block_matches_nobody(block: &MatchBlock) -> bool {
 /// instances rather than two blocks' value lists.
 fn criterion_instances_have_common_witness(kind: &str, instances: &[&[String]]) -> bool {
     match kind {
-        "user" | "group" | "host" => name_instances_have_common_witness(instances),
+        "user" | "group" | "host" => name_instances_have_common_witness(kind, instances),
         "address" | "localaddress" => cidr_instances_have_common_address(instances),
         "localport" => port_instances_have_common_port(instances),
         // Unmodeled type: assume satisfiable (never manufactures a finding).
@@ -962,8 +980,10 @@ fn criterion_instances_have_common_witness(kind: &str, instances: &[&[String]]) 
 /// the literals-plus-FRESH witness set of [`pattern_lists_overlap`]: a name admitted
 /// by all instances is either a listed literal or some fresh name, so testing every
 /// literal plus one sentinel decides it. (A witness that only a wildcard-vs-wildcard
-/// pairing would admit is the documented v0.3 accepted false negative.)
-fn name_instances_have_common_witness(instances: &[&[String]]) -> bool {
+/// pairing would admit is the documented v0.3 accepted false negative.) Candidates
+/// stay unfolded: `match_pattern_list` folds both sides on the host axis, so a
+/// mixed-case literal still witnesses the folded intersection (#495).
+fn name_instances_have_common_witness(kind: &str, instances: &[&[String]]) -> bool {
     const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
     let mut candidates: Vec<&str> = Vec::new();
     for values in instances {
@@ -978,7 +998,7 @@ fn name_instances_have_common_witness(instances: &[&[String]]) -> bool {
     candidates.iter().any(|name| {
         instances
             .iter()
-            .all(|values| match_pattern_list(name, values))
+            .all(|values| match_pattern_list(kind, name, values))
     })
 }
 
@@ -1033,7 +1053,7 @@ fn criteria_by_type(block: &MatchBlock) -> BTreeMap<String, Vec<&[String]>> {
 /// non-overlapping (conservative: an undecidable type never manufactures a finding).
 fn criterion_overlap(kind: &str, a_values: &[String], b_values: &[String]) -> bool {
     match kind {
-        "user" | "group" | "host" => pattern_lists_overlap(a_values, b_values),
+        "user" | "group" | "host" => pattern_lists_overlap(kind, a_values, b_values),
         "address" | "localaddress" => cidr_lists_overlap(a_values, b_values),
         "localport" => port_lists_overlap(a_values, b_values),
         _ => false,
@@ -1047,9 +1067,11 @@ fn criterion_overlap(kind: &str, a_values: &[String], b_values: &[String]) -> bo
 /// name distinct from all of them, so testing every literal plus one fresh sentinel
 /// decides overlap. (`!bob,*` vs `bob` is disjoint: bob is excluded by the negation
 /// and every other name fails the literal `bob`.)
-fn pattern_lists_overlap(a: &[String], b: &[String]) -> bool {
+fn pattern_lists_overlap(kind: &str, a: &[String], b: &[String]) -> bool {
     // A name matching none of the listed literals, to witness wildcard-only overlaps
     // (e.g. `*` vs `*`). The NUL bytes keep it distinct from any real criterion value.
+    // Candidates stay unfolded: `match_pattern_list` folds both sides on the host
+    // axis, so a mixed-case literal still witnesses the folded overlap (#495).
     const FRESH: &str = "\u{0}rulesteward-w07-fresh-name\u{0}";
     let mut candidates: Vec<&str> = Vec::new();
     for value in a.iter().chain(b) {
@@ -1061,15 +1083,48 @@ fn pattern_lists_overlap(a: &[String], b: &[String]) -> bool {
     candidates.push(FRESH);
     candidates
         .iter()
-        .any(|name| match_pattern_list(name, a) && match_pattern_list(name, b))
+        .any(|name| match_pattern_list(kind, name, a) && match_pattern_list(kind, name, b))
+}
+
+/// Whether sshd case-folds this (lowercased) criterion kind before matching.
+///
+/// ONLY the host axis folds, and it folds BOTH sides: `match_hostname` lowercases
+/// the incoming host (`match.c:196-203`, `lowercase(hostcopy)`) and passes
+/// `dolower=1`, under which `match_pattern_list` lowercases the config pattern too
+/// (`match.c:141-146`). `User` (`servconf.c:1108-1115`) and `Group`
+/// (`servconf.c:1127` -> `groupaccess.c:117-118`) both reach the `dolower=0`
+/// comparison at `match.c:177-186` (`/* Case sensitive match */`). The fold is
+/// byte-wise `isupper`/`tolower` in the C locale - ASCII-only, bytes >= 0x80 pass
+/// through - so the faithful Rust fold is `to_ascii_lowercase`, never the full
+/// Unicode `to_lowercase` (#495; live oracles pinned in `w07_tests`).
+fn host_axis_folds(kind: &str) -> bool {
+    kind == "host"
 }
 
 /// OpenSSH `match_pattern_list`: a value matches iff some POSITIVE pattern matches
 /// AND no negated (`!`-prefixed) pattern matches. A negated match fails the whole
-/// list immediately, mirroring sshd's early return.
-fn match_pattern_list(value: &str, patterns: &[String]) -> bool {
+/// list immediately, mirroring sshd's early return. On the host axis
+/// ([`host_axis_folds`]) both the incoming value and every pattern are ASCII-folded
+/// first, mirroring `dolower=1`; callers therefore never pre-fold the values or
+/// witness candidates they pass in.
+fn match_pattern_list(kind: &str, value: &str, patterns: &[String]) -> bool {
+    let fold = host_axis_folds(kind);
+    let folded_value;
+    let value: &str = if fold {
+        folded_value = value.to_ascii_lowercase();
+        &folded_value
+    } else {
+        value
+    };
     let mut matched_positive = false;
     for pattern in patterns {
+        let folded_pattern;
+        let pattern: &str = if fold {
+            folded_pattern = pattern.to_ascii_lowercase();
+            &folded_pattern
+        } else {
+            pattern
+        };
         if let Some(negated) = pattern.strip_prefix('!') {
             if glob_match(negated, value) {
                 return false;
@@ -1289,13 +1344,16 @@ mod w07_tests {
     //!   `g3_earlier_type_outside_t_is_ignored_entirely` lock this, and
     //!   `ce6_match_all_agreeing_interleave_stays_correct_regression_lock` locks that
     //!   the pre-existing `Match all` interleave is undisturbed.
-    //! - HOST case-folding (#495): the impl's `Host` axis matching is case-SENSITIVE
-    //!   (`glob_match` compares chars exactly) but sshd lowercases the client
-    //!   hostname before Match evaluation, so a `Host` criterion differing from
-    //!   another only by case is treated as disjoint (accepted FN) and a mixed-case
-    //!   pattern that sshd would never match can still participate in overlap
-    //!   reasoning (accepted FP/FN on the host axis only). Parked as the tracked
-    //!   follow-up #495.
+    //! - HOST case-folding (#495): the `Host` axis folds case exactly as sshd does -
+    //!   [`match_pattern_list`] ASCII-folds BOTH the incoming value and every pattern
+    //!   when [`host_axis_folds`] (`dolower=1`, `match.c:141-146` + `:196-203`), and
+    //!   [`block_matches_nobody`] pre-folds raw host lists on the caller side so
+    //!   `!web.corp,WEB.CORP` self-negates. `User`/`Group` stay case-SENSITIVE
+    //!   (`dolower=0`) and `glob_match` itself stays char-exact. The fold is
+    //!   `to_ascii_lowercase` (bytes >= 0x80 untouched), never full Unicode. The
+    //!   exhaustive axis x shape x block x charset sweep lives in
+    //!   `tests/w07_case_fold_matrix.rs`; the wrong-impl kill fixtures below predate
+    //!   it and stay as targeted regression guards.
 
     use crate::lints::{SshdLintContext, lint};
     use rulesteward_core::{Diagnostic, Severity};
@@ -4314,11 +4372,11 @@ mod w07_tests {
 
     // ---- HOST fold on a GLOB, and full multi-site Unicode fidelity (#495 round 5) ----
     //
-    // DEFERRAL NOTE: #495 is being taken out of the v0.8 Wave-1 milestone for a
-    // dedicated future session. These are the last two fixtures landed before the
-    // hand-off; see the issue for the full implementation map (call-site surface,
-    // signature-preserving fold routes, and the exact fold semantics) so the next
-    // session does not have to re-derive it from the five review rounds' history.
+    // These two fixtures closed the round-5 holes at the #495 barrier; the fold has
+    // since been implemented ([`host_axis_folds`] / [`match_pattern_list`]) and the
+    // exhaustive sweep over axis x shape x block x charset lives in
+    // `tests/w07_case_fold_matrix.rs`. The prose below records why these SPECIFIC
+    // shapes had to exist, in the pre-fix terms the suite was authored against.
     //
     // Every host GLOB in the suite above is already lowercase (`*.corp`, `a*`, `*`);
     // the only UPPERCASE host tokens are LITERALS (`WEB.CORP`, `CAF\u{C9}`, `K`). So

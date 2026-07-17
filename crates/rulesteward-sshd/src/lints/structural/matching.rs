@@ -23,8 +23,12 @@ fn glob_advance(i: usize) -> usize {
 }
 
 /// OpenSSH `match_pattern` glob: `*` matches any run of characters and `?` matches
-/// exactly one. Case-sensitive (sshd criterion values are case-sensitive). Iterative
-/// with `*` backtracking, so it never recurses.
+/// exactly one. Char-exact: this function never folds case, mirroring
+/// `match_pattern()` itself. Case handling is the CALLER's job, exactly as in
+/// sshd: `User`/`Group` values compare case-sensitively (`dolower=0`), while the
+/// `Host` axis is compared only after W07's `match_pattern_list` ASCII-folds both
+/// the pattern and the incoming value (`dolower=1`, `match.c:141-146` + `:196-203`;
+/// #495). Iterative with `*` backtracking, so it never recurses.
 pub(super) fn glob_match(pattern: &str, value: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let value: Vec<char> = value.chars().collect();
