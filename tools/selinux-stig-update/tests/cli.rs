@@ -121,15 +121,18 @@ fn help_exits_0_and_documents_the_tool() {
     );
 }
 
-// --- exit-code contract: 2 on error (GREEN today by construction of the
-// always-exit-2 stub; remain meaningful forward-looking pins once real
-// subcommand parsing lands) ---------------------------------------------------
+// --- exit-code contract: 2 on error, with a SPECIFIC message (RED today: the
+// always-exit-2 stub satisfies the code but not the message assertions, so a
+// wrong impl cannot pass these by exiting 2 unconditionally) -------------------
 
 #[test]
 fn unknown_subcommand_exits_2() {
     let (code, _out, err) = run(&["frobnicate"]);
     assert_eq!(code, Some(2));
-    let _ = err;
+    assert!(
+        err.contains("unknown subcommand"),
+        "error must name the unknown subcommand, got err={err}"
+    );
 }
 
 #[test]
@@ -142,5 +145,8 @@ fn missing_file_exits_2() {
         "/no/such/xccdf.xml",
     ]);
     assert_eq!(code, Some(2), "unreadable source must exit 2");
-    let _ = err;
+    assert!(
+        err.contains("/no/such/xccdf.xml") || err.to_lowercase().contains("no such file"),
+        "error must name the unreadable path, got err={err}"
+    );
 }
