@@ -1,8 +1,11 @@
-//! fapd-W14: `fapolicyd.conf` sets `permissive=1` (fail-open instead of
-//! enforcing). Operates on an explicitly-supplied conf file (CLI `--conf`
-//! path, `commands/fapolicyd/lint.rs`); NOT wired into the default per-file
-//! `lint_with_context` pass list (a conf file is not a `rules.d/*.rules`
-//! file and has no `--file`/directory relationship to one).
+//! fapd-W14: `fapolicyd.conf` resolves an effectively-permissive
+//! `permissive=` value (fail-open instead of enforcing - not just the
+//! literal `permissive=1`; see `is_effectively_permissive`'s doc for the
+//! exact daemon-matching predicate). Operates on an explicitly-supplied
+//! conf file (CLI `--conf` path, `commands/fapolicyd/lint.rs`); NOT wired
+//! into the default per-file `lint_with_context` pass list (a conf file is
+//! not a `rules.d/*.rules` file and has no `--file`/directory relationship
+//! to one).
 //!
 //! Version-INDEPENDENT: `permissive=1` fail-open is wrong on every supported
 //! fapolicyd release, so this fires even with `target: None` - unlike
@@ -28,14 +31,18 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::lints::stig::ControlFamily;
 use crate::version::TargetVersion;
 
-/// fapd-W14: `permissive=1` set in the `fapolicyd.conf` text at `path`.
+/// fapd-W14: an effectively-permissive `permissive=` value set in the
+/// `fapolicyd.conf` text at `path`.
 ///
-/// Fires whenever the LAST-WINS resolved value of the `permissive` key is
-/// exactly `"1"`, regardless of `target` (version-independent). Anchored at
-/// the WINNING line (the last non-whole-line-comment occurrence of the key,
-/// last-wins per fapolicyd's own config-loader semantics - see the module
-/// doc). Absent key, or resolved to anything other than `"1"` (e.g. `"0"`),
-/// is clean.
+/// Fires whenever the LAST-WINS resolved value of the `permissive` key is a
+/// non-empty, all-ASCII-digit string containing at least one nonzero digit -
+/// the daemon's `strtoul`-then-clamp semantics (see `is_effectively_permissive`
+/// below): `"1"`, `"2"`, `"10"`, `"01"`, `"007"`, etc. all fire - regardless
+/// of `target` (version-independent). Anchored at the WINNING line (the last
+/// non-whole-line-comment occurrence of the key, last-wins per fapolicyd's
+/// own config-loader semantics - see the module doc). Absent key, an
+/// all-zero digit string (e.g. `"0"`, `"00"`), or a non-numeric value (e.g.
+/// `"1x"`) is clean.
 #[must_use]
 pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
     // Last-wins scan, mirroring `commands/conf.rs::conf_value` exactly (whole-line
@@ -75,7 +82,7 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
             Severity::Warning,
             "fapd-W14",
             span,
-            "fapolicyd.conf sets `permissive = 1` (fail-open instead of enforcing)",
+            "fapolicyd.conf sets a permissive (fail-open) value instead of enforcing",
             path,
             line,
         )

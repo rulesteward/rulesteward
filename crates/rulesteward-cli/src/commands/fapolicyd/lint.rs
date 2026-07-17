@@ -74,7 +74,7 @@ fn run_lint_resolved(
     target: Option<TargetVersionArg>,
     profile: Option<Framework>,
 ) -> anyhow::Result<i32> {
-    let trustdb = match open_trustdb_arg(args.against_trustdb.as_ref()) {
+    let trustdb = match open_trustdb_arg(args.against_trustdb.as_deref()) {
         Ok(db) => db,
         Err(code) => return Ok(code),
     };
@@ -227,7 +227,7 @@ fn run_lint_resolved(
 /// Open the `--against-trustdb` path, if given. `Ok(None)` when the flag is
 /// absent; `Ok(Some(db))` on success; `Err(exit_code)` with the exit code the
 /// caller should return immediately on a directory/LMDB-open failure.
-fn open_trustdb_arg(path: Option<&PathBuf>) -> Result<Option<TrustDb>, i32> {
+fn open_trustdb_arg(path: Option<&Path>) -> Result<Option<TrustDb>, i32> {
     let Some(p) = path else {
         return Ok(None);
     };

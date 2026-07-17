@@ -429,6 +429,11 @@ fn check_denial_rate(probe: &dyn SystemProbe) -> CheckResult {
 /// EXACTLY `any` (STRICT: `perm=execute`, the shipped `90-deny-execute.rules`
 /// default, is NOT a deny-all - opens are still wide open), subject exactly
 /// `all`, and object exactly `all` (after the `:` separator).
+///
+/// Sibling predicate: `rulesteward-fapolicyd`'s
+/// `lints::deny_all::is_deny_all_family` implements the SAME G1.4 verdict
+/// over an already-PARSED `Rule` (fapd-W13) instead of raw `compiled.rules`
+/// text. Keep both in sync.
 fn is_deny_all_final_rule(line: &str) -> bool {
     // Tokenize on RUNS OF SPACES ONLY (G1.4: the daemon's own separator
     // tolerance; a tab is a daemon PARSE ERROR, never a valid rule, so a

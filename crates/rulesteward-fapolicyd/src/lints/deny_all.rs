@@ -9,9 +9,12 @@
 //! byte-normalization (G1.2), so "the last effective rule" is a property of the
 //! WHOLE merged stream, never a single file in isolation - a file that itself
 //! ends in a clean deny-all can still be shadowed by a LATER-loading file that
-//! appends something else. The predicate (G1.4): tokenize the candidate rule's
-//! decision/perm/subject/object on RUNS OF SPACES (the daemon's own separator
-//! tolerance; a tab is a daemon PARSE ERROR, never a rule); the rule satisfies
+//! appends something else. Per G1.4, the daemon itself tokenizes rules on
+//! runs of spaces (a tab is a daemon PARSE ERROR, never a rule); this
+//! predicate instead matches the resulting PARSED rule (an already-tokenized
+//! `Rule` struct - the raw-string tokenization lives in
+//! `commands/doctor/checks.rs::is_deny_all_final_rule`, which mirrors this
+//! same G1.4 verdict over `compiled.rules` text). The rule satisfies
 //! this check iff `decision` is one of `deny`, `deny_audit`, `deny_syslog`,
 //! `deny_log` (the DECISION family, not just the bare literal - see G1.3/G1.4),
 //! `perm` is EXACTLY `any` (STRICT - `perm=execute` is the shipped
@@ -109,6 +112,11 @@ pub fn w13(files: &[(PathBuf, Vec<Entry>)], target: Option<TargetVersion>) -> Ve
 /// not just the bare literal), `perm` EXACTLY `any` (STRICT - `perm=execute`
 /// is the shipped `90-deny-execute.rules` default and is NOT a deny-all),
 /// subject exactly `all`, and object exactly `all`.
+///
+/// Sibling predicate: `rulesteward-cli`'s
+/// `commands/doctor/checks.rs::is_deny_all_final_rule` implements the SAME
+/// G1.4 verdict over the raw (already-tokenized) `compiled.rules` text
+/// instead of a parsed `Rule`. Keep both in sync.
 fn is_deny_all_family(rule: &Rule) -> bool {
     matches!(
         rule.decision,

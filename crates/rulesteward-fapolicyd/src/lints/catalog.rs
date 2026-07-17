@@ -314,7 +314,7 @@ pub const FAPD_CODES: &[LintCode] = &[
     LintCode {
         code: "fapd-W14",
         severity: Severity::Warning,
-        description: "fapolicyd.conf sets permissive=1 (fail-open instead of enforcing)",
+        description: "fapolicyd.conf sets a permissive (fail-open) value instead of enforcing",
         condition: Condition::RequiresConf,
     },
     LintCode {
