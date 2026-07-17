@@ -170,15 +170,62 @@ fn doctor_help_renders_target_flag() {
         .stdout(predicate::str::contains("--target"));
 }
 
+/// The RHEL-family major (8/9/10) the live probe would resolve for this host's
+/// `/etc/os-release` under the default `--target auto`, or `None` when auto
+/// degrades. Mirrors the family + major signals of `commands::target_probe`
+/// (family `ID`, an `ID_LIKE` containing `rhel`, or `PLATFORM_ID=platform:elN`;
+/// major from `PLATFORM_ID` first, then the integer prefix of `VERSION_ID`) -
+/// the same accepted mirror trade-off as `e2e_selinux_lint.rs`'s host guard.
+/// Used to branch the omitted-target assertions: the distro-CI containers
+/// (Rocky/Alma/Oracle 8/9/10) resolve; ubuntu CI runners and dev sandboxes
+/// degrade.
+fn host_resolvable_el_major() -> Option<u32> {
+    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let field = |key: &str| {
+        text.lines().map(str::trim).find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k == key).then(|| v.trim_matches(|c| c == '"' || c == '\'').to_owned())
+        })
+    };
+    let (id, id_like) = (field("ID"), field("ID_LIKE"));
+    let (platform_id, version_id) = (field("PLATFORM_ID"), field("VERSION_ID"));
+    let family = id
+        .as_deref()
+        .is_some_and(|id| matches!(id, "rhel" | "rocky" | "almalinux" | "centos"))
+        || id_like
+            .as_deref()
+            .is_some_and(|like| like.split_whitespace().any(|t| t == "rhel"))
+        || platform_id
+            .as_deref()
+            .is_some_and(|p| p.starts_with("platform:el"));
+    if !family {
+        return None;
+    }
+    let major = platform_id
+        .as_deref()
+        .and_then(|p| p.strip_prefix("platform:el"))
+        .and_then(|n| n.parse::<u32>().ok())
+        .or_else(|| {
+            version_id
+                .as_deref()
+                .and_then(|v| v.split('.').next())
+                .and_then(|maj| maj.parse::<u32>().ok())
+        })?;
+    matches!(major, 8..=10).then_some(major)
+}
+
 /// #519: `--target rhel9` must attach exact STIG `ControlRef`s to the
-/// `service-status`, `fapolicyd-package`, and `misconfiguration` checks;
-/// omitting `--target` (the default `auto` on this non-EL sandbox/CI host)
-/// must carry NO `controls` key on any check at all. Combined into one test
+/// `service-status`, `fapolicyd-package`, and `misconfiguration` checks.
+/// Omitting `--target` (the default `auto`) is HOST-DEPENDENT and both arms
+/// are asserted: on a resolvable EL host (the distro-CI containers) the three
+/// STIG-family checks must auto-attach controls keyed to the host's major and
+/// every other check must still carry none; on any other host auto degrades
+/// and NO check may carry a `controls` key at all. Combined into one test
 /// (the target-explicit assertions run first) so a not-yet-wired
 /// implementation fails immediately rather than passing vacuously on the
 /// omitted-target half alone.
 #[test]
-fn doctor_target_rhel9_attaches_exact_stig_controls_and_omitted_target_has_none() {
+fn doctor_target_rhel9_attaches_exact_stig_controls_and_omitted_target_follows_host() {
     let with_target = bin()
         .args([
             "fapolicyd",
@@ -226,19 +273,52 @@ fn doctor_target_rhel9_attaches_exact_stig_controls_and_omitted_target_has_none(
          full output: {stdout}"
     );
 
-    // Without --target: this sandbox/CI host's /etc/os-release is non-EL, so
-    // the default `auto` resolves to no baseline - NO check may carry a
-    // `controls` key at all.
+    // Without --target the default `auto` consults this host's
+    // /etc/os-release (#519: doctor auto-detects). Host-dependent, so assert
+    // both arms honestly instead of assuming a non-EL host (the assumption
+    // that broke on the distro-CI containers, where auto RESOLVES).
     let without_target = bin()
         .args(["fapolicyd", "doctor", "--format", "json"])
         .output()
         .expect("binary ran");
     let stdout2 = String::from_utf8(without_target.stdout).expect("utf8");
     let v2: serde_json::Value = serde_json::from_str(&stdout2).expect("valid JSON");
-    for c in v2["checks"].as_array().expect("checks array") {
-        assert!(
-            c.get("controls").is_none(),
-            "omitted --target must carry no controls key on any check, got {c} in {stdout2}"
-        );
+    let checks2 = v2["checks"].as_array().expect("checks array");
+    let stig_checks = ["service-status", "fapolicyd-package", "misconfiguration"];
+    match host_resolvable_el_major() {
+        Some(major) => {
+            let prefix = format!("RHEL-{major:02}-");
+            for c in checks2 {
+                let name = c["name"].as_str().expect("check name");
+                if stig_checks.contains(&name) {
+                    let id = c["controls"][0]["id"].as_str().unwrap_or_else(|| {
+                        panic!(
+                            "on a resolvable EL{major} host, omitted --target must \
+                             auto-attach a STIG control to {name}; got {c} in {stdout2}"
+                        )
+                    });
+                    assert!(
+                        id.starts_with(&prefix),
+                        "auto-detected controls on {name} must be keyed to this \
+                         host's major ({prefix}*), got {id} in {stdout2}"
+                    );
+                } else {
+                    assert!(
+                        c.get("controls").is_none(),
+                        "non-STIG check {name} must carry no controls even when \
+                         auto resolves, got {c} in {stdout2}"
+                    );
+                }
+            }
+        }
+        None => {
+            for c in checks2 {
+                assert!(
+                    c.get("controls").is_none(),
+                    "omitted --target must carry no controls key on any check \
+                     when auto degrades, got {c} in {stdout2}"
+                );
+            }
+        }
     }
 }
