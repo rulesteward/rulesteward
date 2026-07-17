@@ -5,7 +5,7 @@ members = ["crates/*"]
 # `crates/*` only matches one level deep so it would NOT pick up the nested
 # fuzz directory, but we state the exclusion explicitly as documentation and
 # as a guard against any future glob widening.
-exclude = ["crates/rulesteward-fapolicyd/fuzz", "tools/stig-update", "tools/sshd-stig-update", "tools/sshd-probe-update", "tools/fapolicyd-attr-update", "tools/fapolicyd-probe-update", "tools/auditd-msgtype-update", "tools/auditd-stig-update", "tools/selinux-stig-update"]
+exclude = ["crates/rulesteward-fapolicyd/fuzz", "tools/stig-update", "tools/sshd-stig-update", "tools/sshd-probe-update", "tools/fapolicyd-attr-update", "tools/fapolicyd-probe-update", "tools/auditd-msgtype-update", "tools/auditd-stig-update"]
 resolver = "3"
 
 [workspace.package]
