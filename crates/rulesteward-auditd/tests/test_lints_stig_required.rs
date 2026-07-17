@@ -132,14 +132,24 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
     // entries grounded live against the pinned RHEL 9 STIG V2R7 XCCDF
     // (V-258227/RHEL-09-654265 "-f 2" and V-258229/RHEL-09-654275 "-e 2"; see
     // the "Deepening (#523)" block below) -- that bump already landed and is
-    // GREEN. This is the SECOND, additive bump (also #523, additive round 2):
-    // 69 -> 70 rows for the "--loginuid-immutable" deepening entry
-    // (V-258228/RHEL-09-654270; see the "Deepening cont'd (#523)" block
-    // further below). RED today: the shipped table is still 69 rows (has no
-    // loginuid row yet).
+    // GREEN. The next bump (also #523, additive round 2): 69 -> 70 rows for
+    // the "--loginuid-immutable" deepening entry (V-258228/RHEL-09-654270;
+    // see the "Deepening cont'd (#523)" block further below) -- also landed
+    // and is GREEN.
+    //
+    // #549 RE-GROUNDED (session 9e-wave2c pipeline P2, 2026-07-17): DISA RHEL
+    // 9 STIG V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip; lane3-tooling.md T1
+    // DRIFT-CHECK, "33 change(s)") rewrote 9 identity/login audit rules from
+    // single-line watch form into dual-arch (b32/b64) syscall form (net +9:
+    // 9 old single lines -> 18 new lines) and added a new required rule,
+    // V-279936 (RHEL-09-654097), for `execve` auditing scoped to
+    // `subj_type=crond_t` (cron_exec key), replacing the two old cron watch
+    // lines with 4 new dual-arch syscall lines (net +2). Net table growth:
+    // 70 + 9 + 2 = 81. RED today: the shipped RHEL9_REQUIRED table is still
+    // 70 rows (V2R7-grounded identity/cron content).
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
-    assert_eq!(diags.len(), 70, "{diags:?}");
+    assert_eq!(diags.len(), 81, "{diags:?}");
     assert!(
         diags.iter().all(|d| d.severity == Severity::Warning),
         "every au-W06 finding must be severity=Warning: {diags:?}"
@@ -1210,6 +1220,98 @@ fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
         diags.iter().any(|d| d.message.contains("RHEL-09-654270")),
         "the real RHEL9 dispatch must report the loginuid-immutable control \
          missing once the shipped table carries it: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #549 (session 9e-wave2c pipeline P2, 2026-07-17): RHEL9 V2R7 -> V2R9 content
+// drift, real-entrypoint proof (mirrors the loginuid-immutable pattern above:
+// against the SHIPPED RHEL9_REQUIRED table, not an injected local baseline).
+//
+// Grounding: DISA RHEL 9 STIG V2R9, confirmed 2026-07-17 via
+// U_RHEL_9_V2R9_STIG.zip (lane3-tooling.md T1 DRIFT-CHECK transcript).
+// DISA rewrote 9 identity/login audit rules from a single-line watch form
+// (`-w PATH -p wa -k identity`) into dual-arch (b32/b64) syscall form
+// (`-a always,exit -F arch=bXX -F path=PATH -F perm=wa -k identity`), and
+// added a brand-new required rule, V-279936 (RHEL-09-654097): `execve`
+// auditing scoped to `subj_type=crond_t` (`cron_exec` key), replacing the
+// two old `-w /etc/cron.d`/`-w /var/spool/cron` watch lines.
+//
+// Each test below feeds a ruleset containing ONLY the OLD (V2R7-grounded)
+// form of one rewritten requirement -- a line that the CURRENT shipped
+// table's matching row satisfies EXACTLY (`rules_match` full-axis Watch-vs-
+// Watch equality) -- through the REAL `w06` dispatch against the shipped
+// RHEL9_REQUIRED table. RED today: the old-form line still satisfies the
+// V2R7-grounded shipped row, so au-W06 stays silent for that STIG id. Once
+// the table is updated to require the NEW dual-arch syscall form, the same
+// old-form-only ruleset no longer satisfies it (a Watch-shaped candidate
+// never matches a Syscall-shaped requirement -- `rules_match`'s `_ => false`
+// arm), so a "missing" finding must fire naming the STIG id.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w06_real_entrypoint_names_rhel9_cron_exec_v279936_new_syscall_form() {
+    // V-279936 (RHEL-09-654097): the OLD form (still shipped today) is
+    // `-w /etc/cron.d -p wa -k cronjobs` + `-w /var/spool/cron -p wa -k
+    // cronjobs`. The V2R9 XCCDF requires 4 dual-arch execve syscall rules
+    // scoped to subj_type=crond_t instead (lane3-tooling.md T1 DRIFT-CHECK:
+    // "+ V-279936 (RHEL-09-654097): -a always,exit -F arch=b32 -S execve
+    // -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec" and its
+    // b64/euid=0 siblings; the two old watch lines appear as "-" removals in
+    // the same diff). A ruleset with ONLY the old watch-form lines currently
+    // satisfies V-279936 in full (exact Watch-vs-Watch match); it must not
+    // once the table requires the new syscall form.
+    let rules = parse("-w /etc/cron.d -p wa -k cronjobs\n-w /var/spool/cron -p wa -k cronjobs\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-09-654097") && d.message.contains("is missing")),
+        "the old watch-form cron lines must no longer satisfy V-279936 \
+         (RHEL-09-654097) once the shipped table requires the new dual-arch \
+         execve/subj_type=crond_t syscall form: {diags:?}"
+    );
+}
+
+#[test]
+fn w06_real_entrypoint_names_rhel9_identity_syscall_form_v258222_passwd() {
+    // V-258222 (RHEL-09-654240): DISA RHEL 9 STIG V2R9 rewrote the
+    // /etc/passwd identity-watch rule from `-w /etc/passwd -p wa -k identity`
+    // (the form still shipped today) into a dual-arch syscall rule:
+    // "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k
+    // identity" (+ the b64 twin) (lane3-tooling.md T1 DRIFT-CHECK "+
+    // V-258222" lines; the old watch line appears as a "-" removal in the
+    // same diff). A ruleset with ONLY the old watch-form line currently
+    // satisfies V-258222 in full; it must not once the table requires the
+    // new syscall form.
+    let rules = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-09-654240") && d.message.contains("is missing")),
+        "the old watch-form /etc/passwd line must no longer satisfy V-258222 \
+         (RHEL-09-654240) once the shipped table requires the new dual-arch \
+         syscall form: {diags:?}"
+    );
+}
+
+#[test]
+fn w06_real_entrypoint_names_rhel9_identity_syscall_form_v258223_shadow() {
+    // V-258223 (RHEL-09-654245): same drift as V-258222, for /etc/shadow.
+    // Old form (still shipped today): `-w /etc/shadow -p wa -k identity`.
+    // New V2R9 form: "-a always,exit -F arch=b32 -F path=/etc/shadow
+    // -F perm=wa -k identity" (+ the b64 twin) (lane3-tooling.md T1
+    // DRIFT-CHECK "+ V-258223" lines).
+    let rules = parse("-w /etc/shadow -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-09-654245") && d.message.contains("is missing")),
+        "the old watch-form /etc/shadow line must no longer satisfy V-258223 \
+         (RHEL-09-654245) once the shipped table requires the new dual-arch \
+         syscall form: {diags:?}"
     );
 }
 

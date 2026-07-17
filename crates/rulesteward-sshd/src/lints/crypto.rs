@@ -766,22 +766,47 @@ mod w06_tests {
     }
 
     #[test]
-    fn kex_caret_gss_group1_sha1_fires_w06() {
-        // `^gss-group1-sha1-<oid>` prepends a weak GSS KEX (SHA-1 variant).
-        // The gss-prefix matching from W03 must also apply after stripping `^`.
-        let diags = run("KexAlgorithms ^gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
-        assert_eq!(
-            diags.len(),
-            1,
-            "`^` with gss-sha1 KEX => one W06 diagnostic"
-        );
-        assert_eq!(diags[0].code, "sshd-W06");
-        assert_eq!(diags[0].line, 1);
+    fn kex_caret_gss_group1_sha1_does_not_fire_w06_after_gss_rewire() {
+        // #548 RE-GROUNDED (was `kex_caret_gss_group1_sha1_fires_w06`, which
+        // asserted this fired under KexAlgorithms). gss- names are daemon-
+        // INVALID under KexAlgorithms regardless of a leading operator
+        // (lane1-sshd.md F-02: `KexAlgorithms gss-<name>` -> sshd -t exit 255
+        // on rocky8/rocky9). The gss- SHA-1 denylist now applies only to
+        // GSSAPIKexAlgorithms (see
+        // `gssapikexalgorithms_caret_group14_sha1_fires_w06` below). W06 must
+        // no longer fire for a gss- token under KexAlgorithms.
         assert!(
-            diags[0].message.contains("gss-group1-sha1-"),
-            "message names the reintroduced gss-sha1 KEX, got: {}",
+            run("KexAlgorithms ^gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
+            "gss- names are daemon-invalid under KexAlgorithms; W06 must not \
+             fire there post-rewire"
+        );
+    }
+
+    // --- #548: gss- SHA-1 KEX denylist rewired to GSSAPIKexAlgorithms (W06) -
+    //
+    // `weak_exact_list` is the single scoping table shared by BOTH W03
+    // (`w03_directive`) and W06 (`w06`), so adding a `gssapikexalgorithms` arm
+    // for the REWIRE (#548) makes the operator-aware W06 apply to
+    // GSSAPIKexAlgorithms too, with the SAME `+`/`-`/`^` semantics W06 already
+    // applies to Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms (sshd_config(5):
+    // the operators act on the directive's OWN built-in default list).
+
+    #[test]
+    fn gssapikexalgorithms_caret_group14_sha1_fires_w06() {
+        // `^gss-group14-sha1-<oid>` prepends the previously-omitted weak gss-
+        // SHA-1 KEX prefix (see
+        // `gssapikexalgorithms_group14_sha1_fires_w03_previously_omitted_prefix`)
+        // under GSSAPIKexAlgorithms, the directive where gss- names are
+        // actually daemon-valid.
+        let diags = run("GSSAPIKexAlgorithms ^gss-group14-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].code, "sshd-W06");
+        assert!(
+            diags[0].message.contains("gss-group14-sha1-"),
+            "got: {}",
             diags[0].message
         );
+        assert!(diags[0].message.contains('^'), "got: {}", diags[0].message);
     }
 
     #[test]
@@ -1886,19 +1911,107 @@ mod w03_tests {
     }
 
     #[test]
-    fn kex_gss_group1_sha1_fires_w03() {
-        // GSSAPI group1 with SHA-1 - wildcard pattern gss-group1-sha1-*.
-        let diags = run("KexAlgorithms gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, "sshd-W03");
+    fn kex_gss_group1_sha1_does_not_fire_w03_after_gss_rewire() {
+        // #548 RE-GROUNDED (was `kex_gss_group1_sha1_fires_w03`, which asserted
+        // this fired under KexAlgorithms). gss- algorithm names are daemon-
+        // INVALID under KexAlgorithms: overnight audit lane1-sshd.md F-02
+        // differential, `KexAlgorithms gss-gex-sha1-<oid>` -> `sudo sshd -t`
+        // "assemble_algorithms: kex_algorithms: invalid argument", exit 255 on
+        // rocky8 (the whole line is rejected, never loaded). The gss- SHA-1
+        // denylist now applies ONLY to `GSSAPIKexAlgorithms` (see
+        // `gssapikexalgorithms_plain_list_fires_w03_for_each_weak_gss_kex`
+        // below, where gss- names are the daemon-valid, actually-checked form).
+        // A gss- name under KexAlgorithms must no longer produce the weak-gss
+        // W03 finding post-rewire.
+        assert!(
+            run("KexAlgorithms gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
+            "gss- names are daemon-invalid under KexAlgorithms; W03 must not \
+             fire the weak-gss finding there post-rewire"
+        );
     }
 
     #[test]
-    fn kex_gss_gex_sha1_fires_w03() {
-        // GSSAPI group-exchange with SHA-1 - wildcard pattern gss-gex-sha1-*.
-        let diags = run("KexAlgorithms gss-gex-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
-        assert_eq!(diags.len(), 1);
+    fn kex_gss_gex_sha1_does_not_fire_w03_after_gss_rewire() {
+        // #548 RE-GROUNDED (was `kex_gss_gex_sha1_fires_w03`). Same grounding
+        // as `kex_gss_group1_sha1_does_not_fire_w03_after_gss_rewire` above.
+        assert!(
+            run("KexAlgorithms gss-gex-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
+            "gss- names are daemon-invalid under KexAlgorithms; W03 must not \
+             fire the weak-gss finding there post-rewire"
+        );
+    }
+
+    // --- #548: gss- SHA-1 KEX denylist rewired to GSSAPIKexAlgorithms -------
+    //
+    // Grounding: overnight audit 2026-07-17, lane1-sshd.md F-02. Real sshd
+    // (rocky8 OpenSSH 8.0p1, rocky9 OpenSSH 9.9p1) accepts gss- algorithm
+    // names ONLY under `GSSAPIKexAlgorithms`; `KexAlgorithms` rejects them
+    // outright (rc 255). `GSSAPIKexAlgorithms gss-group14-sha1-<oid>` ->
+    // `sudo sshd -t` exit 0 on BOTH rocky8 and rocky9 (the daemon accepts the
+    // weak SHA-1 gss-KEX). rocky8's DEFAULT `gssapikexalgorithms` (`sshd -T`)
+    // includes both `gss-group14-sha1-` and `gss-gex-sha1-`, so both ship
+    // enabled by default on RHEL 8. `gss-group14-sha1-` was previously OMITTED
+    // from `WEAK_KEX_GSS_PREFIXES` despite being real and daemon-default-weak.
+
+    #[test]
+    fn gssapikexalgorithms_plain_list_fires_w03_for_each_weak_gss_kex() {
+        // Plain (no-operator) comma list of two weak gss- SHA-1 KEX prefixes:
+        // W03's domain (a bare value is a full replacement). One diagnostic
+        // per weak token.
+        let diags = run("GSSAPIKexAlgorithms gss-gex-sha1-,gss-group1-sha1-\n");
+        assert_eq!(
+            diags.len(),
+            2,
+            "two weak gss- KEX tokens => two W03 diagnostics; got {diags:?}"
+        );
+        assert!(diags.iter().all(|d| d.code == "sshd-W03"), "got {diags:?}");
+        assert!(
+            diags.iter().any(|d| d.message.contains("gss-gex-sha1-")),
+            "got {diags:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("gss-group1-sha1-")),
+            "got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn gssapikexalgorithms_group14_sha1_fires_w03_previously_omitted_prefix() {
+        // gss-group14-sha1- was omitted from WEAK_KEX_GSS_PREFIXES pre-#548
+        // despite being a real SHA-1 gss-KEX shipped in rocky8's DEFAULT
+        // gssapikexalgorithms (lane1-sshd.md F-02). Must fire once added.
+        let diags = run("GSSAPIKexAlgorithms gss-group14-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
+        assert_eq!(diags.len(), 1, "got {diags:?}");
         assert_eq!(diags[0].code, "sshd-W03");
+        assert!(
+            diags[0].message.contains("gss-group14-sha1-"),
+            "got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn gssapikexalgorithms_curve25519_sha256_does_not_fire_w03() {
+        // gss-curve25519-sha256-*: RFC 8732 strong GSSAPI KEX method (SHA-256,
+        // Curve25519). Only the -sha1 gss variants are weak; this pins the
+        // strong-negative under the newly-checked GSSAPIKexAlgorithms
+        // directive (mirrors the existing KexAlgorithms strong-gss negative).
+        assert!(
+            run("GSSAPIKexAlgorithms gss-curve25519-sha256-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
+            "gss-curve25519-sha256-* is a strong gss KEX method (RFC 8732); \
+             W03 must not fire"
+        );
+    }
+
+    #[test]
+    fn gssapikexalgorithms_group14_sha256_does_not_fire_w03() {
+        // gss-group14-sha256-*: RFC 8732 strong GSSAPI KEX method (SHA-256,
+        // 2048-bit MODP).
+        assert!(
+            run("GSSAPIKexAlgorithms gss-group14-sha256-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
+            "gss-group14-sha256-* is a strong gss KEX method (RFC 8732); \
+             W03 must not fire"
+        );
     }
 
     // --- KexAlgorithms: strong KEX must NOT fire (critical negative assertion) ---

@@ -4,13 +4,22 @@
 // the doc with backticks on every keyword name.
 #![allow(clippy::doc_markdown)]
 //!
-//! # Grounding (DISA XCCDF, fetched 2026-06-14; live VMs 2026-06-15)
+//! # Grounding (DISA XCCDF, fetched 2026-06-14; live VMs 2026-06-15;
+//! # RE-GROUNDED 2026-07-17 for RHEL 9 V2R9 -- issues #549/#547, session
+//! # 9e-wave2c pipeline P2. DISA RHEL 9 STIG V2R9 (confirmed 2026-07-17 via
+//! # U_RHEL_9_V2R9_STIG.zip; lane3-tooling.md T1) dropped the Compression
+//! # control (V-258002 / RHEL-09-255130): zero matches for "V-258002" in the
+//! # V2R9 XCCDF, and the sole "compression" hit is an unrelated gzip
+//! # fix-text example. Compression is no longer STIG-required OR
+//! # STIG-value-checked on ANY target.
 //!
 //! sshd-W01: a STIG-required directive is absent from the global block.
-//!   - RHEL 9 V2R7: 20 required directives (V-257981..V-258011 SSH set).
-//!   - RHEL 8 V2R4: 14 required directives (the 20 minus LogLevel, PubkeyAuthentication,
-//!     UsePAM, IgnoreRhosts, HostbasedAuthentication, Compression).
-//!   - RHEL 10 V1R1: 19 required directives (the 20 minus Compression).
+//!   - RHEL 9 V2R9: 19 required directives (was 20 under V2R7; Compression
+//!     dropped, V-258002/RHEL-09-255130 removed).
+//!   - RHEL 8 V2R4: 14 required directives (the 19 minus LogLevel, PubkeyAuthentication,
+//!     UsePAM, IgnoreRhosts, HostbasedAuthentication).
+//!   - RHEL 10 V1R1: 19 required directives (same set as RHEL9 V2R9; RHEL10 also
+//!     never had Compression).
 //!   - target=None fires on the CONSERVATIVE FLOOR = the intersection of all
 //!     supported versions = the 14 from the RHEL 8 set. Every floor directive is
 //!     required by every supported version, so zero false positives.
@@ -26,8 +35,8 @@
 //!     IgnoreRhosts, X11Forwarding, StrictModes, GSSAPIAuthentication,
 //!     KerberosAuthentication, PubkeyAuthentication, IgnoreUserKnownHosts,
 //!     PrintLastLog, X11UseLocalhost): exact literal match.
-//!   - Compression: `delayed` or `no` are OK; anything else is a finding (RHEL 8/9
-//!     only - RHEL 10 dropped this control).
+//!   - Compression: NOT a W02 value check on any target as of V2R9 (was
+//!     `delayed`/`no` OK, anything else a finding, RHEL 8/9 only).
 //!   - LogLevel: exact `VERBOSE` (RHEL 9/10 only).
 //!   - SCOPE GUARD: W02 evaluates the single-file value only. Cross-file / drop-in
 //!     precedence (first-value-wins across sshd_config.d/) is F02/Wave C.
@@ -298,38 +307,28 @@ fn w01_usepam_fires_for_rhel9_not_for_none() {
     );
 }
 
-/// Compression is RHEL9 required (V-258002) but NOT RHEL8 and NOT RHEL10.
+/// #549 RE-GROUNDED (was `w01_compression_fires_for_rhel9_not_for_rhel8_or_none`,
+/// which asserted Rhel9 fired). DISA RHEL 9 STIG V2R9 dropped Compression
+/// (V-258002 / RHEL-09-255130); it is no longer STIG-required on ANY target.
 #[test]
-fn w01_compression_fires_for_rhel9_not_for_rhel8_or_none() {
+fn w01_compression_no_longer_required_at_any_target_v2r9() {
     let src = RHEL9_FULL.replace("Compression delayed\n", "");
 
-    // Must fire for Rhel9
-    let rhel9_diags = run_w01(&src, Some(TargetVersion::Rhel9));
-    assert!(
-        rhel9_diags.iter().any(|d| d.code == "sshd-W01"),
-        "Compression is RHEL9-required (V-258002); missing it must fire W01"
-    );
-
-    // Must NOT fire for Rhel8 (not in RHEL8 required set)
-    let rhel8_diags = run_w01(&src, Some(TargetVersion::Rhel8));
-    assert!(
-        !rhel8_diags.iter().any(|d| d.code == "sshd-W01"),
-        "Compression is NOT RHEL8-required; must NOT fire W01 for Rhel8"
-    );
-
-    // Must NOT fire for Rhel10 (V1R1 dropped this control)
-    let rhel10_diags = run_w01(&src, Some(TargetVersion::Rhel10));
-    assert!(
-        !rhel10_diags.iter().any(|d| d.code == "sshd-W01"),
-        "Compression was DROPPED from RHEL10 V1R1; must NOT fire W01 for Rhel10"
-    );
-
-    // Must NOT fire for None (not in floor set)
-    let none_diags = run_w01(&src, None);
-    assert!(
-        !none_diags.iter().any(|d| d.code == "sshd-W01"),
-        "Compression is NOT in the RHEL8 floor set; must NOT fire W01 for target=None"
-    );
+    for target in [
+        Some(TargetVersion::Rhel8),
+        Some(TargetVersion::Rhel9),
+        Some(TargetVersion::Rhel10),
+        None,
+    ] {
+        let diags = run_w01(&src, target);
+        assert!(
+            !diags.iter().any(|d| {
+                d.code == "sshd-W01" && d.message.to_ascii_lowercase().contains("compression")
+            }),
+            "Compression was dropped from RHEL9 V2R9 (V-258002/RHEL-09-255130 \
+             removed); missing it must NOT fire W01 for {target:?}; got {diags:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,14 +336,16 @@ fn w01_compression_fires_for_rhel9_not_for_rhel8_or_none() {
 // ---------------------------------------------------------------------------
 
 /// An empty config must fire one W01 per required directive for the target.
-/// RHEL9 requires 20 directives; an empty file should produce exactly 20 W01.
+/// #549 RE-GROUNDED (was `w01_rhel9_empty_config_fires_20_findings`, 20).
+/// DISA RHEL 9 STIG V2R9 dropped Compression, so RHEL9 now requires 19
+/// directives; an empty file should produce exactly 19 W01.
 #[test]
-fn w01_rhel9_empty_config_fires_20_findings() {
+fn w01_rhel9_empty_config_fires_19_findings() {
     let diags = run_w01("", Some(TargetVersion::Rhel9));
     let count = diags.iter().filter(|d| d.code == "sshd-W01").count();
     assert_eq!(
-        count, 20,
-        "RHEL9 requires 20 directives; an empty config must produce exactly 20 W01 findings; got {count}"
+        count, 19,
+        "RHEL9 V2R9 requires 19 directives; an empty config must produce exactly 19 W01 findings; got {count}"
     );
 }
 
@@ -940,48 +941,82 @@ fn w02_hostbasedauthentication_yes_does_not_fire_for_none() {
 }
 
 // ---------------------------------------------------------------------------
-// W02: Compression - "delayed" and "no" OK; "yes" is a finding (RHEL8/9 only)
+// W02: Compression - #549: DISA RHEL 9 STIG V2R9 dropped this control
+// (V-258002 / RHEL-09-255130); as of V2R9, Compression is not a W02 value
+// check on ANY target (was: "delayed"/"no" OK, anything else a finding, on
+// RHEL 8/9). Issue #547 (absorbed into #549) covers the same underlying
+// "no target value-checks Compression at all" endpoint for the rhel8/None
+// legs that had already been firing with no STIG control attached (a
+// separate, pre-existing internal-consistency defect the audit's F-01 named
+// -- see lane1-sshd.md).
 // ---------------------------------------------------------------------------
 
-/// "delayed" is an accepted value per RHEL 9 V2R7 / RHEL 8 V2R4.
+/// "delayed" remains clean (it was always an accepted value, and Compression
+/// is not checked at all post-V2R9, so ANY value is clean).
 #[test]
 fn w02_compression_delayed_is_clean_for_rhel9() {
     assert!(
         run_w02("Compression delayed\n", Some(TargetVersion::Rhel9)).is_empty(),
-        "Compression delayed is an accepted STIG value for RHEL9 (V-258002)"
+        "Compression delayed remains clean for RHEL9 (was an accepted STIG \
+         value pre-V2R9; the control is dropped entirely as of V2R9)"
     );
 }
 
-/// "no" is also an accepted value.
+/// "no" remains clean, same reasoning.
 #[test]
 fn w02_compression_no_is_clean_for_rhel9() {
     assert!(
         run_w02("Compression no\n", Some(TargetVersion::Rhel9)).is_empty(),
-        "Compression no is an accepted STIG value for RHEL9"
+        "Compression no remains clean for RHEL9"
     );
 }
 
-/// "yes" is a finding for RHEL8 and RHEL9.
+/// #549 RE-GROUNDED (was `w02_compression_yes_fires_for_rhel9`, which
+/// asserted this fired). DISA RHEL 9 STIG V2R9 drops the Compression control
+/// (V-258002/RHEL-09-255130 removed); "yes" is no longer a W02 finding.
 #[test]
-fn w02_compression_yes_fires_for_rhel9() {
+fn w02_compression_yes_no_longer_checked_for_rhel9_v2r9() {
     let diags = run_w02("Compression yes\n", Some(TargetVersion::Rhel9));
     assert!(
-        diags.iter().any(|d| d.code == "sshd-W02"),
-        "Compression yes violates the STIG requirement (V-258002): must be 'delayed' or 'no'"
+        !diags.iter().any(|d| d.code == "sshd-W02"),
+        "Compression was dropped from RHEL9 V2R9 (V-258002/RHEL-09-255130 \
+         removed); W02 must NOT fire for it under Rhel9; got {diags:?}"
     );
 }
 
+/// #549/#547 RE-GROUNDED (was `w02_compression_yes_fires_for_rhel8`, which
+/// asserted this fired). Issue #547 (absorbed into #549): after the V2R9
+/// drop, no target value-checks Compression at all, including RHEL8 (which
+/// was already firing with no STIG control attached -- lane1-sshd.md F-01).
 #[test]
-fn w02_compression_yes_fires_for_rhel8() {
+fn w02_compression_yes_no_longer_checked_for_rhel8() {
     let diags = run_w02("Compression yes\n", Some(TargetVersion::Rhel8));
     assert!(
-        diags.iter().any(|d| d.code == "sshd-W02"),
-        "Compression yes violates the STIG requirement for RHEL8"
+        !diags.iter().any(|d| d.code == "sshd-W02"),
+        "Compression is not a RHEL8 STIG control (never was, and V2R9 \
+         confirms no target checks it); W02 must NOT fire for it under \
+         Rhel8; got {diags:?}"
+    );
+}
+
+/// #547: the same cross-target aspect for target=None (the conservative
+/// floor). Compression was never in the RHEL8 floor SET, but `w02_rule`'s
+/// guard (`is_rhel8_or_9 || target_is_none`) independently made it FIRE for
+/// target=None too (lane1-sshd.md F-01: "the finding fires with NO STIG
+/// control attached" on rhel8/None). Post-#549/#547, no target checks it.
+#[test]
+fn w02_compression_yes_no_longer_checked_for_target_none() {
+    let diags = run_w02("Compression yes\n", None);
+    assert!(
+        !diags.iter().any(|d| d.code == "sshd-W02"),
+        "Compression is not in the RHEL8 floor set and no target checks it \
+         post-V2R9; W02 must NOT fire for it under target=None; got {diags:?}"
     );
 }
 
 /// Compression is NOT a controlled directive for RHEL10 (V1R1 dropped it).
-/// W02 must NOT fire for Compression with any value under Rhel10.
+/// W02 must NOT fire for Compression with any value under Rhel10. Unchanged
+/// by #549 (RHEL10 already excluded it); kept as a control.
 #[test]
 fn w02_compression_yes_does_not_fire_for_rhel10() {
     let diags = run_w02("Compression yes\n", Some(TargetVersion::Rhel10));

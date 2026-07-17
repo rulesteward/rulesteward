@@ -759,10 +759,14 @@ mod tests {
             14,
             "RHEL8 must have 14 required directives"
         );
+        // #549 RE-GROUNDED: was 20 (DISA RHEL 9 STIG V2R7). DISA RHEL 9 STIG
+        // V2R9 (confirmed 2026-07-17 via U_RHEL_9_V2R9_STIG.zip;
+        // lane3-tooling.md T1) dropped the Compression control (V-258002 /
+        // RHEL-09-255130), leaving 19.
         assert_eq!(
             RHEL9_REQUIRED.len(),
-            20,
-            "RHEL9 must have 20 required directives"
+            19,
+            "RHEL9 V2R9 must have 19 required directives (Compression dropped)"
         );
         assert_eq!(
             RHEL10_REQUIRED.len(),
@@ -846,7 +850,18 @@ mod tests {
     }
 
     #[test]
-    fn compression_in_rhel9_only_among_floors() {
+    fn compression_dropped_from_all_rhel_targets_v2r9() {
+        // #549 RE-GROUNDED (was `compression_in_rhel9_only_among_floors`,
+        // which asserted Compression WAS RHEL9-required). DISA RHEL 9 STIG
+        // V2R9 (confirmed 2026-07-17 via U_RHEL_9_V2R9_STIG.zip) drops the
+        // Compression control (V-258002 / RHEL-09-255130): the V2R9 XCCDF has
+        // zero matches for "V-258002", and the sole case-insensitive
+        // "compression" hit is an unrelated gzip fix-text example in a
+        // different control (lane3-tooling.md T1 + its "Sanity check on the
+        // 'compression removed' read" section). Cross-checked against the OLD
+        // V2R7 pinned zip, which DOES show `compression // V-258002`,
+        // confirming the control existed in V2R7 and is genuinely gone in
+        // V2R9. Compression is no longer STIG-required on ANY target.
         assert!(
             !RHEL10_REQUIRED.contains(&"compression"),
             "Compression was dropped from RHEL10 V1R1"
@@ -856,8 +871,8 @@ mod tests {
             "Compression was never in RHEL8 V2R4 (no such STIG control)"
         );
         assert!(
-            RHEL9_REQUIRED.contains(&"compression"),
-            "Compression is in RHEL9 V2R7 (V-258002)"
+            !RHEL9_REQUIRED.contains(&"compression"),
+            "Compression was dropped from RHEL9 V2R9 (V-258002/RHEL-09-255130 removed)"
         );
     }
 
@@ -1021,8 +1036,10 @@ mod tests {
     /// `stig_baseline` must have one control per required directive (14/20/19).
     #[test]
     fn stig_baseline_sizes_match_required_sets() {
+        // #549 RE-GROUNDED: RHEL9 was 20 (V2R7); V2R9 drops Compression,
+        // leaving 19 (same size as RHEL10, which dropped it in V1R1).
         assert_eq!(stig_baseline(TargetVersion::Rhel8).len(), 14);
-        assert_eq!(stig_baseline(TargetVersion::Rhel9).len(), 20);
+        assert_eq!(stig_baseline(TargetVersion::Rhel9).len(), 19);
         assert_eq!(stig_baseline(TargetVersion::Rhel10).len(), 19);
     }
 
@@ -1071,21 +1088,31 @@ mod tests {
             get("rekeylimit").value_rule,
             StigValueRule::TwoTokenExact("1g", "1h")
         );
-        // AnyOf delayed/no.
-        assert_eq!(
-            get("compression").value_rule,
-            StigValueRule::AnyOf(&["delayed", "no"])
-        );
+        // #549 RE-GROUNDED: the AnyOf(delayed/no) spot-check previously lived
+        // here as `get("compression").value_rule`. DISA RHEL 9 STIG V2R9
+        // drops Compression (V-258002/RHEL-09-255130 removed; see
+        // `compression_dropped_from_all_rhel_targets_v2r9`), so `compression`
+        // is no longer a key in `by_kw` at all -- `get("compression")` would
+        // now panic (its `unwrap_or_else` fires "missing compression").
+        // `AnyOf` was Compression's only consumer in `w02_rule`; no other
+        // required directive uses it, so there is currently no other AnyOf
+        // representative to substitute here.
     }
 
     /// Compression is dropped from RHEL10, so its projection must NOT include it,
     /// and RHEL8 (floor) also excludes it (matches the required-set tables).
     #[test]
-    fn stig_baseline_compression_only_rhel9() {
+    fn stig_baseline_compression_absent_from_all_targets_v2r9() {
+        // #549 RE-GROUNDED (was `stig_baseline_compression_only_rhel9`, which
+        // asserted RHEL9's projection DID include Compression). DISA RHEL 9
+        // STIG V2R9 drops the control (see
+        // `compression_dropped_from_all_rhel_targets_v2r9`), so the
+        // projection must now omit Compression from ALL three targets.
         assert!(
-            stig_baseline(TargetVersion::Rhel9)
+            !stig_baseline(TargetVersion::Rhel9)
                 .iter()
-                .any(|c| c.keyword == "compression")
+                .any(|c| c.keyword == "compression"),
+            "Compression dropped from RHEL9 V2R9 (V-258002/RHEL-09-255130 removed)"
         );
         assert!(
             !stig_baseline(TargetVersion::Rhel10)
