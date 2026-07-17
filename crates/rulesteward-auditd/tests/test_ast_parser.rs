@@ -93,10 +93,8 @@ fn control_enable_lock_parses() {
 /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." (verified against
 /// the installed `auditctl(8)` man page, 2026-07-15).
 ///
-/// RED today (#523, session 9b-v0_8-wave2 lane 2e): `parser.rs`'s
-/// `parse_line` match has no `"--loginuid-immutable"` arm, so this line
-/// falls into the trailing `other => Err(...)` unknown-flag branch instead
-/// of producing `Ok`.
+/// (#523, session 9b-v0_8-wave2 lane 2e): `parser.rs`'s `parse_line` match
+/// has a dedicated `"--loginuid-immutable"` arm that returns `Ok` directly.
 #[test]
 fn control_loginuid_immutable_parses() {
     let rules = parse_ok("--loginuid-immutable");

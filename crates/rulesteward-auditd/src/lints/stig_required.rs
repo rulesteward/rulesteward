@@ -1307,7 +1307,8 @@ pub fn w06_with_baseline(
 
 /// Parse one required `BaselineRule.line` via the SAME parser rules.d files go
 /// through, taking the first (and only) parsed rule. Every real baseline entry
-/// is a single auditd rules.d line (one `-w`/`-a`/`-A` per row - see
+/// is a single auditd rules.d line (one `-w`/`-a`/`-A` per row, or a bare
+/// Control-rule line like `-e 2`/`-f 2`/`--loginuid-immutable` - see
 /// [`crate::derive`]'s module doc: `parse_requirements` emits one row per
 /// extracted line), so exactly one rule is expected.
 fn parse_single_rule(line: &str) -> Result<crate::ast::AuditRule, String> {

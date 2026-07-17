@@ -389,10 +389,8 @@ mod tests {
     // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): each fixture gained new
     // real Groups whose ENTIRE requirement is a bare Control-rule line
     // ("-e 2" / "-f 2") -- fetched live 2026-07-15 against the pinned DISA
-    // zips. `RULE_LINE_RE` (this module) does not recognize "-e"/"-f" leading
-    // tokens today, so these Groups are currently DROPPED by the selector
-    // (zero extracted lines each): the three tests below are RED until the
-    // implementer widens `RULE_LINE_RE` to also select them (see
+    // zips. `RULE_LINE_RE` (this module) now recognizes "-e"/"-f" leading
+    // tokens, so these Groups are selected by the selector (see
     // `control_rule_check_content_e_flag_is_selected_as_a_required_line` /
     // `..._f_flag_...` below, which pin the mechanism directly). That bump
     // already landed and is GREEN.
@@ -403,16 +401,16 @@ mod tests {
     // (RHEL-08-030122) on rhel8, V-258228 (RHEL-09-654270) on rhel9. RHEL10's
     // pinned XCCDF has no loginuid-immutable control at all (verified live
     // 2026-07-15), so the rhel10 fixture/count is untouched. `RULE_LINE_RE`
-    // recognizes "-A"/"-a"/"-w"/"-e"/"-f" as the leading token; "--loginuid-
-    // immutable" starts with a DOUBLE dash and matches NONE of those
-    // alternatives, so this Group is also currently DROPPED entirely (zero
-    // extracted lines): `rhel8_known_answer_counts`/`rhel9_known_answer_counts`
-    // and `decoys_excluded_exact_v_number_count` below are RED (still pinned
-    // to the pre-loginuid 46/62 and 53/69 counts today) until the implementer
-    // ALSO widens `RULE_LINE_RE` to select "--loginuid-immutable" (see
-    // `rhel{8,9}_fixture_selects_the_loginuid_immutable_control_line` and
+    // now also recognizes the "--loginuid-immutable" alternative (a DOUBLE
+    // dash, distinct from the single-dash "-A"/"-a"/"-w"/"-e"/"-f" leading
+    // tokens), so this Group is also selected: `rhel8_known_answer_counts`/
+    // `rhel9_known_answer_counts` and `decoys_excluded_exact_v_number_count`
+    // below reflect the post-loginuid 47/63 and 54/70 counts and are GREEN
+    // (see `rhel{8,9}_fixture_selects_the_loginuid_immutable_control_line`
+    // and
     // `control_rule_check_content_loginuid_immutable_flag_is_selected_as_a_required_line`
-    // below, which pin the mechanism directly).
+    // below, which pin the mechanism directly). That bump has also landed
+    // and is GREEN.
 
     #[test]
     fn rhel8_known_answer_counts() {
@@ -440,7 +438,7 @@ mod tests {
     // DISA Group for this control (see the fixtures' own updated title
     // comment). Pinned separately from the aggregate known-answer counts
     // above so a failure names the SPECIFIC missing v_number/line rather
-    // than only an aggregate count mismatch. RED today for the same
+    // than only an aggregate count mismatch. GREEN today for the same
     // RULE_LINE_RE reason as those counts.
 
     #[test]

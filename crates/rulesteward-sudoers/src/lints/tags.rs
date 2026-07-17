@@ -2249,10 +2249,12 @@ mod w06_stig_drift_tests {
     //! queries of `stigviewer.com`'s mirror of the DISA XCCDF; the RHEL 10
     //! (RHEL-10-600520) excerpt is from a single `stigaview.com` mirror query
     //! (no independent second source was found for RHEL 10 in-session). The raw
-    //! `dl.dod.cyber.mil` zip is not fetchable from this session's sandboxed
-    //! tool surface, so these mirrors are the best available primary-source
-    //! excerpt for this pass; a bump-time re-verify should prefer the raw zip
-    //! per the recipe above. The RHEL 10 mirror's grep invocation differs
+    //! DISA XCCDF zips for all three products are cached locally at
+    //! `/home/runner/rulesteward-docs/grounding/auditd-stig/stig_research/`
+    //! (`U_RHEL_8_V2R4_STIG.zip` / `U_RHEL_9_V2R7_STIG.zip` /
+    //! `U_RHEL_10_V1R1_STIG.zip`); a bump-time re-verify should diff against
+    //! those raw zips directly rather than re-fetching a mirror. The RHEL 10
+    //! mirror's grep invocation differs
     //! cosmetically from RHEL 8/9's (`-riw` + double-quoted `'#'` vs `-iwR` +
     //! single-quoted `'#'`); this is recorded verbatim rather than silently
     //! normalized, since `w06`'s doc comment claims a "byte-identical fire
@@ -2307,7 +2309,7 @@ mod w06_stig_drift_tests {
                 than RHEL 8/9's -iwR with a single-quoted '#'; functionally \
                 equivalent (same flags, same predicate), recorded verbatim per \
                 source rather than silently normalized to match RHEL 8/9's wording. \
-                If the either of the following entries are returned, this is a \
+                If the either of the following entries is returned, this is a \
                 finding: ALL ALL=(ALL) ALL ALL ALL=(ALL:ALL) ALL",
         },
     ];
