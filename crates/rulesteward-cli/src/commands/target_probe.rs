@@ -186,6 +186,34 @@ pub(crate) fn resolve_target(
     }
 }
 
+/// Doctor-verb target resolution, shared by every backend's doctor command
+/// (fapolicyd today; selinux #520 and sshd #536 next).
+///
+/// Differs from [`resolve_target`] in exactly one place: an OMITTED `--target`
+/// defaults to `auto` because doctor always examines the host it runs on
+/// (lint's omitted `--target` means version-agnostic instead). A failed or
+/// unresolvable auto detection resolves to `None` silently at this layer;
+/// doctor callers own their one-line stderr note ("running checks without
+/// STIG control attachment") rather than reusing lint's pinned warning
+/// wording.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "9d Phase-0 foundation: the doctor verbs (#519 fapolicyd, #520 selinux) wire \
+                  this in their lanes; `expect` (not `allow`) trips the moment the first \
+                  caller lands, forcing this attribute's removal instead of lingering. \
+                  cfg_attr(not(test)) because the unit tests already call it, so the \
+                  expectation would be unfulfilled in the --all-targets test build"
+    )
+)]
+pub(crate) fn resolve_doctor_target(
+    sel: Option<TargetSelector>,
+    probe: &dyn HostTargetProbe,
+) -> Option<TargetVersionArg> {
+    resolve_target(Some(sel.unwrap_or(TargetSelector::Auto)), probe).target
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +457,35 @@ mod tests {
     }
 
     /// A probe returning a canned result, for the `auto` arms.
+    // --- resolve_doctor_target ---------------------------------------------
+    //
+    // Doctor semantics differ from lint in exactly one place: an OMITTED
+    // --target defaults to auto-detect (doctor examines the host it runs on),
+    // where lint stays version-agnostic. Everything else (explicit selector,
+    // failed/unresolvable auto -> None) matches resolve_target.
+
+    #[test]
+    fn doctor_target_omitted_defaults_to_auto_detect() {
+        let resolved = resolve_doctor_target(None, &FakeProbe(Ok(Some(TargetVersionArg::Rhel9))));
+        assert_eq!(resolved, Some(TargetVersionArg::Rhel9));
+    }
+
+    #[test]
+    fn doctor_target_explicit_selector_skips_probe() {
+        // PanicProbe proves the probe is never consulted for an explicit value.
+        let resolved = resolve_doctor_target(Some(TargetSelector::Rhel8), &PanicProbe);
+        assert_eq!(resolved, Some(TargetVersionArg::Rhel8));
+    }
+
+    #[test]
+    fn doctor_target_unresolvable_auto_is_none() {
+        assert_eq!(resolve_doctor_target(None, &FakeProbe(Ok(None))), None);
+        assert_eq!(
+            resolve_doctor_target(None, &FakeProbe(Err("no /etc/os-release".into()))),
+            None
+        );
+    }
+
     struct FakeProbe(Result<Option<TargetVersionArg>, String>);
     impl HostTargetProbe for FakeProbe {
         fn detect(&self) -> Result<Option<TargetVersionArg>, String> {

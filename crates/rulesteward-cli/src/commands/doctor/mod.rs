@@ -19,18 +19,24 @@ use crate::cli::{DoctorArgs, HumanJsonFormat};
 mod checks;
 mod model;
 mod probe;
-mod render;
+pub(crate) mod render;
 
-pub use checks::{run_checks, worst_exit_code};
+pub use checks::run_checks;
 pub use model::{
     CheckResult, CheckStatus, CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts,
-    ServiceState, SystemProbe,
+    ServiceState, SystemProbe, worst_exit_code,
 };
 pub use probe::{LiveProbe, parse_fanotify_denials};
 
 use render::{render_human, render_json};
 
 const DEFAULT_RULES_DIR: &str = "/etc/fapolicyd/rules.d/";
+
+/// Schema version for the `doctor-report` kind.
+/// Bumps only on a breaking change (field removal, rename, retype); the
+/// additive `controls` field (omitted when empty) did NOT bump it, matching
+/// the `Diagnostic.controls` precedent.
+const DOCTOR_SCHEMA_VERSION: u32 = 1;
 
 /// Run the `fapolicyd doctor` subcommand.
 pub fn run(args: &DoctorArgs) -> anyhow::Result<i32> {
@@ -51,8 +57,8 @@ pub fn run(args: &DoctorArgs) -> anyhow::Result<i32> {
     let results = run_checks(&probe, rules_dir, Some(&container_report));
 
     let output = match args.format {
-        HumanJsonFormat::Human => render_human(&results),
-        HumanJsonFormat::Json => render_json(&results),
+        HumanJsonFormat::Human => render_human("fapolicyd doctor report", &results),
+        HumanJsonFormat::Json => render_json("doctor-report", DOCTOR_SCHEMA_VERSION, &results),
     };
 
     print!("{output}");

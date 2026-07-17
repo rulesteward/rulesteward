@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use rulesteward_core::ControlRef;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,14 @@ pub struct CheckResult {
     pub detail: String,
     /// Remediation hint shown for Warn / Fail; None for Ok / Skip / Unknown.
     pub remediation: Option<String>,
+    /// Typed compliance controls this check evaluates evidence for (attached
+    /// whenever the benchmark target is resolved, regardless of status: on the
+    /// doctor surface a check IS the control's assessment, so a compliant host
+    /// must still report its coverage). Omitted from JSON when empty, so the
+    /// field is additive under the tolerant-reader contract (same as
+    /// `Diagnostic.controls`: no schemaVersion bump).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlRef>,
 }
 
 impl CheckResult {
@@ -47,6 +56,7 @@ impl CheckResult {
             status: CheckStatus::Ok,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
 
@@ -61,6 +71,7 @@ impl CheckResult {
             status: CheckStatus::Warn,
             detail: detail.into(),
             remediation: Some(remediation.into()),
+            controls: Vec::new(),
         }
     }
 
@@ -75,6 +86,7 @@ impl CheckResult {
             status: CheckStatus::Fail,
             detail: detail.into(),
             remediation: Some(remediation.into()),
+            controls: Vec::new(),
         }
     }
 
@@ -86,6 +98,7 @@ impl CheckResult {
             status: CheckStatus::Skip,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
 
@@ -97,8 +110,40 @@ impl CheckResult {
             status: CheckStatus::Unknown,
             detail: detail.into(),
             remediation: None,
+            controls: Vec::new(),
         }
     }
+
+    /// Attach typed compliance controls, mirroring `Diagnostic::with_controls`.
+    #[must_use]
+    pub fn with_controls(mut self, controls: Vec<ControlRef>) -> Self {
+        self.controls = controls;
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exit code computation (worst-status-wins, design decision #3)
+// ---------------------------------------------------------------------------
+
+/// Compute the overall exit code from a list of check results.
+///
+/// Any `Fail` -> `EXIT_ERRORS` (2); else any `Warn` -> `EXIT_WARNINGS` (1);
+/// else `EXIT_CLEAN` (0). `Skip` and `Unknown` never escalate.
+///
+/// Lives on the model (not in the fapolicyd `checks` module) because it is
+/// pure over the result types and every backend's doctor verb shares it.
+#[must_use]
+pub fn worst_exit_code(results: &[CheckResult]) -> i32 {
+    use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
+
+    if results.iter().any(|r| r.status == CheckStatus::Fail) {
+        return EXIT_ERRORS;
+    }
+    if results.iter().any(|r| r.status == CheckStatus::Warn) {
+        return EXIT_WARNINGS;
+    }
+    EXIT_CLEAN
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +250,94 @@ pub trait SystemProbe {
 
 #[cfg(test)]
 mod tests {
-    use super::{CheckResult, CheckStatus};
+    use rulesteward_core::{ControlRef, Framework};
+
+    use super::{CheckResult, CheckStatus, worst_exit_code};
+    use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
+
+    fn result(status: CheckStatus) -> CheckResult {
+        CheckResult {
+            name: "test",
+            status,
+            detail: String::new(),
+            remediation: None,
+            controls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn worst_exit_code_all_ok_is_clean() {
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Ok)]),
+            EXIT_CLEAN
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_warn_only_is_warnings() {
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Warn)]),
+            EXIT_WARNINGS
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_fail_overrides_warn() {
+        assert_eq!(
+            worst_exit_code(&[
+                result(CheckStatus::Warn),
+                result(CheckStatus::Fail),
+                result(CheckStatus::Ok)
+            ]),
+            EXIT_ERRORS
+        );
+    }
+
+    #[test]
+    fn worst_exit_code_skip_unknown_do_not_escalate() {
+        // Skip and Unknown alone must not escalate above clean.
+        assert_eq!(
+            worst_exit_code(&[result(CheckStatus::Skip), result(CheckStatus::Unknown)]),
+            EXIT_CLEAN
+        );
+    }
+
+    #[test]
+    fn with_controls_sets_controls_and_constructors_default_empty() {
+        // Every constructor starts with no controls; the builder attaches them.
+        let plain = CheckResult::ok("svc", "running");
+        assert!(plain.controls.is_empty(), "constructors default to empty");
+
+        let attached =
+            CheckResult::warn("misconfiguration", "permissive", "fix it").with_controls(vec![
+                ControlRef::new(Framework::Stig, "RHEL-09-433016").with_alias("V-270180"),
+            ]);
+        assert_eq!(attached.controls.len(), 1);
+        assert_eq!(attached.controls[0].id, "RHEL-09-433016");
+        assert_eq!(attached.controls[0].alias.as_deref(), Some("V-270180"));
+        // The builder must not disturb the underlying result fields.
+        assert_eq!(attached.status, CheckStatus::Warn);
+        assert_eq!(attached.remediation.as_deref(), Some("fix it"));
+    }
+
+    #[test]
+    fn controls_omitted_from_json_when_empty_present_when_set() {
+        // Additive field contract (same as Diagnostic.controls): empty vec is
+        // omitted entirely so existing doctor-report consumers see no new key.
+        let plain = serde_json::to_value(CheckResult::ok("svc", "running")).unwrap();
+        assert!(
+            plain.get("controls").is_none(),
+            "empty controls must be omitted from JSON, got {plain}"
+        );
+
+        let attached = serde_json::to_value(
+            CheckResult::ok("svc", "running")
+                .with_controls(vec![ControlRef::new(Framework::Stig, "RHEL-08-040136")]),
+        )
+        .unwrap();
+        assert_eq!(attached["controls"][0]["id"], "RHEL-08-040136");
+        assert_eq!(attached["controls"][0]["framework"], "stig");
+    }
 
     #[test]
     fn constructors_set_status_detail_and_remediation() {

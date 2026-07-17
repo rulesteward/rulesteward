@@ -2,7 +2,8 @@
 //!
 //! Each `check_*` fn takes a `&dyn SystemProbe` and classifies its plain-data
 //! return into a `CheckResult` (no I/O here -- that lives behind the trait in
-//! `probe`). `run_checks` drives all 13; `worst_exit_code` folds the verdicts.
+//! `probe`). `run_checks` drives all 13; the shared `model::worst_exit_code`
+//! folds the verdicts.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -12,7 +13,6 @@ use crate::commands::container_check::{
     Report as ContainerReport, Severity as ContainerSeverity,
     worst_severity as container_worst_severity,
 };
-use crate::exit_code::{EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS};
 
 // ---------------------------------------------------------------------------
 // The 13 check functions (pure classification over probe data)
@@ -307,6 +307,7 @@ fn check_container(container: Option<&ContainerReport>) -> CheckResult {
         status,
         detail,
         remediation,
+        controls: Vec::new(),
     }
 }
 
@@ -474,25 +475,6 @@ pub fn run_checks(
         check_denial_rate(probe),
         check_misconfig(probe, rules_dir),
     ]
-}
-
-// ---------------------------------------------------------------------------
-// Exit code computation (worst-status-wins, design decision #3)
-// ---------------------------------------------------------------------------
-
-/// Compute the overall exit code from a list of check results.
-///
-/// Any `Fail` -> `EXIT_ERRORS` (2); else any `Warn` -> `EXIT_WARNINGS` (1);
-/// else `EXIT_CLEAN` (0). `Skip` and `Unknown` never escalate.
-#[must_use]
-pub fn worst_exit_code(results: &[CheckResult]) -> i32 {
-    if results.iter().any(|r| r.status == CheckStatus::Fail) {
-        return EXIT_ERRORS;
-    }
-    if results.iter().any(|r| r.status == CheckStatus::Warn) {
-        return EXIT_WARNINGS;
-    }
-    EXIT_CLEAN
 }
 
 #[cfg(test)]
@@ -1159,56 +1141,6 @@ mod tests {
             result.detail.contains("fapd-F02"),
             "both-layouts (fapd-F02) must not be masked by the other two: {}",
             result.detail
-        );
-    }
-
-    // -------------------------------------------------------------------------
-    // worst_exit_code
-    // -------------------------------------------------------------------------
-
-    fn result(status: CheckStatus) -> CheckResult {
-        CheckResult {
-            name: "test",
-            status,
-            detail: String::new(),
-            remediation: None,
-        }
-    }
-
-    #[test]
-    fn worst_exit_code_all_ok_is_clean() {
-        assert_eq!(
-            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Ok)]),
-            EXIT_CLEAN
-        );
-    }
-
-    #[test]
-    fn worst_exit_code_warn_only_is_warnings() {
-        assert_eq!(
-            worst_exit_code(&[result(CheckStatus::Ok), result(CheckStatus::Warn)]),
-            EXIT_WARNINGS
-        );
-    }
-
-    #[test]
-    fn worst_exit_code_fail_overrides_warn() {
-        assert_eq!(
-            worst_exit_code(&[
-                result(CheckStatus::Warn),
-                result(CheckStatus::Fail),
-                result(CheckStatus::Ok)
-            ]),
-            EXIT_ERRORS
-        );
-    }
-
-    #[test]
-    fn worst_exit_code_skip_unknown_do_not_escalate() {
-        // Skip and Unknown alone must not escalate above clean.
-        assert_eq!(
-            worst_exit_code(&[result(CheckStatus::Skip), result(CheckStatus::Unknown)]),
-            EXIT_CLEAN
         );
     }
 

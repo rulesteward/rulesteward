@@ -162,6 +162,18 @@ examine_globs = [
     "crates/rulesteward-selinux/src/triage.rs",
     "crates/rulesteward-selinux/src/te_emit.rs",
     "crates/rulesteward-selinux/src/categorize.rs",
+    # selinux STIG surface (#520, session 9d): allowlisted BEFORE the code lands
+    # (the 4a lesson: a new file outside examine_globs mutates zero times and its
+    # gate passes vacuously). config.rs = /etc/selinux/config reader; stig.rs =
+    # control table + projections; version.rs = TargetVersion; lints/** = se-
+    # codes. The selinux doctor CHECK classifiers (pure fns over SelinuxProbe
+    # data) enter via the commands/selinux/doctor glob; the LiveSelinuxProbe
+    # impl is excluded by regex below (same rationale as doctor's LiveProbe).
+    "crates/rulesteward-selinux/src/config.rs",
+    "crates/rulesteward-selinux/src/stig.rs",
+    "crates/rulesteward-selinux/src/version.rs",
+    "crates/rulesteward-selinux/src/lints/**/*.rs",
+    "crates/rulesteward-cli/src/commands/selinux/doctor/**/*.rs",
     # selinux-sys FFI shim: RESTORED per #131 (excluded in PR #128 when it had
     # 0% coverage and no consumer). #124/#135 wired it into categorize.rs and
     # made the vendored build default-on, and it now has a DIRECT vendored-gated
@@ -313,6 +325,10 @@ exclude_re = [
     # parse_kernel_version, parse_lint_counts, worst_exit_code, renderers) stays
     # in scope and is killed by the FakeProbe unit tests.
     '<impl SystemProbe for LiveProbe>',
+    # selinux doctor LiveSelinuxProbe shell-out methods (#520, session 9d): same
+    # rationale as the doctor LiveProbe above. Matches nothing until lane 2b
+    # lands (the documented MigrateProbe pre-registration precedent).
+    '<impl SelinuxProbe for LiveSelinuxProbe>',
     # container-check LiveContainerProbe shell-out methods (#175): same rationale
     # as the doctor LiveProbe above. The real OS access (which/systemctl/test/rpm/
     # ausearch/fapolicyd-cli dispatch) has no unit tests by design; it is covered
