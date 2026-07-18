@@ -53,9 +53,11 @@ where
             let rule =
                 cac::parse_rule_sysctl(&resolved).map_err(|e| format!("{rule_name}: {e}"))?;
 
+            // `cac::yaml_to_string_list` never yields `Some(empty)` (an empty
+            // list becomes `None`), so `Some` here always carries values.
             let accepted = match rule.sysctlval {
-                Some(values) if !values.is_empty() => values,
-                _ => {
+                Some(values) => values,
+                None => {
                     let var = var_yaml.ok_or_else(|| {
                         format!("{rule_name}: no inline sysctlval and no _value.var fetched")
                     })?;

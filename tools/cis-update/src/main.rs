@@ -189,3 +189,39 @@ fn config_path(args: &[String]) -> PathBuf {
         PathBuf::from,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{config_path, flag, run};
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn flag_returns_the_value_after_the_name() {
+        let a = args(&["derive", "--product", "rhel9", "--ref", "abc"]);
+        assert_eq!(flag(&a, "--product").as_deref(), Some("rhel9"));
+        assert_eq!(flag(&a, "--ref").as_deref(), Some("abc"));
+        assert_eq!(flag(&a, "--config"), None);
+        // A flag at the end with no value yields None, not a panic.
+        assert_eq!(flag(&args(&["check", "--config"]), "--config"), None);
+    }
+
+    #[test]
+    fn config_path_defaults_beside_the_crate_and_honors_override() {
+        assert!(config_path(&[]).ends_with("cis-refs.toml"));
+        assert_eq!(
+            config_path(&args(&["--config", "/tmp/other.toml"])),
+            std::path::PathBuf::from("/tmp/other.toml")
+        );
+    }
+
+    #[test]
+    fn run_rejects_unknown_subcommands_and_accepts_help() {
+        let e = run(&args(&["frobnicate"])).unwrap_err();
+        assert!(e.contains("frobnicate"), "{e}");
+        assert!(run(&args(&["--help"])).is_ok());
+        assert!(run(&[]).is_ok());
+    }
+}
