@@ -134,6 +134,49 @@ stig-derive product="all":
         cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
+# (#524) Derive / drift-check the per-backend CIS control tables against
+# ComplianceAsCode/content CIS profiles. Same nested-tool pattern
+# (tools/cis-update, OUT of `just ci`); all three recipes skip gracefully
+# (exit 0) when curl is absent.
+#
+# cis-check          : derive at the PINNED refs (cis-refs.toml); verify the sudoers
+#                      anchors; exit 1 on drift vs any shipped CIS table (families
+#                      without a shipped table yet report SKIPPED, never vacuous OK).
+# cis-check-latest   : derive at the LATEST CaC release; report pending upstream changes.
+# cis-derive <p>     : print the derived per-family tables for review
+#                      (p = rhel8|rhel9|rhel10, or `all`). Direct `cargo run` flags
+#                      --family <f> / --values narrow to one backend / add sysctl values.
+cis-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "cis-check: prerequisites missing - need curl + network access to ComplianceAsCode" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- check
+
+cis-check-latest:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "cis-check-latest: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- check --latest
+
+cis-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "cis-derive: prerequisites missing - need curl + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- derive --product "{{product}}"
+    fi
+
 # (#479) Drift-check / refresh the fapd-E01 attribute registry against upstream
 # fapolicyd's src/library/{subject,object}-attr.c. Same nested-tool pattern
 # (tools/fapolicyd-attr-update, OUT of `just ci`). The LIVE recipe skips gracefully

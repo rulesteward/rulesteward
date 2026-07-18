@@ -1,0 +1,56 @@
+name: cis-check
+
+# PINNED drift gate for the CIS framework (#524): run on every pull request that
+# touches a CIS drift INPUT and fail the build if a shipped per-backend CIS table
+# no longer matches ComplianceAsCode at the refs pinned in
+# tools/cis-update/cis-refs.toml, or if the pinned derivation itself breaks (empty
+# family / missing sudoers anchors). Families whose CIS table has not landed yet
+# report an explicit SKIPPED line and do not fail the gate. Distinct from the
+# weekly cis-drift.yml, which derives against the LATEST ComplianceAsCode release
+# and only opens/updates a tracking issue - it never fails a build.
+#
+# paths: is scoped to the drift INPUTS so unrelated PRs never pay the network
+# cost. As each Wave-3 lane lands its backend's CIS table, the orchestrator adds
+# that table's path here (the lane-wiring commit):
+#   - tools/cis-update/**                 - the derivation tool, cis-refs.toml pins,
+#                                           and the shipped-table registry
+#   - tools/stig-update/**               - the shared lib surface this tool builds
+#                                           on (jinja / source / derive)
+#   - .github/workflows/cis-check.yml    - this workflow
+on:
+  pull_request:
+    paths:
+      - 'tools/cis-update/**'
+      - 'tools/stig-update/**'
+      - '.github/workflows/cis-check.yml'
+
+# Least privilege: this job only reads the repo and calls out to public APIs; it
+# never writes anything back to GitHub (contrast cis-drift.yml, which needs
+# issues: write to file its tracking issue).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: CIS control-table drift vs pinned ComplianceAsCode refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/cis-update
+      - name: cargo run -- check (pinned refs)
+        # Direct cargo run, NOT `just cis-check` - that recipe soft-skips (exit 0)
+        # when curl is absent, which is the right call for a local dev machine but
+        # WRONG for CI (a missing curl on a hosted runner should fail loudly, not
+        # silently report success). No `set +e` / error swallowing here either:
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool/upstream error, and
+        # ALL non-zero exits must hard-fail this job.
+        run: cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- check
