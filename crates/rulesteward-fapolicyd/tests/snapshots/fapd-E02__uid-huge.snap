@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[fapd-E02] sev=Error line=1 col=1 span=0..41 :: invalid value for `uid=`: expected u32 decimal, name, or `unset`
+[fapd-E02] sev=Error line=1 col=1 span=0..42 :: invalid value for `uid=`: expected u32 decimal, name, or `unset`

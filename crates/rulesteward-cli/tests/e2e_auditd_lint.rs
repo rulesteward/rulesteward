@@ -328,6 +328,31 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     // "--loginuid-immutable" deepening entry grows the shipped table from 69
     // to 70 rows (also unsatisfied by this fixture), so 69 (not 68) of the
     // 70 required lines are now missing.
+    //
+    // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // V2R9 rewrote RHEL-09-654240 (V-258222) from the single-line watch form
+    // this fixture carries into a dual-arch syscall form; a Watch-shaped
+    // candidate never satisfies a Syscall-shaped requirement (`rules_match`'s
+    // `_ => false` arm), so the fixture no longer satisfies ANY of the 81
+    // required rows -- all 81 now fire, including RHEL-09-654240 itself.
+    // (This bump landed and went GREEN as commit 0bcbcf0.)
+    //
+    // FOURTH bump, RE-DECIDED (USER RULING via AskUserQuestion, 2026-07-17,
+    // "watch<->syscall EQUIVALENCE" -- full grounding in
+    // crates/rulesteward-auditd/tests/test_lints_stig_required.rs's section
+    // doc comment above `w06_real_entrypoint_watch_equivalent_satisfies_
+    // v258222_passwd`): au-W06's matcher must treat a path-watch requirement
+    // as satisfied by EITHER kernel-equivalent form. V-258222's two dual-arch
+    // syscall rows (b32 + b64) are a pure path-watch shape, so this fixture's
+    // classic `-w /etc/passwd -p wa -k identity` line becomes a
+    // kernel-equivalent form of BOTH rows again -- dropping the missing
+    // count from 81 back to 79 (81 minus the 2 V-258222 rows the fixture's
+    // watch now satisfies; every OTHER required row has a distinct path, so
+    // nothing else in the table is affected).
+    //
+    // RED today: the current matcher's `rules_match` still treats
+    // Watch-vs-Syscall as an unconditional mismatch (`_ => false`), so it
+    // still reports all 81, including RHEL-09-654240.
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -345,8 +370,10 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
     let diags = v["diagnostics"].as_array().expect("diagnostics array");
     assert_eq!(
         diags.len(),
-        69,
-        "69 of the 70 required lines are missing (RHEL-09-654240 is satisfied): {out}"
+        79,
+        "81 required rows minus the 2 (b32+b64) V-258222 rows the fixture's \
+         classic watch now satisfies via the watch<->syscall equivalence \
+         ruling: {out}"
     );
     assert!(
         diags
@@ -354,12 +381,30 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
             .all(|d| d["code"] == serde_json::json!("au-W06")),
         "every finding must be au-W06: {out}"
     );
+    // Can-satisfy discriminator (restores the reviewer's Item-4 finding,
+    // re-decided for the equivalence ruling): RHEL-09-654240 (V-258222,
+    // /etc/passwd) must NOT be reported missing -- the fixture's classic
+    // watch satisfies it via the equivalence ruling.
     assert!(
-        !diags.iter().any(|d| d["message"]
+        diags.iter().all(|d| !d["message"]
             .as_str()
             .unwrap_or_default()
             .contains("RHEL-09-654240")),
-        "the satisfied requirement must not be reported missing: {out}"
+        "RHEL-09-654240 (V-258222) must NOT be reported missing: the \
+         fixture's classic watch line is a kernel-equivalent form of its \
+         dual-arch syscall requirement: {out}"
+    );
+    // ...but a DIFFERENT required row (RHEL-09-654215, V-258217,
+    // /etc/sudoers) must still be missing -- the fixture's watch is scoped
+    // to /etc/passwd only, so this is a genuine discriminator, not a
+    // vacuous "everything now passes" impl.
+    assert!(
+        diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("RHEL-09-654215")),
+        "RHEL-09-654215 (V-258217, /etc/sudoers) must still be reported \
+         missing -- the fixture's watch is scoped to /etc/passwd only: {out}"
     );
 }
 

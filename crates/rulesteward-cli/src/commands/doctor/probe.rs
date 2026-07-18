@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use rulesteward_core::extract_audit_field;
+use rulesteward_fapolicyd::is_effectively_permissive;
 
 use super::model::{
     CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts, ServiceState, SystemProbe,
@@ -214,7 +215,8 @@ impl SystemProbe for LiveProbe {
         let conf_path = Path::new("/etc/fapolicyd/fapolicyd.conf");
         let conf_text = std::fs::read_to_string(conf_path)
             .map_err(|e| format!("cannot read {}: {e}", conf_path.display()))?;
-        let permissive_set = conf_value(&conf_text, "permissive") == Some("1");
+        let permissive_set = conf_value(&conf_text, "permissive")
+            .is_some_and(permissive_value_is_effectively_permissive);
 
         // Check for sha256hash= in any rules file.
         let deprecated_sha256hash = check_sha256hash_in_dir(rules_dir);
@@ -255,18 +257,44 @@ fn read_fapolicyd_mode() -> Option<String> {
 /// Inner implementation of `read_fapolicyd_mode` that accepts an explicit path
 /// so that unit tests can supply a temp file without touching the real system.
 ///
-/// Returns `Some("permissive")` if `permissive` is set to `1` (tolerant of any
-/// whitespace around `=`), `Some("enforcing")` if the file is readable but the
-/// key is absent or set to anything other than `1`, and `None` if the file cannot
-/// be read. Shares the `conf_value` reader with the misconfiguration check so the
-/// two cannot disagree on a line like `permissive =1` (issue #192, D2).
+/// Returns `Some("permissive")` if `permissive` resolves to an effectively-
+/// permissive value per the daemon's `strtoul`-then-clamp semantics (issue
+/// #567; see `rulesteward_fapolicyd::is_effectively_permissive`'s doc for the
+/// exact predicate - not just the literal `"1"`), `Some("enforcing")` if the
+/// file is readable but the key is absent or resolves to a non-permissive
+/// value, and `None` if the file cannot be read. Shares the `conf_value`
+/// reader with the misconfiguration check so the two cannot disagree on a
+/// line like `permissive =1` (issue #192, D2), and shares
+/// `permissive_value_is_effectively_permissive` with `LiveProbe::
+/// fapolicyd_conf`'s `permissive_set` so the two probe sites cannot drift on
+/// the fail-open predicate itself.
 fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(conf_path).ok()?;
-    if conf_value(&text, "permissive") == Some("1") {
+    if conf_value(&text, "permissive").is_some_and(permissive_value_is_effectively_permissive) {
         Some("permissive".to_string())
     } else {
         Some("enforcing".to_string())
     }
+}
+
+/// True iff the raw `permissive=` value text (as returned by `conf_value`,
+/// which may include a trailing inline comment - see its doc) resolves to an
+/// effectively-permissive value in the real daemon (issue #567, ATL round 2
+/// MISS 1).
+///
+/// Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, live-verified on
+/// fapolicyd 1.3.2 and 1.4.5): a config line is whitespace-tokenized, and
+/// `nv.value` is bound to ONLY the FIRST token after `=` - a trailing
+/// `# comment` (or any further token) is separately logged as "Wrong number
+/// of arguments" but does not change which token the keyword's parser
+/// receives. So `"1 # temporarily on"` is interpreted exactly as `"1"` by
+/// the real daemon, not rejected as garbage. The single shared seam for both
+/// `read_fapolicyd_mode_from` and `LiveProbe::fapolicyd_conf`'s
+/// `permissive_set`, so the two probe sites cannot drift.
+fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
+    raw.split_whitespace()
+        .next()
+        .is_some_and(is_effectively_permissive)
 }
 
 /// The last non-empty, non-comment line of the `fapolicyd.conf`-style rules
@@ -567,6 +595,230 @@ mod tests {
         assert_eq!(
             read_fapolicyd_mode_from(&conf),
             Some("permissive".to_string())
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // read_fapolicyd_mode_from: fail-open value parity (issue #567).
+    //
+    // Ground truth (fapolicyd `daemon-config.c`'s `permissive_parser`,
+    // already cited and grounded for the sibling fapd-W14 check at
+    // `rulesteward-fapolicyd/src/lints/conf.rs::is_effectively_permissive`):
+    // the daemon delegates to `unsigned_int_parser` - a base-10 `strtoul` of
+    // the WHOLE value - then CLAMPS any parsed value greater than 1 down to
+    // 1. So the real daemon runs permissive (fail-open) for ANY non-empty,
+    // all-ASCII-digit value that contains at least one nonzero digit: "1",
+    // "2", "10", "01" (leading zeros are valid decimal syntax to strtoul),
+    // not just the exact string "1". Today `read_fapolicyd_mode_from` (and
+    // the sibling `LiveProbe::fapolicyd_conf`'s `permissive_set` at line 217,
+    // which shares the identical `== Some("1")` bug but has no path-injection
+    // seam for a unit test) compares `conf_value(...) == Some("1")` -
+    // exact-string, so any nonzero-numeric-but-not-literal-"1" value is a
+    // false negative: doctor reports "enforcing" for a daemon that is
+    // actually fail-open.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_two_returns_permissive() {
+        // strtoul("2", ...) = 2, clamped to 1 by unsigned_int_parser's range
+        // check -> the real daemon runs permissive. RED: the probe's exact
+        // `== "1"` compare treats "2" as not-"1" and reports "enforcing".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 2\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=2 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_leading_zero_one_returns_permissive() {
+        // strtoul("01", ...) = 1 (leading zeros are valid decimal syntax to
+        // strtoul) -> the real daemon runs permissive. RED: the probe's
+        // exact `== "1"` string compare treats "01" as not-"1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 01\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=01 parses to 1 in the real daemon; the probe's exact \
+             `==\"1\"` compare misses the leading zero (#567)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_all_zeros_returns_enforcing() {
+        // strtoul("00", ...) = 0 -> the real daemon stays enforcing. Pinning
+        // control: must NOT flip to "permissive" as a side effect of fixing
+        // #567 (an all-digit predicate that forgets the "at least one
+        // nonzero digit" clause would wrongly fire here).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 00\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=00 parses to 0 (enforcing) in the real daemon"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_non_numeric_returns_enforcing() {
+        // "1x" has trailing non-digit garbage after the leading digit - a
+        // parse error in the real daemon's strtoul-based parser, leaving the
+        // enforcing default in place. Pinning control against an over-eager
+        // digit-PREFIX fix (e.g. one that only checks the first byte is a
+        // nonzero digit rather than every byte).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1x\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=1x is a parse error in the real daemon (stays enforcing)"
+        );
+    }
+
+    // Adversarial review strengthening (2026-07-17), Finding 3 [BLOCKER]: the
+    // original two RED fixtures ("2" and "01") let a wrong impl pass via
+    // `matches!(v, "1" | "2" | "01")` (an exact-set overfit) instead of the
+    // real daemon-matching predicate. These two use DIFFERENT literal values
+    // - both cited verbatim in `is_effectively_permissive`'s own doc comment
+    // (`rulesteward-fapolicyd/src/lints/conf.rs` ~lines 100-101: "the daemon
+    // runs permissive for `\"1\"`, `\"2\"`, `\"10\"`, `\"01\"` ... `\"007\"`,
+    // and so on") - to force a real digit-based predicate, not a hardcoded
+    // literal set.
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_ten_returns_permissive() {
+        // strtoul("10", ...) = 10, clamped to 1 by unsigned_int_parser's
+        // range check -> the real daemon runs permissive. RED: the probe's
+        // exact `== "1"` compare treats "10" as not-"1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 10\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=10 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567, adversarial-review Finding 3)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_multi_digit_leading_zeros_007_returns_permissive() {
+        // strtoul("007", ...) = 7, clamped to 1 -> the real daemon runs
+        // permissive. RED: the probe's exact `== "1"` compare treats "007"
+        // as not-"1". Distinct in SHAPE from "01" (already tested above):
+        // multiple leading zeros AND a multi-digit nonzero tail, defeating a
+        // wrong impl that special-cases only single-leading-zero or
+        // single-nonzero-digit values.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 007\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=007 clamps to permissive-mode in the real daemon \
+             (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
+             misses it (#567, adversarial-review Finding 3)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // ATL round 2, MISS 1 (#567 scope): inline-comment permissive value is a
+    // fail-open miss.
+    //
+    // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, verified BOTH
+    // via a fresh live differential this round on fapolicyd8 1.3.2 and
+    // fapolicyd9 1.4.5, AND against the upstream C source): a config line is
+    // whitespace-tokenized; `nv.value` is bound to the FIRST token after `=`
+    // ("1", "5", "0" - never the trailing comment text). A line with MORE
+    // than that one value token (e.g. a trailing `# note`) ALSO logs
+    // "Wrong number of arguments for line N" - a separate, non-fatal
+    // complaint - but `nv_split`'s token-count check does not prevent
+    // `kw->parser` (here `permissive_parser`) from still being called with
+    // the correctly-extracted first-token value:
+    //   permissive = 1 # temporarily on -> daemon applies permissive=1
+    //     (live: only "Wrong number of arguments" logged - no "reset to 1"
+    //     needed since 1 already <=1 - daemon runs permissive).
+    //   permissive = 5 # comment -> daemon applies permissive=5, then
+    //     `permissive_parser` clamps >1 down to 1 and logs "permissive
+    //     value reset to 1 - line 1" (live-confirmed on fapolicyd9; the
+    //     clamp-then-warn code path is unconditional on the prior
+    //     "Wrong number of arguments" check).
+    //   permissive = 0 # off -> daemon applies permissive=0 (enforcing);
+    //     "Wrong number of arguments" still logged (same tokenization
+    //     noise) but no permissive/reset warning - stays enforcing.
+    //
+    // Today: `conf_value` returns the WHOLE trimmed remainder after `=`
+    // ("1 # temporarily on", "5 # comment"), which `is_effectively_permissive`
+    // rejects outright (`value.bytes().all(|b| b.is_ascii_digit())` is false
+    // once a space/`#`/letter appears) -> the probe reports "enforcing" for a
+    // daemon that is actually fail-open. FAIL-OPEN false negative - the exact
+    // opposite of a benign false positive, so this is HIGH severity for a
+    // health-check tool.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_one_with_inline_comment_returns_permissive() {
+        // RED: the real daemon runs permissive (nv.value = "1", the first
+        // whitespace token); today's probe sees the raw "1 # temporarily on"
+        // remainder, fails the all-digit check, and reports enforcing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1 # temporarily on\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=1 with a trailing inline comment still resolves to \
+             the first token \"1\" in the real daemon (nv_split/_strsplit) \
+             and runs permissive; the probe must not be fooled by the \
+             trailing comment text into reporting enforcing (#567 ATL \
+             round 2, MISS 1)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_five_with_inline_comment_returns_permissive() {
+        // RED: same miss, plus the daemon's own clamp->1 for an out-of-range
+        // value (live-confirmed WARNING "permissive value reset to 1 - line
+        // 1" on fapolicyd9 for this exact fixture).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 5 # comment\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=5 with a trailing inline comment resolves to the \
+             first token \"5\", clamped to permissive-mode by the real \
+             daemon (live: WARNING \"permissive value reset to 1\"); the \
+             probe must not be fooled by the trailing comment text (#567 \
+             ATL round 2, MISS 1)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_zero_with_inline_comment_returns_enforcing() {
+        // Control (must already pass, and keep passing after the fix): the
+        // first token is "0" - the real daemon stays enforcing regardless of
+        // the trailing comment (live-confirmed: "Wrong number of arguments"
+        // is logged - the same tokenization noise as the RED cases above -
+        // but no permissive/reset warning follows).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 0 # off\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=0 with a trailing inline comment still resolves to \
+             the first token \"0\" and stays enforcing in the real daemon"
         );
     }
 

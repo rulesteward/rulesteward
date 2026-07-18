@@ -1,1 +1,1 @@
-allow uid=99999999999 : exe=/foo
+allow uid=99999999999 : path=/foo

@@ -1,2 +1,2 @@
-allow uid=0 : exe=%langs
+allow uid=0 : path=%langs
 %langs=ruby,perl

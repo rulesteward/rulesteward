@@ -39,15 +39,6 @@ impl OwnedValueRule {
             StigValueRule::TwoTokenExact(a, b) => {
                 OwnedValueRule::TwoTokenExact(a.to_string(), b.to_string())
             }
-            StigValueRule::AnyOf(v) => {
-                // Sort so the comparison against the derived table (whose
-                // `anyof_alternatives` also sorts) is order-insensitive: AnyOf is a
-                // SET, so the shipped `StigValueRule::AnyOf` need not be authored in
-                // sorted order without provoking a false drift.
-                let mut alts: Vec<String> = v.iter().map(|s| (*s).to_string()).collect();
-                alts.sort();
-                OwnedValueRule::AnyOf(alts)
-            }
             StigValueRule::NumericCeiling(n) => OwnedValueRule::NumericCeiling(n),
             StigValueRule::NumericExact(n) => OwnedValueRule::NumericExact(n),
         }
@@ -185,8 +176,9 @@ mod tests {
     #[test]
     fn code_table_projects_shipped_projection_faithfully() {
         // The code table must equal the crate projection, row-for-row.
+        // #549: was 20 (RHEL9 V2R7); V2R9 dropped Compression, leaving 19.
         let code = code_table(TargetVersion::Rhel9);
-        assert_eq!(code.len(), 20);
+        assert_eq!(code.len(), 19);
         let prl = code
             .iter()
             .find(|c| c.keyword == "permitrootlogin")
@@ -210,18 +202,17 @@ mod tests {
         assert!(diff_controls(&code, &code).is_empty());
     }
 
-    /// `of_projection` must SORT AnyOf alternatives, so an unsorted shipped
-    /// `StigValueRule::AnyOf` compares equal to the derived (sorted) table instead of
-    /// falsely reporting drift. Uses a deliberately UNSORTED input.
-    #[test]
-    fn of_projection_sorts_anyof() {
-        let owned = OwnedValueRule::of_projection(StigValueRule::AnyOf(&["no", "delayed"]));
-        assert_eq!(
-            owned,
-            OwnedValueRule::AnyOf(vec!["delayed".to_string(), "no".to_string()]),
-            "AnyOf alternatives must be sorted regardless of authored order"
-        );
-    }
+    // #549 (session 9e-wave2c pipeline P2): `of_projection_sorts_anyof`, which
+    // pinned that `of_projection` sorts a `StigValueRule::AnyOf` from the
+    // crate side, is REMOVED here (not weakened) -- the crate's
+    // `StigValueRule::AnyOf` variant was deleted (Compression was its only
+    // constructor; #549 dropped Compression entirely, no-speculative-
+    // abstraction). `of_projection` can no longer receive an AnyOf value at
+    // all, so the sort-on-conversion behavior this test pinned has no input
+    // that can exercise it. `OwnedValueRule::AnyOf` itself is unaffected and
+    // stays live via the xccdf fixtext parser's OWN "set the value to X, Y,
+    // or Z" grammar (see `three_alternative_anyof_captures_all` in
+    // `xccdf.rs`, which is independent of this crate-side mapping).
 
     #[test]
     fn diff_reports_added_removed_and_changed() {

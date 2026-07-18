@@ -1,2 +1,2 @@
 %m=foo
-allow uid=0 : exe=%m
+allow uid=0 : path=%m

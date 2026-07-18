@@ -158,19 +158,6 @@ ClientAliveInterval 600
 
 For the changes to take effect, the SSH daemon must be restarted.
 
-$ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258002"><Rule severity="medium"><version>RHEL-09-255130</version><title>SRG-OS-000480-GPOS-00227</title><check system="C-x"><check-content><check-content>Verify the RHEL 9 SSH daemon performs compression after a user successfully authenticates with the following command:
-
-$ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*compression'
-/etc/ssh/sshd_config:Compression no
-
-If the "Compression" keyword is set to "yes", is missing, or the returned line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure the SSH daemon to not allow compression.
-
-Uncomment the "Compression" keyword in "/etc/ssh/sshd_config" on the system and set the value to "delayed" or "no":
-
-Compression no
-
-The SSH service must be restarted for changes to take effect:
-
 $ sudo systemctl restart sshd.service</fixtext></Rule></Group><Group id="V-258003"><Rule severity="medium"><version>RHEL-09-255135</version><title>SRG-OS-000364-GPOS-00151</title><check system="C-x"><check-content><check-content>Verify the SSH daemon does not allow GSSAPI authentication with the following command:
 
 $ sudo /usr/sbin/sshd -dd 2&gt;&amp;1 | awk '/filename/ {print $4}' | tr -d '\r' | tr '\n' ' ' | xargs sudo grep -iH '^\s*gssapiauthentication'

@@ -357,6 +357,14 @@ mod tests {
 
     /// Every value-rule KIND must be exercised by the RHEL9 fixture and classified
     /// correctly (anti-tautology: hard-coded expectations from the DISA grounding).
+    ///
+    /// #549 (session 9e-wave2c pipeline P2): the `compression` assertion this test
+    /// previously carried is REMOVED (not weakened) -- DISA RHEL 9 STIG V2R9
+    /// dropped Compression (V-258002/RHEL-09-255130), so its Group was removed
+    /// from `RHEL9_FIXTURE` too and `find(&d, "compression")` would now panic
+    /// ("keyword present" expect fires). The AnyOf grammar this assertion also
+    /// exercised stays covered by `three_alternative_anyof_captures_all` below,
+    /// which is independent of the real fixture / shipped table.
     #[test]
     fn rhel9_all_semantics_classified() {
         let d = parse_controls(RHEL9_FIXTURE).expect("parses");
@@ -381,18 +389,16 @@ mod tests {
             find(&d, "rekeylimit").value_rule,
             OwnedValueRule::TwoTokenExact("1g".into(), "1h".into())
         );
-        assert_eq!(
-            find(&d, "compression").value_rule,
-            OwnedValueRule::AnyOf(vec!["delayed".into(), "no".into()])
-        );
     }
 
     /// The fixtures carry decoy non-directive Groups (crypto-policies + file-perms);
     /// the selector must EXCLUDE them (exact expected counts, no decoy keywords).
+    /// #549: RHEL9 was 20 (V2R7); V2R9 dropped Compression, leaving 19 (same
+    /// count as RHEL10, which never had it).
     #[test]
     fn decoys_excluded_exact_counts() {
         assert_eq!(parse_controls(RHEL8_FIXTURE).unwrap().len(), 14);
-        assert_eq!(parse_controls(RHEL9_FIXTURE).unwrap().len(), 20);
+        assert_eq!(parse_controls(RHEL9_FIXTURE).unwrap().len(), 19);
         assert_eq!(parse_controls(RHEL10_FIXTURE).unwrap().len(), 19);
     }
 

@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[fapd-E03] sev=Error line=1 col=1 span=0..31 :: undefined macro reference `%missingmacro`
+[fapd-E03] sev=Error line=1 col=1 span=0..32 :: undefined macro reference `%missingmacro`

@@ -78,7 +78,7 @@ pub const SSHD_CODES: &[LintCode] = &[
     LintCode {
         code: "sshd-W03",
         severity: Severity::Warning,
-        description: "weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms (CBC, MD5/SHA1, group1, ssh-rsa)",
+        description: "weak algorithm in Ciphers/MACs/KexAlgorithms/GSSAPIKexAlgorithms/HostKeyAlgorithms (CBC, MD5/SHA1, group1, ssh-rsa)",
     },
     LintCode {
         code: "sshd-W04",

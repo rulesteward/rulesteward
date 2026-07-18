@@ -17,16 +17,35 @@
 /// Tolerant of any whitespace around `=` (`permissive=1`, `permissive = 1`,
 /// `permissive =1`, `permissive= 1` all read as value `"1"`). The key is matched
 /// EXACTLY (so `permissive_debug=1` is NOT read as the `permissive` key). Only
-/// WHOLE-LINE `#` comments are skipped; a trailing `#` is part of the literal value
-/// (fapolicyd's `nv_split` rejects only a line whose first token starts with `#`).
+/// WHOLE-LINE `#` comments are skipped (a line whose first token starts with
+/// `#` is dropped entirely); a trailing `#` on an otherwise-live line is NOT
+/// stripped, so this function returns the RAW remainder verbatim, including
+/// any inline comment text.
+///
+/// IMPORTANT (doc-truth-decay correction, ATL round 2 MISS 1): this raw
+/// remainder is NOT the same string the fapolicyd daemon itself uses as the
+/// key's value. `daemon-config.c`'s `nv_split`/`_strsplit` whitespace-
+/// tokenizes each line and binds `nv.value` to ONLY the FIRST token after
+/// `=` - a trailing `# comment` (or any further token) is separately logged
+/// as "Wrong number of arguments" but does NOT change which token the
+/// keyword's parser receives (verified live on fapolicyd 1.3.2 and 1.4.5:
+/// `permissive = 1 # temporarily on` -> the daemon applies permissive=1 and
+/// runs permissive; `conf_value` on that same line returns
+/// `"1 # temporarily on"`, not `"1"`). `conf_value` is a RAW per-line
+/// extractor, one layer below the daemon's actual interpretation; any
+/// caller that needs the daemon-INTERPRETED value (e.g. the permissive
+/// fail-open predicate) must do that first-whitespace-token split itself -
+/// see `doctor/probe.rs::read_fapolicyd_mode_from`.
 /// Returns `None` when the key is absent.
 #[must_use]
 pub(crate) fn conf_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let mut value = None;
     for line in text.lines() {
         // Whole-line comments only: fapolicyd skips a line whose first token starts
-        // with `#` but does NOT strip a trailing inline comment (the value is
-        // literal). See daemon-config.c `nv_split`.
+        // with `#`. A trailing inline comment on a live line is NOT stripped here -
+        // this function's contract is the raw remainder, not the daemon's
+        // interpreted value (see the function doc above). See daemon-config.c
+        // `nv_split`.
         if line.trim_start().starts_with('#') {
             continue;
         }
@@ -91,10 +110,24 @@ mod tests {
 
     #[test]
     fn conf_value_does_not_strip_inline_comment() {
-        // fapolicyd honors ONLY whole-line `#` comments; a trailing `#` is part of
-        // the literal value (nv_split in daemon-config.c rejects only a line whose
-        // first token starts with `#`). Match that exactly so we never accept a
-        // value fapolicyd would read differently (issue #192 adversarial finding).
+        // Pins `conf_value`'s RAW EXTRACTION layer only: it skips a line
+        // ONLY when the line's first token starts with `#` (a whole-line
+        // comment); it does not strip a trailing inline comment, so the
+        // whole post-`=` remainder - including any `# ...` tail - comes
+        // back verbatim (issue #192 adversarial finding, still true of this
+        // function).
+        //
+        // RE-GROUNDED (ATL round 2, MISS 1, 2026-07-18): this test does NOT
+        // pin what the fapolicyd DAEMON does with that raw text next. The
+        // daemon's own `nv_split`/`_strsplit` (daemon-config.c) further
+        // whitespace-tokenizes the remainder and uses ONLY the first token
+        // as the interpreted value ("1", not "1 # default off") -
+        // live-verified on fapolicyd 1.3.2 and 1.4.5. `conf_value` and the
+        // daemon's interpreted value are different layers; a caller that
+        // needs the daemon's INTERPRETED value must tokenize this raw
+        // remainder itself (see `doctor/probe.rs`'s permissive-evaluation
+        // seam). Do not read this test as "fapolicyd treats the whole
+        // trailing text as the literal value" - it does not.
         assert_eq!(
             conf_value("permissive=1 # default off\n", "permissive"),
             Some("1 # default off")

@@ -248,18 +248,23 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 /// * `dir`, `ftype`, `trust` are object-only (in modern they are `Either`).
 /// * `gid`, `ppid` are illegal on the legacy subject side and are NOT valid
 ///   split anchors (return `None`).
+/// * `exe_dir`, `exe_type` are subject-only (ATL round 2 MISS 2, #546) -
+///   legal ONLY in the legacy dialect, unlike modern where they are unknown;
+///   see `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS` for the shared grounding
+///   cite (kept in sync with fapd-E01's flavor-aware skip in
+///   `lints::walker::e01`, which reads the same const).
 ///
 /// Source: R2-audit-grammar.md "Subject attributes (legacy ORIG format)" and
 /// "Object attributes" sections.
 fn legacy_classify(name: &str) -> Option<AttrSide> {
     match name {
         // Subject-only in legacy (`pattern` is subject-only in both flavors).
-        // `exe_dir`/`exe_type` are NOT here: fapolicyd 1.3.2/1.4.3/1.4.5 all reject
-        // them, so they fall through to `None` and fapd-E01 flags them (matching the
-        // daemon) rather than being silently accepted as legacy anchors.
         "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "pattern" => {
             Some(AttrSide::Subject)
         }
+        // exe_dir/exe_type: legal ONLY on the legacy subject side - see
+        // `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`'s doc for the grounding.
+        _ if crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS.contains(&name) => Some(AttrSide::Subject),
         // Object-only in legacy (dir/ftype/trust differ from modern's Either)
         "path" | "device" | "filehash" | "sha256hash" | "mode" | "dir" | "ftype" | "trust" => {
             Some(AttrSide::Object)
@@ -272,25 +277,77 @@ fn legacy_classify(name: &str) -> Option<AttrSide> {
 }
 
 /// Split a flat legacy-syntax attribute list into `(subject, object)` using
-/// the legacy-specific attribute classifier. The first object-only attribute
-/// marks the switch point.
+/// the legacy-specific attribute classifier, one token at a time and
+/// order-INDEPENDENT (issue #546) - matching upstream fapolicyd's `nv_split`
+/// (`rules.c:922-1027` v1.4.5 / `rules.c:784-892` v1.3.2): each `key=value`
+/// token is classified individually via a name->side lookup with no
+/// positional ordering constraint, and a legacy-illegal or unknown name (e.g.
+/// `gid`) errors immediately regardless of what follows.
+///
+/// A bare `all` token (`Attr::All`, never `Attr::Kv` - see `attr()`'s
+/// `attr_all` branch) is not itself named, so it routes by the RUNNING
+/// subject/object counts at the point it is encountered, exactly like
+/// upstream: subject if nothing has been classified subject yet, else object
+/// if nothing has been classified object yet, else an error (both sides
+/// already populated). `legacy_classify`'s `Either` case (only ever "all",
+/// which the parser never produces as a `Kv`) is routed the same way for
+/// defense in depth, though it is unreachable in practice.
 ///
 /// Uses `legacy_classify` (not `attrs::classify`) so that `dir`, `ftype`, and
-/// `trust` correctly serve as object-side anchors in the legacy dialect.
+/// `trust` correctly serve as object-side anchors in the legacy dialect. Does
+/// NOT change `legacy_classify`'s truth table.
 fn positional_split(attrs_flat: &[Attr]) -> Result<(Vec<Attr>, Vec<Attr>), String> {
-    let switch_at = attrs_flat
-        .iter()
-        .position(|a| {
-            matches!(a, Attr::Kv { key, .. } if matches!(legacy_classify(key), Some(AttrSide::Object)))
-        })
-        .ok_or_else(|| "legacy rule has no object-only attribute to split on".to_string())?;
+    let mut subject: Vec<Attr> = Vec::new();
+    let mut object: Vec<Attr> = Vec::new();
 
-    let subject: Vec<Attr> = attrs_flat[..switch_at].to_vec();
-    let object: Vec<Attr> = attrs_flat[switch_at..].to_vec();
+    for a in attrs_flat {
+        match a {
+            Attr::Kv { key, .. } => match legacy_classify(key) {
+                Some(AttrSide::Subject) => subject.push(a.clone()),
+                Some(AttrSide::Object) => object.push(a.clone()),
+                Some(AttrSide::Either) => route_by_running_count(a, &mut subject, &mut object)?,
+                None => {
+                    return Err(format!(
+                        "legacy rule references unknown or legacy-illegal attribute `{key}`"
+                    ));
+                }
+            },
+            Attr::All => route_by_running_count(a, &mut subject, &mut object)?,
+        }
+    }
+
     if subject.is_empty() {
-        return Err("legacy rule has no subject attributes before the object split".to_string());
+        return Err("legacy rule has no subject attribute".to_string());
+    }
+    if object.is_empty() {
+        return Err("legacy rule has no object attribute".to_string());
     }
     Ok((subject, object))
+}
+
+/// Route an unnamed-side token (`Attr::All`, or in principle `Either`) to
+/// whichever side is still empty, matching upstream `nv_split`'s
+/// `s_count == 0` / `o_count == 0` running-count check: subject if the
+/// subject side has nothing yet, else object if the object side has nothing
+/// yet, else an error (both sides already populated - a case no frozen test
+/// exercises, since it requires three-plus unnamed tokens in one rule).
+fn route_by_running_count(
+    a: &Attr,
+    subject: &mut Vec<Attr>,
+    object: &mut Vec<Attr>,
+) -> Result<(), String> {
+    if subject.is_empty() {
+        subject.push(a.clone());
+    } else if object.is_empty() {
+        object.push(a.clone());
+    } else {
+        return Err(
+            "legacy rule has a bare `all` attribute that cannot be classified: \
+             both subject and object sides are already populated"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -414,14 +471,168 @@ mod tests {
     }
 
     #[test]
-    fn positional_split_errors_when_object_attr_first() {
+    fn positional_split_errors_when_no_subject_attr_present_at_all() {
+        // RE-GROUNDED 2026-07-17 (issue #546). This test used to be named
+        // `positional_split_errors_when_object_attr_first` and its name
+        // implied fapolicyd rejects a legacy rule merely because an
+        // object-side attribute appears BEFORE a subject-side one
+        // positionally - WRONG. Upstream fapolicyd's `nv_split`
+        // (`rules.c:922-1027` v1.4.5, `rules.c:784-892` v1.3.2, cited in the
+        // 2026-07-17 audit lane report Finding F2) classifies each token
+        // INDEPENDENTLY via a name->side lookup with NO positional ordering
+        // constraint at all: `allow mode=0755 uid=0` (object-attr `mode`
+        // BEFORE subject-attr `uid`) loads clean on both live daemon
+        // versions (reproduced 2026-07-17 05:01-05:02 UTC; see
+        // `positional_split_classifies_object_first_order_independent`
+        // below, which is the actual regression test for that claim). What
+        // THIS fixture still correctly pins - the only part of the old test
+        // that survives the order-independence fix - is that a legacy attr
+        // list with NO subject-side attribute ANYWHERE (not merely "object
+        // first") has nothing to assign to the subject side and must still
+        // error, matching upstream's `finish_up` "Subject is missing" check
+        // (`rules.c` ~1016-1026, already cited in the audit's Finding F1
+        // evidence for the modern grammar's equivalent check).
         let attrs_flat = vec![Attr::Kv {
             key: "path".into(),
             value: AttrValue::Str("/x".into()),
             span: 0..0,
         }];
-        // Subject would be empty - error.
-        assert!(positional_split(&attrs_flat).is_err());
+        assert!(
+            positional_split(&attrs_flat).is_err(),
+            "a legacy attr list with only an object-side attr (no subject \
+             attr at all) must still error, independent of ordering"
+        );
+    }
+
+    #[test]
+    fn positional_split_classifies_object_first_order_independent() {
+        // The actual #546 regression. `mode` (object-only) appears BEFORE
+        // `uid` (subject-only). Grounded exactly as above: `nv_split` has no
+        // positional constraint, and the live daemon loads
+        // `allow mode=0755 uid=0` clean on both fapolicyd 1.3.2 and 1.4.5
+        // (audit lane report 2026-07-17 Finding F2).
+        //
+        // Today: `positional_split`'s `.position()` search finds `mode` (the
+        // first Object-classified attr) at index 0, so
+        // `subject = attrs_flat[..0]` is EMPTY -> errors "legacy rule has no
+        // subject attributes before the object split" - RED (a daemon-valid
+        // rule is wrongly rejected as fapd-F01 Fatal).
+        let attrs_flat = vec![
+            Attr::Kv {
+                key: "mode".into(),
+                value: AttrValue::Str("0755".into()),
+                span: 0..0,
+            },
+            Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0,
+            },
+        ];
+        let (subject, object) = positional_split(&attrs_flat).expect(
+            "legacy split must be order-independent per nv_split; \
+             mode-before-uid must still split correctly (#546)",
+        );
+        assert_eq!(
+            subject.len(),
+            1,
+            "subject must contain only uid; got {subject:?}"
+        );
+        assert!(matches!(&subject[0], Attr::Kv { key, .. } if key == "uid"));
+        assert_eq!(
+            object.len(),
+            1,
+            "object must contain only mode; got {object:?}"
+        );
+        assert!(matches!(&object[0], Attr::Kv { key, .. } if key == "mode"));
+    }
+
+    // --- bare `all` placement corollary (#546 F2, resolves the audit's
+    // [UNVERIFIED] item). Grounded 2026-07-17 via a direct fetch of
+    // raw.githubusercontent.com/linux-application-whitelisting/fapolicyd/
+    // v1.4.5/src/library/rules.c: a bare `all` token is NOT classified by
+    // subj_name_to_val/obj_name_to_val at all - it is routed by the RUNNING
+    // s_count/o_count at the point it is encountered:
+    //   } else if (strcmp(ptr, "all") == 0) {
+    //       if (n->s_count == 0) { type = ALL_SUBJ; assign_subject(...); }
+    //       else if (n->o_count == 0) { type = ALL_OBJ; assign_object(...); }
+    // This matches the audit's own citation (rules.c:997-1008) for the same
+    // s_count==0-then-subject / o_count==0-then-object rule.
+
+    #[test]
+    fn positional_split_all_after_a_subject_attr_becomes_object_side() {
+        // After `uid=0` has already been classified subject (s_count=1), a
+        // later bare `all` token has s_count!=0, so it falls to the
+        // o_count==0 branch and becomes the OBJECT side.
+        //
+        // Today: `positional_split`'s Object-anchor search only matches
+        // `Attr::Kv` (the `matches!(a, Attr::Kv { .. } if ...)` guard above),
+        // so a bare `Attr::All` can NEVER be the switch anchor; with `all` as
+        // the only Object-shaped candidate here, no anchor is found at all
+        // and the whole split errors "no object-only attribute to split on"
+        // - RED (a daemon-valid rule is wrongly rejected).
+        let attrs_flat = vec![
+            Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0,
+            },
+            Attr::All,
+        ];
+        let (subject, object) = positional_split(&attrs_flat).expect(
+            "`uid=0 all` must split: uid->subject, then all \
+             (s_count!=0, o_count==0)->object (#546 corollary)",
+        );
+        assert_eq!(
+            subject,
+            vec![Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0,
+            }]
+        );
+        assert_eq!(object, vec![Attr::All]);
+    }
+
+    #[test]
+    fn positional_split_all_before_a_subject_attr_both_go_subject_and_split_errors() {
+        // Companion control (same grounding as above): when `all` appears
+        // FIRST, s_count==0 at that point, so `all` itself becomes SUBJECT
+        // (ALL_SUBJ). The following `uid=0` is independently subject-
+        // classified too, so the whole rule ends with s_count=2, o_count=0 -
+        // upstream's `finish_up` rejects it ("Object is missing in line N",
+        // `rules.c` ~1016-1026, already cited in Finding F2).
+        //
+        // Today's `positional_split` ALSO errors here (coincidentally, for
+        // the unrelated "no Kv-classified object anchor found" reason,
+        // since `Attr::All` is invisible to its anchor search) - this must
+        // remain an error after the fix too. Pinning control, not RED.
+        let attrs_flat = vec![
+            Attr::All,
+            Attr::Kv {
+                key: "uid".into(),
+                value: AttrValue::Int(0),
+                span: 0..0,
+            },
+        ];
+        let err = positional_split(&attrs_flat).expect_err(
+            "`all uid=0` must still fail: both tokens route to subject (all: \
+             s_count==0; uid: subject-only), leaving zero object attrs - \
+             matching upstream's 'Object is missing' rejection",
+        );
+        // Adversarial review Concern 5: pin the ROUTING REASON, not just
+        // is_err(), so a wrong impl that rejects this input for the WRONG
+        // reason (e.g. reports a missing-subject error, or a generic
+        // parse-failure unrelated to the object side) is still caught. Every
+        // existing error message in this module already names "subject" or
+        // "object" explicitly (see the sibling messages above), so this is a
+        // structural pin, not a hardcoded exact-string match.
+        assert!(
+            err.to_lowercase().contains("object"),
+            "the rejection reason must name the OBJECT side as missing (both \
+             `all` and `uid` classify subject, leaving object empty), not \
+             some other cause; got error: {err:?}"
+        );
     }
 
     #[test]
@@ -487,15 +698,39 @@ mod tests {
     }
 
     #[test]
-    fn legacy_classify_exe_dir_and_exe_type_are_not_anchors() {
-        // `exe_dir`/`exe_type` are NOT real fapolicyd attributes - 1.3.2/1.4.3/1.4.5
-        // all reject them ("Field type (exe_dir) is unknown", differential
-        // 2026-06-01). The parser must agree with `attrs::is_known` (which rejects
-        // them) instead of pre-accepting them as legacy subject anchors, so
-        // `legacy_classify` returns None and fapd-E01 flags them - matching the
-        // daemon. (Replaces the prior tests that asserted Some(Subject).)
-        assert_eq!(legacy_classify("exe_dir"), None);
-        assert_eq!(legacy_classify("exe_type"), None);
+    fn legacy_classify_exe_dir_and_exe_type_are_subject_anchors() {
+        // RE-GROUNDED (ATL round 2 MISS 2, 2026-07-18). The prior version of
+        // this test (`legacy_classify_exe_dir_and_exe_type_are_not_anchors`)
+        // asserted `None`, citing "1.3.2/1.4.3/1.4.5 all reject
+        // exe_dir/exe_type" (differential 2026-06-01) - that differential
+        // tested ONLY the MODERN (colon) grammar. Upstream fapolicyd's
+        // `subject-attr.c` table1 (the LEGACY/ORIG-format subject attribute
+        // table) DOES list `EXE_DIR`/`EXE_TYPE` in BOTH 1.3.2 and 1.4.5;
+        // they are unknown ONLY to the separate MODERN table (table2),
+        // which is what `attrs::classify`/`attrs::SUBJECT_ONLY` correctly
+        // models (that removal from `SUBJECT_ONLY` on 2026-05-29 stays
+        // correct and is NOT touched here - see attrs.rs's refreshed note).
+        //
+        // Live-verified 2026-07-18 on BOTH fapolicyd 1.3.2 and 1.4.5:
+        //   LEGACY `allow exe_dir=/usr/bin/ trust=1` -> "Loaded 1 rules"
+        //     (clean) on both versions.
+        //   LEGACY `allow exe_type=application/x-executable trust=1` ->
+        //     "Loaded 1 rules" (clean) on both versions.
+        //   MODERN `allow exe_dir=/usr/bin/ : all` -> "Field type (exe_dir)
+        //     is unknown in line 2" on both versions (unaffected by this
+        //     change - modern still goes through `attrs::classify`, not
+        //     `legacy_classify`).
+        //
+        // `legacy_classify` must therefore route `exe_dir`/`exe_type` to
+        // `Subject`, matching upstream `subj_name_to_val(ptr, RULE_FMT_ORIG)`.
+        // Today (pre-fix) `legacy_classify` still returns `None` for both,
+        // which makes the landed per-token `positional_split` (issue #546)
+        // reject this daemon-VALID legacy rule outright as fapd-F01 Fatal -
+        // a NEW false-positive introduced by the #546 fix (pre-#546 it
+        // merely mis-warned via a different path). RED until
+        // `legacy_classify` gains these two `Subject` entries.
+        assert_eq!(legacy_classify("exe_dir"), Some(AttrSide::Subject));
+        assert_eq!(legacy_classify("exe_type"), Some(AttrSide::Subject));
     }
 
     #[test]
@@ -642,5 +877,146 @@ mod tests {
         } else {
             panic!("expected Rule");
         }
+    }
+
+    // --- legacy_rule() order-independence integration tests (issue #546) ---
+
+    #[test]
+    fn legacy_rule_mode_before_uid_order_independent() {
+        // #546 Finding F2 (grounded, audit lane report 2026-07-17): `allow
+        // mode=0755 uid=0` loads cleanly on live fapolicyd 1.3.2 and 1.4.5
+        // even though the OBJECT-only `mode` attr appears BEFORE the
+        // SUBJECT-only `uid` attr. Upstream `nv_split` classifies each token
+        // independently (subj_name_to_val then obj_name_to_val,
+        // `rules.c:922-1027` v1.4.5 / `:784-892` v1.3.2) with no ordering
+        // constraint at all.
+        //
+        // Today: `positional_split` finds `mode` (the first Object-
+        // classified attr) at index 0, so `subject = attrs_flat[..0]` is
+        // empty -> errors "legacy rule has no subject attributes before the
+        // object split" - RED (this daemon-valid rule fails to parse at all
+        // today, surfacing as fapd-F01 Fatal).
+        let parsed = legacy_rule()
+            .parse("allow mode=0755 uid=0")
+            .into_result()
+            .expect("daemon-valid order-independent legacy rule must parse (#546)");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(r.subject.len(), 1, "subject must contain only uid");
+            assert!(matches!(&r.subject[0], Attr::Kv { key, .. } if key == "uid"));
+            assert_eq!(r.object.len(), 1, "object must contain only mode");
+            assert!(matches!(&r.object[0], Attr::Kv { key, .. } if key == "mode"));
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_interleaved_comm_trust_uid_classifies_each_token_independently() {
+        // A THIRD attribute after the object anchor must not be swept into
+        // the object bucket just because of its position. `comm` (subject-
+        // only, legacy_classify_comm_is_subject) and `uid` (subject-only,
+        // legacy_classify_uid_is_subject) sandwich `trust` (object-only-in-
+        // legacy, legacy_classify_trust_is_object_in_legacy). Grounded by
+        // composing two already-differential-grounded per-attribute
+        // classifications with the general order-independence fact
+        // (`nv_split`, same citation as above): if both per-attribute
+        // classifications are correct AND classification is truly order-
+        // independent, `uid` (appearing textually AFTER the object anchor
+        // `trust`) must still land in subject, not object.
+        //
+        // Today: `positional_split` finds `trust` (the first Object-
+        // classified attr) at index 1; subject = attrs[..1] = [comm];
+        // object = attrs[1..] = [trust, uid] - `uid` is SILENTLY
+        // misclassified into the object bucket. No error is raised at all
+        // here, so this bug is invisible without an exact assertion on the
+        // split contents - RED.
+        let parsed = legacy_rule()
+            .parse("allow comm=bash trust=1 uid=0")
+            .into_result()
+            .expect("legacy rule parses (positional_split never errors on this input)");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(
+                r.subject.len(),
+                2,
+                "subject must contain comm AND uid, not just comm; got {:?}",
+                r.subject
+            );
+            let subj_keys: Vec<&str> = r
+                .subject
+                .iter()
+                .map(|a| match a {
+                    Attr::Kv { key, .. } => key.as_str(),
+                    Attr::All => "all",
+                })
+                .collect();
+            assert!(subj_keys.contains(&"comm"), "got subject={subj_keys:?}");
+            assert!(
+                subj_keys.contains(&"uid"),
+                "uid must be classified subject despite following the object \
+                 anchor `trust` positionally; got subject={subj_keys:?}"
+            );
+            assert_eq!(r.object.len(), 1, "object must contain only trust");
+            assert!(matches!(&r.object[0], Attr::Kv { key, .. } if key == "trust"));
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_filehash_before_two_subject_attrs_order_independent() {
+        // Same class of bug as `mode=0755 uid=0` (outright split failure)
+        // but with a different object-anchor attribute (`filehash`, legacy-
+        // object per legacy_classify_filehash_is_object) and TWO trailing
+        // subject attrs (`uid`, `auid` - both legacy_classify_*_is_subject-
+        // grounded) to confirm the fix handles more than a single trailing
+        // subject token.
+        let parsed = legacy_rule()
+            .parse("allow filehash=deadbeef uid=0 auid=1000")
+            .into_result()
+            .expect("daemon-valid order-independent legacy rule must parse (#546)");
+        if let Entry::Rule(r) = parsed {
+            assert_eq!(
+                r.subject.len(),
+                2,
+                "subject must contain uid and auid; got {:?}",
+                r.subject
+            );
+            assert_eq!(
+                r.object.len(),
+                1,
+                "object must contain only filehash; got {:?}",
+                r.object
+            );
+            assert!(matches!(&r.object[0], Attr::Kv { key, .. } if key == "filehash"));
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn legacy_rule_rejects_legacy_illegal_attr_even_with_a_valid_object_anchor() {
+        // Negative control (#546 task item (c)): `gid` is legacy-illegal
+        // (legacy_classify_gid_is_illegal_in_legacy, grounded in
+        // R2-audit-grammar.md per this file's own module doc: "gid, ppid
+        // are illegal on the legacy subject side... NOT valid split
+        // anchors"). Matches upstream nv_split: a token unrecognized by BOTH
+        // subj_name_to_val(format=ORIG) and obj_name_to_val immediately
+        // errors ("Field type (gid) is unknown", return 3) - regardless of
+        // whether a LATER token supplies a valid object anchor.
+        //
+        // Today: `positional_split`'s ONLY validity check is "does an
+        // object-only Attr::Kv anchor exist anywhere" - `path` supplies that
+        // anchor at index 2, so `gid` silently rides along in the subject
+        // bucket with NO rejection at all. RED: this daemon-invalid rule
+        // parses cleanly today.
+        let result = legacy_rule()
+            .parse("allow gid=100 uid=0 path=/bin/sh")
+            .into_result();
+        assert!(
+            result.is_err(),
+            "gid= is illegal in the legacy dialect and must reject the WHOLE \
+             rule, even though `path` supplies a valid object anchor; \
+             got {result:?}"
+        );
     }
 }

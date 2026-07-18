@@ -6,19 +6,26 @@
 //! Phase-0 stub (session 7c): the entrypoint signature and the
 //! [`TargetVersion`] enum are frozen here so the fan-out pipeline fills only
 //! this file's body. The pinned per-RHEL-major required-rules tables are
-//! derived from the DISA XCCDF benchmarks (RHEL 8 V2R4 / RHEL 9 V2R7 /
-//! RHEL 10 V1R1) by `tools/auditd-stig-update`; matching is KEY-SENSITIVE
+//! derived from the DISA XCCDF benchmarks (RHEL 8 V2R8 / RHEL 9 V2R9 /
+//! RHEL 10 V1R2) by `tools/auditd-stig-update`; matching is KEY-SENSITIVE
 //! with a distinct present-but-key-differs message (locked decisions,
 //! 2026-07-10).
 //!
 //! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
-//! [`w06_with_baseline`] are the shipped shapes.
+//! [`w06_with_baseline`] are the shipped shapes. USER RULING (`AskUserQuestion`,
+//! 2026-07-17, session 9e-wave2c pipeline P2 round 2, #549 follow-up): a
+//! path-watch STIG requirement is satisfied by EITHER kernel-equivalent form
+//! (a classic `-w path -p perms -k key` watch, or its dual-arch
+//! `-a always,exit -F arch=bXX -F path= -F perm= -k key` syscall pair), both
+//! directions, all targets -- see [`rules_match`]'s doc comment for the full
+//! grounding and the structural "pure path-watch shape" definition.
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
-//! per-RHEL-major required-rules tables (63/70/77 rules.d lines respectively
-//! as of the #523 loginuid-immutable deepening; originally 61/67/75),
-//! transcribed verbatim from `tools/auditd-stig-update derive`'s paste-ready
-//! output and kept drift-tethered to the DISA XCCDF by that tool's `check`
-//! gate (re-derive on a STIG bump; do not hand-edit). The matching algorithm
+//! per-RHEL-major required-rules tables (63/81/77 rules.d lines respectively
+//! as of the #549 RHEL9 V2R7->V2R9 pin bump, session 9e-wave2c pipeline P2;
+//! originally 61/67/75), transcribed verbatim from
+//! `tools/auditd-stig-update derive`'s paste-ready output and kept
+//! drift-tethered to the DISA XCCDF by that tool's `check` gate (re-derive on
+//! a STIG bump; do not hand-edit). The matching algorithm
 //! (`w06_with_baseline`'s body) is implemented per the grounded matcher spec
 //! on that function's doc comment (sourced from the P2 grounding doc Part
 //! C.5). [`w06_with_baseline`] is `pub` (not `pub(crate)`) specifically so the
@@ -688,60 +695,127 @@ const RHEL9_REQUIRED: &[BaselineRule] = &[
         stig_id: "RHEL-09-654210",
         line: "-a always,exit -F arch=b32 -S umount2 -F auid>=1000 -F auid!=-1 -F key=privileged-umount",
     },
+    // #549 (session 9e-wave2c pipeline P2, 2026-07-17): DISA RHEL 9 STIG V2R9
+    // (confirmed via U_RHEL_9_V2R9_STIG.zip) rewrote the 9 identity/login
+    // rules below from single-line watch form (`-w PATH -p wa -k KEY`) into
+    // dual-arch (b32/b64) syscall form, and added a brand-new required rule,
+    // V-279936 (RHEL-09-654097), replacing the two old cron watch lines with
+    // 4 new dual-arch execve/subj_type=crond_t syscall lines. Every line below
+    // is pasted VERBATIM from `auditd-stig-update derive --product rhel9`
+    // against the real V2R9 XCCDF (transcribed from check-content, not
+    // fixtext); V-258225's b64 line carries a genuine double space before
+    // `-F perm=wa` in DISA's own check-content text (not a transcription
+    // error - see the pinned content test in
+    // crates/rulesteward-auditd/tests/test_lints_stig_required.rs).
     BaselineRule {
         v_number: "V-258217",
         stig_id: "RHEL-09-654215",
-        line: "-w /etc/sudoers -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258217",
+        stig_id: "RHEL-09-654215",
+        line: "-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258218",
         stig_id: "RHEL-09-654220",
-        line: "-w /etc/sudoers.d/ -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/sudoers.d -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258218",
+        stig_id: "RHEL-09-654220",
+        line: "-a always,exit -F arch=b64 -F path=/etc/sudoers.d -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258219",
         stig_id: "RHEL-09-654225",
-        line: "-w /etc/group -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/group -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258219",
+        stig_id: "RHEL-09-654225",
+        line: "-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258220",
         stig_id: "RHEL-09-654230",
-        line: "-w /etc/gshadow -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/gshadow -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258220",
+        stig_id: "RHEL-09-654230",
+        line: "-a always,exit -F arch=b64 -F path=/etc/gshadow -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258221",
         stig_id: "RHEL-09-654235",
-        line: "-w /etc/security/opasswd -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/security/opasswd -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258221",
+        stig_id: "RHEL-09-654235",
+        line: "-a always,exit -F arch=b64 -F path=/etc/security/opasswd -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258222",
         stig_id: "RHEL-09-654240",
-        line: "-w /etc/passwd -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258222",
+        stig_id: "RHEL-09-654240",
+        line: "-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258223",
         stig_id: "RHEL-09-654245",
-        line: "-w /etc/shadow -p wa -k identity",
+        line: "-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity",
+    },
+    BaselineRule {
+        v_number: "V-258223",
+        stig_id: "RHEL-09-654245",
+        line: "-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity",
     },
     BaselineRule {
         v_number: "V-258224",
         stig_id: "RHEL-09-654250",
-        line: "-w /var/log/faillock -p wa -k logins",
+        line: "-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+    },
+    BaselineRule {
+        v_number: "V-258224",
+        stig_id: "RHEL-09-654250",
+        line: "-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
     },
     BaselineRule {
         v_number: "V-258225",
         stig_id: "RHEL-09-654255",
-        line: "-w /var/log/lastlog -p wa -k logins",
+        line: "-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
+    },
+    BaselineRule {
+        v_number: "V-258225",
+        stig_id: "RHEL-09-654255",
+        line: "-a always,exit -F arch=b64 -F path=/var/log/lastlog  -F perm=wa -F auid>=1000 -F auid!=unset -k logins",
     },
     BaselineRule {
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
-        line: "-w /etc/cron.d -p wa -k cronjobs",
+        line: "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
     },
     BaselineRule {
         v_number: "V-279936",
         stig_id: "RHEL-09-654097",
-        line: "-w /var/spool/cron -p wa -k cronjobs",
+        line: "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec",
+    },
+    BaselineRule {
+        v_number: "V-279936",
+        stig_id: "RHEL-09-654097",
+        line: "-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
+    },
+    BaselineRule {
+        v_number: "V-279936",
+        stig_id: "RHEL-09-654097",
+        line: "-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec",
     },
     // Deepening (#523): SV-258227r1014992_rule, a bare Control-rule
     // requirement (panic on critical audit failure). Fetched live
@@ -1184,15 +1258,24 @@ pub fn stig_baseline(target: TargetVersion) -> &'static [BaselineRule] {
 /// baseline (the shipped `RHEL*_REQUIRED` tables via [`w06`], or a test-local
 /// injected one) runs the full matcher below.
 ///
-/// # Grounded matcher spec (P2 grounding doc Part C.5)
+/// # Grounded matcher spec (P2 grounding doc Part C.5, PLUS the path-watch
+/// # equivalence fold, USER RULING 2026-07-17 -- see [`rules_match`]'s doc
+/// # comment for the full grounding)
 ///
 /// For each `BaselineRule` in `baseline`:
 /// 1. Parse `rule.line` via [`crate::parser`] (the SAME parser rules.d files
 ///    go through - `rulesteward_auditd::parser::parse_rules_str`, taking the
 ///    first parsed `AuditRule`) into the required `AuditRule`.
-/// 2. Search `rules` (the full parsed ruleset) for a same-variant
-///    (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`) rule that matches on
-///    EVERY axis:
+/// 2. Search `rules` (the full parsed ruleset) for a rule that matches on
+///    EVERY axis. This is SAME-VARIANT (`Watch`-vs-`Watch` or
+///    `Syscall`-vs-`Syscall`), PLUS the path-watch equivalence fold: a
+///    `Watch`-vs-`Syscall` (or `Syscall`-vs-`Watch`) pair also matches when
+///    the `Syscall` side is STRUCTURALLY a pure path-watch (empty `-S` list,
+///    `always,exit`, no `-C`, and `-F` predicates limited to
+///    `path`/`perm`/`arch`) and its `path`/`perm` equal the `Watch` side's
+///    (arch is ignored on that side -- a watch has no arch axis, so it
+///    matches a b32 row and a b64 row independently). See [`rules_match`]'s
+///    doc comment for the axis definitions:
 ///    - **Watch path:** plain string compare (or trailing-slash-normalized;
 ///      `is_dir` is NOT part of the comparison - grounding Part B.7.2).
 ///    - **Watch perms:** exact `PermBits` equality.
@@ -1343,9 +1426,43 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// Whether `candidate` satisfies `required`. When `include_key` is `true` this
 /// is the FULL match (the "Satisfied" verdict); when `false` the key axis is
 /// excluded (used to distinguish "Missing" from "Present-but-key-differs").
-/// Same-variant only (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`): a
-/// kernel-equivalent rule spelled in the OTHER variant's grammar never
-/// satisfies a requirement (grounding Part C.2's documented non-goal).
+///
+/// Same-variant (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`), PLUS the
+/// path-watch equivalence fold (USER RULING via `AskUserQuestion`,
+/// 2026-07-17, session 9e-wave2c pipeline P2 round 2, #549 follow-up): a
+/// `Watch`-vs-`Syscall` pair (either order) ALSO matches when the `Syscall`
+/// side is a pure path-watch SHAPE and its `path`/`perm` equal the `Watch`
+/// side's. Grounding: DISA V2R9's own check-content runs `auditctl -l | grep
+/// <path>` and PASSES against a plain watch line (V-258222's check-content,
+/// verified against the downloaded V2R9 XCCDF); `auditctl(8)` documents
+/// `-w path -p perms` as compiling to `-a always,exit -F path= -F perm=` per
+/// architecture; `ComplianceAsCode`'s RHEL9 OVAL defaults to the watch style
+/// (`audit_watches_style = 'legacy'`, `ssg/constants.py:468`); the kernel
+/// folds a path-watch syscall rule back to `-w` in `auditctl -l`. So a
+/// classic watch and its dual-arch syscall pair are the SAME kernel-level
+/// audit configuration for a plain path+perm(+key) requirement -- this
+/// supersedes grounding Part C.2's prior "different variant never satisfies"
+/// non-goal for this specific shape only.
+///
+/// "Pure path-watch shape" (the structural test [`is_pure_path_watch_shaped`]
+/// applies, on WHICHEVER side is `Syscall`): an EMPTY `-S` syscall list (`-w`
+/// never names one), the `always,exit` list/action pair, no `-C`
+/// field-comparisons, and `-F` predicates limited to `path`/`perm`/`arch`.
+/// This is a STRUCTURAL check, never a per-V-number special case: a rule with
+/// a non-empty `-S` list or any OTHER `-F` field (e.g. V-279936's
+/// `-S execve -F subj_type=crond_t`) fails the shape test and stays
+/// syscall-only, with no watch-equivalent form at all. `-F arch=` is IGNORED
+/// on the `Syscall` side when comparing against a `Watch` (a watch has no
+/// arch axis), so the SAME watch independently satisfies a b32 row and a b64
+/// row of the same V-number (each is checked separately by the caller's
+/// per-required-row loop). Path compares via [`normalize_watch_path`] (same
+/// as the Watch-vs-Watch axis); perm compares via [`perm_bits_from_field_value`]
+/// parsing the `-F perm=` string into `PermBits` for a genuinely
+/// order-insensitive equality (mirroring the existing Watch-vs-Watch `rpe ==
+/// cpe` rigor, not a raw string compare that `-p wa` vs `-p aw` could break).
+/// Key handling is UNCHANGED: `effective_key` already works generically over
+/// either variant, so the trailing `include_key` check below needs no new
+/// logic once `axes_match` crosses variants.
 fn rules_match(
     required: &crate::ast::AuditRule,
     candidate: &crate::ast::AuditRule,
@@ -1402,6 +1519,49 @@ fn rules_match(
                 && multiset_eq(rfc, cfc, |a, b| a == b)
                 && fields_match_excluding_key(rf, cf, opts)
         }
+        // Path-watch equivalence fold (USER RULING, 2026-07-17; see the doc
+        // comment above): a Watch-shaped requirement, satisfied by a
+        // structurally pure-path-watch Syscall candidate with matching
+        // path/perm (arch ignored).
+        (
+            AuditRule::Watch {
+                path: rp,
+                perms: rpe,
+                ..
+            },
+            AuditRule::Syscall {
+                list: cl,
+                action: ca,
+                syscalls: cs,
+                fields: cf,
+                field_compares: cfc,
+                ..
+            },
+        ) => {
+            is_pure_path_watch_shaped(cl, ca, cs, cf, cfc)
+                && watch_equivalent_axes_match(rp, rpe, cf)
+        }
+        // Reverse direction: a Syscall-shaped requirement (e.g. V-258222's
+        // b32/b64 rows) satisfied by a classic Watch candidate, same shape
+        // test applied to the REQUIRED side this time.
+        (
+            AuditRule::Syscall {
+                list: rl,
+                action: ra,
+                syscalls: rs,
+                fields: rf,
+                field_compares: rfc,
+                ..
+            },
+            AuditRule::Watch {
+                path: cp,
+                perms: cpe,
+                ..
+            },
+        ) => {
+            is_pure_path_watch_shaped(rl, ra, rs, rf, rfc)
+                && watch_equivalent_axes_match(cp, cpe, rf)
+        }
         _ => false,
     };
 
@@ -1415,6 +1575,97 @@ fn rules_match(
 /// simpler, equivalent way to state "ignore `is_dir`".
 fn normalize_watch_path(path: &str) -> &str {
     path.trim_end_matches('/')
+}
+
+/// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure path-watch" -- the
+/// shape a classic `-w path -p perms -k key` compiles down to at the kernel
+/// level (see [`rules_match`]'s doc comment for the full grounding). This is
+/// a purely structural test on the rule's own fields/syscalls/list/action, no
+/// per-V-number special-casing: an EMPTY `-S` list, the `always,exit`
+/// list/action pair, no `-C` field-comparisons, and every `-F` predicate one
+/// of `path`/`perm`/`arch` (with at least one `path` predicate present, so an
+/// empty field set does not vacuously pass). A rule with a non-empty `-S`
+/// list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
+/// subj_type=crond_t`) fails this test and has no watch-equivalent form.
+fn is_pure_path_watch_shaped(
+    list: &crate::ast::FilterList,
+    action: &crate::ast::Action,
+    syscalls: &[String],
+    fields: &[crate::ast::FieldFilter],
+    field_compares: &[crate::ast::FieldComparison],
+) -> bool {
+    use crate::ast::{Action, AuditField, FilterList};
+
+    *list == FilterList::Exit
+        && *action == Action::Always
+        && syscalls.is_empty()
+        && field_compares.is_empty()
+        && fields.iter().all(|f| {
+            matches!(
+                f.field,
+                AuditField::Path | AuditField::Perm | AuditField::Arch
+            )
+        })
+        && fields.iter().any(|f| f.field == AuditField::Path)
+}
+
+/// Compare a `Watch`'s `path`/`perms` against a (structurally pure-path-watch,
+/// per [`is_pure_path_watch_shaped`]) `Syscall`'s `-F path=`/`-F perm=`
+/// fields, for the path-watch equivalence fold. `-F arch=` is deliberately
+/// never read here -- a watch has no arch axis, so the SAME watch candidate
+/// independently satisfies a b32 required row and a b64 required row (the
+/// caller's per-required-row loop checks each separately; see
+/// [`rules_match`]'s doc comment). Returns `false` if the syscall side has no
+/// `path` or `perm` predicate at all, or the perm value cannot parse as
+/// permission-bit letters.
+fn watch_equivalent_axes_match(
+    watch_path: &str,
+    watch_perms: &crate::ast::PermBits,
+    syscall_fields: &[crate::ast::FieldFilter],
+) -> bool {
+    use crate::ast::AuditField;
+
+    let syscall_path = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Path)
+        .map(|f| f.value.as_str());
+    let syscall_perm = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Perm)
+        .map(|f| f.value.as_str());
+
+    let (Some(sp), Some(sperm)) = (syscall_path, syscall_perm) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sp)
+        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+}
+
+/// Parse a `-F perm=` field VALUE (e.g. `"wa"`) into `PermBits`, mirroring
+/// `parser::parse_perms`'s `r`/`w`/`x`/`a` letter grammar (the same one `-w
+/// -p` uses) so a syscall rule's perm value compares against a `Watch`'s
+/// `PermBits` order-insensitively -- the same rigor the existing
+/// Watch-vs-Watch perms axis (`rpe == cpe`, genuine `PermBits` equality) has,
+/// not a raw string compare that `-F perm=wa` vs `-F perm=aw` would wrongly
+/// treat as different. Reimplemented locally (rather than exposing
+/// `parser::parse_perms`) since this module's fix is scoped to this file; the
+/// grammar itself is small and stable (4 letters, `permtab.h:28-31`). An
+/// unrecognized character means the value cannot represent valid perm bits at
+/// all, so it can never be perm-equivalent to a watch -- `None`, not a
+/// partial/best-effort parse.
+fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
+    let mut perms = crate::ast::PermBits::default();
+    for ch in raw.trim().chars() {
+        match ch {
+            'r' => perms.read = true,
+            'w' => perms.write = true,
+            'x' => perms.exec = true,
+            'a' => perms.attr = true,
+            _ => return None,
+        }
+    }
+    Some(perms)
 }
 
 /// Compare two rules' `-F` field-filter sets, EXCLUDING any `AuditField::Key`
@@ -1462,4 +1713,80 @@ fn multiset_eq<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> bool {
         }
     }
     true
+}
+
+/// Direct unit tests for [`is_pure_path_watch_shaped`]'s OWN return value,
+/// NOT filtered through [`watch_equivalent_axes_match`] (which is the only
+/// caller reachable from the public `w06`/`w06_with_baseline` API).
+///
+/// # Why this can't be pinned at the public-API level (mutation-gate report,
+/// session 9e-wave2c pipeline P2 round 3)
+///
+/// `cargo mutants` flagged `:1609:42 - replace == with !=` (the
+/// `fields.iter().any(|f| f.field == AuditField::Path)` guard) as a survivor.
+/// It cannot be killed through `w06`/`w06_with_baseline`: EVERY caller of
+/// [`is_pure_path_watch_shaped`] immediately follows it with
+/// [`watch_equivalent_axes_match`], which independently re-derives path
+/// presence via its OWN `.find(|f| f.field == AuditField::Path)` (and
+/// likewise for `Perm`) and returns `false` whenever either is absent. Proof
+/// by cases on the mutated `==`/`!=` divergence (only possible when `fields`
+/// contains ALL-Path-no-other, or ALL-non-Path-no-Path): both divergent
+/// shapes are missing either a Path or a Perm predicate, so
+/// `watch_equivalent_axes_match` independently forces `false` regardless of
+/// what `is_pure_path_watch_shaped` decided -- the observable `rules_match`
+/// result is IDENTICAL under the mutant and the original for every reachable
+/// input. Testing the private function directly (the standard Rust pattern
+/// for a helper with no other observable surface) is the only way to pin the
+/// "at least one Path predicate present" guard's own correctness -- it
+/// exists to reject a vacuously-empty-of-Path field set per this function's
+/// doc comment ("with at least one path predicate present, so an empty field
+/// set does not vacuously pass").
+#[cfg(test)]
+mod pure_path_watch_shape_tests {
+    use super::is_pure_path_watch_shaped;
+    use crate::ast::{Action, AuditField, CompareOp, FieldFilter, FilterList};
+
+    fn field(f: AuditField, value: &str) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op: CompareOp::Eq,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn perm_and_arch_without_any_path_predicate_is_not_path_watch_shaped() {
+        // Every OTHER conjunct passes (always,exit / empty -S / empty -C /
+        // every field is one of Path|Perm|Arch), but there is NO Path
+        // predicate at all -- Perm and Arch alone must NOT count as
+        // "path-watch shaped". Kills the `:1609:42 == -> !=` mutant
+        // directly: the mutant's `any(|f| f.field != Path)` evaluates `true`
+        // here (both Perm and Arch differ from Path), wrongly returning
+        // `true` for a field set that names no path at all.
+        let fields = vec![
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "Perm+Arch with no Path predicate must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn path_perm_arch_is_path_watch_shaped() {
+        // Positive control: the real V-258222/V-258223 dual-arch shape
+        // (path + perm + arch, empty -S, empty -C) must pass. Without this,
+        // an "always reject" impl would vacuously pass the negative test
+        // above.
+        let fields = vec![
+            field(AuditField::Path, "/etc/passwd"),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "path+perm+arch, empty -S, empty -C must be path-watch shaped"
+        );
+    }
 }

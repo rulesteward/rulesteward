@@ -113,7 +113,8 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
 /// "all digits and at least one nonzero digit" needs no integer parse at
 /// all, so it matches `strtoul`'s clamped behavior regardless of the
 /// input's length.
-fn is_effectively_permissive(value: &str) -> bool {
+#[must_use]
+pub fn is_effectively_permissive(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|b| b.is_ascii_digit())
         && value.bytes().any(|b| b != b'0')

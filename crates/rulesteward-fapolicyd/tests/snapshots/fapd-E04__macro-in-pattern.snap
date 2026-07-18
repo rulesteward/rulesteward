@@ -4,4 +4,4 @@ expression: rendered
 ---
 parse=ok
 diagnostics=1
-[fapd-E04] sev=Error line=2 col=1 span=15..45 :: macro reference `%mymacro` not supported in `pattern=` (fapolicyd does not substitute macros here)
+[fapd-E04] sev=Error line=2 col=1 span=15..43 :: macro reference `%mymacro` not supported in `pattern=` (fapolicyd does not substitute macros here)

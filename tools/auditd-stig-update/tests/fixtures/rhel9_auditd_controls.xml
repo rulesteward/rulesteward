@@ -577,142 +577,183 @@ To load the rules to the kernel immediately, use the following command:
 $ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258217"><Rule severity="medium"><version>RHEL-09-654215</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/sudoers.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers" with the following command:
 
-$ sudo auditctl -l | grep '/etc/sudoers[^.]'
+$ sudo auditctl -l | grep /etc/sudoers
 
--w /etc/sudoers -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers".
+-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers".
 
--w /etc/sudoers -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity
 
 To load the rules to the kernel immediately, use the following command:
 
 $ sudo augenrules --load</fixtext></Rule></Group>
-<Group id="V-258218"><Rule severity="medium"><version>RHEL-09-654220</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/sudoers.d/ directory.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d/" with the following command:
+<Group id="V-258218"><Rule severity="medium"><version>RHEL-09-654220</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/sudoers.d.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d" with the following command:
 
 $ sudo auditctl -l | grep /etc/sudoers.d
 
--w /etc/sudoers.d/ -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/sudoers.d -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d/".
+-a always,exit -F arch=b64 -F path=/etc/sudoers.d -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/sudoers.d".
 
--w /etc/sudoers.d/ -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -F path=/etc/sudoers.d -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/sudoers.d -F perm=wa -k identity
 
 To load the rules to the kernel immediately, use the following command:
 
 $ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258219"><Rule severity="medium"><version>RHEL-09-654225</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/group.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/group" with the following command:
 
-$ sudo auditctl -l | egrep '(/etc/group)'  
+$ sudo auditctl -l | grep /etc/group
 
--w /etc/group -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/group -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/group".
+-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/group".
 
--w /etc/group -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
 
-The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+-a always,exit -F arch=b32 -F path=/etc/group -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258220"><Rule severity="medium"><version>RHEL-09-654230</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/gshadow.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/gshadow" with the following command:
 
-$ sudo auditctl -l | egrep '(/etc/gshadow)' 
+$ sudo auditctl -l | grep /etc/gshadow
 
--w /etc/gshadow -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/gshadow -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/gshadow".
+-a always,exit -F arch=b64 -F path=/etc/gshadow -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/gshadow".
 
--w /etc/gshadow -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
 
-The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+-a always,exit -F arch=b32 -F path=/etc/gshadow -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/gshadow -F perm=wa -k identity
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258221"><Rule severity="medium"><version>RHEL-09-654235</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/opasswd.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/security/opasswd" with the following command:
 
-$ sudo auditctl -l | egrep '(/etc/security/opasswd)' 
+$ sudo auditctl -l | grep /etc/security/opasswd
 
--w /etc/security/opasswd -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/security/opasswd -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/security/opasswd".
+-a always,exit -F arch=b64 -F path=/etc/security/opasswd -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/security/opasswd".
 
--w /etc/security/opasswd -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
 
-The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+-a always,exit -F arch=b32 -F path=/etc/security/opasswd -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/security/opasswd -F perm=wa -k identity
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258222"><Rule severity="medium"><version>RHEL-09-654240</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/passwd.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd" with the following command:
 
-$ sudo auditctl -l | egrep '(/etc/passwd)' 
+$ sudo auditctl -l | grep /etc/passwd
 
--w /etc/passwd -p wa -k identity
+-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd".
+-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd".
 
--w /etc/passwd -p wa -k identity
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
 
-The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
-<Group id="V-258223"><Rule severity="medium"><version>RHEL-09-654245</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/shadow.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/passwd with the following command:
+-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity
 
-$ sudo auditctl -l | egrep '(/etc/shadow)' 
+To load the rules to the kernel immediately, use the following command:
 
--w /etc/shadow -p wa -k identity
+$ sudo augenrules --load</fixtext></Rule></Group>
+<Group id="V-258223"><Rule severity="medium"><version>RHEL-09-654245</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /etc/shadow.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/etc/shadow" with the following command:
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/shadow".
+$ sudo auditctl -l | grep /etc/shadow
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity
 
--w /etc/shadow -p wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity
 
-The audit daemon must be restarted for the changes to take effect.</fixtext></Rule></Group>
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/etc/shadow".
+
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity
+-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258224"><Rule severity="medium"><version>RHEL-09-654250</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /var/log/faillock.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/faillock" with the following command:
 
 $ sudo auditctl -l | grep /var/log/faillock
 
--w /var/log/faillock -p wa -k logins
+-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/faillock".
+-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/faillock".
 
--w /var/log/faillock -p wa -k logins
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
 
-The audit daemon must be restarted for the changes to take effect.
+-a always,exit -F arch=b32 -F path=/var/log/faillock -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
+-a always,exit -F arch=b64 -F path=/var/log/faillock -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
 
-$ sudo service auditd restart</fixtext></Rule></Group>
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
 <Group id="V-258225"><Rule severity="medium"><version>RHEL-09-654255</version><title>RHEL 9 must generate audit records for all account creations, modifications, disabling, and termination events that affect /var/log/lastlog.</title><check system="C-x"><check-content>Verify RHEL 9 generates audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/lastlog" with the following command:
 
 $ sudo auditctl -l | grep /var/log/lastlog
- 
--w /var/log/lastlog -p wa -k logins
 
-If the command does not return a line, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/lastlog".
+-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
 
-Add or update the following file system rule to "/etc/audit/rules.d/audit.rules":
+-a always,exit -F arch=b64 -F path=/var/log/lastlog  -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
 
--w /var/log/lastlog -p wa -k logins
-
-The audit daemon must be restarted for the changes to take effect.
-
-$ sudo service auditd restart</fixtext></Rule></Group>
-<Group id="V-279936"><Rule severity="medium"><version>RHEL-09-654097</version><title>RHEL 9 must audit any script or executable called by cron as root or by any privileged user.</title><check system="C-x"><check-content>Verify RHEL 9 is configured to audit the execution of any system call made by cron as root or by any privileged user.
-
-$ sudo auditctl -l | grep /etc/cron.d
--w /etc/cron.d -p wa -k cronjobs
-
-$ sudo auditctl -l | grep /var/spool/cron
--w /var/spool/cron -p wa -k cronjobs
-
-If either of these commands do not return the expected output, or the lines are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to audit the execution of any system call made by cron as root or by any privileged user.
+If the command does not return a line for each architecture, or the line is commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to generate audit records for all account creations, modifications, disabling, and termination events that affect "/var/log/lastlog".
 
 Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
--w /etc/cron.d/ -p wa -k cronjobs
--w /var/spool/cron/ -p wa -k cronjobs
+
+-a always,exit -F arch=b32 -F path=/var/log/lastlog -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
+-a always,exit -F arch=b64 -F path=/var/log/lastlog  -F perm=wa -F auid&gt;=1000 -F auid!=unset -k logins
+
+To load the rules to the kernel immediately, use the following command:
+
+$ sudo augenrules --load</fixtext></Rule></Group>
+<Group id="V-279936"><Rule severity="medium"><version>RHEL-09-654097</version><title>RHEL 9 must audit any script or executable called by cron as root or by any privileged user.</title><check system="C-x"><check-content>Verify RHEL 9 is configured to audit the execution of any system call made by cron as root or by any privileged user with the following command:
+
+$ sudo auditctl -l | grep cron_exec
+
+-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec
+-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec
+-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid&gt;=1000 -F auid!=unset -k cron_exec
+-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid&gt;=1000 -F auid!=unset -k cron_exec
+
+If any of these commands do not return the expected output, or the lines are commented out, this is a finding.</check-content></check><fixtext fixref="F-x">Configure RHEL 9 to audit the execution of any system call made by cron as root or by any privileged user.
+
+Add or update the following file system rules to "/etc/audit/rules.d/audit.rules":
+
+-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec
+-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F euid=0 -k cron_exec
+-a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid&gt;=1000 -F auid!=unset -k cron_exec
+-a always,exit -F arch=b64 -S execve -F subj_type=crond_t -F auid&gt;=1000 -F auid!=unset -k cron_exec
 
 To load the rules to the kernel immediately, use the following command:
 

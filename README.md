@@ -207,7 +207,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | --- | --- | --- | --- |
 | `fapd-C01` | Convention | rules.d/ filename does not follow the `NN-` numeric-prefix convention | directory mode |
 | `fapd-C02` | Convention | cross-file duplicate: an identical rule appears in two rules.d/ files | directory mode |
-| `fapd-E01` | Error | unknown attribute key | always |
+| `fapd-E01` | Error | unknown attribute key, or a known attribute on the wrong (subject/object) side | always |
 | `fapd-E02` | Error | invalid attribute value (e.g. a malformed digest) | always |
 | `fapd-E03` | Error | reference to an undefined `%setname` macro | always |
 | `fapd-E04` | Error | macro reference in a `trust=`/`pattern=` field, where it is not allowed | always |
@@ -262,7 +262,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sshd-F02` | Fatal | drop-in fragment overrides a required global directive |
 | `sshd-W01` | Warning | STIG-required directive is missing |
 | `sshd-W02` | Warning | directive value is weaker than the STIG baseline |
-| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/HostKeyAlgorithms |
+| `sshd-W03` | Warning | weak algorithm in Ciphers/MACs/KexAlgorithms/GSSAPIKexAlgorithms/HostKeyAlgorithms |
 | `sshd-W04` | Warning | directive deprecated or removed in the target OpenSSH version |
 | `sshd-W05` | Warning | `Match` block overrides a required global in a more permissive direction |
 | `sshd-W06` | Warning | algorithm-list prefix operator (`+`/`-`/`^`) may reintroduce a weak default |

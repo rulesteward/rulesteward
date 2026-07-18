@@ -2244,7 +2244,17 @@ mod w06_stig_drift_tests {
     //!
     //! # Provenance
     //!
-    //! Fetched 2026-07-15: the RHEL 8 (RHEL-08-010382) and RHEL 9
+    //! RE-VERIFIED 2026-07-17 (#549, session 9e-wave2c pipeline P2 STIG pin
+    //! bump: RHEL 8 V2R4->V2R8, RHEL 9 V2R7->V2R9, RHEL 10 V1R1->V1R2). Per
+    //! the bump-time recipe above: diffed this control family's check-content
+    //! (RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520) against the newly
+    //! downloaded XCCDFs for all three products -- text is UNCHANGED (same
+    //! grep invocations, same two literal finding patterns, same RHEL 10
+    //! grep-flag cosmetic variant already recorded below), so only the
+    //! `short_benchmark` labels above were updated; `check_content_excerpt`
+    //! needed no change.
+    //!
+    //! Originally fetched 2026-07-15: the RHEL 8 (RHEL-08-010382) and RHEL 9
     //! (RHEL-09-432030) excerpts are cross-checked against TWO independent
     //! queries of `stigviewer.com`'s mirror of the DISA XCCDF; the RHEL 10
     //! (RHEL-10-600520) excerpt is from a single `stigaview.com` mirror query
@@ -2282,7 +2292,7 @@ mod w06_stig_drift_tests {
         Grounding {
             control_id: "RHEL-08-010382",
             product: "rhel8",
-            short_benchmark: "RHEL 8 STIG V2R4",
+            short_benchmark: "RHEL 8 STIG V2R8",
             check_content_excerpt: "Verify the sudoers file restricts sudo access to \
                 authorized personnel. $ sudo grep -iwR 'ALL' /etc/sudoers \
                 /etc/sudoers.d/ | grep -v '#' If the either of the following entries \
@@ -2291,7 +2301,7 @@ mod w06_stig_drift_tests {
         Grounding {
             control_id: "RHEL-09-432030",
             product: "rhel9",
-            short_benchmark: "RHEL 9 STIG V2R7",
+            short_benchmark: "RHEL 9 STIG V2R9",
             check_content_excerpt: "Verify RHEL 9 restricts privilege elevation to \
                 authorized personnel with the following command: $ sudo grep -iwR \
                 'ALL' /etc/sudoers /etc/sudoers.d/ | grep -v '#' If the either of the \
@@ -2301,7 +2311,7 @@ mod w06_stig_drift_tests {
         Grounding {
             control_id: "RHEL-10-600520",
             product: "rhel10",
-            short_benchmark: "RHEL 10 STIG V1R1",
+            short_benchmark: "RHEL 10 STIG V1R2",
             check_content_excerpt: "Verify RHEL 10 restricts privilege elevation to \
                 authorized personnel with the following command: $ sudo grep -riw \
                 ALL /etc/sudoers /etc/sudoers.d/ | grep -v \"#\" -- this mirror \

@@ -1179,7 +1179,7 @@ fn lint_directory_cross_file_macro_no_e03() {
 /// and `e03` emits fapd-W09 instead of fapd-E03 for the undefined case.
 #[test]
 fn lint_single_file_undefined_macro_is_w09_exit_one() {
-    let f = write_tmp("allow uid=0 : exe=%missingmacro\n");
+    let f = write_tmp("allow uid=0 : path=%missingmacro\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
@@ -1423,4 +1423,32 @@ fn lint_profile_stig_on_w13_firing_ruleset_is_non_empty() {
         stdout.contains("fapd-W13"),
         "the surviving finding must be fapd-W13: {stdout}"
     );
+}
+
+// --- 9e-p1: fapd-E01 attribute-SIDE check (issue #545, CRITICAL fail-open) ---
+
+/// #545: fapd-E01 must validate attribute SIDE, not just NAME, in the modern
+/// colon grammar. `mode=` is `OBJECT_ONLY` (attrs.rs); placed on the SUBJECT
+/// side it is syntactically well-formed but the real daemon rejects it and
+/// exits(1) (grounded: fapolicyd 1.3.2 and 1.4.5 both emit "Field type (mode)
+/// is unknown in line 2" + "Subject is missing", audit lane report
+/// 2026-07-17 Finding F1). Today `RuleSteward` exits 0 with zero diagnostics.
+///
+/// Fires regardless of `--target` since `AttrSide` is version-invariant
+/// (unlike fapd-E06's version-DIVERGENT checks, which are gated on an
+/// explicit `--target`) - the loop below pins that invariance across the
+/// implicit dialect (no flag) and both rhel8/rhel9.
+#[test]
+fn lint_wrong_side_attribute_fires_e01_regardless_of_target() {
+    let f = write_tmp("allow perm=any mode=0755 : all\n");
+    for target in [None, Some("rhel8"), Some("rhel9")] {
+        let mut cmd = Command::cargo_bin("rulesteward").expect("binary");
+        cmd.args(["fapolicyd", "lint", "--file"]).arg(f.path());
+        if let Some(t) = target {
+            cmd.args(["--target", t]);
+        }
+        cmd.assert()
+            .code(2)
+            .stdout(predicate::str::contains("[fapd-E01]"));
+    }
 }
