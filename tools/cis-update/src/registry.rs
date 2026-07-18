@@ -9,9 +9,9 @@
 
 use crate::family::Family;
 
-/// One shipped control row projected for comparison. Ids-only today (the one
-/// surface all four table shapes guarantee); a struct so a lane's projection can
-/// grow fields later without reshaping [`Shipped`].
+/// One shipped control row projected for comparison: the named registry-to-diff
+/// projection boundary. Ids-only - the one surface all four table shapes
+/// guarantee.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShippedControl {
     pub id: String,
@@ -29,7 +29,6 @@ pub enum Shipped {
 
 /// The shipped table for `family` on `product`.
 pub fn shipped(family: Family, product: &str) -> Result<Shipped, String> {
-    let _ = product;
     match family {
         Family::Auditd => auditd::shipped(product),
         Family::Sshd => sshd::shipped(product),
