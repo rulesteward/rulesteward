@@ -12,7 +12,13 @@
 //! 2026-07-10).
 //!
 //! Session 7c-v0_6-wave3, P2: [`BaselineRule`], [`stig_baseline`], and
-//! [`w06_with_baseline`] are the shipped shapes.
+//! [`w06_with_baseline`] are the shipped shapes. USER RULING (`AskUserQuestion`,
+//! 2026-07-17, session 9e-wave2c pipeline P2 round 2, #549 follow-up): a
+//! path-watch STIG requirement is satisfied by EITHER kernel-equivalent form
+//! (a classic `-w path -p perms -k key` watch, or its dual-arch
+//! `-a always,exit -F arch=bXX -F path= -F perm= -k key` syscall pair), both
+//! directions, all targets -- see [`rules_match`]'s doc comment for the full
+//! grounding and the structural "pure path-watch shape" definition.
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
 //! per-RHEL-major required-rules tables (63/81/77 rules.d lines respectively
 //! as of the #549 RHEL9 V2R7->V2R9 pin bump, session 9e-wave2c pipeline P2;
@@ -1252,15 +1258,24 @@ pub fn stig_baseline(target: TargetVersion) -> &'static [BaselineRule] {
 /// baseline (the shipped `RHEL*_REQUIRED` tables via [`w06`], or a test-local
 /// injected one) runs the full matcher below.
 ///
-/// # Grounded matcher spec (P2 grounding doc Part C.5)
+/// # Grounded matcher spec (P2 grounding doc Part C.5, PLUS the path-watch
+/// # equivalence fold, USER RULING 2026-07-17 -- see [`rules_match`]'s doc
+/// # comment for the full grounding)
 ///
 /// For each `BaselineRule` in `baseline`:
 /// 1. Parse `rule.line` via [`crate::parser`] (the SAME parser rules.d files
 ///    go through - `rulesteward_auditd::parser::parse_rules_str`, taking the
 ///    first parsed `AuditRule`) into the required `AuditRule`.
-/// 2. Search `rules` (the full parsed ruleset) for a same-variant
-///    (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`) rule that matches on
-///    EVERY axis:
+/// 2. Search `rules` (the full parsed ruleset) for a rule that matches on
+///    EVERY axis. This is SAME-VARIANT (`Watch`-vs-`Watch` or
+///    `Syscall`-vs-`Syscall`), PLUS the path-watch equivalence fold: a
+///    `Watch`-vs-`Syscall` (or `Syscall`-vs-`Watch`) pair also matches when
+///    the `Syscall` side is STRUCTURALLY a pure path-watch (empty `-S` list,
+///    `always,exit`, no `-C`, and `-F` predicates limited to
+///    `path`/`perm`/`arch`) and its `path`/`perm` equal the `Watch` side's
+///    (arch is ignored on that side -- a watch has no arch axis, so it
+///    matches a b32 row and a b64 row independently). See [`rules_match`]'s
+///    doc comment for the axis definitions:
 ///    - **Watch path:** plain string compare (or trailing-slash-normalized;
 ///      `is_dir` is NOT part of the comparison - grounding Part B.7.2).
 ///    - **Watch perms:** exact `PermBits` equality.
@@ -1411,9 +1426,43 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// Whether `candidate` satisfies `required`. When `include_key` is `true` this
 /// is the FULL match (the "Satisfied" verdict); when `false` the key axis is
 /// excluded (used to distinguish "Missing" from "Present-but-key-differs").
-/// Same-variant only (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`): a
-/// kernel-equivalent rule spelled in the OTHER variant's grammar never
-/// satisfies a requirement (grounding Part C.2's documented non-goal).
+///
+/// Same-variant (`Watch`-vs-`Watch` or `Syscall`-vs-`Syscall`), PLUS the
+/// path-watch equivalence fold (USER RULING via `AskUserQuestion`,
+/// 2026-07-17, session 9e-wave2c pipeline P2 round 2, #549 follow-up): a
+/// `Watch`-vs-`Syscall` pair (either order) ALSO matches when the `Syscall`
+/// side is a pure path-watch SHAPE and its `path`/`perm` equal the `Watch`
+/// side's. Grounding: DISA V2R9's own check-content runs `auditctl -l | grep
+/// <path>` and PASSES against a plain watch line (V-258222's check-content,
+/// verified against the downloaded V2R9 XCCDF); `auditctl(8)` documents
+/// `-w path -p perms` as compiling to `-a always,exit -F path= -F perm=` per
+/// architecture; `ComplianceAsCode`'s RHEL9 OVAL defaults to the watch style
+/// (`audit_watches_style = 'legacy'`, `ssg/constants.py:468`); the kernel
+/// folds a path-watch syscall rule back to `-w` in `auditctl -l`. So a
+/// classic watch and its dual-arch syscall pair are the SAME kernel-level
+/// audit configuration for a plain path+perm(+key) requirement -- this
+/// supersedes grounding Part C.2's prior "different variant never satisfies"
+/// non-goal for this specific shape only.
+///
+/// "Pure path-watch shape" (the structural test [`is_pure_path_watch_shaped`]
+/// applies, on WHICHEVER side is `Syscall`): an EMPTY `-S` syscall list (`-w`
+/// never names one), the `always,exit` list/action pair, no `-C`
+/// field-comparisons, and `-F` predicates limited to `path`/`perm`/`arch`.
+/// This is a STRUCTURAL check, never a per-V-number special case: a rule with
+/// a non-empty `-S` list or any OTHER `-F` field (e.g. V-279936's
+/// `-S execve -F subj_type=crond_t`) fails the shape test and stays
+/// syscall-only, with no watch-equivalent form at all. `-F arch=` is IGNORED
+/// on the `Syscall` side when comparing against a `Watch` (a watch has no
+/// arch axis), so the SAME watch independently satisfies a b32 row and a b64
+/// row of the same V-number (each is checked separately by the caller's
+/// per-required-row loop). Path compares via [`normalize_watch_path`] (same
+/// as the Watch-vs-Watch axis); perm compares via [`perm_bits_from_field_value`]
+/// parsing the `-F perm=` string into `PermBits` for a genuinely
+/// order-insensitive equality (mirroring the existing Watch-vs-Watch `rpe ==
+/// cpe` rigor, not a raw string compare that `-p wa` vs `-p aw` could break).
+/// Key handling is UNCHANGED: `effective_key` already works generically over
+/// either variant, so the trailing `include_key` check below needs no new
+/// logic once `axes_match` crosses variants.
 fn rules_match(
     required: &crate::ast::AuditRule,
     candidate: &crate::ast::AuditRule,
@@ -1470,6 +1519,49 @@ fn rules_match(
                 && multiset_eq(rfc, cfc, |a, b| a == b)
                 && fields_match_excluding_key(rf, cf, opts)
         }
+        // Path-watch equivalence fold (USER RULING, 2026-07-17; see the doc
+        // comment above): a Watch-shaped requirement, satisfied by a
+        // structurally pure-path-watch Syscall candidate with matching
+        // path/perm (arch ignored).
+        (
+            AuditRule::Watch {
+                path: rp,
+                perms: rpe,
+                ..
+            },
+            AuditRule::Syscall {
+                list: cl,
+                action: ca,
+                syscalls: cs,
+                fields: cf,
+                field_compares: cfc,
+                ..
+            },
+        ) => {
+            is_pure_path_watch_shaped(cl, ca, cs, cf, cfc)
+                && watch_equivalent_axes_match(rp, rpe, cf)
+        }
+        // Reverse direction: a Syscall-shaped requirement (e.g. V-258222's
+        // b32/b64 rows) satisfied by a classic Watch candidate, same shape
+        // test applied to the REQUIRED side this time.
+        (
+            AuditRule::Syscall {
+                list: rl,
+                action: ra,
+                syscalls: rs,
+                fields: rf,
+                field_compares: rfc,
+                ..
+            },
+            AuditRule::Watch {
+                path: cp,
+                perms: cpe,
+                ..
+            },
+        ) => {
+            is_pure_path_watch_shaped(rl, ra, rs, rf, rfc)
+                && watch_equivalent_axes_match(cp, cpe, rf)
+        }
         _ => false,
     };
 
@@ -1483,6 +1575,97 @@ fn rules_match(
 /// simpler, equivalent way to state "ignore `is_dir`".
 fn normalize_watch_path(path: &str) -> &str {
     path.trim_end_matches('/')
+}
+
+/// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure path-watch" -- the
+/// shape a classic `-w path -p perms -k key` compiles down to at the kernel
+/// level (see [`rules_match`]'s doc comment for the full grounding). This is
+/// a purely structural test on the rule's own fields/syscalls/list/action, no
+/// per-V-number special-casing: an EMPTY `-S` list, the `always,exit`
+/// list/action pair, no `-C` field-comparisons, and every `-F` predicate one
+/// of `path`/`perm`/`arch` (with at least one `path` predicate present, so an
+/// empty field set does not vacuously pass). A rule with a non-empty `-S`
+/// list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
+/// subj_type=crond_t`) fails this test and has no watch-equivalent form.
+fn is_pure_path_watch_shaped(
+    list: &crate::ast::FilterList,
+    action: &crate::ast::Action,
+    syscalls: &[String],
+    fields: &[crate::ast::FieldFilter],
+    field_compares: &[crate::ast::FieldComparison],
+) -> bool {
+    use crate::ast::{Action, AuditField, FilterList};
+
+    *list == FilterList::Exit
+        && *action == Action::Always
+        && syscalls.is_empty()
+        && field_compares.is_empty()
+        && fields.iter().all(|f| {
+            matches!(
+                f.field,
+                AuditField::Path | AuditField::Perm | AuditField::Arch
+            )
+        })
+        && fields.iter().any(|f| f.field == AuditField::Path)
+}
+
+/// Compare a `Watch`'s `path`/`perms` against a (structurally pure-path-watch,
+/// per [`is_pure_path_watch_shaped`]) `Syscall`'s `-F path=`/`-F perm=`
+/// fields, for the path-watch equivalence fold. `-F arch=` is deliberately
+/// never read here -- a watch has no arch axis, so the SAME watch candidate
+/// independently satisfies a b32 required row and a b64 required row (the
+/// caller's per-required-row loop checks each separately; see
+/// [`rules_match`]'s doc comment). Returns `false` if the syscall side has no
+/// `path` or `perm` predicate at all, or the perm value cannot parse as
+/// permission-bit letters.
+fn watch_equivalent_axes_match(
+    watch_path: &str,
+    watch_perms: &crate::ast::PermBits,
+    syscall_fields: &[crate::ast::FieldFilter],
+) -> bool {
+    use crate::ast::AuditField;
+
+    let syscall_path = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Path)
+        .map(|f| f.value.as_str());
+    let syscall_perm = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Perm)
+        .map(|f| f.value.as_str());
+
+    let (Some(sp), Some(sperm)) = (syscall_path, syscall_perm) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sp)
+        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+}
+
+/// Parse a `-F perm=` field VALUE (e.g. `"wa"`) into `PermBits`, mirroring
+/// `parser::parse_perms`'s `r`/`w`/`x`/`a` letter grammar (the same one `-w
+/// -p` uses) so a syscall rule's perm value compares against a `Watch`'s
+/// `PermBits` order-insensitively -- the same rigor the existing
+/// Watch-vs-Watch perms axis (`rpe == cpe`, genuine `PermBits` equality) has,
+/// not a raw string compare that `-F perm=wa` vs `-F perm=aw` would wrongly
+/// treat as different. Reimplemented locally (rather than exposing
+/// `parser::parse_perms`) since this module's fix is scoped to this file; the
+/// grammar itself is small and stable (4 letters, `permtab.h:28-31`). An
+/// unrecognized character means the value cannot represent valid perm bits at
+/// all, so it can never be perm-equivalent to a watch -- `None`, not a
+/// partial/best-effort parse.
+fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
+    let mut perms = crate::ast::PermBits::default();
+    for ch in raw.trim().chars() {
+        match ch {
+            'r' => perms.read = true,
+            'w' => perms.write = true,
+            'x' => perms.exec = true,
+            'a' => perms.attr = true,
+            _ => return None,
+        }
+    }
+    Some(perms)
 }
 
 /// Compare two rules' `-F` field-filter sets, EXCLUDING any `AuditField::Key`
