@@ -163,7 +163,7 @@ pub const FAPD_CODES: &[LintCode] = &[
     LintCode {
         code: "fapd-E01",
         severity: Severity::Error,
-        description: "unknown attribute key (not a recognized fapolicyd attribute name)",
+        description: "unknown attribute key, or a known attribute placed on the wrong (subject/object) side",
         condition: Condition::Always,
     },
     LintCode {
