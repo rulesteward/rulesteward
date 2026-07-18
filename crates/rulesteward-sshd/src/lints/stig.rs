@@ -1092,17 +1092,14 @@ mod tests {
         // required directive uses it, so there is currently no other AnyOf
         // representative to substitute here.
         //
-        // IMPLEMENTER NOTE (adversarial-review finding 5, no-speculative-
-        // abstraction project rule): once the `"compression"` arm is removed
-        // from `w02_rule` (line ~302-303), `W02Rule::AnyOf` (line ~254) and
-        // `StigValueRule::AnyOf` (line ~340, plus its `value_rule_of` mapping
-        // arm at line ~562) are constructed NOWHERE in this file and
-        // `clippy -D warnings` will flag the dead arms. Endpoint decision:
-        // DELETE both `AnyOf` variants and their `value_rule_of` mapping arm
-        // as part of the same change (do not keep them "for future use" --
-        // no other STIG control in any current target uses a
-        // multi-value-accepted rule; if one is added later, re-add the
-        // variant then, grounded in that control's real check-content).
+        // #549 (adversarial-review finding 5, no-speculative-abstraction
+        // project rule): `W02Rule::AnyOf` and `StigValueRule::AnyOf` (plus
+        // its `value_rule_of` mapping arm) were DELETED, not kept "for
+        // future use", once the `"compression"` arm was removed from
+        // `w02_rule` -- compression was their only constructor, and no
+        // other STIG control in any current target uses a
+        // multi-value-accepted rule. If one is added later, re-add the
+        // variant then, grounded in that control's real check-content.
     }
 
     /// Compression is dropped from RHEL10, so its projection must NOT include it,

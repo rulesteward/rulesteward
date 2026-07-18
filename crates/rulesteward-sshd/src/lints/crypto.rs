@@ -2427,8 +2427,9 @@ mod w03_tests {
     fn kex_extra_arg_does_not_fire_w03() {
         // `KexAlgorithms diffie-hellman-group1-sha1 foo` -- extra arg, fatal sshd
         // parse error ("extra arguments at end of line", rc 255 on rocky9).
-        // W03 covers KexAlgorithms via `is_weak_kex` (see `kex_group1_sha1_fires_w03`
-        // confirming the single-arg form fires); the multi-arg form must NOT fire.
+        // W03 covers KexAlgorithms via the Weak03Kind::Exact arm
+        // (exact_list.contains) (see `kex_group1_sha1_fires_w03` confirming
+        // the single-arg form fires); the multi-arg form must NOT fire.
         assert!(
             run("KexAlgorithms diffie-hellman-group1-sha1 foo\n").is_empty(),
             "a multi-arg KexAlgorithms line (malformed, non-loading) must not fire W03"
@@ -2924,8 +2925,10 @@ mod w03_tests {
     #[test]
     fn kex_minus_operator_list_fires_zero_w03() {
         // Same operator-defers rule for the KexAlgorithms family
-        // (Weak03Kind::Kex, a distinct match arm from Exact -- confirms the
-        // operator guard runs BEFORE the kind dispatch, not duplicated per-arm).
+        // (Weak03Kind::Exact -- #548 rewired kexalgorithms onto the same
+        // exact-match arm as Ciphers/MACs/HostKeyAlgorithms once gss-prefix
+        // matching moved to GSSAPIKexAlgorithms -- confirms the operator
+        // guard runs BEFORE the kind dispatch, not duplicated per-arm).
         assert!(
             run("KexAlgorithms -diffie-hellman-group1-sha1,diffie-hellman-group14-sha1\n")
                 .is_empty(),
