@@ -712,6 +712,97 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // ATL round 2, MISS 1 (#567 scope): inline-comment permissive value is a
+    // fail-open miss.
+    //
+    // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, verified BOTH
+    // via a fresh live differential this round on fapolicyd8 1.3.2 and
+    // fapolicyd9 1.4.5, AND against the upstream C source): a config line is
+    // whitespace-tokenized; `nv.value` is bound to the FIRST token after `=`
+    // ("1", "5", "0" - never the trailing comment text). A line with MORE
+    // than that one value token (e.g. a trailing `# note`) ALSO logs
+    // "Wrong number of arguments for line N" - a separate, non-fatal
+    // complaint - but `nv_split`'s token-count check does not prevent
+    // `kw->parser` (here `permissive_parser`) from still being called with
+    // the correctly-extracted first-token value:
+    //   permissive = 1 # temporarily on -> daemon applies permissive=1
+    //     (live: only "Wrong number of arguments" logged - no "reset to 1"
+    //     needed since 1 already <=1 - daemon runs permissive).
+    //   permissive = 5 # comment -> daemon applies permissive=5, then
+    //     `permissive_parser` clamps >1 down to 1 and logs "permissive
+    //     value reset to 1 - line 1" (live-confirmed on fapolicyd9; the
+    //     clamp-then-warn code path is unconditional on the prior
+    //     "Wrong number of arguments" check).
+    //   permissive = 0 # off -> daemon applies permissive=0 (enforcing);
+    //     "Wrong number of arguments" still logged (same tokenization
+    //     noise) but no permissive/reset warning - stays enforcing.
+    //
+    // Today: `conf_value` returns the WHOLE trimmed remainder after `=`
+    // ("1 # temporarily on", "5 # comment"), which `is_effectively_permissive`
+    // rejects outright (`value.bytes().all(|b| b.is_ascii_digit())` is false
+    // once a space/`#`/letter appears) -> the probe reports "enforcing" for a
+    // daemon that is actually fail-open. FAIL-OPEN false negative - the exact
+    // opposite of a benign false positive, so this is HIGH severity for a
+    // health-check tool.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_one_with_inline_comment_returns_permissive() {
+        // RED: the real daemon runs permissive (nv.value = "1", the first
+        // whitespace token); today's probe sees the raw "1 # temporarily on"
+        // remainder, fails the all-digit check, and reports enforcing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1 # temporarily on\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=1 with a trailing inline comment still resolves to \
+             the first token \"1\" in the real daemon (nv_split/_strsplit) \
+             and runs permissive; the probe must not be fooled by the \
+             trailing comment text into reporting enforcing (#567 ATL \
+             round 2, MISS 1)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_five_with_inline_comment_returns_permissive() {
+        // RED: same miss, plus the daemon's own clamp->1 for an out-of-range
+        // value (live-confirmed WARNING "permissive value reset to 1 - line
+        // 1" on fapolicyd9 for this exact fixture).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 5 # comment\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "permissive=5 with a trailing inline comment resolves to the \
+             first token \"5\", clamped to permissive-mode by the real \
+             daemon (live: WARNING \"permissive value reset to 1\"); the \
+             probe must not be fooled by the trailing comment text (#567 \
+             ATL round 2, MISS 1)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_zero_with_inline_comment_returns_enforcing() {
+        // Control (must already pass, and keep passing after the fix): the
+        // first token is "0" - the real daemon stays enforcing regardless of
+        // the trailing comment (live-confirmed: "Wrong number of arguments"
+        // is logged - the same tokenization noise as the RED cases above -
+        // but no permissive/reset warning follows).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 0 # off\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "permissive=0 with a trailing inline comment still resolves to \
+             the first token \"0\" and stays enforcing in the real daemon"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // read_compiled_final_rule_from (#519, G1/G2 grounding).
     // -------------------------------------------------------------------------
 

@@ -693,15 +693,39 @@ mod tests {
     }
 
     #[test]
-    fn legacy_classify_exe_dir_and_exe_type_are_not_anchors() {
-        // `exe_dir`/`exe_type` are NOT real fapolicyd attributes - 1.3.2/1.4.3/1.4.5
-        // all reject them ("Field type (exe_dir) is unknown", differential
-        // 2026-06-01). The parser must agree with `attrs::is_known` (which rejects
-        // them) instead of pre-accepting them as legacy subject anchors, so
-        // `legacy_classify` returns None and fapd-E01 flags them - matching the
-        // daemon. (Replaces the prior tests that asserted Some(Subject).)
-        assert_eq!(legacy_classify("exe_dir"), None);
-        assert_eq!(legacy_classify("exe_type"), None);
+    fn legacy_classify_exe_dir_and_exe_type_are_subject_anchors() {
+        // RE-GROUNDED (ATL round 2 MISS 2, 2026-07-18). The prior version of
+        // this test (`legacy_classify_exe_dir_and_exe_type_are_not_anchors`)
+        // asserted `None`, citing "1.3.2/1.4.3/1.4.5 all reject
+        // exe_dir/exe_type" (differential 2026-06-01) - that differential
+        // tested ONLY the MODERN (colon) grammar. Upstream fapolicyd's
+        // `subject-attr.c` table1 (the LEGACY/ORIG-format subject attribute
+        // table) DOES list `EXE_DIR`/`EXE_TYPE` in BOTH 1.3.2 and 1.4.5;
+        // they are unknown ONLY to the separate MODERN table (table2),
+        // which is what `attrs::classify`/`attrs::SUBJECT_ONLY` correctly
+        // models (that removal from `SUBJECT_ONLY` on 2026-05-29 stays
+        // correct and is NOT touched here - see attrs.rs's refreshed note).
+        //
+        // Live-verified 2026-07-18 on BOTH fapolicyd 1.3.2 and 1.4.5:
+        //   LEGACY `allow exe_dir=/usr/bin/ trust=1` -> "Loaded 1 rules"
+        //     (clean) on both versions.
+        //   LEGACY `allow exe_type=application/x-executable trust=1` ->
+        //     "Loaded 1 rules" (clean) on both versions.
+        //   MODERN `allow exe_dir=/usr/bin/ : all` -> "Field type (exe_dir)
+        //     is unknown in line 2" on both versions (unaffected by this
+        //     change - modern still goes through `attrs::classify`, not
+        //     `legacy_classify`).
+        //
+        // `legacy_classify` must therefore route `exe_dir`/`exe_type` to
+        // `Subject`, matching upstream `subj_name_to_val(ptr, RULE_FMT_ORIG)`.
+        // Today (pre-fix) `legacy_classify` still returns `None` for both,
+        // which makes the landed per-token `positional_split` (issue #546)
+        // reject this daemon-VALID legacy rule outright as fapd-F01 Fatal -
+        // a NEW false-positive introduced by the #546 fix (pre-#546 it
+        // merely mis-warned via a different path). RED until
+        // `legacy_classify` gains these two `Subject` entries.
+        assert_eq!(legacy_classify("exe_dir"), Some(AttrSide::Subject));
+        assert_eq!(legacy_classify("exe_type"), Some(AttrSide::Subject));
     }
 
     #[test]
