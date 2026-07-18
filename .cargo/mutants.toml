@@ -571,6 +571,37 @@ exclude_re = [
     #   operator-anchored patterns are unambiguous.
     'replace - with / in eq_sentinel_relational_disjoint',
     'replace < with <= in eq_sentinel_relational_disjoint',
+    # `w12` (fapolicyd lints/deprecation.rs, #191) is DORMANT BY CONSTRUCTION: its
+    # version gate `deprecates_untrusted_dir` is a constant `false` until a
+    # fapolicyd-1.6-capable TargetVersion variant exists, so the real body already
+    # returns an empty vec for EVERY input and `replace w12 -> vec![]` is
+    # observationally identical. The detection logic is deliberately split out as
+    # `w12_detect` (fully in scope, killed by its direct unit tests) precisely
+    # because routing tests through the dormant gate would be vacuous - see the
+    # doc comments on `w12` / `deprecates_untrusted_dir`. Verified 2026-07-18:
+    # with the mutant applied, all 848 rulesteward-fapolicyd + 934 rulesteward-cli
+    # tests pass (nightly runs 29475873945/29559182563/29633112455 each reported
+    # exactly this one MISSED). The `vec![Default::default()]` sibling and the
+    # `delete !` gate mutant stay IN scope (the gate flip is killed by the frozen
+    # `w12_is_dormant_for_every_current_target` pin). Path-anchored because `w12`
+    # is a generic lint-fn name. REMOVE THIS EXCLUSION when
+    # `deprecates_untrusted_dir` flips: the mutant stops being equivalent the
+    # moment the lint can fire.
+    'rulesteward-fapolicyd/src/lints/deprecation\.rs:.*replace w12 -> Vec<Diagnostic> with vec!\[\]',
+    # `find_selinuxtype` (selinux config.rs, #520) line-skip guard:
+    # `trimmed.is_empty() || trimmed.starts_with('#')`. The `|| -> &&` mutant makes
+    # the guard never fire (an empty string cannot start with '#'), so empty and
+    # comment lines fall through - but an empty line fails the 12-byte
+    # `SELINUXTYPE=` tag slice (`get(..12)` returns None -> continue) and a
+    # '#'-leading line can never match the tag anchored at position 0
+    # (case-insensitive compare starts at '#' vs 'S'), so `winner` is unchanged on
+    # every input. Same separator-skip-is-an-optimisation shape as the
+    # parse_fanotify_denials / parse_audit_event exclusions above. Verified
+    # 2026-07-18: with the mutant applied, all 183 rulesteward-selinux + 934
+    # rulesteward-cli tests pass (nightly run 29633112455 shard 3 reported exactly
+    # this one MISSED). The sibling `||` mutant in `right_trim_selinuxtype_value`
+    # stays IN scope (caught in the same nightly).
+    'replace \|\| with && in find_selinuxtype',
 ]
 
 # Per-mutant TEST timeout floor (seconds), NOT the per-shard job timeout (that is
