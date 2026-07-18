@@ -1,0 +1,81 @@
+name: cis-drift
+
+# Weekly nudge (#524): re-derive the per-backend CIS control tables from the LATEST
+# ComplianceAsCode release and compare against the shipped tables (families without
+# a shipped table yet report SKIPPED). On drift - including an upstream restructure
+# that breaks the sudoers anchor pairs - open/update a tracking issue (it never
+# edits code). The on-demand path is `just cis-check-latest`.
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Mondays 08:00 UTC (stig-drift runs 06:00 - same upstream, offset)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: CIS control-table drift vs latest ComplianceAsCode
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/cis-update
+      - name: Derive against latest upstream
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/cis-update/Cargo.toml -- check --latest \
+            > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue), 2 = tool/upstream error (fail job).
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc == '2'
+        run: |
+          echo "cis-update errored against latest upstream (see logs above) - upstream may have" \
+               "restructured; the tool needs a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create cis-drift --color FBCA04 \
+            --description "ComplianceAsCode CIS control-table drift" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`cis-update check --latest\` found ComplianceAsCode/content changes"
+            echo "vs the pinned refs in \`tools/cis-update/cis-refs.toml\`."
+            echo
+            echo "To update: run \`just cis-derive <product>\`, review the derived tables, update"
+            echo "the affected per-backend CIS tables, bump that product's ref in"
+            echo "\`cis-refs.toml\`, re-gate (adversarial + mutation), and confirm"
+            echo "\`just cis-check\` reports 0 drift / expected SKIPPED lines."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label cis-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "CIS control-table drift: ComplianceAsCode has updates" \
+              --label cis-drift --body-file issue-body.md
+          fi

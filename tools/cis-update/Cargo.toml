@@ -1,0 +1,23 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the stig-update TOOL's lib half for the shared ComplianceAsCode
+# infrastructure (jinja resolver, network seam, sysctl value derivation) - the
+# repo's first tool-to-tool dependency, chosen over forking cac.rs/jinja.rs
+# (#524 locked decision). stig-update is itself workspace-excluded and resolves
+# its own workspace from its package dir, so the path-dep builds cleanly from here.
+# NOTE for #512 (sysctld DISA XCCDF port): the stig_update lib surface this crate
+# imports (jinja / source / derive / cac) must SURVIVE that port.
+[workspace]
+
+[package]
+name = "cis-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the per-backend CIS control tables from ComplianceAsCode."
+
+[dependencies]
+stig-update = { path = "../stig-update" }
+yaml-rust2 = "0.11"
+toml = "1"

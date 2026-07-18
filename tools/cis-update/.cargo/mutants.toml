@@ -1,0 +1,24 @@
+# cargo-mutants scoping for the cis-update tool workspace.
+#
+# Excluded mutants, each with its justification (mirror of the repo-root
+# discipline: every exclusion is a documented, reviewed decision - never a
+# blanket file skip):
+#
+# - main()/print_help()/cmd_check()/cmd_derive() in src/main.rs: thin dispatch
+#   over the network seam. Every decision they route - SKIPPED/OK/DRIFT wording,
+#   the automated-only diff, anchors, pinned-vs-latest classification, exit-code
+#   mapping inputs - is unit-locked in report.rs/registry.rs; the process-level
+#   behavior is exercised by the live `just cis-check` /verify smoke and the
+#   cis-check.yml PR gate (which run the real binary against the pinned refs).
+#   A cargo-test kill would require stubbing curl at the process boundary,
+#   which the stig-update precedent also does not do.
+# - controls_optional() in src/source.rs: the curl-backed fetch (404-as-None);
+#   its URL construction is unit-locked (controls_url), the status handling
+#   delegates to stig_update::source::fetch_status.
+#
+# flag()/config_path()/run() are NOT excluded: bin-level unit tests kill them.
+exclude_re = [
+    "main\\.rs.*replace (main|print_help|cmd_check|cmd_derive) ",
+    "main\\.rs.*in (cmd_check|cmd_derive)",
+    "source\\.rs.*replace controls_optional ",
+]
