@@ -1,0 +1,30 @@
+# Pinned ComplianceAsCode/content refs for the per-backend CIS control tables.
+# Upstream is BSD-3-Clause; only control ids/titles ever cross into this repo -
+# never CIS benchmark prose (license discipline, #524/#510).
+#
+# Update workflow: bump a product's ref below when ComplianceAsCode moves that
+# product's CIS controls file, then run `cis-update derive --product <p>`, review
+# the diff, update the per-backend CIS tables, re-gate (adversarial + mutation),
+# and confirm `cis-update check` reports 0 drift / expected SKIPPED lines.
+#
+# NOTE on TOML layout: top-level keys (exclude_rules) MUST come before the
+# [products] table header, or they would be parsed as members of [products].
+
+# sysctl_* rules excluded from `derive --values` VALUE derivation only (rules with
+# no `sysctl` template / not /etc/sysctl.d-settable). Exclusion here does NOT
+# remove a control from the id-level family tables - deliberately different
+# semantics from stig-refs.toml's exclude_rules, which drops rules entirely.
+# Seed is EMPTY: at the pinned ref below, neither of stig-refs' excluded rules
+# (sysctl_crypto_fips_enabled, sysctl_kernel_exec_shield) appears in any CIS
+# rules[] list (grounded 2026-07-18). Add entries here only on evidence: a
+# non-excluded sysctl_* rule with no sysctl template is a hard error by design.
+exclude_rules = []
+
+# Per-product pinned ref. The three RHEL CIS benchmarks version INDEPENDENTLY
+# (rhel8 v4.0.0 / rhel9 v2.0.0 / rhel10 v1.0.1 at this pin), so each has its own
+# ref and can be bumped on its own. Today all three point at the commit the
+# Wave-3 grounding ran against - the same pin as stig-refs.toml.
+[products]
+rhel8 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
+rhel9 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
+rhel10 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
