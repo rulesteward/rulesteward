@@ -119,6 +119,21 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // any future caller that skips fill_columns); retained so
                     // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
+                    // exe_dir/exe_type are legal ONLY on the legacy subject
+                    // side (issue #546, ATL round 2 MISS 2): they are unknown
+                    // to the MODERN table (`attrs::is_known` correctly
+                    // rejects them there, unaffected below), but
+                    // `parser::grammar::legacy_classify`'s per-token routing
+                    // already guarantees a `SyntaxFlavor::Legacy` rule's
+                    // exe_dir/exe_type sits on the subject side, so both the
+                    // unknown-attribute and the side check are skipped
+                    // entirely here. Shared `LEGACY_ONLY_SUBJECT_ATTRS` const
+                    // keeps this in sync with `legacy_classify`.
+                    if matches!(r.syntax, SyntaxFlavor::Legacy)
+                        && attrs::LEGACY_ONLY_SUBJECT_ATTRS.contains(&key.as_str())
+                    {
+                        continue;
+                    }
                     if !attrs::is_known(key) {
                         diags.push(super::anchored_at(
                             Severity::Error,

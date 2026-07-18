@@ -248,18 +248,23 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 /// * `dir`, `ftype`, `trust` are object-only (in modern they are `Either`).
 /// * `gid`, `ppid` are illegal on the legacy subject side and are NOT valid
 ///   split anchors (return `None`).
+/// * `exe_dir`, `exe_type` are subject-only (ATL round 2 MISS 2, #546) -
+///   legal ONLY in the legacy dialect, unlike modern where they are unknown;
+///   see `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS` for the shared grounding
+///   cite (kept in sync with fapd-E01's flavor-aware skip in
+///   `lints::walker::e01`, which reads the same const).
 ///
 /// Source: R2-audit-grammar.md "Subject attributes (legacy ORIG format)" and
 /// "Object attributes" sections.
 fn legacy_classify(name: &str) -> Option<AttrSide> {
     match name {
         // Subject-only in legacy (`pattern` is subject-only in both flavors).
-        // `exe_dir`/`exe_type` are NOT here: fapolicyd 1.3.2/1.4.3/1.4.5 all reject
-        // them, so they fall through to `None` and fapd-E01 flags them (matching the
-        // daemon) rather than being silently accepted as legacy anchors.
         "auid" | "uid" | "sessionid" | "pid" | "comm" | "exe" | "pattern" => {
             Some(AttrSide::Subject)
         }
+        // exe_dir/exe_type: legal ONLY on the legacy subject side - see
+        // `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`'s doc for the grounding.
+        _ if crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS.contains(&name) => Some(AttrSide::Subject),
         // Object-only in legacy (dir/ftype/trust differ from modern's Either)
         "path" | "device" | "filehash" | "sha256hash" | "mode" | "dir" | "ftype" | "trust" => {
             Some(AttrSide::Object)

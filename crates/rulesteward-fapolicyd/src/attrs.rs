@@ -74,6 +74,23 @@ pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash", "
 
 pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 
+/// Attribute names legal ONLY on the legacy-grammar subject side (issue #546,
+/// ATL round 2 MISS 2, 2026-07-18): upstream `subject-attr.c` table1 (the
+/// LEGACY/ORIG-format subject table) lists `EXE_DIR`/`EXE_TYPE`, but the
+/// MODERN table (table2, modeled by [`SUBJECT_ONLY`] above) does not.
+/// Live-verified on both fapolicyd 1.3.2 and 1.4.5: legacy
+/// `allow exe_dir=/usr/bin/ trust=1` loads clean on both versions; modern
+/// `allow exe_dir=/usr/bin/ : all` is rejected on both (unaffected - the
+/// modern grammar goes through [`classify`]/[`is_known`], never this list).
+///
+/// Shared, single source of truth for BOTH `parser::grammar::legacy_classify`
+/// (routes these names to `AttrSide::Subject` for a legacy-flavored rule) and
+/// `lints::walker::e01` (skips the unknown-attribute AND side checks
+/// entirely for these names on a `SyntaxFlavor::Legacy` rule, since
+/// `legacy_classify`'s per-token routing already guarantees they land on the
+/// subject side) - referenced by name from both so the two cannot drift.
+pub const LEGACY_ONLY_SUBJECT_ATTRS: &[&str] = &["exe_dir", "exe_type"];
+
 /// fapolicyd's value-TYPE category for an attribute, used by fapd-E07 to predict
 /// load-time type rejection of a `%set` assigned to it.
 ///
