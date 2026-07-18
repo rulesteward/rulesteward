@@ -46,7 +46,9 @@ pub fn controls_optional(reff: &str, product: &str) -> Result<Option<String>, St
 /// `curl` that returns the HTTP status code alongside the body (so a 404 is
 /// distinguishable from a transport failure). `-f` is intentionally NOT passed, so an
 /// HTTP 404 still exits 0 and we read the code; `%{http_code}` is appended to stdout.
-fn fetch_status(url: &str) -> Result<(u16, String), String> {
+/// Public: `tools/cis-update` builds its own 404-as-`None` controls fetch on this
+/// same seam (part of the shared lib surface #512 must keep alive).
+pub fn fetch_status(url: &str) -> Result<(u16, String), String> {
     let out = Command::new("curl")
         .args(["-sSL", "--max-time", "60", "-w", "%{http_code}", url])
         .output()
