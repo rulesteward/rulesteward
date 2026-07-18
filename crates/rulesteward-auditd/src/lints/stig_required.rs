@@ -1714,3 +1714,79 @@ fn multiset_eq<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> bool {
     }
     true
 }
+
+/// Direct unit tests for [`is_pure_path_watch_shaped`]'s OWN return value,
+/// NOT filtered through [`watch_equivalent_axes_match`] (which is the only
+/// caller reachable from the public `w06`/`w06_with_baseline` API).
+///
+/// # Why this can't be pinned at the public-API level (mutation-gate report,
+/// session 9e-wave2c pipeline P2 round 3)
+///
+/// `cargo mutants` flagged `:1609:42 - replace == with !=` (the
+/// `fields.iter().any(|f| f.field == AuditField::Path)` guard) as a survivor.
+/// It cannot be killed through `w06`/`w06_with_baseline`: EVERY caller of
+/// [`is_pure_path_watch_shaped`] immediately follows it with
+/// [`watch_equivalent_axes_match`], which independently re-derives path
+/// presence via its OWN `.find(|f| f.field == AuditField::Path)` (and
+/// likewise for `Perm`) and returns `false` whenever either is absent. Proof
+/// by cases on the mutated `==`/`!=` divergence (only possible when `fields`
+/// contains ALL-Path-no-other, or ALL-non-Path-no-Path): both divergent
+/// shapes are missing either a Path or a Perm predicate, so
+/// `watch_equivalent_axes_match` independently forces `false` regardless of
+/// what `is_pure_path_watch_shaped` decided -- the observable `rules_match`
+/// result is IDENTICAL under the mutant and the original for every reachable
+/// input. Testing the private function directly (the standard Rust pattern
+/// for a helper with no other observable surface) is the only way to pin the
+/// "at least one Path predicate present" guard's own correctness -- it
+/// exists to reject a vacuously-empty-of-Path field set per this function's
+/// doc comment ("with at least one path predicate present, so an empty field
+/// set does not vacuously pass").
+#[cfg(test)]
+mod pure_path_watch_shape_tests {
+    use super::is_pure_path_watch_shaped;
+    use crate::ast::{Action, AuditField, CompareOp, FieldFilter, FilterList};
+
+    fn field(f: AuditField, value: &str) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op: CompareOp::Eq,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn perm_and_arch_without_any_path_predicate_is_not_path_watch_shaped() {
+        // Every OTHER conjunct passes (always,exit / empty -S / empty -C /
+        // every field is one of Path|Perm|Arch), but there is NO Path
+        // predicate at all -- Perm and Arch alone must NOT count as
+        // "path-watch shaped". Kills the `:1609:42 == -> !=` mutant
+        // directly: the mutant's `any(|f| f.field != Path)` evaluates `true`
+        // here (both Perm and Arch differ from Path), wrongly returning
+        // `true` for a field set that names no path at all.
+        let fields = vec![
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "Perm+Arch with no Path predicate must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn path_perm_arch_is_path_watch_shaped() {
+        // Positive control: the real V-258222/V-258223 dual-arch shape
+        // (path + perm + arch, empty -S, empty -C) must pass. Without this,
+        // an "always reject" impl would vacuously pass the negative test
+        // above.
+        let fields = vec![
+            field(AuditField::Path, "/etc/passwd"),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "path+perm+arch, empty -S, empty -C must be path-watch shaped"
+        );
+    }
+}

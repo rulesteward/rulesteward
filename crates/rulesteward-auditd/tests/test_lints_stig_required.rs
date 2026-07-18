@@ -1670,6 +1670,123 @@ fn rhel8_watch_required_row_satisfied_by_dual_arch_syscall_equivalent() {
 }
 
 // ---------------------------------------------------------------------------
+// Equivalence-ruling perm-bit completeness (mutation-gate report, session
+// 9e-wave2c pipeline P2 round 3): `perm_bits_from_field_value` parses a `-F
+// perm=` field value into `PermBits` for the equivalence fold, mirroring
+// `permtab.h:28-31` / `auditctl(8) -p`'s FOUR letters (r/w/x/a). Every
+// existing equivalence test above uses `wa` only (the STIG identity/login
+// rows' actual perm), so `cargo mutants` found the `r`- and `x`-arm deletions
+// (:1661, :1663) survive -- no test ever feeds a perm string containing `r`
+// or `x` through the fold. No shipped RHEL8/9/10 row happens to use `r` or
+// `x` via this fold (every real path-watch row is `wa`), so these use a
+// SYNTHETIC baseline injected via `w06_with_baseline` (the established
+// pattern for matcher-grammar tests in this file, e.g. `rhel9_sample_
+// baseline`/`control_matching_is_presence_only_last_wins_modeling_is_out_of_
+// scope`) -- pinning the PARSING GRAMMAR's completeness, not a specific STIG
+// requirement.
+//
+// Grounding for exact-vs-superset semantics: the EXISTING same-variant
+// Watch-vs-Watch axis in `rules_match` is `rpe == cpe` -- exact `PermBits`
+// equality, not a subset/superset check. `watch_equivalent_axes_match`
+// mirrors that exact rigor (`perm_bits_from_field_value(sperm).as_ref() ==
+// Some(watch_perms)`, also `==`). So the fold requires an EXACT perm match;
+// a watch with MORE bits than required (or fewer) does not satisfy it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn watch_equivalent_recognizes_read_perm_bit() {
+    // Kills the `:1661 - delete 'r' arm` mutant: required perm "ra"
+    // (read+attr) with a candidate watch of the SAME "ra" perms (parsed by
+    // the real, unmutated rules.d parser). Under the correct impl,
+    // `perm_bits_from_field_value("ra")` recognizes both letters and the two
+    // PermBits values compare equal -> satisfied (empty diags). Under the
+    // mutant, the 'r' character falls through to the wildcard `_ => return
+    // None` arm, so the required side never parses at all -> `None !=
+    // Some(watch_perms)` -> wrongly reported missing.
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-R",
+        "TEST-PERM-R",
+        "-a always,exit -F path=/etc/synthetic-r -F perm=ra -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-r -p ra -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a watch with perm 'ra' must satisfy a required perm='ra' path-watch \
+         row (the read bit must be recognized by perm_bits_from_field_value): \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_recognizes_exec_perm_bit() {
+    // Kills the `:1663 - delete 'x' arm` mutant: sibling of the read-bit
+    // test above, for 'x' (exec; PermBits's own doc comment: "exec ->
+    // execve, execveat", grounded in auditctl(8) -p / permtab.h:28-31).
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-X",
+        "TEST-PERM-X",
+        "-a always,exit -F path=/etc/synthetic-x -F perm=xa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-x -p xa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a watch with perm 'xa' must satisfy a required perm='xa' path-watch \
+         row (the exec bit must be recognized by perm_bits_from_field_value): \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_requires_exact_perm_match_not_superset() {
+    // Grounding control (not a mutation killer by itself, both mutant and
+    // original agree here since "wa" never triggers the r/x arms): pins the
+    // EXACT-match semantics explicitly. A watch with MORE bits than required
+    // ("-p rwxa", a strict superset of "wa") must NOT satisfy a required
+    // perm="wa" row -- the fold mirrors the same-variant Watch-vs-Watch axis
+    // (`rpe == cpe`, exact `PermBits` equality), not a "required bits are a
+    // subset of the watch's bits" superset check.
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-SUPERSET",
+        "TEST-PERM-SUPERSET",
+        "-a always,exit -F path=/etc/synthetic-super -F perm=wa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-super -p rwxa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        !diags.is_empty(),
+        "a watch with a SUPERSET of the required perms ('rwxa' vs required \
+         'wa') must NOT satisfy the requirement -- the fold requires exact \
+         PermBits equality: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_missing_required_read_perm_does_not_satisfy() {
+    // Load-bearing "both ways" negative complement to
+    // `watch_equivalent_recognizes_read_perm_bit`: a required perm 'r' bit
+    // that the user's watch OMITS must not be satisfied. Also not a
+    // mutation killer by itself (both mutant and original independently
+    // arrive at "not equal" here -- the required side genuinely fails to
+    // parse under the mutant, and genuinely mismatches under the original --
+    // but it documents the negative half of the exact-match contract the
+    // positive killer test above pins).
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-R-REQUIRED",
+        "TEST-PERM-R-REQUIRED",
+        "-a always,exit -F path=/etc/synthetic-r2 -F perm=rwa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-r2 -p wa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        !diags.is_empty(),
+        "a watch missing the required 'r' bit ('wa' vs required 'rwa') must \
+         NOT satisfy the requirement: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Presence-only decision pin (#523, session 9b-v0_8-wave2 lane 2e; USER
 // DECISION 2026-07-16, via the orchestrator): au-W06 Control matching stays
 // PRESENCE-based this wave -- it asks "does ANY parsed rule match the
