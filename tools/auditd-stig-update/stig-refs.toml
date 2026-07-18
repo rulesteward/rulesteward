@@ -17,13 +17,13 @@ base_url = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip"
 # tools/sshd-stig-update/stig-refs.toml pins (the auditd and sshd baselines are
 # drawn from the same three benchmark documents).
 [products.rhel8]
-zip = "U_RHEL_8_V2R4_STIG.zip"
-benchmark = "RHEL 8 STIG V2R4 (02 Jul 2025)"
+zip = "U_RHEL_8_V2R8_STIG.zip"
+benchmark = "RHEL 8 STIG V2R8 (01 Jul 2026)"
 
 [products.rhel9]
-zip = "U_RHEL_9_V2R7_STIG.zip"
-benchmark = "RHEL 9 STIG V2R7 (05 Jan 2026)"
+zip = "U_RHEL_9_V2R9_STIG.zip"
+benchmark = "RHEL 9 STIG V2R9 (01 Jul 2026)"
 
 [products.rhel10]
-zip = "U_RHEL_10_V1R1_STIG.zip"
-benchmark = "RHEL 10 STIG V1R1 (26 Feb 2026)"
+zip = "U_RHEL_10_V1R2_STIG.zip"
+benchmark = "RHEL 10 STIG V1R2 (01 Jul 2026)"

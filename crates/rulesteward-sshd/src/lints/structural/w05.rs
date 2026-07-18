@@ -421,7 +421,12 @@ mod w05_tests {
 
     // --- DOES NOT FIRE: Compression yes in Match under --target rhel10 ---
     //
-    // Compression is a RHEL8/9-only W02 control (RHEL10 V1R1 dropped it).
+    // #549 REFRESHED (2026-07-17): written when Compression was a RHEL8/9-only
+    // W02 control (RHEL10 V1R1 had already dropped it). DISA RHEL 9 STIG V2R9
+    // (confirmed via U_RHEL_9_V2R9_STIG.zip; lane3-tooling.md T1) subsequently
+    // dropped Compression from RHEL9 too (V-258002/RHEL-09-255130 removed), so
+    // Compression is now not a W02 control on ANY target -- but this test's
+    // assertion (rhel10 specifically stays silent) remains true either way.
     // Under --target rhel10, baseline_check("compression", ...) returns
     // NotControlled, so a Match setting Compression yes must NOT fire W05.
     //
