@@ -1390,83 +1390,127 @@ fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
 // auditing scoped to `subj_type=crond_t` (`cron_exec` key), replacing the
 // two old `-w /etc/cron.d`/`-w /var/spool/cron` watch lines.
 //
+// RE-DECIDED (USER RULING via AskUserQuestion, 2026-07-17, "watch<->syscall
+// EQUIVALENCE"): au-W06's matcher must treat a path-watch requirement as
+// satisfied by EITHER kernel-equivalent form (a classic single-line
+// `-w PATH -p PERMS -k KEY` watch, or the dual-arch
+// `-a always,exit -F arch=bXX -F path=PATH -F perm=PERMS -k KEY` syscall
+// pair), both directions, all targets. Grounding for the ruling: DISA V2R9's
+// own pass/fail check-content (`auditctl -l | egrep <path>`) PASSES on the
+// watch form (verified against the downloaded V2R9 XCCDF, e.g. V-258222's
+// check-content literally runs `auditctl -l | egrep '(/etc/passwd)'` and
+// expects the dual-arch lines OR their auditctl-folded display -- the daemon
+// never distinguishes); `auditctl(8)` documents `-w path -p perms` as
+// equivalent to `-a always,exit -F path= -F perm=`; ComplianceAsCode's RHEL9
+// OVAL (`audit_watches_style` default `'legacy'`, `ssg/constants.py:468`)
+// accepts ONLY the watch pattern on RHEL9 while RHEL10 sets `'modern'`; the
+// kernel folds path-watch syscall rules back to `-w` in `auditctl -l`. So a
+// classic watch and its dual-arch syscall pair are the SAME kernel-level
+// audit configuration for a plain path+perm(+key) requirement -- ONE watch
+// (arch-independent) satisfies BOTH the b32 and b64 required rows for the
+// SAME V-number.
+//
+// This does NOT apply to every Syscall-shaped requirement -- ONLY to rows
+// that are themselves "pure path-watch shaped" (an empty `-S` syscall list,
+// just `-F path=`/`-F perm=`[/`-F arch=`]/`-k`, the literal shape `-w`
+// compiles down to at the kernel level). V-279936's execve/subj_type rows
+// have a non-empty `-S execve` list and a `-F subj_type=` field that no
+// `-w` line can ever express, so they have NO watch-equivalent form and stay
+// syscall-only (see the negative control below).
+//
 // Each test below feeds a ruleset containing ONLY the OLD (V2R7-grounded)
-// form of one rewritten requirement -- a line that the CURRENT shipped
-// table's matching row satisfies EXACTLY (`rules_match` full-axis Watch-vs-
-// Watch equality) -- through the REAL `w06` dispatch against the shipped
-// RHEL9_REQUIRED table. RED today: the old-form line still satisfies the
-// V2R7-grounded shipped row, so au-W06 stays silent for that STIG id. Once
-// the table is updated to require the NEW dual-arch syscall form, the same
-// old-form-only ruleset no longer satisfies it (a Watch-shaped candidate
-// never matches a Syscall-shaped requirement -- `rules_match`'s `_ => false`
-// arm), so a "missing" finding must fire naming the STIG id.
+// watch form of one rewritten requirement, through the REAL `w06` dispatch
+// against the shipped RHEL9_REQUIRED table (now V2R9-grounded, dual-arch
+// syscall rows -- commit 0bcbcf0).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn w06_real_entrypoint_names_rhel9_cron_exec_v279936_new_syscall_form() {
-    // V-279936 (RHEL-09-654097): the OLD form (still shipped today) is
-    // `-w /etc/cron.d -p wa -k cronjobs` + `-w /var/spool/cron -p wa -k
-    // cronjobs`. The V2R9 XCCDF requires 4 dual-arch execve syscall rules
-    // scoped to subj_type=crond_t instead (lane3-tooling.md T1 DRIFT-CHECK:
-    // "+ V-279936 (RHEL-09-654097): -a always,exit -F arch=b32 -S execve
-    // -F subj_type=crond_t -F auid>=1000 -F auid!=unset -k cron_exec" and its
-    // b64/euid=0 siblings; the two old watch lines appear as "-" removals in
-    // the same diff). A ruleset with ONLY the old watch-form lines currently
-    // satisfies V-279936 in full (exact Watch-vs-Watch match); it must not
-    // once the table requires the new syscall form.
+    // V-279936 (RHEL-09-654097): the OLD form (`-w /etc/cron.d -p wa -k
+    // cronjobs` + `-w /var/spool/cron -p wa -k cronjobs`) was replaced by 4
+    // dual-arch execve syscall rules scoped to subj_type=crond_t
+    // (lane3-tooling.md T1 DRIFT-CHECK: "+ V-279936 (RHEL-09-654097):
+    // -a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000
+    // -F auid!=unset -k cron_exec" and its b64/euid=0 siblings). UNLIKE
+    // V-258222/V-258223 below, this STAYS firing under the watch<->syscall
+    // equivalence ruling: `-S execve -F subj_type=crond_t` is not a plain
+    // path-watch shape at all (no `-F path=`, a non-empty `-S` list, and
+    // `subj_type` is a SELinux-context predicate a `-w` line cannot express),
+    // so it has no watch-equivalent form regardless of what the user writes.
     let rules = parse("-w /etc/cron.d -p wa -k cronjobs\n-w /var/spool/cron -p wa -k cronjobs\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     assert!(
         diags
             .iter()
             .any(|d| d.message.contains("RHEL-09-654097") && d.message.contains("is missing")),
-        "the old watch-form cron lines must no longer satisfy V-279936 \
-         (RHEL-09-654097) once the shipped table requires the new dual-arch \
-         execve/subj_type=crond_t syscall form: {diags:?}"
+        "the old watch-form cron lines are not (and under the equivalence \
+         ruling still are not) a kernel-equivalent form of V-279936's \
+         execve/subj_type=crond_t syscall requirement: {diags:?}"
     );
 }
 
 #[test]
-fn w06_real_entrypoint_names_rhel9_identity_syscall_form_v258222_passwd() {
-    // V-258222 (RHEL-09-654240): DISA RHEL 9 STIG V2R9 rewrote the
-    // /etc/passwd identity-watch rule from `-w /etc/passwd -p wa -k identity`
-    // (the form still shipped today) into a dual-arch syscall rule:
-    // "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k
-    // identity" (+ the b64 twin) (lane3-tooling.md T1 DRIFT-CHECK "+
-    // V-258222" lines; the old watch line appears as a "-" removal in the
-    // same diff). A ruleset with ONLY the old watch-form line currently
-    // satisfies V-258222 in full; it must not once the table requires the
-    // new syscall form.
-    let rules = parse("-w /etc/passwd -p wa -k identity\n");
+fn crond_watch_does_not_satisfy_v279936_execve_requirement() {
+    // Negative control (equivalence-ruling boundary, item 1): a plausible but
+    // WRONG admin mental model -- "watch the crond binary" -- must still be
+    // reported missing. V-279936 requires an `-S execve -F subj_type=
+    // crond_t` syscall rule, not a path watch on the crond executable; no
+    // `-w` line can express a subj_type predicate, so there is no watch
+    // form that could ever satisfy this requirement. Passes BOTH before and
+    // after the equivalence fold lands (today via the unconditional
+    // `_ => false` variant mismatch; after the fix because the fold must
+    // recognize V-279936's rows are not path-watch-shaped at all) -- a
+    // regression guard against an over-broad equivalence implementation that
+    // folds ANY Watch-vs-Syscall pair instead of only pure path-watch shapes.
+    let rules = parse("-w /usr/sbin/crond -p x -k cron_exec\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     assert!(
         diags
             .iter()
-            .any(|d| d.message.contains("RHEL-09-654240") && d.message.contains("is missing")),
-        "the old watch-form /etc/passwd line must no longer satisfy V-258222 \
-         (RHEL-09-654240) once the shipped table requires the new dual-arch \
-         syscall form: {diags:?}"
+            .any(|d| d.message.contains("RHEL-09-654097") && d.message.contains("is missing")),
+        "a path-watch on the crond binary is not a kernel-equivalent form of \
+         an execve/subj_type=crond_t syscall rule; V-279936 must still be \
+         reported missing: {diags:?}"
+    );
+}
+
+#[test]
+fn w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd() {
+    // RE-DECIDED (was `w06_real_entrypoint_names_rhel9_identity_syscall_form_
+    // v258222_passwd`, which asserted the classic watch form no longer
+    // satisfies V-258222 post-V2R9-rewrite). USER RULING (AskUserQuestion,
+    // 2026-07-17, "watch<->syscall EQUIVALENCE", see the section doc comment
+    // above for the full grounding): V-258222's two dual-arch syscall rows
+    // ("-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k
+    // identity" + the b64 twin) are a pure path-watch shape (empty `-S`
+    // list, only path/perm/arch/key fields) -- the classic
+    // `-w /etc/passwd -p wa -k identity` line IS their kernel-equivalent
+    // form. ONE watch (arch-independent) must satisfy BOTH the b32 AND b64
+    // required rows -- asserting on the full diagnostics list (not just
+    // `.any()`) so a partial fold (satisfying only one arch row) still fails
+    // this test.
+    let rules = parse("-w /etc/passwd -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-09-654240")),
+        "the classic watch line is a kernel-equivalent form of BOTH \
+         V-258222's (RHEL-09-654240) b32 and b64 dual-arch syscall rows; \
+         neither may be reported missing: {diags:?}"
     );
 }
 
 #[test]
 fn w06_real_entrypoint_v258222_new_syscall_form_satisfies_once_shipped() {
     // Positive complement to
-    // `w06_real_entrypoint_names_rhel9_identity_syscall_form_v258222_passwd`
-    // above (adversarial-review finding 2b): feed the ruleset the EXACT V2R9
+    // `w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` above
+    // (adversarial-review finding 2b): feed the ruleset the EXACT V2R9
     // dual-arch syscall form for V-258222 (transcribed verbatim from its
     // check-content, same source as the content pins above) and confirm it
-    // does NOT get reported missing.
-    //
-    // RED today, and it lands RED for a DIFFERENT reason than the negative
-    // test above: the shipped RHEL9_REQUIRED table's V-258222 row is still
-    // the OLD single-line watch form (`Watch`-shaped in `rules_match`'s
-    // variant dispatch). A `Syscall`-shaped candidate NEVER matches a
-    // `Watch`-shaped requirement (the `_ => false` arm), so au-W06 currently
-    // reports V-258222 missing even though this ruleset already carries the
-    // (soon-to-be-)correct V2R9 form -- confirmed by actually running this
-    // assertion against the shipped table before adding it (see the
-    // RED-EVIDENCE report).
+    // does NOT get reported missing. Same-variant (Syscall-vs-Syscall) match:
+    // GREEN as of commit 0bcbcf0, which populated the shipped table with the
+    // V2R9 syscall form (the equivalence ruling that follows in this file
+    // does not change this test's outcome -- it only adds the CROSS-variant
+    // watch-form case as an ADDITIONAL way to satisfy V-258222).
     let rules = parse(
         "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity\n",
@@ -1480,21 +1524,148 @@ fn w06_real_entrypoint_v258222_new_syscall_form_satisfies_once_shipped() {
 }
 
 #[test]
-fn w06_real_entrypoint_names_rhel9_identity_syscall_form_v258223_shadow() {
-    // V-258223 (RHEL-09-654245): same drift as V-258222, for /etc/shadow.
-    // Old form (still shipped today): `-w /etc/shadow -p wa -k identity`.
-    // New V2R9 form: "-a always,exit -F arch=b32 -F path=/etc/shadow
-    // -F perm=wa -k identity" (+ the b64 twin) (lane3-tooling.md T1
-    // DRIFT-CHECK "+ V-258223" lines).
+fn w06_real_entrypoint_watch_equivalent_satisfies_v258223_shadow() {
+    // RE-DECIDED (was `w06_real_entrypoint_names_rhel9_identity_syscall_form_
+    // v258223_shadow`, which asserted the classic watch form no longer
+    // satisfies V-258223 post-V2R9-rewrite). Sibling of
+    // `w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` above
+    // (same USER RULING, 2026-07-17, same grounding -- see the section doc
+    // comment). V-258223's two dual-arch syscall rows ("-a always,exit
+    // -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity" + the b64
+    // twin) are the same pure path-watch shape as V-258222's; the classic
+    // `-w /etc/shadow -p wa -k identity` line is their kernel-equivalent
+    // form and must satisfy BOTH rows.
+    let rules = parse("-w /etc/shadow -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-09-654245")),
+        "the classic watch line is a kernel-equivalent form of BOTH \
+         V-258223's (RHEL-09-654245) b32 and b64 dual-arch syscall rows; \
+         neither may be reported missing: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Equivalence-ruling boundary pins (item 3): ground each against
+// auditctl(8)'s documented -w/-a equivalence and the EXISTING matcher's
+// perm/key semantics (`rules_match`, `fields_match_excluding_key`,
+// `effective_key`) -- not invented. The perms/path pins below are
+// discriminating-negative CONTROLS: they pass BOTH before and after the
+// equivalence fold (today via the unconditional Watch-vs-Syscall `_ =>
+// false`; after the fix because a correct fold still compares path/perm),
+// guarding against an over-broad implementation that folds ANY watch into
+// ANY syscall row regardless of content. The key-semantics pin is RED today
+// (the current matcher never reaches the key axis for a cross-variant pair
+// at all).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn watch_equivalent_wrong_path_does_not_satisfy_v258222_passwd() {
+    // A watch on a DIFFERENT path (/etc/shadow -- which correctly satisfies
+    // V-258223 once equivalence lands, per the sibling test above) must NOT
+    // satisfy V-258222's /etc/passwd requirement. Mirrors the Watch-vs-Watch
+    // path axis (`normalize_watch_path(rp) == normalize_watch_path(cp)` in
+    // `rules_match`) applying equally to the cross-variant fold.
     let rules = parse("-w /etc/shadow -p wa -k identity\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     assert!(
         diags
             .iter()
-            .any(|d| d.message.contains("RHEL-09-654245") && d.message.contains("is missing")),
-        "the old watch-form /etc/shadow line must no longer satisfy V-258223 \
-         (RHEL-09-654245) once the shipped table requires the new dual-arch \
-         syscall form: {diags:?}"
+            .any(|d| d.message.contains("RHEL-09-654240") && d.message.contains("is missing")),
+        "a watch on a DIFFERENT path (/etc/shadow) must not satisfy \
+         V-258222's /etc/passwd requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_wrong_perms_does_not_satisfy_v258222_passwd() {
+    // V-258222 requires perm=wa (write+attribute-change). A watch with a
+    // NARROWER perm set (-p w only) must NOT satisfy it, even though the
+    // path and key match -- mirrors the existing Watch-vs-Watch perms axis
+    // (`rpe == cpe` in `rules_match`) and the established same-variant
+    // precedent `narrower_watch_perms_does_not_satisfy_the_requirement`
+    // (this file) applying equally to the cross-variant fold.
+    let rules = parse("-w /etc/passwd -p w -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-09-654240") && d.message.contains("is missing")),
+        "a watch with narrower perms (-p w, missing 'a') must not satisfy \
+         V-258222's perm=wa requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_with_different_key_reports_key_differs_not_missing() {
+    // Key-semantics boundary: `rules_match`'s EXISTING two-pass design
+    // (`w06_with_baseline` calls it once with `include_key=true` for
+    // "Satisfied", then falls back to `include_key=false` for "Present-but-
+    // key-differs" vs "Missing" -- see the module doc's `w06_with_baseline`
+    // grounded matcher spec, step 3) already distinguishes a same-shape-but-
+    // wrong-key match from a genuinely absent rule for EVERY existing axis
+    // (pinned for Syscall-vs-Syscall by
+    // `w06_present_but_key_differs_finding_carries_its_stig_control_ref`
+    // elsewhere in this file). Per the USER RULING (do not invent new key
+    // semantics for the new axis), the SAME two-pass distinction must apply
+    // once path+perm match ACROSS variants too: a watch with V-258222's
+    // correct path (/etc/passwd) and perms (wa) but a DIFFERENT key must
+    // produce the SAME "present but with a different key" message, not
+    // "is missing".
+    //
+    // RED today: the current matcher's Watch-vs-Syscall `_ => false` arm
+    // short-circuits `axes_match` before path/perm/key are ever compared, so
+    // BOTH the `include_key=true` and `include_key=false` passes return
+    // `false` today, and `w06_with_baseline` falls all the way to "is
+    // missing" rather than "present but with a different key".
+    let rules = parse("-w /etc/passwd -p wa -k wrongkey\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
+    let v258222: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("RHEL-09-654240"))
+        .collect();
+    assert!(
+        !v258222.is_empty(),
+        "V-258222 must still produce a finding when the key differs: {diags:?}"
+    );
+    assert!(
+        v258222.iter().all(|d| d.message.contains("different key")),
+        "a path+perm-equivalent watch with the WRONG key must produce the \
+         'present but with a different key' message, not 'is missing': \
+         {v258222:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Equivalence-ruling reverse direction (item 2): RHEL8's V2R8 required table
+// still carries plain single-line watch-form rows (DISA never rewrote
+// RHEL8's identity/login set the way V2R9 rewrote RHEL9's -- the RHEL8 pin
+// bump V2R4->V2R8, commit 0bcbcf0, confirmed ZERO content drift). A user
+// config expressing the SAME kernel-level watch as a dual-arch syscall pair
+// must satisfy a watch-shaped required row too -- the equivalence is
+// bidirectional (USER RULING: "both directions, all targets").
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rhel8_watch_required_row_satisfied_by_dual_arch_syscall_equivalent() {
+    // V-230406 (RHEL-08-030150): "-w /etc/passwd -p wa -k identity"
+    // (stig_required.rs, RHEL8_REQUIRED, unchanged by the V2R8 pin bump). A
+    // dual-arch syscall pair expressing the SAME kernel-level watch
+    // (auditctl(8): "-w path -p perms" compiles to one path-watch syscall
+    // rule PER SUPPORTED ARCHITECTURE; `auditctl -l` folds them back into a
+    // single -w line) must satisfy this watch-shaped requirement.
+    //
+    // RED today: `rules_match`'s Watch-vs-Syscall `_ => false` arm rejects
+    // this regardless of content.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030150")),
+        "a dual-arch syscall pair expressing the same kernel-level watch as \
+         V-230406's required -w line must satisfy it: {diags:?}"
     );
 }
 
