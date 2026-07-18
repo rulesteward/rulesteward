@@ -346,6 +346,29 @@ mod tests {
             "mode= (object-only) on the subject side must fire fapd-E01; got {diags:?}"
         );
         assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+        // Mutation-gate strengthening (2026-07-17): pin the MESSAGE content,
+        // not just the diagnostic count/code. `side_name` (walker.rs:79-85)
+        // maps `AttrSide::Subject -> "subject"` / `AttrSide::Object ->
+        // "object"`; a mutant that replaces its return with `""` or
+        // `"xyzzy"` still passes a count/code-only assertion. Here `mode`
+        // was FOUND on the subject side (wrong) and is DECLARED object-only
+        // (expected), so the emission site's exact format string
+        // (`"attribute \`{key}\` is not valid on the {} side (expected
+        // {})"`) must read "subject side" (found) and "expected object"
+        // (declared) - both words pinned so a mutant garbling either one
+        // fails.
+        assert!(
+            diags[0].message.contains("subject side"),
+            "message must name the side the attribute was actually found on \
+             (\"subject side\"); got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("expected object"),
+            "message must name the DECLARED/expected side (\"expected \
+             object\"); got: {:?}",
+            diags[0].message
+        );
     }
 
     #[test]
@@ -372,6 +395,26 @@ mod tests {
             "uid= (subject-only) on the object side must fire fapd-E01; got {diags:?}"
         );
         assert_eq!(diags[0].code.as_ref(), "fapd-E01");
+        // Mutation-gate strengthening (2026-07-17): the opposite direction
+        // from the mode= test above - `uid` was FOUND on the object side
+        // (wrong) and is DECLARED subject-only (expected), so the message
+        // must read "object side" (found) and "expected subject" (declared).
+        // Together with the mode= assertions above, all four `side_name`
+        // outputs (subject-found, object-found, subject-expected,
+        // object-expected) are pinned by content, killing a `""`/`"xyzzy"`
+        // constant-replacement mutant on `side_name` (walker.rs:79-85).
+        assert!(
+            diags[0].message.contains("object side"),
+            "message must name the side the attribute was actually found on \
+             (\"object side\"); got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            diags[0].message.contains("expected subject"),
+            "message must name the DECLARED/expected side (\"expected \
+             subject\"); got: {:?}",
+            diags[0].message
+        );
     }
 
     #[test]
