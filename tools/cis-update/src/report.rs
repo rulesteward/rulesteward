@@ -178,11 +178,13 @@ pub fn render_derive(
         let rows: &[CisControl] = groups.get(&family).map_or(&[], Vec::as_slice);
         total_rows += rows.len();
         let mappings: usize = rows.iter().map(|c| c.rules.len()).sum();
+        let selections: usize = rows.iter().map(|c| c.selections.len()).sum();
         sections.push_str(&format!(
-            "## {} ({} controls, {} rule mappings)\n",
+            "## {} ({} controls, {} rule mappings, {} selections)\n",
             family.as_str(),
             rows.len(),
-            mappings
+            mappings,
+            selections
         ));
         for c in rows {
             for rule in &c.rules {
@@ -192,6 +194,17 @@ pub fn render_derive(
                     c.status.as_str(),
                     c.levels.join(" "),
                     rule,
+                    c.title
+                ));
+            }
+            for s in &c.selections {
+                sections.push_str(&format!(
+                    "{}\t{}\t{}\t{}={}\t{}\n",
+                    c.id,
+                    c.status.as_str(),
+                    c.levels.join(" "),
+                    s.name,
+                    s.option,
                     c.title
                 ));
             }
@@ -241,6 +254,7 @@ mod tests {
             levels: vec!["l1_server".to_string(), "l1_workstation".to_string()],
             status,
             rules: rules.iter().map(|r| (*r).to_string()).collect(),
+            selections: Vec::new(),
         }
     }
 
@@ -415,22 +429,29 @@ mod tests {
             )],
         );
 
+        groups.get_mut(&Family::Sysctld).unwrap()[0].selections =
+            vec![crate::controls::Selection {
+                name: "sysctl_net_ipv4_conf_all_log_martians_value".to_string(),
+                option: "enabled".to_string(),
+            }];
+
         let all = render_derive("rhel9", "abc123", &header, &groups, None);
         let expected = "\
 # rhel9 @ abc123  cis v2.0.0  (2 family-relevant controls)
-## auditd (0 controls, 0 rule mappings)
-## sshd (0 controls, 0 rule mappings)
-## sudoers (1 controls, 1 rule mappings)
+## auditd (0 controls, 0 rule mappings, 0 selections)
+## sshd (0 controls, 0 rule mappings, 0 selections)
+## sudoers (1 controls, 1 rule mappings, 0 selections)
 5.2.2\tautomated\tl1_server l1_workstation\tsudo_add_use_pty\tEnsure 5.2.2 is configured (Automated)
-## sysctld (1 controls, 2 rule mappings)
+## sysctld (1 controls, 2 rule mappings, 1 selections)
 3.3.9\tautomated\tl1_server l1_workstation\tsysctl_net_ipv4_conf_all_log_martians\tEnsure 3.3.9 is configured (Automated)
 3.3.9\tautomated\tl1_server l1_workstation\tsysctl_net_ipv4_conf_default_log_martians\tEnsure 3.3.9 is configured (Automated)
+3.3.9\tautomated\tl1_server l1_workstation\tsysctl_net_ipv4_conf_all_log_martians_value=enabled\tEnsure 3.3.9 is configured (Automated)
 ";
         assert_eq!(all, expected);
 
         let one = render_derive("rhel9", "abc123", &header, &groups, Some(Family::Sudoers));
         assert!(
-            one.contains("## sudoers (1 controls, 1 rule mappings)"),
+            one.contains("## sudoers (1 controls, 1 rule mappings, 0 selections)"),
             "{one}"
         );
         assert!(!one.contains("## sysctld"), "{one}");

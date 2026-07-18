@@ -68,8 +68,10 @@ pub fn family_of(rule: &str) -> Option<Family> {
     }
 }
 
-/// Group controls per family. Each returned row is the control with `rules`
-/// FILTERED to that family; families with no matching controls are absent.
+/// Group controls per family. Each returned row is the control with `rules` AND
+/// `selections` FILTERED to that family (selections by name prefix); membership
+/// requires at least one matching RULE - a lone selection is not a mapping.
+/// Families with no matching controls are absent.
 #[must_use]
 pub fn group(controls: &[CisControl]) -> BTreeMap<Family, Vec<CisControl>> {
     let mut out: BTreeMap<Family, Vec<CisControl>> = BTreeMap::new();
@@ -82,8 +84,15 @@ pub fn group(controls: &[CisControl]) -> BTreeMap<Family, Vec<CisControl>> {
                 .cloned()
                 .collect();
             if !rules.is_empty() {
+                let selections = control
+                    .selections
+                    .iter()
+                    .filter(|s| family_of(&s.name) == Some(fam))
+                    .cloned()
+                    .collect();
                 out.entry(fam).or_default().push(CisControl {
                     rules,
+                    selections,
                     ..control.clone()
                 });
             }
@@ -104,6 +113,7 @@ mod tests {
             levels: vec!["l1_server".to_string()],
             status: Status::Automated,
             rules: rules.iter().map(|r| (*r).to_string()).collect(),
+            selections: Vec::new(),
         }
     }
 
@@ -185,6 +195,40 @@ mod tests {
         assert_eq!(g.len(), 1);
         assert_eq!(g[&Family::Sudoers].len(), 1);
         assert!(!g.contains_key(&Family::Sshd));
+    }
+
+    #[test]
+    fn group_filters_selections_by_name_prefix() {
+        use crate::controls::Selection;
+        let mut c = control("3.3.10", &["sysctl_net_ipv4_tcp_syncookies"]);
+        c.selections = vec![
+            Selection {
+                name: "sysctl_net_ipv4_tcp_syncookies_value".to_string(),
+                option: "enabled".to_string(),
+            },
+            Selection {
+                name: "var_authselect_profile".to_string(),
+                option: "sssd".to_string(),
+            },
+        ];
+        let g = group(&[c]);
+        let row = &g[&Family::Sysctld][0];
+        assert_eq!(row.selections.len(), 1, "{:?}", row.selections);
+        assert_eq!(
+            row.selections[0].name,
+            "sysctl_net_ipv4_tcp_syncookies_value"
+        );
+    }
+
+    #[test]
+    fn selections_alone_do_not_create_family_membership() {
+        use crate::controls::Selection;
+        let mut c = control("1.1.1", &["enable_authselect"]);
+        c.selections = vec![Selection {
+            name: "sysctl_lonely_value".to_string(),
+            option: "enabled".to_string(),
+        }];
+        assert!(group(&[c]).is_empty());
     }
 
     #[test]

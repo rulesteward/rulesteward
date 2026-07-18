@@ -57,8 +57,21 @@ impl Status {
     }
 }
 
+/// A variable selection carried inside a control's `rules:` block using CaC's
+/// profile-selector syntax `name=option` (e.g.
+/// `sysctl_net_ipv4_tcp_syncookies_value=enabled`, `var_selinux_state=enforcing`).
+/// Selections are NOT rules: they pick an option of a CaC variable and there is no
+/// rule.yml behind them. The CIS controls files use them heavily (the STIG ones do
+/// not), so they are split out at parse time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub name: String,
+    pub option: String,
+}
+
 /// One parsed control. `levels` is carried as metadata verbatim (lenient: absent =
-/// empty); `rules` lists ONLY the `rules:` block (`related_rules` and `notes` are
+/// empty); `rules` lists ONLY the plain entries of the `rules:` block, with
+/// `name=option` entries split into `selections` (`related_rules` and `notes` are
 /// deliberately ignored - related rules are not the control's mapping).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CisControl {
@@ -68,6 +81,7 @@ pub struct CisControl {
     pub levels: Vec<String>,
     pub status: Status,
     pub rules: Vec<String>,
+    pub selections: Vec<Selection>,
 }
 
 /// Resolve per-product Jinja (a no-op on today's plain-YAML controls files, but the
@@ -94,9 +108,11 @@ pub fn parse(product: &str, text: &str) -> Result<(Header, Vec<CisControl>), Str
         let status_str =
             scalar(&item["status"]).ok_or_else(|| format!("control {id}: missing status"))?;
         let status = Status::parse(&status_str).map_err(|e| format!("control {id}: {e}"))?;
+        let (rules, selections) = split_rules(string_list(&item["rules"]));
         out.push(CisControl {
             levels: string_list(&item["levels"]),
-            rules: string_list(&item["rules"]),
+            rules,
+            selections,
             id,
             title,
             status,
@@ -107,8 +123,9 @@ pub fn parse(product: &str, text: &str) -> Result<(Header, Vec<CisControl>), Str
 
 /// A YAML scalar as its raw string. Ids like `9.9` lex as floats (`Yaml::Real`
 /// keeps the raw spelling) and a bare integer would lex as `Yaml::Integer`, so
-/// both are accepted alongside plain strings.
-fn scalar(y: &Yaml) -> Option<String> {
+/// both are accepted alongside plain strings. `pub(crate)`: [`crate::values`]
+/// reuses it for var `options:` values (which are often bare integers).
+pub(crate) fn scalar(y: &Yaml) -> Option<String> {
     match y {
         Yaml::String(s) | Yaml::Real(s) => Some(s.clone()),
         Yaml::Integer(i) => Some(i.to_string()),
@@ -120,6 +137,23 @@ fn string_list(y: &Yaml) -> Vec<String> {
     y.as_vec()
         .map(|v| v.iter().filter_map(scalar).collect())
         .unwrap_or_default()
+}
+
+/// Split a `rules:` block into plain rule names and `name=option` variable
+/// selections (CaC's profile-selector syntax, split at the FIRST `=`).
+fn split_rules(entries: Vec<String>) -> (Vec<String>, Vec<Selection>) {
+    let mut rules = Vec::new();
+    let mut selections = Vec::new();
+    for entry in entries {
+        match entry.split_once('=') {
+            Some((name, option)) => selections.push(Selection {
+                name: name.to_string(),
+                option: option.to_string(),
+            }),
+            None => rules.push(entry),
+        }
+    }
+    (rules, selections)
 }
 
 #[cfg(test)]
@@ -156,6 +190,16 @@ controls:
       status: automated
       rules:
           - sudo_add_use_pty
+    - id: 3.3.10
+      title: Ensure tcp syn cookies is enabled (Automated)
+      levels:
+          - l1_server
+          - l1_workstation
+      status: automated
+      rules:
+          - sysctl_net_ipv4_tcp_syncookies
+          - sysctl_net_ipv4_tcp_syncookies_value=enabled
+          - var_authselect_profile=sssd
     - id: 5.2.3
       title: Ensure sudo log file exists (Automated)
       levels:
@@ -259,9 +303,31 @@ controls:
     }
 
     #[test]
+    fn selections_split_out_of_rules_on_the_equals_sign() {
+        let controls = fixture_controls("rhel9");
+        let c = by_id(&controls, "3.3.10");
+        assert_eq!(c.rules, vec!["sysctl_net_ipv4_tcp_syncookies"]);
+        assert_eq!(
+            c.selections,
+            vec![
+                super::Selection {
+                    name: "sysctl_net_ipv4_tcp_syncookies_value".to_string(),
+                    option: "enabled".to_string(),
+                },
+                super::Selection {
+                    name: "var_authselect_profile".to_string(),
+                    option: "sssd".to_string(),
+                },
+            ]
+        );
+        // Controls without selector entries have an empty selections list.
+        assert!(by_id(&controls, "5.2.2").selections.is_empty());
+    }
+
+    #[test]
     fn parses_full_field_carry() {
         let controls = fixture_controls("rhel9");
-        assert_eq!(controls.len(), 11);
+        assert_eq!(controls.len(), 12);
         let anchor = by_id(&controls, "5.2.2");
         assert_eq!(anchor.title, "Ensure sudo commands use pty (Automated)");
         assert_eq!(anchor.levels, vec!["l1_server", "l1_workstation"]);

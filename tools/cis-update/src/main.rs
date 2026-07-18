@@ -163,11 +163,9 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
             if family_filter.is_some_and(|f| f != Family::Sysctld) {
                 eprintln!("--values applies to the sysctld family only; ignored for this filter");
             } else {
-                // The values path re-reads the RAW controls text (stig-update's
-                // derive_table does its own controls parse + per-rule Jinja).
                 let tree = stig_source::tree(&reff)?;
                 let get_rule = stig_source::rule_fetcher(&reff, &tree);
-                let vals = values::sysctl_values(&text, product, &cfg.exclude_rules, get_rule)?;
+                let vals = values::sysctl_values(&parsed, product, &cfg.exclude_rules, get_rule)?;
                 print!("{}", report::render_values(&vals));
             }
         }
