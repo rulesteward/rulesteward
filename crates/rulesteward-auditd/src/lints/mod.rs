@@ -21,6 +21,8 @@
 //! * `stig_required` - au-W06 ruleset missing rules the applicable RHEL STIG
 //!   requires, version-aware under `--target` (issue #474; Phase-0 stub; owns
 //!   the clap-free [`TargetVersion`]).
+//! * `cis` - per-product CIS Benchmark control table (issue #528; mirrors
+//!   `stig_required`'s `BaselineRule`/`stig_baseline` shape).
 //! * `catalog` - machine-readable `au-` code catalog.
 //!
 //! Unlike fapolicyd's per-file `lint()`, the auditd dispatcher takes the WHOLE
@@ -34,6 +36,7 @@
 
 pub mod arch_coverage;
 pub mod catalog;
+pub mod cis;
 pub mod compare_pair;
 pub mod duplicate;
 pub mod field_filter;
