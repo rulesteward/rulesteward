@@ -10,6 +10,9 @@
 //!   unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation; #522).
 //! * `stig` - sudo-W04 (Defaults setting weaker than the sudo STIG baseline)
 //!   (#333).
+//! * `cis` - the per-product (rhel8/rhel9/rhel10) CIS Benchmark control table
+//!   (#526, v0.8 Wave 3) the `stig` module's two `Framework::Cis` `ControlRef`s
+//!   (`use_pty` / I/O-logging) draw their renumbered ids + titles from.
 //! * `catalog` - the machine-readable `sudo-` code catalog (frozen Phase 0).
 //!
 //! The dispatcher [`lint`] runs every pass for real (so `rulesteward sudoers lint`
@@ -21,6 +24,7 @@
 
 pub mod aliases;
 pub mod catalog;
+pub mod cis;
 pub mod f01;
 pub mod stig;
 pub mod tags;

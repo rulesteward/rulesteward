@@ -831,7 +831,7 @@ mod tests {
     /// stigviewer (RHEL 8 V2R7 / RHEL 9 4320xx cluster):
     /// - `!authenticate` -> DISA STIG RHEL-08-010381 / RHEL-09-432025
     /// - `targetpw` / `rootpw` / `runaspw` -> DISA STIG RHEL-08-010383 / RHEL-09-432020
-    /// - `use_pty` (incl. `!use_pty`) -> CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5
+    /// - `use_pty` (incl. `!use_pty`) -> CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5
     ///   (no DISA sudo STIG control)
     /// - `visiblepw` -> CIS / general hardening (no DISA STIG control)
     /// - `timestamp_timeout` (negative value) -> DISA STIG RHEL-08-010384 /
@@ -839,6 +839,14 @@ mod tests {
     ///
     /// If this fails, RE-RUN the grounding pass against a pinned ComplianceAsCode
     /// commit + DISA -- do NOT just edit the string to make it pass (#355, #359, #363).
+    ///
+    /// `use_pty`'s CIS id is RENUMBERED (#526, LOCKED post-A0 2026-07-18): the
+    /// stale "1.3.2" (an older CIS benchmark generation's numbering, surviving
+    /// in ComplianceAsCode only as a `cis@sle12`/`cis@sle15` rule reference) is
+    /// WRONG for the pinned commit `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`,
+    /// whose `sudo_add_use_pty` control anchors at "5.2.2" (uniform across
+    /// rhel8/rhel9/rhel10; see `lints::cis`). RED until the implementer swaps
+    /// the `USE_PTY_CONTROLS` id and the matching message-text literal.
     #[test]
     fn w04_weakening_findings_cite_grounded_controls() {
         // Each finding's message must contain the grounded citation.
@@ -849,7 +857,7 @@ mod tests {
             ("Defaults targetpw\n", "RHEL-09-432020"),
             ("Defaults rootpw\n", "RHEL-08-010383"),
             ("Defaults runaspw\n", "RHEL-08-010383"),
-            ("Defaults !use_pty\n", "CIS Benchmark 1.3.2"),
+            ("Defaults !use_pty\n", "CIS Benchmark 5.2.2"),
             ("Defaults !use_pty\n", "PCI-DSS Req-10.2.5"),
             ("Defaults visiblepw\n", "CIS / general hardening"),
             // timestamp_timeout negative value (#363): per-file weakening finding.
@@ -869,11 +877,14 @@ mod tests {
 
         // The mis-grounded ids found in #355/#359 must NOT reappear in their
         // respective findings (the swapped pair, and the bogus use_pty STIG id).
+        // The #526 entry guards the RENUMBER regression direction: the stale CIS
+        // id "1.3.2" must not survive the swap to "5.2.2".
         let must_not_cite = [
             ("Defaults !authenticate\n", "010383"), // swapped: !authenticate is 010381
             ("Defaults targetpw\n", "010381"),      // swapped: pw family is 010383
             ("Defaults !use_pty\n", "RHEL-08-010382"), // use_pty has no DISA STIG id
             ("Defaults !use_pty\n", "RHEL-09-432020"), // 432020 is the pw control, not use_pty
+            ("Defaults !use_pty\n", "1.3.2"), // #526 renumber: the stale CIS id must not reappear
         ];
         for (defaults, bad) in must_not_cite {
             let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
@@ -933,12 +944,16 @@ mod tests {
         }
     }
 
-    /// `Defaults !use_pty` cites CIS Benchmark 1.3.2 AND PCI-DSS Req-10.2.5
+    /// `Defaults !use_pty` cites CIS Benchmark 5.2.2 AND PCI-DSS Req-10.2.5
     /// (stig.rs:211-212, the negated `use_pty` arm of `check_file`). The dual
     /// CROSS-framework citation must become TWO typed `ControlRef`s: one
-    /// `Framework::Cis` (bare id `"1.3.2"`) and one `Framework::Pci` (bare id
-    /// `"Req-10.2.5"`), in citation order (CIS first, then PCI, matching the
-    /// message text's "CIS Benchmark ... / PCI-DSS ..." order).
+    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 -- LOCKED post-A0
+    /// 2026-07-18, was the stale "1.3.2"; see `lints::cis`) carrying the CaC
+    /// title via `.with_name(..)`, and one `Framework::Pci` (bare id
+    /// `"Req-10.2.5"`, unaffected by the renumber, no name), in citation order
+    /// (CIS first, then PCI, matching the message text's
+    /// "CIS Benchmark ... / PCI-DSS ..." order). RED until the implementer
+    /// swaps `USE_PTY_CONTROLS`'s id to "5.2.2" and attaches the title.
     #[test]
     fn w04_not_use_pty_finding_carries_cis_and_pci_controls() {
         use rulesteward_core::Framework;
@@ -955,7 +970,15 @@ mod tests {
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Cis);
-        assert_eq!(finding.controls[0].id, "1.3.2");
+        assert_eq!(
+            finding.controls[0].id, "5.2.2",
+            "#526 renumber: use_pty's CIS id is 5.2.2 (was the stale 1.3.2)"
+        );
+        assert_eq!(
+            finding.controls[0].name.as_deref(),
+            Some("Ensure sudo commands use pty (Automated)"),
+            "#526: the renumbered CIS ref carries the verbatim CaC title via .with_name(..)"
+        );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
     }
@@ -1019,13 +1042,17 @@ mod tests {
     }
 
     /// The merged-required MISSING `use_pty` absence finding (line 0) cites
-    /// CIS Benchmark 1.3.2 AND PCI-DSS Req-10.2.5 (stig.rs:382, the
+    /// CIS Benchmark 5.2.2 AND PCI-DSS Req-10.2.5 (stig.rs:382, the
     /// `!has_use_pty` branch of `check_merged_required`). Its controls must be
-    /// `Framework::Cis` (id `"1.3.2"`) then `Framework::Pci` (id
-    /// `"Req-10.2.5"`), matching the `!use_pty` per-file finding's pair (same
-    /// control, different emit site). Fixture: `timestamp_timeout=5` present so
-    /// the timestamp absence does not fire; no I/O log so ONLY the use_pty and
-    /// I/O-log absences fire, and we select the use_pty one.
+    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 -- LOCKED post-A0
+    /// 2026-07-18, was the stale "1.3.2") carrying the CaC title via
+    /// `.with_name(..)`, then `Framework::Pci` (id `"Req-10.2.5"`, unaffected,
+    /// no name), matching the `!use_pty` per-file finding's pair (same
+    /// control, different emit site -- pins that the impl wires the renumber
+    /// at BOTH sites, not just the per-file one). Fixture:
+    /// `timestamp_timeout=5` present so the timestamp absence does not fire;
+    /// no I/O log so ONLY the use_pty and I/O-log absences fire, and we
+    /// select the use_pty one.
     #[test]
     fn w04_missing_use_pty_finding_carries_cis_and_pci_controls() {
         use rulesteward_core::Framework;
@@ -1044,18 +1071,28 @@ mod tests {
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Cis);
-        assert_eq!(finding.controls[0].id, "1.3.2");
+        assert_eq!(
+            finding.controls[0].id, "5.2.2",
+            "#526 renumber: use_pty's CIS id is 5.2.2 (was the stale 1.3.2)"
+        );
+        assert_eq!(
+            finding.controls[0].name.as_deref(),
+            Some("Ensure sudo commands use pty (Automated)"),
+            "#526: the renumbered CIS ref carries the verbatim CaC title via .with_name(..)"
+        );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
     }
 
     /// The merged-required MISSING I/O-logging absence finding (line 0) cites
-    /// CIS Benchmark 1.3.3 AND PCI-DSS Req-10.2.5 (stig.rs:395, the
+    /// CIS Benchmark 5.2.3 AND PCI-DSS Req-10.2.5 (stig.rs:395, the
     /// `!has_io_log` branch of `check_merged_required`). Its controls must be
-    /// `Framework::Cis` (id `"1.3.3"`, DISTINCT from use_pty's `1.3.2`) then
-    /// `Framework::Pci` (id `"Req-10.2.5"`). The absence finding's message
-    /// names "logging"; use_pty is present so only the I/O-log (and timestamp)
-    /// absences fire, and we select the logging one.
+    /// `Framework::Cis` (id `"5.2.3"`, RENUMBERED #526 -- LOCKED post-A0
+    /// 2026-07-18, was the stale "1.3.3", DISTINCT from use_pty's `5.2.2`)
+    /// carrying the CaC title via `.with_name(..)`, then `Framework::Pci` (id
+    /// `"Req-10.2.5"`, unaffected, no name). The absence finding's message
+    /// names "logging"; use_pty is present so only the I/O-log (and
+    /// timestamp) absences fire, and we select the logging one.
     #[test]
     fn w04_missing_io_log_finding_carries_cis_and_pci_controls() {
         use rulesteward_core::Framework;
@@ -1074,7 +1111,15 @@ mod tests {
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Cis);
-        assert_eq!(finding.controls[0].id, "1.3.3");
+        assert_eq!(
+            finding.controls[0].id, "5.2.3",
+            "#526 renumber: I/O logging's CIS id is 5.2.3 (was the stale 1.3.3)"
+        );
+        assert_eq!(
+            finding.controls[0].name.as_deref(),
+            Some("Ensure sudo log file exists (Automated)"),
+            "#526: the renumbered CIS ref carries the verbatim CaC title via .with_name(..)"
+        );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
     }
