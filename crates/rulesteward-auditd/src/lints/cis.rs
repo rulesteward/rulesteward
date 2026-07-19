@@ -20,6 +20,8 @@
 //! and cross-product divergence against these tables, so they fail (RED) until
 //! the tables are filled.
 
+use rulesteward_core::ControlRef;
+
 use super::TargetVersion;
 
 /// One CIS-mapped audit rule row: the `ComplianceAsCode` rule name (the stable
@@ -70,4 +72,42 @@ pub fn cis_baseline(target: TargetVersion) -> &'static [CisControl] {
         TargetVersion::Rhel9 => RHEL9_CIS,
         TargetVersion::Rhel10 => RHEL10_CIS,
     }
+}
+
+/// The `Framework::Cis` control references that join `stig_id` under `target`,
+/// ready to append to that STIG rule's au-W06 finding (issue #528). One
+/// [`ControlRef`] per DISTINCT CIS control id that maps `stig_id` in the
+/// product's `controls/stig_<p>.yml` (`cis-update`'s stig-refs join at the
+/// pinned `CaC` commit), each carrying:
+///
+/// * `framework == Framework::Cis`,
+/// * `id` = the CIS Benchmark control id (e.g. `"6.3.3.24"`), PRODUCT-SPECIFIC,
+/// * `name = Some(<CaC title>)` -- the one-line `CaC` recommendation title
+///   (via [`ControlRef::with_name`]); `CaC` titles only, never CIS prose,
+/// * `alias == None` (CIS controls have no DISA Group/Vuln secondary id).
+///
+/// The result is DEDUPLICATED by control id and NEVER repeats one: several
+/// `CaC` rules under one STIG id (e.g. `unlink`+`unlinkat` both under
+/// `RHEL-10-500810`) collapse to their distinct CIS controls. It is
+/// slice-shaped -- 0/1/many, not an `Option`: EMPTY when `stig_id` has no CIS
+/// counterpart under `target` (a CIS-only `-` row, or a STIG id absent from
+/// this product's join), and those findings stay STIG-only. One STIG id can
+/// map several distinct CIS controls (`RHEL-10-500810` -> `6.3.3.24` +
+/// `6.3.3.25`), so callers get 0, 1, or many refs.
+///
+/// Because the join is product-specific, callers MUST pass the target whose
+/// au-W06 finding they are annotating; the same STIG id can join different CIS
+/// ids (or none) on a different RHEL major.
+///
+/// # RED scaffolding (test-author barrier)
+/// Returns an empty `Vec` at the barrier. The implementer builds the
+/// per-product `stig_id -> [(cis_id, title)]` join (verbatim from
+/// `cis-update`'s stig-refs output, next to the `RHEL*_CIS` tables above) and
+/// wires this accessor into [`super::stig_required::w06`] (the only entrypoint
+/// that carries the `target`), so every attach test in
+/// `tests/test_lints_cis.rs` FAILS (RED) until then.
+#[must_use]
+pub fn cis_controls_for_stig(target: TargetVersion, stig_id: &str) -> Vec<ControlRef> {
+    let _ = (target, stig_id);
+    Vec::new()
 }
