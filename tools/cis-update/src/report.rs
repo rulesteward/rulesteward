@@ -217,6 +217,27 @@ pub fn render_derive(
     )
 }
 
+/// The `derive --stig-refs` section: one tab-separated line per (CIS control,
+/// auditd rule) join row; an empty join renders `-` (CIS-only rule). The joined
+/// count in the header makes partial STIG coverage visible at a glance.
+#[must_use]
+pub fn render_stig_refs(rows: &[crate::stig_refs::StigRefRow]) -> String {
+    let joined = rows.iter().filter(|r| !r.stig_ids.is_empty()).count();
+    let mut out = format!(
+        "## auditd stig-refs ({} rows, {joined} joined)\n",
+        rows.len()
+    );
+    for r in rows {
+        let ids = if r.stig_ids.is_empty() {
+            "-".to_string()
+        } else {
+            r.stig_ids.join(",")
+        };
+        out.push_str(&format!("{}\t{}\t{}\n", r.cis_id, r.rule, ids));
+    }
+    out
+}
+
 /// The `derive --values` section: one line per derived sysctl key.
 #[must_use]
 pub fn render_values(rows: &[DerivedKey]) -> String {
@@ -241,11 +262,12 @@ mod tests {
 
     use super::{
         HealthFailure, check_family, classify_health_failure, diff_family, family_health,
-        render_derive, render_values, skip_line, verify_anchors,
+        render_derive, render_stig_refs, render_values, skip_line, verify_anchors,
     };
     use crate::controls::{CisControl, Header, Status};
     use crate::family::Family;
     use crate::registry::{Shipped, ShippedControl};
+    use crate::stig_refs::StigRefRow;
 
     fn control(id: &str, status: Status, rules: &[&str]) -> CisControl {
         CisControl {
@@ -264,6 +286,28 @@ mod tests {
                 id: (*i).to_string(),
             })
             .collect()
+    }
+
+    #[test]
+    fn render_stig_refs_tabs_rows_and_counts_joined() {
+        let rows = vec![
+            StigRefRow {
+                cis_id: "6.3.3.18".to_string(),
+                rule: "audit_rules_privileged_commands_usermod".to_string(),
+                stig_ids: vec!["RHEL-08-030560".to_string(), "RHEL-08-030561".to_string()],
+            },
+            StigRefRow {
+                cis_id: "6.3.3.1".to_string(),
+                rule: "audit_rules_sysadmin_actions".to_string(),
+                stig_ids: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            render_stig_refs(&rows),
+            "## auditd stig-refs (2 rows, 1 joined)\n\
+             6.3.3.18\taudit_rules_privileged_commands_usermod\tRHEL-08-030560,RHEL-08-030561\n\
+             6.3.3.1\taudit_rules_sysadmin_actions\t-\n"
+        );
     }
 
     fn anchor_rows() -> Vec<CisControl> {
