@@ -7,6 +7,9 @@
 //!   permissive Match override (Wave A, plus the registry-gated E01).
 //! * `stig` - sshd-W01 required-directive-missing, sshd-W02 weaker-than-baseline
 //!   (Wave B; gated on the STIG-baseline grounding task).
+//! * `cis` - the per-product CIS Benchmark table + `Framework::Cis` `ControlRef`
+//!   attachment onto the sshd-W01/W02 findings that overlap a CIS control (v0.8
+//!   Wave 3, issue #525).
 //! * `crypto` - sshd-W03 weak algorithm, sshd-W06 prefix-op reintroduction
 //!   (Wave B/C; gated on the per-version default-algorithm lists).
 //! * `deprecation` - sshd-W04 deprecated/removed directive (Wave B).
@@ -20,6 +23,7 @@
 //! call their own entrypoint directly.
 
 pub mod catalog;
+pub mod cis;
 pub mod crypto;
 pub mod deprecation;
 pub mod drop_in;
