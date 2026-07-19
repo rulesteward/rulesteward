@@ -53,6 +53,15 @@
 /// `rulesteward_sysctld::lints::baseline::TargetVersion` /
 /// `rulesteward_sshd::lints::mod::TargetVersion`) so this crate stays
 /// clap-free too.
+///
+/// This is the sudoers crate's FIRST `TargetVersion` (the sudo-W04 STIG
+/// findings are version-agnostic, per `lints::mod`'s module doc, so no prior
+/// `--target` rail existed). Defined here (this module is the sole consumer
+/// today) and re-exported at `lints::TargetVersion` + the crate root
+/// (`lib.rs`), matching the auditd (`stig_required.rs:46` ->
+/// `lints::mod::TargetVersion`) / sysctld (`baseline.rs:35` ->
+/// `lints::mod::TargetVersion`) convention -- never buried under
+/// `lints::cis::TargetVersion` only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetVersion {
     Rhel8,
@@ -66,8 +75,13 @@ pub enum TargetVersion {
 /// checker) can diff the shipped table against ComplianceAsCode by IMPORTING
 /// it, instead of parsing this source file -- mirrors
 /// `rulesteward_sysctld::lints::baseline::StigEntry`.
+///
+/// Named `CisControl` (not `CisEntry`) per the barrier dedup reconciliation
+/// (#524 arbiter ruling, round 3): the entry-struct name is standardized as
+/// `CisControl` across all four Wave-3 CIS lanes (the struct itself stays
+/// per-crate; only the name unifies).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CisEntry {
+pub struct CisControl {
     /// The CIS control id (e.g. `"5.2.2"`).
     pub id: &'static str,
     /// The CaC-carried title, verbatim (includes the upstream `"(Automated)"`
@@ -81,14 +95,19 @@ pub struct CisEntry {
 /// The grounded CIS control table for `target`: the 5 sudoers-family
 /// controls (5.2.2-5.2.6), in ascending-id order. See the module doc for the
 /// grounding pin and the renumber this table backs.
+///
+/// Returns a static slice (not `Vec`), per the barrier dedup reconciliation
+/// (#524 arbiter ruling, round 3): accessor symmetry with the sibling
+/// backends' `pub fn X_baseline(target) -> &'static [Y]` shape (e.g.
+/// `rulesteward_auditd::lints::cis::cis_baseline`).
 #[must_use]
-pub fn cis_baseline(_target: TargetVersion) -> Vec<CisEntry> {
+pub fn cis_baseline(_target: TargetVersion) -> &'static [CisControl] {
     todo!("cis-3b (#526): per-product CIS control table, see module doc")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CisEntry, TargetVersion, cis_baseline};
+    use super::{CisControl, TargetVersion, cis_baseline};
 
     const ALL_TARGETS: [TargetVersion; 3] = [
         TargetVersion::Rhel8,
@@ -112,11 +131,11 @@ mod tests {
         "sudo_require_reauthentication",
     ];
 
-    fn ids(entries: &[CisEntry]) -> Vec<&str> {
+    fn ids(entries: &[CisControl]) -> Vec<&str> {
         entries.iter().map(|e| e.id).collect()
     }
 
-    fn rules(entries: &[CisEntry]) -> Vec<&str> {
+    fn rules(entries: &[CisControl]) -> Vec<&str> {
         entries.iter().map(|e| e.rule).collect()
     }
 
@@ -131,13 +150,13 @@ mod tests {
         for target in ALL_TARGETS {
             let entries = cis_baseline(target);
             assert_eq!(
-                ids(&entries),
+                ids(entries),
                 ANCHOR_IDS.to_vec(),
                 "{target:?} must carry exactly the 5 grounded ids in ascending order; \
                  got {entries:?}"
             );
             assert_eq!(
-                rules(&entries),
+                rules(entries),
                 ANCHOR_RULES.to_vec(),
                 "{target:?}'s rule-name mapping must match the grounded (id, rule) \
                  pairing (same position as ANCHOR_IDS); got {entries:?}"
@@ -237,7 +256,7 @@ mod tests {
     fn timestamp_timeout_title_diverges_on_rhel9_only() {
         let title_for = |target: TargetVersion| -> String {
             cis_baseline(target)
-                .into_iter()
+                .iter()
                 .find(|e| e.id == "5.2.6")
                 .unwrap_or_else(|| panic!("{target:?} table must contain 5.2.6"))
                 .title

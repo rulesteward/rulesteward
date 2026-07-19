@@ -34,6 +34,6 @@ pub mod parser;
 pub mod resolve;
 
 pub use ast::SudoersFile;
-pub use lints::{SudoersLintContext, lint};
+pub use lints::{SudoersLintContext, TargetVersion, lint};
 pub use parser::parse;
 pub use resolve::resolve_target;

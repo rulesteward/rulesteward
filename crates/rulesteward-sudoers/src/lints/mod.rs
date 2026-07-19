@@ -56,6 +56,14 @@ pub use rulesteward_core::anchored;
 /// module's `use super::{..., f01, ...}` import.
 pub use f01::f01;
 
+/// Re-exported from the `cis` module (#526, v0.8 Wave 3 lane 3b): the
+/// sudoers crate's FIRST `TargetVersion`. Surfaced at `lints::TargetVersion`
+/// (not buried under `lints::cis::TargetVersion` only), matching the auditd
+/// (`lints::mod::TargetVersion`, re-exported from `stig_required`) / sysctld
+/// (`lints::mod::TargetVersion`, re-exported from `baseline`) convention --
+/// per the barrier dedup reconciliation (#524 arbiter ruling, round 3).
+pub use cis::TargetVersion;
+
 /// Run every semantic lint pass over the parsed `files` and return the merged
 /// diagnostic list, in catalog order for byte-stable output.
 ///
