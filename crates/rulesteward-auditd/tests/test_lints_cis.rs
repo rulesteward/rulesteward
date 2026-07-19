@@ -88,6 +88,29 @@ fn cis_baseline_rhel8_has_grounded_rows() {
         r.title,
         "Ensure the audit configuration is immutable (Automated)"
     );
+
+    // Two rows whose grounding was regenerated clean (answers round 1). The
+    // sysadmin-actions title carries NO stray "894" suffix (a source-fixed
+    // transcription artifact) and phrases rhel8's exact wording ("changes to
+    // system administration scope (sudoers)"), which rhel10 renumbers AND
+    // rewords -- so a table copied from a sibling product fails here.
+    // (derive-rhel8 row 10.)
+    let r = row_for_cac(t, "audit_rules_sysadmin_actions");
+    assert_eq!(r.control_id, "6.3.3.1");
+    assert_eq!(
+        r.title,
+        "Ensure changes to system administration scope (sudoers) is collected (Automated)"
+    );
+
+    // usermod: rhel8 numbers it 6.3.3.18 (the upstream "6.6.3.18" typo was
+    // corrected at source) and phrases the title "... are recorded ..."
+    // (rhel9/rhel10 say "... collected ..."). (derive-rhel8 row 61.)
+    let r = row_for_cac(t, "audit_rules_privileged_commands_usermod");
+    assert_eq!(r.control_id, "6.3.3.18");
+    assert_eq!(
+        r.title,
+        "Ensure successful and unsuccessful attempts to use the usermod command are recorded (Automated)"
+    );
 }
 
 #[test]
@@ -152,6 +175,25 @@ fn cis_baseline_immutable_control_id_diverges_per_product() {
     assert_eq!(id(TargetVersion::Rhel8), "6.3.3.21");
     assert_eq!(id(TargetVersion::Rhel9), "6.3.3.20");
     assert_eq!(id(TargetVersion::Rhel10), "6.3.3.36");
+}
+
+#[test]
+fn cis_baseline_usermod_title_diverges_rhel8_vs_rhel10() {
+    // The usermod control's CaC TITLE (not just its id) diverges per product:
+    // rhel8 says "... are recorded ..."; rhel10 says "... are collected ...".
+    // This forces the rhel8 table to carry rhel8's exact (regenerated) wording
+    // rather than a copy of a sibling product's, complementing the immutable
+    // test (same title, divergent id) with the mirror case (divergent title).
+    // (derive-rhel8 row 61 vs derive-rhel10 row 71.)
+    let title = |t| row_for_cac(cis_baseline(t), "audit_rules_privileged_commands_usermod").title;
+    assert_eq!(
+        title(TargetVersion::Rhel8),
+        "Ensure successful and unsuccessful attempts to use the usermod command are recorded (Automated)"
+    );
+    assert_eq!(
+        title(TargetVersion::Rhel10),
+        "Ensure successful and unsuccessful attempts to use the usermod command are collected (Automated)"
+    );
 }
 
 #[test]
@@ -319,6 +361,33 @@ fn cis_join_dedups_multiple_rows_sharing_one_control() {
         refs[0].name.as_deref(),
         Some("Ensure unsuccessful file access attempts are collected (Automated)")
     );
+}
+
+#[test]
+fn cis_join_one_control_maps_multiple_distinct_stig_ids() {
+    // The complementary many-shape (answers round 1): ONE CIS control is the
+    // join target of SEVERAL distinct STIG ids. rhel8 6.3.3.8 (user/group
+    // modification) is joined by five separate STIG rules -- RHEL-08-030130 /
+    // 030140 / 030150 / 030160 / 030170 (stig-refs-rhel8 rows 24-28). Each of
+    // those findings therefore carries exactly the single 6.3.3.8 ref with the
+    // one shared CaC title (derive-rhel8 row 25). Asserting three of them keeps
+    // this a pure-accessor pin independent of baseline membership.
+    for stig in ["RHEL-08-030130", "RHEL-08-030150", "RHEL-08-030170"] {
+        let refs = cis_controls_for_stig(TargetVersion::Rhel8, stig);
+        assert_eq!(
+            refs.len(),
+            1,
+            "{stig} joins exactly one CIS control: {refs:?}"
+        );
+        assert_eq!(refs[0].framework, Framework::Cis);
+        assert_eq!(refs[0].id, "6.3.3.8", "{stig} joins CIS 6.3.3.8: {refs:?}");
+        assert_eq!(
+            refs[0].name.as_deref(),
+            Some("Ensure events that modify user/group information are collected (Automated)"),
+            "{stig}"
+        );
+        assert!(refs[0].alias.is_none(), "{stig}");
+    }
 }
 
 #[test]
