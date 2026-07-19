@@ -82,7 +82,7 @@ pub struct CisControl {
 /// value choice for an existing rule, not a rule of their own, and this lane adds
 /// no new value-comparison lint that would consume them.
 #[must_use]
-pub fn cis_baseline(_target: TargetVersion) -> Vec<CisControl> {
+pub fn cis_baseline(_target: TargetVersion) -> &'static [CisControl] {
     todo!("issue #525: populate the per-product sshd CIS table")
 }
 
