@@ -275,6 +275,158 @@ mod tests {
         assert_eq!(loglevel10.id, "5.1.14");
     }
 
+    /// Per-target expectation row for a STIG/CIS overlap keyword: `None` means
+    /// STIG has no attach site on that target (`cis_control_ref` must return
+    /// `None`); `Some((id, title))` pins the exact CIS id + CaC title. A type
+    /// alias per `clippy::type_complexity` (mirrors `sudoers::stig::WeakeningRow`'s
+    /// rationale -- the inline nested-tuple-array form trips the lint).
+    type CisOverlapExpectation = [Option<(&'static str, &'static str)>; 3];
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // data-driven: 10 keywords x 3 targets, inline
+    fn cis_control_ref_pins_every_stig_cis_overlap_keyword_on_every_applicable_target() {
+        // Adversarial-review closeout (barrier round 2, #524/#525): the completeness
+        // loop over in `stig.rs` only asserted counts + non-empty id/name, so a
+        // swapped or misaligned CIS id/title (e.g. a gssapiauthentication<->
+        // permitemptypasswords swap, or id `5.1.99`) passed the whole suite. This
+        // test pins the EXACT id + title for all ten STIG/CIS overlap keywords on
+        // every target where STIG (and therefore W01/W02) has an attach site for
+        // them, transcribed verbatim from `derive-rhel{8,9,10}-sshd.txt` (pin
+        // `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`) -- never from recall.
+        //
+        // `None` in a target slot means STIG does not require the keyword on that
+        // target (RHEL8 never requires ignorerhosts/loglevel/usepam -- see
+        // `stig.rs`'s `RHEL8_REQUIRED`), so there is no existing W01/W02 diagnostic
+        // to attach a CIS ref to and `cis_control_ref` must return `None`.
+        const BANNER_TITLE: &str = "Ensure sshd Banner is configured (Automated)";
+        const CLIENTALIVE_TITLE: &str =
+            "Ensure sshd ClientAliveInterval and ClientAliveCountMax are configured (Automated)";
+        const GSSAPI_TITLE: &str = "Ensure sshd GSSAPIAuthentication is disabled (Automated)";
+        const IGNORERHOSTS_TITLE: &str = "Ensure sshd IgnoreRhosts is enabled (Automated)";
+        const LOGLEVEL_TITLE: &str = "Ensure sshd LogLevel is configured (Automated)";
+        const PERMITEMPTY_TITLE: &str = "Ensure sshd PermitEmptyPasswords is disabled (Automated)";
+        const PERMITROOTLOGIN_TITLE: &str = "Ensure sshd PermitRootLogin is disabled (Automated)";
+        const PERMITUSERENV_TITLE: &str =
+            "Ensure sshd PermitUserEnvironment is disabled (Automated)";
+        const USEPAM_TITLE: &str = "Ensure sshd UsePAM is enabled (Automated)";
+
+        // (keyword, [(rhel8 expectation), (rhel9 expectation), (rhel10 expectation)])
+        let cases: &[(&str, CisOverlapExpectation)] = &[
+            (
+                "banner",
+                [
+                    Some(("5.1.7", BANNER_TITLE)),
+                    Some(("5.1.8", BANNER_TITLE)),
+                    Some(("5.1.5", BANNER_TITLE)),
+                ],
+            ),
+            (
+                "clientaliveinterval",
+                [
+                    Some(("5.1.9", CLIENTALIVE_TITLE)),
+                    Some(("5.1.9", CLIENTALIVE_TITLE)),
+                    Some(("5.1.7", CLIENTALIVE_TITLE)),
+                ],
+            ),
+            (
+                "clientalivecountmax",
+                [
+                    Some(("5.1.9", CLIENTALIVE_TITLE)),
+                    Some(("5.1.9", CLIENTALIVE_TITLE)),
+                    Some(("5.1.7", CLIENTALIVE_TITLE)),
+                ],
+            ),
+            (
+                "gssapiauthentication",
+                [
+                    Some(("5.1.11", GSSAPI_TITLE)),
+                    Some(("5.1.11", GSSAPI_TITLE)),
+                    Some(("5.1.9", GSSAPI_TITLE)),
+                ],
+            ),
+            (
+                "ignorerhosts",
+                [
+                    None,
+                    Some(("5.1.13", IGNORERHOSTS_TITLE)),
+                    Some(("5.1.11", IGNORERHOSTS_TITLE)),
+                ],
+            ),
+            (
+                "loglevel",
+                [
+                    None,
+                    Some(("5.1.15", LOGLEVEL_TITLE)),
+                    Some(("5.1.14", LOGLEVEL_TITLE)),
+                ],
+            ),
+            (
+                "permitemptypasswords",
+                [
+                    Some(("5.1.21", PERMITEMPTY_TITLE)),
+                    Some(("5.1.19", PERMITEMPTY_TITLE)),
+                    Some(("5.1.19", PERMITEMPTY_TITLE)),
+                ],
+            ),
+            (
+                "permitrootlogin",
+                [
+                    Some(("5.1.22", PERMITROOTLOGIN_TITLE)),
+                    Some(("5.1.20", PERMITROOTLOGIN_TITLE)),
+                    Some(("5.1.20", PERMITROOTLOGIN_TITLE)),
+                ],
+            ),
+            (
+                "permituserenvironment",
+                [
+                    Some(("5.1.23", PERMITUSERENV_TITLE)),
+                    Some(("5.1.21", PERMITUSERENV_TITLE)),
+                    Some(("5.1.21", PERMITUSERENV_TITLE)),
+                ],
+            ),
+            (
+                "usepam",
+                [
+                    None,
+                    Some(("5.1.22", USEPAM_TITLE)),
+                    Some(("5.1.22", USEPAM_TITLE)),
+                ],
+            ),
+        ];
+
+        let targets = [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ];
+
+        for (keyword, expectations) in cases {
+            for (target, expect) in targets.iter().zip(expectations.iter()) {
+                let actual = cis_control_ref(keyword, Some(*target));
+                match expect {
+                    Some((id, title)) => {
+                        let control = actual.unwrap_or_else(|| {
+                            panic!("{keyword} must resolve a CIS control on {target:?}")
+                        });
+                        assert_eq!(control.framework, Framework::Cis);
+                        assert_eq!(control.id, *id, "{keyword} id ({target:?})");
+                        assert_eq!(
+                            control.name,
+                            Some((*title).to_string()),
+                            "{keyword} title ({target:?})"
+                        );
+                    }
+                    None => {
+                        assert!(
+                            actual.is_none(),
+                            "{keyword} must have no attach site on {target:?}; got {actual:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn cis_control_ref_none_for_directives_without_an_existing_attach_site() {
         // These six are real CIS controls (present in `cis_baseline`), but no sshd
