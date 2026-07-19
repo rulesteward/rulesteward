@@ -32,3 +32,4 @@ pub mod parser;
 pub mod system;
 
 pub use lints::baseline::{StigEntry, TargetVersion, stig_baseline};
+pub use lints::cis::{CisControl, cis_baseline};

@@ -20,6 +20,8 @@
 //! [`crate::parser::lint_dir_with_target`].
 
 pub mod baseline;
+pub mod cis;
 
 pub use crate::parser::{lint_dir, lint_dir_with_target, lint_str, lint_str_with_target};
 pub use baseline::TargetVersion;
+pub use cis::{CisControl, cis_baseline};
