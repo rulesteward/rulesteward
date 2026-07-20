@@ -637,13 +637,6 @@ mod tests {
         }
     }
 
-    /// `auditd lint --format sarif` must be REJECTED by the value enum (CC-4).
-    #[test]
-    fn auditd_lint_rejects_sarif_format() {
-        let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--format", "sarif"]);
-        assert!(cli.is_err(), "sarif must not be a valid auditd lint format");
-    }
-
     /// `auditd lint --target auto|rhel8|rhel9|rhel10` parses to the matching
     /// selector variant (issue #474: the au-W06 STIG baseline `--target`).
     #[test]

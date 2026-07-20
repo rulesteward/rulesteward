@@ -8,6 +8,8 @@
 use std::io::Write;
 
 use assert_cmd::Command;
+use boon::{Compiler, Schemas};
+use serde_json::Value;
 
 fn bin() -> Command {
     Command::cargo_bin("rulesteward").expect("binary built")
@@ -1276,5 +1278,128 @@ fn dir_mode_conditional_match_one_past_max_depth_does_not_fire_w03() {
         w03.is_empty(),
         "a conditional-Match weak cipher one hop past SERVCONF_MAX_DEPTH ({hops}) is \
          beyond the cap and must NOT be reached -> no sshd-W03; got: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
+// (findings-only; `--sarif-include-pass` stays fapolicyd-ONLY). RED today:
+// `SshdLintArgs.format` is `HumanJsonFormat` (human|json only), so clap
+// rejects `--format sarif` at parse time (observed live: exit 3, stderr
+// "invalid value 'sarif' for '--format <FORMAT>' [possible values: human,
+// json]"), so none of the assertions below are reached. The planned impl
+// switches `SshdLintArgs.format` to `OutputFormat` and routes the new Sarif
+// arm through `output::emit_lint` (crates/rulesteward-cli/src/output/mod.rs).
+// ---------------------------------------------------------------------------
+
+/// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema
+/// (same fixture + boon harness as `tests/e2e_lint.rs::assert_valid_sarif` /
+/// `tests/sarif_render.rs`). Duplicated per-file: each `tests/*.rs` file
+/// compiles as its own binary with no shared support module (the same reason
+/// `bin()` / `config_file()` are duplicated per e2e file in this project).
+fn assert_valid_sarif(rendered: &str) {
+    let instance: Value = serde_json::from_str(rendered).expect("SARIF stdout must parse as JSON");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sarif-2.1.0.schema.json"
+    );
+    let schema: Value = serde_json::from_slice(&std::fs::read(path).expect("read schema fixture"))
+        .expect("schema fixture parses");
+    let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(schema_id, schema)
+        .expect("add SARIF schema");
+    let mut schemas = Schemas::new();
+    let idx = compiler
+        .compile(schema_id, &mut schemas)
+        .expect("compile SARIF schema");
+    if let Err(e) = schemas.validate(&instance, idx) {
+        panic!("SARIF failed schema validation:\n{e}\n--- instance ---\n{rendered}");
+    }
+}
+
+/// A fixture firing a known code (`sshd-E02`, duplicate global directive)
+/// emits a schema-valid SARIF 2.1.0 document whose results carry the firing
+/// code as `ruleId` with the correctly-mapped `level`, and stdout ends with a
+/// trailing newline. `sshd-E02` is `Severity::Error`, which
+/// `severity_to_level` (output/sarif.rs) maps to `"error"`; `exit_code::compute`
+/// maps any Error/Fatal diagnostic to `EXIT_ERRORS` (2), matching the existing
+/// `fires_e02_with_exit_two_and_code_in_stdout` human-mode pin above.
+#[test]
+fn sarif_format_fires_e02_with_ruleid_error_level_and_trailing_newline() {
+    let cfg = config_file("PermitRootLogin no\nPermitRootLogin yes\n");
+    let out = run_lint(cfg.path(), &["--format", "sarif"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "sshd-E02 (Error) must still exit 2 under --format sarif; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.iter().any(
+            |r| r.get("ruleId").and_then(Value::as_str) == Some("sshd-E02")
+                && r.get("level").and_then(Value::as_str) == Some("error")
+        ),
+        "a result must carry ruleId \"sshd-E02\" with level \"error\"; got: {stdout}"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "SARIF stdout must end with a newline"
+    );
+}
+
+/// A clean (STIG-compliant) config emits a schema-valid SARIF document with
+/// zero results and exits 0.
+#[test]
+fn sarif_format_clean_config_is_schema_valid_with_zero_results() {
+    let cfg = config_file(CLEAN_CONFIG);
+    let out = run_lint(cfg.path(), &["--format", "sarif"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a clean config must exit 0 under --format sarif; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.is_empty(),
+        "a clean config must produce zero SARIF results; got: {stdout}"
+    );
+}
+
+/// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
+/// still reject it as an unrecognized flag on `sshd lint`. GREEN today (clap
+/// already rejects the unknown flag regardless of `--format`) and must stay
+/// green after the impl -- pins the findings-only scope decision. A wrong
+/// impl that also added the flag to `SshdLintArgs` would flip this from a
+/// clap parse error to a successful run.
+#[test]
+fn sarif_include_pass_is_rejected_for_sshd_lint() {
+    let cfg = config_file(CLEAN_CONFIG);
+    let out = run_lint(cfg.path(), &["--sarif-include-pass"]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "an unrecognized flag is a clap parse error (mapped to EXIT_TOOL_FAILURE); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    assert!(
+        stderr.contains("--sarif-include-pass"),
+        "clap's error must name the rejected flag; got: {stderr}"
     );
 }
