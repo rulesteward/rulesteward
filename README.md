@@ -249,7 +249,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-W02` | Warning | shadowed rule: an earlier, broader rule subsumes it |
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
 | `au-W04` | Warning | missing-ABI coverage: a syscall rule pins one ABI (`arch=b32`/`b64`) with no companion on the other ABI |
-| `au-W06` | Warning | missing STIG-required audit rule: the applicable RHEL STIG requires a rule this ruleset does not contain (fires only under `--target`) |
+| `au-W06` | Warning | missing STIG-required audit rule: the applicable RHEL STIG requires a rule this ruleset does not contain (fires only under `--target`; the finding also carries the mapped CIS Benchmark control ref(s) where the same rule appears in the CIS baseline) |
 
 ### sshd_config (`sshd-`, 13 codes)
 

@@ -89,9 +89,14 @@ pub fn skip_line(product: &str, family: Family, derived_count: usize, lane_issue
     )
 }
 
-/// Drift lines for one family: AUTOMATED-status derived ids vs shipped ids.
-/// (`manual`/`partial`/... controls are not shipped as lint coverage by default,
-/// so they do not count against the shipped table.) Empty result == no drift.
+/// Drift lines for one family. The automated-only filter is ASYMMETRIC:
+/// upstream-side additions count only when `status=automated` (a new
+/// `manual`/`partial` control is not lint coverage and never nags), but a
+/// SHIPPED id is forgiven whenever upstream maps it at ANY status - the shipped
+/// tables mirror `derive` verbatim, which includes non-automated controls
+/// (first hit: rhel9 auditd 6.3.3.5, `partial` at the pin, 9g integration).
+/// Only an id upstream does not map at all is "in code, absent upstream", so
+/// renumber/removal detection is unchanged. Empty result == no drift.
 #[must_use]
 pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<String> {
     let automated: BTreeMap<&str, &CisControl> = derived
@@ -99,6 +104,8 @@ pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<St
         .filter(|c| c.status == Status::Automated)
         .map(|c| (c.id.as_str(), c))
         .collect();
+    let derived_any: std::collections::BTreeSet<&str> =
+        derived.iter().map(|c| c.id.as_str()).collect();
     let shipped_ids: std::collections::BTreeSet<&str> =
         shipped.iter().map(|s| s.id.as_str()).collect();
 
@@ -113,7 +120,9 @@ pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<St
     let mut out = Vec::new();
     for id in ids {
         match (shipped_ids.contains(id), automated.get(id)) {
-            (true, None) => out.push(format!("- {id}  (in code, absent upstream)")),
+            (true, None) if !derived_any.contains(id) => {
+                out.push(format!("- {id}  (in code, absent upstream)"));
+            }
             (false, Some(c)) => out.push(format!("+ {id} [{}]  (new upstream)", c.rules.join(","))),
             _ => {}
         }
@@ -395,15 +404,25 @@ mod tests {
     }
 
     #[test]
-    fn diff_family_counts_only_automated_derived_controls() {
+    fn diff_family_is_asymmetric_over_non_automated_upstream_status() {
+        // The automated-only filter is ASYMMETRIC (the plan's deferred revisit
+        // fired at 9g integration: rhel9 auditd 6.3.3.5 is status=partial at
+        // the pin, and the shipped tables mirror `derive` verbatim by design).
+        // A non-automated upstream control neither DEMANDS a shipped row nor
+        // counts a shipped one as drift; only an id upstream does not map AT
+        // ALL is "in code, absent upstream", so renumber/removal detection is
+        // unchanged.
         let derived = vec![
             control("5.2.2", Status::Automated, &["sudo_add_use_pty"]),
             control("5.9.9", Status::Manual, &["sudo_manual_thing"]),
         ];
-        // The manual control neither demands a shipped row nor forgives one.
+        // Not shipped: the manual control does not demand a row.
         assert!(diff_family(&derived, &shipped_ids(&["5.2.2"])).is_empty());
-        let d = diff_family(&derived, &shipped_ids(&["5.2.2", "5.9.9"]));
-        assert_eq!(d, vec!["- 5.9.9  (in code, absent upstream)"]);
+        // Shipped: upstream still maps 5.9.9 (manual) -> forgiven, no drift.
+        assert!(diff_family(&derived, &shipped_ids(&["5.2.2", "5.9.9"])).is_empty());
+        // A shipped id upstream does not map at all IS drift.
+        let d = diff_family(&derived, &shipped_ids(&["5.2.2", "1.0.0"]));
+        assert_eq!(d, vec!["- 1.0.0  (in code, absent upstream)"]);
     }
 
     #[test]

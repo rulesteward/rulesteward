@@ -19,6 +19,7 @@ description = "Dev tool: derive + drift-check the per-backend CIS control tables
 
 [dependencies]
 stig-update = { path = "../stig-update" }
+rulesteward-auditd = { path = "../../crates/rulesteward-auditd" }
 rulesteward-sshd = { path = "../../crates/rulesteward-sshd" }
 rulesteward-sudoers = { path = "../../crates/rulesteward-sudoers" }
 rulesteward-sysctld = { path = "../../crates/rulesteward-sysctld" }

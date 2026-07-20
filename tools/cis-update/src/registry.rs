@@ -38,9 +38,29 @@ pub fn shipped(family: Family, product: &str) -> Result<Shipped, String> {
 }
 
 mod auditd {
-    use super::Shipped;
-    pub(super) fn shipped(_product: &str) -> Result<Shipped, String> {
-        Ok(Shipped::Pending { lane_issue: 528 })
+    use super::{Shipped, ShippedControl};
+    use rulesteward_auditd::lints::stig_required::TargetVersion;
+
+    pub(super) fn shipped(product: &str) -> Result<Shipped, String> {
+        let target = match product {
+            "rhel8" => TargetVersion::Rhel8,
+            "rhel9" => TargetVersion::Rhel9,
+            "rhel10" => TargetVersion::Rhel10,
+            other => return Err(format!("auditd: unknown product {other:?}")),
+        };
+        // One row per (control, rule) mapping (66/68/75) -> distinct control
+        // ids (25/24/40); the drift diff is id-set-based, so project distinct
+        // ids in table order.
+        let mut seen = std::collections::BTreeSet::new();
+        Ok(Shipped::Table(
+            rulesteward_auditd::lints::cis::cis_baseline(target)
+                .iter()
+                .filter(|c| seen.insert(c.control_id))
+                .map(|c| ShippedControl {
+                    id: c.control_id.to_string(),
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -185,13 +205,19 @@ mod tests {
     }
 
     #[test]
-    fn unshipped_family_slots_stay_pending_with_their_lane_issue() {
-        for product in ["rhel8", "rhel9", "rhel10"] {
-            assert_eq!(
-                shipped(Family::Auditd, product).unwrap(),
-                Shipped::Pending { lane_issue: 528 },
-                "{product}/auditd"
-            );
+    fn auditd_slots_ship_per_product_distinct_control_ids() {
+        // Lane 3d (#528): one row per rule mapping (66/68/75) -> distinct
+        // control ids 25/24/40; the per-product counts differing kills a
+        // shared-superset projection. max_log_file's 6.3.2.1 is a grounded
+        // all-products anchor.
+        for (product, distinct_ids) in [("rhel8", 25), ("rhel9", 24), ("rhel10", 40)] {
+            let Shipped::Table(rows) = shipped(Family::Auditd, product).unwrap() else {
+                panic!("{product}/auditd: expected a shipped table, got Pending");
+            };
+            let distinct: std::collections::BTreeSet<&str> =
+                rows.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(distinct.len(), distinct_ids, "{product}");
+            assert!(distinct.contains("6.3.2.1"), "{product}: 6.3.2.1");
         }
     }
 

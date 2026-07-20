@@ -23,6 +23,7 @@ on:
       - 'tools/cis-update/**'
       - 'tools/stig-update/**'
       - '.github/workflows/cis-check.yml'
+      - 'crates/rulesteward-auditd/**'
       - 'crates/rulesteward-sshd/**'
       - 'crates/rulesteward-sudoers/**'
       - 'crates/rulesteward-sysctld/**'
