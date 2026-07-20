@@ -36,6 +36,7 @@
 use rulesteward_core::{ControlRef, Diagnostic, Framework};
 
 use super::LintOptions;
+use super::cis;
 use crate::ast::LocatedRule;
 
 /// RHEL release whose STIG audit-rule baseline to check against. Clap-free
@@ -54,6 +55,15 @@ pub enum TargetVersion {
 /// against the shipped grounded table for `t` (via [`stig_baseline`]), which
 /// reports every rule that release's STIG requires but this ruleset is missing
 /// (or has present under a different key).
+///
+/// After `w06_with_baseline` returns, this outer wrapper attaches the
+/// `Framework::Cis` refs (issue #528) that join each finding's `Stig` id
+/// under `t` (via [`cis::cis_controls_for_stig`]), EXTENDING each
+/// diagnostic's existing `controls` rather than replacing it (a finding keeps
+/// its `Stig` ref and gains 0/1/many `Cis` refs alongside it). The CIS attach
+/// lives HERE, not in `w06_with_baseline`, because that function's frozen
+/// scenario tests (`tests/test_lints_stig_required.rs`) assert
+/// `controls.len() == 1`.
 #[must_use]
 pub fn w06(
     rules: &[LocatedRule],
@@ -62,7 +72,21 @@ pub fn w06(
 ) -> Vec<Diagnostic> {
     match target {
         None => Vec::new(),
-        Some(t) => w06_with_baseline(rules, opts, baseline_for(t)),
+        Some(t) => {
+            let mut diags = w06_with_baseline(rules, opts, baseline_for(t));
+            for d in &mut diags {
+                let stig_ids: Vec<String> = d
+                    .controls
+                    .iter()
+                    .filter(|c| c.framework == Framework::Stig)
+                    .map(|c| c.id.clone())
+                    .collect();
+                for stig_id in stig_ids {
+                    d.controls.extend(cis::cis_controls_for_stig(t, &stig_id));
+                }
+            }
+            diags
+        }
     }
 }
 
