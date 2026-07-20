@@ -45,9 +45,29 @@ mod auditd {
 }
 
 mod sshd {
-    use super::Shipped;
-    pub(super) fn shipped(_product: &str) -> Result<Shipped, String> {
-        Ok(Shipped::Pending { lane_issue: 525 })
+    use super::{Shipped, ShippedControl};
+    use rulesteward_sshd::TargetVersion;
+
+    pub(super) fn shipped(product: &str) -> Result<Shipped, String> {
+        let target = match product {
+            "rhel8" => TargetVersion::Rhel8,
+            "rhel9" => TargetVersion::Rhel9,
+            "rhel10" => TargetVersion::Rhel10,
+            other => return Err(format!("sshd: unknown product {other:?}")),
+        };
+        // 16 rule-mapping rows -> 15 distinct control ids (the ClientAlive
+        // control maps two directives under one id); the drift diff is
+        // id-set-based, so project distinct ids in table order.
+        let mut seen = std::collections::BTreeSet::new();
+        Ok(Shipped::Table(
+            rulesteward_sshd::lints::cis::cis_baseline(target)
+                .iter()
+                .filter(|c| seen.insert(c.id))
+                .map(|c| ShippedControl {
+                    id: c.id.to_string(),
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -103,13 +123,30 @@ mod tests {
     }
 
     #[test]
+    fn sshd_slots_ship_fifteen_distinct_ids_with_the_product_specific_banner_id() {
+        // Lane 3a (#525): 16 rule-mapping rows, 15 distinct control ids (the
+        // ClientAlive control maps two directives under one id). The banner id
+        // is the 3-way product differentiator (grounded in
+        // derive-rhel{8,9,10}-sshd.txt at the pin).
+        for (product, banner) in [("rhel8", "5.1.7"), ("rhel9", "5.1.8"), ("rhel10", "5.1.5")] {
+            let Shipped::Table(rows) = shipped(Family::Sshd, product).unwrap() else {
+                panic!("{product}/sshd: expected a shipped table, got Pending");
+            };
+            let distinct: std::collections::BTreeSet<&str> =
+                rows.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(distinct.len(), 15, "{product}");
+            assert!(distinct.contains(banner), "{product}: banner id {banner}");
+            assert!(
+                distinct.iter().all(|id| id.starts_with("5.1.")),
+                "{product}"
+            );
+        }
+    }
+
+    #[test]
     fn unshipped_family_slots_stay_pending_with_their_lane_issue() {
         for product in ["rhel8", "rhel9", "rhel10"] {
-            for (family, lane) in [
-                (Family::Sshd, 525),
-                (Family::Sysctld, 527),
-                (Family::Auditd, 528),
-            ] {
+            for (family, lane) in [(Family::Sysctld, 527), (Family::Auditd, 528)] {
                 assert_eq!(
                     shipped(family, product).unwrap(),
                     Shipped::Pending { lane_issue: lane },

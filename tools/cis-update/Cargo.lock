@@ -18,6 +18,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "cis-update"
 version = "0.1.0"
 dependencies = [
+ "rulesteward-sshd",
  "rulesteward-sudoers",
  "stig-update",
  "toml",
@@ -44,6 +45,12 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "hashbrown"
@@ -102,6 +109,14 @@ name = "rulesteward-core"
 version = "0.7.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "rulesteward-sshd"
+version = "0.7.0"
+dependencies = [
+ "glob",
+ "rulesteward-core",
 ]
 
 [[package]]
