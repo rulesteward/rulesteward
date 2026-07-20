@@ -438,26 +438,113 @@ fn cis_join_is_product_specific() {
 }
 
 #[test]
-fn cis_join_never_repeats_a_control_id_and_is_well_shaped() {
-    // Over EVERY shipped au-W06 baseline row of every product: the join never
-    // repeats a control id within one finding (the no-duplicate-cis_id
-    // invariant), and every returned ref is a titled CIS ref with no secondary
-    // id. The `total > 0` guard keeps this RED pre-impl (an empty stub joins
-    // nothing) rather than vacuously green over an all-empty join.
-    let mut total = 0usize;
-    for target in [
-        TargetVersion::Rhel8,
-        TargetVersion::Rhel9,
-        TargetVersion::Rhel10,
-    ] {
-        for r in stig_baseline(target) {
-            let refs = cis_controls_for_stig(target, r.stig_id);
-            total += refs.len();
+fn cis_join_rhel9_more_distinct_anchors() {
+    // Two MORE distinct rhel9 join anchors beyond the immutable pin (answers
+    // round-1 adversarial ask; rhel9 previously had exactly one pinned distinct
+    // case). Each is a specific STIG id -> single CIS control with its verbatim
+    // CaC title:
+    //   RHEL-09-654015 -> 6.3.3.9  (dac chmod/fchmod/fchmodat all collapse to
+    //     one control; stig-refs-rhel9 rows 35/37/38; title derive-rhel9 6.3.3.9)
+    //   RHEL-09-654250 -> 6.3.3.12 (login/faillock; stig-refs-rhel9 row 52;
+    //     title derive-rhel9 6.3.3.12)
+    let a = cis_controls_for_stig(TargetVersion::Rhel9, "RHEL-09-654015");
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(a[0].framework, Framework::Cis);
+    assert_eq!(a[0].id, "6.3.3.9");
+    assert!(a[0].alias.is_none());
+    assert_eq!(
+        a[0].name.as_deref(),
+        Some(
+            "Ensure discretionary access control permission modification events are collected (Automated)"
+        )
+    );
+
+    let b = cis_controls_for_stig(TargetVersion::Rhel9, "RHEL-09-654250");
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].framework, Framework::Cis);
+    assert_eq!(b[0].id, "6.3.3.12");
+    assert!(b[0].alias.is_none());
+    assert_eq!(
+        b[0].name.as_deref(),
+        Some("Ensure login and logout events are collected (Automated)")
+    );
+}
+
+#[test]
+fn cis_join_rhel10_more_distinct_anchors() {
+    // Two MORE distinct rhel10 join anchors beyond RHEL-10-500810 (answers
+    // round-1 adversarial ask; rhel10 previously had exactly one pinned distinct
+    // case). rhel10 renumbers these (dac=6.3.3.18, login=6.3.3.23) AND rewords
+    // the dac title to enumerate the syscalls, so a table copied from rhel8/9
+    // fails here:
+    //   RHEL-10-500780 -> 6.3.3.18 (dac chmod/fchmod/fchmodat/fchmodat2 collapse
+    //     to one control; stig-refs-rhel10 rows 40-43; title derive-rhel10 6.3.3.18)
+    //   RHEL-10-500750 -> 6.3.3.23 (login/faillock; stig-refs-rhel10 row 58;
+    //     title derive-rhel10 6.3.3.23)
+    let a = cis_controls_for_stig(TargetVersion::Rhel10, "RHEL-10-500780");
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(a[0].framework, Framework::Cis);
+    assert_eq!(a[0].id, "6.3.3.18");
+    assert!(a[0].alias.is_none());
+    assert_eq!(
+        a[0].name.as_deref(),
+        Some(
+            "Ensure discretionary access control permission modification events chmod,fchmod,fchmodat,fchmodat2 are collected (Automated)"
+        )
+    );
+
+    let b = cis_controls_for_stig(TargetVersion::Rhel10, "RHEL-10-500750");
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].framework, Framework::Cis);
+    assert_eq!(b[0].id, "6.3.3.23");
+    assert!(b[0].alias.is_none());
+    assert_eq!(
+        b[0].name.as_deref(),
+        Some("Ensure login and logout events are collected (Automated)")
+    );
+}
+
+#[test]
+fn cis_join_is_grounded_complete_and_well_shaped() {
+    // GROUNDED per-product completeness -- the backstop for the round-1
+    // adversarial survivor. Over every DISTINCT au-W06 stig id shipped in
+    // `stig_baseline`, both (a) the number of ids carrying a non-empty CIS join
+    // and (b) the total distinct CIS refs across them must equal the numbers
+    // derived mechanically by intersecting each product's
+    // `stig-refs-rhel{8,9,10}-auditd.txt` joined ids with its `RHEL*_REQUIRED`
+    // table (transcribed from that computation, never recalled):
+    //   rhel8  : 21 joined stig ids, 21 CIS refs  (no multi-CIS id)
+    //   rhel9  : 20 joined stig ids, 20 CIS refs  (no multi-CIS id)
+    //   rhel10 : 21 joined stig ids, 22 CIS refs  (RHEL-10-500810 -> 2 controls)
+    // A wrong impl that hardcodes only the individually-pinned stig ids and
+    // returns empty for the rest passes every per-id attach test yet FAILS these
+    // counts -- exactly the survivor the round-1 adversarial review flagged (no
+    // other backstop exists: cis-check is ids-only and mutation cannot detect a
+    // missing join entry). Per-finding well-shapedness (no repeated control id;
+    // every ref is a titled CIS ref with no secondary id) is checked alongside.
+    let cases = [
+        (TargetVersion::Rhel8, 21usize, 21usize),
+        (TargetVersion::Rhel9, 20, 20),
+        (TargetVersion::Rhel10, 21, 22),
+    ];
+    for (target, want_joined_ids, want_total_refs) in cases {
+        // Distinct so a stig id borne by several BaselineRule rows is counted
+        // once (join is a pure fn of stig id), keeping the counts multiplicity-
+        // robust.
+        let stig_ids: BTreeSet<&str> = stig_baseline(target).iter().map(|r| r.stig_id).collect();
+        let mut joined_ids = 0usize;
+        let mut total_refs = 0usize;
+        for &sid in &stig_ids {
+            let refs = cis_controls_for_stig(target, sid);
+            if refs.is_empty() {
+                continue;
+            }
+            joined_ids += 1;
+            total_refs += refs.len();
             assert_eq!(
                 cis_ids(&refs).len(),
                 refs.len(),
-                "{target:?} {}: CIS join must not repeat a control id: {refs:?}",
-                r.stig_id
+                "{target:?} {sid}: CIS join must not repeat a control id: {refs:?}"
             );
             for c in &refs {
                 assert_eq!(
@@ -472,11 +559,15 @@ fn cis_join_never_repeats_a_control_id_and_is_well_shaped() {
                 assert!(c.alias.is_none(), "CIS refs have no secondary id: {c:?}");
             }
         }
+        assert_eq!(
+            joined_ids, want_joined_ids,
+            "{target:?}: distinct au-W06 stig ids carrying a CIS join (grounded intersection count)"
+        );
+        assert_eq!(
+            total_refs, want_total_refs,
+            "{target:?}: total distinct CIS refs across joined au-W06 findings (grounded)"
+        );
     }
-    assert!(
-        total > 0,
-        "expected some au-W06 findings to join CIS controls across the three products"
-    );
 }
 
 // --- End-to-end: the join flows through w06(.., Some(target)) -------------
