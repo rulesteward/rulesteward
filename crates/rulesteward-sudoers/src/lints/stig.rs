@@ -184,16 +184,43 @@ const AUTHENTICATE_CONTROLS: [(Framework, &str); 2] = [
     (Framework::Stig, "RHEL-09-432025"),
 ];
 
-/// `use_pty`: CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5. Shared by the per-file
-/// `!use_pty` negation (`check_file`) and the merged missing-`use_pty`
-/// (`check_merged_required`) findings -- same control, two emit sites.
-const USE_PTY_CONTROLS: [(Framework, &str); 2] =
-    [(Framework::Cis, "1.3.2"), (Framework::Pci, "Req-10.2.5")];
+/// The verbatim CaC title for a product-invariant CIS control id, drawn from
+/// the single-source `lints::cis` table (#526: the `use_pty` / I/O-logging
+/// `Framework::Cis` refs below never re-type a title literal -- they look it
+/// up here). `use_pty` (5.2.2) and I/O-logging (5.2.3) are PRODUCT-INVARIANT
+/// (see `lints::cis` module doc), so any target yields the same title;
+/// `Rhel8` is used arbitrarily.
+fn cis_title(id: &str) -> &'static str {
+    crate::lints::cis::cis_baseline(crate::lints::cis::TargetVersion::Rhel8)
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("lints::cis::cis_baseline must contain {id}"))
+        .title
+}
 
-/// I/O logging (`logfile=` / `log_output`): CIS Benchmark 5.2.3 / PCI-DSS
-/// Req-10.2.5 (`check_merged_required`'s missing-I/O-log finding).
-const IO_LOG_CONTROLS: [(Framework, &str); 2] =
-    [(Framework::Cis, "1.3.3"), (Framework::Pci, "Req-10.2.5")];
+/// `use_pty`: CIS Benchmark 5.2.2 (RENUMBERED #526, LOCKED post-A0
+/// 2026-07-18, was the stale "1.3.2"; id + title drawn from `lints::cis`) /
+/// PCI-DSS Req-10.2.5 (unaffected by the renumber, no title). Shared by the
+/// per-file `!use_pty` negation (`check_file`) and the merged
+/// missing-`use_pty` (`check_merged_required`) findings -- same control, two
+/// emit sites.
+fn use_pty_controls() -> Vec<ControlRef> {
+    vec![
+        ControlRef::new(Framework::Cis, "5.2.2").with_name(cis_title("5.2.2")),
+        ControlRef::new(Framework::Pci, "Req-10.2.5"),
+    ]
+}
+
+/// I/O logging (`logfile=` / `log_output`): CIS Benchmark 5.2.3 (RENUMBERED
+/// #526, LOCKED post-A0 2026-07-18, was the stale "1.3.3"; id + title drawn
+/// from `lints::cis`) / PCI-DSS Req-10.2.5 (unaffected by the renumber, no
+/// title) (`check_merged_required`'s missing-I/O-log finding).
+fn io_log_controls() -> Vec<ControlRef> {
+    vec![
+        ControlRef::new(Framework::Cis, "5.2.3").with_name(cis_title("5.2.3")),
+        ControlRef::new(Framework::Pci, "Req-10.2.5"),
+    ]
+}
 
 /// `timestamp_timeout`: DISA STIG RHEL-08-010384 / RHEL-09-432015. Shared by
 /// the per-file NEGATIVE-value weakening (`check_file`) and the merged
@@ -370,14 +397,14 @@ fn negated_weakening(
                      pseudo-terminal allocation; the CIS / PCI hardening \
                      baseline requires 'Defaults use_pty' to prevent I/O \
                      redirection attacks \
-                     (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; \
+                     (CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; \
                      not a DISA STIG control)",
                     scope_paren(scope),
                 ),
                 file,
                 line_no,
             )
-            .with_controls(controls(&USE_PTY_CONTROLS)),
+            .with_controls(use_pty_controls()),
         ),
         _ => None,
     }
@@ -505,11 +532,11 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
                 "required 'Defaults use_pty' is not set anywhere in the resolved \
                  sudoers configuration; without it sudo does not allocate a \
                  pseudo-terminal, leaving privileged sessions open to I/O redirection \
-                 (CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+                 (CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
                 &top.path,
                 0,
             )
-            .with_controls(controls(&USE_PTY_CONTROLS)),
+            .with_controls(use_pty_controls()),
         );
     }
     if !has_io_log {
@@ -521,11 +548,11 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
                 "required sudo I/O logging is not configured anywhere in the resolved \
                  sudoers configuration (no 'Defaults logfile=' or 'Defaults \
                  log_output'); privileged command sessions are not recorded for audit \
-                 (CIS Benchmark 1.3.3 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
+                 (CIS Benchmark 5.2.3 / PCI-DSS Req-10.2.5; not a DISA STIG control)",
                 &top.path,
                 0,
             )
-            .with_controls(controls(&IO_LOG_CONTROLS)),
+            .with_controls(io_log_controls()),
         );
     }
     // timestamp_timeout (#363, DISA STIG RHEL-08-010384 / RHEL-09-432015,

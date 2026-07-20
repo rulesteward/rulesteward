@@ -92,6 +92,77 @@ pub struct CisControl {
     pub rule: &'static str,
 }
 
+// ---------------------------------------------------------------------------
+// Grounded tables (verbatim from `tools/cis-update derive`, see module doc).
+// Ids, titles, and rule mappings are IDENTICAL across all three products for
+// 4 of the 5 controls; only 5.2.6's title diverges on rhel9, so rhel8 and
+// rhel10 share one table and rhel9 gets its own.
+// ---------------------------------------------------------------------------
+
+/// The shared table for rhel8 (CIS v4.0.0) and rhel10 (CIS v1.0.1): both
+/// generations carry byte-identical ids, titles, and rule mappings for all 5
+/// controls (see module doc grounding note).
+const RHEL8_RHEL10_TABLE: &[CisControl] = &[
+    CisControl {
+        id: "5.2.2",
+        title: "Ensure sudo commands use pty (Automated)",
+        rule: "sudo_add_use_pty",
+    },
+    CisControl {
+        id: "5.2.3",
+        title: "Ensure sudo log file exists (Automated)",
+        rule: "sudo_custom_logfile",
+    },
+    CisControl {
+        id: "5.2.4",
+        title: "Ensure users must provide password for escalation (Automated)",
+        rule: "sudo_remove_nopasswd",
+    },
+    CisControl {
+        id: "5.2.5",
+        title: "Ensure re-authentication for privilege escalation is not disabled \
+                globally (Automated)",
+        rule: "sudo_remove_no_authenticate",
+    },
+    CisControl {
+        id: "5.2.6",
+        title: "Ensure sudo timestamp_timeout is configured (Automated)",
+        rule: "sudo_require_reauthentication",
+    },
+];
+
+/// rhel9 (CIS v2.0.0): identical to [`RHEL8_RHEL10_TABLE`] except 5.2.6's
+/// title, which uses different CaC wording for the same id + rule mapping
+/// (see module doc grounding note).
+const RHEL9_TABLE: &[CisControl] = &[
+    CisControl {
+        id: "5.2.2",
+        title: "Ensure sudo commands use pty (Automated)",
+        rule: "sudo_add_use_pty",
+    },
+    CisControl {
+        id: "5.2.3",
+        title: "Ensure sudo log file exists (Automated)",
+        rule: "sudo_custom_logfile",
+    },
+    CisControl {
+        id: "5.2.4",
+        title: "Ensure users must provide password for escalation (Automated)",
+        rule: "sudo_remove_nopasswd",
+    },
+    CisControl {
+        id: "5.2.5",
+        title: "Ensure re-authentication for privilege escalation is not disabled \
+                globally (Automated)",
+        rule: "sudo_remove_no_authenticate",
+    },
+    CisControl {
+        id: "5.2.6",
+        title: "Ensure sudo authentication timeout is configured correctly (Automated)",
+        rule: "sudo_require_reauthentication",
+    },
+];
+
 /// The grounded CIS control table for `target`: the 5 sudoers-family
 /// controls (5.2.2-5.2.6), in ascending-id order. See the module doc for the
 /// grounding pin and the renumber this table backs.
@@ -101,8 +172,11 @@ pub struct CisControl {
 /// backends' `pub fn X_baseline(target) -> &'static [Y]` shape (e.g.
 /// `rulesteward_auditd::lints::cis::cis_baseline`).
 #[must_use]
-pub fn cis_baseline(_target: TargetVersion) -> &'static [CisControl] {
-    todo!("cis-3b (#526): per-product CIS control table, see module doc")
+pub fn cis_baseline(target: TargetVersion) -> &'static [CisControl] {
+    match target {
+        TargetVersion::Rhel8 | TargetVersion::Rhel10 => RHEL8_RHEL10_TABLE,
+        TargetVersion::Rhel9 => RHEL9_TABLE,
+    }
 }
 
 #[cfg(test)]
