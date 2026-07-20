@@ -32,6 +32,7 @@ use std::path::Path;
 use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::Block;
+use crate::lints::cis;
 use crate::lints::{SshdLintContext, TargetVersion, anchored};
 
 // ---------------------------------------------------------------------------
@@ -529,6 +530,21 @@ fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Optio
     Some(ControlRef::new(Framework::Stig, rule_id).with_alias(v_number))
 }
 
+/// Build the combined control list for a W01/W02 finding: the existing STIG
+/// [`ControlRef`] (never dropped) plus, for the ten STIG/CIS overlap keywords
+/// (issue #525, v0.8 Wave 3), the [`Framework::Cis`] ref from [`cis::cis_control_ref`].
+///
+/// `Diagnostic::with_controls` REPLACES the `controls` Vec, so this builds the
+/// COMBINED vec once here rather than each emit site calling `with_controls`
+/// twice (which would drop the first ref).
+fn combined_controls(keyword_lower: &str, target: Option<TargetVersion>) -> Vec<ControlRef> {
+    let mut controls: Vec<ControlRef> = stig_control_ref(keyword_lower, target)
+        .into_iter()
+        .collect();
+    controls.extend(cis::cis_control_ref(keyword_lower, target));
+    controls
+}
+
 /// Look up the STIG Rule id (the DISA XCCDF `<Rule><version>`) for `keyword_lower`
 /// on a concrete `target`, or `None` if the keyword has no Rule id for that target.
 ///
@@ -662,7 +678,7 @@ pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
                     file,
                     0,
                 )
-                .with_controls(stig_control_ref(req, ctx.target).into_iter().collect()),
+                .with_controls(combined_controls(req, ctx.target)),
             );
         }
     }
@@ -727,7 +743,7 @@ pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
                     file,
                     directive.line,
                 )
-                .with_controls(stig_control_ref(&keyword, ctx.target).into_iter().collect()),
+                .with_controls(combined_controls(&keyword, ctx.target)),
             );
         }
     }
@@ -1144,6 +1160,9 @@ mod tests {
         //   Rule id  RHEL-09-255025 -- RHEL9_REQUIRED comment:
         //            `"banner", // RHEL-09-255025 V-257981` (this file).
         //   V-number V-257981       -- RHEL9_VNUM entry `("banner", "V-257981")`.
+        //   CIS id   5.1.8 -- `derive-rhel9-sshd.txt`
+        //            (`5.1.8 ... sshd_enable_warning_banner_net ... "Ensure sshd
+        //            Banner is configured (Automated)"`); issue #525 (v0.8 Wave 3).
         use rulesteward_core::Framework;
         let ctx = SshdLintContext {
             target: Some(TargetVersion::Rhel9),
@@ -1163,15 +1182,34 @@ mod tests {
             "STIG-required directive 'banner' is missing from the configuration"
         );
 
-        // RED anchor: length first, so RED is a clean `0 != 1`, not an index panic.
+        // RED anchor: length first, so RED is a clean `0 != 2`, not an index panic.
+        // #525: banner is a STIG/CIS overlap keyword on every target, so the
+        // finding must carry BOTH -- the existing Stig ref is never dropped, and
+        // exactly one new Cis ref is added (no duplicate).
         assert_eq!(
             banner.controls.len(),
-            1,
-            "W01 finding must carry exactly one STIG control"
+            2,
+            "W01 finding must carry the STIG control AND a CIS control (#525); got {:?}",
+            banner.controls
         );
-        assert_eq!(banner.controls[0].framework, Framework::Stig);
-        assert_eq!(banner.controls[0].id, "RHEL-09-255025");
-        assert_eq!(banner.controls[0].alias, Some("V-257981".to_string()));
+        let stig = banner
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Stig)
+            .expect("existing Stig control must not be dropped");
+        assert_eq!(stig.id, "RHEL-09-255025");
+        assert_eq!(stig.alias, Some("V-257981".to_string()));
+        let cis = banner
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Cis)
+            .expect("a Cis control must be attached");
+        assert_eq!(cis.id, "5.1.8");
+        assert_eq!(
+            cis.name,
+            Some("Ensure sshd Banner is configured (Automated)".to_string()),
+            "the CaC title must surface via ControlRef::name"
+        );
     }
 
     #[test]
@@ -1180,6 +1218,9 @@ mod tests {
         //   Rule id  RHEL-09-255045 -- RHEL9_REQUIRED comment:
         //            `"permitrootlogin", // RHEL-09-255045 V-257985` (this file).
         //   V-number V-257985       -- RHEL9_VNUM entry `("permitrootlogin", "V-257985")`.
+        //   CIS id   5.1.20 -- `derive-rhel9-sshd.txt`
+        //            (`5.1.20 ... sshd_disable_root_login ... "Ensure sshd
+        //            PermitRootLogin is disabled (Automated)"`); issue #525.
         use rulesteward_core::Framework;
         let ctx = SshdLintContext {
             target: Some(TargetVersion::Rhel9),
@@ -1201,15 +1242,33 @@ mod tests {
             "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
         );
 
-        // RED anchor: length first.
+        // RED anchor: length first. #525: permitrootlogin is a STIG/CIS overlap
+        // keyword on every target -- both refs must be present, never a dropped
+        // Stig ref or a duplicated Cis ref.
         assert_eq!(
             prl.controls.len(),
-            1,
-            "W02 finding must carry exactly one STIG control"
+            2,
+            "W02 finding must carry the STIG control AND a CIS control (#525); got {:?}",
+            prl.controls
         );
-        assert_eq!(prl.controls[0].framework, Framework::Stig);
-        assert_eq!(prl.controls[0].id, "RHEL-09-255045");
-        assert_eq!(prl.controls[0].alias, Some("V-257985".to_string()));
+        let stig = prl
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Stig)
+            .expect("existing Stig control must not be dropped");
+        assert_eq!(stig.id, "RHEL-09-255045");
+        assert_eq!(stig.alias, Some("V-257985".to_string()));
+        let cis = prl
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Cis)
+            .expect("a Cis control must be attached");
+        assert_eq!(cis.id, "5.1.20");
+        assert_eq!(
+            cis.name,
+            Some("Ensure sshd PermitRootLogin is disabled (Automated)".to_string()),
+            "the CaC title must surface via ControlRef::name"
+        );
     }
 
     #[test]
@@ -1242,9 +1301,16 @@ mod tests {
     // alias is cross-validated against this file's shipped RHEL8_VNUM/RHEL10_VNUM.
 
     /// Shared W01 assertion: an empty config makes `banner` missing on `target`;
-    /// the finding must carry exactly one STIG `ControlRef` (`id` = Rule id,
-    /// `alias` = V-number) and keep its message byte-identical.
-    fn assert_w01_banner_control(target: TargetVersion, expect_id: &str, expect_vnum: &str) {
+    /// the finding must carry the STIG `ControlRef` (`id` = Rule id, `alias` =
+    /// V-number) AND a CIS `ControlRef` (`id` = CIS control id, `name` = CaC
+    /// title) -- banner is a STIG/CIS overlap keyword on EVERY target (#525) --
+    /// and keep its message byte-identical.
+    fn assert_w01_banner_control(
+        target: TargetVersion,
+        expect_id: &str,
+        expect_vnum: &str,
+        expect_cis_id: &str,
+    ) {
         use rulesteward_core::Framework;
         let ctx = SshdLintContext {
             target: Some(target),
@@ -1262,21 +1328,40 @@ mod tests {
         );
         assert_eq!(
             banner.controls.len(),
-            1,
-            "W01 finding must carry exactly one STIG control ({target:?})"
+            2,
+            "W01 finding must carry the STIG control AND a CIS control ({target:?}, #525); got {:?}",
+            banner.controls
         );
-        assert_eq!(banner.controls[0].framework, Framework::Stig);
-        assert_eq!(banner.controls[0].id, expect_id);
-        assert_eq!(banner.controls[0].alias, Some(expect_vnum.to_string()));
+        let stig = banner
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Stig)
+            .expect("existing Stig control must not be dropped");
+        assert_eq!(stig.id, expect_id);
+        assert_eq!(stig.alias, Some(expect_vnum.to_string()));
+        let cis = banner
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Cis)
+            .expect("a Cis control must be attached");
+        assert_eq!(cis.id, expect_cis_id, "CIS control id ({target:?})");
+        assert_eq!(
+            cis.name,
+            Some("Ensure sshd Banner is configured (Automated)".to_string()),
+            "the CaC title must surface via ControlRef::name ({target:?})"
+        );
     }
 
     /// Shared W02 assertion: `PermitRootLogin yes` on `target` is a weak-value
-    /// finding (STIG requires `no`) that must carry exactly one STIG `ControlRef`
-    /// (`id` = Rule id, `alias` = V-number) and keep its message byte-identical.
+    /// finding (STIG requires `no`) that must carry the STIG `ControlRef` (`id` =
+    /// Rule id, `alias` = V-number) AND a CIS `ControlRef` (`id` = CIS control
+    /// id, `name` = CaC title) -- permitrootlogin is a STIG/CIS overlap keyword on
+    /// EVERY target (#525) -- and keep its message byte-identical.
     fn assert_w02_permitrootlogin_control(
         target: TargetVersion,
         expect_id: &str,
         expect_vnum: &str,
+        expect_cis_id: &str,
     ) {
         use rulesteward_core::Framework;
         let ctx = SshdLintContext {
@@ -1298,40 +1383,70 @@ mod tests {
         );
         assert_eq!(
             prl.controls.len(),
-            1,
-            "W02 finding must carry exactly one STIG control ({target:?})"
+            2,
+            "W02 finding must carry the STIG control AND a CIS control ({target:?}, #525); got {:?}",
+            prl.controls
         );
-        assert_eq!(prl.controls[0].framework, Framework::Stig);
-        assert_eq!(prl.controls[0].id, expect_id);
-        assert_eq!(prl.controls[0].alias, Some(expect_vnum.to_string()));
+        let stig = prl
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Stig)
+            .expect("existing Stig control must not be dropped");
+        assert_eq!(stig.id, expect_id);
+        assert_eq!(stig.alias, Some(expect_vnum.to_string()));
+        let cis = prl
+            .controls
+            .iter()
+            .find(|c| c.framework == Framework::Cis)
+            .expect("a Cis control must be attached");
+        assert_eq!(cis.id, expect_cis_id, "CIS control id ({target:?})");
+        assert_eq!(
+            cis.name,
+            Some("Ensure sshd PermitRootLogin is disabled (Automated)".to_string()),
+            "the CaC title must surface via ControlRef::name ({target:?})"
+        );
     }
 
     #[test]
     fn w01_missing_findings_carry_typed_stig_control_rhel8() {
         // banner on Rhel8: Rule id RHEL-08-010040 (DISA XCCDF RHEL8 V2R4),
         // V-number V-230225 (this file's RHEL8_VNUM `("banner", "V-230225")`).
-        assert_w01_banner_control(TargetVersion::Rhel8, "RHEL-08-010040", "V-230225");
+        // CIS id 5.1.7 (derive-rhel8-sshd.txt, #525).
+        assert_w01_banner_control(TargetVersion::Rhel8, "RHEL-08-010040", "V-230225", "5.1.7");
     }
 
     #[test]
     fn w02_weak_value_findings_carry_typed_stig_control_rhel8() {
         // PermitRootLogin on Rhel8: Rule id RHEL-08-010550 (DISA XCCDF RHEL8 V2R4),
         // V-number V-230296 (this file's RHEL8_VNUM `("permitrootlogin", "V-230296")`).
-        assert_w02_permitrootlogin_control(TargetVersion::Rhel8, "RHEL-08-010550", "V-230296");
+        // CIS id 5.1.22 (derive-rhel8-sshd.txt, #525).
+        assert_w02_permitrootlogin_control(
+            TargetVersion::Rhel8,
+            "RHEL-08-010550",
+            "V-230296",
+            "5.1.22",
+        );
     }
 
     #[test]
     fn w01_missing_findings_carry_typed_stig_control_rhel10() {
         // banner on Rhel10: Rule id RHEL-10-700010 (DISA XCCDF RHEL10 V1R1),
         // V-number V-281224 (this file's RHEL10_VNUM `("banner", "V-281224")`).
-        assert_w01_banner_control(TargetVersion::Rhel10, "RHEL-10-700010", "V-281224");
+        // CIS id 5.1.5 (derive-rhel10-sshd.txt, #525).
+        assert_w01_banner_control(TargetVersion::Rhel10, "RHEL-10-700010", "V-281224", "5.1.5");
     }
 
     #[test]
     fn w02_weak_value_findings_carry_typed_stig_control_rhel10() {
         // PermitRootLogin on Rhel10: Rule id RHEL-10-700620 (DISA XCCDF RHEL10 V1R1),
         // V-number V-281265 (this file's RHEL10_VNUM `("permitrootlogin", "V-281265")`).
-        assert_w02_permitrootlogin_control(TargetVersion::Rhel10, "RHEL-10-700620", "V-281265");
+        // CIS id 5.1.20 (derive-rhel10-sshd.txt, #525).
+        assert_w02_permitrootlogin_control(
+            TargetVersion::Rhel10,
+            "RHEL-10-700620",
+            "V-281265",
+            "5.1.20",
+        );
     }
 
     // --- #501 backfill: full-coverage completeness (locks the user's decision to
@@ -1345,7 +1460,19 @@ mod tests {
     // is what rules out a partial impl.
 
     /// Shared completeness assertion (see the block comment above).
-    fn assert_w01_completeness(target: TargetVersion, id_prefix: &str) {
+    ///
+    /// #525 extension: every W01 finding must still carry exactly one STIG
+    /// control (never dropped), but exactly `expect_cis_overlap` of them ALSO
+    /// carry exactly one CIS control (never duplicated) -- the STIG/CIS overlap
+    /// keywords for `target` (banner, clientaliveinterval, clientalivecountmax,
+    /// gssapiauthentication, permitemptypasswords, permitrootlogin,
+    /// permituserenvironment on every target; plus ignorerhosts, loglevel, usepam
+    /// on RHEL9/RHEL10 only). Every other required directive
+    /// (ignoreuserknownhosts, kerberosauthentication, printlastlog, rekeylimit,
+    /// strictmodes, x11forwarding, x11uselocalhost, hostbasedauthentication,
+    /// pubkeyauthentication) has no CIS control in the sshd table and must carry
+    /// no Cis ref at all.
+    fn assert_w01_completeness(target: TargetVersion, id_prefix: &str, expect_cis_overlap: usize) {
         use rulesteward_core::Framework;
         let ctx = SshdLintContext {
             target: Some(target),
@@ -1366,29 +1493,66 @@ mod tests {
             expected,
             "W01 must fire once per required directive on an empty config ({target:?})"
         );
+        let mut cis_count = 0usize;
         for d in &diags {
             assert_eq!(d.code, "sshd-W01");
-            // len first so RED is a clean `0 != 1`, not an index panic.
+            let stig_controls: Vec<_> = d
+                .controls
+                .iter()
+                .filter(|c| c.framework == Framework::Stig)
+                .collect();
             assert_eq!(
-                d.controls.len(),
+                stig_controls.len(),
                 1,
                 "every W01 finding must carry exactly one STIG control ({target:?}); \
                  offender: {}",
                 d.message
             );
-            assert_eq!(d.controls[0].framework, Framework::Stig);
             assert!(
-                d.controls[0].id.starts_with(id_prefix),
+                stig_controls[0].id.starts_with(id_prefix),
                 "W01 control id {:?} must start with {id_prefix:?} ({target:?})",
-                d.controls[0].id
+                stig_controls[0].id
+            );
+            let cis_controls: Vec<_> = d
+                .controls
+                .iter()
+                .filter(|c| c.framework == Framework::Cis)
+                .collect();
+            assert!(
+                cis_controls.len() <= 1,
+                "no duplicate CIS ref ({target:?}); offender: {}",
+                d.message
+            );
+            if let [cis] = cis_controls[..] {
+                cis_count += 1;
+                assert!(!cis.id.is_empty(), "CIS control id must be non-empty");
+                assert!(
+                    cis.name.as_deref().is_some_and(|n| !n.is_empty()),
+                    "CIS ref must carry a title via with_name; offender: {}",
+                    d.message
+                );
+            }
+            assert_eq!(
+                d.controls.len(),
+                stig_controls.len() + cis_controls.len(),
+                "no controls beyond Stig+Cis ({target:?}); offender: {}",
+                d.message
             );
         }
+        assert_eq!(
+            cis_count, expect_cis_overlap,
+            "exactly the STIG/CIS overlap keywords must gain a Cis ref ({target:?})"
+        );
     }
 
     #[test]
     fn w01_completeness_all_required_carry_stig_control_rhel8() {
         // RHEL8 V2R4: 14 required directives, every id under the `RHEL-08-` prefix.
-        assert_w01_completeness(TargetVersion::Rhel8, "RHEL-08-");
+        // #525: 7 of them overlap a CIS control (banner, clientaliveinterval,
+        // clientalivecountmax, gssapiauthentication, permitemptypasswords,
+        // permitrootlogin, permituserenvironment) -- ignorerhosts/loglevel/usepam
+        // are not RHEL8-required by STIG, so RHEL8 has no attach site for them.
+        assert_w01_completeness(TargetVersion::Rhel8, "RHEL-08-", 7);
     }
 
     #[test]
@@ -1398,13 +1562,16 @@ mod tests {
         // This assertion itself is unaffected either way (it reads
         // `required_set(Some(target)).len()` dynamically, not a hardcoded
         // count) -- only the comment was stale.
-        assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-");
+        // #525: 10 overlap a CIS control (the RHEL8 7 plus ignorerhosts, loglevel,
+        // usepam, which STIG requires starting at RHEL9).
+        assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-", 10);
     }
 
     #[test]
     fn w01_completeness_all_required_carry_stig_control_rhel10() {
         // RHEL10 V1R1: 19 required directives, every id under the `RHEL-10-` prefix.
-        assert_w01_completeness(TargetVersion::Rhel10, "RHEL-10-");
+        // #525: 10 overlap a CIS control (same set as RHEL9).
+        assert_w01_completeness(TargetVersion::Rhel10, "RHEL-10-", 10);
     }
 
     // --- #507 drift-tool `rule_id_for` accessor ------------------------------
