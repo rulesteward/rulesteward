@@ -3,14 +3,19 @@
 //! `/usr/lib/sysctl.d/*.conf`) and runs security-baseline lint passes over them.
 //!
 //! # Scope (implemented)
-//! Three codes (the [`parser`] tokenizes the file and runs F01/W01; the STIG
-//! baseline W02 lives in [`lints::baseline`]):
+//! Four codes (the [`parser`] tokenizes the file and runs F01/W01; the STIG
+//! baseline W02 lives in [`lints::baseline`]; the CIS baseline W04 lives in
+//! [`lints::cis`]):
 //! * `sysctld-F01` - the file does not parse (a malformed line).
 //! * `sysctld-W01` - a last-wins conflict (the same key is assigned different
 //!   effective values across the drop-in precedence order).
 //! * `sysctld-W02` - the version-aware STIG kernel-hardening baseline check
 //!   (issue #335): a STIG-required key unset or set to an insecure value. Runs
 //!   only when a `--target rhel8|rhel9|rhel10` baseline is selected.
+//! * `sysctld-W04` - the version-aware CIS-Benchmark kernel-hardening baseline
+//!   check (issue #527): a CIS-required key unset or set to a value outside the
+//!   benchmark-accepted set. Runs only when a `--target` baseline is selected;
+//!   additive to (coexists with) `sysctld-W02`.
 //!
 //! The catalog ([`catalog`]) lists the FULL `sysctld-` taxonomy in sorted order;
 //! freezing it up front means the lint passes emit only already-catalogued codes

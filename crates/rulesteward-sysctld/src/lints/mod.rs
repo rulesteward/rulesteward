@@ -8,16 +8,20 @@
 //! * `sysctld-W02` - the version-aware STIG kernel-hardening baseline check
 //!   ([`baseline`], issue #335): a required key unset or set to an insecure value.
 //!   Runs only when a `--target` baseline is selected.
+//! * `sysctld-W04` - the version-aware CIS-Benchmark kernel-hardening baseline
+//!   check ([`cis`], issue #527): a CIS-required key unset or set to a value
+//!   outside the benchmark-accepted set. Runs only when a `--target` baseline is
+//!   selected; additive to (coexists with) `sysctld-W02`.
 //!
 //! The `sysctld-` code catalog is frozen in Phase 0 ([`crate::catalog`]). The
 //! F01/W01 passes are driven from [`crate::parser`]: the assignment model and the
 //! precedence-ordered last-wins reasoning live next to the tokenizer (one parse,
 //! one pass over the assignments), so this module re-exports the public entry
 //! points rather than re-implementing the dispatch. W02 lives in [`baseline`] and
-//! reuses the parser's effective-value map. Single-file linting goes through
-//! [`crate::parser::lint_str`] / [`crate::parser::lint_str_with_target`]; a
-//! directory of drop-ins through [`crate::parser::lint_dir`] /
-//! [`crate::parser::lint_dir_with_target`].
+//! W04 lives in [`cis`]; both reuse the parser's effective-value map. Single-file
+//! linting goes through [`crate::parser::lint_str`] /
+//! [`crate::parser::lint_str_with_target`]; a directory of drop-ins through
+//! [`crate::parser::lint_dir`] / [`crate::parser::lint_dir_with_target`].
 
 pub mod baseline;
 pub mod cis;
