@@ -35,7 +35,7 @@
 //!   CIS / general hardening; no DISA sudo STIG control.
 //! - `!use_pty` (explicit negation of the pty requirement) -- deliberately
 //!   disabling pseudo-terminal allocation is a present weakening.
-//!   CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control
+//!   CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control
 //!   (ComplianceAsCode `sudo_add_use_pty` carries no `stigid@` key; the
 //!   RHEL-08-010382 it formerly cited is the unrelated "restrict privilege
 //!   elevation to authorized personnel" control).
@@ -59,8 +59,10 @@
 //! The `use_pty` / I/O-logging requirements are NOT DISA STIG controls: primary
 //! sources (ComplianceAsCode `sudo_add_use_pty` / `sudo_custom_logfile` rule.yml;
 //! the RHEL 8 V2R7 / RHEL 9 V2R8 / RHEL 10 V1R1 STIG sudo clusters) confirm neither
-//! carries a `stigid@` mapping. They are CIS Benchmark 1.3.2 (use_pty) / 1.3.3
-//! (logfile) + PCI-DSS Req-10.2.5 controls, and are cited as such.
+//! carries a `stigid@` mapping. They are CIS Benchmark 5.2.2 (use_pty) / 5.2.3
+//! (logfile) + PCI-DSS Req-10.2.5 controls, and are cited as such (#526
+//! renumber, LOCKED post-A0 2026-07-18; the stale "1.3.2"/"1.3.3" ids
+//! were an older CIS benchmark generation's numbering).
 //!
 //! `timestamp_timeout` (#363) IS a DISA STIG control (RHEL-08-010384 /
 //! RHEL-09-432015, ComplianceAsCode `sudo_require_reauthentication`) and fires here
@@ -182,13 +184,13 @@ const AUTHENTICATE_CONTROLS: [(Framework, &str); 2] = [
     (Framework::Stig, "RHEL-09-432025"),
 ];
 
-/// `use_pty`: CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5. Shared by the per-file
+/// `use_pty`: CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5. Shared by the per-file
 /// `!use_pty` negation (`check_file`) and the merged missing-`use_pty`
 /// (`check_merged_required`) findings -- same control, two emit sites.
 const USE_PTY_CONTROLS: [(Framework, &str); 2] =
     [(Framework::Cis, "1.3.2"), (Framework::Pci, "Req-10.2.5")];
 
-/// I/O logging (`logfile=` / `log_output`): CIS Benchmark 1.3.3 / PCI-DSS
+/// I/O logging (`logfile=` / `log_output`): CIS Benchmark 5.2.3 / PCI-DSS
 /// Req-10.2.5 (`check_merged_required`'s missing-I/O-log finding).
 const IO_LOG_CONTROLS: [(Framework, &str); 2] =
     [(Framework::Cis, "1.3.3"), (Framework::Pci, "Req-10.2.5")];
@@ -357,7 +359,7 @@ fn negated_weakening(
             .with_controls(controls(&AUTHENTICATE_CONTROLS)),
         ),
         // `!use_pty`: explicit negation of the pty requirement.
-        // CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
+        // CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
         "use_pty" => Some(
             anchored(
                 Severity::Warning,
@@ -877,14 +879,21 @@ mod tests {
 
         // The mis-grounded ids found in #355/#359 must NOT reappear in their
         // respective findings (the swapped pair, and the bogus use_pty STIG id).
-        // The #526 entry guards the RENUMBER regression direction: the stale CIS
-        // id "1.3.2" must not survive the swap to "5.2.2".
+        // The #526 entries guard the RENUMBER regression direction: the stale CIS
+        // ids "1.3.2"/"1.3.3" must not survive the swap to "5.2.2"/"5.2.3" -- one
+        // guard per renumbered anchor (use_pty AND I/O-logging), mirroring each
+        // other so neither renumber can silently regress alone.
         let must_not_cite = [
             ("Defaults !authenticate\n", "010383"), // swapped: !authenticate is 010381
             ("Defaults targetpw\n", "010381"),      // swapped: pw family is 010383
             ("Defaults !use_pty\n", "RHEL-08-010382"), // use_pty has no DISA STIG id
             ("Defaults !use_pty\n", "RHEL-09-432020"), // 432020 is the pw control, not use_pty
             ("Defaults !use_pty\n", "1.3.2"), // #526 renumber: the stale CIS id must not reappear
+            // I/O-log-absent fixture (use_pty + timestamp_timeout set, no
+            // logfile/log_output -- the same fixture
+            // `w04_missing_io_log_finding_carries_cis_and_pci_controls` uses):
+            // the stale "1.3.3" must not survive the swap to "5.2.3" either.
+            ("Defaults use_pty\nDefaults timestamp_timeout=5\n", "1.3.3"), // #526 renumber: the stale I/O-log CIS id must not reappear
         ];
         for (defaults, bad) in must_not_cite {
             let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
@@ -981,6 +990,12 @@ mod tests {
         );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
+        assert!(
+            finding.controls[1].name.is_none(),
+            "the bare PCI ref carries no name (only the renumbered CIS ref gains \
+             one via .with_name(..)); got {:?}",
+            finding.controls[1].name
+        );
     }
 
     /// `Defaults !authenticate` cites DISA STIG RHEL-08-010381 AND
@@ -1082,6 +1097,12 @@ mod tests {
         );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
+        assert!(
+            finding.controls[1].name.is_none(),
+            "the bare PCI ref carries no name (only the renumbered CIS ref gains \
+             one via .with_name(..)); got {:?}",
+            finding.controls[1].name
+        );
     }
 
     /// The merged-required MISSING I/O-logging absence finding (line 0) cites
@@ -1103,6 +1124,18 @@ mod tests {
             .into_iter()
             .find(|d| d.message.contains("logging"))
             .expect("the merged missing-I/O-logging absence finding fires");
+        // #526 adversarial-review fix: the FREE-TEXT message must also carry the
+        // renumbered id, mirroring `use_pty`'s must_cite guard in
+        // `w04_weakening_findings_cite_grounded_controls` -- without this, an
+        // impl could renumber the TYPED ControlRef to 5.2.3 while the message
+        // literal (`check_merged_required`'s `!has_io_log` branch) still cites
+        // the stale 1.3.3, violating the module's own no-drift invariant.
+        assert!(
+            finding.message.contains("CIS Benchmark 5.2.3"),
+            "#526 renumber: the missing-I/O-log message must cite 'CIS Benchmark \
+             5.2.3' (not the stale 1.3.3); got {:?}",
+            finding.message
+        );
         assert_eq!(
             finding.controls.len(),
             2,
@@ -1122,6 +1155,12 @@ mod tests {
         );
         assert_eq!(finding.controls[1].framework, Framework::Pci);
         assert_eq!(finding.controls[1].id, "Req-10.2.5");
+        assert!(
+            finding.controls[1].name.is_none(),
+            "the bare PCI ref carries no name (only the renumbered CIS ref gains \
+             one via .with_name(..)); got {:?}",
+            finding.controls[1].name
+        );
     }
 
     /// The merged-required ABSENT `timestamp_timeout` finding (line 0, the
