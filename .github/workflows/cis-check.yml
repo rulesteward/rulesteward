@@ -23,6 +23,10 @@ on:
       - 'tools/cis-update/**'
       - 'tools/stig-update/**'
       - '.github/workflows/cis-check.yml'
+      - 'crates/rulesteward-auditd/**'
+      - 'crates/rulesteward-sshd/**'
+      - 'crates/rulesteward-sudoers/**'
+      - 'crates/rulesteward-sysctld/**'
 
 # Least privilege: this job only reads the repo and calls out to public APIs; it
 # never writes anything back to GitHub (contrast cis-drift.yml, which needs

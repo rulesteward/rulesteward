@@ -10,6 +10,9 @@
 //!   unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation; #522).
 //! * `stig` - sudo-W04 (Defaults setting weaker than the sudo STIG baseline)
 //!   (#333).
+//! * `cis` - the per-product (rhel8/rhel9/rhel10) CIS Benchmark control table
+//!   (#526, v0.8 Wave 3) the `stig` module's two `Framework::Cis` `ControlRef`s
+//!   (`use_pty` / I/O-logging) draw their renumbered ids + titles from.
 //! * `catalog` - the machine-readable `sudo-` code catalog (frozen Phase 0).
 //!
 //! The dispatcher [`lint`] runs every pass for real (so `rulesteward sudoers lint`
@@ -21,6 +24,7 @@
 
 pub mod aliases;
 pub mod catalog;
+pub mod cis;
 pub mod f01;
 pub mod stig;
 pub mod tags;
@@ -51,6 +55,14 @@ pub use rulesteward_core::anchored;
 /// bare both here (the [`lint`] dispatcher) and in this module's own test
 /// module's `use super::{..., f01, ...}` import.
 pub use f01::f01;
+
+/// Re-exported from the `cis` module (#526, v0.8 Wave 3 lane 3b): the
+/// sudoers crate's FIRST `TargetVersion`. Surfaced at `lints::TargetVersion`
+/// (not buried under `lints::cis::TargetVersion` only), matching the auditd
+/// (`lints::mod::TargetVersion`, re-exported from `stig_required`) / sysctld
+/// (`lints::mod::TargetVersion`, re-exported from `baseline`) convention --
+/// per the barrier dedup reconciliation (#524 arbiter ruling, round 3).
+pub use cis::TargetVersion;
 
 /// Run every semantic lint pass over the parsed `files` and return the merged
 /// diagnostic list, in catalog order for byte-stable output.

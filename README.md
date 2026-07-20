@@ -150,9 +150,9 @@ rulesteward sudoers lint --format json /etc/sudoers
 ### sysctl.d
 
 ```bash
-rulesteward sysctl lint /etc/sysctl.conf               # lint kernel parameter assignments (4 sysctld- codes)
+rulesteward sysctl lint /etc/sysctl.conf               # lint kernel parameter assignments (5 sysctld- codes)
 rulesteward sysctl lint /etc/sysctl.d/99-hardening.conf
-rulesteward sysctl lint --target rhel9 /etc/sysctl.conf   # STIG baseline check (sysctld-W02)
+rulesteward sysctl lint --target rhel9 /etc/sysctl.conf   # STIG + CIS baseline checks (sysctld-W02/W04)
 rulesteward sysctl lint --system                       # scan the whole sysctl.d precedence chain (sysctld-W03)
 rulesteward sysctl lint --system --root ./rootfs        # reroot the system scan (offline / container)
 ```
@@ -161,7 +161,8 @@ rulesteward sysctl lint --system --root ./rootfs        # reroot the system scan
   `/etc/sysctl.d/*.conf`, etc.) and run the lint passes: `sysctld-F01` (parse
   error), `sysctld-W01` (last-wins conflict across the drop-in precedence order),
   and - when `--target rhel8|rhel9|rhel10` is set - the version-aware `sysctld-W02`
-  STIG kernel-hardening baseline check. With `--system` (optionally rerooted by
+  STIG and `sysctld-W04` CIS-Benchmark kernel-hardening baseline checks. With
+  `--system` (optionally rerooted by
   `--root <PREFIX>`) it instead scans the whole `sysctl.d` search-path precedence
   chain and adds `sysctld-W03` (cross-directory override / applier-divergence /
   masked-drop-in surprises). Read-only.
@@ -248,7 +249,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `au-W02` | Warning | shadowed rule: an earlier, broader rule subsumes it |
 | `au-W03` | Warning | suppression conflict: an exclude/never rule suppresses an always rule's events |
 | `au-W04` | Warning | missing-ABI coverage: a syscall rule pins one ABI (`arch=b32`/`b64`) with no companion on the other ABI |
-| `au-W06` | Warning | missing STIG-required audit rule: the applicable RHEL STIG requires a rule this ruleset does not contain (fires only under `--target`) |
+| `au-W06` | Warning | missing STIG-required audit rule: the applicable RHEL STIG requires a rule this ruleset does not contain (fires only under `--target`; the finding also carries the mapped CIS Benchmark control ref(s) where the same rule appears in the CIS baseline) |
 
 ### sshd_config (`sshd-`, 13 codes)
 
@@ -278,7 +279,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sudo-W01` | Warning | `NOPASSWD` applies to an `ALL` command (passwordless run-anything) |
 | `sudo-W02` | Warning | a `Cmnd_Alias` transitively expands to `ALL` under `NOPASSWD` |
 | `sudo-W03` | Warning | alias defined but never referenced (dead alias) |
-| `sudo-W04` | Warning | `Defaults` setting weaker than, or required hardening absent from, the sudo security baseline (covers weakening settings such as `!authenticate`, `targetpw`, `rootpw`, `visiblepw`, `!use_pty`, and negative `timestamp_timeout`; and missing-required checks for `use_pty`, I/O logging, and `timestamp_timeout` over the merged config - DISA STIG RHEL-08-010384/RHEL-09-432015 and CIS Benchmark 1.3.2/1.3.3) |
+| `sudo-W04` | Warning | `Defaults` setting weaker than, or required hardening absent from, the sudo security baseline (covers weakening settings such as `!authenticate`, `targetpw`, `rootpw`, `visiblepw`, `!use_pty`, and negative `timestamp_timeout`; and missing-required checks for `use_pty`, I/O logging, and `timestamp_timeout` over the merged config - DISA STIG RHEL-08-010384/RHEL-09-432015 and CIS Benchmark 5.2.2/5.2.3) |
 | `sudo-W05` | Warning | `NOPASSWD` grants passwordless sudo on a specific (non-ALL) command; STIG requires removing `NOPASSWD` entirely (DISA STIG RHEL-08-010380/RHEL-09-611085) |
 | `sudo-W06` | Warning | a user specification grants the literal `ALL` user unrestricted privilege elevation (`ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`, including `ALL` appearing among other list members and run-as specs inherited by later commands on the line) - DISA STIG RHEL-08-010382/RHEL-09-432030/RHEL-10-600520 |
 
@@ -290,6 +291,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sysctld-W01` | Warning | last-wins conflict: the same key is assigned different effective values across the drop-in precedence order | always |
 | `sysctld-W02` | Warning | STIG-required kernel-hardening key is unset or set to an insecure value (version-aware) | `--target` |
 | `sysctld-W03` | Warning | cross-directory precedence surprise: a lower-precedence directory wins (W03-a), the procps and systemd appliers disagree on `/etc/sysctl.conf` (W03-b), or a masked same-basename drop-in silently drops a key (W03-c) | `--system` |
+| `sysctld-W04` | Warning | CIS-Benchmark-required kernel-hardening key is unset or set to a value outside the benchmark-accepted set (version-aware) | `--target` |
 
 ### SELinux (`se-`, 2 codes)
 

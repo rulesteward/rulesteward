@@ -89,9 +89,14 @@ pub fn skip_line(product: &str, family: Family, derived_count: usize, lane_issue
     )
 }
 
-/// Drift lines for one family: AUTOMATED-status derived ids vs shipped ids.
-/// (`manual`/`partial`/... controls are not shipped as lint coverage by default,
-/// so they do not count against the shipped table.) Empty result == no drift.
+/// Drift lines for one family. The automated-only filter is ASYMMETRIC:
+/// upstream-side additions count only when `status=automated` (a new
+/// `manual`/`partial` control is not lint coverage and never nags), but a
+/// SHIPPED id is forgiven whenever upstream maps it at ANY status - the shipped
+/// tables mirror `derive` verbatim, which includes non-automated controls
+/// (first hit: rhel9 auditd 6.3.3.5, `partial` at the pin, 9g integration).
+/// Only an id upstream does not map at all is "in code, absent upstream", so
+/// renumber/removal detection is unchanged. Empty result == no drift.
 #[must_use]
 pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<String> {
     let automated: BTreeMap<&str, &CisControl> = derived
@@ -99,6 +104,8 @@ pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<St
         .filter(|c| c.status == Status::Automated)
         .map(|c| (c.id.as_str(), c))
         .collect();
+    let derived_any: std::collections::BTreeSet<&str> =
+        derived.iter().map(|c| c.id.as_str()).collect();
     let shipped_ids: std::collections::BTreeSet<&str> =
         shipped.iter().map(|s| s.id.as_str()).collect();
 
@@ -113,7 +120,9 @@ pub fn diff_family(derived: &[CisControl], shipped: &[ShippedControl]) -> Vec<St
     let mut out = Vec::new();
     for id in ids {
         match (shipped_ids.contains(id), automated.get(id)) {
-            (true, None) => out.push(format!("- {id}  (in code, absent upstream)")),
+            (true, None) if !derived_any.contains(id) => {
+                out.push(format!("- {id}  (in code, absent upstream)"));
+            }
             (false, Some(c)) => out.push(format!("+ {id} [{}]  (new upstream)", c.rules.join(","))),
             _ => {}
         }
@@ -217,6 +226,27 @@ pub fn render_derive(
     )
 }
 
+/// The `derive --stig-refs` section: one tab-separated line per (CIS control,
+/// auditd rule) join row; an empty join renders `-` (CIS-only rule). The joined
+/// count in the header makes partial STIG coverage visible at a glance.
+#[must_use]
+pub fn render_stig_refs(rows: &[crate::stig_refs::StigRefRow]) -> String {
+    let joined = rows.iter().filter(|r| !r.stig_ids.is_empty()).count();
+    let mut out = format!(
+        "## auditd stig-refs ({} rows, {joined} joined)\n",
+        rows.len()
+    );
+    for r in rows {
+        let ids = if r.stig_ids.is_empty() {
+            "-".to_string()
+        } else {
+            r.stig_ids.join(",")
+        };
+        out.push_str(&format!("{}\t{}\t{}\n", r.cis_id, r.rule, ids));
+    }
+    out
+}
+
 /// The `derive --values` section: one line per derived sysctl key.
 #[must_use]
 pub fn render_values(rows: &[DerivedKey]) -> String {
@@ -241,11 +271,12 @@ mod tests {
 
     use super::{
         HealthFailure, check_family, classify_health_failure, diff_family, family_health,
-        render_derive, render_values, skip_line, verify_anchors,
+        render_derive, render_stig_refs, render_values, skip_line, verify_anchors,
     };
     use crate::controls::{CisControl, Header, Status};
     use crate::family::Family;
     use crate::registry::{Shipped, ShippedControl};
+    use crate::stig_refs::StigRefRow;
 
     fn control(id: &str, status: Status, rules: &[&str]) -> CisControl {
         CisControl {
@@ -264,6 +295,28 @@ mod tests {
                 id: (*i).to_string(),
             })
             .collect()
+    }
+
+    #[test]
+    fn render_stig_refs_tabs_rows_and_counts_joined() {
+        let rows = vec![
+            StigRefRow {
+                cis_id: "6.3.3.18".to_string(),
+                rule: "audit_rules_privileged_commands_usermod".to_string(),
+                stig_ids: vec!["RHEL-08-030560".to_string(), "RHEL-08-030561".to_string()],
+            },
+            StigRefRow {
+                cis_id: "6.3.3.1".to_string(),
+                rule: "audit_rules_sysadmin_actions".to_string(),
+                stig_ids: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            render_stig_refs(&rows),
+            "## auditd stig-refs (2 rows, 1 joined)\n\
+             6.3.3.18\taudit_rules_privileged_commands_usermod\tRHEL-08-030560,RHEL-08-030561\n\
+             6.3.3.1\taudit_rules_sysadmin_actions\t-\n"
+        );
     }
 
     fn anchor_rows() -> Vec<CisControl> {
@@ -351,15 +404,25 @@ mod tests {
     }
 
     #[test]
-    fn diff_family_counts_only_automated_derived_controls() {
+    fn diff_family_is_asymmetric_over_non_automated_upstream_status() {
+        // The automated-only filter is ASYMMETRIC (the plan's deferred revisit
+        // fired at 9g integration: rhel9 auditd 6.3.3.5 is status=partial at
+        // the pin, and the shipped tables mirror `derive` verbatim by design).
+        // A non-automated upstream control neither DEMANDS a shipped row nor
+        // counts a shipped one as drift; only an id upstream does not map AT
+        // ALL is "in code, absent upstream", so renumber/removal detection is
+        // unchanged.
         let derived = vec![
             control("5.2.2", Status::Automated, &["sudo_add_use_pty"]),
             control("5.9.9", Status::Manual, &["sudo_manual_thing"]),
         ];
-        // The manual control neither demands a shipped row nor forgives one.
+        // Not shipped: the manual control does not demand a row.
         assert!(diff_family(&derived, &shipped_ids(&["5.2.2"])).is_empty());
-        let d = diff_family(&derived, &shipped_ids(&["5.2.2", "5.9.9"]));
-        assert_eq!(d, vec!["- 5.9.9  (in code, absent upstream)"]);
+        // Shipped: upstream still maps 5.9.9 (manual) -> forgiven, no drift.
+        assert!(diff_family(&derived, &shipped_ids(&["5.2.2", "5.9.9"])).is_empty());
+        // A shipped id upstream does not map at all IS drift.
+        let d = diff_family(&derived, &shipped_ids(&["5.2.2", "1.0.0"]));
+        assert_eq!(d, vec!["- 1.0.0  (in code, absent upstream)"]);
     }
 
     #[test]

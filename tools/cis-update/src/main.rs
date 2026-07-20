@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use cis_update::config::Config;
 use cis_update::family::{self, Family};
 use cis_update::report::{self, HealthFailure};
-use cis_update::{controls, registry, source, values};
+use cis_update::{controls, registry, source, stig_refs, values};
 use stig_update::source as stig_source;
 
 fn main() -> ExitCode {
@@ -59,6 +59,8 @@ fn print_help() {
            --ref R          override the upstream ref (commit/tag)\n  \
            --family F       sshd | sudoers | sysctld | auditd (default: all)\n  \
            --values         also derive sysctl VALUES for the sysctld family\n  \
+           --stig-refs      also derive the auditd CIS<->STIG join (via the\n                   \
+           product STIG controls file at the same ref)\n  \
            --config PATH    path to cis-refs.toml (default: next to the crate)"
     );
 }
@@ -87,7 +89,7 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
                 "{product}: CIS controls file not found at the pinned ref {reff}"
             ));
         };
-        let (_header, parsed) = controls::parse(product, &text)?;
+        let (_header, parsed) = controls::parse_corrected(product, &text)?;
         let groups = family::group(&parsed);
 
         // Health: all four families derive non-empty AND the sudoers anchors are
@@ -139,6 +141,7 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
         .map(|f| Family::parse(&f))
         .transpose()?;
     let want_values = args.iter().any(|a| a == "--values");
+    let want_stig_refs = args.iter().any(|a| a == "--stig-refs");
     let products: Vec<String> = match flag(args, "--product") {
         Some(p) => vec![p],
         None => cfg.products.keys().cloned().collect(),
@@ -152,7 +155,7 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
         eprintln!("deriving {product} @ {reff} ...");
         let text = source::controls_optional(&reff, product)?
             .ok_or_else(|| format!("{product}: CIS controls file not found at {reff}"))?;
-        let (header, parsed) = controls::parse(product, &text)?;
+        let (header, parsed) = controls::parse_corrected(product, &text)?;
         let groups = family::group(&parsed);
         print!(
             "{}",
@@ -167,6 +170,21 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
                 let get_rule = stig_source::rule_fetcher(&reff, &tree);
                 let vals = values::sysctl_values(&parsed, product, &cfg.exclude_rules, get_rule)?;
                 print!("{}", report::render_values(&vals));
+            }
+        }
+
+        if want_stig_refs {
+            if family_filter.is_some_and(|f| f != Family::Auditd) {
+                eprintln!("--stig-refs applies to the auditd family only; ignored for this filter");
+            } else {
+                let stig_text = stig_source::controls_optional(&reff, product)?
+                    .ok_or_else(|| format!("{product}: STIG controls file not found at {reff}"))?;
+                let index = stig_refs::stig_rule_index(product, &stig_text)?;
+                let rows = groups.get(&Family::Auditd).map_or(&[][..], Vec::as_slice);
+                print!(
+                    "{}",
+                    report::render_stig_refs(&stig_refs::join(rows, &index))
+                );
             }
         }
         println!();

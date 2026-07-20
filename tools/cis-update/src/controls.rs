@@ -121,6 +121,16 @@ pub fn parse(product: &str, text: &str) -> Result<(Header, Vec<CisControl>), Str
     Ok((header, out))
 }
 
+/// [`parse`] plus the targeted upstream-artifact corrections from
+/// [`crate::overrides`]. The ONLY parse entry point `main.rs` may use: both
+/// `check` and `derive` must see corrected rows, or the drift gate and the
+/// shipped tables disagree about the artifact rows.
+pub fn parse_corrected(product: &str, text: &str) -> Result<(Header, Vec<CisControl>), String> {
+    let (header, mut controls) = parse(product, text)?;
+    crate::overrides::apply(product, &mut controls);
+    Ok((header, controls))
+}
+
 /// A YAML scalar as its raw string. Ids like `9.9` lex as floats (`Yaml::Real`
 /// keeps the raw spelling) and a bare integer would lex as `Yaml::Integer`, so
 /// both are accepted alongside plain strings. `pub(crate)`: [`crate::values`]

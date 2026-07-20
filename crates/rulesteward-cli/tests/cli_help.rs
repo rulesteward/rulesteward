@@ -162,6 +162,29 @@ fn completions_help_lists_supported_shells() {
 }
 
 #[test]
+fn sudoers_lint_help_cites_renumbered_cis_ids() {
+    // #526 (adversarial-impl-reviewer miss, lane-3b-sudoers): the sudo-W04
+    // long-help doc comment still cited the STALE CIS ids "1.3.2" / "1.3.3"
+    // (an older CIS benchmark generation's numbering) even though #526 locked
+    // the renumber to "5.2.2" (use_pty) / "5.2.3" (I/O logging) post-A0, and
+    // `rulesteward-sudoers::lints::cis` / `lints::stig` already emit the
+    // renumbered ids in every live sudo-W04 `Diagnostic` (verified by running
+    // `rulesteward sudoers lint` on a `Defaults !use_pty` fixture: the
+    // findings say "CIS Benchmark 5.2.2" / "CIS Benchmark 5.2.3", never
+    // "1.3.2"/"1.3.3"). The operator-facing `sudoers lint --help` must match
+    // the tool's own output instead of contradicting it.
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sudoers", "lint", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CIS Benchmark 5.2.2"))
+        .stdout(predicate::str::contains("5.2.3"))
+        .stdout(predicate::str::contains("1.3.2").not())
+        .stdout(predicate::str::contains("1.3.3").not());
+}
+
+#[test]
 fn sshd_lint_help_lists_all_codes_including_w07() {
     // #414: sshd-W07 (#302) was added after this help block was written, which
     // still claimed "All 12 sshd- codes" and omitted W07 from the enumeration.

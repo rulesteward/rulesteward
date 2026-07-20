@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CIS Benchmark control tables for all four RHEL-target backends** (sshd
+  #525, sudoers #526, sysctld #527, auditd #528): per-product (rhel8 v4.0.0 /
+  rhel9 v2.0.0 / rhel10 v1.0.1) tables transcribed verbatim from
+  ComplianceAsCode/content at the ref pinned in `tools/cis-update/cis-refs.toml`,
+  each behind a `pub cis_baseline` accessor and drift-tethered by the
+  `cis-check` gate (all 12 family-by-product slots now report `OK`, none
+  `SKIPPED`). Control ids and CaC titles only - never benchmark prose.
+- **`sysctld-W04`** (one new lint code, bringing the total to 61: fapolicyd 25,
+  sshd 13, auditd 10, sudoers 8, sysctld 5): version-aware CIS-Benchmark
+  kernel-hardening baseline check under `--target` - one Warning per
+  CIS-required key that is unset or set outside the benchmark-accepted set,
+  each carrying exactly one titled `Cis` control ref. (#527)
+- **`Framework::Cis` control refs with CaC titles across backends**: sshd
+  `W01`/`W02` findings on the STIG/CIS overlap keywords now carry BOTH their
+  existing `Stig` ref and one `Cis` ref (never a dropped Stig ref, never a
+  duplicate); auditd `au-W06` findings carry the mapped CIS control ref(s) via
+  the CaC-rule join (`RHEL-10-500810` maps two CIS controls and carries both).
+  `--profile cis` now surfaces findings from all four RHEL-target backends.
+  (#525, #528)
+
+### Changed
+
+- **sudoers `sudo-W04` CIS citations renumbered** from the stale
+  `1.3.2`/`1.3.3` (an older benchmark generation) to `5.2.2` (`use_pty`) /
+  `5.2.3` (I/O logging), now table-driven from the backend's first
+  `cis_baseline` accessor and carrying CaC titles; the CLI long-help was
+  updated to match the emitted output. (#526)
+- **`cis-check` drift filter is asymmetric over non-automated upstream
+  status**: a shipped control id is forgiven when upstream maps it at any
+  status (first hit: rhel9 auditd `6.3.3.5`, `partial` at the pin); upstream
+  additions still count only when `automated`, and renumber/removal detection
+  is unchanged. (#524)
+
 ## [0.7.0] - 2026-07-13
 
 A cross-cutting STIG compliance-profile release. No new backends and no new
