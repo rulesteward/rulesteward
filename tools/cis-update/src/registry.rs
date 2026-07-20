@@ -1,11 +1,12 @@
 //! The shipped-table registry: which (family, product) CIS tables the backend
 //! crates actually ship, projected into the drift-comparison shape.
 //!
-//! At the #524 foundation every slot is `Pending` (no lane has landed): `check`
-//! must say so explicitly per family - never a vacuous OK. Lane integration
-//! (orchestrator-owned) replaces ONE family mod's body with a projection off that
-//! crate's new `pub cis_baseline`-style accessor + adds the path-dep; the other
-//! families' arms are untouched, so each lane wiring is a small isolated edit.
+//! All four Wave-3 families (sshd #525, sudoers #526, sysctld #527, auditd
+//! #528) are ARMED: each family mod projects distinct control ids off its
+//! crate's `pub cis_baseline`-style accessor via a path-dep. `Pending` is
+//! reserved for backends without a CIS lane yet (fapolicyd / selinux, filed
+//! only after this wave per the #518 verdict shape); `check` reports a Pending
+//! slot as an explicit per-family SKIPPED line - never a vacuous OK.
 
 use crate::family::Family;
 
