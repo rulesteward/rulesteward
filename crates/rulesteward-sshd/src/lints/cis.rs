@@ -455,4 +455,288 @@ mod tests {
             }
         }
     }
+
+    // --- strengthen round 2 (adversarial re-review, #524/#525): the table itself
+    // -----------------------------------------------------------------------
+    // Round 1 pinned only 4 of the 16 `cis_baseline` rows (via
+    // `cis_baseline_matches_grounding_for_permitrootlogin`,
+    // `cis_baseline_matches_grounding_for_banner_three_way`, and
+    // `cis_baseline_multi_directive_control_covers_both_clientalive_rules`, which
+    // together pin permitrootlogin/banner/idle-timeout/keepalive). The SIX rows
+    // with no CIS `ControlRef` attach site at all (`sshd_limit_user_access`,
+    // `sshd_disable_forwarding`, `sshd_set_login_grace_time`,
+    // `sshd_set_max_auth_tries`, `sshd_set_max_sessions`, `sshd_set_maxstartups`)
+    // appeared NOWHERE in the suite, so a transcription error in the table for
+    // any of them passed every existing assertion. The tests below close that
+    // gap with a data-driven known-answer test over ALL 16 rows, a structural
+    // floor mirroring `stig.rs`'s `provenance_covers_required_set_exactly` +
+    // `v_numbers_are_well_formed_and_unique`, and a cross-bind between
+    // `cis_baseline` and `cis_control_ref` for every STIG/CIS overlap row.
+
+    /// Well-formedness check for a CIS control id: `5.1.<digits>`, mirrors
+    /// `stig.rs`'s `V-<digits>` check for `v_number`.
+    fn is_well_formed_cis_id(id: &str) -> bool {
+        id.strip_prefix("5.1.")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+    }
+
+    /// The 16 `rule` identifiers `cis_baseline` must carry on EVERY target -- the
+    /// rule set is uniform across products (module doc: "Every product carries
+    /// the SAME shape"); only the `id`/product-specific numbering differs.
+    /// Transcribed verbatim from `derive-rhel{8,9,10}-sshd.txt` (all three agree).
+    const EXPECTED_RULES: [&str; 16] = [
+        "sshd_limit_user_access",
+        "sshd_enable_warning_banner_net",
+        "sshd_set_idle_timeout",
+        "sshd_set_keepalive",
+        "sshd_disable_forwarding",
+        "sshd_disable_gssapi_auth",
+        "sshd_disable_rhosts",
+        "sshd_set_login_grace_time",
+        "sshd_set_loglevel_verbose",
+        "sshd_set_max_auth_tries",
+        "sshd_set_max_sessions",
+        "sshd_set_maxstartups",
+        "sshd_disable_empty_passwords",
+        "sshd_disable_root_login",
+        "sshd_do_not_permit_user_env",
+        "sshd_enable_pam",
+    ];
+
+    #[test]
+    fn cis_baseline_ids_are_well_formed() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            for c in cis_baseline(target) {
+                assert!(
+                    is_well_formed_cis_id(c.id),
+                    "malformed CIS id {:?} for rule {} ({target:?})",
+                    c.id,
+                    c.rule
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cis_baseline_rule_set_covers_expected_sixteen_rules_exactly() {
+        // Mirrors `stig.rs::provenance_covers_required_set_exactly`: the table's
+        // `rule` set must equal the expected set exactly (no missing rule, no
+        // extra rule), and no row is a duplicate of another (the BTreeSet length
+        // must equal the row count -- distinct from `id`, which legitimately
+        // repeats for the two-directive ClientAliveInterval/ClientAliveCountMax
+        // control).
+        let expected: std::collections::BTreeSet<&str> = EXPECTED_RULES.iter().copied().collect();
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            let table = cis_baseline(target);
+            let rules: std::collections::BTreeSet<&str> = table.iter().map(|c| c.rule).collect();
+            assert_eq!(rules, expected, "rule-name set mismatch ({target:?})");
+            assert_eq!(
+                table.len(),
+                rules.len(),
+                "duplicate rule row in cis_baseline ({target:?})"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // data-driven: 16 rules x 3 targets, inline
+    fn cis_baseline_pins_all_sixteen_rows_every_target() {
+        // Every (rule, id-per-target, title) triple transcribed verbatim from
+        // `derive-rhel{8,9,10}-sshd.txt` (pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`).
+        // Includes the six rows with no CIS `ControlRef` attach site
+        // (sshd_limit_user_access, sshd_disable_forwarding,
+        // sshd_set_login_grace_time, sshd_set_max_auth_tries,
+        // sshd_set_max_sessions, sshd_set_maxstartups), which round 1 never
+        // pinned anywhere.
+        const ACCESS_TITLE: &str = "Ensure sshd access is configured (Automated)";
+        const BANNER_TITLE: &str = "Ensure sshd Banner is configured (Automated)";
+        const CLIENTALIVE_TITLE: &str =
+            "Ensure sshd ClientAliveInterval and ClientAliveCountMax are configured (Automated)";
+        const FORWARDING_TITLE: &str = "Ensure sshd DisableForwarding is enabled (Automated)";
+        const GSSAPI_TITLE: &str = "Ensure sshd GSSAPIAuthentication is disabled (Automated)";
+        const IGNORERHOSTS_TITLE: &str = "Ensure sshd IgnoreRhosts is enabled (Automated)";
+        const LOGINGRACE_TITLE: &str = "Ensure sshd LoginGraceTime is configured (Automated)";
+        const LOGLEVEL_TITLE: &str = "Ensure sshd LogLevel is configured (Automated)";
+        const MAXAUTHTRIES_TITLE: &str = "Ensure sshd MaxAuthTries is configured (Automated)";
+        const MAXSESSIONS_TITLE: &str = "Ensure sshd MaxSessions is configured (Automated)";
+        const MAXSTARTUPS_TITLE: &str = "Ensure sshd MaxStartups is configured (Automated)";
+        const PERMITEMPTY_TITLE: &str = "Ensure sshd PermitEmptyPasswords is disabled (Automated)";
+        const PERMITROOTLOGIN_TITLE: &str = "Ensure sshd PermitRootLogin is disabled (Automated)";
+        const PERMITUSERENV_TITLE: &str =
+            "Ensure sshd PermitUserEnvironment is disabled (Automated)";
+        const USEPAM_TITLE: &str = "Ensure sshd UsePAM is enabled (Automated)";
+
+        // (rule, [rhel8 id, rhel9 id, rhel10 id], title)
+        let rows: &[(&str, [&str; 3], &str)] = &[
+            (
+                "sshd_limit_user_access",
+                ["5.1.6", "5.1.7", "5.1.4"],
+                ACCESS_TITLE,
+            ),
+            (
+                "sshd_enable_warning_banner_net",
+                ["5.1.7", "5.1.8", "5.1.5"],
+                BANNER_TITLE,
+            ),
+            (
+                "sshd_set_idle_timeout",
+                ["5.1.9", "5.1.9", "5.1.7"],
+                CLIENTALIVE_TITLE,
+            ),
+            (
+                "sshd_set_keepalive",
+                ["5.1.9", "5.1.9", "5.1.7"],
+                CLIENTALIVE_TITLE,
+            ),
+            (
+                "sshd_disable_forwarding",
+                ["5.1.10", "5.1.10", "5.1.8"],
+                FORWARDING_TITLE,
+            ),
+            (
+                "sshd_disable_gssapi_auth",
+                ["5.1.11", "5.1.11", "5.1.9"],
+                GSSAPI_TITLE,
+            ),
+            (
+                "sshd_disable_rhosts",
+                ["5.1.13", "5.1.13", "5.1.11"],
+                IGNORERHOSTS_TITLE,
+            ),
+            (
+                "sshd_set_login_grace_time",
+                ["5.1.15", "5.1.14", "5.1.13"],
+                LOGINGRACE_TITLE,
+            ),
+            (
+                "sshd_set_loglevel_verbose",
+                ["5.1.16", "5.1.15", "5.1.14"],
+                LOGLEVEL_TITLE,
+            ),
+            (
+                "sshd_set_max_auth_tries",
+                ["5.1.18", "5.1.16", "5.1.16"],
+                MAXAUTHTRIES_TITLE,
+            ),
+            (
+                "sshd_set_max_sessions",
+                ["5.1.19", "5.1.18", "5.1.18"],
+                MAXSESSIONS_TITLE,
+            ),
+            (
+                "sshd_set_maxstartups",
+                ["5.1.20", "5.1.17", "5.1.17"],
+                MAXSTARTUPS_TITLE,
+            ),
+            (
+                "sshd_disable_empty_passwords",
+                ["5.1.21", "5.1.19", "5.1.19"],
+                PERMITEMPTY_TITLE,
+            ),
+            (
+                "sshd_disable_root_login",
+                ["5.1.22", "5.1.20", "5.1.20"],
+                PERMITROOTLOGIN_TITLE,
+            ),
+            (
+                "sshd_do_not_permit_user_env",
+                ["5.1.23", "5.1.21", "5.1.21"],
+                PERMITUSERENV_TITLE,
+            ),
+            (
+                "sshd_enable_pam",
+                ["5.1.24", "5.1.22", "5.1.22"],
+                USEPAM_TITLE,
+            ),
+        ];
+
+        let targets = [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ];
+
+        for (rule, ids, title) in rows {
+            for (target, expect_id) in targets.iter().zip(ids.iter()) {
+                let table = cis_baseline(*target);
+                let row = table
+                    .iter()
+                    .find(|c| c.rule == *rule)
+                    .unwrap_or_else(|| panic!("{rule} present ({target:?})"));
+                assert_eq!(row.id, *expect_id, "{rule} id ({target:?})");
+                assert_eq!(row.title, *title, "{rule} title ({target:?})");
+            }
+        }
+    }
+
+    #[test]
+    fn cis_baseline_and_cis_control_ref_agree_on_every_overlap_row() {
+        // Cross-bind guard: for every STIG/CIS overlap keyword, the `id` the
+        // runtime attach path (`cis_control_ref`) resolves must be the SAME `id`
+        // as the corresponding `cis_baseline` row for the same rule/target -- the
+        // two id sources (the per-rule table and the per-keyword attach lookup)
+        // must never be allowed to drift apart.
+        let targets = [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ];
+
+        // Overlap keywords with an attach site on every target.
+        let overlap_every_target: &[(&str, &str)] = &[
+            ("banner", "sshd_enable_warning_banner_net"),
+            ("clientaliveinterval", "sshd_set_idle_timeout"),
+            ("clientalivecountmax", "sshd_set_keepalive"),
+            ("gssapiauthentication", "sshd_disable_gssapi_auth"),
+            ("permitemptypasswords", "sshd_disable_empty_passwords"),
+            ("permitrootlogin", "sshd_disable_root_login"),
+            ("permituserenvironment", "sshd_do_not_permit_user_env"),
+        ];
+        for (keyword, rule) in overlap_every_target {
+            for target in targets {
+                let table = cis_baseline(target);
+                let row = table
+                    .iter()
+                    .find(|c| c.rule == *rule)
+                    .unwrap_or_else(|| panic!("{rule} present in cis_baseline ({target:?})"));
+                let control = cis_control_ref(keyword, Some(target))
+                    .unwrap_or_else(|| panic!("{keyword} resolves a cis_control_ref ({target:?})"));
+                assert_eq!(
+                    row.id, control.id,
+                    "{keyword}/{rule} id must match between cis_baseline and cis_control_ref ({target:?})"
+                );
+            }
+        }
+
+        // Overlap keywords with an attach site on RHEL9/RHEL10 only (STIG never
+        // requires them on RHEL8; see `cis_control_ref_scoped_to_rhel9_10_for_stig_gated_keywords`).
+        let overlap_rhel9_10_only: &[(&str, &str)] = &[
+            ("ignorerhosts", "sshd_disable_rhosts"),
+            ("loglevel", "sshd_set_loglevel_verbose"),
+            ("usepam", "sshd_enable_pam"),
+        ];
+        for (keyword, rule) in overlap_rhel9_10_only {
+            for target in [TargetVersion::Rhel9, TargetVersion::Rhel10] {
+                let table = cis_baseline(target);
+                let row = table
+                    .iter()
+                    .find(|c| c.rule == *rule)
+                    .unwrap_or_else(|| panic!("{rule} present in cis_baseline ({target:?})"));
+                let control = cis_control_ref(keyword, Some(target))
+                    .unwrap_or_else(|| panic!("{keyword} resolves a cis_control_ref ({target:?})"));
+                assert_eq!(
+                    row.id, control.id,
+                    "{keyword}/{rule} id must match between cis_baseline and cis_control_ref ({target:?})"
+                );
+            }
+        }
+    }
 }
