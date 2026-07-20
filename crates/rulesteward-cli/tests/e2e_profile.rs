@@ -15,7 +15,7 @@
 //!    (`rulesteward-sysctld/src/lints/baseline.rs`).
 //!  * `sysctld-W01` (last-wins) attaches NO controls -> dropped by any profile.
 //!  * `sudo-W04` missing-`use_pty` / missing-I/O-log attach `Framework::Cis`
-//!    (1.3.2 / 1.3.3) + `Framework::Pci` (`rulesteward-sudoers/src/lints/stig.rs`).
+//!    (5.2.2 / 5.2.3) + `Framework::Pci` (`rulesteward-sudoers/src/lints/stig.rs`).
 //!  * fapolicyd findings attach NO controls -> any profile empties them.
 //!  * `Framework::Nist` is attached by NO lint today -> `--profile nist` empties
 //!    any non-empty finding set.
@@ -217,7 +217,7 @@ fn sysctl_profile_stig_drops_uncontrolled_findings_keeps_stig() {
 
 /// A sudoers file that SETS `timestamp_timeout` (so no STIG timestamp W04 fires)
 /// but omits `use_pty` and I/O logging -> the only findings are the two CIS
-/// `sudo-W04` merged-absence warnings (CIS 1.3.2 / 1.3.3, + PCI). Grounded in
+/// `sudo-W04` merged-absence warnings (CIS 5.2.2 / 5.2.3, + PCI). Grounded in
 /// `rulesteward-sudoers/src/lints/stig.rs` `USE_PTY_CONTROLS` / `IO_LOG_CONTROLS`.
 /// Verified `visudo -c`-shaped (valid Defaults + one user-spec).
 const CIS_ONLY_SUDOERS: &str = "\

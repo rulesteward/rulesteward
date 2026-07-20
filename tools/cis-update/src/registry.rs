@@ -52,9 +52,24 @@ mod sshd {
 }
 
 mod sudoers {
-    use super::Shipped;
-    pub(super) fn shipped(_product: &str) -> Result<Shipped, String> {
-        Ok(Shipped::Pending { lane_issue: 526 })
+    use super::{Shipped, ShippedControl};
+    use rulesteward_sudoers::TargetVersion;
+
+    pub(super) fn shipped(product: &str) -> Result<Shipped, String> {
+        let target = match product {
+            "rhel8" => TargetVersion::Rhel8,
+            "rhel9" => TargetVersion::Rhel9,
+            "rhel10" => TargetVersion::Rhel10,
+            other => return Err(format!("sudoers: unknown product {other:?}")),
+        };
+        Ok(Shipped::Table(
+            rulesteward_sudoers::lints::cis::cis_baseline(target)
+                .iter()
+                .map(|c| ShippedControl {
+                    id: c.id.to_string(),
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -71,11 +86,27 @@ mod tests {
     use crate::family::Family;
 
     #[test]
-    fn all_twelve_foundation_slots_are_pending_with_their_lane_issue() {
+    fn sudoers_slots_ship_their_five_controls_on_every_product() {
+        // Lane 3b (#526) landed: the sudoers family projects off
+        // rulesteward_sudoers::lints::cis::cis_baseline on all three products.
+        for product in ["rhel8", "rhel9", "rhel10"] {
+            let Shipped::Table(rows) = shipped(Family::Sudoers, product).unwrap() else {
+                panic!("{product}/sudoers: expected a shipped table, got Pending");
+            };
+            let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["5.2.2", "5.2.3", "5.2.4", "5.2.5", "5.2.6"],
+                "{product}"
+            );
+        }
+    }
+
+    #[test]
+    fn unshipped_family_slots_stay_pending_with_their_lane_issue() {
         for product in ["rhel8", "rhel9", "rhel10"] {
             for (family, lane) in [
                 (Family::Sshd, 525),
-                (Family::Sudoers, 526),
                 (Family::Sysctld, 527),
                 (Family::Auditd, 528),
             ] {
@@ -86,5 +117,10 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shipped_rejects_unknown_products_for_armed_families() {
+        assert!(shipped(Family::Sudoers, "rhel7").is_err());
     }
 }

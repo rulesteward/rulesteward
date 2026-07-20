@@ -529,7 +529,7 @@ pub enum SudoersCommand {
     /// - `Defaults` settings that weaken the sudo hardening baseline - `targetpw`,
     ///   `rootpw`, `visiblepw`, `!authenticate`, `!use_pty` - or a required
     ///   hardening absent from the whole resolved config: `use_pty` or I/O logging
-    ///   (`logfile` / `log_output`) not set anywhere (CIS Benchmark 1.3.2 / 1.3.3)
+    ///   (`logfile` / `log_output`) not set anywhere (CIS Benchmark 5.2.2 / 5.2.3)
     ///   (sudo-W04).
     ///
     /// A directory target (e.g. `/etc/sudoers.d`) lints each eligible drop-in
