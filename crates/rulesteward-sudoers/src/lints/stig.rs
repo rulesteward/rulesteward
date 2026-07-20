@@ -805,7 +805,7 @@ mod tests {
 
     /// `Defaults !use_pty` fires W04 (explicit negation of the pty requirement).
     ///
-    /// Grounding: CIS Benchmark 1.3.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
+    /// Grounding: CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control.
     /// Fixture verified valid by `visudo -c`.
     #[test]
     fn w04_fires_for_not_use_pty_explicit() {
