@@ -52,9 +52,10 @@
 // same allow + rationale.
 #![allow(clippy::doc_markdown)]
 
-use rulesteward_core::ControlRef;
+use rulesteward_core::{ControlRef, Framework};
 
 use crate::lints::TargetVersion;
+use crate::lints::stig;
 
 /// One CIS-Benchmark-controlled sshd rule, projected for [`cis_baseline`] and the
 /// future `cis-update` drift tool: the control id (product-specific), the CaC rule
@@ -72,6 +73,278 @@ pub struct CisControl {
     pub title: &'static str,
 }
 
+const BANNER_TITLE: &str = "Ensure sshd Banner is configured (Automated)";
+const CLIENTALIVE_TITLE: &str =
+    "Ensure sshd ClientAliveInterval and ClientAliveCountMax are configured (Automated)";
+const GSSAPI_TITLE: &str = "Ensure sshd GSSAPIAuthentication is disabled (Automated)";
+const IGNORERHOSTS_TITLE: &str = "Ensure sshd IgnoreRhosts is enabled (Automated)";
+const LOGLEVEL_TITLE: &str = "Ensure sshd LogLevel is configured (Automated)";
+const PERMITEMPTY_TITLE: &str = "Ensure sshd PermitEmptyPasswords is disabled (Automated)";
+const PERMITROOTLOGIN_TITLE: &str = "Ensure sshd PermitRootLogin is disabled (Automated)";
+const PERMITUSERENV_TITLE: &str = "Ensure sshd PermitUserEnvironment is disabled (Automated)";
+const USEPAM_TITLE: &str = "Ensure sshd UsePAM is enabled (Automated)";
+const ACCESS_TITLE: &str = "Ensure sshd access is configured (Automated)";
+const FORWARDING_TITLE: &str = "Ensure sshd DisableForwarding is enabled (Automated)";
+const LOGINGRACE_TITLE: &str = "Ensure sshd LoginGraceTime is configured (Automated)";
+const MAXAUTHTRIES_TITLE: &str = "Ensure sshd MaxAuthTries is configured (Automated)";
+const MAXSESSIONS_TITLE: &str = "Ensure sshd MaxSessions is configured (Automated)";
+const MAXSTARTUPS_TITLE: &str = "Ensure sshd MaxStartups is configured (Automated)";
+
+/// RHEL8 (CIS Benchmark v4.0.0) sshd CIS table, verbatim from
+/// `derive-rhel8-sshd.txt` (pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`).
+const RHEL8_CIS: &[CisControl] = &[
+    CisControl {
+        id: "5.1.6",
+        rule: "sshd_limit_user_access",
+        title: ACCESS_TITLE,
+    },
+    CisControl {
+        id: "5.1.7",
+        rule: "sshd_enable_warning_banner_net",
+        title: BANNER_TITLE,
+    },
+    CisControl {
+        id: "5.1.9",
+        rule: "sshd_set_idle_timeout",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.9",
+        rule: "sshd_set_keepalive",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.10",
+        rule: "sshd_disable_forwarding",
+        title: FORWARDING_TITLE,
+    },
+    CisControl {
+        id: "5.1.11",
+        rule: "sshd_disable_gssapi_auth",
+        title: GSSAPI_TITLE,
+    },
+    CisControl {
+        id: "5.1.13",
+        rule: "sshd_disable_rhosts",
+        title: IGNORERHOSTS_TITLE,
+    },
+    CisControl {
+        id: "5.1.15",
+        rule: "sshd_set_login_grace_time",
+        title: LOGINGRACE_TITLE,
+    },
+    CisControl {
+        id: "5.1.16",
+        rule: "sshd_set_loglevel_verbose",
+        title: LOGLEVEL_TITLE,
+    },
+    CisControl {
+        id: "5.1.18",
+        rule: "sshd_set_max_auth_tries",
+        title: MAXAUTHTRIES_TITLE,
+    },
+    CisControl {
+        id: "5.1.19",
+        rule: "sshd_set_max_sessions",
+        title: MAXSESSIONS_TITLE,
+    },
+    CisControl {
+        id: "5.1.20",
+        rule: "sshd_set_maxstartups",
+        title: MAXSTARTUPS_TITLE,
+    },
+    CisControl {
+        id: "5.1.21",
+        rule: "sshd_disable_empty_passwords",
+        title: PERMITEMPTY_TITLE,
+    },
+    CisControl {
+        id: "5.1.22",
+        rule: "sshd_disable_root_login",
+        title: PERMITROOTLOGIN_TITLE,
+    },
+    CisControl {
+        id: "5.1.23",
+        rule: "sshd_do_not_permit_user_env",
+        title: PERMITUSERENV_TITLE,
+    },
+    CisControl {
+        id: "5.1.24",
+        rule: "sshd_enable_pam",
+        title: USEPAM_TITLE,
+    },
+];
+
+/// RHEL9 (CIS Benchmark v2.0.0) sshd CIS table, verbatim from
+/// `derive-rhel9-sshd.txt` (pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`).
+const RHEL9_CIS: &[CisControl] = &[
+    CisControl {
+        id: "5.1.7",
+        rule: "sshd_limit_user_access",
+        title: ACCESS_TITLE,
+    },
+    CisControl {
+        id: "5.1.8",
+        rule: "sshd_enable_warning_banner_net",
+        title: BANNER_TITLE,
+    },
+    CisControl {
+        id: "5.1.9",
+        rule: "sshd_set_idle_timeout",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.9",
+        rule: "sshd_set_keepalive",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.10",
+        rule: "sshd_disable_forwarding",
+        title: FORWARDING_TITLE,
+    },
+    CisControl {
+        id: "5.1.11",
+        rule: "sshd_disable_gssapi_auth",
+        title: GSSAPI_TITLE,
+    },
+    CisControl {
+        id: "5.1.13",
+        rule: "sshd_disable_rhosts",
+        title: IGNORERHOSTS_TITLE,
+    },
+    CisControl {
+        id: "5.1.14",
+        rule: "sshd_set_login_grace_time",
+        title: LOGINGRACE_TITLE,
+    },
+    CisControl {
+        id: "5.1.15",
+        rule: "sshd_set_loglevel_verbose",
+        title: LOGLEVEL_TITLE,
+    },
+    CisControl {
+        id: "5.1.16",
+        rule: "sshd_set_max_auth_tries",
+        title: MAXAUTHTRIES_TITLE,
+    },
+    CisControl {
+        id: "5.1.17",
+        rule: "sshd_set_maxstartups",
+        title: MAXSTARTUPS_TITLE,
+    },
+    CisControl {
+        id: "5.1.18",
+        rule: "sshd_set_max_sessions",
+        title: MAXSESSIONS_TITLE,
+    },
+    CisControl {
+        id: "5.1.19",
+        rule: "sshd_disable_empty_passwords",
+        title: PERMITEMPTY_TITLE,
+    },
+    CisControl {
+        id: "5.1.20",
+        rule: "sshd_disable_root_login",
+        title: PERMITROOTLOGIN_TITLE,
+    },
+    CisControl {
+        id: "5.1.21",
+        rule: "sshd_do_not_permit_user_env",
+        title: PERMITUSERENV_TITLE,
+    },
+    CisControl {
+        id: "5.1.22",
+        rule: "sshd_enable_pam",
+        title: USEPAM_TITLE,
+    },
+];
+
+/// RHEL10 (CIS Benchmark v1.0.1) sshd CIS table, verbatim from
+/// `derive-rhel10-sshd.txt` (pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`).
+const RHEL10_CIS: &[CisControl] = &[
+    CisControl {
+        id: "5.1.4",
+        rule: "sshd_limit_user_access",
+        title: ACCESS_TITLE,
+    },
+    CisControl {
+        id: "5.1.5",
+        rule: "sshd_enable_warning_banner_net",
+        title: BANNER_TITLE,
+    },
+    CisControl {
+        id: "5.1.7",
+        rule: "sshd_set_idle_timeout",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.7",
+        rule: "sshd_set_keepalive",
+        title: CLIENTALIVE_TITLE,
+    },
+    CisControl {
+        id: "5.1.8",
+        rule: "sshd_disable_forwarding",
+        title: FORWARDING_TITLE,
+    },
+    CisControl {
+        id: "5.1.9",
+        rule: "sshd_disable_gssapi_auth",
+        title: GSSAPI_TITLE,
+    },
+    CisControl {
+        id: "5.1.11",
+        rule: "sshd_disable_rhosts",
+        title: IGNORERHOSTS_TITLE,
+    },
+    CisControl {
+        id: "5.1.13",
+        rule: "sshd_set_login_grace_time",
+        title: LOGINGRACE_TITLE,
+    },
+    CisControl {
+        id: "5.1.14",
+        rule: "sshd_set_loglevel_verbose",
+        title: LOGLEVEL_TITLE,
+    },
+    CisControl {
+        id: "5.1.16",
+        rule: "sshd_set_max_auth_tries",
+        title: MAXAUTHTRIES_TITLE,
+    },
+    CisControl {
+        id: "5.1.17",
+        rule: "sshd_set_maxstartups",
+        title: MAXSTARTUPS_TITLE,
+    },
+    CisControl {
+        id: "5.1.18",
+        rule: "sshd_set_max_sessions",
+        title: MAXSESSIONS_TITLE,
+    },
+    CisControl {
+        id: "5.1.19",
+        rule: "sshd_disable_empty_passwords",
+        title: PERMITEMPTY_TITLE,
+    },
+    CisControl {
+        id: "5.1.20",
+        rule: "sshd_disable_root_login",
+        title: PERMITROOTLOGIN_TITLE,
+    },
+    CisControl {
+        id: "5.1.21",
+        rule: "sshd_do_not_permit_user_env",
+        title: PERMITUSERENV_TITLE,
+    },
+    CisControl {
+        id: "5.1.22",
+        rule: "sshd_enable_pam",
+        title: USEPAM_TITLE,
+    },
+];
+
 /// The full sshd CIS Benchmark table for `target`: 16 rows (one per rule
 /// mapping; two controls each cover two directives, so this is one row PER RULE,
 /// not per control -- 15 distinct `id`s result). Grounded verbatim in
@@ -82,9 +355,31 @@ pub struct CisControl {
 /// value choice for an existing rule, not a rule of their own, and this lane adds
 /// no new value-comparison lint that would consume them.
 #[must_use]
-pub fn cis_baseline(_target: TargetVersion) -> &'static [CisControl] {
-    todo!("issue #525: populate the per-product sshd CIS table")
+pub fn cis_baseline(target: TargetVersion) -> &'static [CisControl] {
+    match target {
+        TargetVersion::Rhel8 => RHEL8_CIS,
+        TargetVersion::Rhel9 => RHEL9_CIS,
+        TargetVersion::Rhel10 => RHEL10_CIS,
+    }
 }
+
+/// The ten STIG/CIS overlap keywords: the sshd directive (lowercase, matching
+/// [`crate::lints::stig::required_set`]'s keys) paired with the [`cis_baseline`]
+/// `rule` identifier it maps to. Only these keywords have an EXISTING sshd attach
+/// site (sshd-W01/W02); the remaining six `cis_baseline` rows have no lint that
+/// emits a diagnostic for their directive at all (module doc).
+const OVERLAP_KEYWORD_RULE: &[(&str, &str)] = &[
+    ("banner", "sshd_enable_warning_banner_net"),
+    ("clientaliveinterval", "sshd_set_idle_timeout"),
+    ("clientalivecountmax", "sshd_set_keepalive"),
+    ("gssapiauthentication", "sshd_disable_gssapi_auth"),
+    ("ignorerhosts", "sshd_disable_rhosts"),
+    ("loglevel", "sshd_set_loglevel_verbose"),
+    ("permitemptypasswords", "sshd_disable_empty_passwords"),
+    ("permitrootlogin", "sshd_disable_root_login"),
+    ("permituserenvironment", "sshd_do_not_permit_user_env"),
+    ("usepam", "sshd_enable_pam"),
+];
 
 /// Build the typed CIS [`ControlRef`] for `keyword_lower` on `target`, or `None`
 /// when the keyword has no EXISTING sshd attach site for CIS (either because no
@@ -93,20 +388,28 @@ pub fn cis_baseline(_target: TargetVersion) -> &'static [CisControl] {
 /// on this particular target). `target = None` uses the RHEL8 floor, mirroring
 /// [`crate::lints::stig::baseline_check`]'s `target=None` convention.
 ///
+/// The attach-site gate is [`stig::required_set`] itself (rather than a second,
+/// independently-hand-authored per-target keyword list): a CIS overlap keyword
+/// only has somewhere to attach a ref when STIG's W01/W02 already emits a finding
+/// for it on that target, so this stays single-sourced against the same table
+/// `stig_control_ref` uses and cannot silently drift from it.
+///
 /// `pub(crate)` so sshd-W01/W02 (in `stig.rs`) can attach this CIS ref ALONGSIDE
 /// the existing `stig_control_ref` result, never replacing it (issue #525's
 /// no-double-attach / no-dropped-Stig requirement).
-///
-/// Not yet called from `stig.rs`'s W01/W02 emit sites (that wiring is the
-/// implementer's job, not this test-author lane's); `#[allow(dead_code)]` keeps
-/// the non-test build (which doesn't see this module's `#[cfg(test)]` callers)
-/// clean of a false "never used" until that wiring lands.
-#[allow(dead_code)]
 pub(crate) fn cis_control_ref(
-    _keyword_lower: &str,
-    _target: Option<TargetVersion>,
+    keyword_lower: &str,
+    target: Option<TargetVersion>,
 ) -> Option<ControlRef> {
-    todo!("issue #525: resolve the CIS ControlRef for a STIG-overlap keyword")
+    let concrete = target.unwrap_or(TargetVersion::Rhel8);
+    let rule = OVERLAP_KEYWORD_RULE
+        .iter()
+        .find_map(|&(kw, rule)| (kw == keyword_lower).then_some(rule))?;
+    if !stig::required_set(Some(concrete)).contains(&keyword_lower) {
+        return None;
+    }
+    let row = cis_baseline(concrete).iter().find(|c| c.rule == rule)?;
+    Some(ControlRef::new(Framework::Cis, row.id).with_name(row.title))
 }
 
 #[cfg(test)]

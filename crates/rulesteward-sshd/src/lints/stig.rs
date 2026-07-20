@@ -32,6 +32,7 @@ use std::path::Path;
 use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity};
 
 use crate::ast::Block;
+use crate::lints::cis;
 use crate::lints::{SshdLintContext, TargetVersion, anchored};
 
 // ---------------------------------------------------------------------------
@@ -529,6 +530,21 @@ fn stig_control_ref(keyword_lower: &str, target: Option<TargetVersion>) -> Optio
     Some(ControlRef::new(Framework::Stig, rule_id).with_alias(v_number))
 }
 
+/// Build the combined control list for a W01/W02 finding: the existing STIG
+/// [`ControlRef`] (never dropped) plus, for the ten STIG/CIS overlap keywords
+/// (issue #525, v0.8 Wave 3), the [`Framework::Cis`] ref from [`cis::cis_control_ref`].
+///
+/// `Diagnostic::with_controls` REPLACES the `controls` Vec, so this builds the
+/// COMBINED vec once here rather than each emit site calling `with_controls`
+/// twice (which would drop the first ref).
+fn combined_controls(keyword_lower: &str, target: Option<TargetVersion>) -> Vec<ControlRef> {
+    let mut controls: Vec<ControlRef> = stig_control_ref(keyword_lower, target)
+        .into_iter()
+        .collect();
+    controls.extend(cis::cis_control_ref(keyword_lower, target));
+    controls
+}
+
 /// Look up the STIG Rule id (the DISA XCCDF `<Rule><version>`) for `keyword_lower`
 /// on a concrete `target`, or `None` if the keyword has no Rule id for that target.
 ///
@@ -662,7 +678,7 @@ pub fn w01(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
                     file,
                     0,
                 )
-                .with_controls(stig_control_ref(req, ctx.target).into_iter().collect()),
+                .with_controls(combined_controls(req, ctx.target)),
             );
         }
     }
@@ -727,7 +743,7 @@ pub fn w02(blocks: &[Block], file: &Path, ctx: &SshdLintContext) -> Vec<Diagnost
                     file,
                     directive.line,
                 )
-                .with_controls(stig_control_ref(&keyword, ctx.target).into_iter().collect()),
+                .with_controls(combined_controls(&keyword, ctx.target)),
             );
         }
     }
