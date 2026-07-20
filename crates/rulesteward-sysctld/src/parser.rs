@@ -32,6 +32,7 @@ use rulesteward_core::span::Span;
 use rulesteward_core::{Diagnostic, Severity, anchored};
 
 use crate::lints::baseline::{TargetVersion, w02_baseline};
+use crate::lints::cis::w04_baseline;
 
 /// One classified non-trivial line: an assignment or a parse failure. Comments,
 /// blank lines, and bare glob-exclusions carry no semantic payload and are not
@@ -280,9 +281,12 @@ pub fn lint_str(source: &str, path: &Path) -> Vec<Diagnostic> {
     lint_str_with_target(source, path, None)
 }
 
-/// As [`lint_str`], plus the version-aware `sysctld-W02` STIG baseline pass when
-/// `target` is `Some`. A MISSING required key is anchored at `path` (file mode); a
-/// present-but-insecure key is anchored at its real assignment line/span.
+/// As [`lint_str`], plus the version-aware `sysctld-W02` STIG baseline pass and
+/// the version-aware `sysctld-W04` CIS baseline pass when `target` is `Some`. A
+/// MISSING required key is anchored at `path` (file mode); a present-but-insecure
+/// (W02) / present-but-out-of-set (W04) key is anchored at its real assignment
+/// line/span. W02 and W04 are additive: both run and each carries its own
+/// framework's [`rulesteward_core::ControlRef`].
 #[must_use]
 pub fn lint_str_with_target(
     source: &str,
@@ -293,6 +297,7 @@ pub fn lint_str_with_target(
     diags.extend(w01_last_wins(&assignments));
     if let Some(t) = target {
         diags.extend(w02_baseline(&assignments, t, path));
+        diags.extend(w04_baseline(&assignments, t, path));
     }
     diags
 }
@@ -323,11 +328,12 @@ pub fn lint_dir(dir: &Path) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
     lint_dir_with_target(dir, None)
 }
 
-/// As [`lint_dir`], plus the version-aware `sysctld-W02` STIG baseline pass when
-/// `target` is `Some`. A MISSING required key is anchored at `dir` (the drop-in
-/// set has no single source line); a present-but-insecure key is anchored at the
-/// real drop-in file it came from (whose source is staged, so the human renderer
-/// shows a snippet).
+/// As [`lint_dir`], plus the version-aware `sysctld-W02` STIG baseline pass and
+/// the version-aware `sysctld-W04` CIS baseline pass when `target` is `Some`. A
+/// MISSING required key is anchored at `dir` (the drop-in set has no single
+/// source line); a present-but-insecure (W02) / present-but-out-of-set (W04) key
+/// is anchored at the real drop-in file it came from (whose source is staged, so
+/// the human renderer shows a snippet).
 #[must_use]
 pub fn lint_dir_with_target(
     dir: &Path,
@@ -394,6 +400,7 @@ pub fn lint_dir_with_target(
     diags.extend(w01_last_wins(&all_assignments));
     if let Some(t) = target {
         diags.extend(w02_baseline(&all_assignments, t, dir));
+        diags.extend(w04_baseline(&all_assignments, t, dir));
     }
     (diags, sources)
 }
