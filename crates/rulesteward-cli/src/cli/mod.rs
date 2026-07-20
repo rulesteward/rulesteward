@@ -496,7 +496,9 @@ pub enum SysctlCommand {
     /// error), sysctld-W01 (last-wins conflict: the same key assigned different
     /// effective values across the drop-in precedence order), and - when a
     /// `--target rhel8|rhel9|rhel10` baseline is selected - the version-aware
-    /// sysctld-W02 STIG kernel-hardening baseline check (#335). `--system` opts in
+    /// sysctld-W02 STIG kernel-hardening baseline check (#335) and the
+    /// sysctld-W04 CIS-Benchmark kernel-hardening baseline check (#527).
+    /// `--system` opts in
     /// to a cross-directory precedence scan (issue #420): it enumerates the full
     /// standard search path (`/etc/sysctl.d`, `/run/sysctl.d`,
     /// `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus `/etc/sysctl.conf`,

@@ -94,9 +94,29 @@ mod sudoers {
 }
 
 mod sysctld {
-    use super::Shipped;
-    pub(super) fn shipped(_product: &str) -> Result<Shipped, String> {
-        Ok(Shipped::Pending { lane_issue: 527 })
+    use super::{Shipped, ShippedControl};
+    use rulesteward_sysctld::lints::baseline::TargetVersion;
+
+    pub(super) fn shipped(product: &str) -> Result<Shipped, String> {
+        let target = match product {
+            "rhel8" => TargetVersion::Rhel8,
+            "rhel9" => TargetVersion::Rhel9,
+            "rhel10" => TargetVersion::Rhel10,
+            other => return Err(format!("sysctld: unknown product {other:?}")),
+        };
+        // Per-KEY rows share a control id when one control maps several keys
+        // (rhel9: 25 key rows, 13 distinct ids); the drift diff is
+        // id-set-based, so project distinct ids in table order.
+        let mut seen = std::collections::BTreeSet::new();
+        Ok(Shipped::Table(
+            rulesteward_sysctld::lints::cis::cis_baseline(target)
+                .iter()
+                .filter(|c| seen.insert(c.cis_id))
+                .map(|c| ShippedControl {
+                    id: c.cis_id.to_string(),
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -144,15 +164,34 @@ mod tests {
     }
 
     #[test]
+    fn sysctld_slots_ship_distinct_control_ids_with_the_ip_forward_divergence() {
+        // Lane 3c (#527): per-KEY rows project to distinct control ids
+        // (rhel8 33/33, rhel9 25 key rows -> 13 distinct ids, rhel10 33/33).
+        // net.ipv4.ip_forward is the grounded per-product id divergence:
+        // 3.3.1.1 on rhel8/rhel10 but 3.3.1 on rhel9.
+        for (product, distinct_ids, ip_forward) in [
+            ("rhel8", 33, "3.3.1.1"),
+            ("rhel9", 13, "3.3.1"),
+            ("rhel10", 33, "3.3.1.1"),
+        ] {
+            let Shipped::Table(rows) = shipped(Family::Sysctld, product).unwrap() else {
+                panic!("{product}/sysctld: expected a shipped table, got Pending");
+            };
+            let distinct: std::collections::BTreeSet<&str> =
+                rows.iter().map(|r| r.id.as_str()).collect();
+            assert_eq!(distinct.len(), distinct_ids, "{product}");
+            assert!(distinct.contains(ip_forward), "{product}: {ip_forward}");
+        }
+    }
+
+    #[test]
     fn unshipped_family_slots_stay_pending_with_their_lane_issue() {
         for product in ["rhel8", "rhel9", "rhel10"] {
-            for (family, lane) in [(Family::Sysctld, 527), (Family::Auditd, 528)] {
-                assert_eq!(
-                    shipped(family, product).unwrap(),
-                    Shipped::Pending { lane_issue: lane },
-                    "{product}/{family:?}"
-                );
-            }
+            assert_eq!(
+                shipped(Family::Auditd, product).unwrap(),
+                Shipped::Pending { lane_issue: 528 },
+                "{product}/auditd"
+            );
         }
     }
 

@@ -150,9 +150,9 @@ rulesteward sudoers lint --format json /etc/sudoers
 ### sysctl.d
 
 ```bash
-rulesteward sysctl lint /etc/sysctl.conf               # lint kernel parameter assignments (4 sysctld- codes)
+rulesteward sysctl lint /etc/sysctl.conf               # lint kernel parameter assignments (5 sysctld- codes)
 rulesteward sysctl lint /etc/sysctl.d/99-hardening.conf
-rulesteward sysctl lint --target rhel9 /etc/sysctl.conf   # STIG baseline check (sysctld-W02)
+rulesteward sysctl lint --target rhel9 /etc/sysctl.conf   # STIG + CIS baseline checks (sysctld-W02/W04)
 rulesteward sysctl lint --system                       # scan the whole sysctl.d precedence chain (sysctld-W03)
 rulesteward sysctl lint --system --root ./rootfs        # reroot the system scan (offline / container)
 ```
@@ -161,7 +161,8 @@ rulesteward sysctl lint --system --root ./rootfs        # reroot the system scan
   `/etc/sysctl.d/*.conf`, etc.) and run the lint passes: `sysctld-F01` (parse
   error), `sysctld-W01` (last-wins conflict across the drop-in precedence order),
   and - when `--target rhel8|rhel9|rhel10` is set - the version-aware `sysctld-W02`
-  STIG kernel-hardening baseline check. With `--system` (optionally rerooted by
+  STIG and `sysctld-W04` CIS-Benchmark kernel-hardening baseline checks. With
+  `--system` (optionally rerooted by
   `--root <PREFIX>`) it instead scans the whole `sysctl.d` search-path precedence
   chain and adds `sysctld-W03` (cross-directory override / applier-divergence /
   masked-drop-in surprises). Read-only.
@@ -290,6 +291,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sysctld-W01` | Warning | last-wins conflict: the same key is assigned different effective values across the drop-in precedence order | always |
 | `sysctld-W02` | Warning | STIG-required kernel-hardening key is unset or set to an insecure value (version-aware) | `--target` |
 | `sysctld-W03` | Warning | cross-directory precedence surprise: a lower-precedence directory wins (W03-a), the procps and systemd appliers disagree on `/etc/sysctl.conf` (W03-b), or a masked same-basename drop-in silently drops a key (W03-c) | `--system` |
+| `sysctld-W04` | Warning | CIS-Benchmark-required kernel-hardening key is unset or set to a value outside the benchmark-accepted set (version-aware) | `--target` |
 
 ### SELinux (`se-`, 2 codes)
 

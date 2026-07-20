@@ -13,6 +13,8 @@
 //! The framework tags these fixtures rely on are grounded in the lint crates:
 //!  * `sysctld-W02` (STIG baseline) attaches `Framework::Stig`
 //!    (`rulesteward-sysctld/src/lints/baseline.rs`).
+//!  * `sysctld-W04` (CIS baseline, #527) attaches `Framework::Cis`
+//!    (`rulesteward-sysctld/src/lints/cis.rs`).
 //!  * `sysctld-W01` (last-wins) attaches NO controls -> dropped by any profile.
 //!  * `sudo-W04` missing-`use_pty` / missing-I/O-log attach `Framework::Cis`
 //!    (5.2.2 / 5.2.3) + `Framework::Pci` (`rulesteward-sudoers/src/lints/stig.rs`).
@@ -105,22 +107,28 @@ fn fapolicyd_lint_profile_stig_empties_and_exits_nine() {
 // is byte-for-byte identical to the no-flag run (nothing is filtered).
 // ---------------------------------------------------------------------------
 
-/// A `sysctl lint --target rhel9` run whose only findings are `sysctld-W02` (all
-/// STIG-tagged). `--profile stig` retains every one, so BOTH the exit code and the
-/// stdout are byte-identical to the no-`--profile` baseline. This pins (a) STIG
-/// retention and (b) that the filter is a no-op when everything matches.
+/// An `sshd lint --target rhel9` run on a minimal config: every finding is an
+/// `sshd-W01` STIG-baseline miss, and ALL of them carry a `Framework::Stig` ref
+/// (the CIS-overlap keywords carry an ADDITIONAL `Framework::Cis` ref, which does
+/// not affect `stig` retention). `--profile stig` retains every one, so BOTH the
+/// exit code and the stdout are byte-identical to the no-`--profile` baseline.
+/// This pins (a) STIG retention and (b) that the filter is a no-op when
+/// everything matches. (Pre-Wave-3 this property was pinned via sysctl, but
+/// `sysctld-W04` CIS findings now fire alongside `sysctld-W02` under `--target`,
+/// so sysctl baselines are no longer all-STIG by design -- see
+/// `sysctl_profile_stig_keeps_w02_and_drops_w04` below.)
 #[test]
-fn sysctl_profile_stig_retains_all_and_is_byte_identical_to_baseline() {
-    let cfg = tmp_file("# nothing hardened here\nkernel.sysrq = 0\n");
+fn sshd_profile_stig_retains_all_and_is_byte_identical_to_baseline() {
+    let cfg = tmp_file("Port 22\n");
     let path = cfg.path().to_str().unwrap();
 
     let baseline = bin()
-        .args(["sysctl", "lint", path, "--target", "rhel9"])
+        .args(["sshd", "lint", path, "--target", "rhel9"])
         .output()
         .expect("baseline ran");
     let profiled = bin()
         .args([
-            "sysctl",
+            "sshd",
             "lint",
             path,
             "--target",
@@ -131,18 +139,18 @@ fn sysctl_profile_stig_retains_all_and_is_byte_identical_to_baseline() {
         .output()
         .expect("profiled ran");
 
-    // Baseline sanity: the fixture yields STIG W02 findings (exit 1), else the
+    // Baseline sanity: the fixture yields STIG W01 findings (exit 1), else the
     // identity below would be a vacuous 0==0 / empty==empty.
     assert_eq!(
         baseline.status.code(),
         Some(1),
-        "unhardened config under --target rhel9 warns (exit 1); stderr: {}",
+        "minimal config under --target rhel9 warns (exit 1); stderr: {}",
         String::from_utf8_lossy(&baseline.stderr)
     );
     let baseline_stdout = String::from_utf8(baseline.stdout).expect("utf8");
     assert!(
-        baseline_stdout.contains("sysctld-W02"),
-        "baseline must carry the STIG W02 findings; stdout: {baseline_stdout}"
+        baseline_stdout.contains("sshd-W01"),
+        "baseline must carry the STIG W01 findings; stdout: {baseline_stdout}"
     );
 
     // Retention + byte-identity: an all-STIG set is unchanged by --profile stig.
@@ -155,6 +163,72 @@ fn sysctl_profile_stig_retains_all_and_is_byte_identical_to_baseline() {
     assert_eq!(
         profiled_stdout, baseline_stdout,
         "an all-STIG set retained by --profile stig is byte-identical to the baseline"
+    );
+}
+
+/// `sysctl lint --target rhel9` now yields BOTH `sysctld-W02` (STIG-tagged) and
+/// `sysctld-W04` (CIS-tagged) findings for an unhardened config (#527).
+/// `--profile stig` keeps every W02 and drops every W04; `--profile cis` does
+/// the inverse. This replaced the pre-Wave-3 sysctl byte-identity test: with
+/// W04 in the baseline, a single-framework profile is never a no-op for sysctl
+/// by design.
+#[test]
+fn sysctl_profile_stig_keeps_w02_and_drops_w04() {
+    let cfg = tmp_file("# nothing hardened here\nkernel.sysrq = 0\n");
+    let path = cfg.path().to_str().unwrap();
+
+    let baseline = bin()
+        .args(["sysctl", "lint", path, "--target", "rhel9"])
+        .output()
+        .expect("baseline ran");
+    assert_eq!(
+        baseline.status.code(),
+        Some(1),
+        "unhardened config under --target rhel9 warns (exit 1); stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    let baseline_stdout = String::from_utf8(baseline.stdout).expect("utf8");
+    assert!(
+        baseline_stdout.contains("sysctld-W02") && baseline_stdout.contains("sysctld-W04"),
+        "baseline must carry BOTH the STIG W02 and CIS W04 findings; stdout: {baseline_stdout}"
+    );
+
+    let stig = bin()
+        .args([
+            "sysctl",
+            "lint",
+            path,
+            "--target",
+            "rhel9",
+            "--profile",
+            "stig",
+        ])
+        .output()
+        .expect("stig-profiled ran");
+    assert_eq!(stig.status.code(), Some(1), "W02 findings remain (exit 1)");
+    let stig_stdout = String::from_utf8(stig.stdout).expect("utf8");
+    assert!(
+        stig_stdout.contains("sysctld-W02") && !stig_stdout.contains("sysctld-W04"),
+        "--profile stig keeps W02 and drops W04; stdout: {stig_stdout}"
+    );
+
+    let cis = bin()
+        .args([
+            "sysctl",
+            "lint",
+            path,
+            "--target",
+            "rhel9",
+            "--profile",
+            "cis",
+        ])
+        .output()
+        .expect("cis-profiled ran");
+    assert_eq!(cis.status.code(), Some(1), "W04 findings remain (exit 1)");
+    let cis_stdout = String::from_utf8(cis.stdout).expect("utf8");
+    assert!(
+        cis_stdout.contains("sysctld-W04") && !cis_stdout.contains("sysctld-W02"),
+        "--profile cis keeps W04 and drops W02; stdout: {cis_stdout}"
     );
 }
 
