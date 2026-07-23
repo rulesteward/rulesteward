@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One product's pinned DISA STIG zip.
+#[derive(Debug)]
 pub struct Product {
     /// The zip filename (e.g. `U_RHEL_9_V2R9_STIG.zip`).
     pub zip: String,
@@ -31,6 +32,7 @@ pub struct Product {
 }
 
 /// Parsed `stig-refs.toml`.
+#[derive(Debug)]
 pub struct Config {
     /// CDN base URL; the full zip URL is `base_url/<product.zip>`.
     pub base_url: String,

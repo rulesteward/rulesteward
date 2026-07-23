@@ -203,3 +203,106 @@ fn config_path(args: &[String]) -> PathBuf {
         PathBuf::from,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Bonus hardening (post-GREEN Adversarial Testing Loop mutation-strengthening
+    // round, session 9h-v0_8-wave4 Lane B, 2026-07-23): main.rs's small pure glue
+    // functions have no dedicated tests in the sshd/auditd precedent tools either
+    // (per the coordinator dispatch: "the sshd/auditd precedent tools have no
+    // main.rs tests, these are bonus hardening, not gate items"), but they were
+    // quick to add and cheaply lock down behavior a future edit could silently
+    // break.
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn synthetic_cfg() -> Config {
+        Config::parse(
+            "base_url = \"https://example.test\"\n\
+             [products.rhel8]\nzip = \"a.zip\"\nbenchmark = \"A\"\n\
+             [products.rhel9]\nzip = \"b.zip\"\nbenchmark = \"B\"\n\
+             [products.rhel10]\nzip = \"c.zip\"\nbenchmark = \"C\"\n",
+        )
+        .expect("valid synthetic config")
+    }
+
+    #[test]
+    fn flag_finds_the_value_immediately_after_the_named_flag() {
+        assert_eq!(
+            flag(&args(&["--product", "rhel9"]), "--product"),
+            Some("rhel9".to_string())
+        );
+    }
+
+    #[test]
+    fn flag_returns_none_when_the_named_flag_is_absent() {
+        assert_eq!(flag(&args(&["--other", "x"]), "--product"), None);
+    }
+
+    #[test]
+    fn flag_returns_none_when_the_named_flag_is_the_last_argument() {
+        // A trailing flag with no following value must not panic (args.get(i+1)
+        // is out of bounds) or fall back to returning the flag's own name.
+        assert_eq!(flag(&args(&["--product"]), "--product"), None);
+    }
+
+    #[test]
+    fn selected_products_with_no_flag_returns_every_configured_product() {
+        let cfg = synthetic_cfg();
+        let got = selected_products(&cfg, &[]).expect("ok");
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn selected_products_with_a_product_flag_returns_only_that_one() {
+        let cfg = synthetic_cfg();
+        let got = selected_products(&cfg, &args(&["--product", "rhel9"])).expect("ok");
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, "rhel9");
+    }
+
+    #[test]
+    fn selected_products_with_an_unknown_product_errors() {
+        let cfg = synthetic_cfg();
+        let err = selected_products(&cfg, &args(&["--product", "rhel7"]))
+            .expect_err("an unconfigured product must error");
+        assert!(err.contains("rhel7"), "{err}");
+    }
+
+    #[test]
+    fn config_path_defaults_to_stig_refs_toml_next_to_the_crate() {
+        let p = config_path(&[]);
+        assert!(p.ends_with("stig-refs.toml"), "{p:?}");
+        assert!(
+            p.starts_with(env!("CARGO_MANIFEST_DIR")),
+            "default path must live next to the crate: {p:?}"
+        );
+    }
+
+    #[test]
+    fn config_path_honors_an_explicit_config_flag() {
+        let p = config_path(&args(&["--config", "/tmp/custom-stig-refs.toml"]));
+        assert_eq!(p, PathBuf::from("/tmp/custom-stig-refs.toml"));
+    }
+
+    #[test]
+    fn cmd_check_file_flag_without_exactly_one_product_errors_before_any_fetch() {
+        // Guards the arg-guard at cmd_check's `file.is_some() && products.len() !=
+        // 1` check: --file supplied but --product omitted means `selected_products`
+        // returns ALL 3 configured products, which is ambiguous against a single
+        // local XCCDF file - this must error BEFORE the loop ever reaches
+        // `source::fetch_xccdf`/`source::read_local` (no network, no real file
+        // needed for this test - the guard fires first using the real, offline,
+        // committed stig-refs.toml, which has 3 products).
+        let err = cmd_check(&args(&["--file", "whatever.xml"]))
+            .expect_err("must error: --file requires exactly one --product");
+        assert!(
+            err.contains("--file requires exactly one --product"),
+            "{err}"
+        );
+    }
+}

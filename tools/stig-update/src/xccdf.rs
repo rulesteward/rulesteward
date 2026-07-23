@@ -729,4 +729,101 @@ If not "1", this is a finding.</check-content></check></Rule></Group></Benchmark
             "stig_id must be the Rule's <version> text, not the Group's V-number id"
         );
     }
+
+    // --- mutation-strengthening tests (post-GREEN Adversarial Testing Loop,
+    // impl commit 03960a3, session 9h-v0_8-wave4 Lane B, 2026-07-23) - the
+    // impl-aware review found no miss-case, but the coverage-blind mutation gate
+    // on this file surfaced 4 survivors. Each test below pins the specific state
+    // guard whose survivor is listed. None of these shapes are observed in the
+    // real DISA corpus (every real Rule has exactly one <version> and one
+    // check-content); they defend against a hypothetical future XCCDF reformat,
+    // the same "fail-closed / behave-correctly for the unobserved case" posture
+    // `duplicate_key_with_differing_values_fails_closed` and its siblings above
+    // already establish for this module.
+
+    #[test]
+    fn only_the_first_version_element_sets_the_stig_id() {
+        // Kills TWO survivors at once, both guarding the SAME "first <version>
+        // wins" contract from opposite ends:
+        //   - line 147 `b"version" if cur_stig_id.is_none()` (Start): mutated to
+        //     `true` would re-arm capture for a SECOND <version>, so the LATER
+        //     value would overwrite the first.
+        //   - line 195 `b"version" if capture == Capture::Version` (End): mutated
+        //     to `true` would fire on ANY `</version>` close, even one reached
+        //     while `capture` is `None` (as it legitimately is here, once the
+        //     intervening check-content's End resets it) - corrupting
+        //     `cur_stig_id` with `text_buf.trim()` of whatever is CURRENTLY in the
+        //     buffer (here: the empty string the check-content's End left behind
+        //     via `mem::take`), not the second <version>'s own text.
+        // A check-content is deliberately sandwiched between the two <version>
+        // elements so the buffer-tampering half of the guard-195 mutant is
+        // exercised (without it, `text_buf` would coincidentally still hold the
+        // first version's text and the mutant would go undetected - see the
+        // adversarial-review-round test-report notes for the full trace).
+        let doc = r#"<Benchmark><Group id="V-10"><Rule><version>RHEL-09-999010</version>
+            <check><check-content>$ sudo sysctl kernel.dmesg_restrict
+kernel.dmesg_restrict = 1
+If not "1", this is a finding.</check-content></check>
+            <version>RHEL-09-999999</version>
+            </Rule></Group></Benchmark>"#;
+        let d = parse_baseline(doc).expect("parses");
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(
+            d[0].stig_id, "RHEL-09-999010",
+            "the FIRST <version> must win over a later stray one, and no later \
+             </version> close may leak in and overwrite it: {d:?}"
+        );
+    }
+
+    #[test]
+    fn numeric_character_reference_inside_check_content_resolves_into_the_value() {
+        // Kills the `Event::GeneralRef(r) => { if capture != Capture::None { ... }
+        // }` survivor (line 173, `!=` mutated to `==`): quick-xml 0.41 tokenizes a
+        // character/entity reference as its OWN event, separate from the
+        // surrounding Text events (module doc). A numeric character reference for
+        // the digit '1' (`&#49;`) sits INSIDE the echo line's value, while we ARE
+        // in a capture state (`Capture::CheckContent`) - the correct guard
+        // (`capture != None`) accumulates it; the mutant guard (`capture ==
+        // None`) would DROP it instead (we are never NOT capturing here), leaving
+        // the echo line's value empty and the whole check-content unextractable
+        // (fails closed) instead of resolving to "1".
+        let doc = r#"<Benchmark><Group id="V-11"><Rule><version>RHEL-09-999011</version>
+            <check><check-content>$ sudo sysctl kernel.dmesg_restrict
+kernel.dmesg_restrict = &#49;
+If not "1", this is a finding.</check-content></check></Rule></Group></Benchmark>"#;
+        let d = parse_baseline(doc)
+            .expect("parses: the numeric character reference &#49; must resolve to '1'");
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].key, "kernel.dmesg_restrict");
+        assert_eq!(
+            d[0].accepted,
+            ["1"],
+            "&#49; must resolve to the digit '1' inside the captured check-content"
+        );
+    }
+
+    #[test]
+    fn a_premature_check_content_close_does_not_clobber_an_already_extracted_value() {
+        // Kills the `b"check-content" if capture == Capture::CheckContent`
+        // survivor (line 199, End): mutated to `true` would fire on ANY
+        // `</check-content>` close, even one reached while `capture` is `None`.
+        // A (deliberately malformed / not real-DISA-shaped) NESTED check-content
+        // forces exactly that: the INNER close legitimately captures the real
+        // check text and resets `capture` to `None`; under the real guard the
+        // OUTER close is then correctly a no-op (capture isn't `CheckContent`
+        // anymore) and `cur_check_content` keeps the inner value. Under the
+        // mutant, the outer close fires anyway and overwrites `cur_check_content`
+        // with `text_buf.trim()` of the (now-empty, already-taken) buffer,
+        // silently dropping the Group (the empty content matches no `sysctl
+        // <key>` command) instead of keeping the correctly-extracted row.
+        let doc = r#"<Benchmark><Group id="V-12"><Rule><version>RHEL-09-999012</version>
+            <check><check-content>PREFIX <check-content>$ sudo sysctl kernel.dmesg_restrict
+kernel.dmesg_restrict = 1
+If not "1", this is a finding.</check-content></check-content></check></Rule></Group></Benchmark>"#;
+        let d = parse_baseline(doc).expect("parses");
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert_eq!(d[0].key, "kernel.dmesg_restrict");
+        assert_eq!(d[0].accepted, ["1"]);
+        assert_eq!(d[0].stig_id, "RHEL-09-999012");
+    }
 }
