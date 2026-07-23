@@ -131,6 +131,26 @@ mod tests {
         e.accepted = accepted.iter().map(|s| (*s).to_string()).collect();
     }
 
+    /// Insert `key` with the grounded fields if `t` does not already have it, or
+    /// overwrite it IN PLACE (to the same grounded fields) if it does - idempotent
+    /// either way, unlike a bare `push`. Needed (not just `set_accepted`) for a row
+    /// that is ABSENT pre-reconciliation and PRESENT post-reconciliation: a plain
+    /// `push` would duplicate the row once the implementer's `RHEL8_BASELINE`
+    /// already carries it (#512 adversarial-review BLOCKER 1, session
+    /// 9h-v0_8-wave4 Lane B, 2026-07-23 - `reconciled_rhel8`'s three `push`es were
+    /// non-idempotent: correct while `code_table(Rhel8)` was still the
+    /// un-reconciled 28-key table, but duplicating once the implementer lands the
+    /// reconciled 31-key table, since all three keys would then already be present).
+    fn upsert(t: &mut Vec<DerivedKey>, key: &str, accepted: &[&str], stig_id: &str, numeric: bool) {
+        if let Some(e) = t.iter_mut().find(|d| d.key == key) {
+            e.accepted = accepted.iter().map(|s| (*s).to_string()).collect();
+            e.stig_id = stig_id.to_string();
+            e.numeric = numeric;
+        } else {
+            t.push(dk(key, accepted, stig_id, numeric));
+        }
+    }
+
     // --- the golden tests: fixture-derived must equal the RECONCILED table -----
     // Built FROM the shipped `code_table` with the DISA-grounded reconciliation
     // patch applied (lane-b-grounding.md section 5), so these stay correct whether
@@ -139,34 +159,45 @@ mod tests {
     // RED today for BOTH reasons at once (parse_baseline is todo!(), AND
     // baseline.rs has not yet been updated), the same "RED for TWO independent
     // reasons" shape tools/auditd-stig-update's own xccdf.rs had at its barrier.
+    // The "no-op once baseline.rs is updated" claim REQUIRES every patch operation
+    // to be idempotent: `set_accepted` (narrow-in-place) always was; the rhel8
+    // helper's `push`es were not until they were rewritten to `upsert` above (see
+    // its doc comment) - both forms are now idempotent, so the claim holds for all
+    // three products.
 
     /// RHEL8: `net.ipv4.conf.all.rp_filter` narrows from `{1,2}` to `{1}`
     /// (V-230549/RHEL-08-040285), plus 3 new DISA V2R8 keys the shipped table
     /// does not have yet: `net.ipv4.conf.default.rp_filter` (V-284947/
     /// RHEL-08-040287), `net.ipv4.conf.all.log_martians` (V-284948/
     /// RHEL-08-040221), `net.ipv4.conf.default.log_martians` (V-284949/
-    /// RHEL-08-040222) - all three `ENABLE`-only (`["1"]`), numeric.
+    /// RHEL-08-040222) - all three `ENABLE`-only (`["1"]`), numeric. Uses `upsert`
+    /// (not a bare `push`) for the 3 new keys so this stays correct both before AND
+    /// after the implementer adds them to `RHEL8_BASELINE` (converges to the same
+    /// 31-row table either way, never duplicating).
     fn reconciled_rhel8() -> Vec<DerivedKey> {
         let mut t = code_table(TargetVersion::Rhel8);
         set_accepted(&mut t, "net.ipv4.conf.all.rp_filter", &["1"]);
-        t.push(dk(
+        upsert(
+            &mut t,
             "net.ipv4.conf.default.rp_filter",
             &["1"],
             "RHEL-08-040287",
             true,
-        ));
-        t.push(dk(
+        );
+        upsert(
+            &mut t,
             "net.ipv4.conf.all.log_martians",
             &["1"],
             "RHEL-08-040221",
             true,
-        ));
-        t.push(dk(
+        );
+        upsert(
+            &mut t,
             "net.ipv4.conf.default.log_martians",
             &["1"],
             "RHEL-08-040222",
             true,
-        ));
+        );
         t.sort_by(|a, b| a.key.cmp(&b.key));
         t
     }

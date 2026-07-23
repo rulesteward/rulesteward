@@ -407,14 +407,43 @@ fn w02_accepts_hex_and_leading_zero_forms_of_a_compliant_int() {
             "the kernel-equivalent radix form of the compliant value must not fire W02: {src:?}"
         );
     }
-    // 0x2 == 2 is in the rhel9 kptr_restrict accepted set {1,2}.
+    // 0x1 == 1 is accepted for kptr_restrict on rhel9 BOTH before and after the
+    // #512 DISA reconciliation (rhel9 kptr_restrict narrows from {1,2} to {1} -
+    // see `kptr_restrict_and_rp_filter_all_are_enable_only_on_every_target` in
+    // `src/lints/baseline.rs` - so 1 stays accepted either way, unlike 2). This
+    // demonstrates the SAME hex-radix normalization the two `dmesg_restrict`
+    // cases above cover, on a second key/table, without depending on a value
+    // (`2`) whose acceptance the reconciliation changes (#512 adversarial-review
+    // BLOCKER 2, session 9h-v0_8-wave4 Lane B, 2026-07-23: the prior `0x2`
+    // example asserted ACCEPTED and would flip RED the moment the implementer
+    // applies the reconciled table, forcing an edit to this frozen test).
     assert!(
         w02_for(
-            &lint("kernel.kptr_restrict = 0x2\n", TargetVersion::Rhel9),
+            &lint("kernel.kptr_restrict = 0x1\n", TargetVersion::Rhel9),
             "kernel.kptr_restrict"
         )
         .is_empty(),
-        "0x2 == 2 is accepted for kptr_restrict on rhel9"
+        "0x1 == 1 is accepted for kptr_restrict on rhel9 (radix-normalized, stable across the #512 reconciliation)"
+    );
+}
+
+#[test]
+fn w02_kptr_restrict_hex_0x2_fires_after_disa_reconciliation() {
+    // STRENGTHENING (#512 adversarial-review BLOCKER 2 follow-up, session
+    // 9h-v0_8-wave4 Lane B, 2026-07-23): 0x2 == 2 was accepted for rhel9
+    // kernel.kptr_restrict under the CaC-derived {1,2} set; the DISA-reconciled
+    // set is {1} only (V-257800/RHEL-09-213025 - see the grounding doc section
+    // 4a/5), so a radix-normalized 2 must now FIRE W02 too, not just a decimal
+    // 2 (already pinned by
+    // `w02_kptr_restrict_only_accepts_1_on_every_target` in this file). RED
+    // today (same reason as that test - RHEL9_BASELINE has not yet been
+    // reconciled); intended-RED, listed alongside it.
+    let diags = lint("kernel.kptr_restrict = 0x2\n", TargetVersion::Rhel9);
+    let found = w02_for(&diags, "kernel.kptr_restrict");
+    assert_eq!(
+        found.len(),
+        1,
+        "0x2 == 2 must be rejected for kptr_restrict on rhel9 post-reconciliation (was accepted pre-#512): {found:?}"
     );
 }
 
