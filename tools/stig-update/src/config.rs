@@ -47,12 +47,42 @@ impl Config {
     /// `tools/sshd-stig-update/src/config.rs::Config::parse` exactly - see the tests
     /// module below for the pinned error cases).
     pub fn parse(toml_src: &str) -> Result<Config, String> {
-        todo!(
-            "#512: port to the DISA base_url/products/{{zip,benchmark}} shape \
-             (mirror tools/sshd-stig-update/src/config.rs::Config::parse verbatim); \
-             input was {} bytes",
-            toml_src.len()
-        )
+        let value: toml::Table = toml_src
+            .parse()
+            .map_err(|e| format!("stig-refs.toml: {e}"))?;
+
+        let base_url = value
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .ok_or("stig-refs.toml: missing string `base_url`")?
+            .to_string();
+
+        let products_tbl = value
+            .get("products")
+            .and_then(toml::Value::as_table)
+            .ok_or("stig-refs.toml: missing [products] table")?;
+        let mut products = BTreeMap::new();
+        for (name, v) in products_tbl {
+            let tbl = v
+                .as_table()
+                .ok_or_else(|| format!("products.{name} must be a table"))?;
+            let zip = tbl
+                .get("zip")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| format!("products.{name}.zip must be a string"))?
+                .to_string();
+            let benchmark = tbl
+                .get("benchmark")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(name)
+                .to_string();
+            products.insert(name.clone(), Product { zip, benchmark });
+        }
+        if products.is_empty() {
+            return Err("stig-refs.toml: [products] is empty".to_string());
+        }
+
+        Ok(Config { base_url, products })
     }
 
     pub fn load(path: &Path) -> Result<Config, String> {

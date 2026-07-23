@@ -8,13 +8,29 @@
 //!
 //! W02 is version-aware: it runs only when a `--target` baseline is selected
 //! (rhel8/rhel9/rhel10); with no target the backend stays version-agnostic and
-//! emits no W02. The baseline tables are transcribed verbatim from
-//! `rulesteward-docs/sysctld-stig-baseline-grounding.md`, which grounds every
+//! emits no W02. The baseline tables were originally transcribed verbatim from
+//! `rulesteward-docs/sysctld-stig-baseline-grounding.md`, which grounded every
 //! key + accepted-value set against ComplianceAsCode/content at the pinned commit
 //! `519b5fe8ce338cfa25d53065bcb3759aafe8d36d` (the controls file is the
 //! authoritative key set; each rule.yml `sysctlval` / `_value.var` default is the
 //! accepted value, resolved per product) and was gated by the
 //! source-adversarial-reviewer.
+//!
+//! **#512 (session 9h-v0_8-wave4 Lane B)** ported the drift-checking `tools/stig-update`
+//! tool off `ComplianceAsCode` onto the official DISA XCCDF (see that crate's own module
+//! docs) and, per that lane's grounding
+//! (`/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md`), reconciled 7
+//! CaC-vs-DISA diffs directly into these tables where DISA's literal check-content
+//! disagreed with `ComplianceAsCode`'s own (broader) jinja-derived value: rhel8
+//! `net.ipv4.conf.all.rp_filter` narrows to ENABLE-only plus 3 new DISA V2R8 keys
+//! (`net.ipv4.conf.default.rp_filter`, `net.ipv4.conf.{all,default}.log_martians`);
+//! `kernel.kptr_restrict` narrows to ENABLE-only on rhel9 AND rhel10; rhel10
+//! `net.ipv4.conf.all.rp_filter` also narrows to ENABLE-only. Every OTHER key/value
+//! in these tables is unchanged and still traces to the original CaC-era grounding
+//! above (DISA's own text agreed with it for every non-listed row - see the #512
+//! grounding doc section 3 for the full per-product reconciliation table). Going
+//! forward, `tools/stig-update` (DISA-sourced) is the authoritative drift check for
+//! ALL rows in these tables, not just the 7 that changed.
 //!
 //! Two STIG-listed keys are DELIBERATELY EXCLUDED because neither is settable via
 //! `/etc/sysctl.d` on RHEL (so flagging them "missing" would be an unfixable false
@@ -79,8 +95,8 @@ pub(crate) fn baseline_for(target: TargetVersion) -> &'static [BaselineKey] {
 }
 
 /// A stable, public view of one STIG baseline entry. Exists so external dev tooling
-/// (the `tools/stig-update` drift checker) can diff the shipped tables against
-/// `ComplianceAsCode` by IMPORTING them, instead of parsing this source file.
+/// (the `tools/stig-update` drift checker) can diff the shipped tables against the
+/// official DISA XCCDF (#512) by IMPORTING them, instead of parsing this source file.
 pub struct StigEntry {
     /// Dotted sysctl key (the STIG form, e.g. `net.ipv4.conf.all.rp_filter`).
     pub key: &'static str,
@@ -108,12 +124,17 @@ pub fn stig_baseline(target: TargetVersion) -> Vec<StigEntry> {
         .collect()
 }
 
-// Accepted-value sets, named for readability. Most STIG keys require a single
-// value; the set-valued ones are spelled out so a divergence is obvious.
+// Accepted-value sets, named for readability. Every STIG sysctl key in these
+// tables requires a single value (#512: DISA's own XCCDF check-content is
+// strictly single-valued for every sysctl key across all three products - the
+// CaC-derived set-valued `ONE_OR_TWO` acceptance this file used to carry for
+// `kernel.kptr_restrict`/`net.ipv4.conf.all.rp_filter` traced to
+// ComplianceAsCode's own jinja branching, not to DISA's literal text, and was
+// removed once every remaining set-valued row was reconciled to ENABLE-only;
+// see `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 4a/5).
 const DISABLE: &[&str] = &["0"];
 const ENABLE: &[&str] = &["1"];
 const VALUE_2: &[&str] = &["2"];
-const ONE_OR_TWO: &[&str] = &["1", "2"];
 /// `kernel.core_pattern` is a STRING-typed key; the STIG requires this exact value
 /// (pipe a crashing process to `/bin/false`, i.e. produce no core dump).
 const NO_CORE_DUMP: &[&str] = &["|/bin/false"];
@@ -126,7 +147,9 @@ const NO_CORE_DUMP: &[&str] = &["|/bin/false"];
 // (not /etc/sysctl.d-settable on RHEL).
 // ---------------------------------------------------------------------------
 
-/// RHEL 8 STIG sysctl baseline (28 keys; `RHEL-08-*` ID series).
+/// RHEL 8 STIG sysctl baseline (31 keys; `RHEL-08-*` ID series). #512: DISA
+/// STIG V2R8 added 3 keys (`net.ipv4.conf.{all,default}.log_martians`,
+/// `net.ipv4.conf.default.rp_filter`) beyond the original 28 CaC-derived keys.
 const RHEL8_BASELINE: &[BaselineKey] = &[
     k("fs.protected_hardlinks", ENABLE, "RHEL-08-010374"),
     k("fs.protected_symlinks", ENABLE, "RHEL-08-010373"),
@@ -150,7 +173,11 @@ const RHEL8_BASELINE: &[BaselineKey] = &[
         "RHEL-08-040239",
     ),
     k("net.ipv4.conf.all.forwarding", DISABLE, "RHEL-08-040259"),
-    k("net.ipv4.conf.all.rp_filter", ONE_OR_TWO, "RHEL-08-040285"),
+    // #512 (DISA V2R8 new key): net.ipv4.conf.all.log_martians (RHEL-08-040221).
+    k("net.ipv4.conf.all.log_martians", ENABLE, "RHEL-08-040221"),
+    // #512 (DISA-reconciled): was ONE_OR_TWO (CaC jinja branching); DISA's
+    // literal check-content (V-230549/RHEL-08-040285) requires exactly `1`.
+    k("net.ipv4.conf.all.rp_filter", ENABLE, "RHEL-08-040285"),
     k(
         "net.ipv4.conf.all.send_redirects",
         DISABLE,
@@ -166,6 +193,16 @@ const RHEL8_BASELINE: &[BaselineKey] = &[
         DISABLE,
         "RHEL-08-040249",
     ),
+    // #512 (DISA V2R8 new key): net.ipv4.conf.default.log_martians (RHEL-08-040222).
+    k(
+        "net.ipv4.conf.default.log_martians",
+        ENABLE,
+        "RHEL-08-040222",
+    ),
+    // #512 (DISA V2R8 new key): net.ipv4.conf.default.rp_filter (RHEL-08-040287),
+    // the paired .default. variant of all.rp_filter above (already required on
+    // rhel9/rhel10).
+    k("net.ipv4.conf.default.rp_filter", ENABLE, "RHEL-08-040287"),
     k(
         "net.ipv4.conf.default.send_redirects",
         DISABLE,
@@ -209,8 +246,9 @@ const RHEL9_BASELINE: &[BaselineKey] = &[
     k_exact("kernel.core_pattern", NO_CORE_DUMP, "RHEL-09-213040"),
     k("kernel.dmesg_restrict", ENABLE, "RHEL-09-213010"),
     k("kernel.kexec_load_disabled", ENABLE, "RHEL-09-213020"),
-    // DIVERGENCE: rhel9/rhel10 accept 1 OR 2 (rhel8 accepts only 1).
-    k("kernel.kptr_restrict", ONE_OR_TWO, "RHEL-09-213025"),
+    // #512 (DISA-reconciled): was ONE_OR_TWO (CaC jinja branching); DISA's
+    // literal check-content (V-257800/RHEL-09-213025) requires exactly `1`.
+    k("kernel.kptr_restrict", ENABLE, "RHEL-09-213025"),
     k("kernel.perf_event_paranoid", VALUE_2, "RHEL-09-213015"),
     k("kernel.randomize_va_space", VALUE_2, "RHEL-09-213070"),
     k("kernel.unprivileged_bpf_disabled", ENABLE, "RHEL-09-213075"),
@@ -228,7 +266,6 @@ const RHEL9_BASELINE: &[BaselineKey] = &[
     ),
     k("net.ipv4.conf.all.forwarding", DISABLE, "RHEL-09-253075"),
     k("net.ipv4.conf.all.log_martians", ENABLE, "RHEL-09-253025"),
-    // DIVERGENCE: rhel9 accepts ONLY 1 (rhel8/rhel10 accept 1 OR 2).
     k("net.ipv4.conf.all.rp_filter", ENABLE, "RHEL-09-253035"),
     k(
         "net.ipv4.conf.all.send_redirects",
@@ -294,15 +331,19 @@ const RHEL9_BASELINE: &[BaselineKey] = &[
 ];
 
 /// RHEL 10 STIG sysctl baseline (32 keys; `RHEL-10-*` ID series).
-/// Differs from rhel9: `all.rp_filter` accepts 1 OR 2, and
-/// `user.max_user_namespaces` is NOT in the rhel10 baseline.
+/// Differs from rhel9: `user.max_user_namespaces` is NOT in the rhel10
+/// baseline (the one remaining real presence-divergence; #512 reconciled
+/// `kptr_restrict`/`all.rp_filter` to ENABLE-only on every target, so those two
+/// keys no longer diverge from rhel9's values).
 const RHEL10_BASELINE: &[BaselineKey] = &[
     k("fs.protected_hardlinks", ENABLE, "RHEL-10-701070"),
     k("fs.protected_symlinks", ENABLE, "RHEL-10-701080"),
     k_exact("kernel.core_pattern", NO_CORE_DUMP, "RHEL-10-701090"),
     k("kernel.dmesg_restrict", ENABLE, "RHEL-10-701030"),
     k("kernel.kexec_load_disabled", ENABLE, "RHEL-10-701050"),
-    k("kernel.kptr_restrict", ONE_OR_TWO, "RHEL-10-701060"),
+    // #512 (DISA-reconciled): was ONE_OR_TWO (CaC jinja branching); DISA's
+    // literal check-content (V-281308/RHEL-10-701060) requires exactly `1`.
+    k("kernel.kptr_restrict", ENABLE, "RHEL-10-701060"),
     k("kernel.perf_event_paranoid", VALUE_2, "RHEL-10-701040"),
     k("kernel.randomize_va_space", VALUE_2, "RHEL-10-701130"),
     k("kernel.unprivileged_bpf_disabled", ENABLE, "RHEL-10-800030"),
@@ -320,7 +361,9 @@ const RHEL10_BASELINE: &[BaselineKey] = &[
     ),
     k("net.ipv4.conf.all.forwarding", DISABLE, "RHEL-10-800210"),
     k("net.ipv4.conf.all.log_martians", ENABLE, "RHEL-10-800110"),
-    k("net.ipv4.conf.all.rp_filter", ONE_OR_TWO, "RHEL-10-800130"),
+    // #512 (DISA-reconciled): was ONE_OR_TWO (CaC jinja branching); DISA's
+    // literal check-content (V-281345/RHEL-10-800130) requires exactly `1`.
+    k("net.ipv4.conf.all.rp_filter", ENABLE, "RHEL-10-800130"),
     k(
         "net.ipv4.conf.all.send_redirects",
         DISABLE,

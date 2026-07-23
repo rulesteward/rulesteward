@@ -85,7 +85,18 @@
 //! `derive::code_table` projects into this comparison shape) carries no V-number
 //! either, so there is no gap.
 
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
+use std::sync::LazyLock;
+
 use crate::derive::DerivedKey;
+
+/// The check-content `sysctl <key>` command selector (module doc, grounding section
+/// 2): a literal `sysctl` command invocation naming the dotted key that a same-content
+/// echo line later reports the value of. Matches both `$ sudo sysctl <key>` and the
+/// bare `$ sysctl <key>` form (both occur in the real corpus).
+static SYSCTL_CMD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"sysctl\s+([a-z][a-z0-9_.]+)").expect("valid regex"));
 
 /// Parse a full DISA XCCDF benchmark into the normalized sysctld-W02 baseline
 /// table, sorted by dotted sysctl key. Returns an error on any Rule the parser
@@ -96,12 +107,193 @@ use crate::derive::DerivedKey;
 /// # Errors
 /// See the module doc's "fails CLOSED" paragraph.
 pub fn parse_baseline(xccdf: &str) -> Result<Vec<DerivedKey>, String> {
-    todo!(
-        "#512: parse the DISA `sysctl <key>` command + `<key> = <value>` echo idiom \
-         into DerivedKey rows (see this module's doc comment for the grounded \
-         selector, extraction, and fail-closed rules); input was {} bytes",
-        xccdf.len()
-    )
+    let mut reader = Reader::from_str(xccdf);
+
+    let mut out: Vec<DerivedKey> = Vec::new();
+
+    // State for the Group/Rule pair currently being walked. Groups never nest and
+    // each wraps exactly one Rule (same shape as the auditd tool's xccdf.rs), so a
+    // flat set of "current" slots (reset on the next `<Group>` Start) is sufficient.
+    let mut cur_group_id: Option<String> = None;
+    let mut cur_stig_id: Option<String> = None;
+    let mut cur_check_content: Option<String> = None;
+
+    // Which element (if any) text events should accumulate into right now.
+    #[derive(PartialEq)]
+    enum Capture {
+        None,
+        Version,
+        CheckContent,
+    }
+    let mut capture = Capture::None;
+    let mut text_buf = String::new();
+
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|e| format!("xccdf xml parse error: {e}"))?;
+        match event {
+            Event::Eof => break,
+
+            Event::Start(e) => match e.name().as_ref() {
+                b"Group" => {
+                    cur_group_id = xml_attr(&e, b"id");
+                    cur_stig_id = None;
+                    cur_check_content = None;
+                }
+                // Only the FIRST <version> in a Rule is the STIG id; a second
+                // <version> (not observed, but defended per the module doc's
+                // "fail closed for a future DISA reformat" posture) is ignored.
+                b"version" if cur_stig_id.is_none() => {
+                    capture = Capture::Version;
+                    text_buf.clear();
+                }
+                b"check-content" => {
+                    capture = Capture::CheckContent;
+                    text_buf.clear();
+                }
+                _ => {}
+            },
+
+            Event::Text(t) => {
+                if capture != Capture::None {
+                    let decoded = t
+                        .decode()
+                        .map_err(|e| format!("xccdf xml text decode error: {e}"))?;
+                    text_buf.push_str(&decoded);
+                }
+            }
+
+            // quick-xml 0.41 tokenizes an entity/character reference as its OWN
+            // event, separate from the surrounding Text events (see the auditd
+            // tool's xccdf.rs for the same handling + rationale). Resolve numeric
+            // char refs first, then the five predefined XML entities. An
+            // unresolvable entity is a hard parse error (fail-closed).
+            Event::GeneralRef(r) => {
+                if capture != Capture::None {
+                    let resolved = match r
+                        .resolve_char_ref()
+                        .map_err(|e| format!("xccdf xml char-ref resolve error: {e}"))?
+                    {
+                        Some(c) => c.to_string(),
+                        None => {
+                            let name = r
+                                .decode()
+                                .map_err(|e| format!("xccdf xml entity decode error: {e}"))?;
+                            quick_xml::escape::resolve_xml_entity(&name)
+                                .map(str::to_string)
+                                .ok_or_else(|| {
+                                    format!("xccdf xml: unresolvable entity '&{name};'")
+                                })?
+                        }
+                    };
+                    text_buf.push_str(&resolved);
+                }
+            }
+
+            Event::End(e) => match e.name().as_ref() {
+                b"version" if capture == Capture::Version => {
+                    cur_stig_id = Some(text_buf.trim().to_string());
+                    capture = Capture::None;
+                }
+                b"check-content" if capture == Capture::CheckContent => {
+                    cur_check_content = Some(std::mem::take(&mut text_buf));
+                    capture = Capture::None;
+                }
+                b"Group" => {
+                    if let Some(content) = cur_check_content.take() {
+                        select_and_push(
+                            &mut out,
+                            cur_group_id.take(),
+                            cur_stig_id.take(),
+                            &content,
+                        )?;
+                    }
+                }
+                _ => {}
+            },
+
+            Event::Empty(_)
+            | Event::CData(_)
+            | Event::Comment(_)
+            | Event::Decl(_)
+            | Event::PI(_)
+            | Event::DocType(_) => {}
+        }
+    }
+
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(out)
+}
+
+/// Apply the selector + extraction to one Group's check-content (module doc): select
+/// via the `sysctl <key>` command idiom, then extract the required value from a
+/// matching `<key>[ ]=[ ]<value>` echo line. A non-selected Group (no `sysctl <key>`
+/// command at all) is silently skipped - this is the FIPS-decoy exclusion mechanism
+/// (see the module doc's "Selector-negative" paragraph), not an error.
+fn select_and_push(
+    out: &mut Vec<DerivedKey>,
+    group_id: Option<String>,
+    stig_id: Option<String>,
+    content: &str,
+) -> Result<(), String> {
+    let Some(caps) = SYSCTL_CMD_RE.captures(content) else {
+        return Ok(());
+    };
+    let key = caps[1].to_string();
+    let group_id = group_id.unwrap_or_default();
+
+    let stig_id = stig_id.ok_or_else(|| {
+        format!("{group_id}: selected sysctl key {key:?} but the Rule has no <version> element (fail-closed)")
+    })?;
+    let value = extract_echo_value(content, &key).ok_or_else(|| {
+        format!(
+            "{group_id}: sysctl {key} selected but no matching '{key} = <value>' echo line \
+             found in check-content (fail-closed)"
+        )
+    })?;
+    let numeric = value.chars().all(|c| c.is_ascii_digit());
+
+    if let Some(existing) = out.iter().find(|d| d.key == key) {
+        if existing.accepted != [value.clone()] {
+            return Err(format!(
+                "{group_id}: sysctl {key} = {value:?} conflicts with an earlier Group's value \
+                 {:?} for the same key (fail-closed, ambiguous duplicate)",
+                existing.accepted
+            ));
+        }
+        // Identical duplicate value: unambiguous, dedupe (drop this row).
+        return Ok(());
+    }
+
+    out.push(DerivedKey {
+        key,
+        accepted: vec![value],
+        stig_id,
+        numeric,
+    });
+    Ok(())
+}
+
+/// Find the `<key>[ ]=[ ]<value>` echo line for `key` within `content` (module doc:
+/// tolerates both `key = value` and `key=value` spacing, and a trailing space after
+/// the value before the newline). Returns the first match; not observed to occur more
+/// than once per real Group in the corpus.
+fn extract_echo_value(content: &str, key: &str) -> Option<String> {
+    let pattern = format!(r"(?m)^\s*{}\s*=\s*(\S+)\s*$", regex::escape(key));
+    let re = regex::Regex::new(&pattern).ok()?;
+    re.captures(content).map(|c| c[1].to_string())
+}
+
+/// Read an attribute's value as plain UTF-8 (no entity unescaping): the attribute
+/// this parser reads (`Group/@id`) is a simple token (`V-NNNNNN`) that never carries
+/// XML entities in the real DISA corpus.
+fn xml_attr(start: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
+    start
+        .attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .map(|a| String::from_utf8_lossy(a.value.as_ref()).into_owned())
 }
 
 #[cfg(test)]

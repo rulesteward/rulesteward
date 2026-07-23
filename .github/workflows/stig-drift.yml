@@ -1,8 +1,33 @@
 name: stig-drift
 
-# Weekly nudge: re-derive the sysctld STIG baselines from the LATEST ComplianceAsCode
-# release and compare against the shipped tables. On drift, open/update a tracking
-# issue (it never edits code). The on-demand path is `just stig-check-latest`.
+# Weekly nudge for the sysctld-W02 STIG kernel-hardening baseline (issue #335): fetch
+# the pinned DISA XCCDF zips LIVE and compare against the shipped tables. On drift,
+# open/update a tracking issue (it never edits code). The on-demand path is
+# `just stig-check`.
+#
+# #512 (session 9h-v0_8-wave4 Lane B): this RETIRES the prior weekly
+# `check --latest` probe against ComplianceAsCode's `releases/latest` API - now that
+# this tool derives from the official DISA XCCDF (mirroring
+# tools/sshd-stig-update / tools/auditd-stig-update, which already source DISA),
+# there is no equivalent API to probe: DISA has no releases/latest endpoint, each
+# RHEL STIG is versioned by FILENAME. This run instead derives at the PINNED zips
+# (tools/stig-update/stig-refs.toml), mirroring sshd-stig-drift.yml /
+# auditd-stig-drift.yml exactly. It therefore catches:
+#   - a DISA in-place re-publish of a pinned filename (rare but real),
+#   - a DISA XCCDF reformat that breaks the parser (fail-closed -> the job fails),
+#   - the committed fixtures having themselves drifted from live DISA.
+# It CANNOT auto-detect a brand-new DISA revision (new filename) - this tool used to
+# be able to detect ComplianceAsCode staleness via `--latest`, a capability
+# sshd-stig-update/auditd-stig-update never had; now that all three tools are
+# DISA-sourced, all three share the same gap. Staleness detection for a brand-new
+# DISA revision across all three DISA-sourced tools is tracked in #550 (a
+# `probe-latest` HEAD-probe of the next candidate `V<major>R<minor>` filename); this
+# workflow does not implement that probe. Until #550 lands, the issue body below
+# reminds a human to periodically check dl.dod.cyber.mil for a newer RHEL STIG.
+#
+# Cron slot: Mondays 06:00 UTC (unchanged from the retired CaC-latest probe;
+# sshd-stig-drift.yml runs Tuesdays 07:00 UTC and auditd-stig-drift.yml runs
+# Wednesdays 07:00 UTC, so this slot stays clear of both).
 on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
@@ -18,7 +43,7 @@ env:
 
 jobs:
   drift:
-    name: STIG baseline drift vs latest ComplianceAsCode
+    name: sysctld STIG baseline drift vs live pinned DISA XCCDF
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -29,23 +54,30 @@ jobs:
         with:
           # The tool is its own workspace; cache it separately from the main build.
           workspaces: tools/stig-update
-      - name: Derive against latest upstream
+      - name: Live check vs the pinned DISA zips
         id: check
         run: |
           set +e
-          cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check --latest \
+          cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check \
             > drift.txt 2> drift.err
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           cat drift.err
           cat drift.txt
-          # rc: 0 = no drift, 1 = drift (open issue), 2 = tool/upstream error (fail job).
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool/CDN
+          # error, 101 = a `cargo run` compile failure if this out-of-workspace tool
+          # drifts from the rulesteward-sysctld public API, etc.) = fail the job
+          # loudly.
           exit 0
       - name: Fail on tool error
-        if: steps.check.outputs.rc == '2'
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
         run: |
-          echo "stig-update errored against latest upstream (see logs above) - upstream may have" \
-               "restructured; the tool needs a look." >&2
+          echo "stig-update did not exit cleanly (rc=$RC; see logs above): the DISA CDN" \
+               "may be unreachable, DISA may have reformatted the XCCDF and the parser failed" \
+               "closed, or the tool may no longer compile against the rulesteward-sysctld API." \
+               "The tool needs a look." >&2
           exit 1
       - name: Open or update the drift tracking issue
         if: steps.check.outputs.rc == '1'
@@ -54,17 +86,25 @@ jobs:
         run: |
           set -euo pipefail
           gh label create stig-drift --color FBCA04 \
-            --description "ComplianceAsCode STIG baseline drift" 2>/dev/null || true
+            --description "DISA sysctld STIG baseline drift" 2>/dev/null || true
           # Build the body in a FILE (cat copies drift.txt verbatim - no shell
           # expansion of the tool's output) and pass it via --body-file.
           {
-            echo "The weekly \`stig-update check --latest\` found ComplianceAsCode/content changes"
-            echo "vs the pinned refs in \`tools/stig-update/stig-refs.toml\`."
+            echo "The weekly \`stig-update check\` found the shipped sysctld-W02 STIG baseline"
+            echo "tables no longer match the official DISA XCCDF at the pinned zips in"
+            echo "\`tools/stig-update/stig-refs.toml\`."
             echo
             echo "To update: run \`just stig-derive <product>\`, review the diff, paste the new"
-            echo "\`k(...)\` lines into \`crates/rulesteward-sysctld/src/lints/baseline.rs\`, bump"
-            echo "that product's ref in \`stig-refs.toml\`, re-gate (adversarial + mutation), and"
-            echo "confirm \`just stig-check\` reports 0 drift."
+            echo "\`k(...)\`/\`k_exact(...)\` lines into"
+            echo "\`crates/rulesteward-sysctld/src/lints/baseline.rs\` (the RHEL*_BASELINE"
+            echo "tables), refresh the committed \`tools/stig-update/tests/fixtures/\` if the DISA"
+            echo "Groups changed, re-gate (adversarial + mutation), and confirm"
+            echo "\`just stig-check\` reports 0 drift."
+            echo
+            echo "NOTE: this run derives at the PINNED filenames. If DISA published a NEW revision"
+            echo "(new filename), bump the \`zip\` values in \`stig-refs.toml\` first. Check"
+            echo "dl.dod.cyber.mil for the current RHEL 8 / 9 / 10 STIG revisions (automated"
+            echo "detection of a new revision is tracked in #550, not yet implemented)."
             echo
             echo '```'
             cat drift.txt
@@ -74,6 +114,6 @@ jobs:
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body-file issue-body.md
           else
-            gh issue create --title "STIG baseline drift: ComplianceAsCode has updates" \
+            gh issue create --title "sysctld STIG baseline drift: DISA XCCDF has changes" \
               --label stig-drift --body-file issue-body.md
           fi
