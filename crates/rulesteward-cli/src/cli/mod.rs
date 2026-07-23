@@ -600,7 +600,7 @@ mod tests {
         {
             assert!(args.path.is_none(), "positional path must default to None");
             assert!(
-                matches!(args.format, HumanJsonFormat::Human),
+                matches!(args.format, OutputFormat::Human),
                 "format must default to human"
             );
         } else {
@@ -609,8 +609,8 @@ mod tests {
     }
 
     /// `auditd lint <PATH> --format json`: positional path + the json format.
-    /// human|json ONLY by type (locked CC-4: SARIF is fapolicyd-lint-only;
-    /// CC-3: lint is not a flat-row verb, no CSV).
+    /// human|json|sarif by type (CC-4: findings-only SARIF, #511); CC-3: lint
+    /// is not a flat-row verb, no CSV.
     #[test]
     fn auditd_lint_parses_path_and_json_format() {
         let cli = Cli::try_parse_from([
@@ -631,17 +631,10 @@ mod tests {
                 args.path.as_deref(),
                 Some(std::path::Path::new("/etc/audit/rules.d"))
             );
-            assert!(matches!(args.format, HumanJsonFormat::Json));
+            assert!(matches!(args.format, OutputFormat::Json));
         } else {
             panic!("expected Auditd(Lint(_))");
         }
-    }
-
-    /// `auditd lint --format sarif` must be REJECTED by the value enum (CC-4).
-    #[test]
-    fn auditd_lint_rejects_sarif_format() {
-        let cli = Cli::try_parse_from(["rulesteward", "auditd", "lint", "--format", "sarif"]);
-        assert!(cli.is_err(), "sarif must not be a valid auditd lint format");
     }
 
     /// `auditd lint --target auto|rhel8|rhel9|rhel10` parses to the matching

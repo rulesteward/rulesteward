@@ -3,8 +3,10 @@
 //!
 //! Mirrors the auditd / sshd / sysctld catalogs (the crate that OWNS the codes
 //! carries the catalog, inside the mutation `examine_globs`): no `Condition`
-//! machinery, since there is no SARIF for sudoers (locked CC-4: SARIF is
-//! `fapolicyd lint` only).
+//! machinery here. `sudoers lint --format sarif` is offered (#511) and is
+//! findings-only, so it needs no per-check run-condition gate; the
+//! `--sarif-include-pass` coverage attestation that the `Condition` machinery
+//! backs stays fapolicyd-only (locked CC-4).
 //!
 //! # Frozen in Phase 0
 //! The catalog lists the FULL planned sudoers taxonomy now, even though only

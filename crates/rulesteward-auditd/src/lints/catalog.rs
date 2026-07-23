@@ -3,8 +3,10 @@
 //!
 //! Mirrors the fapolicyd catalog (the crate that OWNS the codes carries the
 //! catalog, inside the mutation `examine_globs`), minus the `Condition`
-//! machinery: every auditd pass runs unconditionally, and there is no SARIF
-//! for auditd (locked CC-4: SARIF is `fapolicyd lint` only).
+//! machinery: every auditd pass runs unconditionally. `auditd lint --format
+//! sarif` is offered (#511) and is findings-only, so it needs no per-check
+//! run-condition gate; the `--sarif-include-pass` coverage attestation that
+//! the `Condition` machinery backs stays fapolicyd-only (locked CC-4).
 
 use rulesteward_core::Severity;
 

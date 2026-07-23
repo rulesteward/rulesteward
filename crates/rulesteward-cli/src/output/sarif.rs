@@ -205,21 +205,38 @@ fn control_taxa_reference(
 /// so a control-free diagnostic renders byte-identically to the pre-L4 form
 /// (pinned by `sarif_no_controls_omits_taxonomy_keys`).
 fn diagnostic_to_result(diag: &Diagnostic, taxonomy_groups: &[TaxonomyGroup]) -> SarifResult {
-    // `Region` line/column are i64 in the SARIF schema; the Diagnostic stores
-    // them as usize (1-based). The cast is lossless for any real source file.
-    let region = Region::builder()
-        .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
-        .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
-        .build();
-
     let artifact_location = ArtifactLocation::builder()
         .uri(diag.file.display().to_string())
         .build();
 
-    let physical_location = PhysicalLocation::builder()
-        .artifact_location(artifact_location)
-        .region(region)
-        .build();
+    // The SARIF 2.1.0 schema requires `region.startLine`/`startColumn` >= 1
+    // when `region` is present. An UNANCHORED diagnostic has no real source
+    // byte range to report: `line == 0` is the codebase-wide convention for
+    // this (see `rulesteward_core::diagnostic::anchored_at`'s doc, and e.g.
+    // `sysctld`'s `w02_baseline` MISSING-key arm / fapolicyd's `file_level`
+    // helper, both of which construct `Diagnostic::new(.., 0, 0)` with no
+    // `source_id`). Emitting `region: {startLine: 0, ...}` for these would be
+    // schema-invalid, so `region` is omitted entirely rather than lying about
+    // a line that does not exist; `physicalLocation.artifactLocation.uri` (the
+    // real file/dir the finding is about) is still emitted, matching the
+    // human renderer's own "unanchored -> no snippet, but still named" shape.
+    let physical_location = if diag.line == 0 {
+        PhysicalLocation::builder()
+            .artifact_location(artifact_location)
+            .build()
+    } else {
+        // `Region` line/column are i64 in the SARIF schema; the Diagnostic
+        // stores them as usize (1-based). The cast is lossless for any real
+        // source file.
+        let region = Region::builder()
+            .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
+            .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
+            .build();
+        PhysicalLocation::builder()
+            .artifact_location(artifact_location)
+            .region(region)
+            .build()
+    };
 
     let location = Location::builder()
         .physical_location(physical_location)

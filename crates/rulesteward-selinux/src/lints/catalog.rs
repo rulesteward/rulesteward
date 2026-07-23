@@ -3,9 +3,11 @@
 //! description.
 //!
 //! Mirrors the sysctld catalog (the crate that OWNS the codes carries the
-//! catalog, inside the mutation `examine_globs`): no `Condition` machinery,
-//! since there is no SARIF for selinux lint (locked CC-4: SARIF is
-//! `fapolicyd lint` only).
+//! catalog, inside the mutation `examine_globs`): no `Condition` machinery
+//! here. `selinux lint --format sarif` is offered (#511) and is
+//! findings-only, so it needs no per-check run-condition gate; the
+//! `--sarif-include-pass` coverage attestation that the `Condition` machinery
+//! backs stays fapolicyd-only (locked CC-4).
 //!
 //! # Frozen taxonomy
 //! Two passes: `se-W01` (SELINUX= not enforcing at boot; rhel9/rhel10 only)

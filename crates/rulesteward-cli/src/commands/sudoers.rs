@@ -68,13 +68,16 @@ fn lint(args: &SudoersLintArgs, profile: Option<Framework>) -> i32 {
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    crate::output::emit_lint(
+    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
         args.format,
         "sudoers-lint",
         SUDOERS_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
-    );
+    ) {
+        eprintln!("sudoers lint: rendering {:?} output: {msg}", args.format);
+        return EXIT_TOOL_FAILURE;
+    }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
 }
@@ -82,12 +85,12 @@ fn lint(args: &SudoersLintArgs, profile: Option<Framework>) -> i32 {
 #[cfg(test)]
 mod lint_shell_tests {
     use super::lint;
-    use crate::cli::{HumanJsonFormat, SudoersLintArgs};
+    use crate::cli::{OutputFormat, SudoersLintArgs};
     use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
     use crate::output::json;
     use rulesteward_sudoers::{SudoersLintContext, lints, resolve};
 
-    fn args(path: &std::path::Path, format: HumanJsonFormat) -> SudoersLintArgs {
+    fn args(path: &std::path::Path, format: OutputFormat) -> SudoersLintArgs {
         SudoersLintArgs {
             path: Some(path.to_path_buf()),
             format,
@@ -124,7 +127,7 @@ root ALL=(ALL:ALL) ALL
     fn missing_path_exits_tool_failure() {
         let a = args(
             std::path::Path::new("/nonexistent/329/sudoers"),
-            HumanJsonFormat::Human,
+            OutputFormat::Human,
         );
         assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
@@ -138,7 +141,7 @@ root ALL=(ALL:ALL) ALL
         let dropins = dir.path().join("sudoers.d");
         std::fs::create_dir(&dropins).expect("mkdir dropins");
         std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
-        let a = args(&f, HumanJsonFormat::Json);
+        let a = args(&f, OutputFormat::Json);
         assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
@@ -160,7 +163,7 @@ root ALL=(ALL:ALL) ALL
         std::fs::write(dropins.join("99-nopasswd"), "ALL ALL=(ALL) NOPASSWD: ALL\n")
             .expect("write dropin");
         std::fs::write(&f, clean_sudoers(&dropins)).expect("write");
-        let a = args(&f, HumanJsonFormat::Human);
+        let a = args(&f, OutputFormat::Human);
         assert_eq!(lint(&a, None), EXIT_WARNINGS);
     }
 
@@ -170,7 +173,7 @@ root ALL=(ALL:ALL) ALL
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sudoers");
         std::fs::write(&f, "this is not valid sudoers\n").expect("write");
-        let a = args(&f, HumanJsonFormat::Human);
+        let a = args(&f, OutputFormat::Human);
         assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
@@ -188,7 +191,7 @@ root ALL=(ALL:ALL) ALL
         .expect("w");
         std::fs::write(dir.path().join("10-alice"), "alice ALL=(ALL) ALL\n").expect("w");
         std::fs::write(dir.path().join("20-bob"), "bob ALL=(ALL) ALL\n").expect("w");
-        let a = args(dir.path(), HumanJsonFormat::Human);
+        let a = args(dir.path(), OutputFormat::Human);
         assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
@@ -212,7 +215,7 @@ root ALL=(ALL:ALL) ALL
         let f = dir.path().join("sudoers");
         std::fs::write(&f, "").expect("write byte-empty file");
 
-        let a = args(&f, HumanJsonFormat::Json);
+        let a = args(&f, OutputFormat::Json);
         assert_eq!(
             lint(&a, None),
             EXIT_WARNINGS,

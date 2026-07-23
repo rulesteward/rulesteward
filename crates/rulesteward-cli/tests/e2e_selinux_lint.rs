@@ -4,7 +4,9 @@
 //! NEW file for the new `lint` verb.
 
 use assert_cmd::Command;
+use boon::{Compiler, Schemas};
 use predicates::prelude::*;
+use serde_json::Value;
 use std::io::Write as _;
 
 fn bin() -> Command {
@@ -154,4 +156,134 @@ fn lint_target_auto_degrade_warns_on_stderr_and_exits_0() {
         // commands/target_probe.rs; the verb prefixes it with "selinux lint:".
         .stderr(predicate::str::contains("selinux lint: --target auto:"))
         .stderr(predicate::str::contains("linting version-agnostic"));
+}
+
+// ---------------------------------------------------------------------------
+// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
+// (findings-only). RED today: `SelinuxLintArgs.format` is `HumanJsonFormat`
+// (human|json only), so clap rejects `--format sarif` at parse time. The
+// planned impl switches `SelinuxLintArgs.format` to `OutputFormat` and routes
+// the new Sarif arm through `output::emit_lint`.
+// ---------------------------------------------------------------------------
+
+/// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
+/// Duplicated per-file (see the identical helper in `e2e_sshd_lint.rs` for why
+/// -- no shared test-support module exists in this crate).
+fn assert_valid_sarif(rendered: &str) {
+    let instance: Value = serde_json::from_str(rendered).expect("SARIF stdout must parse as JSON");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sarif-2.1.0.schema.json"
+    );
+    let schema: Value = serde_json::from_slice(&std::fs::read(path).expect("read schema fixture"))
+        .expect("schema fixture parses");
+    let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(schema_id, schema)
+        .expect("add SARIF schema");
+    let mut schemas = Schemas::new();
+    let idx = compiler
+        .compile(schema_id, &mut schemas)
+        .expect("compile SARIF schema");
+    if let Err(e) = schemas.validate(&instance, idx) {
+        panic!("SARIF failed schema validation:\n{e}\n--- instance ---\n{rendered}");
+    }
+}
+
+/// A permissive-at-boot config under `--target rhel9` fires `se-W01`
+/// (Warning, STIG RHEL-09-431010/V-258078). SARIF output is schema-valid,
+/// carries `ruleId: "se-W01"` at `level: "warning"`, ends with a trailing
+/// newline, and exits 1 (Warning tier, matching
+/// `lint_target_rhel9_permissive_fires_se_w01_with_control_suffix_and_exits_1`
+/// above).
+#[test]
+fn sarif_format_fires_se_w01_with_ruleid_warning_level_and_trailing_newline() {
+    let f = write_config("SELINUX=permissive\nSELINUXTYPE=targeted\n");
+    let out = bin()
+        .args(["selinux", "lint"])
+        .arg(f.path())
+        .args(["--target", "rhel9", "--format", "sarif"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "se-W01 (Warning) must exit 1 under --format sarif; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.iter().any(
+            |r| r.get("ruleId").and_then(Value::as_str) == Some("se-W01")
+                && r.get("level").and_then(Value::as_str) == Some("warning")
+        ),
+        "a result must carry ruleId \"se-W01\" with level \"warning\"; got: {stdout}"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "SARIF stdout must end with a newline"
+    );
+}
+
+/// An enforcing-at-boot, targeted-type config under `--target rhel9` emits a
+/// schema-valid SARIF document with zero results and exits 0.
+#[test]
+fn sarif_format_clean_config_is_schema_valid_with_zero_results() {
+    let f = write_config("SELINUX=enforcing\nSELINUXTYPE=targeted\n");
+    let out = bin()
+        .args(["selinux", "lint"])
+        .arg(f.path())
+        .args(["--target", "rhel9", "--format", "sarif"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a clean config must exit 0 under --format sarif; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.is_empty(),
+        "a clean config must produce zero SARIF results; got: {stdout}"
+    );
+}
+
+/// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
+/// still reject it as an unrecognized flag on `selinux lint`. GREEN today
+/// (clap already rejects the unknown flag) and must stay green after the
+/// impl.
+#[test]
+fn sarif_include_pass_is_rejected_for_selinux_lint() {
+    let f = write_config("SELINUX=enforcing\nSELINUXTYPE=targeted\n");
+    let out = bin()
+        .args(["selinux", "lint"])
+        .arg(f.path())
+        .args(["--sarif-include-pass"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "an unrecognized flag is a clap parse error (mapped to EXIT_TOOL_FAILURE); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    assert!(
+        stderr.contains("--sarif-include-pass"),
+        "clap's error must name the rejected flag; got: {stderr}"
+    );
 }

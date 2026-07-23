@@ -10,6 +10,8 @@
 use std::io::Write;
 
 use assert_cmd::Command;
+use boon::{Compiler, Schemas};
+use serde_json::Value;
 
 fn bin() -> Command {
     Command::cargo_bin("rulesteward").expect("binary built")
@@ -550,5 +552,216 @@ fn help_lists_the_target_flag() {
     assert!(
         stdout.contains("--target"),
         "sysctl lint --help advertises the --target flag; stdout: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
+// (findings-only). RED today: `SysctlLintArgs.format` is `HumanJsonFormat`
+// (human|json only), so clap rejects `--format sarif` at parse time. The
+// planned impl switches `SysctlLintArgs.format` to `OutputFormat` and routes
+// the new Sarif arm through `output::emit_lint`.
+// ---------------------------------------------------------------------------
+
+/// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
+/// Duplicated per-file (see the identical helper in `e2e_sshd_lint.rs` for why
+/// -- no shared test-support module exists in this crate).
+fn assert_valid_sarif(rendered: &str) {
+    let instance: Value = serde_json::from_str(rendered).expect("SARIF stdout must parse as JSON");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sarif-2.1.0.schema.json"
+    );
+    let schema: Value = serde_json::from_slice(&std::fs::read(path).expect("read schema fixture"))
+        .expect("schema fixture parses");
+    let schema_id = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
+    let mut compiler = Compiler::new();
+    compiler
+        .add_resource(schema_id, schema)
+        .expect("add SARIF schema");
+    let mut schemas = Schemas::new();
+    let idx = compiler
+        .compile(schema_id, &mut schemas)
+        .expect("compile SARIF schema");
+    if let Err(e) = schemas.validate(&instance, idx) {
+        panic!("SARIF failed schema validation:\n{e}\n--- instance ---\n{rendered}");
+    }
+}
+
+/// A malformed line fires the parse-failure code `sysctld-F01` (Fatal, NO
+/// controls attached). SARIF output is schema-valid, carries `ruleId:
+/// "sysctld-F01"` at `level: "error"`, ends with a trailing newline, exits 5
+/// (`EXIT_RULE_PARSE_ERROR`, matching
+/// `malformed_file_exits_with_the_parse_error_code` above) -- and, because
+/// F01 carries no `controls`, the run has NO `taxonomies` key and the result
+/// has NO `taxa` key. This is sarif.rs's generic, backend-agnostic
+/// `sarif_no_controls_omits_taxonomy_keys` unit pin, exercised here end to
+/// end through the real CLI for a non-fapolicyd backend.
+#[test]
+fn sarif_format_fires_f01_with_ruleid_error_level_and_no_taxonomy_keys() {
+    let cfg = config_file("kernel.dmesg_restrict\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "sysctld-F01 maps to EXIT_RULE_PARSE_ERROR (5) under SARIF too; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    let f01 = results
+        .iter()
+        .find(|r| r.get("ruleId").and_then(Value::as_str) == Some("sysctld-F01"))
+        .unwrap_or_else(|| panic!("no sysctld-F01 result found: {stdout}"));
+    assert_eq!(
+        f01.get("level").and_then(Value::as_str),
+        Some("error"),
+        "Fatal severity maps to SARIF level \"error\"; got: {stdout}"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "SARIF stdout must end with a newline"
+    );
+    assert!(
+        v.pointer("/runs/0/taxonomies").is_none(),
+        "sysctld-F01 carries no controls; the run must have NO taxonomies key: {stdout}"
+    );
+    assert!(
+        f01.get("taxa").is_none(),
+        "sysctld-F01 carries no controls; its result must have NO taxa key: {stdout}"
+    );
+}
+
+/// A clean file (no `--target`) emits a schema-valid SARIF document with zero
+/// results and exits 0.
+#[test]
+fn sarif_format_clean_file_is_schema_valid_with_zero_results() {
+    let cfg = config_file("kernel.sysrq = 0\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a clean file must exit 0 under --format sarif; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.is_empty(),
+        "a clean file must produce zero SARIF results; got: {stdout}"
+    );
+}
+
+/// A STIG-mapped finding (`sysctld-W02` under `--target rhel9`) produces a
+/// `runs[0].taxonomies[]` entry named "STIG" (`Framework::Stig::name()`) and
+/// at least one `sysctld-W02` result whose `taxa[]` is non-empty. Exercises
+/// the generic, backend-agnostic taxonomy plumbing (sarif.rs
+/// `collect_taxonomy_groups` / `diagnostic_to_result`) end to end for a
+/// non-fapolicyd backend.
+#[test]
+fn sarif_format_target_rhel9_w02_carries_stig_taxonomy_and_taxa() {
+    let cfg = config_file("# nothing hardened here\nkernel.sysrq = 0\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--target",
+            "rhel9",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "sysctld-W02 (Warning) exits 1 under SARIF too; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_valid_sarif(&stdout);
+    let v: Value = serde_json::from_str(&stdout).expect("SARIF stdout parses as JSON");
+
+    let taxonomies = v
+        .pointer("/runs/0/taxonomies")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("no taxonomies array present: {stdout}"));
+    assert!(
+        taxonomies
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("STIG")),
+        "a taxonomies entry named \"STIG\" must be present: {stdout}"
+    );
+
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array present");
+    assert!(
+        results.iter().any(|r| {
+            r.get("ruleId").and_then(Value::as_str) == Some("sysctld-W02")
+                && r.get("taxa")
+                    .and_then(Value::as_array)
+                    .is_some_and(|taxa| !taxa.is_empty())
+        }),
+        "a sysctld-W02 result must carry a non-empty taxa[] array: {stdout}"
+    );
+}
+
+/// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
+/// still reject it as an unrecognized flag on `sysctl lint`. GREEN today
+/// (clap already rejects the unknown flag) and must stay green after the
+/// impl.
+#[test]
+fn sarif_include_pass_is_rejected_for_sysctl_lint() {
+    let cfg = config_file("kernel.sysrq = 0\n");
+    let out = bin()
+        .args([
+            "sysctl",
+            "lint",
+            cfg.path().to_str().unwrap(),
+            "--sarif-include-pass",
+        ])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "an unrecognized flag is a clap parse error (mapped to EXIT_TOOL_FAILURE); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    assert!(
+        stderr.contains("--sarif-include-pass"),
+        "clap's error must name the rejected flag; got: {stderr}"
     );
 }

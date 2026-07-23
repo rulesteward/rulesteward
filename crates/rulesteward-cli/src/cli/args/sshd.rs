@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::{HumanJsonFormat, TargetSelector};
+use crate::cli::{OutputFormat, TargetSelector};
 
 /// Arguments for `rulesteward sshd lint` (#149).
 #[derive(Debug, Parser)]
@@ -10,10 +10,11 @@ pub struct SshdLintArgs {
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Output format (human | json; SARIF and CSV are not offered for this verb
-    /// per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
+    /// Output format (human | json | sarif; CSV is not offered for this verb
+    /// per the locked output contract CC-3). SARIF is findings-only here:
+    /// `--sarif-include-pass` coverage attestation stays fapolicyd-only (CC-4).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 
     /// Target OS baseline (auto|rhel8|rhel9|rhel10) for the version-aware lints.
     /// Selects which OpenSSH keyword set the version-aware passes (sshd-E01,
