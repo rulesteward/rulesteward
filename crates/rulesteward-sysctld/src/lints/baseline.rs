@@ -563,9 +563,46 @@ mod tests {
         // Pins completeness against the grounding doc (controls-file key counts
         // minus the 2 deliberately-excluded non-sysctl keys: fips_enabled,
         // exec-shield). A dropped/added key changes one of these counts.
-        assert_eq!(RHEL8_BASELINE.len(), 28, "rhel8 STIG sysctl key count");
+        //
+        // #512 (session 9h-v0_8-wave4 Lane B, DISA-XCCDF reconciliation): rhel8
+        // grows 28 -> 31 - DISA STIG V2R8 added 3 keys ComplianceAsCode's rhel8
+        // controls file did not have (all `ENABLE`-only): the paired
+        // `net.ipv4.conf.default.rp_filter` (RHEL-08-040287,
+        // `net.ipv4.conf.all.rp_filter`'s sibling, already required on rhel9/
+        // rhel10), `net.ipv4.conf.all.log_martians` (RHEL-08-040221), and
+        // `net.ipv4.conf.default.log_martians` (RHEL-08-040222) (both already
+        // required on rhel9/rhel10). rhel9/rhel10 key SETS are unchanged (only
+        // VALUES narrow - see `stig_baseline_public_view_is_stable` below). RED
+        // against the current (un-reconciled) RHEL8_BASELINE until the
+        // implementer adds these 3 rows; see
+        // `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 5 for the
+        // full reconciled diff table.
+        assert_eq!(RHEL8_BASELINE.len(), 31, "rhel8 STIG sysctl key count");
         assert_eq!(RHEL9_BASELINE.len(), 33, "rhel9 STIG sysctl key count");
         assert_eq!(RHEL10_BASELINE.len(), 32, "rhel10 STIG sysctl key count");
+    }
+
+    /// #512 (session 9h-v0_8-wave4 Lane B): the 3 DISA V2R8 rhel8 keys added above
+    /// must be present with their grounded values (all `ENABLE`-only, numeric) and
+    /// grounded STIG ids - RED until the implementer adds these rows.
+    #[test]
+    fn rhel8_v2r8_new_keys_are_present_with_grounded_values() {
+        for (key, stig_id) in [
+            ("net.ipv4.conf.default.rp_filter", "RHEL-08-040287"),
+            ("net.ipv4.conf.all.log_martians", "RHEL-08-040221"),
+            ("net.ipv4.conf.default.log_martians", "RHEL-08-040222"),
+        ] {
+            let entry = RHEL8_BASELINE
+                .iter()
+                .find(|k| k.key == key)
+                .unwrap_or_else(|| panic!("{key} must be present in RHEL8_BASELINE (DISA V2R8)"));
+            assert_eq!(entry.accepted, ["1"], "{key} is ENABLE-only");
+            assert_eq!(entry.stig_id, stig_id);
+            assert!(
+                matches!(entry.kind, ValueKind::Int),
+                "{key} is numeric (Int-typed)"
+            );
+        }
     }
 
     #[test]
@@ -717,18 +754,68 @@ mod tests {
         // The public accessor `tools/stig-update` imports: sizes + a divergent
         // projection. Guards the public surface (and the numeric projection) against
         // drift / a mutation that flips the ValueKind mapping.
+        //
+        // #512 (session 9h-v0_8-wave4 Lane B): rhel8 size 28 -> 31 (see
+        // `baseline_tables_have_the_grounded_sizes` above); the rhel9
+        // `kernel.kptr_restrict` accepted-set assertion below is RECONCILED from
+        // `["1", "2"]` to `["1"]` - DISA's own XCCDF text (V-257800/
+        // RHEL-09-213025, all three products) requires exactly `1`; the `{1,2}`
+        // shipped value traced to ComplianceAsCode's own jinja branching, not to
+        // DISA's literal check-content (grounding doc section 4a/5). This is a
+        // BEHAVIOR CHANGE the pre-authorized DISA-reconciliation decision gate
+        // approved, not a widened/weakened test: `kptr_restrict = 2` becomes
+        // INSECURE on rhel9 (previously accepted) - see the companion
+        // `tests/baseline.rs` integration-test updates for the crate-level pin
+        // of that behavior change.
         use super::stig_baseline;
-        assert_eq!(stig_baseline(TargetVersion::Rhel8).len(), 28);
+        assert_eq!(stig_baseline(TargetVersion::Rhel8).len(), 31);
         assert_eq!(stig_baseline(TargetVersion::Rhel9).len(), 33);
         assert_eq!(stig_baseline(TargetVersion::Rhel10).len(), 32);
 
         let r9 = stig_baseline(TargetVersion::Rhel9);
         let kptr = r9.iter().find(|e| e.key == "kernel.kptr_restrict").unwrap();
-        assert_eq!(kptr.accepted, ["1", "2"], "rhel9 kptr accepts 1 or 2");
+        assert_eq!(
+            kptr.accepted,
+            ["1"],
+            "rhel9 kptr_restrict is DISA-reconciled to ENABLE-only (RHEL-09-213025)"
+        );
         assert!(kptr.numeric, "kptr is int-typed");
         let cp = r9.iter().find(|e| e.key == "kernel.core_pattern").unwrap();
         assert!(!cp.numeric, "core_pattern is string-typed");
         assert_eq!(cp.stig_id, "RHEL-09-213040");
+    }
+
+    /// #512 (session 9h-v0_8-wave4 Lane B): the full DISA-reconciled value-narrowing
+    /// set, pinned directly (independent of `stig_baseline_public_view_is_stable`
+    /// above, which only spot-checks rhel9 `kptr_restrict`) - `kernel.kptr_restrict`
+    /// narrows to ENABLE-only on ALL THREE targets (was already ENABLE-only on
+    /// rhel8; rhel9/rhel10 narrow from `{1,2}`), and `net.ipv4.conf.all.rp_filter`
+    /// narrows to ENABLE-only on rhel8 AND rhel10 (was already ENABLE-only on
+    /// rhel9). See `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 5
+    /// for the full reconciled diff table this pins.
+    #[test]
+    fn kptr_restrict_and_rp_filter_all_are_enable_only_on_every_target() {
+        for (t, table) in all_tables() {
+            let kptr = table
+                .iter()
+                .find(|k| k.key == "kernel.kptr_restrict")
+                .unwrap_or_else(|| panic!("{t:?} must have kernel.kptr_restrict"));
+            assert_eq!(
+                kptr.accepted,
+                ["1"],
+                "{t:?} kernel.kptr_restrict must be DISA-reconciled to ENABLE-only"
+            );
+
+            let rp_filter = table
+                .iter()
+                .find(|k| k.key == "net.ipv4.conf.all.rp_filter")
+                .unwrap_or_else(|| panic!("{t:?} must have net.ipv4.conf.all.rp_filter"));
+            assert_eq!(
+                rp_filter.accepted,
+                ["1"],
+                "{t:?} net.ipv4.conf.all.rp_filter must be DISA-reconciled to ENABLE-only"
+            );
+        }
     }
 
     #[test]
