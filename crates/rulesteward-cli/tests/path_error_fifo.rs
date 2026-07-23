@@ -27,8 +27,11 @@
 //! fix, so those are the two backends pinned here as the load-bearing RED
 //! regression tests. The shared `rulesteward_core::fsread::read_to_string`
 //! contract every backend is expected to route through (including
-//! sshd/sysctl/auditd, per the #560 brief's call-site list) is exhaustively
-//! pinned at the unit level in `rulesteward-core/src/fsread.rs`.
+//! sshd/sysctl/auditd, per the #560 brief's call-site list) is pinned at the
+//! unit level in `rulesteward-core/src/fsread.rs`: regular files, symlinks
+//! to regular files, directories, FIFOs, character devices (`/dev/null`,
+//! plus a bounded-thread `/dev/zero` case mirroring the FIFO hang guard
+//! below), and Unix domain sockets are all covered there.
 
 use std::time::Duration;
 

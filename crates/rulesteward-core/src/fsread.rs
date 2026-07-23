@@ -149,6 +149,94 @@ mod tests {
         );
     }
 
+    /// A character device (`/dev/null`) must be rejected, not silently
+    /// "succeed" by falling through to a plain read. This kills a wrong
+    /// "per-type-enumeration" implementation that only special-cases the two
+    /// types most obviously exercised by #560's shell reproduction
+    /// (directory, FIFO) and lets anything else -- including device nodes --
+    /// fall through to an ordinary `std::fs::read_to_string`. Such an impl
+    /// would happily return `Ok("")` here (`/dev/null` reads as an instant,
+    /// silent EOF) and, worse, would still read `/dev/zero` UNBOUNDEDLY --
+    /// the exact OOM half of #560's bug report ("on a device node it reads
+    /// unboundedly"). Requires `/dev/null`, universal on the Linux
+    /// distribution target.
+    #[test]
+    fn character_device_dev_null_is_rejected() {
+        let path = std::path::Path::new("/dev/null");
+        let err = read_to_string(path).expect_err("/dev/null must be rejected, not silently read");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-regular file") || msg.to_lowercase().contains("character device"),
+            "error must name the non-regular-file / character-device condition, got: {msg}"
+        );
+    }
+
+    /// #560's OOM half of the bug, driven directly: `/dev/zero` is a
+    /// character device that reads UNBOUNDED zero bytes forever unless the
+    /// special-file guard rejects it before ever attempting a normal read.
+    /// Driven off a background thread with a bounded `recv_timeout`,
+    /// mirroring `fifo_is_rejected_fast_no_hang` below, so a runaway-reading
+    /// (wrong) implementation fails this ONE test instead of exhausting
+    /// memory / wedging the whole suite.
+    #[test]
+    fn character_device_dev_zero_is_rejected_fast_no_unbounded_read() {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = read_to_string(std::path::Path::new("/dev/zero"));
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => {
+                let err = result.expect_err("/dev/zero must be rejected, never read");
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("non-regular file")
+                        || msg.to_lowercase().contains("character device"),
+                    "error must name the non-regular-file / character-device condition, got: {msg}"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_to_string on /dev/zero did not return within 5s -- \
+                     this IS the #560 OOM/hang bug (an unbounded read of a \
+                     character device that returns infinite zero bytes); \
+                     the special-file guard must reject the device before \
+                     ever attempting a read"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "worker thread ended without a result (the todo!() stub \
+                     panics today -- expected RED until #560 is implemented)"
+                );
+            }
+        }
+    }
+
+    /// A Unix domain socket must be rejected exactly like any other
+    /// non-regular file. This kills a wrong implementation that guards only
+    /// against directories, FIFOs, and device nodes but forgets sockets
+    /// entirely (a real-world special file type any of the lint backends
+    /// could be pointed at by mistake, e.g. a stray systemd-notify socket).
+    #[test]
+    fn unix_domain_socket_is_rejected() {
+        let dir = TempDir::new("socket");
+        let sock_path = dir.path().join("test.sock");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(&sock_path).expect("bind unix socket");
+        let err = read_to_string(&sock_path).expect_err("a unix domain socket must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-regular file"),
+            "error must explicitly name the non-regular-file condition, got: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("socket"),
+            "error must name the actual file type found (socket), got: {msg}"
+        );
+    }
+
     /// #560's actual bug: a FIFO with no writer must fail FAST, never block.
     /// Driven off a background thread with a bounded `recv_timeout` so a
     /// hanging (wrong) implementation fails this ONE test instead of wedging
