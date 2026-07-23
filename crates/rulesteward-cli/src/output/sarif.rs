@@ -683,4 +683,74 @@ mod tests {
             Some("fapd-W01")
         );
     }
+
+    #[test]
+    fn region_is_omitted_for_unanchored_diagnostics_but_kept_for_anchored_ones() {
+        // Pin for the unanchored-SARIF-region fix (#511): `line == 0` is the
+        // codebase-wide UNANCHORED convention (mirrors
+        // `rulesteward_fapolicyd::lints::file_level`'s exact construction: a
+        // 0..0 span with line=0/column=0, used by fapd-C01/F02/X01). The SARIF
+        // 2.1.0 schema requires `region.startLine`/`startColumn` >= 1 when
+        // `region` is present, so an unanchored diagnostic must omit `region`
+        // entirely rather than emit `startLine: 0` (schema-invalid). A second,
+        // anchored (line >= 1) diagnostic in the same render call must still
+        // carry a `region` with both fields >= 1, so this test also guards
+        // against an overcorrection that drops `region` unconditionally.
+        let unanchored = Diagnostic::new(
+            Severity::Convention,
+            "fapd-C01",
+            0..0,
+            "rules.d filename does not follow the NN- numeric-prefix convention",
+            "/etc/fapolicyd/rules.d/badname.rules",
+            0,
+            0,
+        );
+        let anchored = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..4,
+            "inline trailing comment is ignored by fapolicyd",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            1,
+        );
+        let out = render(&[unanchored, anchored], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let unanchored_loc = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation")
+            .expect("unanchored result has a physicalLocation");
+        assert!(
+            unanchored_loc.get("region").is_none(),
+            "an unanchored diagnostic (line=0) must omit the region key entirely, \
+             not emit startLine: 0 (schema-invalid): {unanchored_loc}"
+        );
+        assert_eq!(
+            unanchored_loc
+                .pointer("/artifactLocation/uri")
+                .and_then(Value::as_str),
+            Some("/etc/fapolicyd/rules.d/badname.rules"),
+            "artifactLocation.uri must still be present for an unanchored finding"
+        );
+
+        let anchored_region = v
+            .pointer("/runs/0/results/1/locations/0/physicalLocation/region")
+            .expect("an anchored diagnostic (line>=1) must still carry a region");
+        let start_line = anchored_region
+            .get("startLine")
+            .and_then(Value::as_i64)
+            .expect("startLine present on an anchored region");
+        let start_column = anchored_region
+            .get("startColumn")
+            .and_then(Value::as_i64)
+            .expect("startColumn present on an anchored region");
+        assert!(
+            start_line >= 1,
+            "anchored region startLine must be >= 1, got {start_line}"
+        );
+        assert!(
+            start_column >= 1,
+            "anchored region startColumn must be >= 1, got {start_column}"
+        );
+    }
 }

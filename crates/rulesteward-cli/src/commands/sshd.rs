@@ -66,14 +66,14 @@ fn lint_with_probe(
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let no_op = crate::profile::apply_profile(&mut diags, profile);
         let sources = std::collections::BTreeMap::new();
-        if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+        if let Err(e) = crate::output::emit_lint(
             args.format,
             "sshd-lint",
             SSHD_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
         ) {
-            eprintln!("sshd lint: rendering {:?} output: {msg}", args.format);
+            eprintln!("sshd lint: rendering {:?} output: {e}", args.format);
             return EXIT_TOOL_FAILURE;
         }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
@@ -109,14 +109,14 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+    if let Err(e) = crate::output::emit_lint(
         args.format,
         "sshd-lint",
         SSHD_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
     ) {
-        eprintln!("sshd lint: rendering {:?} output: {msg}", args.format);
+        eprintln!("sshd lint: rendering {:?} output: {e}", args.format);
         return EXIT_TOOL_FAILURE;
     }
 

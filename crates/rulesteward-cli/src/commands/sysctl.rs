@@ -57,14 +57,14 @@ fn lint_with_probe(
         let (mut diags, sources) =
             rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);
         let no_op = crate::profile::apply_profile(&mut diags, profile);
-        if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+        if let Err(e) = crate::output::emit_lint(
             args.format,
             "sysctl-lint",
             SYSCTL_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
         ) {
-            eprintln!("sysctl lint: rendering {:?} output: {msg}", args.format);
+            eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
             return EXIT_TOOL_FAILURE;
         }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
@@ -88,14 +88,14 @@ fn lint_with_probe(
     if path.is_dir() {
         let (mut diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
         let no_op = crate::profile::apply_profile(&mut diags, profile);
-        if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+        if let Err(e) = crate::output::emit_lint(
             args.format,
             "sysctl-lint",
             SYSCTL_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
         ) {
-            eprintln!("sysctl lint: rendering {:?} output: {msg}", args.format);
+            eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
             return EXIT_TOOL_FAILURE;
         }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
@@ -128,14 +128,14 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+    if let Err(e) = crate::output::emit_lint(
         args.format,
         "sysctl-lint",
         SYSCTL_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
     ) {
-        eprintln!("sysctl lint: rendering {:?} output: {msg}", args.format);
+        eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
         return EXIT_TOOL_FAILURE;
     }
 

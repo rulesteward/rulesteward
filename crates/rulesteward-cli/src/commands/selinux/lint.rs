@@ -74,14 +74,14 @@ fn run_lint_with_probe(
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
     sources.insert(path.display().to_string(), text);
 
-    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+    if let Err(e) = crate::output::emit_lint(
         args.format,
         "selinux-lint",
         SELINUX_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
     ) {
-        eprintln!("selinux lint: rendering {:?} output: {msg}", args.format);
+        eprintln!("selinux lint: rendering {:?} output: {e}", args.format);
         return EXIT_TOOL_FAILURE;
     }
 

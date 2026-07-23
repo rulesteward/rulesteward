@@ -118,14 +118,14 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
+    if let Err(e) = crate::output::emit_lint(
         args.format,
         "auditd-lint",
         AUDITD_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
     ) {
-        eprintln!("auditd lint: rendering {:?} output: {msg}", args.format);
+        eprintln!("auditd lint: rendering {:?} output: {e}", args.format);
         return EXIT_TOOL_FAILURE;
     }
 
