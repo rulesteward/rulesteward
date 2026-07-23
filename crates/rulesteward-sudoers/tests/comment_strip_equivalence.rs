@@ -13,23 +13,31 @@ fn matches_old_parser_rs_strip_inline_comment() {
     // Ground truth: crates/rulesteward-sudoers/src/parser.rs:237-315 +
     // paren_opens_runas (324-335).
     let cases: &[(&str, &str)] = &[
-        // parser.rs:1684-1697.
+        // parser.rs:295 `,`/`%` prev-byte arms of `prev_allows_uid`.
+        // Reproduces the value of the old
+        // `strip_keeps_percent_hash_gid_token_...` test, removed by lane-3
+        // (#562) once superseded by this row and the `sudoers_table` rows in
+        // `rulesteward-core/src/comment.rs`; see the lane-3 report
+        // ("Barrier rework") for the full old-test -> row mapping.
         ("%#1000 ALL=(ALL) ALL", "%#1000 ALL=(ALL) ALL"),
         ("Defaults passprompt=foo#1000", "Defaults passprompt=foo"),
-        // parser.rs:1763-1780 (#407 runas colon / open-paren `#<digits>`
-        // UID/GID exception).
+        // parser.rs:263,295,299 (#407 runas colon / open-paren `#<digits>`
+        // UID/GID exception, plus `paren_opens_runas` at 324-335). See
+        // lane-3 report mapping.
         (
             "alice ALL=(root:#1000) /bin/su",
             "alice ALL=(root:#1000) /bin/su",
         ),
-        // parser.rs:1830-1842 (mid-command paren does not open runas
-        // state, so the trailing `#foo` is a real comment).
+        // parser.rs:263,299 + `paren_opens_runas` (324-335): mid-command
+        // paren does not open runas state, so the trailing `#foo` is a real
+        // comment. See lane-3 report mapping.
         (
             "alice localhost = /bin/echo (#foo",
             "alice localhost = /bin/echo (",
         ),
-        // parser.rs:1849-1863 (a `(` inside double quotes is literal, does
-        // not open runas state).
+        // parser.rs:262-263 (`b'(' if !in_quotes`): a `(` inside double
+        // quotes is literal, does not open runas state. See lane-3 report
+        // mapping.
         (
             "Defaults passprompt=\"=(\" #abc",
             "Defaults passprompt=\"=(\" ",
