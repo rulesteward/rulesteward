@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_hash_is_part_of_the_value_not_a_comment() {
+    fn inline_hash_after_permissive_one_still_fires_first_token_wins() {
         // CORRECTED (issue #569, doc-truth-decay fix): the scanner-level
         // claim ("a trailing `#` is not stripped") is still true and
         // unchanged - `winner`'s captured value is the raw, untrimmed-of-
@@ -349,6 +349,46 @@ mod tests {
         );
         assert_eq!(diags[0].code, "fapd-W14");
         assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_zero_with_trailing_one_stays_clean() {
+        // ATL rework round (adversarial review, BLOCKER): pins the
+        // FIRST-token-only binding against a plausible-but-wrong
+        // "any token is effectively permissive" impl (e.g.
+        // `value.split_whitespace().any(is_effectively_permissive)`), which
+        // would wrongly fire here having found "1" as the SECOND token.
+        // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, same
+        // citation as `permissive_value_is_effectively_permissive` in
+        // `rulesteward-cli/src/commands/doctor/probe.rs`): `nv.value` is
+        // bound to ONLY the first whitespace token after `=` ("0"); the
+        // trailing "1" is a second token that only trips the daemon's
+        // separate "Wrong number of arguments" logging and is never passed
+        // to `permissive_parser`. So the real daemon stays enforcing for
+        // this line, and a correct first-token impl must report clean.
+        let diags = lint_conf("permissive = 0 1\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "the daemon binds nv.value to the FIRST token (\"0\", \
+             enforcing) and never inspects the trailing \"1\"; an \
+             any-token impl would wrongly fire here: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn conf_inline_permissive_non_numeric_with_trailing_one_stays_clean() {
+        // Mirror of the pin above with a non-numeric first token: "foo" is
+        // not all-ASCII-digits, so `is_effectively_permissive` rejects it
+        // (parse error, daemon stays at the enforcing default) regardless
+        // of the trailing "1" - again defeating an any-token impl that
+        // would find "1" as the second token and wrongly fire.
+        let diags = lint_conf("permissive = foo 1\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "the daemon binds nv.value to the FIRST token (\"foo\", a \
+             parse error that leaves the enforcing default in place) and \
+             never inspects the trailing \"1\": {diags:?}"
+        );
     }
 
     // ---------------------------------------------------------------------
