@@ -1,36 +1,35 @@
 name: stig-check
 
-# PINNED drift gate: run on every pull request that touches a drift INPUT and fail
-# the build if the sysctld STIG baseline table no longer matches ComplianceAsCode
-# at the refs pinned in tools/stig-update/stig-refs.toml. This is distinct from the
-# weekly stig-drift.yml workflow, which derives against the LATEST ComplianceAsCode
-# release on a schedule/workflow_dispatch and only opens/updates a tracking issue -
-# it never fails a build. This workflow instead catches, at review time, the case
-# where a human hand-edits baseline.rs (or stig-update's derivation logic) out of
-# sync with what ComplianceAsCode ACTUALLY says at the pinned ref.
+# PR-time drift gate for the sysctld-W02 STIG kernel-hardening baseline (issue #335).
+# Fail the build if crates/rulesteward-sysctld/src/lints/baseline.rs no longer
+# matches the official DISA XCCDF content that grounds it.
 #
-# paths: is scoped to exactly the drift INPUTS, so unrelated PRs never pay the
-# network-fetch cost of this job:
+# #512 (session 9h-v0_8-wave4 Lane B): this gate now runs OFFLINE, against the
+# committed real-DISA fixtures under tools/stig-update/tests/fixtures/ (the pinned
+# DISA sysctl Groups) - mirroring tools/auditd-stig-update's and
+# tools/sshd-stig-update's own PR-time gates exactly, replacing the prior
+# ComplianceAsCode-live-fetch-at-PR-time shape this workflow used to have. That is a
+# deliberate reliability choice: the DISA CDN (dl.dod.cyber.mil) is not a dependency
+# a PR should block on. The offline gate catches the common case - a human edits
+# baseline.rs (or the tool's derivation logic) out of sync with the grounded DISA
+# content. The complementary weekly stig-drift.yml does the LIVE fetch against the
+# pinned DISA zips and opens an issue on drift (catching a DISA in-place re-publish
+# or a fixture that has itself drifted from real DISA).
+#
+# DISA versions each RHEL STIG by FILENAME (there is no releases/latest API like
+# ComplianceAsCode has), so there is no `--latest` mode here; `check` derives at the
+# pinned zips / fixtures.
+#
+# paths: is scoped to exactly the drift INPUTS, so unrelated PRs never pay the cost
+# of this job:
 #   - crates/rulesteward-sysctld/src/lints/baseline.rs  - the shipped baseline table
 #   - crates/rulesteward-sysctld/src/lints/baseline/**  - in case that file is later
-#     split into a directory (see the BACKSTOP note below)
-#   - tools/stig-update/**                              - the derivation tool itself,
-#     including stig-refs.toml (the pinned refs) and its exclusion list
+#     split into a directory (a backstop so this gate does not silently stop
+#     triggering; the weekly stig-drift.yml still catches drift independently on its
+#     own schedule)
+#   - tools/stig-update/**                              - the derivation tool + its
+#     fixtures + stig-refs.toml
 #   - .github/workflows/stig-check.yml                  - this workflow
-#
-# FUTURE (not implemented here): stig-update's curl calls hit the GitHub REST API
-# unauthenticated (60 requests/hour). Passing this job's Actions-provided
-# GITHUB_TOKEN to stig-update (e.g. an `Authorization: Bearer` header on the
-# GitHub API calls in tools/stig-update/src/source.rs) would raise that ceiling to
-# roughly 5000 requests/hour (~16x) - worth adding if a future growth in
-# product/rule count pushes a single `check` run close to the unauthenticated
-# limit. This GITHUB_TOKEN hardening is intentionally deferred (see #443); the gate
-# runs unauthenticated for now.
-#
-# BACKSTOP: if baseline.rs is later reorganized (e.g. split into a directory) and
-# this paths: filter goes stale before being updated, the weekly stig-drift.yml
-# run still independently catches drift on its own schedule - this workflow is an
-# earlier, PR-time gate layered on top of that backstop, not the only gate.
 on:
   pull_request:
     paths:
@@ -39,9 +38,9 @@ on:
       - 'tools/stig-update/**'
       - '.github/workflows/stig-check.yml'
 
-# Least privilege: this job only reads the repo and calls out to public APIs; it
-# never writes anything back to GitHub (contrast stig-drift.yml, which needs
-# issues: write to file its tracking issue).
+# Least privilege: this job only reads the repo. It never writes anything back to
+# GitHub (contrast stig-drift.yml, which needs issues: write to file its tracking
+# issue).
 permissions:
   contents: read
 
@@ -50,7 +49,7 @@ env:
 
 jobs:
   check:
-    name: STIG baseline drift vs pinned ComplianceAsCode refs
+    name: sysctld STIG baseline drift vs committed DISA fixtures
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -61,11 +60,23 @@ jobs:
         with:
           # The tool is its own workspace; cache it separately from the main build.
           workspaces: tools/stig-update
-      - name: cargo run -- check (pinned refs)
-        # Direct cargo run, NOT `just stig-check` - that recipe soft-skips (exit 0)
-        # when curl is absent, which is the right call for a local dev machine but
-        # WRONG for CI (a missing curl on a hosted runner should fail loudly, not
-        # silently report success). No `set +e` / error swallowing here either:
-        # `check` exits 0 on no drift, 1 on drift, 2 on a tool/upstream error, and
-        # ALL non-zero exits must hard-fail this job.
-        run: cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check
+      - name: Tool fmt + clippy
+        # The tool is its own workspace, so `just ci` (--workspace) never lints it;
+        # this is the tool's only CI lint enforcement.
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path tools/stig-update/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/stig-update/Cargo.toml \
+            --all-targets --locked -- -D warnings
+      - name: Tool tests (offline golden fixture drift + exit-code contract)
+        run: cargo test --manifest-path tools/stig-update/Cargo.toml --locked
+      - name: Offline drift gate (check --file vs committed DISA fixtures)
+        # `check` exits 0 on no drift, 1 on drift, 2 on a tool error; ALL non-zero
+        # exits must hard-fail this job. No error swallowing.
+        run: |
+          set -euo pipefail
+          for p in rhel8 rhel9 rhel10; do
+            cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- \
+              check --product "$p" \
+              --file "tools/stig-update/tests/fixtures/${p}_sysctld_controls.xml"
+          done

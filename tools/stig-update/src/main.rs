@@ -1,21 +1,27 @@
-//! `stig-update` - derive + drift-check the sysctld STIG baseline tables against
-//! ComplianceAsCode/content.
+//! `stig-update` - derive + drift-check the sysctld-W02 STIG baseline tables against
+//! the official DISA XCCDF.
 //!
 //! Subcommands:
-//!   stig-update check [--latest]        # drift gate: derive at the pinned (or
-//!                                       # latest) ref and diff vs the shipped tables
-//!   stig-update derive [--product P] [--ref R]
-//!                                       # print the derived table + diff + paste-
-//!                                       # ready k(...) lines for review
+//!   stig-update check [--product P]
+//!                                # drift gate: derive at the pinned DISA zips and
+//!                                # diff vs the shipped tables (exit 1 on drift)
+//!   stig-update derive [--product P] [--file XCCDF]
+//!                                # print the derived table + diff + paste-ready lines
 //! Common flags: --config <stig-refs.toml>
+//!
+//! Mirrors `tools/sshd-stig-update/src/main.rs` / `tools/auditd-stig-update/src/main.rs`'s
+//! exit-code contract (0 in-sync / 1 drift / 2 any `Err`) and subcommand shape (#512,
+//! session 9h-v0_8-wave4 Lane B - the CaC-fetch-based `check`/`derive` wiring this
+//! binary previously had is replaced by the DISA zip/base_url path those two tools
+//! already use).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rulesteward_sysctld::TargetVersion;
-use stig_update::config::Config;
-use stig_update::derive::{self, DerivedKey};
-use stig_update::source;
+use stig_update::config::{Config, Product};
+use stig_update::derive::{DerivedKey, code_table, diff_tables};
+use stig_update::{source, xccdf};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,16 +48,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 
 fn print_help() {
     eprintln!(
-        "stig-update - derive + drift-check the sysctld STIG baselines\n\
+        "stig-update - derive + drift-check the sysctld-W02 STIG baselines\n\
          \n\
          USAGE:\n  \
-           stig-update check [--latest]            drift gate (exit 1 on drift)\n  \
-           stig-update derive [--product P] [--ref R]   print derived table + diff\n\
+           stig-update check [--product P] [--file X]   drift gate (exit 1 on drift)\n  \
+           stig-update derive [--product P] [--file X]  print derived table + diff\n\
          \n\
          FLAGS:\n  \
-           --latest         derive at the latest CaC release tag (vs the pinned ref)\n  \
            --product P      rhel8 | rhel9 | rhel10 (default: all)\n  \
-           --ref R          override the upstream ref (commit/tag)\n  \
+           --file XCCDF     use a local XCCDF xml instead of fetching (needs --product)\n  \
            --config PATH    path to stig-refs.toml (default: next to the crate)"
     );
 }
@@ -59,47 +64,40 @@ fn print_help() {
 // --- subcommands -------------------------------------------------------------
 
 fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
-    let latest = args.iter().any(|a| a == "--latest");
     let cfg = Config::load(&config_path(args))?;
-    let upstream = if latest {
-        Some(source::latest_release()?)
-    } else {
-        None
-    };
-
+    let file = flag(args, "--file");
+    let products = selected_products(&cfg, args)?;
+    if file.is_some() && products.len() != 1 {
+        return Err("--file requires exactly one --product (a file is one product's XCCDF)".into());
+    }
     let mut drift = false;
-    for (product, pinned) in &cfg.products {
-        let reff = upstream.as_deref().unwrap_or(pinned);
-        eprintln!("checking {product} @ {reff} ...");
-        let Some(derived) = derive_for_optional(&cfg, product, reff)? else {
-            // The product's controls file is absent at this ref. Under --latest that
-            // just means it is not yet in a tagged release (e.g. rhel10 is master-only),
-            // so skip it; under a pinned ref it is a misconfigured ref, so error.
-            if latest {
-                println!(
-                    "{product}: not present at {reff} (master-only / not yet released); skipped"
-                );
-                continue;
+    for (name, product) in products {
+        let target = target_of(&name)?;
+        let xml = match &file {
+            Some(path) => source::read_local(Path::new(path))?,
+            None => {
+                let url = cfg.zip_url(product);
+                eprintln!("checking {name} @ {} ({url}) ...", product.benchmark);
+                source::fetch_xccdf(&url)?
             }
-            return Err(format!(
-                "{product}: controls file not found at the pinned ref {reff}"
-            ));
         };
-        let diff = derive::diff_tables(&derived, &code_table(product)?);
+        let derived = xccdf::parse_baseline(&xml)?;
+        let diff = diff_tables(&derived, &code_table(target));
         if diff.is_empty() {
-            println!("{product}: OK (0 drift)");
+            println!("{name}: OK (0 drift, {} keys)", derived.len());
         } else {
             drift = true;
-            println!("{product}: DRIFT ({} change(s)) @ {reff}", diff.len());
+            println!("{name}: DRIFT ({} change(s))", diff.len());
             for line in diff {
                 println!("  {line}");
             }
         }
     }
-    if drift && latest {
+    if drift {
         println!(
-            "\nUpstream changed since the pinned refs. Run `derive`, review, update \
-             baseline.rs, and bump stig-refs.toml."
+            "\nThe DISA XCCDF changed since the shipped tables. Run `derive`, review, and \
+             update crates/rulesteward-sysctld/src/lints/baseline.rs (the RHEL*_BASELINE \
+             tables), then re-run `check`."
         );
     }
     Ok(if drift {
@@ -111,22 +109,26 @@ fn cmd_check(args: &[String]) -> Result<ExitCode, String> {
 
 fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
     let cfg = Config::load(&config_path(args))?;
-    let ref_override = flag(args, "--ref");
-    let products: Vec<String> = match flag(args, "--product") {
-        Some(p) => vec![p],
-        None => cfg.products.keys().cloned().collect(),
-    };
+    let file = flag(args, "--file");
+    let products = selected_products(&cfg, args)?;
+    if file.is_some() && products.len() != 1 {
+        return Err("--file requires exactly one --product (a file is one product's XCCDF)".into());
+    }
 
-    for product in &products {
-        let reff = ref_override
-            .clone()
-            .or_else(|| cfg.products.get(product).cloned())
-            .ok_or_else(|| format!("no ref for {product} (pass --ref)"))?;
-        eprintln!("deriving {product} @ {reff} ...");
-        let derived = derive_for(&cfg, product, &reff)?;
-        let diff = derive::diff_tables(&derived, &code_table(product)?);
+    for (name, product) in products {
+        let target = target_of(&name)?;
+        let xml = match &file {
+            Some(path) => source::read_local(Path::new(path))?,
+            None => {
+                let url = cfg.zip_url(product);
+                eprintln!("deriving {name} @ {} ({url}) ...", product.benchmark);
+                source::fetch_xccdf(&url)?
+            }
+        };
+        let derived = xccdf::parse_baseline(&xml)?;
+        let diff = diff_tables(&derived, &code_table(target));
 
-        println!("# {product} @ {reff}  ({} keys)", derived.len());
+        println!("# {name} @ {} ({} keys)", product.benchmark, derived.len());
         if diff.is_empty() {
             println!("# (no drift vs the shipped table)");
         } else {
@@ -135,60 +137,46 @@ fn cmd_derive(args: &[String]) -> Result<ExitCode, String> {
                 println!("#   {line}");
             }
         }
-        println!(
-            "# paste-ready (verbatim into RHEL{}_BASELINE):",
-            major(product)
-        );
-        for entry in &derived {
-            println!("{}", render_k(entry));
-        }
+        print_paste_ready(&name, &derived);
         println!();
     }
     Ok(ExitCode::SUCCESS)
 }
 
+// --- rendering ---------------------------------------------------------------
+
+/// Print paste-ready Rust for a human to reconcile `baseline.rs`'s `RHEL*_BASELINE`
+/// const table against: one `k`/`k_exact` call per derived row (`k_exact` for the
+/// one string-typed `kernel.core_pattern`, `k` for every numeric key - see
+/// `crates/rulesteward-sysctld/src/lints/baseline.rs`'s own constructors).
+fn print_paste_ready(name: &str, derived: &[DerivedKey]) {
+    let major = name.strip_prefix("rhel").unwrap_or(name);
+    println!("# paste-ready RHEL{major}_BASELINE entries:");
+    for e in derived {
+        let ctor = if e.numeric { "k" } else { "k_exact" };
+        println!(
+            "    {ctor}({:?}, &{:?}, {:?}),",
+            e.key, e.accepted, e.stig_id
+        );
+    }
+}
+
 // --- glue --------------------------------------------------------------------
 
-/// Derive a product's table at `reff` (controls + git-tree + each rule.yml), or `None`
-/// when the product's controls file is absent at that ref (HTTP 404 - e.g. rhel10 not
-/// yet in a tagged release).
-fn derive_for_optional(
-    cfg: &Config,
-    product: &str,
-    reff: &str,
-) -> Result<Option<Vec<DerivedKey>>, String> {
-    let Some(controls) = source::controls_optional(reff, product)? else {
-        return Ok(None);
-    };
-    let tree = source::tree(reff)?;
-    let get_rule = source::rule_fetcher(reff, &tree);
-    Ok(Some(derive::derive_table(
-        &controls,
-        product,
-        &cfg.exclude_rules,
-        get_rule,
-    )?))
-}
-
-/// `derive_for_optional` that errors when the product is absent at `reff` (used by
-/// `derive`, where an explicit `--product` / `--ref` that 404s is a user error).
-fn derive_for(cfg: &Config, product: &str, reff: &str) -> Result<Vec<DerivedKey>, String> {
-    derive_for_optional(cfg, product, reff)?
-        .ok_or_else(|| format!("{product}: controls file not found at {reff}"))
-}
-
-/// The shipped Rust const table for `product`, projected into the comparison shape.
-fn code_table(product: &str) -> Result<Vec<DerivedKey>, String> {
-    let target = target_of(product)?;
-    Ok(rulesteward_sysctld::stig_baseline(target)
-        .into_iter()
-        .map(|e| DerivedKey {
-            key: e.key.to_string(),
-            accepted: derive::normalize_set(e.accepted.iter().map(|s| (*s).to_string()).collect()),
-            stig_id: e.stig_id.to_string(),
-            numeric: e.numeric,
-        })
-        .collect())
+fn selected_products<'a>(
+    cfg: &'a Config,
+    args: &[String],
+) -> Result<Vec<(String, &'a Product)>, String> {
+    match flag(args, "--product") {
+        Some(p) => {
+            let product = cfg
+                .products
+                .get(&p)
+                .ok_or_else(|| format!("unknown product {p:?} (expected rhel8|rhel9|rhel10)"))?;
+            Ok(vec![(p, product)])
+        }
+        None => Ok(cfg.products.iter().map(|(k, v)| (k.clone(), v)).collect()),
+    }
 }
 
 fn target_of(product: &str) -> Result<TargetVersion, String> {
@@ -200,38 +188,6 @@ fn target_of(product: &str) -> Result<TargetVersion, String> {
             "unknown product {other:?} (expected rhel8|rhel9|rhel10)"
         )),
     }
-}
-
-fn major(product: &str) -> &str {
-    product.strip_prefix("rhel").unwrap_or(product)
-}
-
-/// Render one derived row as a `baseline.rs` `k(...)` / `k_exact(...)` line, picking
-/// the named accepted-set const when it matches (else an inline literal).
-fn render_k(e: &DerivedKey) -> String {
-    let ctor = if e.numeric { "k" } else { "k_exact" };
-    let set = match e
-        .accepted
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        ["0"] => "DISABLE".to_string(),
-        ["1"] => "ENABLE".to_string(),
-        ["2"] => "VALUE_2".to_string(),
-        ["1", "2"] => "ONE_OR_TWO".to_string(),
-        ["|/bin/false"] => "NO_CORE_DUMP".to_string(),
-        other => format!(
-            "&[{}]",
-            other
-                .iter()
-                .map(|s| format!("{s:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    };
-    format!("    {ctor}({:?}, {set}, {:?}),", e.key, e.stig_id)
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -246,4 +202,107 @@ fn config_path(args: &[String]) -> PathBuf {
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stig-refs.toml"),
         PathBuf::from,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Bonus hardening (post-GREEN Adversarial Testing Loop mutation-strengthening
+    // round, session 9h-v0_8-wave4 Lane B, 2026-07-23): main.rs's small pure glue
+    // functions have no dedicated tests in the sshd/auditd precedent tools either
+    // (per the coordinator dispatch: "the sshd/auditd precedent tools have no
+    // main.rs tests, these are bonus hardening, not gate items"), but they were
+    // quick to add and cheaply lock down behavior a future edit could silently
+    // break.
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn synthetic_cfg() -> Config {
+        Config::parse(
+            "base_url = \"https://example.test\"\n\
+             [products.rhel8]\nzip = \"a.zip\"\nbenchmark = \"A\"\n\
+             [products.rhel9]\nzip = \"b.zip\"\nbenchmark = \"B\"\n\
+             [products.rhel10]\nzip = \"c.zip\"\nbenchmark = \"C\"\n",
+        )
+        .expect("valid synthetic config")
+    }
+
+    #[test]
+    fn flag_finds_the_value_immediately_after_the_named_flag() {
+        assert_eq!(
+            flag(&args(&["--product", "rhel9"]), "--product"),
+            Some("rhel9".to_string())
+        );
+    }
+
+    #[test]
+    fn flag_returns_none_when_the_named_flag_is_absent() {
+        assert_eq!(flag(&args(&["--other", "x"]), "--product"), None);
+    }
+
+    #[test]
+    fn flag_returns_none_when_the_named_flag_is_the_last_argument() {
+        // A trailing flag with no following value must not panic (args.get(i+1)
+        // is out of bounds) or fall back to returning the flag's own name.
+        assert_eq!(flag(&args(&["--product"]), "--product"), None);
+    }
+
+    #[test]
+    fn selected_products_with_no_flag_returns_every_configured_product() {
+        let cfg = synthetic_cfg();
+        let got = selected_products(&cfg, &[]).expect("ok");
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn selected_products_with_a_product_flag_returns_only_that_one() {
+        let cfg = synthetic_cfg();
+        let got = selected_products(&cfg, &args(&["--product", "rhel9"])).expect("ok");
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, "rhel9");
+    }
+
+    #[test]
+    fn selected_products_with_an_unknown_product_errors() {
+        let cfg = synthetic_cfg();
+        let err = selected_products(&cfg, &args(&["--product", "rhel7"]))
+            .expect_err("an unconfigured product must error");
+        assert!(err.contains("rhel7"), "{err}");
+    }
+
+    #[test]
+    fn config_path_defaults_to_stig_refs_toml_next_to_the_crate() {
+        let p = config_path(&[]);
+        assert!(p.ends_with("stig-refs.toml"), "{p:?}");
+        assert!(
+            p.starts_with(env!("CARGO_MANIFEST_DIR")),
+            "default path must live next to the crate: {p:?}"
+        );
+    }
+
+    #[test]
+    fn config_path_honors_an_explicit_config_flag() {
+        let p = config_path(&args(&["--config", "/tmp/custom-stig-refs.toml"]));
+        assert_eq!(p, PathBuf::from("/tmp/custom-stig-refs.toml"));
+    }
+
+    #[test]
+    fn cmd_check_file_flag_without_exactly_one_product_errors_before_any_fetch() {
+        // Guards the arg-guard at cmd_check's `file.is_some() && products.len() !=
+        // 1` check: --file supplied but --product omitted means `selected_products`
+        // returns ALL 3 configured products, which is ambiguous against a single
+        // local XCCDF file - this must error BEFORE the loop ever reaches
+        // `source::fetch_xccdf`/`source::read_local` (no network, no real file
+        // needed for this test - the guard fires first using the real, offline,
+        // committed stig-refs.toml, which has 3 products).
+        let err = cmd_check(&args(&["--file", "whatever.xml"]))
+            .expect_err("must error: --file requires exactly one --product");
+        assert!(
+            err.contains("--file requires exactly one --product"),
+            "{err}"
+        );
+    }
 }

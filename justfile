@@ -94,38 +94,48 @@ trustdb-contention:
     cargo test -p rulesteward-fapolicyd --features test-fixtures \
         --test trustdb_contention --locked -- --ignored --test-threads=1
 
-# (#335 follow-up) Drift-check / refresh the sysctld STIG baselines against
-# ComplianceAsCode/content. The tool lives in its OWN workspace (tools/stig-update),
-# OUT of `just ci`. All three recipes skip gracefully (exit 0) when curl is absent.
+# (#335, #512) Drift-check / refresh the sysctld-W02 STIG baselines against the
+# OFFICIAL DISA XCCDF. Same nested-tool pattern as sshd-stig-*/auditd-stig-* below
+# (tools/stig-update, OUT of `just ci`). #512 (session 9h-v0_8-wave4 Lane B) ported
+# this tool off ComplianceAsCode/content onto DISA XCCDF; DISA versions each RHEL
+# STIG by FILENAME (no releases API), so there is NO `--latest` mode (the prior
+# `stig-check-latest` recipe is retired - see stig-drift.yml for the replacement
+# weekly live-pinned-zip posture). `check` derives at the pinned zips in the tool's
+# stig-refs.toml. The LIVE recipe skips gracefully (exit 0) when curl/unzip are
+# absent.
 #
-# stig-check         : derive at the PINNED refs (stig-refs.toml); exit 1 on any drift
-#                      vs the shipped baseline.rs tables (the CI drift gate uses this).
-# stig-check-latest  : derive at the LATEST CaC release; report pending upstream changes.
-# stig-derive <p>    : print the derived table + diff + paste-ready k(...) lines for
-#                      review (p = rhel8|rhel9|rhel10, or `all`). Usage: just stig-derive rhel9
+# stig-check         : LIVE - fetch the pinned DISA zips; exit 1 on any drift vs
+#                      baseline.rs (the weekly stig-drift workflow uses this).
+# stig-check-offline : OFFLINE - drift-check baseline.rs against the committed real
+#                      DISA fixtures; no network (the PR-gate uses this).
+# stig-derive <p>    : print the derived table + diff + paste-ready k(...)/k_exact(...)
+#                      lines for review (p = rhel8|rhel9|rhel10, or `all`). Usage:
+#                      just stig-derive rhel9
 stig-check:
     #!/usr/bin/env bash
     set -uo pipefail
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "stig-check: prerequisites missing - need curl + network access to ComplianceAsCode" >&2
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "stig-check: prerequisites missing - need curl + unzip + network to dl.dod.cyber.mil" >&2
         exit 0
     fi
     cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check
 
-stig-check-latest:
+stig-check-offline:
     #!/usr/bin/env bash
-    set -uo pipefail
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "stig-check-latest: prerequisites missing - need curl + network access" >&2
-        exit 0
-    fi
-    cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- check --latest
+    set -euo pipefail
+    # Offline drift gate: derive from the committed real-DISA fixtures and confirm
+    # baseline.rs still matches. No network. Any product's drift (exit 1) or error
+    # (2) fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/stig-update/Cargo.toml -- \
+            check --product "$p" --file "tools/stig-update/tests/fixtures/${p}_sysctld_controls.xml"
+    done
 
 stig-derive product="all":
     #!/usr/bin/env bash
     set -uo pipefail
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "stig-derive: prerequisites missing - need curl + network access" >&2
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "stig-derive: prerequisites missing - need curl + unzip + network access" >&2
         exit 0
     fi
     if [ "{{product}}" = "all" ]; then
