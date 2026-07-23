@@ -77,7 +77,7 @@ provenance to a typed, first-class property of every finding and adds a
 `--profile` selector that turns the six independent linters into one
 framework-scoped compliance scanner. Control IDs previously reached the user
 only as inconsistent free text inside messages; they are now a structured
-`controls` field, surfaced identically across human, JSON, CSV, and SARIF
+`controls` field, surfaced identically across human, JSON, and SARIF
 output and machine-followable from a finding to its control. A dev-tooling
 gap is also closed: `tools/sshd-stig-update` now drift-guards the
 hand-authored sshd DISA Rule IDs against the upstream XCCDF.
@@ -95,7 +95,7 @@ hand-authored sshd DISA Rule IDs against the upstream XCCDF.
   is byte-identical to prior behavior. (#506)
 - **Typed control references** on findings: a structured `controls` array
   carrying each control's framework, ID, title, and (for DISA STIG) its
-  V-number alias, surfaced consistently in human, JSON, CSV, and SARIF
+  V-number alias, surfaced consistently in human, JSON, and SARIF
   output. (#500, #504)
 - **SARIF control taxonomies**: the SARIF renderer emits `runs[0].taxonomies`
   (one taxonomy component per framework) plus per-result `taxa` references -

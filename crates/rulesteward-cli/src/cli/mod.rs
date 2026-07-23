@@ -451,15 +451,21 @@ pub enum AuditdCommand {
     /// Semantic ruleset lint (#193)
     ///
     /// Statically analyzes an audit ruleset for semantic problems no load-time
-    /// check reports: duplicate rules across rules.d/ files (au-W01), rules
+    /// check reports: duplicate rules across rules.d/ files (au-W01), a
+    /// structurally identical earlier rule that makes `auditctl -R` abort the
+    /// load so every later rule silently fails to load (au-E03), rules
     /// shadowed by an earlier broader rule (au-W02), rules unreachable after
     /// the `-e 2` lock line (au-E01), exclude/never rules suppressing events an
     /// always rule intends to record (au-W03), comparison operators that
     /// are invalid for a field's type and would make auditctl reject the rule
-    /// (au-E02), fields used on a filter list the kernel rejects for that field,
-    /// which aborts the rule load (au-E04), and syscall rules pinned to one ABI
-    /// (`arch=b32`/`b64`) with no companion on the opposite ABI, leaving the
-    /// other ABI unaudited (au-W04).
+    /// (au-E02), a bitmask operator (`&`/`&=`) the kernel rejects at rule-load
+    /// time even though auditctl's own parser accepts it (au-E05), fields used
+    /// on a filter list the kernel rejects for that field, which aborts the
+    /// rule load (au-E04), syscall rules pinned to one ABI (`arch=b32`/`b64`)
+    /// with no companion on the opposite ABI, leaving the other ABI unaudited
+    /// (au-W04), and - when `--target rhel8|rhel9|rhel10` is set - an audit
+    /// rule the applicable RHEL STIG requires that this ruleset does not
+    /// contain (au-W06).
     ///
     /// Read-only. Exit codes follow the shared scheme: 0 clean, 1 warnings,
     /// 2 errors, 3 tool failure, 5 unparseable rules (au-F01).
@@ -532,7 +538,12 @@ pub enum SudoersCommand {
     ///   `rootpw`, `visiblepw`, `!authenticate`, `!use_pty` - or a required
     ///   hardening absent from the whole resolved config: `use_pty` or I/O logging
     ///   (`logfile` / `log_output`) not set anywhere (CIS Benchmark 5.2.2 / 5.2.3)
-    ///   (sudo-W04).
+    ///   (sudo-W04);
+    /// - a token visudo rejects at a given position (sudo-F02);
+    /// - NOPASSWD granted on a specific (non-ALL) command, which STIG requires
+    ///   removing entirely (sudo-W05);
+    /// - a `UserSpec` granting the literal `ALL` user unrestricted sudo access to
+    ///   run `ALL` commands as `ALL` users/groups (sudo-W06).
     ///
     /// A directory target (e.g. `/etc/sudoers.d`) lints each eligible drop-in
     /// (sorted; names ending in `~` or containing `.` are skipped, per the man

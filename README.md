@@ -349,13 +349,13 @@ RuleSteward is the CI-grade semantic layer above that:
 | Capability | `fapolicyd-cli --check-rules --lint` | RuleSteward |
 | --- | --- | --- |
 | Syntax validation | yes | yes |
-| Policy-shape warnings | a small fixed set (default-allow reachability) | a documented lint-code taxonomy (25 fapolicyd codes today) |
+| Policy-shape warnings | a small fixed set (default-allow reachability) | a documented lint-code taxonomy (28 fapolicyd codes today) |
 | Whole-ruleset analysis (shadowing, ordering, subsumption) | no | yes |
 | Machine-readable output | no (human text + exit code) | SARIF 2.1, JSON, CSV |
 | Exit-code taxonomy | binary (zero / non-zero) | documented `0`/`1`/`2`/`3`/`5` contract |
 | Version-aware linting | no | yes (`--target <fapolicyd-version>`) |
 | Trust-database analysis | no | yes (`trustdb` + simulate/report/explain/doctor) |
-| Other policy backends | fapolicyd only | + `sshd_config` lint, auditd semantic lint + cost, SELinux denial triage / TE emission |
+| Other policy backends | fapolicyd only | + `sshd_config` lint, auditd semantic lint + cost, `sudoers` policy lint, `sysctl.d` STIG/CIS baseline lint, SELinux denial triage / TE emission |
 
 Use `fapolicyd-cli --check-rules` as your local syntax gate; reach for
 RuleSteward when you want CI-grade semantic analysis, machine-readable findings

@@ -10,19 +10,27 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::Block;
 use crate::lints::{SshdLintContext, TargetVersion, anchored};
 
-/// Deprecated/removed `sshd_config` keywords for sshd-W04 that the daemon answers
-/// with `Deprecated option <X>` on EVERY supported RHEL 8/9/10 target.
+/// Deprecated/removed `sshd_config` keywords for sshd-W04. Most of the set is
+/// confirmed recognized-but-deprecated on every supported RHEL 8/9/10 target
+/// via the daemon's own `Deprecated option <X>` diagnostic; four entries lack
+/// that literal message: three are recognized RENAME ALIASES
+/// (`challengeresponseauthentication`, `pubkeyacceptedkeytypes`,
+/// `hostbasedacceptedkeytypes`) the daemon accepts silently or rejects only on
+/// a bad value, and `protocol` is a REMOVED protocol-1 option the daemon
+/// accepts silently. All four are still upstream-deprecated, and W04 flags
+/// them as a policy finding steering users to the canonical spelling.
 ///
-/// Grounding: `rulesteward-docs/sshd-stig-version-grounding.md` section 3 +
-/// depth-sshd-sets.md FINDING 2, backed by `[VM]` `sudo sshd -t -o "<Keyword>=yes"`
-/// on Rocky 8/9/10 (OpenSSH 8.0p1 / 9.9p1 / 9.9p1, 2026-06-15 + 2026-06-17). The
-/// daemon accepts all of these with `Deprecated option <X>` (sshd-t exit 0), so
-/// they are W04 (warn) not E01 (error). `ChallengeResponseAuthentication` is
-/// additionally an alias for `KbdInteractiveAuthentication` (renamed in OpenSSH
-/// 8.7, `release-8.7`).
+/// Grounding: `rulesteward-docs/sshd-stig-version-grounding.md` sections 2.3
+/// and 3 + depth-sshd-sets.md FINDING 2, backed by `[VM]` `sudo sshd -t -o
+/// "<Keyword>=yes"` on Rocky 8/9/10 (OpenSSH 8.0p1 / 9.9p1 / 9.9p1,
+/// 2026-06-15 + 2026-06-17). All of these are recognized by the daemon (not
+/// unknown), so they are W04 (warn) not E01 (error). `ChallengeResponseAuthentication`
+/// is additionally an alias for `KbdInteractiveAuthentication` (renamed in
+/// OpenSSH 8.7, `release-8.7`).
 ///
-/// This set is UNIFORM across RHEL 8/9/10 (all three VMs gave identical
-/// `Deprecated option` responses), so it fires under `target=None`. The
+/// This set is UNIFORM across RHEL 8/9/10 (each keyword's behavior - whether
+/// the literal `Deprecated option` message or the rename-alias handling
+/// above - matched on all three VMs), so it fires under `target=None`. The
 /// version-SPLIT keyword `skeyauthentication` (deprecated on 8.0p1 but a
 /// recognized non-deprecated legacy keyword on 9.9p1) is NOT here; it is gated on
 /// the target in [`w04`]. Lowercased and sorted for `binary_search`.
@@ -132,11 +140,16 @@ mod w04_tests {
     //! sshd-W04: deprecated / removed directive.
     //!
     //! # Grounding
-    //! `rulesteward-docs/sshd-stig-version-grounding.md` section 3. Every keyword
-    //! in the W04 set was probed via `[VM]` `sudo sshd -t -o "<Keyword>=yes"` on
+    //! `rulesteward-docs/sshd-stig-version-grounding.md` sections 2.3 and 3. Most
+    //! of the W04 set was probed via `[VM]` `sudo sshd -t -o "<Keyword>=yes"` on
     //! Rocky 8/9/10 and answered `Deprecated option <X>` (exit 0), confirming it
-    //! is recognized-but-deprecated on EVERY currently-supported RHEL. The set is
-    //! therefore version-uniform; W04 fires with `target=None`.
+    //! is recognized-but-deprecated on every currently-supported RHEL. Four
+    //! entries lack that literal message: three rename aliases
+    //! (`challengeresponseauthentication`, `pubkeyacceptedkeytypes`,
+    //! `hostbasedacceptedkeytypes`) plus `protocol`, a removed protocol-1
+    //! option accepted silently (see the per-test comments below); W04 still
+    //! flags them as a policy finding. The set is version-uniform; W04 fires
+    //! with `target=None`.
     //!
     //! # Key negative assertions (prevent over-fire)
     //! - Modern replacements (`KbdInteractiveAuthentication`, `PubkeyAuthentication`,
