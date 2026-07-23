@@ -330,7 +330,7 @@ Three commands report their scorecard through the exit code instead:
 | --- | --- |
 | `human` | every command (default) |
 | `json` | every structured command (versioned envelope) |
-| `sarif` | `fapolicyd lint` only (findings-only, SARIF 2.1.0; `--sarif-include-pass` adds per-check pass results) |
+| `sarif` | every `lint` verb (findings-only, SARIF 2.1.0); `--sarif-include-pass` (per-check pass results) stays `fapolicyd lint` only |
 | `csv` | flat-row verbs only: `fapolicyd report`, `fapolicyd trustdb list`, `auditd cost` |
 
 OSCAL / HDF compliance exports are deferred; the register payload is pre-designed to map

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SARIF output for every lint verb** (#511): `--format sarif` (findings-only,
+  SARIF 2.1.0) now works on `sshd lint`, `sysctl lint`, `sudoers lint`,
+  `auditd lint`, and `selinux lint` in addition to `fapolicyd lint`, closing the
+  "SARIF from all six lint verbs" v0.8 milestone item. `--sarif-include-pass`
+  remains `fapolicyd lint` only (locked scope decision). The versioned JSON
+  envelopes of the five verbs are byte-identical to before.
+- **sysctld STIG derivation ported to DISA XCCDF** (#512): `tools/stig-update`
+  now derives the sysctld baseline from the pinned official DISA STIG zips
+  (RHEL 8 V2R8 / RHEL 9 V2R9 / RHEL 10 V1R2), like the sshd and auditd tools,
+  with committed trimmed fixtures and golden tests; the PR-time drift gate runs
+  offline against the fixtures and the weekly ComplianceAsCode `--latest` probe
+  is retired (staleness detection tracked in #550). Reconciling against DISA
+  narrowed four accepted values (`kernel.kptr_restrict` to `1` on rhel9/rhel10,
+  `net.ipv4.conf.all.rp_filter` to `1` on rhel8/rhel10) and added three
+  RHEL 8 V2R8 keys (`net.ipv4.conf.default.rp_filter`,
+  `net.ipv4.conf.all.log_martians`, `net.ipv4.conf.default.log_martians`);
+  RHEL 8 table grows 28 -> 31 keys.
+
+### Fixed
+
+- **fapolicyd SARIF schema validity for file-level findings**: diagnostics not
+  anchored to a source line (e.g. `fapd-F02`/`fapd-C01`/`fapd-X01`) previously
+  rendered `region.startLine: 0`, which violates the SARIF 2.1.0 minimum of 1.
+  The renderer now omits the `region` (keeping `artifactLocation`) for
+  unanchored findings, the standard SARIF shape for file-level results.
+  Anchored findings are unchanged.
+
 - **CIS Benchmark control tables for all four RHEL-target backends** (sshd
   #525, sudoers #526, sysctld #527, auditd #528): per-product (rhel8 v4.0.0 /
   rhel9 v2.0.0 / rhel10 v1.0.1) tables transcribed verbatim from
