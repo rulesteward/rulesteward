@@ -680,37 +680,53 @@ mod tests {
     // ===================================================================
     // CHECK 1B - subject-side filehash= wrong-side gap (issue #568, lane-6)
     //
-    // Grounding (issue #568 + the E01-side module doc's "FLAGGED GAP" note,
-    // `tests/test_lints_e01_side.rs`): CHECK 1 above only fires for rhel8
-    // (filehash does not EXIST at all on 1.3.2, so it is flagged on EITHER
-    // side there - unaffected, unchanged by this section). But on rhel9/
-    // rhel10 (1.4.5) filehash DOES exist, and per the same live differential
-    // that grounded the E01 exclusion pin, it is OBJECT-ONLY there too -
-    // subject-side filehash= is rejected on 1.4.5 exactly like on 1.3.2
-    // ("Field type (filehash) is unknown" + "Subject is missing", confirmed
-    // 2026-07-17). So filehash's SUBJECT-SIDE INVALIDITY is actually
-    // version-INVARIANT (true on every supported version), unlike its
-    // EXISTENCE (rhel8-only-divergent, CHECK 1's concern) or `device`'s SIDE
-    // (genuinely version-divergent, CHECK 2's concern).
+    // USER RULING (barrier rework round, 2026-07-23): option (a) NONE-CLOSED.
+    // Subject-side filehash= gets EXACTLY the same shape as `device=` (CHECK
+    // 2): fires fapd-E06 under an explicit --target rhel9/rhel10 (closing
+    // the "uncaught on rhel9/rhel10" half of #568's gap), but stays CLEAN
+    // under `None` - matching the established E06 None-convention (see
+    // `check2_none_accepts_subject_side_device_clean` above: with no
+    // --target, a version-conditional subject-side check does not fire,
+    // because there is no version to evaluate the condition against). This
+    // supersedes an earlier draft of this section that argued (via the
+    // fapd-E07 `type_compat.rs`/`ALL_TARGETS` outcome-invariance precedent)
+    // that filehash should fire under `None` too since it is invalid on
+    // EVERY version; the user overruled that reading in favor of the
+    // simpler, established device-shaped convention. The "uncaught under
+    // None" half of #568 is therefore an ACCEPTED, documented residual gap
+    // (consistent with how `device=`'s own None case already behaves), not
+    // something this fix closes.
     //
-    // Applying the fapd-E06/E07 version-divergent precedent (module docs,
-    // `type_compat.rs`'s `ALL_TARGETS`/outcome-invariance gate): a condition
-    // that holds on EVERY supported version fires under `None` too (matching
-    // fapd-E07's "universal mismatches fire without --target" rule), while a
-    // condition that holds on only SOME versions (like `device`'s side, or
-    // filehash's rhel8-only EXISTENCE) stays gated behind an explicit
-    // `--target` (fapd-E06's blanket None-closed default, CHECK 2/3 above).
-    // Subject-side filehash is the former case, so it must fire fapd-E06
-    // under rhel9, rhel10, AND None alike - closing the residual fail-open
-    // #568 tracks. rhel8 is UNCHANGED (CHECK 1 already covers it for both
-    // sides); its regression guard here is a green pin, not a new RED case.
+    // Grounding for filehash's existence/side, re-derived via a fresh
+    // `WebFetch` of upstream `src/library/subject-attr.c` at the pinned
+    // `v1.3.2`/`v1.4.5` tags (2026-07-23): the string "filehash" does NOT
+    // appear in EITHER version's subject attribute tables (table1/legacy or
+    // table2/modern) - filehash is never a recognized SUBJECT attribute on
+    // any supported version. This matches issue #568's own cited live
+    // differential ("`allow perm=any filehash=<hex> : all` is rejected by
+    // BOTH fapolicyd 1.3.2 and 1.4.5" - "Field type (filehash) is unknown" +
+    // "Subject is missing", confirmed 2026-07-17) and confirms CHECK 1's
+    // existing rhel8 behavior (E06 fires there today) is CORRECT, current
+    // behavior - not something the #568 fix changes. rhel8 is therefore a
+    // green pin (CHECK 1 already covers it for both sides), same as before.
+    //
+    // Contrast with `device`'s subject side (CHECK 2): `device` DOES appear
+    // in v1.3.2's subject-attr.c table2 (valid on the subject side on
+    // 1.3.2/rhel8) but is ABSENT from v1.4.5's subject-attr.c entirely
+    // (invalid on rhel9/rhel10) - genuinely version-DIVERGENT, which is why
+    // `check_subject_device` is target-gated and None-closed already.
+    // filehash is version-INVARIANT (never valid on the subject side on any
+    // version) but, per the ruling above, still gets the None-closed
+    // treatment rather than the E07-style None-fires treatment.
     //
     // RED expectation: today CHECK 1 (`check_filehash`) only fires under
-    // `target == Rhel8`, so a subject-side filehash= under rhel9/rhel10/None
-    // is uncaught by ANYTHING (E01 defers it - see `SIDE_CHECK_EXCLUDED` in
-    // `walker.rs` - and CHECK 1 is rhel8-only). Every "must fire" assertion
-    // below FAILS today; the rhel8 green pin and the object-side negative
-    // controls already pass and must keep passing.
+    // `target == Rhel8`, so a subject-side filehash= under an explicit
+    // --target rhel9/rhel10 is uncaught by ANYTHING (E01 defers it - see
+    // `SIDE_CHECK_EXCLUDED` in `walker.rs` - and CHECK 1 is rhel8-only). The
+    // rhel9/rhel10 "must fire" assertions below FAIL today; the rhel8 green
+    // pin, the None-clean pin (matches TODAY's silent behavior exactly - it
+    // is the ACCEPTED final behavior per the ruling, not a bug), and the
+    // object-side negative controls already pass and must keep passing.
     // ===================================================================
 
     #[test]
@@ -764,22 +780,25 @@ mod tests {
     }
 
     #[test]
-    fn filehash_subject_side_fires_e06_under_none() {
-        // The critical #568 pin: the issue explicitly names `None` (no
-        // `--target`, the default invocation an operator is most likely to
-        // run) as part of the fail-open, not just rhel9/rhel10. Since
-        // subject-side filehash= is invalid on EVERY supported version (see
-        // the section doc), the fapd-E06/E07 outcome-invariance precedent
-        // says it must fire under `None` too - unlike `device`'s subject
-        // side (CHECK 2) or a bogus `pattern=` value that is only SOMETIMES
-        // invalid (CHECK 3), which stay None-closed because they are
-        // genuinely version-divergent, not universal.
+    fn filehash_subject_side_stays_clean_under_none() {
+        // USER RULING (barrier rework round, 2026-07-23): NONE-CLOSED.
+        // Mirrors `check2_none_accepts_subject_side_device_clean` above -
+        // with no `--target`, there is no version to evaluate a
+        // version-conditional subject-side check against, so nothing fires.
+        // This matches TODAY's actual (buggy, per #568) silent behavior
+        // exactly; the ruling accepts it as the final, intended None
+        // behavior rather than closing it via the fapd-E07 outcome-
+        // invariance route an earlier draft of this test used. Non-vacuity:
+        // this is a genuine green/negative-control pin (protect-against-
+        // over-widening), not a not-yet-implemented RED case - it must stay
+        // GREEN before and after the rhel9/rhel10 arms of the #568 fix land.
         let diags = run(13, vec![kv("filehash", HEX64)], vec![Attr::All], None);
         assert!(
-            diags.iter().any(|d| d.code.as_ref() == "fapd-E06"),
-            "subject-side filehash= must fire fapd-E06 under NO --target too \
-             (universal condition, true on rhel8/rhel9/rhel10 alike - #568's \
-             'uncaught on rhel9/rhel10/None' fail-open); got {diags:?}",
+            diags.is_empty(),
+            "with no --target, subject-side filehash= must stay CLEAN \
+             (None-closed, matching device's established None convention - \
+             #568's 'uncaught under None' is an accepted residual, not \
+             closed by this fix); got {diags:?}",
         );
     }
 
@@ -790,6 +809,15 @@ mod tests {
         // does not exist on 1.3.2). This must stay GREEN before and after
         // the #568 fix - included here so the CHECK-1B group is a
         // self-contained set spanning every target.
+        //
+        // Re-derived per the barrier rework ruling (2026-07-23): does 1.3.2
+        // accept subject-side filehash=? NO - a fresh `WebFetch` of upstream
+        // `src/library/subject-attr.c` at the `v1.3.2` tag confirms the
+        // string "filehash" does not appear in EITHER of that file's
+        // attribute tables (table1/legacy or table2/modern) - it is not a
+        // recognized subject attribute on 1.3.2 at all. Since 1.3.2 does
+        // NOT accept it, this pin correctly stays E06 (current behavior),
+        // not clean.
         let diags = run(
             14,
             vec![kv("filehash", HEX64)],
@@ -871,16 +899,17 @@ mod tests {
             codes(&diags9),
         );
 
-        // None: device's subject-side invalidity is version-DIVERGENT (valid
-        // on rhel8), so it stays None-closed (CHECK 2's existing behavior,
-        // unaffected). filehash's is version-INVARIANT, so it alone fires ->
-        // exactly one E06.
+        // None: per the barrier rework ruling (2026-07-23), filehash's
+        // subject-side check is None-closed just like device's (CHECK 2) -
+        // with no --target there is no version to evaluate either
+        // version-conditional check against, so NEITHER fires -> zero E06.
         let diags_none = run(17, subj, vec![Attr::All], None);
         assert_eq!(
             count(&diags_none, "fapd-E06"),
-            1,
-            "None: only filehash= should fire fapd-E06 (device= subject-side \
-             stays None-closed, CHECK 2 unaffected); got codes={:?} diags={diags_none:?}",
+            0,
+            "None: neither device= nor filehash= subject-side checks fire \
+             without an explicit --target (both None-closed); got codes={:?} \
+             diags={diags_none:?}",
             codes(&diags_none),
         );
     }

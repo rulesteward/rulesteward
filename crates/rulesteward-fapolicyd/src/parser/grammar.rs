@@ -760,11 +760,15 @@ mod tests {
         // (exe_device) is unknown" on 1.4.5 (fapolicyd9).
         //
         // Today `legacy_classify("exe_device")` returns `None` (not in any
-        // match arm, including `LEGACY_ONLY_SUBJECT_ATTRS`), which makes
-        // `positional_split` (issue #546) reject a daemon-1.3.2-valid legacy
-        // rule outright as fapd-F01 Fatal - RED until `legacy_classify`
-        // (and `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`, the shared const
-        // it consults) gain this entry. The RHEL9/RHEL10 version-divergence
+        // match arm, including `LEGACY_ONLY_SUBJECT_ATTRS`), so both the
+        // modern AND legacy (`positional_split`, issue #546) parses fail for
+        // this rule. `parser::mod::parse_line` tries `modern_rule()` first
+        // and, on a dual failure, surfaces MODERN's diagnostic rather than
+        // legacy's "unknown or legacy-illegal attribute" message - so the
+        // rule is rejected outright as fapd-F01 Fatal carrying the MODERN
+        // "malformed rule syntax" message, RED until `legacy_classify` (and
+        // `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`, the shared const it
+        // consults) gain this entry. The RHEL9/RHEL10 version-divergence
         // (post-parse E06 diagnostic) is a separate concern, pinned at the
         // full-lint level in `tests/legacy_exe_device_test.rs`.
         assert_eq!(legacy_classify("exe_device"), Some(AttrSide::Subject));

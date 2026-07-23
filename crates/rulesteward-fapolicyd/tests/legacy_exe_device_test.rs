@@ -36,11 +36,16 @@
 //! pin in `version_target.rs`), staying CLEAN under no `--target`.
 //!
 //! Today: `parser::grammar::legacy_classify("exe_device")` returns `None`
-//! (not in `LEGACY_ONLY_SUBJECT_ATTRS`), so `positional_split` (#546) rejects
-//! the whole rule with "legacy rule references unknown or legacy-illegal
-//! attribute", surfacing as fapd-F01 Fatal - a false positive under EVERY
-//! target (including rhel8, where the real daemon accepts it). Every test
-//! below that expects a successful parse is RED today (panics in the
+//! (not in `LEGACY_ONLY_SUBJECT_ATTRS`), so the legacy parse (via
+//! `positional_split`, #546) fails too. `parser::mod::parse_line` tries
+//! `modern_rule()` first; on a DUAL failure (both modern and legacy fail) it
+//! surfaces MODERN's diagnostic, not legacy's "unknown or legacy-illegal
+//! attribute" message from `positional_split` - so the observed fapd-F01 is
+//! the MODERN "malformed rule syntax: found end of input expected any, ' ',
+//! '\t', or colon separator" message (see `parser::mod::parse_line`'s "Both
+//! failed - return modern's diagnostics" branch), a false positive under
+//! EVERY target (including rhel8, where the real daemon accepts it). Every
+//! test below that expects a successful parse is RED today (panics in the
 //! `unwrap_or_else` parse step itself).
 
 use std::path::Path;
