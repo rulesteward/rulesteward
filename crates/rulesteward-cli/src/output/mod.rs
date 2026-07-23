@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use rulesteward_core::Diagnostic;
 
-use crate::cli::{HumanJsonFormat, OutputFormat};
+use crate::cli::OutputFormat;
 
 /// Errors a renderer can return. The human and JSON renderers are infallible;
 /// only the SARIF renderer can fail, and only at the final `serde_json`
@@ -51,27 +51,37 @@ pub fn render(
     }
 }
 
-/// Render `diags` in the operator-selected Human/Json format and print the
-/// non-empty result to stdout.
+/// Render `diags` in the operator-selected Human/Json/Sarif format and print
+/// the non-empty result to stdout.
 ///
-/// The shared lint-shell emitter for the four `HumanJsonFormat` backends
-/// (sshd / sysctl / sudoers / auditd): each supplies its own envelope `kind`
-/// string and `schema_version` constant (CC-1) and stages `sources` for the
-/// ariadne human path. fapolicyd is NOT a caller: it uses the three-variant
-/// [`render`] (with SARIF + `--sarif-include-pass` attestation). Exit-code
-/// mapping stays in the caller (`exit_code::compute`).
+/// The shared lint-shell emitter for the five `OutputFormat` lint verbs
+/// (sshd / sysctl / sudoers / auditd / selinux): each supplies its own
+/// envelope `kind` string and `schema_version` constant (CC-1) and stages
+/// `sources` for the ariadne human path. The JSON arm always renders the
+/// versioned lint envelope (`json::render_lint_envelope`), never the plain
+/// `json::render` fapolicyd uses, so the envelope stays byte-identical to
+/// before SARIF was added (#511). The SARIF arm always passes `pass: None`:
+/// `--sarif-include-pass` per-check coverage attestation stays fapolicyd-only
+/// (CC-4); these five verbs are findings-only. fapolicyd is NOT a caller: it
+/// uses the three-variant [`render`] directly (with the real
+/// `--sarif-include-pass` attestation). Exit-code mapping stays in the caller
+/// (`exit_code::compute`); a rendering failure here is reported to the caller
+/// so it can override that mapping to a tool failure (mirrors the
+/// `output::render` error-handling convention in `commands::fapolicyd::lint`).
 pub fn emit_lint(
-    format: HumanJsonFormat,
+    format: OutputFormat,
     kind: &str,
     schema_version: u32,
     diags: &[Diagnostic],
     sources: &BTreeMap<String, String>,
-) {
+) -> Result<(), RenderError> {
     let output = match format {
-        HumanJsonFormat::Human => human::render(diags, sources),
-        HumanJsonFormat::Json => json::render_lint_envelope(kind, schema_version, diags),
+        OutputFormat::Human => human::render(diags, sources),
+        OutputFormat::Json => json::render_lint_envelope(kind, schema_version, diags),
+        OutputFormat::Sarif => sarif::render(diags, None)?,
     };
     if !output.is_empty() {
         print!("{output}");
     }
+    Ok(())
 }

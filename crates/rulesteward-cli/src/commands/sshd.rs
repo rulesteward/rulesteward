@@ -66,13 +66,16 @@ fn lint_with_probe(
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let no_op = crate::profile::apply_profile(&mut diags, profile);
         let sources = std::collections::BTreeMap::new();
-        crate::output::emit_lint(
+        if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
             args.format,
             "sshd-lint",
             SSHD_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
-        );
+        ) {
+            eprintln!("sshd lint: rendering {:?} output: {msg}", args.format);
+            return EXIT_TOOL_FAILURE;
+        }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
@@ -106,13 +109,16 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    crate::output::emit_lint(
+    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
         args.format,
         "sshd-lint",
         SSHD_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
-    );
+    ) {
+        eprintln!("sshd lint: rendering {:?} output: {msg}", args.format);
+        return EXIT_TOOL_FAILURE;
+    }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
 }
@@ -120,7 +126,7 @@ fn lint_with_probe(
 #[cfg(test)]
 mod lint_shell_tests {
     use super::{HostTargetProbe, lint, lint_with_probe};
-    use crate::cli::{HumanJsonFormat, SshdLintArgs, TargetSelector, TargetVersionArg};
+    use crate::cli::{OutputFormat, SshdLintArgs, TargetSelector, TargetVersionArg};
     use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE};
 
     /// A host probe returning a canned result, so the `--target auto` wiring is
@@ -132,7 +138,7 @@ mod lint_shell_tests {
         }
     }
 
-    fn args(path: &std::path::Path, format: HumanJsonFormat) -> SshdLintArgs {
+    fn args(path: &std::path::Path, format: OutputFormat) -> SshdLintArgs {
         SshdLintArgs {
             path: Some(path.to_path_buf()),
             format,
@@ -172,7 +178,7 @@ X11UseLocalhost yes
     fn missing_path_exits_tool_failure() {
         let a = args(
             std::path::Path::new("/nonexistent/149/sshd_config"),
-            HumanJsonFormat::Human,
+            OutputFormat::Human,
         );
         assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
@@ -191,7 +197,7 @@ X11UseLocalhost yes
         std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
         std::fs::write(dropin_dir.join("50-clean.conf"), "PermitRootLogin no\n")
             .expect("write drop-in");
-        let a = args(dir.path(), HumanJsonFormat::Human);
+        let a = args(dir.path(), OutputFormat::Human);
         assert_eq!(
             lint(&a, None),
             EXIT_CLEAN,
@@ -204,7 +210,7 @@ X11UseLocalhost yes
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sshd_config");
         std::fs::write(&f, CLEAN_CONFIG).expect("write");
-        let a = args(&f, HumanJsonFormat::Json);
+        let a = args(&f, OutputFormat::Json);
         assert_eq!(lint(&a, None), EXIT_CLEAN);
     }
 
@@ -214,7 +220,7 @@ X11UseLocalhost yes
         let dir = tempfile::tempdir().expect("tempdir");
         let f = dir.path().join("sshd_config");
         std::fs::write(&f, "Banner \"/etc/issue\n").expect("write");
-        let a = args(&f, HumanJsonFormat::Human);
+        let a = args(&f, OutputFormat::Human);
         assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
@@ -227,7 +233,7 @@ X11UseLocalhost yes
         std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = SshdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: Some(TargetSelector::Rhel9),
         };
         assert_eq!(lint(&a, None), EXIT_CLEAN);
@@ -243,7 +249,7 @@ X11UseLocalhost yes
         std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = SshdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(Some(TargetVersionArg::Rhel9)));
@@ -260,7 +266,7 @@ X11UseLocalhost yes
         std::fs::write(&f, CLEAN_CONFIG).expect("write");
         let a = SshdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));

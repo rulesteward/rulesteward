@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::{HumanJsonFormat, TargetSelector};
+use crate::cli::{HumanJsonFormat, OutputFormat, TargetSelector};
 
 /// Arguments for `rulesteward selinux triage` (#94).
 ///
@@ -82,9 +82,10 @@ pub struct SelinuxLintArgs {
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
+    /// Output format (human | json | sarif; findings-only:
+    /// `--sarif-include-pass` coverage attestation stays fapolicyd-only (CC-4)).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 
     /// Target RHEL release for the version-aware STIG baseline
     /// (auto|rhel8|rhel9|rhel10). Omit `--target` to lint version-agnostically

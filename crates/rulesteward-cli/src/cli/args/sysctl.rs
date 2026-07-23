@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::{HumanJsonFormat, TargetSelector};
+use crate::cli::{OutputFormat, TargetSelector};
 
 /// Arguments for `rulesteward sysctl lint` (#150, #335, #420).
 #[derive(Debug, Parser)]
@@ -26,10 +26,11 @@ pub struct SysctlLintArgs {
     #[arg(long, value_name = "PREFIX", requires = "system")]
     pub root: Option<PathBuf>,
 
-    /// Output format (human | json; SARIF and CSV are not offered for this verb
-    /// per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
+    /// Output format (human | json | sarif; CSV is not offered for this verb
+    /// per the locked output contract CC-3). SARIF is findings-only here:
+    /// `--sarif-include-pass` coverage attestation stays fapolicyd-only (CC-4).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 
     /// Target RHEL release for the STIG hardening baseline (auto|rhel8|rhel9|rhel10).
     /// Enables the version-aware `sysctld-W02` check: a STIG-required kernel-hardening

@@ -118,13 +118,16 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    crate::output::emit_lint(
+    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
         args.format,
         "auditd-lint",
         AUDITD_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
-    );
+    ) {
+        eprintln!("auditd lint: rendering {:?} output: {msg}", args.format);
+        return EXIT_TOOL_FAILURE;
+    }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
 }
@@ -1054,7 +1057,7 @@ mod tests {
 #[cfg(test)]
 mod lint_shell_tests {
     use super::{HostTargetProbe, lint, lint_with_probe, resolve_lint_target};
-    use crate::cli::{AuditdLintArgs, HumanJsonFormat, TargetSelector, TargetVersionArg};
+    use crate::cli::{AuditdLintArgs, OutputFormat, TargetSelector, TargetVersionArg};
     use crate::exit_code::{EXIT_CLEAN, EXIT_RULE_PARSE_ERROR, EXIT_TOOL_FAILURE, EXIT_WARNINGS};
 
     /// A host probe returning a canned result, so the `--target auto` wiring
@@ -1068,7 +1071,7 @@ mod lint_shell_tests {
         }
     }
 
-    fn args(path: &std::path::Path, format: HumanJsonFormat) -> AuditdLintArgs {
+    fn args(path: &std::path::Path, format: OutputFormat) -> AuditdLintArgs {
         AuditdLintArgs {
             path: Some(path.to_path_buf()),
             format,
@@ -1111,7 +1114,7 @@ mod lint_shell_tests {
     fn lint_missing_target_exits_tool_failure() {
         let a = args(
             std::path::Path::new("/nonexistent/6a/x"),
-            HumanJsonFormat::Human,
+            OutputFormat::Human,
         );
         assert_eq!(lint(&a, None), EXIT_TOOL_FAILURE);
     }
@@ -1124,7 +1127,7 @@ mod lint_shell_tests {
         // cross-file claims unsound) - if it did, this test would panic.
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("10-bad.rules"), "-Z bogus\n").expect("write");
-        let a = args(dir.path(), HumanJsonFormat::Json);
+        let a = args(dir.path(), OutputFormat::Json);
         assert_eq!(lint(&a, None), EXIT_RULE_PARSE_ERROR);
     }
 
@@ -1143,7 +1146,7 @@ mod lint_shell_tests {
         std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
         let a = AuditdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             apparmor: false,
             target: Some(TargetSelector::Rhel9),
         };
@@ -1161,7 +1164,7 @@ mod lint_shell_tests {
         std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
         let a = AuditdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             apparmor: false,
             target: Some(TargetSelector::Auto),
         };
@@ -1178,7 +1181,7 @@ mod lint_shell_tests {
         std::fs::write(&f, "-w /etc/passwd -p wa -k identity\n").expect("write");
         let a = AuditdLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             apparmor: false,
             target: Some(TargetSelector::Auto),
         };

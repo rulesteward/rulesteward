@@ -74,13 +74,16 @@ fn run_lint_with_probe(
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
     sources.insert(path.display().to_string(), text);
 
-    crate::output::emit_lint(
+    if let Err(crate::output::RenderError::Serialization(msg)) = crate::output::emit_lint(
         args.format,
         "selinux-lint",
         SELINUX_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
-    );
+    ) {
+        eprintln!("selinux lint: rendering {:?} output: {msg}", args.format);
+        return EXIT_TOOL_FAILURE;
+    }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
 }
@@ -88,7 +91,7 @@ fn run_lint_with_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{HumanJsonFormat, TargetSelector};
+    use crate::cli::{OutputFormat, TargetSelector};
     use crate::exit_code::EXIT_TOOL_FAILURE;
 
     /// A host probe returning a canned result, so the `--target auto` wiring
@@ -104,7 +107,7 @@ mod tests {
     fn args(path: Option<PathBuf>) -> SelinuxLintArgs {
         SelinuxLintArgs {
             path,
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: None,
         }
     }
@@ -131,7 +134,7 @@ mod tests {
         std::fs::write(&f, "SELINUX=enforcing\nSELINUXTYPE=targeted\n").expect("write");
         let a = SelinuxLintArgs {
             path: Some(f),
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));
