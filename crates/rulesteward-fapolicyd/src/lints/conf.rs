@@ -216,23 +216,45 @@ mod tests {
 
     #[test]
     fn inline_hash_is_part_of_the_value_not_a_comment() {
-        // Adversarial round 1 (Finding 3): pins the module doc's "a trailing
-        // `#` is not stripped". Mirrors
-        // `commands/conf.rs::conf_value_does_not_strip_inline_comment`:
-        // fapolicyd's own `nv_split` (daemon-config.c) honors ONLY whole-line
-        // `#` comments, so the raw resolved value here is `"1 # note"`, which
-        // is NOT exactly `"1"` -> clean. An impl that strips inline comments
-        // (reading the value as `"1"`) would wrongly fire.
+        // CORRECTED (issue #569, doc-truth-decay fix): the scanner-level
+        // claim ("a trailing `#` is not stripped") is still true and
+        // unchanged - `winner`'s captured value is the raw, untrimmed-of-
+        // comment remainder `"1 # note"`. What was WRONG in the original
+        // version of this test (Adversarial round 1, Finding 3) was the
+        // conclusion drawn from that raw value: it assumed the daemon
+        // treats a non-exact-"1" raw remainder as a parse error and stays
+        // enforcing. Issue #567/#569's ATL round 2 grounding (live-verified
+        // on fapolicyd 1.3.2 and 1.4.5, see
+        // `rulesteward-cli/src/commands/doctor/probe.rs`'s
+        // `permissive_value_is_effectively_permissive` doc, ~line 280-298,
+        // and its `daemon-config.c` `nv_split`/`_strsplit` citation) proved
+        // the opposite: the daemon whitespace-tokenizes the raw remainder
+        // and binds `nv.value` to ONLY the FIRST token ("1"); a trailing
+        // `# note` (or any further token) is separately logged as "Wrong
+        // number of arguments" but does NOT stop `permissive_parser` from
+        // being called with the first-token value. So the real daemon runs
+        // PERMISSIVE for this line, and `lint_conf` must fire fapd-W14
+        // here, not report clean. The doctor probe was already corrected
+        // for this (9e-wave2c); this lint (`fapd-W14`, from PR #565) has
+        // the IDENTICAL miss and is fixed by the same first-token
+        // tokenization before `is_effectively_permissive` (issue #569).
         let diags = lint_conf("permissive = 1 # note\n", &p(), None);
-        assert!(
-            codes(&diags).is_empty(),
-            "raw value \"1 # note\" is not \"1\"; the inline `#` must not be \
-             stripped: {diags:?}"
+        assert_eq!(
+            diags.len(),
+            1,
+            "the daemon's nv_split takes only the first whitespace token \
+             (\"1\") as the value and runs permissive despite the trailing \
+             \"# note\" text (live-verified fapolicyd 1.3.2/1.4.5, issue \
+             #567/#569); lint_conf must fire fapd-W14: {diags:?}"
         );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
 
-        // And the inline-`#` line must not shadow a LATER bare occurrence:
-        // last-wins resolves line 2's `permissive = 1` to exactly "1" ->
-        // fires, anchored at that later WINNING line.
+        // And the inline-comment line must not shadow a LATER bare
+        // occurrence: last-wins resolves line 2's `permissive = 1` to
+        // exactly "1" -> fires, anchored at that later WINNING line (this
+        // outcome is unchanged by the #569 fix: both lines resolve
+        // permissive, but only the LAST occurrence is evaluated at all).
         let diags = lint_conf("permissive = 1 # note\npermissive = 1\n", &p(), None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, "fapd-W14");
@@ -241,6 +263,92 @@ mod tests {
             "must anchor at the later uncommented winning line, not the \
              inline-comment line"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #569: first-token tokenization before `is_effectively_permissive`,
+    // mirroring the already-fixed doctor probe
+    // (`rulesteward-cli/src/commands/doctor/probe.rs::
+    // permissive_value_is_effectively_permissive`, 9e-wave2c / ATL round 2
+    // MISS 1). Ground truth: fapolicyd's `daemon-config.c` `nv_split`/
+    // `_strsplit` whitespace-tokenizes the value text and binds `nv.value`
+    // to ONLY the first token after `=`; any further token (a `# comment`
+    // or otherwise) is logged as "Wrong number of arguments" but does NOT
+    // change which token the keyword's parser (here `permissive_parser`)
+    // receives. Live-verified on fapolicyd 1.3.2 (Rocky 8) and 1.4.5
+    // (Rocky 9) per the probe's grounding. These pins mirror the probe's
+    // `read_fapolicyd_mode_from_permissive_{one,five,zero}_with_inline_
+    // comment_returns_*` fixtures exactly, at the `lint_conf` surface.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn conf_inline_permissive_one_with_trailing_comment_fires() {
+        // First token "1" -> effectively permissive -> daemon runs
+        // permissive despite "Wrong number of arguments" being logged for
+        // the extra token.
+        let diags = lint_conf("permissive = 1 # temporarily on\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"1\" is effectively permissive in the real \
+             daemon (nv_split/_strsplit); the trailing comment text must \
+             not mask it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_five_with_trailing_comment_fires() {
+        // First token "5" -> strtoul("5") = 5, clamped to 1 by
+        // `permissive_parser`'s range check -> the real daemon runs
+        // permissive (live-confirmed WARNING "permissive value reset to 1"
+        // on fapolicyd9 for this exact fixture per the probe's grounding).
+        let diags = lint_conf("permissive = 5 # comment\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"5\" clamps to permissive-mode in the real \
+             daemon; the trailing comment text must not mask it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_zero_with_trailing_comment_is_clean() {
+        // Control (must pass both before and after the #569 fix): first
+        // token "0" -> strtoul("0") = 0 -> the daemon stays enforcing
+        // regardless of the trailing comment text ("Wrong number of
+        // arguments" is still logged, but no permissive/reset warning
+        // follows, per the probe's live-verified grounding).
+        let diags = lint_conf("permissive = 0 # off\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "first token \"0\" is enforcing in the real daemon regardless \
+             of the trailing comment text: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn conf_inline_permissive_one_with_trailing_word_fires() {
+        // Non-`#` trailing junk is the SAME daemon code path as an inline
+        // comment: `nv_split` tokenizes on whitespace generically, not on
+        // `#` specifically, so any second token (comment or otherwise)
+        // triggers the identical "Wrong number of arguments" logging while
+        // the first token ("1") still reaches `permissive_parser`. This
+        // pin defeats a narrow fix that special-cases only a `#`-prefixed
+        // trailing token instead of doing a true first-whitespace-token
+        // split.
+        let diags = lint_conf("permissive = 1 anything\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"1\" is effectively permissive regardless of \
+             what non-comment trailing token follows it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
     }
 
     // ---------------------------------------------------------------------
