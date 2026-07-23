@@ -614,6 +614,75 @@ mod tests {
     }
 
     #[test]
+    fn startcolumn_omitted_when_line_positive_column_zero() {
+        // Defensive-hardening pin (#581): `line == 0` already omits `region`
+        // entirely (see `region_is_omitted_for_unanchored_diagnostics...`
+        // above), but a diagnostic with `line > 0` and `column == 0` is a
+        // DIFFERENT case -- `region` IS built (because `diag.line != 0`), and
+        // today `start_column` is set unconditionally from `diag.column`,
+        // which would emit `"startColumn": 0`. That is schema-invalid: SARIF
+        // 2.1.0 requires `region.startColumn` >= 1 when present. No shipping
+        // backend constructs `line > 0, column == 0` today (every backend
+        // maintains line>0 => column>=1), so this is unreachable via any real
+        // lint path -- but the renderer must not lie about an invalid column
+        // if a future backend ever does. `startLine` must still be present
+        // (line>0 is a real, valid line).
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..0,
+            "defensive: unreachable via any backend today",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            0,
+        );
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let region = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation/region")
+            .expect("line>0 must still produce a region");
+        assert_eq!(
+            region.get("startLine").and_then(Value::as_i64),
+            Some(7),
+            "startLine must still be present and correct for line>0"
+        );
+        assert!(
+            region.get("startColumn").is_none(),
+            "column==0 must omit the startColumn key entirely, not emit \
+             startColumn: 0 (schema-invalid): {region}"
+        );
+    }
+
+    #[test]
+    fn startcolumn_present_when_line_and_column_positive() {
+        // Companion green pin: guards against over-guarding -- a normal
+        // anchored diagnostic (line>=1, column>=1) must still carry BOTH
+        // startLine and startColumn.
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..0,
+            "normal anchored diagnostic",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            3,
+        );
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let region = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation/region")
+            .expect("line>0 must produce a region");
+        assert_eq!(region.get("startLine").and_then(Value::as_i64), Some(7));
+        assert_eq!(
+            region.get("startColumn").and_then(Value::as_i64),
+            Some(3),
+            "column>=1 must still emit startColumn"
+        );
+    }
+
+    #[test]
     fn severity_levels_map_to_sarif_levels() {
         assert_eq!(severity_to_level(Severity::Fatal), ResultLevel::Error);
         assert_eq!(severity_to_level(Severity::Error), ResultLevel::Error);
