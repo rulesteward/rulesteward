@@ -42,45 +42,13 @@ pub fn strip_inline_comment(line: &str) -> &str {
     inline_comment_index(line).map_or(line, |idx| &line[..idx])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_trailing_hash() {
-        let line = "allow uid=0 : all # comment";
-        let idx = inline_comment_index(line).expect("inline # detected");
-        assert_eq!(&line[idx..], "# comment");
-    }
-
-    #[test]
-    fn ignores_column_0_hash() {
-        assert_eq!(inline_comment_index("# whole-line comment"), None);
-    }
-
-    #[test]
-    fn ignores_leading_ws_hash() {
-        assert_eq!(inline_comment_index("   # leading ws"), None);
-        assert_eq!(inline_comment_index("\t# tab then hash"), None);
-    }
-
-    #[test]
-    fn detects_hash_immediately_after_token() {
-        let line = "allow uid=0 : all#nospace";
-        assert_eq!(inline_comment_index(line), Some(line.find('#').unwrap()));
-    }
-
-    #[test]
-    fn strip_preserves_when_no_inline_hash() {
-        let line = "allow uid=0 : all";
-        assert_eq!(strip_inline_comment(line), line);
-    }
-
-    #[test]
-    fn strip_cuts_at_inline_hash() {
-        assert_eq!(
-            strip_inline_comment("allow uid=0 : all # tail"),
-            "allow uid=0 : all "
-        );
-    }
-}
+// The `#[cfg(test)] mod tests` that pinned `inline_comment_index` /
+// `strip_inline_comment` (finds_trailing_hash, ignores_column_0_hash,
+// ignores_leading_ws_hash, detects_hash_immediately_after_token,
+// strip_preserves_when_no_inline_hash, strip_cuts_at_inline_hash) was removed
+// by lane-3 (#562): both functions are being replaced by the shared
+// `rulesteward_core::comment` helper (`StripConfig::FAPOLICYD`), and every
+// assertion above is reproduced byte-for-byte in
+// `crates/rulesteward-core/src/comment.rs`'s `fapolicyd_table` unit tests and
+// in `crates/rulesteward-fapolicyd/tests/comment_strip_equivalence.rs`. See
+// the lane-3 report for the old-test -> new-table-row mapping.
