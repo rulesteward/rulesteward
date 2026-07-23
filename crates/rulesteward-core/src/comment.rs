@@ -150,6 +150,16 @@ mod tests {
             (r"allow \#x", r"allow \"),
             // Empty line: the byte loop never executes -> None -> unchanged.
             ("", ""),
+            // Round-3 CONCERN row (author's discretion): a leading `#` sets
+            // `seen_token = true` (inline.rs:33-34, the `_` wildcard arm
+            // catches `#` too - `seen_token` is only gated on `' '`/`'\t'`,
+            // not on "is this byte itself a `#`"), so a SECOND `#` later on
+            // the same line IS read as inline even though the first `#`
+            // made the line look like a whole-line comment. Hand-traced:
+            // idx0 `#` -> guard `if seen_token` fails (still false) ->
+            // falls to `_` -> seen_token=true; idx1 ` ` -> no-op; idx2 `#`
+            // -> guard now true -> `Some(2)`.
+            ("# #y", "# "),
         ];
 
         #[test]
@@ -355,6 +365,59 @@ mod tests {
             // Empty line: the byte loop never executes -> whole (empty)
             // line.
             ("", ""),
+            // ---- Round-3 adversarial strengthening (killing rows for the
+            // prev_allows_uid byte-set, parser.rs:286-298): the pre-rework
+            // table only pinned ',' '%' and whitespace via the KEEP path
+            // (strip_keeps_percent_hash_gid_token_...,
+            // strip_handles_a_uid_token_then_a_normal_token...), so a wrong
+            // impl that drops ':' '(' '>' '@' '"' from the set still passed.
+            // Each row below forces the byte immediately BEFORE `#` to be
+            // one of the previously-undiscriminated bytes, with a digit
+            // immediately after `#` so `next_is_digit` is unconditionally
+            // true and only `prev_allows_uid` decides the outcome.
+            //
+            // parser.rs:295 `'>'` arm (the #407 `Defaults>` runas-userid
+            // scope sigil): prev='>' before the digit -> KEEP, whole line
+            // unchanged.
+            ("Defaults>#1000", "Defaults>#1000"),
+            // parser.rs:295 `'@'` arm (the #407 `Defaults@` host-named
+            // scope sigil): prev='@' before the digit -> KEEP, unchanged.
+            ("Defaults@#1000", "Defaults@#1000"),
+            // parser.rs:295 `'"'` arm (the #424 case: a `#<digits>` glued
+            // right after a Defaults value's CLOSING double quote is an
+            // invalid token OUTSIDE the quote, not a comment). At the `#`,
+            // `in_quotes` has already toggled back to false from the
+            // closing `"`, so this exercises the QUOTE-CLOSE byte itself as
+            // the `prev` arm (distinct from "inside an open quote", which
+            // the earlier `passprompt="=(" #abc` row already covers) ->
+            // KEEP, unchanged.
+            ("Defaults passprompt=\"a\"#5", "Defaults passprompt=\"a\"#5"),
+            // parser.rs:295 `'('` arm, discriminated from `in_runas_paren`
+            // (parser.rs:299): this `(` is the SAME mid-command paren as
+            // the `alice localhost = /bin/echo (#foo` row above (not a
+            // runas paren per `paren_opens_runas` - it follows a command
+            // token "echo ", not `host =` / `,` / line start), so
+            // `in_runas_paren` stays false. But `prev_allows_uid` matches
+            // `'('` UNCONDITIONALLY (the match arm does not check
+            // `in_runas_paren`), so with a DIGIT after `#` (unlike the
+            // `#foo` row's letter, which fails `next_is_digit` and strips)
+            // this is KEPT even though it is not actually a runas
+            // position - the exact under-discrimination the `#foo` row
+            // alone could not catch (a wrong impl that only allows `'('`
+            // when `in_runas_paren` is true would strip this; real
+            // parser.rs keeps it).
+            (
+                "alice localhost = /bin/echo (#1000",
+                "alice localhost = /bin/echo (#1000",
+            ),
+            // parser.rs:289-296 (#426): `char::is_whitespace` (NOT
+            // `is_ascii_whitespace`) governs the whitespace half of
+            // `prev_allows_uid`. `\u{000B}` (vertical tab) is NOT covered
+            // by `u8::is_ascii_whitespace` (which excludes VT) but IS
+            // Unicode `White_Space=Yes`, so `(p as char).is_whitespace()`
+            // is true and this is KEPT, unchanged - narrowing the check to
+            // ASCII whitespace would be the #426 regression.
+            ("foo\u{000B}#1000", "foo\u{000B}#1000"),
         ];
 
         #[test]
