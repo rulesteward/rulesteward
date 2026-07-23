@@ -8,11 +8,17 @@
 //!
 //! The rest of this module (`curl`, `controls_optional`, `fetch_status`, `tree`,
 //! `rule_fetcher`, `latest_release`, ...) is the CaC-era ComplianceAsCode fetch that
-//! `main.rs`'s new DISA-sourced `check`/`derive` subcommands no longer call - kept
-//! alive per the #512 survival constraint (`fetch_status` is `pub`; `tools/cis-update`
-//! builds its own 404-as-`None` controls fetch on that same seam, and this crate's own
-//! `cac.rs`/`jinja.rs`/`derive::derive_table` still exercise the rest via their own
-//! test modules).
+//! `main.rs`'s new DISA-sourced `check`/`derive` subcommands no longer call directly -
+//! but it is NOT dead code: `tools/cis-update` (which path-deps this crate for its
+//! own, still-`ComplianceAsCode`-sourced CIS derivation) calls `controls_optional`,
+//! `tree`, `rule_fetcher`, and `latest_release` directly from its `main.rs`
+//! (`cmd_check`/`cmd_derive`, for the `--latest`/`--stig-refs` paths), in addition to
+//! `fetch_status` (via its own thin wrapper in `tools/cis-update/src/source.rs`).
+//! Every function in this module stays `pub`/reachable per the #512 survival
+//! constraint (verified live: `grep -rn stig_source:: tools/cis-update/src/main.rs`).
+//! Any `check --latest` mentioned in the doc comments below refers to
+//! `cis-update`'s OWN `--latest` flag - THIS crate's `check`/`derive` subcommands
+//! dropped `--latest` entirely in #512 (DISA has no releases/latest API).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -121,8 +127,10 @@ fn raw(reff: &str, path: &str) -> String {
 
 /// Fetch a product's STIG controls file at `reff`, returning `None` when it does not
 /// exist there (HTTP 404). A product can be absent at a given ref - e.g. `rhel10` is
-/// on ComplianceAsCode master but not yet in a tagged release - so `check --latest`
-/// treats `None` as "not yet released; skip" rather than a hard error.
+/// on ComplianceAsCode master but not yet in a tagged release - so `cis-update`'s own
+/// `check --latest` (see `tools/cis-update/src/main.rs::cmd_check`, which calls this
+/// function directly for its `--stig-refs` CIS<->STIG join) treats `None` as
+/// "not yet released; skip" rather than a hard error.
 pub fn controls_optional(reff: &str, product: &str) -> Result<Option<String>, String> {
     let url = raw(
         reff,
@@ -217,7 +225,9 @@ fn reject_if_truncated(tree_json: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The latest ComplianceAsCode release tag (for `check --latest`).
+/// The latest ComplianceAsCode release tag (for `cis-update`'s own `check --latest`
+/// flag - see `tools/cis-update/src/main.rs::cmd_check`, which calls this function
+/// directly; THIS crate's own `check` subcommand has no `--latest` flag as of #512).
 pub fn latest_release() -> Result<String, String> {
     let json = curl(&format!(
         "https://api.github.com/repos/{REPO}/releases/latest"
