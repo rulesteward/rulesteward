@@ -848,6 +848,52 @@ fn sarif_pass_excludes_fired_codes() {
     );
 }
 
+/// Regression pin for the SARIF unanchored-region fix (#511), fapolicyd-real
+/// end to end: `fapd-C01` (a rules.d filename lacking the NN- numeric-prefix
+/// convention) is a genuine UNANCHORED, file-level finding - built via
+/// `lints::file_level`'s `0..0` span / line=0 / column=0, exactly like
+/// `fapd-F02`/`fapd-X01`. The rule body itself is clean, so C01 is the only
+/// finding. The rendered SARIF must still validate against the bundled
+/// official OASIS 2.1.0 schema, and the C01 result's `physicalLocation` must
+/// carry NO `region` key while still naming the offending file via
+/// `artifactLocation.uri`. Before the fix, the renderer emitted
+/// `region: {"startLine": 0, "startColumn": 0}` unconditionally, which is
+/// schema-invalid (SARIF requires `region.startLine`/`startColumn` >= 1),
+/// failing schema validation here.
+#[test]
+fn sarif_fapd_c01_unanchored_finding_has_no_region_and_validates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules_d = write_rules_d(dir.path(), "badname.rules", "allow uid=0 : all\n");
+
+    let (v, stdout, _stderr) = run_sarif_lint(&rules_d, &[]);
+    assert_valid_sarif(&stdout);
+
+    let results = v
+        .pointer("/runs/0/results")
+        .and_then(Value::as_array)
+        .expect("results array");
+    let c01 = results
+        .iter()
+        .find(|r| r.get("ruleId").and_then(Value::as_str) == Some("fapd-C01"))
+        .unwrap_or_else(|| panic!("expected a fapd-C01 result: {results:?}"));
+
+    let physical_location = c01
+        .pointer("/locations/0/physicalLocation")
+        .expect("fapd-C01 result has a physicalLocation");
+    assert!(
+        physical_location.get("region").is_none(),
+        "fapd-C01 is a file-level/unanchored finding; region must be omitted: {physical_location}"
+    );
+    assert_eq!(
+        physical_location
+            .pointer("/artifactLocation/uri")
+            .and_then(Value::as_str)
+            .map(|uri| uri.ends_with("badname.rules")),
+        Some(true),
+        "artifactLocation.uri must still name the offending file: {physical_location}"
+    );
+}
+
 /// Regression (getent stdout leak): `--check-identities` shells out to
 /// `getent`, whose matched-line stdout must NOT leak into rulesteward's own
 /// stdout - it would corrupt machine-readable `--format json`/`sarif`. Before

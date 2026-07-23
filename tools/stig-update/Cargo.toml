@@ -12,9 +12,13 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-description = "Dev tool: derive + drift-check the sysctld STIG baselines from ComplianceAsCode."
+description = "Dev tool: derive + drift-check the sysctld-W02 STIG baselines from the official DISA XCCDF."
 
 [dependencies]
 rulesteward-sysctld = { path = "../../crates/rulesteward-sysctld" }
 yaml-rust2 = "0.11"
 toml = "1"
+regex = "1"
+# Real, namespace-aware XML parser for the Group/Rule extraction (#512; mirrors
+# tools/auditd-stig-update's own choice - see src/xccdf.rs's module doc).
+quick-xml = "0.41"

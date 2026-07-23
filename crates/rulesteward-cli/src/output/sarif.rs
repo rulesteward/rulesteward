@@ -205,21 +205,38 @@ fn control_taxa_reference(
 /// so a control-free diagnostic renders byte-identically to the pre-L4 form
 /// (pinned by `sarif_no_controls_omits_taxonomy_keys`).
 fn diagnostic_to_result(diag: &Diagnostic, taxonomy_groups: &[TaxonomyGroup]) -> SarifResult {
-    // `Region` line/column are i64 in the SARIF schema; the Diagnostic stores
-    // them as usize (1-based). The cast is lossless for any real source file.
-    let region = Region::builder()
-        .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
-        .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
-        .build();
-
     let artifact_location = ArtifactLocation::builder()
         .uri(diag.file.display().to_string())
         .build();
 
-    let physical_location = PhysicalLocation::builder()
-        .artifact_location(artifact_location)
-        .region(region)
-        .build();
+    // The SARIF 2.1.0 schema requires `region.startLine`/`startColumn` >= 1
+    // when `region` is present. An UNANCHORED diagnostic has no real source
+    // byte range to report: `line == 0` is the codebase-wide convention for
+    // this (see `rulesteward_core::diagnostic::anchored_at`'s doc, and e.g.
+    // `sysctld`'s `w02_baseline` MISSING-key arm / fapolicyd's `file_level`
+    // helper, both of which construct `Diagnostic::new(.., 0, 0)` with no
+    // `source_id`). Emitting `region: {startLine: 0, ...}` for these would be
+    // schema-invalid, so `region` is omitted entirely rather than lying about
+    // a line that does not exist; `physicalLocation.artifactLocation.uri` (the
+    // real file/dir the finding is about) is still emitted, matching the
+    // human renderer's own "unanchored -> no snippet, but still named" shape.
+    let physical_location = if diag.line == 0 {
+        PhysicalLocation::builder()
+            .artifact_location(artifact_location)
+            .build()
+    } else {
+        // `Region` line/column are i64 in the SARIF schema; the Diagnostic
+        // stores them as usize (1-based). The cast is lossless for any real
+        // source file.
+        let region = Region::builder()
+            .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
+            .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
+            .build();
+        PhysicalLocation::builder()
+            .artifact_location(artifact_location)
+            .region(region)
+            .build()
+    };
 
     let location = Location::builder()
         .physical_location(physical_location)
@@ -664,6 +681,76 @@ mod tests {
         assert_eq!(
             results[1].get("ruleId").and_then(Value::as_str),
             Some("fapd-W01")
+        );
+    }
+
+    #[test]
+    fn region_is_omitted_for_unanchored_diagnostics_but_kept_for_anchored_ones() {
+        // Pin for the unanchored-SARIF-region fix (#511): `line == 0` is the
+        // codebase-wide UNANCHORED convention (mirrors
+        // `rulesteward_fapolicyd::lints::file_level`'s exact construction: a
+        // 0..0 span with line=0/column=0, used by fapd-C01/F02/X01). The SARIF
+        // 2.1.0 schema requires `region.startLine`/`startColumn` >= 1 when
+        // `region` is present, so an unanchored diagnostic must omit `region`
+        // entirely rather than emit `startLine: 0` (schema-invalid). A second,
+        // anchored (line >= 1) diagnostic in the same render call must still
+        // carry a `region` with both fields >= 1, so this test also guards
+        // against an overcorrection that drops `region` unconditionally.
+        let unanchored = Diagnostic::new(
+            Severity::Convention,
+            "fapd-C01",
+            0..0,
+            "rules.d filename does not follow the NN- numeric-prefix convention",
+            "/etc/fapolicyd/rules.d/badname.rules",
+            0,
+            0,
+        );
+        let anchored = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..4,
+            "inline trailing comment is ignored by fapolicyd",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            1,
+        );
+        let out = render(&[unanchored, anchored], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let unanchored_loc = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation")
+            .expect("unanchored result has a physicalLocation");
+        assert!(
+            unanchored_loc.get("region").is_none(),
+            "an unanchored diagnostic (line=0) must omit the region key entirely, \
+             not emit startLine: 0 (schema-invalid): {unanchored_loc}"
+        );
+        assert_eq!(
+            unanchored_loc
+                .pointer("/artifactLocation/uri")
+                .and_then(Value::as_str),
+            Some("/etc/fapolicyd/rules.d/badname.rules"),
+            "artifactLocation.uri must still be present for an unanchored finding"
+        );
+
+        let anchored_region = v
+            .pointer("/runs/0/results/1/locations/0/physicalLocation/region")
+            .expect("an anchored diagnostic (line>=1) must still carry a region");
+        let start_line = anchored_region
+            .get("startLine")
+            .and_then(Value::as_i64)
+            .expect("startLine present on an anchored region");
+        let start_column = anchored_region
+            .get("startColumn")
+            .and_then(Value::as_i64)
+            .expect("startColumn present on an anchored region");
+        assert!(
+            start_line >= 1,
+            "anchored region startLine must be >= 1, got {start_line}"
+        );
+        assert!(
+            start_column >= 1,
+            "anchored region startColumn must be >= 1, got {start_column}"
         );
     }
 }

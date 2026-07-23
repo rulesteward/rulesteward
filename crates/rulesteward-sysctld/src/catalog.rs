@@ -2,8 +2,11 @@
 //! codes: each code's id, severity tier, and a short operator-facing description.
 //!
 //! Mirrors the auditd / sshd catalogs (the crate that OWNS the codes carries the
-//! catalog, inside the mutation `examine_globs`): no `Condition` machinery, since
-//! there is no SARIF for sysctld (locked CC-4: SARIF is `fapolicyd lint` only).
+//! catalog, inside the mutation `examine_globs`): no `Condition` machinery here.
+//! `sysctl lint --format sarif` is offered (#511) and is findings-only, so it
+//! needs no per-check run-condition gate; the `--sarif-include-pass` coverage
+//! attestation that the `Condition` machinery backs stays fapolicyd-only
+//! (locked CC-4).
 //!
 //! # Frozen taxonomy
 //! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Four passes

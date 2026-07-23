@@ -1,0 +1,1051 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:cpe="http://cpe.mitre.org/language/2.0" xmlns:xhtml="http://www.w3.org/1999/xhtml" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#" xsi:schemaLocation="http://checklists.nist.gov/xccdf/1.1 http://nvd.nist.gov/schema/xccdf-1.1.4.xsd http://cpe.mitre.org/dictionary/2.0 http://cpe.mitre.org/files/cpe-dictionary_2.1.xsd" id="RHEL_9_STIG" xml:lang="en" xmlns="http://checklists.nist.gov/xccdf/1.1">
+<Group id="V-257797"><title>SRG-OS-000132-GPOS-00067</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257797r1198253_rule" weight="10.0" severity="medium"><version>RHEL-09-213010</version><title>RHEL 9 must restrict access to the kernel message buffer.</title><description>&lt;VulnDiscussion&gt;Preventing unauthorized information transfers mitigates the risk of information, including encrypted representations of information, produced by the actions of prior users/roles (or the actions of processes acting on behalf of prior users/roles) from being available to any current users/roles (or current processes) that obtain access to shared system resources (e.g., registers, main memory, hard disks) after those resources have been released back to information systems. The control of information in shared resources is also commonly referred to as object reuse and residual information protection.
+
+This requirement generally applies to the design of an information technology product, but it can also apply to the configuration of particular information system components that are, or use, such products. This can be verified by acceptance/validation processes in DOD or other government agencies.
+
+There may be shared resources with configurable protections (e.g., files in storage) that may be assessed on specific information system components.
+
+Restricting access to the kernel message buffer limits access to only root. This prevents attackers from gaining additional system information as a nonprivileged user.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000132-GPOS-00067, SRG-OS-000138-GPOS-00069&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001082</ident><ident system="http://cyber.mil/cci">CCI-001090</ident><fixtext fixref="F-61462r1155690_fix">Configure RHEL 9 to restrict access to the kernel message buffer.
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-dmesg_restrict.conf
+
+Add the following to the file:
+kernel.dmesg_restrict = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61462r1155690_fix" /><check system="C-61538r1155689_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to restrict access to the kernel message buffer.
+
+Check the status of the "kernel.dmesg_restrict" kernel parameter with the following command:
+
+$ sudo sysctl kernel.dmesg_restrict
+kernel.dmesg_restrict = 1
+
+If "kernel.dmesg_restrict" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257798"><title>SRG-OS-000132-GPOS-00067</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257798r1198253_rule" weight="10.0" severity="medium"><version>RHEL-09-213015</version><title>RHEL 9 must prevent kernel profiling by nonprivileged users.</title><description>&lt;VulnDiscussion&gt;Preventing unauthorized information transfers mitigates the risk of information, including encrypted representations of information, produced by the actions of prior users/roles (or the actions of processes acting on behalf of prior users/roles) from being available to any current users/roles (or current processes) that obtain access to shared system resources (e.g., registers, main memory, hard disks) after those resources have been released back to information systems. The control of information in shared resources is also commonly referred to as object reuse and residual information protection.
+
+This requirement generally applies to the design of an information technology product, but it can also apply to the configuration of particular information system components that are, or use, such products. This can be verified by acceptance/validation processes in DOD or other government agencies.
+
+There may be shared resources with configurable protections (e.g., files in storage) that may be assessed on specific information system components.
+
+Setting the kernel.perf_event_paranoid kernel parameter to "2" prevents attackers from gaining additional system information as a nonprivileged user.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000132-GPOS-00067, SRG-OS-000138-GPOS-00069&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001082</ident><ident system="http://cyber.mil/cci">CCI-001090</ident><fixtext fixref="F-61463r1155693_fix">Configure RHEL 9 to prevent kernel profiling by nonprivileged users.
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_perf_event_paranoid.conf
+
+Add the following to the file:
+kernel.perf_event_paranoid = 2
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61463r1155693_fix" /><check system="C-61539r1155692_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to prevent kernel profiling by nonprivileged users.
+
+Check the status of the "kernel.perf_event_paranoid" kernel parameter.
+
+$ sudo sysctl kernel.perf_event_paranoid
+kernel.perf_event_paranoid = 2
+
+If "kernel.perf_event_paranoid" is not set to "2" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257799"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257799r1155697_rule" weight="10.0" severity="medium"><version>RHEL-09-213020</version><title>RHEL 9 must prevent the loading of a new kernel for later execution.</title><description>&lt;VulnDiscussion&gt;Changes to any software components can have significant effects on the overall security of the operating system. This requirement ensures the software has not been tampered with and that it has been provided by a trusted vendor.
+
+Disabling kexec_load prevents an unsigned kernel image (that could be a windows kernel or modified vulnerable kernel) from being loaded. Kexec can be used subvert the entire secureboot process and should be avoided at all costs especially since it can load unsigned kernel images.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000480-GPOS-00227, SRG-OS-000366-GPOS-00153&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-003992</ident><ident system="http://cyber.mil/cci">CCI-001749</ident><fixtext fixref="F-61464r1155696_fix">Configure RHEL 9 to disable kernel image loading.
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_kexec_load_disabled.conf
+
+Add the following to the file:
+kernel.kexec_load_disabled = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61464r1155696_fix" /><check system="C-61540r1155695_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to disable kernel image loading.
+
+Check the status of the "kernel.kexec_load_disabled" kernel parameter with the following command:
+
+$ sudo sysctl kernel.kexec_load_disabled
+kernel.kexec_load_disabled = 1
+
+If "kernel.kexec_load_disabled" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257800"><title>SRG-OS-000132-GPOS-00067</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257800r1198253_rule" weight="10.0" severity="medium"><version>RHEL-09-213025</version><title>RHEL 9 must restrict exposed kernel pointer addresses access.</title><description>&lt;VulnDiscussion&gt;It is detrimental for operating systems to provide, or install by default, functionality exceeding requirements or mission objectives. These unnecessary capabilities or services are often overlooked and therefore may remain unsecured. They increase the risk to the platform by providing additional attack vectors.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000132-GPOS-00067, SRG-OS-000433-GPOS-00192, SRG-OS-000480-GPOS-00227&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001082</ident><ident system="http://cyber.mil/cci">CCI-002824</ident><fixtext fixref="F-61465r1155699_fix">Configure RHEL 9 to restrict exposed kernel pointer addresses access.
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_kptr_restrict.conf
+
+Add the following to the file:
+kernel.kptr_restrict = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61465r1155699_fix" /><check system="C-61541r1155698_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to restrict exposed kernel pointer address access.
+
+Verify the runtime status of the "kernel.kptr_restrict" kernel parameter with the following command:
+
+$ sudo sysctl kernel.kptr_restrict 
+kernel.kptr_restrict = 1
+
+If "kernel.kptr_restrict" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257801"><title>SRG-OS-000312-GPOS-00123</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257801r1155703_rule" weight="10.0" severity="medium"><version>RHEL-09-213030</version><title>RHEL 9 must enable kernel parameters to enforce discretionary access control (DAC) on hardlinks.</title><description>&lt;VulnDiscussion&gt;DAC is based on the notion that individual users are "owners" of objects and therefore have discretion over who should be authorized to access the object and in which mode (e.g., read or write). Ownership is usually acquired as a consequence of creating the object or via specified ownership assignment. DAC allows the owner to determine who will have access to objects they control. An example of DAC includes user-controlled file permissions.
+
+When discretionary access control policies are implemented, subjects are not constrained with regard to what actions they can take with information for which they have already been granted access. Thus, subjects that have been granted access to information are not prevented from passing (i.e., the subjects have the discretion to pass) the information to other subjects or objects. A subject that is constrained in its operation by Mandatory Access Control policies is still able to operate under the less rigorous constraints of this requirement. Thus, while Mandatory Access Control imposes constraints preventing a subject from passing information to another subject operating at a different sensitivity level, this requirement permits the subject to pass the information to any subject at the same sensitivity level. The policy is bounded by the information system boundary. Once the information is passed outside the control of the information system, additional means may be required to ensure the constraints remain in effect. While the older, more traditional definitions of discretionary access control require identity-based access control, that limitation is not required for this use of discretionary access control.
+
+By enabling the fs.protected_hardlinks kernel parameter, users can no longer create soft or hard links to files they do not own. Disallowing such hardlinks mitigate vulnerabilities based on insecure file system accessed by privileged programs, avoiding an exploitation vector exploiting unsafe use of open() or creat().
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000312-GPOS-00122, SRG-OS-000312-GPOS-00123, SRG-OS-000312-GPOS-00124, SRG-OS-000324-GPOS-00125&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-002165</ident><ident system="http://cyber.mil/cci">CCI-002235</ident><fixtext fixref="F-61466r1155702_fix">Configure RHEL 9 to enable DAC on hardlinks.
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-fs_protected_hardlinks.conf
+
+Add the following to the file:
+fs.protected_hardlinks = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61466r1155702_fix" /><check system="C-61542r1155701_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to enable DAC on hardlinks.
+
+Check the status of the "fs.protected_hardlinks" kernel parameter with the following command:
+
+$ sudo sysctl fs.protected_hardlinks
+fs.protected_hardlinks = 1
+
+If "fs.protected_hardlinks" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257802"><title>SRG-OS-000312-GPOS-00123</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257802r1155706_rule" weight="10.0" severity="medium"><version>RHEL-09-213035</version><title>RHEL 9 must enable kernel parameters to enforce discretionary access (DAC) control on symlinks.</title><description>&lt;VulnDiscussion&gt;DAC is based on the notion that individual users are "owners" of objects and therefore have discretion over who should be authorized to access the object and in which mode (e.g., read or write). Ownership is usually acquired as a consequence of creating the object or via specified ownership assignment. DAC allows the owner to determine who will have access to objects they control. An example of DAC includes user-controlled file permissions.
+
+When discretionary access control policies are implemented, subjects are not constrained with regard to what actions they can take with information for which they have already been granted access. Thus, subjects that have been granted access to information are not prevented from passing (i.e., the subjects have the discretion to pass) the information to other subjects or objects. A subject that is constrained in its operation by Mandatory Access Control policies is still able to operate under the less rigorous constraints of this requirement. Thus, while Mandatory Access Control imposes constraints preventing a subject from passing information to another subject operating at a different sensitivity level, this requirement permits the subject to pass the information to any subject at the same sensitivity level. The policy is bounded by the information system boundary. Once the information is passed outside the control of the information system, additional means may be required to ensure the constraints remain in effect. While the older, more traditional definitions of discretionary access control require identity-based access control, that limitation is not required for this use of discretionary access control.
+
+By enabling the fs.protected_symlinks kernel parameter, symbolic links are permitted to be followed only when outside a sticky world-writable directory, or when the UID of the link and follower match, or when the directory owner matches the symlink's owner. Disallowing such symlinks helps mitigate vulnerabilities based on insecure file system accessed by privileged programs, avoiding an exploitation vector exploiting unsafe use of open() or creat().
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000312-GPOS-00122, SRG-OS-000312-GPOS-00123, SRG-OS-000312-GPOS-00124, SRG-OS-000324-GPOS-00125&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-002165</ident><ident system="http://cyber.mil/cci">CCI-002235</ident><fixtext fixref="F-61467r1155705_fix">Configure RHEL 9 to enable DAC on symlinks with the following:
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-fs_protected_symlinks.conf
+
+Add the following to the file:
+fs.protected_symlinks = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61467r1155705_fix" /><check system="C-61543r1155704_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to enable DAC on symlinks.
+
+Check the status of the "fs.protected_symlinks" kernel parameter with the following command:
+
+$ sudo sysctl fs.protected_symlinks
+fs.protected_symlinks = 1
+
+If "fs.protected_symlinks" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257803"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257803r1155668_rule" weight="10.0" severity="medium"><version>RHEL-09-213040</version><title>RHEL 9 must disable the kernel.core_pattern.</title><description>&lt;VulnDiscussion&gt;A core dump includes a memory image taken at the time the operating system terminates an application. The memory image could contain sensitive data and is generally useful only for developers trying to debug problems.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61468r1155667_fix">Configure RHEL 9 to disable storing core dumps. 
+
+Create a drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_core_pattern.conf
+
+Add the following to the file:
+kernel.core_pattern = |/bin/false
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61468r1155667_fix" /><check system="C-61544r1155666_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 disables storing core dumps.
+
+Check the status of the "kernel.core_pattern" kernel parameter with the following command:
+
+$ sudo sysctl kernel.core_pattern
+kernel.core_pattern = |/bin/false
+
+If "kernel.core_pattern" is not set to "|/bin/false", or a line is not returned and the need for core dumps is not documented with the information system security officer (ISSO) as an operational requirement, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257809"><title>SRG-OS-000433-GPOS-00193</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257809r1208769_rule" weight="10.0" severity="medium"><version>RHEL-09-213070</version><title>RHEL 9 must implement address space layout randomization (ASLR) to protect its memory from unauthorized code execution.</title><description>&lt;VulnDiscussion&gt;Some adversaries launch attacks with the intent of executing code in nonexecutable regions of memory or in memory locations that are prohibited. Security safeguards employed to protect memory include, for example, data execution prevention and address space layout randomization. Data execution prevention safeguards can be either hardware-enforced or software-enforced with hardware providing the greater strength of mechanism.
+
+Examples of attacks are buffer overflow attacks.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000433-GPOS-00193, SRG-OS-000480-GPOS-00227&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-002824</ident><fixtext fixref="F-61474r1208768_fix">Configure RHEL 9 to implement ASLR.
+
+$ echo 'kernel.randomize_va_space = 2' | sudo tee /etc/sysctl.d/99-kernel_randomize_va_space.conf
+
+Remove any configurations that conflict with the above from the following locations: 
+
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+/etc/sysctl.d/*.conf
+
+Issue the following command to make the changes take effect:
+
+$ sudo sysctl --system</fixtext><fix id="F-61474r1208768_fix" /><check system="C-61550r1208767_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is implementing ASLR.
+
+$ sudo sysctl kernel.randomize_va_space
+kernel.randomize_va_space = 2
+
+If "kernel.randomize_va_space" is not set to "2", this is a finding.
+
+Check that the configuration files are present to enable this kernel parameter.
+
+$ sudo grep -rs kernel.randomize_va_space /run/sysctl.d/*.conf /usr/local/lib/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf /lib/sysctl.d/*.conf /etc/sysctl.conf /etc/sysctl.d/*.conf
+/etc/sysctl.d/99-kernel_randomize_va_space.conf:kernel.randomize_va_space = 2
+
+If "kernel.randomize_va_space" is not set to "2", or is missing or commented out, this is a finding.
+
+If conflicting results are returned, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257810"><title>SRG-OS-000132-GPOS-00067</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257810r1198253_rule" weight="10.0" severity="medium"><version>RHEL-09-213075</version><title>RHEL 9 must disable access to network bpf system call from nonprivileged processes.</title><description>&lt;VulnDiscussion&gt;It is detrimental for operating systems to provide, or install by default, functionality exceeding requirements or mission objectives. These unnecessary capabilities or services are often overlooked and therefore, may remain unsecured. They increase the risk to the platform by providing additional attack vectors.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000132-GPOS-00067, SRG-OS-000480-GPOS-00227&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001082</ident><fixtext fixref="F-61475r1155711_fix">Configure RHEL 9 to prevent privilege escalation through the kernel by disabling access to the bpf system call.
+
+Create the drop-in file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_unprivileged_bpf_disabled.conf
+
+Add the following line to the file:
+kernel.unprivileged_bpf_disabled = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61475r1155711_fix" /><check system="C-61551r1155710_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 prevents privilege escalation through the kernel by disabling access to the bpf system call.
+
+Check the status of the "kernel.unprivileged_bpf_disabled" kernel parameter with the following command:
+
+$ sysctl kernel.unprivileged_bpf_disabled
+kernel.unprivileged_bpf_disabled = 1
+
+If "kernel.unprivileged_bpf_disabled" is not set to "1", or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257811"><title>SRG-OS-000132-GPOS-00067</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257811r1198253_rule" weight="10.0" severity="medium"><version>RHEL-09-213080</version><title>RHEL 9 must restrict usage of ptrace to descendant processes.</title><description>&lt;VulnDiscussion&gt;It is detrimental for operating systems to provide, or install by default, functionality exceeding requirements or mission objectives. These unnecessary capabilities or services are often overlooked and therefore, may remain unsecured. They increase the risk to the platform by providing additional attack vectors.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographic order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000132-GPOS-00067, SRG-OS-000480-GPOS-00227&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001082</ident><fixtext fixref="F-61476r1155673_fix">Configure RHEL 9 to restrict the usage of ptrace to descendant processes.
+
+Create the drop-in if it doesn't already exist:
+
+$ sudo vi /etc/sysctl.d/99-kernel_yama.ptrace_scope.conf
+
+Add the following line to the file:
+kernel.yama.ptrace_scope = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61476r1155673_fix" /><check system="C-61552r1155672_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 restricts the usage of ptrace to descendant processes.
+
+Check the status of the "kernel.yama.ptrace_scope" kernel parameter with the following command:
+
+$ sysctl kernel.yama.ptrace_scope
+kernel.yama.ptrace_scope = 1
+
+If the network parameter "kernel.yama.ptrace_scope" is not equal to "1", or nothing is returned, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257816"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257816r1155715_rule" weight="10.0" severity="medium"><version>RHEL-09-213105</version><title>RHEL 9 must disable the use of user namespaces.</title><description>&lt;VulnDiscussion&gt;It is detrimental for operating systems to provide, or install by default, functionality exceeding requirements or mission objectives. These unnecessary capabilities or services are often overlooked and therefore, may remain unsecured. They increase the risk to the platform by providing additional attack vectors.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61481r1155714_fix">Configure RHEL 9 to disable the use of user namespaces.
+
+Create the drop-in if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-user_max_user_namespaces.conf
+
+Add the following line to the file:
+
+user.max_user_namespaces = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61481r1155714_fix" /><check system="C-61557r1155713_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 disables the use of user namespaces.
+
+Check the status of the "user.max_user_namespaces" parameter with the following command:
+
+$ sudo sysctl user.max_user_namespaces
+
+user.max_user_namespaces = 0
+
+If "user.max_user_namespaces" is not set to "0" or is missing, this is a finding.
+
+If the use of namespaces is operationally required and documented with the information system security manager (ISSM), it is not a finding.</check-content></check></Rule></Group>
+<Group id="V-257942"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257942r1155718_rule" weight="10.0" severity="medium"><version>RHEL-09-251045</version><title>RHEL 9 must enable hardening for the Berkeley Packet Filter just-in-time compiler.</title><description>&lt;VulnDiscussion&gt;It is detrimental for operating systems to provide, or install by default, functionality exceeding requirements or mission objectives. These unnecessary capabilities or services are often overlooked and therefore may remain unsecured. They increase the risk to the platform by providing additional attack vectors.
+
+Enabling hardening for the Berkeley Packet Filter (BPF) Just-in-time (JIT) compiler aids in mitigating JIT spraying attacks. Setting the value to "2" enables JIT hardening for all users.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61607r1155717_fix">Configure RHEL 9 to enable hardening for the BPF JIT compiler.
+
+Create the drop-in file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-net_core-bpf_jit_harden.conf
+
+Add the following line to the file:
+net.core.bpf_jit_harden = 2
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61607r1155717_fix" /><check system="C-61683r1155716_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 enables hardening for the BPF JIT compiler.
+
+Check the status of the "net.core.bpf_jit_harden" parameter with the following command:
+
+$ sudo sysctl net.core.bpf_jit_harden
+net.core.bpf_jit_harden = 2
+
+If "net.core.bpf_jit_harden" is not equal to "2" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257957"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257957r1155618_rule" weight="10.0" severity="medium"><version>RHEL-09-253010</version><title>RHEL 9 must be configured to use TCP syncookies.</title><description>&lt;VulnDiscussion&gt;Preventing unauthorized information transfers mitigates the risk of information, including encrypted representations of information, produced by the actions of prior users/roles (or the actions of processes acting on behalf of prior users/roles) from being available to any current users/roles (or current processes) that obtain access to shared system resources (e.g., registers, main memory, hard disks) after those resources have been released back to information systems. The control of information in shared resources is also commonly referred to as object reuse and residual information protection.
+
+This requirement generally applies to the design of an information technology product, but it can also apply to the configuration of particular information system components that are, or use, such products. This can be verified by acceptance/validation processes in DOD or other government agencies.
+
+There may be shared resources with configurable protections (e.g., files in storage) that may be assessed on specific information system components.
+
+Restricting access to the kernel message buffer limits access to only root. This prevents attackers from gaining additional system information as a nonprivileged user.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf
+
+Satisfies: SRG-OS-000480-GPOS-00227, SRG-OS-000420-GPOS-00186, SRG-OS-000142-GPOS-00071&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-001095</ident><ident system="http://cyber.mil/cci">CCI-002385</ident><fixtext fixref="F-61622r1155617_fix">Configure RHEL 9 to use TCP syncookies.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_tcp_syncookies.conf
+
+Add the following line to the file:
+net.ipv4.tcp_syncookies = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61622r1155617_fix" /><check system="C-61698r1155616_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is configured to use IPv4 TCP syncookies.
+
+Check the value of all "tcp_syncookies" variables with the following command:
+
+$ sudo sysctl net.ipv4.tcp_syncookies
+net.ipv4.tcp_syncookies = 1
+
+If the network parameter "ipv4.tcp_syncookies" is not equal to "1" or nothing is returned, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257958"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257958r1155721_rule" weight="10.0" severity="medium"><version>RHEL-09-253015</version><title>RHEL 9 must ignore Internet Protocol version 4 (IPv4) Internet Control Message Protocol (ICMP) redirect messages.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages modify the host's route table and are unauthenticated. An illicit ICMP redirect message could result in a man-in-the-middle attack.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61623r1155720_fix">Configure RHEL 9 to ignore IPv4 ICMP redirect messages.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_accept_redirects.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.accept_redirects = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61623r1155720_fix" /><check system="C-61699r1155719_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 will not accept IPv4 ICMP redirect messages.
+
+Check the value of all "net.ipv4.conf.all.accept_redirects" variables with the following command:
+
+$ sudo sysctl net.ipv4.conf.all.accept_redirects
+net.ipv4.conf.all.accept_redirects = 0
+
+If "net.ipv4.conf.all.accept_redirects" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257959"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257959r1155724_rule" weight="10.0" severity="medium"><version>RHEL-09-253020</version><title>RHEL 9 must not forward Internet Protocol version 4 (IPv4) source-routed packets.</title><description>&lt;VulnDiscussion&gt;Source-routed packets allow the source of the packet to suggest that routers forward the packet along a different path than configured on the router, which can be used to bypass network security measures. This requirement applies only to the forwarding of source-routed traffic, such as when forwarding is enabled and the system is functioning as a router.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of which of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61624r1155723_fix">Configure RHEL 9 to ignore IPv4 source-routed packets.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_accept_source.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.accept_source_route = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61624r1155723_fix" /><check system="C-61700r1155722_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 will not accept IPv4 source-routed packets.
+
+Check the value of the "accept_source_route" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.all.accept_source_route
+net.ipv4.conf.all.accept_source_route = 0
+
+If "net.ipv4.conf.all.accept_source_route" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257960"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257960r1155727_rule" weight="10.0" severity="medium"><version>RHEL-09-253025</version><title>RHEL 9 must log IPv4 packets with impossible addresses.</title><description>&lt;VulnDiscussion&gt;The presence of "martian" packets (which have impossible addresses) as well as spoofed packets, source-routed packets, and redirects could be a sign of nefarious network activity. Logging these packets enables this activity to be detected.
+
+Preventing unauthorized information transfers mitigates the risk of information, including encrypted representations of information, produced by the actions of prior users/roles (or the actions of processes acting on behalf of prior users/roles) from being available to any current users/roles (or current processes) that obtain access to shared system resources (e.g., registers, main memory, hard disks) after those resources have been released back to information systems. The control of information in shared resources is also commonly referred to as object reuse and residual information protection.
+
+This requirement generally applies to the design of an information technology product, but it can also apply to the configuration of particular information system components that are, or use, such products. This can be verified by acceptance/validation processes in DOD or other government agencies.
+
+There may be shared resources with configurable protections (e.g., files in storage) that may be assessed on specific information system components.
+
+Restricting access to the kernel message buffer limits access to only root. This prevents attackers from gaining additional system information as a nonprivileged user.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61625r1155726_fix">Configure RHEL 9 to log martian packets on IPv4 interfaces.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_log_martians.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.log_martians=1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61625r1155726_fix" /><check system="C-61701r1155725_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 logs IPv4 martian packets.
+
+Check the value of the "log_martians" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.all.log_martians
+net.ipv4.conf.all.log_martians = 1
+
+If "net.ipv4.conf.all.log_martians" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257961"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257961r1155730_rule" weight="10.0" severity="medium"><version>RHEL-09-253030</version><title>RHEL 9 must log IPv4 packets with impossible addresses by default.</title><description>&lt;VulnDiscussion&gt;The presence of "martian" packets (which have impossible addresses) as well as spoofed packets, source-routed packets, and redirects could be a sign of nefarious network activity. Logging these packets enables this activity to be detected.
+
+Preventing unauthorized information transfers mitigates the risk of information, including encrypted representations of information, produced by the actions of prior users/roles (or the actions of processes acting on behalf of prior users/roles) from being available to any current users/roles (or current processes) that obtain access to shared system resources (e.g., registers, main memory, hard disks) after those resources have been released back to information systems. The control of information in shared resources is also commonly referred to as object reuse and residual information protection.
+
+This requirement generally applies to the design of an information technology product, but it can also apply to the configuration of particular information system components that are, or use, such products. This can be verified by acceptance/validation processes in DOD or other government agencies.
+
+There may be shared resources with configurable protections (e.g., files in storage) that may be assessed on specific information system components.
+
+Restricting access to the kernel message buffer limits access to only root. This prevents attackers from gaining additional system information as a nonprivileged user.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61626r1155729_fix">Configure RHEL 9 to log martian packets on IPv4 interfaces by default.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_log_martians.conf
+
+Add the following line to the file:
+net.ipv4.conf.default.log_martians=1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61626r1155729_fix" /><check system="C-61702r1155728_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 logs IPv4 martian packets by default.
+
+Check the value of the "default.log_martians" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.default.log_martians
+net.ipv4.conf.default.log_martians = 1
+
+If "net.ipv4.conf.default.log_martians" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257962"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257962r1155733_rule" weight="10.0" severity="medium"><version>RHEL-09-253035</version><title>RHEL 9 must use reverse path filtering on all IPv4 interfaces.</title><description>&lt;VulnDiscussion&gt;Enabling reverse path filtering drops packets with source addresses that should not have been able to be received on the interface on which they were received. It must not be used on systems that are routers for complicated networks, but is helpful for end hosts and routers serving small networks.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61627r1155732_fix">Configure RHEL 9 to use reverse path filtering on all IPv4 interfaces.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_rp_filter.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.rp_filter = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61627r1155732_fix" /><check system="C-61703r1155731_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 uses reverse path filtering on all IPv4 interfaces.
+
+Check the value of the "rp_filter" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.all.rp_filter
+net.ipv4.conf.all.rp_filter = 1
+
+If "net.ipv4.conf.all.rp_filter" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257963"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257963r1155736_rule" weight="10.0" severity="medium"><version>RHEL-09-253040</version><title>RHEL 9 must prevent IPv4 Internet Control Message Protocol (ICMP) redirect messages from being accepted.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages modify the host's route table and are unauthenticated. An illicit ICMP redirect message could result in a man-in-the-middle attack.
+
+This feature of the IPv4 protocol has few legitimate uses. It must be disabled unless absolutely required.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61628r1155735_fix">Configure RHEL 9 to prevent IPv4 ICMP redirect messages from being accepted.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_accept_redirects.conf
+
+Add the following line to the file:
+net.ipv4.conf.default.accept_redirects = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61628r1155735_fix" /><check system="C-61704r1155734_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 will not accept IPv4 ICMP redirect messages.
+
+Check the value of the default "accept_redirects" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.default.accept_redirects
+net.ipv4.conf.default.accept_redirects = 0
+
+If "net.ipv4.conf.default.accept_redirects" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257964"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257964r1155739_rule" weight="10.0" severity="medium"><version>RHEL-09-253045</version><title>RHEL 9 must not forward IPv4 source-routed packets by default.</title><description>&lt;VulnDiscussion&gt;Source-routed packets allow the source of the packet to suggest routers forward the packet along a different path than configured on the router, which can be used to bypass network security measures. This requirement applies only to the forwarding of source-routed traffic, such as when forwarding is enabled and the system is functioning as a router.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61629r1155738_fix">Configure RHEL 9 to not forward IPv4 source-routed packets by default.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/99-ipv4_accept_source_route.conf
+
+Add the following line to the file:
+net.ipv4.conf.default.accept_source_route = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61629r1155738_fix" /><check system="C-61705r1155737_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not accept IPv4 source-routed packets by default.
+
+Check the value of the "accept source route" variable with the following command:
+
+$ sudo sysctl net.ipv4.conf.default.accept_source_route
+net.ipv4.conf.default.accept_source_route = 0
+
+If "net.ipv4.conf.default.accept_source_route" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257965"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257965r1155646_rule" weight="10.0" severity="medium"><version>RHEL-09-253050</version><title>RHEL 9 must use a reverse-path filter for IPv4 network traffic when possible by default.</title><description>&lt;VulnDiscussion&gt;Enabling reverse path filtering drops packets with source addresses that should not have been able to be received on the interface on which they were received. It must not be used on systems that are routers for complicated networks, but is helpful for end hosts and routers serving small networks.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographic order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61630r1155645_fix">Configure RHEL 9 to use reverse path filtering on IPv4 interfaces by default.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_rp_filter.conf
+
+Add the following line to the file:
+net.ipv4.conf.default.rp_filter = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61630r1155645_fix" /><check system="C-61706r1155644_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 uses reverse path filtering on IPv4 interfaces.
+
+Check the value of the "net.ipv4.conf.default.rp_filter" with the following command:
+
+$ sudo sysctl net.ipv4.conf.default.rp_filter
+net.ipv4.conf.default.rp_filter = 1
+
+If the returned line does not have a value of "1", or a line is not returned, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257966"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257966r1155742_rule" weight="10.0" severity="medium"><version>RHEL-09-253055</version><title>RHEL 9 must not respond to Internet Control Message Protocol (ICMP) echoes sent to a broadcast address.</title><description>&lt;VulnDiscussion&gt;Responding to broadcast (ICMP) echoes facilitates network mapping and provides a vector for amplification attacks.
+
+Ignoring ICMP echo requests (pings) sent to broadcast or multicast addresses makes the system slightly more difficult to enumerate on the network.
+
+There are notable differences between Internet Protocol version 4 (IPv4) and Internet Protocol version 6 (IPv6). IPv6 does not implement the same method of broadcast as IPv4. Instead, IPv6 uses multicast addressing to the all-hosts multicast group. Refer to RFC4294 for an explanation of "IPv6 Node Requirements", which resulted in this difference between IPv4 and IPv6.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61631r1155741_fix">Configure RHEL 9 to ignore IPv4 ICMP echoes sent to a broadcast address.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_icmp_echo_ignore_broadcasts.conf
+
+Add the following line to the file:
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61631r1155741_fix" /><check system="C-61707r1155740_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 ignores ICMP echoes sent to a broadcast address.
+
+Check the value of the "icmp_echo_ignore_broadcasts" variable with the following command:
+
+$ sudo sysctl net.ipv4.icmp_echo_ignore_broadcasts
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+If "net.ipv4.icmp_echo_ignore_broadcasts" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257967"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257967r1155745_rule" weight="10.0" severity="medium"><version>RHEL-09-253060</version><title>RHEL 9 must limit the number of bogus Internet Control Message Protocol (ICMP) response errors logs.</title><description>&lt;VulnDiscussion&gt;Some routers will send responses to broadcast frames that violate RFC-1122, which fills up a log file system with many useless error messages. An attacker may take advantage of this and attempt to flood the logs with bogus error logs. Ignoring bogus ICMP error responses reduces log size, although some activity would not be logged.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61632r1155744_fix">Configure RHEL 9 to not log bogus ICMP errors:
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_icmp_ignore_bogus_error_responses.conf
+
+Add the following line to the file:
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61632r1155744_fix" /><check system="C-61708r1155743_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 limits the number of bogus Internet Control Message Protocol (ICMP) response errors logs.
+
+Check the value of the "net.ipv4.icmp_ignore_bogus_error_response" variables with the following command:
+
+$ sudo sysctl net.ipv4.icmp_ignore_bogus_error_responses
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+If "net.ipv4.icmp_ignore_bogus_error_response" is not set to "1" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257968"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257968r1155748_rule" weight="10.0" severity="medium"><version>RHEL-09-253065</version><title>RHEL 9 must not send Internet Control Message Protocol (ICMP) redirects.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages contain information from the system's route table possibly revealing portions of the network topology.
+
+The ability to send ICMP redirects is only appropriate for systems acting as routers.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61633r1155747_fix">Configure RHEL 9 to not allow interfaces to perform IPv4 ICMP redirects.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_send_redirects.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.send_redirects = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61633r1155747_fix" /><check system="C-61709r1155746_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not IPv4 ICMP redirect messages.
+
+Check the value of the "all send_redirects" variables with the following command:
+
+$ sudo sysctl net.ipv4.conf.all.send_redirects
+net.ipv4.conf.all.send_redirects = 0
+
+If "net.ipv4.conf.all.send_redirects" is not set to "0" and is not documented with the information system security officer (ISSO) as an operational requirement or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257969"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257969r1155623_rule" weight="10.0" severity="medium"><version>RHEL-09-253070</version><title>RHEL 9 must not allow interfaces to perform Internet Control Message Protocol (ICMP) redirects by default.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages contain information from the system's route table possibly revealing portions of the network topology. The ability to send ICMP redirects is only appropriate for systems acting as routers.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61634r1155622_fix">Configure RHEL 9 to not allow interfaces to perform Internet Protocol version 4 (IPv4) ICMP redirects by default.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_send_redirect.conf
+
+Add the following line to the file:
+net.ipv4.conf.default.send_redirects = 0
+
+Load settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61634r1155622_fix" /><check system="C-61710r1155621_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Check the value of the "default send_redirects" variables with the following command:
+
+$ sudo sysctl net.ipv4.conf.default.send_redirects
+net.ipv4.conf.default.send_redirects=0
+
+If "net.ipv4.conf.default.send_redirects" is not set to "0" and is not documented with the information system security officer (ISSO) as an operational requirement or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257970"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257970r1155751_rule" weight="10.0" severity="medium"><version>RHEL-09-253075</version><title>RHEL 9 must not enable IPv4 packet forwarding unless the system is a router.</title><description>&lt;VulnDiscussion&gt;Routing protocol daemons are typically used on routers to exchange network topology information with other routers. If this capability is used when not required, system network information may be unnecessarily transmitted across the network.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61635r1155750_fix">Configure RHEL 9 to not allow IPv4 packet forwarding, unless the system is a router.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_forwarding.conf
+
+Add the following line to the file:
+net.ipv4.conf.all.forwarding = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61635r1155750_fix" /><check system="C-61711r1155749_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is not performing IPv4 packet forwarding unless the system is a router.
+
+Check that "net.ipv4.conf.all.forwarding" is disabled using the following command:
+
+$ sudo sysctl net.ipv4.conf.all.forwarding
+net.ipv4.conf.all.forwarding = 0
+
+If "net.ipv4.conf.all.forwarding" is not set to "0" and is not documented with the information system security officer (ISSO) as an operational requirement or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257971"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257971r1155754_rule" weight="10.0" severity="medium"><version>RHEL-09-254010</version><title>RHEL 9 must not accept router advertisements on all IPv6 interfaces.</title><description>&lt;VulnDiscussion&gt;Routing protocol daemons are typically used on routers to exchange network topology information with other routers. If this software is used when not required, system network information may be unnecessarily transmitted across the network.
+
+An illicit router advertisement message could result in a man-in-the-middle attack.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61636r1155753_fix">Configure RHEL 9 to not accept router advertisements on all IPv6 interfaces unless the system is a router.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv4_accept_ra.conf
+
+Add the following line to the file:
+net.ipv6.conf.all.accept_ra = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61636r1155753_fix" /><check system="C-61712r1155752_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not accept router advertisements on all IPv6 interfaces, unless the system is a router.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check that "net.ipv6.conf.all.accept_ra" is set to not accept router advertisements by using the following command:
+
+$ sudo sysctl net.ipv6.conf.all.accept_ra
+net.ipv6.conf.all.accept_ra = 0
+
+If "net.ipv6.conf.all.accept_ra" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257972"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257972r1155757_rule" weight="10.0" severity="medium"><version>RHEL-09-254015</version><title>RHEL 9 must ignore IPv6 Internet Control Message Protocol (ICMP) redirect messages.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages modify the host's route table and are unauthenticated. An illicit ICMP redirect message could result in a man-in-the-middle attack.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61637r1155756_fix">Configure RHEL 9 to ignore IPv6 ICMP redirect messages.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_accept_redirects.conf
+
+Add the following line to the file:
+net.ipv6.conf.all.accept_redirects = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61637r1155756_fix" /><check system="C-61713r1155755_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 ignores IPv6 ICMP redirect messages.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "accept_redirects" variable with the following command:
+
+$ sysctl net.ipv6.conf.all.accept_redirects
+net.ipv6.conf.all.accept_redirects = 0
+
+If "net.ipv6.conf.all.accept_redirects" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257973"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257973r1155760_rule" weight="10.0" severity="medium"><version>RHEL-09-254020</version><title>RHEL 9 must not forward IPv6 source-routed packets.</title><description>&lt;VulnDiscussion&gt;Source-routed packets allow the source of the packet to suggest that routers forward the packet along a different path than configured on the router, which can be used to bypass network security measures. This requirement applies only to the forwarding of source-routed traffic, such as when forwarding is enabled and the system is functioning as a router.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61638r1155759_fix">Configure RHEL 9 to not accept IPv6 source-routed packets.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_accept_source_route.conf
+
+Add the following line to the file:
+net.ipv6.conf.all.accept_source_route = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61638r1155759_fix" /><check system="C-61714r1155758_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not accept IPv6 source-routed packets.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "net.ipv6.conf.all.accept_source_route" variable with the following command:
+
+$ sudo sysctl net.ipv6.conf.all.accept_source_route
+net.ipv6.conf.all.accept_source_route = 0
+
+If "net.ipv6.conf.all.accept_source_route" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257974"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257974r1155763_rule" weight="10.0" severity="medium"><version>RHEL-09-254025</version><title>RHEL 9 must not enable IPv6 packet forwarding unless the system is a router.</title><description>&lt;VulnDiscussion&gt;Routing protocol daemons are typically used on routers to exchange network topology information with other routers. If this software is used when not required, system network information may be unnecessarily transmitted across the network.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61639r1155762_fix">Configure RHEL 9 to not allow IPv6 packet forwarding, unless the system is a router.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_forwarding.conf
+
+Add the following line to the file:
+net.ipv6.conf.all.forwarding = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61639r1155762_fix" /><check system="C-61715r1155761_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is not performing IPv6 packet forwarding, unless the system is a router.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "net.ipv6.conf.all.forwarding" variable with the following command:
+
+$ sudo sysctl net.ipv6.conf.all.forwarding
+net.ipv6.conf.all.forwarding = 0
+
+If "net.ipv6.conf.all.forwarding" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257975"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257975r1155766_rule" weight="10.0" severity="medium"><version>RHEL-09-254030</version><title>RHEL 9 must not accept router advertisements on all IPv6 interfaces by default.</title><description>&lt;VulnDiscussion&gt;Routing protocol daemons are typically used on routers to exchange network topology information with other routers. If this software is used when not required, system network information may be unnecessarily transmitted across the network. An illicit router advertisement message could result in a man-in-the-middle attack.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61640r1155765_fix">Configure RHEL 9 to not accept router advertisements on all IPv6 interfaces by default unless the system is a router.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_accept_ra.conf
+
+Add the following line to the file:
+net.ipv6.conf.default.accept_ra = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61640r1155765_fix" /><check system="C-61716r1155764_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not accept router advertisements on all IPv6 interfaces by default, unless the system is a router.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "net.ipv6.conf.default.accept_ra" variable with the following command:
+
+$ sudo sysctl net.ipv6.conf.default.accept_ra
+net.ipv6.conf.default.accept_ra = 0
+
+If "net.ipv6.conf.default.accept_ra" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257976"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257976r1155769_rule" weight="10.0" severity="medium"><version>RHEL-09-254035</version><title>RHEL 9 must prevent IPv6 Internet Control Message Protocol (ICMP) redirect messages from being accepted.</title><description>&lt;VulnDiscussion&gt;ICMP redirect messages are used by routers to inform hosts that a more direct route exists for a particular destination. These messages modify the host's route table and are unauthenticated. An illicit ICMP redirect message could result in a man-in-the-middle attack.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61641r1155768_fix">Configure RHEL 9 to prevent IPv6 ICMP redirect messages from being accepted.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_accept_redirects.conf
+
+Add the following line to the file:
+net.ipv6.conf.default.accept_redirects = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61641r1155768_fix" /><check system="C-61717r1155767_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 to prevent IPv6 ICMP redirect messages.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "net.ipv6.conf.default.accept_redirects" variables with the following command:
+
+$ sudo sysctl net.ipv6.conf.default.accept_redirects
+net.ipv6.conf.default.accept_redirects = 0
+
+If "net.ipv6.conf.default.accept_redirects" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257977"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257977r1155772_rule" weight="10.0" severity="medium"><version>RHEL-09-254040</version><title>RHEL 9 must not forward IPv6 source-routed packets by default.</title><description>&lt;VulnDiscussion&gt;Source-routed packets allow the source of the packet to suggest that routers forward the packet along a different path than configured on the router, which can be used to bypass network security measures. This requirement applies only to the forwarding of source-routed traffic, such as when forwarding is enabled and the system is functioning as a router.
+
+Accepting source-routed packets in the IPv6 protocol has few legitimate uses. It must be disabled unless it is absolutely required.
+
+The sysctl --system command will load settings from all system configuration files. All configuration files are sorted by their filename in lexicographical order, regardless of the directories in which they reside. If multiple files specify the same option, the entry in the file with the lexicographically latest name will take precedence. Files are read from directories in the following list from top to bottom. Once a file of a given filename is loaded, any file of the same name in subsequent directories is ignored.
+
+/etc/sysctl.d/*.conf
+/run/sysctl.d/*.conf
+/usr/local/lib/sysctl.d/*.conf
+/usr/lib/sysctl.d/*.conf
+/lib/sysctl.d/*.conf
+/etc/sysctl.conf&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61642r1155771_fix">Configure RHEL 9 to not accept IPv6 source-routed packets by default.
+
+Create a configuration file if it does not already exist:
+
+$ sudo vi /etc/sysctl.d/ipv6_accept_source_route.conf
+
+Add the following line to the file:
+net.ipv6.conf.default.accept_source_route = 0
+
+Reload settings from all system configuration files with the following command:
+
+$ sudo sysctl --system</fixtext><fix id="F-61642r1155771_fix" /><check system="C-61718r1155770_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 does not accept IPv6 source-routed packets by default.
+
+Note: If IPv6 is disabled on the system, this requirement is Not Applicable.
+
+Check the value of the "net.ipv6.conf.default.accept_source_route" variables with the following command:
+
+$ sudo sysctl net.ipv6.conf.default.accept_source_route
+net.ipv6.conf.default.accept_source_route = 0
+
+If "net.ipv6.conf.default.accept_source_route" is not set to "0" or is missing, this is a finding.</check-content></check></Rule></Group>
+<Group id="V-258230"><title>SRG-OS-000033-GPOS-00014</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-258230r1184334_rule" weight="10.0" severity="high"><version>RHEL-09-671010</version><title>RHEL 9 must enable FIPS mode.</title><description>&lt;VulnDiscussion&gt;Use of weak or untested encryption algorithms undermines the purposes of using encryption to protect data. The operating system must implement cryptographic modules adhering to the higher standards approved by the federal government because this provides assurance they have been tested and validated.
+
+Satisfies: SRG-OS-000033-GPOS-00014, SRG-OS-000125-GPOS-00065, SRG-OS-000250-GPOS-00093, SRG-OS-000393-GPOS-00173, SRG-OS-000394-GPOS-00174, SRG-OS-000396-GPOS-00176, SRG-OS-000423-GPOS-00187, SRG-OS-000478-GPOS-00223&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000068</ident><ident system="http://cyber.mil/cci">CCI-000877</ident><ident system="http://cyber.mil/cci">CCI-002418</ident><ident system="http://cyber.mil/cci">CCI-002450</ident><fixtext fixref="F-61895r1184333_fix">Configure RHEL 9 to implement FIPS mode.
+
+If this check fails on an installed system, it is a permanent finding until the system is reinstalled with "fips=1" during installation.</fixtext><fix id="F-61895r1184333_fix" /><check system="C-61971r1184332_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify RHEL 9 is in FIPS mode with the following command:
+
+$ cat /proc/sys/crypto/fips_enabled
+1
+
+If the command does not return "1", this is a finding.</check-content></check></Rule></Group>
+<Group id="V-257956"><title>SRG-OS-000480-GPOS-00227</title><description>&lt;GroupDescription&gt;&lt;/GroupDescription&gt;</description><Rule id="SV-257956r991589_rule" weight="10.0" severity="high"><version>RHEL-09-252075</version><title>There must be no .shosts files on RHEL 9.</title><description>&lt;VulnDiscussion&gt;The .shosts files are used to configure host-based authentication for individual users or the system via SSH. Host-based authentication is not sufficient for preventing unauthorized access to the system, as it does not require interactive identification and authentication of a connection request, or for the use of two-factor authentication.&lt;/VulnDiscussion&gt;&lt;FalsePositives&gt;&lt;/FalsePositives&gt;&lt;FalseNegatives&gt;&lt;/FalseNegatives&gt;&lt;Documentable&gt;false&lt;/Documentable&gt;&lt;Mitigations&gt;&lt;/Mitigations&gt;&lt;SeverityOverrideGuidance&gt;&lt;/SeverityOverrideGuidance&gt;&lt;PotentialImpacts&gt;&lt;/PotentialImpacts&gt;&lt;ThirdPartyTools&gt;&lt;/ThirdPartyTools&gt;&lt;MitigationControl&gt;&lt;/MitigationControl&gt;&lt;Responsibility&gt;&lt;/Responsibility&gt;&lt;IAControls&gt;&lt;/IAControls&gt;</description><reference><dc:title>DPMS Target Red Hat Enterprise Linux 9</dc:title><dc:publisher>DISA</dc:publisher><dc:type>DPMS Target</dc:type><dc:subject>Red Hat Enterprise Linux 9</dc:subject><dc:identifier>5551</dc:identifier></reference><ident system="http://cyber.mil/cci">CCI-000366</ident><fixtext fixref="F-61621r925854_fix">Remove any found ".shosts" files from the system.
+
+$ sudo rm /[path]/[to]/[file]/.shosts</fixtext><fix id="F-61621r925854_fix" /><check system="C-61697r925853_chk"><check-content-ref href="Red_Hat_Enterprise_Linux_9_STIG.xml" name="M" /><check-content>Verify there are no ".shosts" files on RHEL 9 with the following command:
+
+$ sudo find / -name .shosts
+
+If a ".shosts" file is found, this is a finding.</check-content></check></Rule></Group>
+</Benchmark>

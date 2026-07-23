@@ -1,25 +1,31 @@
-# Pinned ComplianceAsCode/content refs + exclusions for the sysctld STIG baselines.
+# Pinned DISA STIG XCCDF zips for the sysctld-W02 baseline drift check.
 #
-# Update workflow: bump a product's ref below when DISA/ComplianceAsCode publish that
-# product's STIG update, then run `stig-update derive --product <p>`, review the diff,
-# update crates/rulesteward-sysctld/src/lints/baseline.rs, re-gate (adversarial +
-# mutation), and confirm `stig-update check` reports 0 drift.
+# DISA versions each RHEL STIG by FILENAME (there is no releases/latest API like
+# ComplianceAsCode has), so a bump = edit the `zip` filename below, then run
+# `stig-update derive --product <p>`, review the diff, update
+# crates/rulesteward-sysctld/src/lints/baseline.rs (the RHEL*_BASELINE tables),
+# re-gate (adversarial + mutation), and confirm `stig-update check` reports 0
+# drift. Mirrors tools/sshd-stig-update/stig-refs.toml and
+# tools/auditd-stig-update/stig-refs.toml exactly (#512 ports this tool from
+# ComplianceAsCode to the same DISA XCCDF source those two tools already use;
+# all three sysctld/sshd/auditd baselines are drawn from the same three
+# benchmark documents, so a STIG bump updates all three tools' pins together).
 #
-# NOTE on TOML layout: top-level keys (exclude_rules) MUST come before the [products]
-# table header, or they would be parsed as members of [products].
+# The public, no-auth CDN. Full URL = base_url + "/" + products.<p>.zip.
+# (public.cyber.mil/stigs/downloads/ is a JavaScript SPA that curl cannot read;
+# dl.dod.cyber.mil is the machine-fetchable path.)
+base_url = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip"
 
-# STIG-listed sysctl rules that are NOT /etc/sysctl.d-settable on RHEL, so the
-# baseline deliberately excludes them (flagging them "missing" would be an unfixable
-# false positive). A NON-excluded rule with no sysctl template is a hard error, so
-# this is the explicit allow-to-drop.
-#   - sysctl_crypto_fips_enabled : boot-time `fips=1`, read-only in /proc/sys.
-#   - sysctl_kernel_exec_shield  : a GRUB noexec / 32-bit-only check on RHEL.
-exclude_rules = ["sysctl_crypto_fips_enabled", "sysctl_kernel_exec_shield"]
+# Per-product pinned zip. The three RHEL STIGs version INDEPENDENTLY, so each has
+# its own pinned filename and can be bumped on its own.
+[products.rhel8]
+zip = "U_RHEL_8_V2R8_STIG.zip"
+benchmark = "RHEL 8 STIG V2R8 (01 Jul 2026)"
 
-# Per-product pinned ref. The three RHEL STIGs version INDEPENDENTLY, so each has its
-# own ref and can be bumped on its own. Today all three point at the commit issue
-# #335 was grounded against.
-[products]
-rhel8 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
-rhel9 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
-rhel10 = "519b5fe8ce338cfa25d53065bcb3759aafe8d36d"
+[products.rhel9]
+zip = "U_RHEL_9_V2R9_STIG.zip"
+benchmark = "RHEL 9 STIG V2R9 (01 Jul 2026)"
+
+[products.rhel10]
+zip = "U_RHEL_10_V1R2_STIG.zip"
+benchmark = "RHEL 10 STIG V1R2 (01 Jul 2026)"

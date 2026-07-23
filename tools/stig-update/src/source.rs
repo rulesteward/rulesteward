@@ -1,11 +1,110 @@
-//! The live ComplianceAsCode fetch (a `curl` shell-out) plus rule.yml / `_value.var`
-//! path location from the repo git-tree. Isolated here behind a thin seam so the
-//! derivation core ([`crate::derive`]) is tested offline with fixtures; this module
-//! is exercised only by the live `check` / `derive` runs.
+//! The live fetch seam. [`fetch_xccdf`]/[`read_local`] (added #512, session
+//! 9h-v0_8-wave4 Lane B) are the DISA zip fetch path this port's `check`/`derive`
+//! subcommands now use - download a DISA STIG zip, unzip it, and read out the
+//! `*Manual-xccdf.xml`, byte-identical logic to `tools/sshd-stig-update/src/source.rs`
+//! / `tools/auditd-stig-update/src/source.rs` (a `curl` + `unzip` shell-out, isolated
+//! here so the derivation core ([`crate::xccdf`]) stays offline-testable with
+//! fixtures).
+//!
+//! The rest of this module (`curl`, `controls_optional`, `fetch_status`, `tree`,
+//! `rule_fetcher`, `latest_release`, ...) is the CaC-era ComplianceAsCode fetch that
+//! `main.rs`'s new DISA-sourced `check`/`derive` subcommands no longer call directly -
+//! but it is NOT dead code: `tools/cis-update` (which path-deps this crate for its
+//! own, still-`ComplianceAsCode`-sourced CIS derivation) calls `controls_optional`,
+//! `tree`, `rule_fetcher`, and `latest_release` directly from its `main.rs`
+//! (`cmd_check`/`cmd_derive`, for the `--latest`/`--stig-refs` paths), in addition to
+//! `fetch_status` (via its own thin wrapper in `tools/cis-update/src/source.rs`).
+//! Every function in this module stays `pub`/reachable per the #512 survival
+//! constraint (verified live: `grep -rn stig_source:: tools/cis-update/src/main.rs`).
+//! Any `check --latest` mentioned in the doc comments below refers to
+//! `cis-update`'s OWN `--latest` flag - THIS crate's `check`/`derive` subcommands
+//! dropped `--latest` entirely in #512 (DISA has no releases/latest API).
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const REPO: &str = "ComplianceAsCode/content";
+
+/// Download the DISA STIG zip at `url`, unzip it, and return the contents of the
+/// single `*Manual-xccdf.xml` inside. Uses a per-process temp dir under the system
+/// temp directory.
+pub fn fetch_xccdf(url: &str) -> Result<String, String> {
+    let stem: String = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("stig")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let work = std::env::temp_dir().join(format!("stig-update-{}-{stem}", std::process::id()));
+    // Fresh working dir.
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).map_err(|e| format!("create {}: {e}", work.display()))?;
+
+    let zip = work.join("stig.zip");
+    run(
+        "curl",
+        &[
+            "-fsSL",
+            "--max-time",
+            "180",
+            "-o",
+            &zip.to_string_lossy(),
+            url,
+        ],
+    )?;
+    run(
+        "unzip",
+        &["-oq", &zip.to_string_lossy(), "-d", &work.to_string_lossy()],
+    )?;
+
+    let xccdf = find_xccdf(&work).ok_or_else(|| {
+        format!("no *Manual-xccdf.xml found after unzipping {url} (is the pinned zip correct?)")
+    })?;
+    let body =
+        std::fs::read_to_string(&xccdf).map_err(|e| format!("read {}: {e}", xccdf.display()))?;
+    let _ = std::fs::remove_dir_all(&work);
+    Ok(body)
+}
+
+/// Read a local XCCDF xml file (the offline `derive --file <path>` path).
+pub fn read_local(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+/// Recursively find the first `*Manual-xccdf.xml` under `dir`.
+fn find_xccdf(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            subdirs.push(path);
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("Manual-xccdf.xml"))
+        {
+            return Some(path);
+        }
+    }
+    subdirs.iter().find_map(|d| find_xccdf(d))
+}
+
+/// Run a command, mapping a spawn failure or non-zero exit to a readable error.
+fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
+    let out = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn {cmd} (is it installed?): {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{cmd} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
 
 /// `curl -fsSL <url>` -> body. Errors carry curl's stderr.
 pub fn curl(url: &str) -> Result<String, String> {
@@ -28,8 +127,10 @@ fn raw(reff: &str, path: &str) -> String {
 
 /// Fetch a product's STIG controls file at `reff`, returning `None` when it does not
 /// exist there (HTTP 404). A product can be absent at a given ref - e.g. `rhel10` is
-/// on ComplianceAsCode master but not yet in a tagged release - so `check --latest`
-/// treats `None` as "not yet released; skip" rather than a hard error.
+/// on ComplianceAsCode master but not yet in a tagged release - so `cis-update`'s own
+/// `check --latest` (see `tools/cis-update/src/main.rs::cmd_check`, which calls this
+/// function directly for its `--stig-refs` CIS<->STIG join) treats `None` as
+/// "not yet released; skip" rather than a hard error.
 pub fn controls_optional(reff: &str, product: &str) -> Result<Option<String>, String> {
     let url = raw(
         reff,
@@ -124,7 +225,9 @@ fn reject_if_truncated(tree_json: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The latest ComplianceAsCode release tag (for `check --latest`).
+/// The latest ComplianceAsCode release tag (for `cis-update`'s own `check --latest`
+/// flag - see `tools/cis-update/src/main.rs::cmd_check`, which calls this function
+/// directly; THIS crate's own `check` subcommand has no `--latest` flag as of #512).
 pub fn latest_release() -> Result<String, String> {
     let json = curl(&format!(
         "https://api.github.com/repos/{REPO}/releases/latest"

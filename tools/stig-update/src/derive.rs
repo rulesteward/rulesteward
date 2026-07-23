@@ -1,9 +1,20 @@
 //! Turn a product's controls file + its rule.yml bodies into the normalized STIG
 //! baseline table. The network fetch is injected (a closure) so this core is tested
 //! offline with in-memory fixtures.
+//!
+//! `code_table` (added #512, session 9h-v0_8-wave4 Lane B) is the "shipped table"
+//! side of the drift diff, mirroring `tools/sshd-stig-update/src/derive.rs::code_table`
+//! and `tools/auditd-stig-update/src/derive.rs::code_table` exactly: a pure,
+//! zero-design-decision projection of `rulesteward_sysctld::stig_baseline(target)`
+//! into this crate's comparison shape. It carries no XCCDF-derivation intelligence
+//! (that lives in `crate::xccdf::parse_baseline`, the actual #512 port target) - it
+//! is relocated here from `main.rs`'s own private helper of the same shape purely so
+//! `xccdf.rs`'s test module (the barrier golden tests) can reference the shipped
+//! table without depending on `main.rs`.
 
 use crate::cac;
 use crate::jinja::{self, ProductFacts};
+use rulesteward_sysctld::TargetVersion;
 
 /// One derived baseline row, normalized for comparison against the Rust const table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +105,23 @@ pub fn normalize_set(mut values: Vec<String>) -> Vec<String> {
     values
 }
 
+/// The shipped `rulesteward_sysctld` STIG baseline for `target`, projected into the
+/// comparison shape. This is the "code" side of the drift diff (see the module doc).
+/// Infallible: the shipped table is `&'static` data, not something that can fail to
+/// project (unlike parsing a live/fixture XCCDF).
+#[must_use]
+pub fn code_table(target: TargetVersion) -> Vec<DerivedKey> {
+    rulesteward_sysctld::stig_baseline(target)
+        .into_iter()
+        .map(|e| DerivedKey {
+            key: e.key.to_string(),
+            accepted: normalize_set(e.accepted.iter().map(|s| (*s).to_string()).collect()),
+            stig_id: e.stig_id.to_string(),
+            numeric: e.numeric,
+        })
+        .collect()
+}
+
 /// Human-readable diff of an upstream-`derived` table against the shipped `code`
 /// table (both keyed by sysctl key). Empty result == no drift. `-` a key in code but
 /// gone upstream; `+` a new upstream key; `~` a changed value / STIG id / datatype.
@@ -143,7 +171,35 @@ pub fn diff_tables(derived: &[DerivedKey], code: &[DerivedKey]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DerivedKey, derive_table};
+    use super::{DerivedKey, code_table, derive_table};
+    use rulesteward_sysctld::TargetVersion;
+
+    /// `code_table` must project the shipped table faithfully (sizes match
+    /// `rulesteward_sysctld::stig_baseline` directly, and normalize_set is applied so
+    /// a code-table entry compares equal to a re-sorted XCCDF-derived entry). This is
+    /// a parity pin on the PROJECTION MECHANISM, not a content oracle for the
+    /// grounded VALUES - see `crate::xccdf`'s golden tests for those (#512, session
+    /// 9h-v0_8-wave4 Lane B grounding).
+    #[test]
+    fn code_table_projects_the_shipped_table() {
+        let r9 = code_table(TargetVersion::Rhel9);
+        assert_eq!(
+            r9.len(),
+            rulesteward_sysctld::stig_baseline(TargetVersion::Rhel9).len()
+        );
+        let dmesg = r9
+            .iter()
+            .find(|d| d.key == "kernel.dmesg_restrict")
+            .expect("kernel.dmesg_restrict present");
+        assert_eq!(dmesg.accepted, ["1"]);
+        assert!(dmesg.numeric);
+        let core_pattern = r9
+            .iter()
+            .find(|d| d.key == "kernel.core_pattern")
+            .expect("kernel.core_pattern present");
+        assert!(!core_pattern.numeric, "core_pattern is string-typed");
+    }
+
     use std::collections::HashMap;
 
     /// A fixture fetcher: maps rule name -> (rule.yml, Option<var.yml>).

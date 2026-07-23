@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cli::{HumanJsonCsvFormat, HumanJsonFormat, TargetSelector};
+use crate::cli::{HumanJsonCsvFormat, OutputFormat, TargetSelector};
 
 /// Arguments for `rulesteward auditd cost` (#85).
 ///
@@ -51,10 +51,11 @@ pub struct AuditdLintArgs {
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Output format (human | json; SARIF and CSV are not offered for this
-    /// verb per the locked output contracts CC-3/CC-4).
-    #[arg(long, value_enum, default_value_t = HumanJsonFormat::Human)]
-    pub format: HumanJsonFormat,
+    /// Output format (human | json | sarif; CSV is not offered for this verb
+    /// per the locked output contract CC-3). SARIF is findings-only here:
+    /// `--sarif-include-pass` coverage attestation stays fapolicyd-only (CC-4).
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 
     /// Also fold `AppArmor` msgtype record names (`APPARMOR_DENIED`, etc.).
     /// Enable when linting rules for an AppArmor-enabled audit build

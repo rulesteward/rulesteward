@@ -57,13 +57,16 @@ fn lint_with_probe(
         let (mut diags, sources) =
             rulesteward_sysctld::system::lint_system(args.root.as_deref(), target);
         let no_op = crate::profile::apply_profile(&mut diags, profile);
-        crate::output::emit_lint(
+        if let Err(e) = crate::output::emit_lint(
             args.format,
             "sysctl-lint",
             SYSCTL_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
-        );
+        ) {
+            eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
+            return EXIT_TOOL_FAILURE;
+        }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
@@ -85,13 +88,16 @@ fn lint_with_probe(
     if path.is_dir() {
         let (mut diags, sources) = rulesteward_sysctld::parser::lint_dir_with_target(&path, target);
         let no_op = crate::profile::apply_profile(&mut diags, profile);
-        crate::output::emit_lint(
+        if let Err(e) = crate::output::emit_lint(
             args.format,
             "sysctl-lint",
             SYSCTL_LINT_SCHEMA_VERSION,
             &diags,
             &sources,
-        );
+        ) {
+            eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
+            return EXIT_TOOL_FAILURE;
+        }
         return crate::profile::resolve_exit_code(no_op, &diags, false);
     }
 
@@ -122,13 +128,16 @@ fn lint_with_probe(
 
     let no_op = crate::profile::apply_profile(&mut diags, profile);
 
-    crate::output::emit_lint(
+    if let Err(e) = crate::output::emit_lint(
         args.format,
         "sysctl-lint",
         SYSCTL_LINT_SCHEMA_VERSION,
         &diags,
         &sources,
-    );
+    ) {
+        eprintln!("sysctl lint: rendering {:?} output: {e}", args.format);
+        return EXIT_TOOL_FAILURE;
+    }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
 }
@@ -136,7 +145,7 @@ fn lint_with_probe(
 #[cfg(test)]
 mod lint_shell_tests {
     use super::{HostTargetProbe, lint, lint_with_probe};
-    use crate::cli::{HumanJsonFormat, SysctlLintArgs, TargetSelector};
+    use crate::cli::{OutputFormat, SysctlLintArgs, TargetSelector};
     use crate::exit_code::EXIT_TOOL_FAILURE;
 
     /// A host probe returning a canned result, so the `--target auto` wiring
@@ -155,7 +164,7 @@ mod lint_shell_tests {
             path,
             system: false,
             root: None,
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: None,
         }
     }
@@ -225,7 +234,7 @@ mod lint_shell_tests {
             path: Some(f),
             system: false,
             root: None,
-            format: HumanJsonFormat::Human,
+            format: OutputFormat::Human,
             target: Some(TargetSelector::Auto),
         };
         let probe = FakeProbe(Ok(None));
