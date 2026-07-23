@@ -866,6 +866,17 @@ mod tests {
             "W01 message must cite RHEL-10-600560; got {:?}",
             d.message
         );
+        // Per-control pin: W01 must NOT pick up a sibling RHEL-10 id from a
+        // different sudo-W04 control this same lane grounds (guards against
+        // NOPASSWD_STIG_CONTROLS getting the wrong new id), mirroring the
+        // stig.rs `must_not_cite` pattern.
+        for bad in ["RHEL-10-600530", "RHEL-10-600540", "RHEL-10-600550"] {
+            assert!(
+                !d.message.contains(bad),
+                "W01 message must NOT cite the sibling id '{bad}'; got {:?}",
+                d.message
+            );
+        }
     }
 }
 
@@ -1391,6 +1402,17 @@ mod w05_tests {
             "W05 message must cite RHEL-10-600560; got {:?}",
             d.message
         );
+        // Per-control pin: W05 must NOT pick up a sibling RHEL-10 id from a
+        // different sudo-W04 control this same lane grounds (guards against
+        // NOPASSWD_STIG_CONTROLS getting the wrong new id), mirroring the
+        // stig.rs `must_not_cite` pattern.
+        for bad in ["RHEL-10-600530", "RHEL-10-600540", "RHEL-10-600550"] {
+            assert!(
+                !d.message.contains(bad),
+                "W05 message must NOT cite the sibling id '{bad}'; got {:?}",
+                d.message
+            );
+        }
     }
 
     // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` used to MERGE two

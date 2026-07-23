@@ -1395,14 +1395,21 @@ mod tests {
             );
         }
 
-        // Cross-contamination guard: `!use_pty` (CIS/PCI, no DISA sudo STIG
-        // control) and `visiblepw` (CIS/general, no DISA STIG control) have
-        // NO RHEL-10 equivalent in the fetched XCCDF -- they must NOT pick up
-        // any RHEL-10-6005xx id.
-        for (defaults, bad) in [
-            ("Defaults !use_pty\n", "RHEL-10-6005"),
-            ("Defaults visiblepw\n", "RHEL-10-6005"),
-        ] {
+        // Per-control pin: each finding's own weakening message must NOT pick
+        // up a SIBLING RHEL-10 id from one of the other two new controls in
+        // this same lane (guards against the 3 new ids getting swapped
+        // between `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
+        // `TIMESTAMP_TIMEOUT_CONTROLS`), mirroring the pre-existing
+        // RHEL-08/RHEL-09 `must_not_cite` pattern above.
+        let must_not_cite = [
+            ("Defaults !authenticate\n", "RHEL-10-600550"), // pw-family id, not authenticate's
+            ("Defaults !authenticate\n", "RHEL-10-600540"), // timestamp id, not authenticate's
+            ("Defaults targetpw\n", "RHEL-10-600530"),      // authenticate id, not pw-family's
+            ("Defaults targetpw\n", "RHEL-10-600540"),      // timestamp id, not pw-family's
+            ("Defaults timestamp_timeout=-1\n", "RHEL-10-600530"), // authenticate id, not timestamp's
+            ("Defaults timestamp_timeout=-1\n", "RHEL-10-600550"), // pw-family id, not timestamp's
+        ];
+        for (defaults, bad) in must_not_cite {
             let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
             let diags = lint_w04(&src);
             assert!(
@@ -1410,8 +1417,47 @@ mod tests {
                     .iter()
                     .filter(|d| d.code == "sudo-W04")
                     .all(|d| !d.message.contains(bad)),
-                "W04 finding for {defaults:?} must NOT cite any RHEL-10 sudo \
-                 STIG id (no grounded equivalent exists); got {diags:?}"
+                "W04 finding for {defaults:?} must NOT cite the sibling id \
+                 '{bad}'; got {diags:?}"
+            );
+        }
+
+        // Cross-contamination guard: `!use_pty` (CIS/PCI, no DISA sudo STIG
+        // control) and `visiblepw` (CIS/general, no DISA STIG control) have
+        // NO RHEL-10 equivalent in the fetched XCCDF -- the WEAKENING finding
+        // for each must NOT pick up any RHEL-10-6005xx id.
+        //
+        // Both fixtures set no `timestamp_timeout` anywhere, so `lint_w04`
+        // ALSO emits the merged missing-required absence finding (#347/#363)
+        // for `timestamp_timeout` -- and once the implementer appends the
+        // grounded RHEL-10-600540 id to `TIMESTAMP_TIMEOUT_CONTROLS` (per
+        // this same lane), that absence finding's message legitimately
+        // contains "RHEL-10-6005...". That is a DIFFERENT, correctly-cited
+        // finding, not cross-contamination of the use_pty/visiblepw
+        // weakening finding under test, so the guard filters to the
+        // specific weakening finding by name before asserting the ban (the
+        // timestamp absence message never contains "use_pty" or
+        // "visiblepw" -- see `check_merged_required`'s message text).
+        for (defaults, setting_name, bad) in [
+            ("Defaults !use_pty\n", "use_pty", "RHEL-10-6005"),
+            ("Defaults visiblepw\n", "visiblepw", "RHEL-10-6005"),
+        ] {
+            let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            let weakening: Vec<_> = diags
+                .iter()
+                .filter(|d| d.code == "sudo-W04" && d.message.contains(setting_name))
+                .collect();
+            assert!(
+                !weakening.is_empty(),
+                "W04 finding for {defaults:?} must include a '{setting_name}' \
+                 weakening finding to guard; got {diags:?}"
+            );
+            assert!(
+                weakening.iter().all(|d| !d.message.contains(bad)),
+                "W04 '{setting_name}' weakening finding for {defaults:?} must \
+                 NOT cite any RHEL-10 sudo STIG id (no grounded equivalent \
+                 exists); got {weakening:?}"
             );
         }
     }
