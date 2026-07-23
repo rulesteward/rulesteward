@@ -945,16 +945,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// The `targetpw` / `rootpw` / `runaspw` pw-family weakenings ALL cite the
-    /// SAME control, DISA STIG RHEL-08-010383 / RHEL-09-432020
+    /// SAME control, DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550
     /// (`WEAKENING_PRESENT` rows at stig.rs:116/123/130), and all fire from the
-    /// SAME generic loop (stig.rs:258-273). Each finding must carry TWO typed
-    /// `ControlRef`s, both `Framework::Stig`, in citation order (RHEL-08 first,
-    /// then RHEL-09). Looping over all THREE fixtures (mirroring the
+    /// SAME generic loop (stig.rs:258-273). Each finding must carry THREE typed
+    /// `ControlRef`s, all `Framework::Stig`, in citation order (RHEL-08, then
+    /// RHEL-09, then RHEL-10). Looping over all THREE fixtures (mirroring the
     /// `w04_weakening_findings_cite_grounded_controls` drift-guard, which
     /// enumerates the same three) closes the omission survivor: a wrong impl
     /// that keys controls off the tested NAME (`"targetpw" => pair, _ => []`)
     /// would pass a targetpw-only test yet ship rootpw + runaspw empty. The
     /// mutation gate cannot backstop an omission, so it is pinned here.
+    ///
+    /// #563 (9i lane-7): extended from a dual RHEL-08/RHEL-09 pin to a triple
+    /// RHEL-08/RHEL-09/RHEL-10 pin (was `len() == 2`, `controls[0]`/`[1]`
+    /// only) -- `RHEL-10-600550` grounded against the DISA RHEL 10 STIG V1R1
+    /// XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use the
+    /// invoking user's password for privilege escalation when using
+    /// \"sudo\""; see `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE
+    /// length assertion that the RHEL-10 addition breaks, so it is updated in
+    /// place per the discipline in the lane-7 brief rather than left stale-red.
     #[test]
     fn w04_pw_family_findings_carry_stig_controls() {
         use rulesteward_core::Framework;
@@ -968,15 +977,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("W04 fires for {name}"));
             assert_eq!(
                 finding.controls.len(),
-                2,
-                "{name}'s dual RHEL-08/RHEL-09 citation must become two \
-                 ControlRefs; got {:?}",
+                3,
+                "{name}'s triple RHEL-08/RHEL-09/RHEL-10 citation must become \
+                 three ControlRefs; got {:?}",
                 finding.controls
             );
             assert_eq!(finding.controls[0].framework, Framework::Stig);
             assert_eq!(finding.controls[0].id, "RHEL-08-010383");
             assert_eq!(finding.controls[1].framework, Framework::Stig);
             assert_eq!(finding.controls[1].id, "RHEL-09-432020");
+            assert_eq!(finding.controls[2].framework, Framework::Stig);
+            assert_eq!(finding.controls[2].id, "RHEL-10-600550");
         }
     }
 
@@ -1026,9 +1037,18 @@ mod tests {
     }
 
     /// `Defaults !authenticate` cites DISA STIG RHEL-08-010381 AND
-    /// RHEL-09-432025 (stig.rs:192, the negated `authenticate` arm of
-    /// `check_file`). Both ids are `Framework::Stig`, in citation order
-    /// (RHEL-08 first, then RHEL-09).
+    /// RHEL-09-432025 AND RHEL-10-600530 (stig.rs:192, the negated
+    /// `authenticate` arm of `check_file`). All three ids are
+    /// `Framework::Stig`, in citation order (RHEL-08, RHEL-09, RHEL-10).
+    ///
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600530` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281208 /
+    /// SV-281208r1166576_rule, "RHEL 10 must require users to reauthenticate
+    /// for privilege escalation"; see `lane-7-sudoersids-report.md`). This is
+    /// an EXHAUSTIVE length assertion that the RHEL-10 addition breaks, so it
+    /// is updated in place per the discipline in the lane-7 brief rather than
+    /// left stale-red.
     #[test]
     fn w04_not_authenticate_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1040,23 +1060,35 @@ mod tests {
             .expect("W04 fires for !authenticate");
         assert_eq!(
             finding.controls.len(),
-            2,
-            "!authenticate's dual RHEL-08/RHEL-09 citation must become two \
-             ControlRefs; got {:?}",
+            3,
+            "!authenticate's triple RHEL-08/RHEL-09/RHEL-10 citation must \
+             become three ControlRefs; got {:?}",
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Stig);
         assert_eq!(finding.controls[0].id, "RHEL-08-010381");
         assert_eq!(finding.controls[1].framework, Framework::Stig);
         assert_eq!(finding.controls[1].id, "RHEL-09-432025");
+        assert_eq!(finding.controls[2].framework, Framework::Stig);
+        assert_eq!(finding.controls[2].id, "RHEL-10-600530");
     }
 
     /// A NEGATIVE `Defaults timestamp_timeout=-1` (the per-file weakening,
-    /// line >= 1) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015
-    /// (stig.rs:248, the negative-value arm of `check_file`). Both ids are
-    /// `Framework::Stig`, in citation order. `use_pty` + `logfile` are present
-    /// so ONLY the per-file timestamp weakening is the timestamp finding under
-    /// test (no merged absent/conflict finding fires).
+    /// line >= 1) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015 AND
+    /// RHEL-10-600540 (stig.rs:248, the negative-value arm of `check_file`).
+    /// All three ids are `Framework::Stig`, in citation order. `use_pty` +
+    /// `logfile` are present so ONLY the per-file timestamp weakening is the
+    /// timestamp finding under test (no merged absent/conflict finding
+    /// fires).
+    ///
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
+    /// SV-281209r1166579_rule, "RHEL 10 must require reauthentication when
+    /// using the \"sudo\" command"; see `lane-7-sudoersids-report.md`). This
+    /// is an EXHAUSTIVE length assertion that the RHEL-10 addition breaks, so
+    /// it is updated in place per the discipline in the lane-7 brief rather
+    /// than left stale-red.
     #[test]
     fn w04_negative_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1072,15 +1104,17 @@ mod tests {
             .expect("W04 fires for negative timestamp_timeout");
         assert_eq!(
             finding.controls.len(),
-            2,
-            "negative timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
-             become two ControlRefs; got {:?}",
+            3,
+            "negative timestamp_timeout's triple RHEL-08/RHEL-09/RHEL-10 \
+             citation must become three ControlRefs; got {:?}",
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Stig);
         assert_eq!(finding.controls[0].id, "RHEL-08-010384");
         assert_eq!(finding.controls[1].framework, Framework::Stig);
         assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+        assert_eq!(finding.controls[2].framework, Framework::Stig);
+        assert_eq!(finding.controls[2].id, "RHEL-10-600540");
     }
 
     /// The merged-required MISSING `use_pty` absence finding (line 0) cites
@@ -1198,6 +1232,14 @@ mod tests {
     /// timestamp_timeout absence fires. Same control-id pair as the per-file
     /// negative weakening, DIFFERENT emit site -- pins that the impl wires
     /// controls at the merged-absent site too (a partial impl fails).
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
+    /// SV-281209r1166579_rule; same control as the per-file negative
+    /// weakening above, DIFFERENT emit site; see `lane-7-sudoersids-report.md`).
+    /// This is an EXHAUSTIVE length assertion that the RHEL-10 addition
+    /// breaks, so it is updated in place per the discipline in the lane-7
+    /// brief rather than left stale-red.
     #[test]
     fn w04_missing_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1211,15 +1253,17 @@ mod tests {
             .expect("the merged absent timestamp_timeout finding fires");
         assert_eq!(
             finding.controls.len(),
-            2,
-            "absent timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
-             become two ControlRefs; got {:?}",
+            3,
+            "absent timestamp_timeout's triple RHEL-08/RHEL-09/RHEL-10 \
+             citation must become three ControlRefs; got {:?}",
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Stig);
         assert_eq!(finding.controls[0].id, "RHEL-08-010384");
         assert_eq!(finding.controls[1].framework, Framework::Stig);
         assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+        assert_eq!(finding.controls[2].framework, Framework::Stig);
+        assert_eq!(finding.controls[2].id, "RHEL-10-600540");
     }
 
     /// The merged-required CONFLICTING `timestamp_timeout` finding (line 0, 2+
@@ -1227,6 +1271,13 @@ mod tests {
     /// (stig.rs:438, the `_multiple` arm of `check_merged_required`). Both ids
     /// are `Framework::Stig`, in citation order. Two merged files set `=5` and
     /// `=30`; the conflict finding's message contains "conflict".
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
+    /// SV-281209r1166579_rule; same control, third emit site; see
+    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
+    /// that the RHEL-10 addition breaks, so it is updated in place per the
+    /// discipline in the lane-7 brief rather than left stale-red.
     #[test]
     fn w04_conflicting_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1245,15 +1296,17 @@ mod tests {
             .expect("the merged conflicting timestamp_timeout finding fires");
         assert_eq!(
             finding.controls.len(),
-            2,
-            "conflicting timestamp_timeout's dual RHEL-08/RHEL-09 citation must \
-             become two ControlRefs; got {:?}",
+            3,
+            "conflicting timestamp_timeout's triple RHEL-08/RHEL-09/RHEL-10 \
+             citation must become three ControlRefs; got {:?}",
             finding.controls
         );
         assert_eq!(finding.controls[0].framework, Framework::Stig);
         assert_eq!(finding.controls[0].id, "RHEL-08-010384");
         assert_eq!(finding.controls[1].framework, Framework::Stig);
         assert_eq!(finding.controls[1].id, "RHEL-09-432015");
+        assert_eq!(finding.controls[2].framework, Framework::Stig);
+        assert_eq!(finding.controls[2].id, "RHEL-10-600540");
     }
 
     /// `visiblepw`'s citation is "CIS / general hardening; not a DISA STIG
@@ -1301,6 +1354,66 @@ mod tests {
             "a sudo-F01 parse failure carries no compliance control; got {:?}",
             diags[0].controls
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #563 (9i lane-7): RHEL-10 STIG control ids for W04
+    // -----------------------------------------------------------------------
+    //
+    // Grounded against the DISA RHEL 10 STIG V1R1 XCCDF
+    // (`U_RHEL_10_STIG_V1R1_Manual-xccdf.xml`, fetched from
+    // dl.dod.cyber.mil; full citations table in
+    // `/mnt/side-projects/9i-closeout/lane-7-sudoersids-report.md`):
+    // - `!authenticate` -> RHEL-10-600530 (V-281208)
+    // - `targetpw`/`rootpw`/`runaspw` -> RHEL-10-600550 (V-281210)
+    // - `timestamp_timeout` -> RHEL-10-600540 (V-281209)
+    // Sanity anchor: RHEL-10-600520 (W06, tags.rs:401) was located in the
+    // same fetched XCCDF (V-281207), confirming the numbering series.
+
+    /// Each affected W04 weakening finding's message must cite its new
+    /// RHEL-10 id, mirroring `w04_weakening_findings_cite_grounded_controls`'
+    /// must-cite shape but scoped to the RHEL-10 additions only. RED until
+    /// the implementer appends the RHEL-10 id to the `WEAKENING_PRESENT`
+    /// free-text citation strings (and the matching typed control consts).
+    #[test]
+    fn rhel10_w04_weakening_findings_cite_grounded_controls() {
+        let must_cite = [
+            ("Defaults !authenticate\n", "RHEL-10-600530"),
+            ("Defaults targetpw\n", "RHEL-10-600550"),
+            ("Defaults rootpw\n", "RHEL-10-600550"),
+            ("Defaults runaspw\n", "RHEL-10-600550"),
+            ("Defaults timestamp_timeout=-1\n", "RHEL-10-600540"),
+        ];
+        for (defaults, needle) in must_cite {
+            let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.code == "sudo-W04" && d.message.contains(needle)),
+                "W04 finding for {defaults:?} must cite '{needle}'; got {diags:?}"
+            );
+        }
+
+        // Cross-contamination guard: `!use_pty` (CIS/PCI, no DISA sudo STIG
+        // control) and `visiblepw` (CIS/general, no DISA STIG control) have
+        // NO RHEL-10 equivalent in the fetched XCCDF -- they must NOT pick up
+        // any RHEL-10-6005xx id.
+        for (defaults, bad) in [
+            ("Defaults !use_pty\n", "RHEL-10-6005"),
+            ("Defaults visiblepw\n", "RHEL-10-6005"),
+        ] {
+            let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
+            let diags = lint_w04(&src);
+            assert!(
+                diags
+                    .iter()
+                    .filter(|d| d.code == "sudo-W04")
+                    .all(|d| !d.message.contains(bad)),
+                "W04 finding for {defaults:?} must NOT cite any RHEL-10 sudo \
+                 STIG id (no grounded equivalent exists); got {diags:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
