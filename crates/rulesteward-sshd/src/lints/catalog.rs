@@ -2,8 +2,11 @@
 //! id, severity tier, and a short operator-facing description.
 //!
 //! Mirrors the auditd catalog (the crate that OWNS the codes carries the catalog,
-//! inside the mutation `examine_globs`): no `Condition` machinery, since there is
-//! no SARIF for sshd (locked CC-4: SARIF is `fapolicyd lint` only).
+//! inside the mutation `examine_globs`): no `Condition` machinery here. `sshd
+//! lint --format sarif` is offered (#511) and is findings-only, so it needs
+//! no per-check run-condition gate; the `--sarif-include-pass` coverage
+//! attestation that the `Condition` machinery backs stays fapolicyd-only
+//! (locked CC-4).
 //!
 //! # Frozen in Phase 0
 //! The catalog lists the FULL planned sshd taxonomy now, even though only
