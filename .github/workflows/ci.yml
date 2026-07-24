@@ -108,6 +108,14 @@ jobs:
       - name: DAC guard (unguarded chmod deny-mode fixtures)
         run: bash scripts/check-dac-guard.sh
 
+      # (#586) Codes-count guard: every "N codes" / "N <backend> codes" prose
+      # mention in README.md and crates/rulesteward-cli/src/cli/mod.rs must
+      # equal its backend's lint-catalog length. Cheap static check (bash +
+      # grep, no cargo build), so it lives here in the lint tier alongside
+      # fmt/clippy/dac-guard rather than in the Rocky matrix.
+      - name: Codes-count guard (doc-truth "N codes" drift)
+        run: bash scripts/check-codes-count.sh
+
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
   # matrix, the dnf bootstrap, the bash shell override, and the

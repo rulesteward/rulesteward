@@ -124,7 +124,7 @@ rulesteward sshd lint --format json /etc/ssh/sshd_config
 ```bash
 rulesteward auditd cost --rules /etc/audit/rules.d/    # estimate SIEM ingest volume + cost
 rulesteward auditd cost --rules /etc/audit/rules.d/ --from-log /var/log/audit/audit.log
-rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (9 au- codes)
+rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (11 au- codes)
 ```
 
 - **cost** - estimate ingest volume and USD/month from the ruleset (a low / typical / high
@@ -136,7 +136,7 @@ rulesteward auditd lint /etc/audit/rules.d/            # semantic ruleset lint (
 ### sudoers
 
 ```bash
-rulesteward sudoers lint /etc/sudoers                  # lint the sudoers policy (8 sudo- codes)
+rulesteward sudoers lint /etc/sudoers                  # lint the sudoers policy (9 sudo- codes)
 rulesteward sudoers lint /etc/sudoers.d                # lint a sudoers.d/ drop-in directory
 rulesteward sudoers lint --format json /etc/sudoers
 ```
@@ -283,7 +283,7 @@ severity tier (`F` fatal, `E` error, `W` warning, `S` style, `C` convention, `X`
 | `sudo-W05` | Warning | `NOPASSWD` grants passwordless sudo on a specific (non-ALL) command; STIG requires removing `NOPASSWD` entirely (DISA STIG RHEL-08-010380/RHEL-09-611085) |
 | `sudo-W06` | Warning | a user specification grants the literal `ALL` user unrestricted privilege elevation (`ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`, including `ALL` appearing among other list members and run-as specs inherited by later commands on the line) - DISA STIG RHEL-08-010382/RHEL-09-432030/RHEL-10-600520 |
 
-### sysctl.d (`sysctld-`, 4 codes)
+### sysctl.d (`sysctld-`, 5 codes)
 
 | Code | Severity | Checks | Gate |
 | --- | --- | --- | --- |
