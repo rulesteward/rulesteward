@@ -12,7 +12,7 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
-use crate::ast::{Attr, AttrValue, Entry, Rule};
+use crate::ast::{Attr, AttrValue, Entry, Rule, SyntaxFlavor};
 use crate::version::TargetVersion;
 
 /// `pattern=` values accepted by fapolicyd on the rhel8 dialect (1.3.2). The
@@ -168,19 +168,34 @@ fn check_subject_device(
 /// CHECK 4 - `exe_device=` (legacy-grammar subject attr; issue #570) exists
 /// in upstream's LEGACY subject table (`subject-attr.c` table1) on 1.3.2
 /// (rhel8) but was dropped from that table by 1.4.5 (rhel9/rhel10), so a
-/// subject-side `exe_device=` is rejected there. Mirrors
-/// `check_subject_device`'s shape exactly: target-gated (fires only on
-/// rhel9/rhel10) and None-closed (no `--target` means no version to
-/// evaluate the divergence against, matching `walk`'s overall None gate).
-/// `exe_device` reaching this check at all already implies a legacy-flavor
-/// rule (the modern grammar never classifies it as subject; see
-/// `attrs::LEGACY_ONLY_SUBJECT_ATTRS` / `parser::grammar::legacy_classify`).
+/// subject-side `exe_device=` is rejected there. Target-gated (fires only on
+/// rhel9/rhel10) and None-closed (no `--target` means no version to evaluate
+/// the divergence against, matching `walk`'s overall None gate) - same shape
+/// as `check_subject_device`.
+///
+/// UNLIKE `device` (known to BOTH grammars' attribute tables, just
+/// version-divergent on the subject side - so `check_subject_device` fires
+/// regardless of `Rule.syntax`), `exe_device` does not exist in EITHER
+/// version's MODERN table (table2) at all; a modern-grammar rule using it
+/// (`allow exe_device=... : all`) is uniformly unknown on every target and
+/// is fapd-E01's territory, not a version divergence. So this check is
+/// ADDITIONALLY gated on `rule.syntax == SyntaxFlavor::Legacy`: `exe_device`
+/// can land in `rule.subject` purely by COLON POSITION in a modern-syntax
+/// rule (the modern grammar splits subject/object positionally, not by
+/// attribute-name classification - see `parser::grammar::modern_rule`), so
+/// without this gate a modern-position `exe_device=` would spuriously
+/// double-report alongside fapd-E01 on rhel9/rhel10. See
+/// `attrs::LEGACY_ONLY_SUBJECT_ATTRS` / `parser::grammar::legacy_classify`
+/// for where the legacy-only legality itself is established.
 fn check_subject_exe_device(
     rule: &Rule,
     file: &Path,
     target: TargetVersion,
     diags: &mut Vec<Diagnostic>,
 ) {
+    if rule.syntax != SyntaxFlavor::Legacy {
+        return;
+    }
     if target < TargetVersion::Rhel9 {
         return;
     }
