@@ -423,4 +423,50 @@ fn explain_record_file_fifo_fails_fast_not_hang() {
         stderr.contains(&fifo.display().to_string()),
         "the diagnostic must name the offending FIFO path; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `explain --record /dev/null` silently succeeds past the read and
+/// hits the UNRELATED "no FANOTIFY record found" parse-error arm
+/// (`EXIT_ERRORS`=2, measured live 2026-07-24), not a crash. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes
+/// every FIFO test above yet still lets this character-device case through
+/// to the wrong error arm. After the fix (routing through the shared
+/// `rulesteward_core::fsread::read_to_string`, which rejects ANY
+/// non-regular file), `/dev/null` must be a tool failure BEFORE parsing is
+/// ever attempted.
+#[test]
+fn explain_record_dev_null_is_a_tool_failure_not_a_parse_error() {
+    let ruleset = ruleset_13_dir();
+    let out = bin()
+        .args(["fapolicyd", "explain", "--record", "/dev/null"])
+        .args(["--ruleset"])
+        .arg(ruleset.path())
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not read as an empty record and hit the unrelated parse-error arm \
+         (EXIT_ERRORS=2, today's behavior); stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
 }

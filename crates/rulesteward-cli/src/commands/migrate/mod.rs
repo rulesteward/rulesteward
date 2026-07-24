@@ -1356,7 +1356,7 @@ mod tests {
         let rules_d = dir.path().join(MODERN_DIR);
         std::fs::create_dir_all(&rules_d).unwrap();
         std::fs::write(rules_d.join("10-good.rules"), "allow uid=0 : all\n").unwrap();
-        let fifo = rules_d.join("20-fifo.rules");
+        let fifo = rules_d.join("20-special.rules");
         let status = std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()
@@ -1384,11 +1384,22 @@ mod tests {
                     "a FIFO in rules.d/*.rules must surface as an Err (fapolicyd-cli \
                      is never even reached), not a successful check_rules outcome",
                 );
+                // AND, not OR: the fixture is deliberately named `20-special.rules`
+                // (not `20-fifo.rules`) so the path text alone can never satisfy
+                // the file-type half of this assertion - a message that only
+                // echoes the path (e.g. a stat-precheck impl's generic "could not
+                // read <path>: No such file or directory" or similar) must still
+                // fail here even though it names the offending path correctly.
                 assert!(
-                    msg.to_lowercase().contains("fifo")
-                        || msg.contains(&fifo.display().to_string()),
-                    "the error must name the FIFO file type or the offending path, \
-                     got: {msg}"
+                    msg.contains(&fifo.display().to_string()),
+                    "the error must name the offending path, got: {msg}"
+                );
+                assert!(
+                    msg.to_lowercase().contains("fifo"),
+                    "the error must ALSO name the actual file type found (FIFO), \
+                     proving the rejection routed through the shared \
+                     rulesteward_core::fsread guard rather than a path-only \
+                     generic I/O error; got: {msg}"
                 );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

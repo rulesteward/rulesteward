@@ -637,6 +637,12 @@ fn report_file_fifo_fails_fast_not_hang() {
         stderr.contains(&fifo.display().to_string()),
         "the diagnostic must name the offending FIFO path; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
 }
 
 /// `report --file <valid> --diff-against <fifo>` must fail FAST, never hang:
@@ -681,5 +687,94 @@ fn report_diff_against_fifo_fails_fast_not_hang() {
     assert!(
         stderr.contains(&fifo.display().to_string()),
         "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+// guard is not enough. `/dev/null` (a character device) never hangs under a
+// raw `std::fs::read_to_string` - it reads back an instant empty string - so
+// it defeats any guard that only special-cases FIFOs, and on `report` this is
+// worse than a hang: it produces a CONFIDENT, FABRICATED clean report.
+// ---------------------------------------------------------------------------
+
+/// `report --file /dev/null` today silently succeeds and prints a fabricated
+/// "0 allow-grants" CLEAN report (measured live, 2026-07-24: exit 0, stdout
+/// "0 allow-grants (0 hash-pinned, 0 trust-scoped)") - a wrong, confident
+/// answer, not a crash or a hang. A `if is_fifo(path) { reject } else { raw
+/// read }` implementation passes every FIFO test in this file yet still lets
+/// this exact silent-wrong-answer case through, and per #560's own title
+/// ("`fapolicyd lint --file /dev/zero` hangs") a device node is squarely
+/// in scope, not just FIFOs. After the fix (routing through the SAME
+/// `rulesteward_core::fsread::read_to_string` every other special-file guard
+/// uses, which rejects ANY non-regular file), `/dev/null` must be a tool
+/// failure instead.
+#[test]
+fn report_file_dev_null_is_a_tool_failure_not_a_fabricated_clean_report() {
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file", "/dev/null"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not silently read as an empty ruleset yielding a fabricated \"0 \
+         allow-grants\" clean report; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case), naming the non-regular-file \
+         condition; stderr: {stderr}"
+    );
+}
+
+/// `report --file <dir>` is ALREADY a tool failure TODAY - raw
+/// `std::fs::read_to_string` on a directory fails with EISDIR - so this pins
+/// the EXIT-CODE invariant across the coming fsread conversion WITHOUT
+/// hard-pinning today's raw OS wording ("Is a directory (os error 21)"),
+/// which fsread's synthetic "refusing to read non-regular file (found
+/// directory)" message legitimately replaces. Only the "reading {path}"
+/// prefix `report.rs`'s own `with_context` adds is asserted, since that part
+/// survives the conversion unchanged.
+#[test]
+fn report_file_is_a_directory_stays_a_tool_failure_across_the_fsread_conversion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(dir.path())
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a directory --file target is a tool failure both before and after \
+         the fsread conversion; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("reading {}", dir.path().display())),
+        "the diagnostic must keep naming the offending path under the \
+         'reading <path>' prefix report's own with_context adds, regardless \
+         of which error wording follows it; stderr: {stderr}"
     );
 }

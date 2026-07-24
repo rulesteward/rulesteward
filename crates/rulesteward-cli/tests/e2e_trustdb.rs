@@ -1593,8 +1593,15 @@ fn trustdb_check_config_fifo_fails_fast_not_hang() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.to_lowercase().contains("fifo") || stdout.contains(&fifo.display().to_string()),
-        "the human 'integrity: ...' header must surface the read failure (naming \
-         the FIFO file type or the conf path), not silently vanish; stdout: {stdout}"
+        stdout.contains(&fifo.display().to_string()),
+        "the human 'integrity: ...' header must name the conf path, not silently \
+         vanish; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck that \
+         still does a raw, TOCTOU-vulnerable read afterwards) - the header must \
+         name the ACTUAL file type found, not just echo the path; stdout: {stdout}"
     );
 }

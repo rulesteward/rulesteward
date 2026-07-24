@@ -649,6 +649,54 @@ fn auditd_cost_from_log_fifo_fails_fast_not_hang() {
         stderr.contains(&fifo.display().to_string()),
         "the diagnostic must name the offending FIFO path; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `auditd cost --from-log /dev/null` silently succeeds and prints a
+/// CONFIDENT, FABRICATED "MEASURED" cost report (measured live 2026-07-24:
+/// exit 0, "CONFIDENCE: rates are MEASURED from --from-log", all-zero
+/// events/GB), the same silent-wrong-answer class the `report --file
+/// /dev/null` and `simulate --workload /dev/null` cases pin. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes the
+/// FIFO test above yet still lets this exact case through. After the fix,
+/// `/dev/null` must be a tool failure instead.
+#[test]
+fn auditd_cost_from_log_dev_null_is_a_tool_failure_not_a_fabricated_measured_report() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+
+    let out = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log", "/dev/null"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not silently read as an empty log yielding a fabricated \"MEASURED\" \
+         cost report; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
 }
 
 /// Control-directive rules (`-D`, `-b <n>`) are NOT `Watch`/`Syscall` rules:

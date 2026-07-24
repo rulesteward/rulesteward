@@ -41,6 +41,36 @@
 //! its own `commands::<backend>` module and must stay green through this fix
 //! -- adding a duplicate e2e assertion here would just be a second copy of an
 //! already-passing (not RED) pin.
+//!
+//! # Extension (session 9j lane 3, #583 half B / #561 follow-up, 2026-07-24)
+//!
+//! The #561 fix above landed for exactly FOUR backends: sshd/sysctl/sudoers/
+//! auditd. Two more gaps in the SAME contract were found and are closed here:
+//!
+//! - `selinux lint`: `commands/selinux/lint.rs`'s path-error arm does
+//!   `eprintln!(...); return EXIT_TOOL_FAILURE;` with NO envelope call at
+//!   all (not even a private `emit_path_error_envelope` of its own) - so
+//!   `--format json` on a bad path emits ZERO bytes of stdout (confirmed
+//!   live against the real binary). Unlike the four backends above, selinux
+//!   never had this fixed; it is not a "fifth backend that already works".
+//! - `fapolicyd lint <missing-dir>` (the POSITIONAL directory-scan mode,
+//!   distinct from `--file <missing-file>` single-file mode): `resolve_targets`
+//!   early-returns `Err("<dir>: not a directory")` BEFORE `output::emit_lint`
+//!   is ever reached, so this ALSO emits zero bytes of stdout under
+//!   `--format json` (confirmed live) - even though `--file` mode already
+//!   works today (its per-file-tolerant loop always falls through to the
+//!   shared render call regardless of read errors, as the fapolicyd model
+//!   above describes; that path is UNCHANGED and not re-pinned here since it
+//!   already passes). Per the operator ruling: pin the OBSERVABLE contract
+//!   (bytes on stdout, exit code, envelope shape) and let the implementer
+//!   choose the fix shape, since fapolicyd's per-file-tolerant architecture
+//!   differs from every other backend's fail-fast one.
+//!
+//! `fapolicyd lint`'s envelope `kind` is `"lint"`, NOT `"fapolicyd-lint"` -
+//! this is an EXISTING, RULED-KEPT inconsistency (renaming it would be a
+//! breaking JSON-schema change belonging to a schemaVersion bump, not this
+//! hardening wave), so `fapolicyd_lint_missing_dir_emits_json_envelope` below
+//! pins `"lint"` deliberately, not as an oversight.
 
 use std::time::Duration;
 
@@ -127,4 +157,28 @@ fn sudoers_lint_missing_path_emits_json_envelope() {
 fn auditd_lint_missing_path_emits_json_envelope() {
     let out = run_missing_path_json("auditd", "/nonexistent/561/audit.rules");
     assert_path_error_envelope(&out, "auditd-lint");
+}
+
+/// #583 half B: `selinux lint` had NO path-error envelope at all (not a
+/// private helper like the four above, not the fapolicyd fallthrough model
+/// below) - `--format json` on a bad path is zero bytes today.
+#[test]
+fn selinux_lint_missing_path_emits_json_envelope() {
+    let out = run_missing_path_json("selinux", "/nonexistent/583/selinux-config");
+    assert_path_error_envelope(&out, "selinux-lint");
+}
+
+/// #583 half B (operator-ruled scope expansion): `fapolicyd lint`'s
+/// POSITIONAL directory-scan mode (no `--file`) hits `resolve_targets`'
+/// `Err("<dir>: not a directory")` early-return before `output::emit_lint`
+/// is ever reached, so this is ALSO zero bytes today - distinct from
+/// `--file <missing-file>` single-file mode, which already emits the
+/// envelope (per this file's "ground truth: the fapolicyd model" section
+/// above) because its per-file-tolerant loop always falls through to the
+/// shared render call. `expected_kind` is deliberately `"lint"` (not
+/// `"fapolicyd-lint"`) - the existing, ruled-kept inconsistency, not a typo.
+#[test]
+fn fapolicyd_lint_missing_dir_emits_json_envelope() {
+    let out = run_missing_path_json("fapolicyd", "/nonexistent/583/rules.d");
+    assert_path_error_envelope(&out, "lint");
 }

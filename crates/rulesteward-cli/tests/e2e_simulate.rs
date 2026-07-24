@@ -1302,4 +1302,51 @@ fn workload_fifo_fails_fast_not_hang() {
         stderr.contains(&fifo.display().to_string()),
         "the diagnostic must name the offending FIFO path; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `simulate --workload /dev/null` silently succeeds with a
+/// CONFIDENT, FABRICATED "0 queries, 0 decisive, 0 possible, 0 no-match"
+/// clean summary (measured live 2026-07-24: exit 0), the same silent-wrong-
+/// answer class the `report --file /dev/null` case pins. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes the
+/// FIFO test above yet still lets this exact case through. After the fix
+/// (routing through the shared `rulesteward_core::fsread::read_to_string`),
+/// `/dev/null` must be a tool failure instead.
+#[test]
+fn workload_dev_null_is_a_tool_failure_not_a_fabricated_empty_summary() {
+    let (_rules_dir_guard, rules_path) = write_rules_dir("deny_audit perm=open all : all\n");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "simulate", "--rules"])
+        .arg(&rules_path)
+        .args(["--workload", "/dev/null"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not silently read as an empty workload yielding a fabricated \"0 \
+         queries\" clean summary; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
 }
