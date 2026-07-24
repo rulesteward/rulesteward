@@ -185,6 +185,37 @@ fn sudoers_lint_help_cites_renumbered_cis_ids() {
 }
 
 #[test]
+fn sysctl_lint_help_system_enumeration_includes_w04() {
+    // #576 (adversarial-impl-reviewer miss, lane-7-sysctld-system-cis): lane 7
+    // wired the sysctld-W04 CIS baseline into `--system` mode's merged-set
+    // rerun (`rulesteward_sysctld::system::lint_system` reruns
+    // F01/W01/W02/W04), but the operator-facing `sysctl lint --help` still
+    // enumerated only F01/W01/W02 in TWO places: the `Lint` subcommand's long
+    // doc comment (cli/mod.rs) and the `--system` flag's own help
+    // (cli/args/sysctl.rs) -- telling an operator that `--system` is
+    // W02-only, the exact false belief #576 existed to kill. Both sites must
+    // name W04.
+    //
+    // The negative assertions target the longer STALE phrase (not just
+    // "F01/W01/W02"), because the fixed text "F01/W01/W02/W04" contains
+    // "F01/W01/W02" as a substring -- a naive negative assertion on the short
+    // form would be unsatisfiable after the fix.
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sysctl", "lint", "--help"])
+        .assert()
+        .success()
+        // cli/mod.rs long-about site: "reruns F01/W01/W02 over the merged set"
+        // must become "reruns F01/W01/W02/W04 over the merged set".
+        .stdout(predicate::str::contains("F01/W01/W02/W04"))
+        .stdout(predicate::str::contains("reruns F01/W01/W02 over").not())
+        // cli/args/sysctl.rs `--system` flag-help site: "pass to
+        // F01/W01/W02." must become "pass to F01/W01/W02/W04.".
+        .stdout(predicate::str::contains("pass to F01/W01/W02/W04."))
+        .stdout(predicate::str::contains("pass to F01/W01/W02.").not());
+}
+
+#[test]
 fn sshd_lint_help_lists_all_codes_including_w07() {
     // #414: sshd-W07 (#302) was added after this help block was written, which
     // still claimed "All 12 sshd- codes" and omitted W07 from the enumeration.

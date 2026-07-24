@@ -15,7 +15,7 @@ pub struct SysctlLintArgs {
     /// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus
     /// `/etc/sysctl.conf`, instead of a single `<path>` (issue #420). Models the
     /// grounded same-basename directory masking + global lexicographic merge and
-    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02. Mutually
+    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02/W04. Mutually
     /// exclusive with the positional `<path>`.
     #[arg(long, conflicts_with = "path")]
     pub system: bool,
