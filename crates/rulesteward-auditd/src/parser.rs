@@ -672,7 +672,7 @@ fn parse_audit_field(s: &str) -> Option<AuditField> {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::parse_line;
+    use super::{parse_line, parse_rules_str};
     use crate::ast::{AuditRule, ControlRule};
 
     // --- quote-stripping guard (parser.rs:180) ---
@@ -843,9 +843,21 @@ mod tests {
     }
 
     // --- -D control rule ---
-    // The `-D` arm is a single `Ok(...DeleteAll)`: the dead if/else that produced
-    // the parser.rs:194 equivalent mutant was collapsed (#115). These tests confirm
-    // both forms (bare and with trailing args) parse to DeleteAll:
+    // Issue #541 (lane-8 #541 report, 2026-07-23/24): source-grounded against
+    // audit-userspace src/auditctl.c `case 'D':` at v3.1.2/v3.1.5/v4.0.3 (the
+    // RHEL8/9/10-shipped audit versions per `rpm -q audit` in the project's
+    // own fapolicyd8/9/10 containers) -- byte-identical logic on all three.
+    // Real auditctl does an UNCONDITIONAL field-count check before any
+    // netlink call: a rules.d line "-D extra" maps to auditctl's per-line
+    // `count == 3` (the synthetic leading "auditctl" field, plus "-D", plus
+    // "extra"), which is REJECTED: "Wrong number of options for Delete all
+    // request" (confirmed live via privileged fapolicyd8/9/10 containers,
+    // rc 255, identical message on all three streams). Bare "-D" (`count ==
+    // 2`) is unaffected and stays DeleteAll. NOTE: parser.rs:294's comment
+    // ("-D (with or without trailing args) is DeleteAll per auditctl(8)")
+    // is now known FALSE per this grounding; left for the implementer to
+    // correct alongside the fix (production code, not a test-module edit --
+    // see the lane-8 report).
     #[test]
     fn delete_all_bare() {
         let parsed = parse_line("-D", 1).expect("-D should parse");
@@ -854,9 +866,36 @@ mod tests {
 
     #[test]
     fn delete_all_with_extra_token() {
-        // auditctl(8): -D with extra args is still DeleteAll.
-        let parsed = parse_line("-D extra", 1).expect("-D extra should parse");
-        assert_eq!(parsed, AuditRule::Control(ControlRule::DeleteAll));
+        // RED (#541): was `parse_line("-D extra", 1).expect("-D extra should
+        // parse")` asserting the lenient (WRONG) behavior -- see the section
+        // doc comment above for the grounding. Updated by the test author
+        // (never the implementer) to pin the real auditctl behavior: a
+        // trailing token that is not "-k <key>" is REJECTED, not silently
+        // absorbed into DeleteAll. (The "-D -k <key>" shape is a distinct,
+        // real auditctl allowance -- out of scope for #541, not pinned
+        // here.)
+        let err = parse_line("-D extra", 1)
+            .expect_err("-D extra must be rejected: real auditctl refuses a trailing token here");
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn delete_all_bare_survives_in_a_multiline_ruleset() {
+        // Green pin (#541): the -D fix must be scoped to THIS line's own
+        // trailing tokens (auditctl's per-line `setopt()` dispatch, per the
+        // lane-8 report) -- a bare "-D" elsewhere in a larger, otherwise
+        // valid ruleset must keep parsing to DeleteAll unchanged.
+        let input = "-w /etc/passwd -p wa -k identity\n-D\n-b 8192\n";
+        let rules = parse_rules_str(input).expect("a bare -D inside a valid ruleset must parse");
+        assert!(
+            rules.contains(&AuditRule::Control(ControlRule::DeleteAll)),
+            "bare -D inside a larger valid file must still resolve to DeleteAll: {rules:?}"
+        );
     }
 }
 
@@ -932,6 +971,29 @@ mod located_tests {
         assert!(
             errs[0].message.contains("unknown flag"),
             "message should name the failure, got {:?}",
+            errs[0].message
+        );
+    }
+
+    /// RED (#541, lane-8 report): a "-D extra" line must surface through the
+    /// SAME `LocatedParseError` -> au-F01 channel as every other malformed
+    /// line (mirrors `located_str_errors_carry_file_and_line`'s "-Z bogus"
+    /// case just above), not an invented side-channel. Grounded against real
+    /// auditctl's unconditional parameter-count rejection of a trailing
+    /// token on `-D` (see the parser.rs inline `tests` module's
+    /// `delete_all_with_extra_token` for the full citation).
+    #[test]
+    fn located_str_rejects_delete_all_with_extra_token() {
+        let input = "-w /etc/passwd -p wa -k identity\n-D extra\n";
+        let file = Path::new("rules.d/99-bad.rules");
+        let errs =
+            parse_rules_str_located(input, file).expect_err("-D extra must fail the whole file");
+        assert_eq!(errs.len(), 1, "exactly one failing line, got {errs:?}");
+        assert_eq!(errs[0].file, file);
+        assert_eq!(errs[0].line, 2);
+        assert!(
+            errs[0].message.contains("-D"),
+            "message should name the offending flag; got {:?}",
             errs[0].message
         );
     }
