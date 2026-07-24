@@ -73,6 +73,7 @@ fn lint_with_probe(
         Ok(files) => files,
         Err(msg) => {
             eprintln!("auditd lint: {msg}");
+            emit_path_error_envelope(args.format);
             return EXIT_TOOL_FAILURE;
         }
     };
@@ -83,10 +84,14 @@ fn lint_with_probe(
     let mut rules: Vec<LocatedRule> = Vec::new();
     let mut diags: Vec<rulesteward_core::Diagnostic> = Vec::new();
     for file in &files {
-        let source = match std::fs::read_to_string(file) {
+        // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+        // node in the rules.d/ load order fails fast with a clear error instead
+        // of hanging or reading unbounded data.
+        let source = match rulesteward_core::fsread::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("auditd lint: cannot read {}: {e}", file.display());
+                emit_path_error_envelope(args.format);
                 return EXIT_TOOL_FAILURE;
             }
         };
@@ -130,6 +135,27 @@ fn lint_with_probe(
     }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
+}
+
+/// #561: a bad lint-target path (missing target, unreadable file, special
+/// file) must not silently drop `--format json`/`--format sarif` -- it must
+/// still emit a valid (empty) envelope on stdout, mirroring
+/// `commands::fapolicyd::lint`'s model (its per-file IO-failure loop always
+/// falls through to `output::render` regardless of the error). Called
+/// alongside (not instead of) the existing `eprintln!` diagnostic; human
+/// format is unaffected (`emit_lint` renders an empty diagnostics list as
+/// `""`, so nothing new prints to stdout there). Render failures are
+/// deliberately swallowed: the caller is already returning
+/// `EXIT_TOOL_FAILURE` for the original path error, and there is no better
+/// exit code to escalate to on this best-effort second render.
+fn emit_path_error_envelope(format: crate::cli::OutputFormat) {
+    let _ = crate::output::emit_lint(
+        format,
+        "auditd-lint",
+        AUDITD_LINT_SCHEMA_VERSION,
+        &[],
+        &std::collections::BTreeMap::new(),
+    );
 }
 
 /// Resolve the lint target to a load-ordered file list: a single file is

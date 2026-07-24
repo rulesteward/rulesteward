@@ -40,8 +40,20 @@
 //! Consumed via the full path (`rulesteward_core::fsread::read_to_string`);
 //! `lib.rs` re-exports are consolidated at integration, not per-lane.
 
-use std::io;
+use std::fs::{FileType, OpenOptions};
+use std::io::{self, Read};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::Path;
+
+/// `O_NONBLOCK`, Linux's value (`asm-generic/fcntl.h`, shared by every
+/// architecture the `x86_64-unknown-linux-musl` distribution target and the
+/// project's other Linux targets build for). Passed via
+/// [`OpenOptionsExt::custom_flags`] so the `open()` call on a FIFO with no
+/// writer returns immediately instead of blocking -- see the module docs
+/// above for why a metadata check performed only AFTER a blocking open is
+/// not sufficient. No new crate dependency (e.g. `libc`) is pulled in for a
+/// single well-known platform constant.
+const O_NONBLOCK: i32 = 0o4000;
 
 /// Drop-in replacement for [`std::fs::read_to_string`] that rejects any
 /// non-regular file (FIFO, directory, socket, block/character device)
@@ -55,11 +67,59 @@ use std::path::Path;
 /// does not exist, or is not readable), or an `io::ErrorKind::InvalidInput`
 /// error naming the file type if the resolved target is not a regular file.
 pub fn read_to_string(path: &Path) -> io::Result<String> {
-    todo!(
-        "fsread::read_to_string({}): not yet implemented -- test-author \
-         stub for #560, see the module docs for the required contract",
-        path.display()
-    )
+    // `O_NONBLOCK` on open() so a FIFO with no writer (and a bound
+    // AF_UNIX socket, which fails at open() with ENXIO on Linux before this
+    // even matters) cannot hang the process. A symlink is followed as
+    // normal (no `O_NOFOLLOW`), so a symlink-to-regular-file opens the
+    // resolved target transparently.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(path)?;
+
+    // Inspect the metadata of the ALREADY-OPENED file descriptor -- never a
+    // separate `stat`/`lstat` on `path` -- so there is no TOCTOU window
+    // between this check and the read below (the module contract).
+    let file_type = file.metadata()?.file_type();
+    if !file_type.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to read non-regular file (found {})",
+                describe_file_type(file_type)
+            ),
+        ));
+    }
+
+    // `O_NONBLOCK` has no effect on regular files (open(2): "this flag has
+    // no effect for regular files and block devices"), so an ordinary
+    // buffered read proceeds normally once the type check above accepts
+    // the target.
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+/// Name the resolved file type for the rejection message. Order matters only
+/// in that each check is mutually exclusive on a real `FileType`.
+fn describe_file_type(file_type: FileType) -> &'static str {
+    if file_type.is_dir() {
+        "directory"
+    } else if file_type.is_fifo() {
+        "FIFO"
+    } else if file_type.is_socket() {
+        "socket"
+    } else if file_type.is_char_device() {
+        "character device"
+    } else if file_type.is_block_device() {
+        "block device"
+    } else if file_type.is_symlink() {
+        // Unreachable in practice: `metadata()` (unlike `symlink_metadata()`)
+        // always follows symlinks to the resolved target's type.
+        "symlink"
+    } else {
+        "unknown non-regular file"
+    }
 }
 
 #[cfg(test)]
