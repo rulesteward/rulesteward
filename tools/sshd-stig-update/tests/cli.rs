@@ -17,6 +17,15 @@ fn temp_xccdf(tag: &str, content: &str) -> PathBuf {
     path
 }
 
+/// Write `content` to a unique temp file (no forced extension) and return its
+/// path - used by the `check-pin` tests below for both a custom
+/// `stig-refs.toml` and a scripted `--fixture` answers file.
+fn temp_named(tag: &str, content: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("sshd-stig-cli-{}-{tag}", std::process::id()));
+    std::fs::write(&path, content).expect("write temp fixture");
+    path
+}
+
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
     let out = Command::new(bin())
         .args(args)
@@ -216,5 +225,163 @@ fn help_exits_0() {
     assert!(
         err.contains("drift-check the sshd W01/W02 STIG baselines"),
         "err={err}"
+    );
+}
+
+// --- check-pin (#550 lane-5 rework, BLOCKER 5): CLI wiring, offline --------
+//
+// Phase 0 already landed the `sshd-stig-check-pin` justfile recipe running
+// `cargo run -- check-pin`; today that subcommand falls into the catch-all
+// `unknown subcommand` branch (see `unknown_subcommand_exits_2` above - the
+// SAME code path). These tests pin two things the pure `pin.rs` unit tests
+// cannot: (1) `check-pin` must be a RECOGNIZED subcommand, and (2) the
+// PROCESS must exit 0 for every `PinStatus`, including `Unavailable` -
+// `main.rs::run`'s `Result<ExitCode, String>` maps `Err` to exit 2 (see
+// `check_missing_file_exits_2` above), so an impl that wires
+// `PinStatus::Unavailable` through that `Err` path would invert the
+// non-blocking contract at the PROCESS boundary even if `pin::report`'s own
+// `u8` were correct in isolation.
+//
+// Since CI must not depend on the network (#550's central constraint), these
+// tests never invoke `check-pin` without a `--fixture`: a NEW, test-only CLI
+// flag this test file's contract requires the implementer to add, mirroring
+// `--file`'s existing "offline override" precedent for `check`/`derive`.
+// `--fixture <path>` requires exactly one `--product` (same rule as
+// `--file`) and reads a plain-text file, one line per probe IN ORDER (the
+// same order `pin::Prober::probe` is called in): `FOUND`, `NOTFOUND`, or
+// `ERR:<message>`. The implementer wires this into an in-process fake
+// `Prober` reading those lines; no real `curl` call happens when `--fixture`
+// is given.
+
+/// A minimal `stig-refs.toml` with a KNOWN, test-controlled pin + base_url
+/// (rather than the real shipped file, which is a live pin that will bump
+/// over time and would make these tests brittle against a future #550-
+/// unrelated pin bump).
+const PIN_TEST_STIG_REFS: &str = "base_url = \"https://mirror.example.test/stigs\"\n\n\
+     [products.rhel9]\n\
+     zip = \"U_RHEL_9_V2R9_STIG.zip\"\n\
+     benchmark = \"test fixture\"\n";
+
+#[test]
+fn check_pin_is_a_recognized_subcommand() {
+    // A missing fixture file must fail on ITS OWN terms (a read error), not
+    // be swallowed by "unknown subcommand" - proving dispatch actually
+    // reaches the check-pin handler rather than falling through to the
+    // catch-all `unknown_subcommand_exits_2` hits above.
+    let (code, _out, err) = run(&[
+        "check-pin",
+        "--product",
+        "rhel9",
+        "--fixture",
+        "/no/such/fixture/file",
+    ]);
+    assert_eq!(code, Some(2), "err={err}");
+    assert!(
+        !err.contains("unknown subcommand"),
+        "check-pin must be a recognized subcommand, not fall through to the \
+         catch-all; err={err}"
+    );
+    assert!(
+        err.contains("fixture"),
+        "the failure must be about the missing fixture file, not something \
+         else; err={err}"
+    );
+}
+
+#[test]
+fn check_pin_fixture_without_product_is_an_error() {
+    // Mirrors `check_file_without_product_exits_2` above: `--fixture`, like
+    // `--file`, needs exactly one `--product` to know which pin to check.
+    let fixture = temp_named("pin-fixture-noproduct", "FOUND\nNOTFOUND\nNOTFOUND\n");
+    let (code, _out, err) = run(&["check-pin", "--fixture", &fixture.to_string_lossy()]);
+    assert_eq!(code, Some(2), "err={err}");
+    assert!(
+        err.contains("--fixture requires exactly one --product"),
+        "err={err}"
+    );
+}
+
+#[test]
+fn check_pin_reports_current_and_exits_0() {
+    let cfg = temp_named("pin-cfg-current", PIN_TEST_STIG_REFS);
+    let fixture = temp_named("pin-fixture-current", "FOUND\nNOTFOUND\nNOTFOUND\n");
+    let (code, stdout, err) = run(&[
+        "check-pin",
+        "--product",
+        "rhel9",
+        "--config",
+        &cfg.to_string_lossy(),
+        "--fixture",
+        &fixture.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(0),
+        "a current pin must exit 0; stdout={stdout} err={err}"
+    );
+    assert!(
+        stdout.to_lowercase().contains("current") || stdout.to_lowercase().contains("no newer"),
+        "stdout={stdout}"
+    );
+}
+
+#[test]
+fn check_pin_reports_newer_revision_and_still_exits_0() {
+    let cfg = temp_named("pin-cfg-newer", PIN_TEST_STIG_REFS);
+    let fixture = temp_named("pin-fixture-newer", "FOUND\nFOUND\nNOTFOUND\nNOTFOUND\n");
+    let (code, stdout, err) = run(&[
+        "check-pin",
+        "--product",
+        "rhel9",
+        "--config",
+        &cfg.to_string_lossy(),
+        "--fixture",
+        &fixture.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(0),
+        "a newer upstream revision is news, not a build failure - must still \
+         exit 0; stdout={stdout} err={err}"
+    );
+    assert!(
+        stdout.contains("V2R10") || stdout.contains("U_RHEL_9_V2R10_STIG.zip"),
+        "stdout must name the specific newer revision; stdout={stdout}"
+    );
+}
+
+#[test]
+fn check_pin_unavailable_prober_still_exits_0_not_2() {
+    // The sharpest clause of blocker 5: `main.rs::run`'s `Result<ExitCode,
+    // String>` maps `Err` to exit 2 (see `check_missing_file_exits_2` /
+    // `check_unclassifiable_rule_exits_2` above). An impl that wires
+    // `PinStatus::Unavailable` through that SAME `Err` path would satisfy
+    // `pin::report`'s `u8 == 0` in isolation while the ACTUAL PROCESS exits
+    // 2 - inverting the non-blocking contract. This can only be caught at
+    // the process boundary, not the pure function.
+    let cfg = temp_named("pin-cfg-unavailable", PIN_TEST_STIG_REFS);
+    let fixture = temp_named(
+        "pin-fixture-unavailable",
+        "ERR:TLS handshake failed: certificate expired\n",
+    );
+    let (code, stdout, err) = run(&[
+        "check-pin",
+        "--product",
+        "rhel9",
+        "--config",
+        &cfg.to_string_lossy(),
+        "--fixture",
+        &fixture.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(0),
+        "an unavailable prober must skip gracefully (exit 0), NOT propagate \
+         as a process error (exit 2); stdout={stdout} err={err}"
+    );
+    assert!(
+        stdout.contains("TLS handshake failed: certificate expired")
+            || err.contains("TLS handshake failed: certificate expired"),
+        "the reason must be surfaced somewhere; stdout={stdout} err={err}"
     );
 }

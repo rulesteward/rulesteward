@@ -4,33 +4,80 @@
 //! `api.github.com/repos/.../releases/latest` and has nothing to do with DISA)
 //! a stale pin cannot be discovered by asking for "latest". Every RHEL DISA
 //! STIG is instead versioned by FILENAME in a `V<major>R<minor>` scheme (e.g.
-//! the `V2R9` inside `U_RHEL_9_V2R9_STIG.zip`), so staleness is detected by
-//! PROBING THE NEXT CANDIDATE filename: increment the minor; once a minor
-//! probe 404s, roll the major over (reset minor to 1) and try once more; stop
-//! the first time BOTH a minor-increment probe and a major-rollover probe
-//! (from the last confirmed revision) come back 404.
+//! the `V2R9` inside `U_RHEL_9_V2R9_STIG.zip`).
 //!
-//! Rollover rule pinned by the tests below (grounded in the observed pin
-//! history: `stig-refs.toml`'s rhel10 lineage began at `V1R1` and is now
-//! `V1R2` - DISA starts a new major at minor 1): a major bump always resets
-//! the minor to 1, and minor-incrementing resumes under the new major before
-//! the next rollover is attempted (V2R9 -> V2R10? -> ... -> V3R1? -> V3R2? ->
-//! ... -> V4R1?, stopping at the first pair of consecutive 404s).
+//! # Algorithm (adversarial-review rework, 2026-07-24)
+//!
+//! 1. Parse the pin's own `V<major>R<minor>` token. Unparseable ->
+//!    [`PinStatus::Unparseable`], nothing probed (a config/typo problem, not
+//!    a network one).
+//! 2. Probe the PINNED zip's own URL FIRST, before enumerating any candidate
+//!    (USER RULING). This is direct, convention-independent evidence: a live
+//!    check (2026-07-24) found DISA's CDN retains only a WINDOW of revisions
+//!    per product (`U_RHEL_8_V2R3..V2R8` returned 200; `V2R1`/`V2R2` already
+//!    404). A pin that has aged past the low end of that window 404s on
+//!    ITSELF - the OLD algorithm (probe next-minor first) could miss this
+//!    entirely: if the next one or two minors are ALSO purged, "next-minor
+//!    404, rollover 404" falsely reported `Current` while later revisions
+//!    (e.g. V2R8) were live the whole time. A 404 on the pin itself needs no
+//!    such inference, so it is checked first and reported as
+//!    [`PinStatus::PinNotFound`] - explicitly NOT [`PinStatus::Current`].
+//! 3. If the pin itself is live, enumerate forward: increment the minor;
+//!    once a minor probe 404s, roll the major over (reset minor to 1) and
+//!    probe once; if THAT is found, resume incrementing the minor under the
+//!    new major before the next rollover is attempted. Stop the first time
+//!    BOTH a minor-increment probe and the major-rollover probe (computed
+//!    from the last CONFIRMED revision) come back 404 -> [`PinStatus::Current`]
+//!    (if nothing beyond the pin was ever found) or [`PinStatus::Newer`]
+//!    (naming the last confirmed revision).
+//! 4. A hard ceiling ([`PROBE_CEILING`]) bounds the TOTAL number of probes
+//!    per call, so a misbehaving prober (a captive portal / proxy answering
+//!    HTTP 200 for every URL - DISA's own CDN returns clean hard 404s, per
+//!    live verification) cannot loop forever; giving up reports
+//!    [`PinStatus::Unavailable`].
+//! 5. An `Err` from the prober at ANY probe position (not only the first)
+//!    short-circuits immediately to [`PinStatus::Unavailable`] - a transient
+//!    failure (DNS, TLS, timeout) partway through enumeration must never be
+//!    folded into a 404-style "stop" and misreported as `Current`.
+//!
+//! ## The minor-then-major rollover rule is ASSUMED, not observed
+//!
+//! [`next_candidates`] pins the rule "a major bump resets the minor to 1,
+//! then minor-incrementing resumes" - this is an ASSUMPTION about DISA's
+//! versioning convention, not a fact verified against a live rollover. A live
+//! check during this rework (2026-07-24) found DISA's CDN has already purged
+//! every historical rollover boundary that could confirm or refute it:
+//! `U_RHEL_8_V1R12`, `V1R13`, `U_RHEL_9_V1R1`, `U_RHEL_7_V3R1`, and the
+//! non-RHEL benchmarks `U_Ubuntu_22-04_LTS_V2R1` / `U_MS_Windows_Server_2022_V2R1`
+//! all 404 today - there is currently no way to observe an actual rollover on
+//! the live CDN. If the assumption is wrong (e.g. DISA resets to R0, or does
+//! not reset the minor at all), the consequence is bounded and ONE-SIDED:
+//! `find_latest` reports `Current` one candidate later than it should (a
+//! missed rollover probe) - it NEVER fabricates a false `Newer`/
+//! `PinNotFound`, since those are only ever reported from a definitive 200 on
+//! some concrete URL that was actually probed. If a real rollover is ever
+//! observed, update `next_candidates`'s OWN tests (the one place this rule is
+//! pinned - see that test's doc comment) rather than the loop tests that
+//! consume it.
 //!
 //! CI must not depend on the network, so the "does this candidate zip exist"
 //! check is abstracted behind [`Prober`]. The real implementation (a `curl`
 //! HEAD-ish probe, mirroring `source.rs`'s `run`/`fetch_status` shape) belongs
 //! beside the other live-network code and is exercised only by a live run, not
 //! by unit tests (see `.cargo/mutants.toml`'s `source.rs` exclusion for the
-//! established precedent this mirrors); [`find_latest`] and everything else in
-//! this module is the offline-testable pure core, exercised below with a fake
-//! `Prober` that never touches the network.
+//! established precedent this mirrors); everything in this module is the
+//! offline-testable pure core, exercised below with a fake `Prober` that
+//! never touches the network.
 //!
 //! Non-blocking by design (#550, Phase-0 justfile comment): a newer upstream
-//! revision is NEWS, not a build failure - [`report`] exits `0` on every
-//! branch, including [`PinStatus::Unavailable`] (e.g. `curl` missing), matching
-//! the `sshd-stig-check-pin` / `auditd-stig-check-pin` recipes' existing
-//! graceful-skip convention for a missing `curl` at the shell level.
+//! revision, and even a retired pin, are NEWS, not a build failure -
+//! [`report`] exits `0` on every branch, matching the `sshd-stig-check-pin` /
+//! `auditd-stig-check-pin` recipes' existing graceful-skip convention for a
+//! missing `curl` at the shell level. The `check-pin` CLI subcommand (see
+//! `tests/cli.rs`) must exit 0 for every `PinStatus`, including
+//! `Unavailable` - `main.rs::run`'s `Result<ExitCode, String>` maps `Err` to
+//! exit 2, so wiring `Unavailable` through that path would invert this
+//! contract at the process boundary even if `report`'s own `u8` were correct.
 
 /// Result of probing whether one candidate revision's zip exists at DISA's CDN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +88,11 @@ pub enum Probe {
     NotFound,
 }
 
-/// The prober itself could not run at all (e.g. `curl` is not installed) -
-/// distinct from [`Probe::NotFound`], which means the prober DID run and got a
-/// definitive 404.
+/// The prober itself could not run at all, or failed transiently (e.g. `curl`
+/// missing, DNS/TLS/timeout) - distinct from [`Probe::NotFound`], which means
+/// the prober DID run and got a definitive 404. An `Err` at ANY probe
+/// position (not only the first) must short-circuit to
+/// [`PinStatus::Unavailable`] - see the module doc, point 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeError(pub String);
 
@@ -52,7 +101,7 @@ pub struct ProbeError(pub String);
 /// inject a fake that returns canned answers and records every URL asked
 /// about, so the exact probe sequence is assertable.
 pub trait Prober {
-    /// Probe `url`. `Err` means the prober could not even attempt the check;
+    /// Probe `url`. `Err` means the prober could not get a definitive answer;
     /// `Ok(Probe::NotFound)` means it ran and got a definitive 404.
     fn probe(&mut self, url: &str) -> Result<Probe, ProbeError>;
 }
@@ -67,13 +116,31 @@ pub struct Revision {
 /// Outcome of a full staleness check against the pinned zip filename.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinStatus {
-    /// No newer revision exists; the pin is current.
+    /// No newer revision exists; the pin (confirmed live) is current.
     Current,
     /// A newer revision exists (informational only - never a build failure).
     Newer { revision: Revision, zip: String },
-    /// The prober could not run at all (e.g. `curl` missing); nothing checked.
+    /// The PINNED zip itself 404d: direct, convention-independent evidence
+    /// the pin has fallen out of DISA's CDN retention window. NOT `Current` -
+    /// see the module doc, point 2, for why forward-guessing from here is
+    /// deliberately NOT attempted.
+    PinNotFound { pinned_zip: String },
+    /// The pinned zip filename has no `V<major>R<minor>` token at all -
+    /// nothing was probed (a config/typo problem, not a network one).
+    Unparseable { pinned_zip: String },
+    /// No definitive answer could be obtained: the prober errored (at any
+    /// probe position) or [`PROBE_CEILING`] was hit without a 404.
     Unavailable(String),
 }
+
+/// Hard ceiling on the TOTAL number of probes (including the leading probe of
+/// the pin itself) [`find_latest`] may issue in one call, so a misbehaving
+/// prober (e.g. a captive portal or proxy that answers HTTP 200 for every
+/// URL - DISA's own CDN returns clean hard 404s, per live verification)
+/// cannot loop forever. Chosen generously above any plausible real STIG
+/// revision drift (DISA STIGs move at most a handful of minors/majors between
+/// this tool's monthly scheduled `check-pin` runs).
+pub const PROBE_CEILING: usize = 64;
 
 /// Parse the `V<major>R<minor>` revision token out of a pinned zip filename
 /// (e.g. `"U_RHEL_9_V2R9_STIG.zip"` -> `Revision { major: 2, minor: 9 }`).
@@ -83,26 +150,31 @@ pub fn parse_revision(_zip: &str) -> Option<Revision> {
 }
 
 /// Build the candidate zip filename for `rev`, substituting into `zip`'s own
-/// `V<major>R<minor>` token and leaving every other character (the `U_RHEL_9_`
-/// prefix, the `_STIG.zip` suffix) unchanged.
+/// `V<major>R<minor>` token and leaving every other character (the
+/// `U_RHEL_<n>_` prefix, the `_STIG.zip` suffix) unchanged.
 pub fn candidate_zip(_zip: &str, _rev: Revision) -> String {
     todo!("lane 5 (#550) impl: substitute a new V<major>R<minor> into the pinned filename")
 }
 
-/// Probe successive candidate revisions after the one pinned by `pinned_zip`,
-/// incrementing the minor first; once a minor probe 404s, roll the major over
-/// (reset minor to 1) and probe once more. Stops the first time BOTH a
-/// minor-increment probe and a major-rollover probe (from the last confirmed
-/// revision) come back 404. See the module doc for the full rollover rule.
+/// The two candidates tried immediately after `current` is confirmed to
+/// exist: `.0` increments the minor; `.1` is the major-rollover fallback
+/// (major + 1, minor reset to 1), tried only once `.0` 404s. Extracted so the
+/// ASSUMED rollover rule (see the module doc) is pinned in exactly ONE place
+/// - a future correction to the assumption touches this function's own tests,
+/// not every `find_latest` loop test's literal `V3R1`/`V4R1` strings.
+pub fn next_candidates(_current: Revision) -> (Revision, Revision) {
+    todo!("lane 5 (#550) impl: (minor+1, same major) and (major+1, minor=1)")
+}
+
+/// Probe the pin itself, then successive candidates, per the module doc's
+/// numbered algorithm.
 pub fn find_latest(_base_url: &str, _pinned_zip: &str, _prober: &mut impl Prober) -> PinStatus {
-    todo!("lane 5 (#550) impl: the next-candidate probe loop")
+    todo!("lane 5 (#550) impl: the pin-first, then next-candidate, probe loop")
 }
 
 /// Render a staleness check to a human-readable message + process exit code.
-/// Every branch exits `0` - a newer revision is news, not a build failure, and
-/// an unavailable prober (e.g. missing `curl`) is a graceful skip, matching the
-/// `*-stig-check-pin` justfile recipes' existing convention for a missing
-/// `curl` at the shell level.
+/// Every branch exits `0` - see the module doc's closing paragraph for why,
+/// including why the CLI wiring (not just this function) must preserve it.
 pub fn report(_product: &str, _status: &PinStatus) -> (String, u8) {
     todo!("lane 5 (#550) impl: format the check-pin message (exit code is always 0)")
 }
@@ -111,7 +183,7 @@ pub fn report(_product: &str, _status: &PinStatus) -> (String, u8) {
 mod tests {
     use super::*;
 
-    // --- parse_revision / candidate_zip: pure filename<->Revision plumbing ---
+    // --- parse_revision / candidate_zip / next_candidates: pure plumbing ---
 
     #[test]
     fn parse_revision_extracts_major_and_minor() {
@@ -152,6 +224,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn candidate_zip_works_for_a_different_rhel_product_and_stig_major() {
+        // #550 lane-5 rework, blocker 1: the two tests above only ever
+        // exercise the RHEL_9 / STIG-major-2 lineage; an impl hardcoding
+        // "U_RHEL_9_" or major==2 could still pass both. rhel10's real pin
+        // (V1R2, a DIFFERENT STIG major and RHEL product) proves the
+        // substitution is filename-driven, for both a minor bump and a
+        // major rollover.
+        assert_eq!(
+            candidate_zip("U_RHEL_10_V1R2_STIG.zip", Revision { major: 1, minor: 3 }),
+            "U_RHEL_10_V1R3_STIG.zip",
+            "minor bump"
+        );
+        assert_eq!(
+            candidate_zip("U_RHEL_10_V1R2_STIG.zip", Revision { major: 2, minor: 1 }),
+            "U_RHEL_10_V2R1_STIG.zip",
+            "major rollover"
+        );
+    }
+
+    #[test]
+    fn next_candidates_pins_the_assumed_rollover_rule() {
+        // #550 lane-5 rework, concern raised in review: extracted so the
+        // ASSUMED (not observed - see this file's module doc, "The
+        // minor-then-major rollover rule is ASSUMED, not observed") rollover
+        // rule is pinned in exactly ONE place. If the assumption is later
+        // proven wrong, only THIS test + `next_candidates` change - not every
+        // `find_latest` loop test's literal `V3R1`/`V4R1` strings.
+        assert_eq!(
+            next_candidates(Revision { major: 2, minor: 9 }),
+            (
+                Revision {
+                    major: 2,
+                    minor: 10
+                }, // minor bump
+                Revision { major: 3, minor: 1 }, // major rollover
+            )
+        );
+        // A rollover from a DIFFERENT major/minor, to prove this isn't
+        // hardcoded to the 2/9 pair used elsewhere in this file.
+        assert_eq!(
+            next_candidates(Revision { major: 1, minor: 2 }),
+            (
+                Revision { major: 1, minor: 3 },
+                Revision { major: 2, minor: 1 },
+            )
+        );
+    }
+
     // --- find_latest: the injected-prober candidate-enumeration core ---------
 
     /// Records every URL probed, in order, and answers from a pre-programmed
@@ -186,6 +307,24 @@ mod tests {
         }
     }
 
+    /// A pathological prober that ALWAYS answers Found and never exhausts
+    /// (unlike `FakeProber`'s queue, which panics when exhausted, so an
+    /// always-Found scenario cannot even be expressed with it). The realistic
+    /// trigger, per the reviewer's live measurement, is a captive portal or
+    /// misconfigured proxy answering HTTP 200 for everything - NOT the DISA
+    /// CDN itself, which returns clean hard 404s. Used ONLY to prove
+    /// `find_latest` enforces its own [`PROBE_CEILING`].
+    struct AlwaysFoundProber {
+        probed: Vec<String>,
+    }
+
+    impl Prober for AlwaysFoundProber {
+        fn probe(&mut self, url: &str) -> Result<Probe, ProbeError> {
+            self.probed.push(url.to_string());
+            Ok(Probe::Found)
+        }
+    }
+
     const BASE_URL: &str = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip";
     const PINNED: &str = "U_RHEL_9_V2R9_STIG.zip";
 
@@ -194,52 +333,94 @@ mod tests {
     }
 
     #[test]
-    fn find_latest_reports_current_when_next_minor_and_major_rollover_both_404() {
-        // V2R9 (pin) -> V2R10 404 -> V3R1 (rollover) 404 -> stop.
-        let mut fake = FakeProber::new(vec![Ok(Probe::NotFound), Ok(Probe::NotFound)]);
+    fn find_latest_probes_the_pin_itself_first_then_reports_current() {
+        // USER RULING: the pin's OWN zip is probed FIRST, before any
+        // candidate enumeration - a direct, convention-independent staleness
+        // signal (see module doc, point 2). V2R9 (pin) found -> V2R10 404 ->
+        // V3R1 (rollover) 404 -> stop, 3 probes total.
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (minor1, rollover1) = next_candidates(pin_rev);
+        let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),    // the pin itself
+            Ok(Probe::NotFound), // next minor
+            Ok(Probe::NotFound), // major rollover
+        ]);
         let status = find_latest(BASE_URL, PINNED, &mut fake);
         assert_eq!(status, PinStatus::Current, "no newer revision exists");
         assert_eq!(
             fake.probed,
             vec![
-                url_for("U_RHEL_9_V2R10_STIG.zip"),
-                url_for("U_RHEL_9_V3R1_STIG.zip"),
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, minor1)),
+                url_for(&candidate_zip(PINNED, rollover1)),
             ],
-            "must probe the next minor, then the major rollover, and stop there \
-             (exactly 2 probes - proves it does not probe unboundedly)"
+            "must probe the pin itself first, then the next minor, then the \
+             major rollover, and stop there (exactly 3 probes)"
+        );
+    }
+
+    #[test]
+    fn find_latest_reports_pin_not_found_when_the_pinned_zip_itself_404s() {
+        // USER RULING: a 404 on the PIN ITSELF is direct, convention-
+        // independent evidence of staleness (DISA purges from the low end of
+        // its retention window, so a pin that has aged past the window 404s
+        // on itself even though newer revisions are live) - it must NOT be
+        // reported as `Current`, and must stop immediately (1 probe) rather
+        // than guess forward using a convention the pin has already fallen
+        // outside of.
+        let mut fake = FakeProber::new(vec![Ok(Probe::NotFound)]);
+        let status = find_latest(BASE_URL, PINNED, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::PinNotFound {
+                pinned_zip: PINNED.to_string()
+            }
+        );
+        assert_ne!(status, PinStatus::Current, "a missing pin is never current");
+        assert_eq!(
+            fake.probed,
+            vec![url_for(PINNED)],
+            "must stop at the very first probe - the pin itself - rather \
+             than continue guessing forward with a convention the pin has \
+             already fallen outside of"
         );
     }
 
     #[test]
     fn find_latest_several_successive_minors_then_stops_at_first_double_404() {
-        // V2R9 (pin) -> V2R10 found -> V2R11 found -> V2R12 found -> V2R13
-        // 404 -> V3R1 (rollover) 404 -> stop. Latest confirmed: V2R12.
+        // V2R9 (pin) found -> V2R10 found -> V2R11 found -> V2R12 found ->
+        // V2R13 404 -> V3R1 (rollover) 404 -> stop. Latest confirmed: V2R12.
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (r10, _) = next_candidates(pin_rev);
+        let (r11, _) = next_candidates(r10);
+        let (r12, _) = next_candidates(r11);
+        let (r13, rollover_from_12) = next_candidates(r12);
+
         let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),    // pin
             Ok(Probe::Found),    // V2R10
             Ok(Probe::Found),    // V2R11
             Ok(Probe::Found),    // V2R12
             Ok(Probe::NotFound), // V2R13
-            Ok(Probe::NotFound), // V3R1 rollover
+            Ok(Probe::NotFound), // V3R1 rollover (from V2R12, the last confirmed)
         ]);
         let status = find_latest(BASE_URL, PINNED, &mut fake);
         assert_eq!(
             status,
             PinStatus::Newer {
-                revision: Revision {
-                    major: 2,
-                    minor: 12
-                },
-                zip: "U_RHEL_9_V2R12_STIG.zip".to_string(),
+                revision: r12,
+                zip: candidate_zip(PINNED, r12),
             }
         );
         assert_eq!(
             fake.probed,
             vec![
-                url_for("U_RHEL_9_V2R10_STIG.zip"),
-                url_for("U_RHEL_9_V2R11_STIG.zip"),
-                url_for("U_RHEL_9_V2R12_STIG.zip"),
-                url_for("U_RHEL_9_V2R13_STIG.zip"),
-                url_for("U_RHEL_9_V3R1_STIG.zip"),
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, r10)),
+                url_for(&candidate_zip(PINNED, r11)),
+                url_for(&candidate_zip(PINNED, r12)),
+                url_for(&candidate_zip(PINNED, r13)),
+                url_for(&candidate_zip(PINNED, rollover_from_12)),
             ],
             "must stop probing the instant BOTH the next minor and the major \
              rollover 404 - not keep incrementing minors under V2 forever, and \
@@ -249,12 +430,18 @@ mod tests {
 
     #[test]
     fn find_latest_rolls_over_major_then_continues_probing_minors_under_new_major() {
-        // V2R9 (pin) -> V2R10 404 (minor exhausted immediately) -> V3R1
+        // V2R9 (pin) found -> V2R10 404 (minor exhausted immediately) -> V3R1
         // (rollover) found -> V3R2 found -> V3R3 404 -> V4R1 (rollover) 404 ->
         // stop. Latest confirmed: V3R2. Pins the explicit rollover rule: a
         // major bump resets the minor to 1, and minor-incrementing resumes
         // under the new major before the next rollover is tried.
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (r10, rollover_from_pin) = next_candidates(pin_rev);
+        let (v3r2, _) = next_candidates(rollover_from_pin);
+        let (v3r3, rollover_from_v3r2) = next_candidates(v3r2);
+
         let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),    // pin
             Ok(Probe::NotFound), // V2R10
             Ok(Probe::Found),    // V3R1 rollover
             Ok(Probe::Found),    // V3R2
@@ -265,33 +452,157 @@ mod tests {
         assert_eq!(
             status,
             PinStatus::Newer {
-                revision: Revision { major: 3, minor: 2 },
-                zip: "U_RHEL_9_V3R2_STIG.zip".to_string(),
+                revision: v3r2,
+                zip: candidate_zip(PINNED, v3r2),
             }
         );
         assert_eq!(
             fake.probed,
             vec![
-                url_for("U_RHEL_9_V2R10_STIG.zip"),
-                url_for("U_RHEL_9_V3R1_STIG.zip"),
-                url_for("U_RHEL_9_V3R2_STIG.zip"),
-                url_for("U_RHEL_9_V3R3_STIG.zip"),
-                url_for("U_RHEL_9_V4R1_STIG.zip"),
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, r10)),
+                url_for(&candidate_zip(PINNED, rollover_from_pin)),
+                url_for(&candidate_zip(PINNED, v3r2)),
+                url_for(&candidate_zip(PINNED, v3r3)),
+                url_for(&candidate_zip(PINNED, rollover_from_v3r2)),
             ]
         );
     }
 
     #[test]
-    fn find_latest_stops_after_one_probe_when_prober_is_unavailable() {
-        // curl-absent case: the prober cannot even attempt the first probe.
+    fn find_latest_uses_the_actual_base_url_and_pinned_filename_not_a_hardcoded_rhel9_lineage() {
+        // #550 lane-5 rework, blocker 1: every OTHER `find_latest` test in
+        // this file uses the SAME `PINNED`/`BASE_URL` constants (RHEL_9, STIG
+        // major 2, the real DISA CDN host) - an impl hardcoding "U_RHEL_9_",
+        // `major == 2`, or the dl.dod.cyber.mil host could pass all of them.
+        // Use a DIFFERENT product (rhel10, STIG major 1) and a NON-DISA
+        // base_url.
+        let base = "https://mirror.example.test/stigs";
+        let pinned = "U_RHEL_10_V1R2_STIG.zip";
+        let pin_rev = Revision { major: 1, minor: 2 };
+        let (r3, _) = next_candidates(pin_rev);
+        let (r4, rollover) = next_candidates(r3);
+
+        let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),    // pin
+            Ok(Probe::Found),    // V1R3
+            Ok(Probe::NotFound), // V1R4
+            Ok(Probe::NotFound), // V2R1 rollover
+        ]);
+        let status = find_latest(base, pinned, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Newer {
+                revision: r3,
+                zip: candidate_zip(pinned, r3),
+            }
+        );
+        assert_eq!(
+            fake.probed,
+            vec![
+                format!("{base}/{pinned}"),
+                format!("{base}/{}", candidate_zip(pinned, r3)),
+                format!("{base}/{}", candidate_zip(pinned, r4)),
+                format!("{base}/{}", candidate_zip(pinned, rollover)),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_latest_enforces_a_hard_probe_ceiling_against_an_always_found_prober() {
+        // #550 lane-5 rework, blocker 2: a misbehaving prober (captive portal
+        // / proxy that answers 200 for every URL - the DISA CDN itself
+        // returns clean hard 404s, per the reviewer's live measurement) must
+        // not loop forever. `find_latest` must give up after EXACTLY
+        // `PROBE_CEILING` probes and report a status the caller can act on,
+        // never hang.
+        let mut always_found = AlwaysFoundProber { probed: Vec::new() };
+        let status = find_latest(BASE_URL, PINNED, &mut always_found);
+        assert_eq!(
+            always_found.probed.len(),
+            PROBE_CEILING,
+            "must stop at exactly the documented ceiling, not before or after"
+        );
+        assert_eq!(
+            status,
+            PinStatus::Unavailable(format!(
+                "gave up after {PROBE_CEILING} probes without a definitive answer \
+                 (a misbehaving prober? DISA's CDN itself returns clean 404s)"
+            ))
+        );
+    }
+
+    #[test]
+    fn find_latest_stops_after_one_probe_when_the_pin_probe_itself_is_unavailable() {
+        // curl-absent case: the prober cannot even attempt the FIRST probe,
+        // which (per the pin-first ruling) is now the pin itself.
         let mut fake = FakeProber::new(vec![Err(ProbeError("curl not found".to_string()))]);
         let status = find_latest(BASE_URL, PINNED, &mut fake);
         assert_eq!(status, PinStatus::Unavailable("curl not found".to_string()));
         assert_eq!(
             fake.probed,
-            vec![url_for("U_RHEL_9_V2R10_STIG.zip")],
+            vec![url_for(PINNED)],
             "must stop at the FIRST unavailable probe, not retry or continue \
-             to the major rollover"
+             to the next candidate"
+        );
+    }
+
+    #[test]
+    fn find_latest_treats_an_error_at_any_later_probe_as_unavailable_not_a_404() {
+        // #550 lane-5 rework, blocker 3: an impl that special-cases ONLY the
+        // FIRST probe's `Err` (folding every LATER `Err` into "stop, as if
+        // 404") would silently misreport staleness on a transient failure
+        // (e.g. DNS) several probes in - exactly the false negative this seam
+        // exists to prevent, just moved later. `Err` must short-circuit to
+        // `Unavailable` at ANY probe position, immediately, without treating
+        // it as evidence of a boundary.
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (r10, _) = next_candidates(pin_rev);
+        let (r11, _) = next_candidates(r10);
+        let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),                                     // pin itself
+            Ok(Probe::Found),                                     // V2R10
+            Err(ProbeError("DNS resolution failed".to_string())), // V2R11
+        ]);
+        let status = find_latest(BASE_URL, PINNED, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unavailable("DNS resolution failed".to_string())
+        );
+        assert_eq!(
+            fake.probed,
+            vec![
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, r10)),
+                url_for(&candidate_zip(PINNED, r11)),
+            ],
+            "must stop immediately at the Err (exactly 3 probes), not continue \
+             probing further or fold the failure into a 404-style boundary"
+        );
+    }
+
+    #[test]
+    fn find_latest_reports_unparseable_when_the_pinned_filename_has_no_version_token_and_probes_nothing()
+     {
+        // CONCERN raised in review: an unparseable pin (a config/typo error,
+        // e.g. someone hand-edits stig-refs.toml and drops the
+        // V<major>R<minor> token) was previously unspecified - any behavior
+        // an impl happened to pick would have been frozen in by omission.
+        // This is a config problem, not a network one: nothing should be
+        // probed (an empty answer queue means ANY probe attempt panics the
+        // fake, so this also double-checks the "nothing probed" claim).
+        let mut fake = FakeProber::new(vec![]);
+        let status = find_latest(BASE_URL, "U_RHEL_9_STIG.zip", &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unparseable {
+                pinned_zip: "U_RHEL_9_STIG.zip".to_string()
+            }
+        );
+        assert!(
+            fake.probed.is_empty(),
+            "an unparseable pin must not trigger any network probe; probed={:?}",
+            fake.probed
         );
     }
 
@@ -329,17 +640,112 @@ mod tests {
     }
 
     #[test]
-    fn report_exits_0_with_clear_message_when_prober_unavailable() {
-        let status = PinStatus::Unavailable("curl not found".to_string());
+    fn report_exits_0_and_explains_pin_not_found_is_not_current() {
+        // USER RULING: pin the report()-level contract for the new
+        // PinNotFound status too - exit 0 (news, not a build failure), but
+        // the message must not be mistakable for the Current-status message.
+        let status = PinStatus::PinNotFound {
+            pinned_zip: "U_RHEL_9_V2R9_STIG.zip".to_string(),
+        };
         let (msg, code) = report("rhel9", &status);
         assert_eq!(
             code, 0,
-            "a missing curl must skip gracefully (exit 0), matching the \
+            "a retired pin is news requiring a human re-pin, not a build failure"
+        );
+        assert!(
+            msg.contains("U_RHEL_9_V2R9_STIG.zip"),
+            "message must name the pinned zip that 404d; message={msg:?}"
+        );
+        assert!(
+            msg.to_lowercase().contains("not found")
+                || msg.to_lowercase().contains("missing")
+                || msg.to_lowercase().contains("gone"),
+            "message must convey the pin itself is gone; message={msg:?}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("no newer revision"),
+            "must not reuse the Current-status phrasing; message={msg:?}"
+        );
+    }
+
+    #[test]
+    fn report_exits_0_and_flags_an_unparseable_pin_as_a_config_problem() {
+        let status = PinStatus::Unparseable {
+            pinned_zip: "U_RHEL_9_STIG.zip".to_string(),
+        };
+        let (msg, code) = report("rhel9", &status);
+        assert_eq!(
+            code, 0,
+            "a config problem must still skip gracefully, not fail the build"
+        );
+        assert!(
+            msg.contains("U_RHEL_9_STIG.zip"),
+            "message must name the unparseable pin; message={msg:?}"
+        );
+    }
+
+    #[test]
+    fn report_exits_0_and_propagates_the_unavailable_reason_verbatim() {
+        // #550 lane-5 rework, blocker 4: the ORIGINAL fixture payload
+        // ("curl not found") shared a substring ("curl") with the test's own
+        // assertion, so a hardcoded message ("curl is required...") could
+        // pass without actually propagating `Unavailable`'s payload. Use a
+        // payload with no plausible overlap with a hand-written message, and
+        // require it verbatim.
+        let status =
+            PinStatus::Unavailable("TLS handshake failed: certificate expired".to_string());
+        let (msg, code) = report("rhel9", &status);
+        assert_eq!(
+            code, 0,
+            "an unavailable prober must skip gracefully (exit 0), matching the \
              existing *-stig-check-pin recipes' shell-level convention"
         );
         assert!(
-            msg.to_lowercase().contains("curl"),
-            "message must explain why nothing was checked; message={msg:?}"
+            msg.contains("TLS handshake failed: certificate expired"),
+            "message must propagate the prober's OWN reason verbatim, not a \
+             hardcoded generic string; message={msg:?}"
+        );
+    }
+
+    // --- cross-tool drift guard ----------------------------------------------
+
+    // #550 lane-5 rework, CONCERN raised in review: this file and
+    // `tools/auditd-stig-update/src/pin.rs` are near-identical by
+    // construction (only the module doc above, and this section's
+    // necessarily-asymmetric `include_str!` path, differ), but nothing
+    // enforces that a future edit to one is mirrored in the other. Mirrors
+    // `rulesteward_sudoers::lints::tags`'s `SSHD_STIG_REFS`/
+    // `AUDITD_STIG_REFS` `include_str!` cross-check (a compile-time relative
+    // path read, NOT a cargo dependency, so this does not violate the "no
+    // dependency on the auditd crate/tool" intent `config.rs`/`source.rs`
+    // already state).
+    const THIS_FILE: &str = include_str!("pin.rs");
+    const OTHER_TOOL_PIN_RS: &str = include_str!("../../auditd-stig-update/src/pin.rs");
+
+    /// The slice of `src` from `start` (inclusive) up to `end` (exclusive).
+    /// Used to compare only the shared core (every `pub` item + every OTHER
+    /// test) between the two copies - this drift-guard SECTION itself is
+    /// necessarily excluded, since each copy's `include_str!` path points at
+    /// its OWN sister file (asymmetric by construction, not drift).
+    fn core_between<'a>(src: &'a str, start: &str, end: &str) -> &'a str {
+        let s = src.find(start).expect("start anchor missing");
+        let e = src.find(end).expect("end anchor missing");
+        &src[s..e]
+    }
+
+    #[test]
+    fn pin_rs_core_logic_and_tests_match_the_sister_tool_byte_for_byte() {
+        const START: &str = "pub enum Probe {";
+        const END: &str = "// --- cross-tool drift guard";
+        let this_core = core_between(THIS_FILE, START, END);
+        let other_core = core_between(OTHER_TOOL_PIN_RS, START, END);
+        assert_eq!(
+            this_core, other_core,
+            "tools/sshd-stig-update/src/pin.rs and tools/auditd-stig-update/src/pin.rs \
+             must stay byte-identical from `pub enum Probe` up to the cross-tool \
+             drift-guard section (only the leading module doc-comment, and this \
+             section's own necessarily-asymmetric include_str! path, may differ) - \
+             if this fails, mirror whichever side changed into the other"
         );
     }
 }
