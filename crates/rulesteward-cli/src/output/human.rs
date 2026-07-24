@@ -12,7 +12,7 @@
 //! operators can grep the output uniformly regardless of whether a snippet is
 //! present.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal as _;
 
 use core::fmt::Write as _;
@@ -63,12 +63,33 @@ fn color_enabled() -> bool {
 /// Returns `false` when the source text is not available and the caller
 /// should fall back to plain rendering.
 ///
+/// `source_cache` holds one lazily-built `ariadne::Source` per `source_id`,
+/// populated on first use via the `HashMap` entry API (#559). Building a
+/// `Source` line-indexes the whole source text, so the pre-cache code (which
+/// called `Source::from(source_text)` inside this function, once per
+/// diagnostic) cost O(diagnostics x `source_length`) when many diagnostics
+/// anchored to one large file. `render` (below) owns `source_cache` for the
+/// lifetime of one call and passes it in by mutable reference, so it is
+/// shared across every diagnostic in that call but never persists beyond
+/// it, and it is populated only for `source_id`s a diagnostic actually
+/// references, never eagerly for the whole `sources` map.
+///
+/// ariadne implements `Cache<Id>` for `(Id, &Source<I>)` as well as for
+/// `(Id, Source<I>)`, so passing a reference to the cached `Source` here
+/// costs nothing beyond the initial cache miss.
+///
 /// The `Report::with_message` title intentionally omits `file:line:col` -
 /// ariadne's own bracket header (`[ <source_id>:<line>:<col> ]`) already
 /// shows that. Including both produced visible duplication in the rendered
 /// output. Plain mode (the fallback branch in `render`) still emits the full
 /// `file:line:col [CODE] sev: msg` for grep parity.
-fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
+fn render_ariadne<'src>(
+    d: &Diagnostic,
+    source_id: &'src str,
+    source_text: &'src str,
+    source_cache: &mut HashMap<&'src str, Source<&'src str>>,
+    out: &mut Vec<u8>,
+) -> bool {
     let config = Config::default().with_color(color_enabled());
     // Convert byte offsets to char offsets: ariadne 0.6 indexes its `Source`
     // by character position. For ASCII-only sources byte offset == char offset,
@@ -76,6 +97,9 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
     // may exceed the char-length and ariadne silently omits the snippet.
     let cspan = byte_span_to_char_span(&d.span, source_text);
     let mut report_buf: Vec<u8> = Vec::new();
+    let source = source_cache
+        .entry(source_id)
+        .or_insert_with(|| Source::from(source_text));
     let result = Report::build(report_kind(d.severity), (source_id, cspan.clone()))
         .with_config(config)
         .with_message(format!(
@@ -87,7 +111,7 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
         ))
         .with_label(label_for(source_id, cspan.clone(), d.message.as_str()))
         .finish()
-        .write((source_id, Source::from(source_text)), &mut report_buf);
+        .write((source_id, &*source), &mut report_buf);
     match result {
         Ok(()) => {
             out.extend_from_slice(&report_buf);
@@ -110,11 +134,16 @@ pub fn render(diags: &[Diagnostic], sources: &BTreeMap<String, String>) -> Strin
     }
     let mut out_bytes: Vec<u8> = Vec::new();
     let mut out_plain = String::new();
+    // One `ariadne::Source` per unique `source_id`, built lazily on first
+    // use and reused for every later diagnostic against that same id in
+    // this call (#559). Scoped to this single `render()` call, not hoisted
+    // any wider - see `render_ariadne`'s doc comment.
+    let mut source_cache: HashMap<&str, Source<&str>> = HashMap::new();
 
     for d in diags {
         let used_ariadne = if let Some(ref id) = d.source_id {
             if let Some(text) = sources.get(id) {
-                render_ariadne(d, id.as_str(), text, &mut out_bytes)
+                render_ariadne(d, id.as_str(), text, &mut source_cache, &mut out_bytes)
             } else {
                 false
             }
