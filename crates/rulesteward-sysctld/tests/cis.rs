@@ -38,7 +38,18 @@
 //!   These emit tests drive the public pipeline (not a crate-private fn), so they
 //!   pin both the emit logic AND the in-crate wiring; they are RED until the
 //!   implementer adds the pass + wires it. (Scope: single-file + single-directory
-//!   modes, mirroring `tests/baseline.rs`; `--system` W04 is out of this lane.)
+//!   modes, mirroring `tests/baseline.rs`.)
+//!
+//! # `--system` wiring (issue #576, user RULING 2026-07-24)
+//! The cross-directory `--system` scan (`system::lint_system`) reruns
+//! `sysctld-F01`/`W01`/`W02` over its precedence-merged effective set but, as of
+//! Wave-3 CIS (#527), did NOT also run the `sysctld-W04` CIS pass over that same
+//! merged set - the more realistic mode (the one reflecting a real host's ACTUAL
+//! configuration) was the less thorough one. The RULING: wire it, mirroring the
+//! existing `W02` wiring exactly (same `merged` list, same `effective_values`
+//! winner-takes-it lookup, same fixed `prefix.join("etc/sysctl.d")` anchor for a
+//! MISSING key). See the "SYSTEM MODE" test section at the end of this file for
+//! the RED tests plus the studied W02 attribution precedent they pin.
 
 use std::path::Path;
 
@@ -660,5 +671,381 @@ fn w04_dir_mode_anchors_missing_at_dir_and_insecure_at_the_dropin() {
         missing[0].file.as_path(),
         dir.path(),
         "a missing-key W04 anchors at the directory (no single source line)"
+    );
+}
+
+// ===========================================================================
+// SYSTEM MODE (issue #576, user RULING 2026-07-24): `sysctl lint --system`
+// must ALSO run the `sysctld-W04` CIS baseline over its precedence-merged
+// effective set, mirroring how `system::lint_system` already wires the STIG
+// `sysctld-W02` pass. RED until the implementer adds
+// `diags.extend(w04_baseline(&merged, t, &prefix.join("etc/sysctl.d")))`
+// alongside the existing `w02_baseline` call in `system.rs`.
+//
+// # The studied W02 attribution precedent (`crates/rulesteward-sysctld/src/system.rs`)
+// `lint_system` (around line 526) does:
+//     diags.extend(w03a_and_w01(&merged, &ranks));
+//     if let Some(t) = target {
+//         diags.extend(w02_baseline(&merged, t, &prefix.join("etc/sysctl.d")));
+//     }
+// `merged` is the precedence-ordered assignment list `lint_system` already
+// builds: surviving drop-ins in GLOBAL lexicographic basename order (module doc
+// point 2 - same-basename masking is resolved earlier, by `enumerate()`, so a
+// masked file's assignments never enter `merged` at all), then
+// `/etc/sysctl.conf` appended dead-last. `w02_baseline`/`w04_baseline` both
+// call the SHARED `effective_values` helper on that list - a plain
+// last-occurrence-wins scan - so "which file wins a given key" is entirely a
+// property of `merged`'s ORDER, not of anything W02/W04-specific. Concretely:
+// * A MISSING key has no real assignment (masked or otherwise) to anchor to,
+//   so it anchors at the FIXED `prefix.join("etc/sysctl.d")` reference path -
+//   exactly W02's missing-branch choice. This is not a new design decision for
+//   W04; it is a direct reuse of the one W02 already made.
+// * A present-but-out-of-set key anchors at the WINNING assignment - the file
+//   `effective_values` resolves as the LAST-occurrence winner for that
+//   canonical key over `merged` - never "every file that sets it" and never
+//   "the last one read from disk".
+// Because this rule is fully determined by the existing W02 precedent (and
+// the "absence has no file" case the task flagged as a possible design fork
+// is ALSO already answered by W02's identical missing-branch anchor), no
+// `[QUESTION FOR USER]` is needed here - wiring is `w04_baseline(&merged, t,
+// &prefix.join("etc/sysctl.d"))`, verbatim alongside the `w02_baseline` call.
+// ===========================================================================
+
+use rulesteward_sysctld::system::lint_system;
+
+/// Write `body` into `<root>/<rel>`, creating parent directories as needed.
+/// Mirrors `tests/system.rs`'s identical helper - each integration-test binary
+/// compiles as its own separate crate, so there is no shared test-support
+/// module to import it from.
+fn write_at(root: &Path, rel: &str, body: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().expect("has parent")).expect("mkdir -p");
+    std::fs::write(&path, body).expect("write fixture file");
+}
+
+/// All `sysctld-W04` diagnostics from a `--system` scan, asserting the tier.
+fn system_w04s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.code == "sysctld-W04")
+        .inspect(|d| {
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "sysctld-W04 must be Warning, got {:?}",
+                d.severity
+            );
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 1. Core RED test: --system emits W04 over the merged effective set, gated
+//    positively/negatively by --target (mirrors `w04_runs_only_under_a_target`
+//    above, ported to `lint_system`, so a vacuous "no W04" cannot be confused
+//    with "the pass never ran").
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_fires_over_the_merged_effective_set_only_under_a_target() {
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "etc/sysctl.conf", "# no keys set\n");
+
+    let (with_target, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+    assert_eq!(
+        system_w04s(&with_target).len(),
+        25,
+        "a --target rhel9 --system scan must run the CIS baseline over the \
+         (empty) merged set and fire one W04 per unset key (25 for rhel9): \
+         {with_target:?}"
+    );
+
+    let (no_target, _sources2) = lint_system(Some(root.path()), None);
+    assert!(
+        no_target.iter().all(|d| d.code != "sysctld-W04"),
+        "with no --target, --system must not run the CIS baseline (no W04): \
+         {no_target:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. Precedence correctness (the sharpest pin): a key set noncompliantly in
+//    the file that LOSES the merge, compliantly in the file that WINS, must
+//    NOT fire - a naive "run W04 over every surviving file individually, then
+//    union the results" implementation fires here anyway (it flags the losing
+//    file's own noncompliant value in isolation, never consulting the merged
+//    effective value at all). The converse (the WINNING file is the
+//    noncompliant one) must fire exactly once, anchored at the winner - this
+//    direction instead catches a REVERSED winner-selection bug (an impl that
+//    picks the first-occurrence file rather than `effective_values`' real
+//    last-occurrence winner).
+//
+//    Fixture: two DIFFERENT basenames (same-basename masking is a SEPARATE
+//    mechanism, covered by test 6 below), chosen so the /etc/sysctl.d file's
+//    basename sorts LEXICOGRAPHICALLY AFTER the /usr/lib/sysctl.d file's
+//    ("10-a.conf" < "50-b.conf" bytewise, matching `system.rs` module doc
+//    point 2's GLOBAL basename merge) - so /etc wins, and /etc also happens to
+//    be the higher-precedence directory, matching the "low-precedence dir" /
+//    "high-precedence dir" framing directly (no W03-a surprise: the
+//    higher-precedence directory winning is the UNSURPRISING order).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_precedence_low_dir_noncompliant_high_dir_compliant_does_not_fire() {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/10-a.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/50-b.conf",
+        "net.ipv4.ip_forward = 0\n",
+    );
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    assert!(
+        system_w04s(&diags)
+            .iter()
+            .all(|d| !d.message.contains("net.ipv4.ip_forward")),
+        "the effective (winning) value of net.ipv4.ip_forward is 0 (from \
+         etc/sysctl.d/50-b.conf, which sorts after and wins over \
+         usr/lib/sysctl.d/10-a.conf in the global basename merge) - compliant, \
+         so NO W04 may fire, even though the LOSING usr/lib file's own value \
+         (1) is noncompliant in isolation (the naive per-file-union failure \
+         mode this test kills); got: {diags:?}"
+    );
+}
+
+#[test]
+fn system_w04_precedence_low_dir_compliant_high_dir_noncompliant_fires_once_at_the_winner() {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/10-a.conf",
+        "net.ipv4.ip_forward = 0\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/50-b.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    let hits: Vec<&Diagnostic> = system_w04s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("net.ipv4.ip_forward"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the effective (winning) value of net.ipv4.ip_forward is 1 (from \
+         etc/sysctl.d/50-b.conf, which sorts after and wins the global \
+         basename merge) - noncompliant, so exactly ONE W04 must fire (a \
+         reversed-winner bug that picked the LOSING usr/lib file's compliant \
+         value instead would wrongly suppress it - never zero); got: {diags:?}"
+    );
+    let hit = hits[0];
+    assert_eq!(
+        hit.file,
+        root.path().join("etc/sysctl.d/50-b.conf"),
+        "the finding anchors at the WINNING assignment's real file (the \
+         studied W02 precedent), not the losing usr/lib file and not a fixed \
+         directory reference: {hit:?}"
+    );
+    assert_eq!(
+        hit.line, 1,
+        "the finding anchors at the winning assignment's real line: {hit:?}"
+    );
+    assert_ne!(
+        hit.span,
+        0..0,
+        "a present-but-out-of-set W04 carries the real assignment's byte span \
+         (not the degenerate 0..0 a missing-key finding uses), giving an \
+         ariadne snippet: {hit:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3. Attribution: the MISSING-key branch anchors at the FIXED `etc/sysctl.d`
+//    reference path (mirrors W02's identical choice exactly; a missing key has
+//    no real assignment - masked or otherwise - to anchor to, so this is a
+//    direct reuse of the established rule, not a new decision) - no
+//    `source_id`, no ariadne snippet, exactly like single-file/dir mode's
+//    missing branch (`w04_missing_key_carries_exactly_one_cis_control_with_name`
+//    above).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_missing_key_anchors_at_the_fixed_sysctl_d_reference_path() {
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "etc/sysctl.conf", "# nothing set\n");
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    let missing = system_w04s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("net.ipv4.ip_forward"))
+        .expect("net.ipv4.ip_forward is unset -> a missing W04 must fire");
+    assert_eq!(
+        missing.file,
+        root.path().join("etc/sysctl.d"),
+        "a MISSING-key --system W04 anchors at the fixed etc/sysctl.d \
+         reference path, mirroring the W02 anchor exactly: {missing:?}"
+    );
+    assert_eq!(
+        missing.line, 0,
+        "a MISSING-key W04 anchors at line 0: {missing:?}"
+    );
+    assert_eq!(
+        missing.span,
+        0..0,
+        "a MISSING-key W04 carries the degenerate 0..0 span: {missing:?}"
+    );
+    assert!(
+        missing.source_id.is_none(),
+        "a MISSING-key W04 carries no source_id: {missing:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. No double-reporting: a key set (noncompliantly) in THREE different
+//    surviving files fires exactly ONE W04 - anchored at whichever wins the
+//    merge - never three. A naive per-file-union implementation fires three.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_key_set_in_three_files_fires_exactly_once() {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.d/10-a.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/20-b.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/90-c.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    let hits: Vec<&Diagnostic> = system_w04s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("net.ipv4.ip_forward"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "net.ipv4.ip_forward is set (noncompliantly) in THREE surviving files, \
+         but the CIS baseline reasons over ONE effective (merged) value per \
+         key, so exactly ONE W04 must fire - not three (the naive per-file \
+         union failure mode); got: {diags:?}"
+    );
+    assert_eq!(
+        hits[0].file,
+        root.path().join("etc/sysctl.d/90-c.conf"),
+        "the single finding anchors at the effective winner (the \
+         lexicographically-last basename, 90-c.conf): {:?}",
+        hits[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. W04 is additive in --system mode too (regression guard for the existing
+//    --system W02 wiring, requirement 6): a key required by BOTH baselines
+//    fires one W02 (Stig) and one W04 (Cis), neither replacing the other.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_and_w02_coexist_with_distinct_frameworks() {
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "etc/sysctl.conf", "# nothing set\n");
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    let w02: Vec<&Diagnostic> = diags
+        .iter()
+        .filter(|d| d.code == "sysctld-W02" && d.message.contains("kernel.randomize_va_space"))
+        .collect();
+    assert_eq!(
+        w02.len(),
+        1,
+        "the STIG W02 pass must still fire in --system mode, untouched by the \
+         W04 wiring: {diags:?}"
+    );
+    assert_eq!(w02[0].controls[0].framework, Framework::Stig);
+
+    let w04: Vec<&Diagnostic> = system_w04s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("kernel.randomize_va_space"))
+        .collect();
+    assert_eq!(
+        w04.len(),
+        1,
+        "the CIS W04 pass must ALSO fire in --system mode, additively: \
+         {diags:?}"
+    );
+    assert_eq!(w04[0].controls[0].framework, Framework::Cis);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Precedence via the OTHER documented mechanism (`system.rs` module doc
+//    point 1, same-basename directory masking) rather than basename ordering:
+//    a masked lower-precedence drop-in's noncompliant value must NEVER
+//    contribute to the effective value - it is not merely outvoted, it is
+//    entirely invisible (mirrors `same_basename_directory_masking_hides_the_
+//    lower_precedence_file` in `tests/system.rs`). Catches an implementation
+//    that re-derives assignments from disk for the W04 pass instead of
+//    reusing `system.rs`'s already-masking-aware `merged` list.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_w04_masked_dropin_never_contributes_to_the_effective_value() {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.d/50-x.conf",
+        "net.ipv4.ip_forward = 0\n",
+    );
+    // Same basename in a LOWER-precedence directory: masked entirely, never
+    // parsed into the merged set, regardless of its (noncompliant) value.
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/50-x.conf",
+        "net.ipv4.ip_forward = 1\n",
+    );
+
+    let (diags, _sources) = lint_system(Some(root.path()), Some(TargetVersion::Rhel9));
+
+    assert!(
+        system_w04s(&diags)
+            .iter()
+            .all(|d| !d.message.contains("net.ipv4.ip_forward")),
+        "the surviving /etc copy sets net.ipv4.ip_forward = 0 (compliant); the \
+         same-basename masked /usr/lib copy's noncompliant value (1) must \
+         never contribute to the effective value, so NO W04 may fire; \
+         got: {diags:?}"
+    );
+    // Belt-and-suspenders: the masked file must never anchor ANY diagnostic
+    // (of any code), matching the invisibility guarantee `tests/system.rs`
+    // already pins for F01/W01/W03.
+    assert!(
+        diags.iter().all(|d| {
+            !d.file
+                .display()
+                .to_string()
+                .contains("usr/lib/sysctl.d/50-x.conf")
+        }),
+        "the masked usr/lib/sysctl.d/50-x.conf must be entirely invisible - \
+         never the anchor of any diagnostic; got: {diags:?}"
     );
 }
