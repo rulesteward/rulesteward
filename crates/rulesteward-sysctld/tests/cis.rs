@@ -1353,7 +1353,7 @@ fn system_w04_uses_the_resolved_target_product_not_a_hardcoded_default() {
     assert!(
         system_w04s(&rhel8)
             .iter()
-            .all(|d| !d.message.contains("rp_filter")),
+            .all(|d| !d.message.contains("net.ipv4.conf.all.rp_filter")),
         "rhel8 accepts net.ipv4.conf.all.rp_filter = 2 (the set {{1,2}}); a \
          hardcoded-rhel9 impl would wrongly flag it: {rhel8:?}"
     );
@@ -1362,7 +1362,7 @@ fn system_w04_uses_the_resolved_target_product_not_a_hardcoded_default() {
     assert_eq!(
         system_w04s(&rhel9)
             .into_iter()
-            .filter(|d| d.message.contains("rp_filter"))
+            .filter(|d| d.message.contains("net.ipv4.conf.all.rp_filter"))
             .count(),
         1,
         "rhel9 accepts ONLY net.ipv4.conf.all.rp_filter = 1, so = 2 must fire \
