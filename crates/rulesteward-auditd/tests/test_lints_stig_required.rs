@@ -26,6 +26,45 @@
 //! <v_number> }`, which the emit sites do not attach yet. They fail on the
 //! `controls.len()` assertion (0 != 1) until the implementer wires the control
 //! onto each `Diagnostic`.
+//!
+//! # dir-shape equivalence fold (issue #571, session 9j lane 8) -- why
+//! # V-258218 is DELIBERATELY not credited by a `-F dir=` ruleset
+//!
+//! Issue #571 was originally reported against V-258218 (RHEL-09-654220,
+//! `/etc/sudoers.d`): a ruleset spelling the directory audit rule as
+//! `-a always,exit -F dir=/etc/sudoers.d -F perm=wa -k identity` was said to
+//! "falsely" report V-258218 missing. That premise is WRONG and must not be
+//! re-litigated from the issue text alone: the real DISA RHEL 9 STIG V2R9
+//! check-content for V-258218 (`tools/auditd-stig-update/tests/fixtures/
+//! rhel9_auditd_controls.xml`, `<Group id="V-258218">`, verified directly
+//! against the fixture, not recalled) requires **`-F path=/etc/sudoers.d`**,
+//! not `-F dir=`, for BOTH the b32 and b64 rows -- confirmed byte-for-byte
+//! against the shipped `RHEL9_REQUIRED` table
+//! (`stig_required.rs:747,752`) and independently pinned by the frozen
+//! content test `stig_baseline_rhel9_v2r9_content_pins` above. RHEL10's
+//! sibling row (`stig_required.rs:1138,1143`) spells the SAME rule
+//! `-F path=/etc/sudoers.d/` too -- `-F dir=` appears in NEITHER fixture for
+//! this STIG id, in either RHEL release. Only RHEL8's V-230410
+//! (`stig_required.rs:171`) is genuinely Watch-shaped
+//! (`-w /etc/sudoers.d/ -p wa -k identity`), which is why this file's
+//! dir-shape tests below anchor on V-230410/V-230406, not V-258218.
+//!
+//! USER RULING (2026-07-24, confirmed after independent orchestrator
+//! verification of the fixture/table citations above): the dir-shape fold
+//! credits ONLY genuinely dir-shaped requirements -- `-w DIR` <-> `-F dir=`
+//! and `-F dir=` <-> `-F dir=`. It does NOT fold `-F dir=` into `-F path=`
+//! (or vice versa) to paper over DISA's own `path=`-for-a-directory
+//! spelling. Consequently: **a ruleset that only has a `-F dir=` rule for
+//! `/etc/sudoers.d` correctly, truly, and permanently fails V-258218 on
+//! RHEL9/RHEL10 -- this is a TRUE missing, not a false positive.** DISA's
+//! own fixtext (the literal remediation text an admin is told to paste)
+//! ALSO says `-F path=`, so a `dir=`-only ruleset genuinely does not
+//! implement what RHEL9/RHEL10's V2R9/V1R2 STIG asks for, whatever a human
+//! eyeballing `auditctl -l | grep sudoers.d` might informally accept. See
+//! the "dir-shape equivalence fold" test section near the end of this file
+//! for the full grounding and the anti-collapse guards that PIN this
+//! boundary (`dir_syscall_form_does_not_satisfy_a_file_shaped_watch_
+//! requirement` / `dir_shaped_requirement_not_satisfied_by_a_file_watch`).
 
 use std::path::Path;
 
@@ -1849,5 +1888,347 @@ fn non_w06_finding_has_empty_controls() {
         diags[0].controls.is_empty(),
         "a non-au-W06 finding must carry no controls: {:?}",
         diags[0].controls
+    );
+}
+
+// ---------------------------------------------------------------------------
+// dir-shape equivalence fold (issue #571, USER RULING 2026-07-24): extends
+// the existing path-watch equivalence fold (grounded above, "watch<->syscall
+// EQUIVALENCE") with a SEPARATE, PARALLEL arm for `-F dir=` <-> `-w DIR`.
+//
+// Grounding, `auditctl(8)` (`-w path`): "If the path is a file, it's almost
+// the same as using the -F path option on a syscall rule. If the watch is on
+// a directory, it's almost the same as using the -F dir option on a syscall
+// rule." The EXAMPLES section shows both forms side by side: a FILE ("To
+// watch a file for changes": `auditctl -w /etc/shadow -p wa` <->
+// `auditctl -a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa`) and a
+// DIRECTORY ("To recursively watch a directory for changes": `auditctl -w
+// /etc/ -p wa` <-> `auditctl -a always,exit -F arch=b64 -F dir=/etc/
+// -F perm=wa`). `-F dir=` places a RECURSIVE SUBTREE watch; `-F path=` places
+// a SINGLE-INODE watch -- genuinely distinct kernel constructs, confirmed
+// directly against `man auditctl` on this machine (`/usr/bin/auditctl`).
+//
+// CRITICAL: this is implemented as a NEW, SEPARATE structural shape check
+// (`is_pure_path_watch_shaped`'s Dir-flavored twin), not an extension of the
+// EXISTING path-shape check's allowed-field set. `-F dir=` and `-F path=`
+// must never satisfy each other, even though both cross a Watch<->Syscall
+// variant boundary the same way -- see the two anti-collapse guards below,
+// which are the load-bearing tests in this section.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rhel8_sudoers_d_dir_watch_still_satisfied_by_plain_directory_watch() {
+    // Regression guard (#571): the classic `-w DIR/` form for V-230410
+    // (RHEL-08-030172: "-w /etc/sudoers.d/ -p wa -k identity",
+    // RHEL8_REQUIRED) is a SAME-VARIANT Watch-vs-Watch match -- this
+    // predates and is entirely independent of the dir-shape fold added for
+    // #571 (the bug report's own words: "The common -w /etc/sudoers.d/ form
+    // IS already credited"). Pins that adding the new fold arm must not
+    // regress this already-working path. GREEN today by design (a
+    // regression guard for pre-existing behavior, not the new fold).
+    let rules = parse("-w /etc/sudoers.d/ -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "the classic directory watch line must continue to satisfy V-230410 \
+         (RHEL-08-030172) after the dir-shape fold lands: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_satisfies_v230410_sudoers_d_directory_watch() {
+    // Positive, direction A (Watch required, Syscall candidate): the
+    // asymmetry the bug report names -- an admin who spells the dual-arch
+    // SYSCALL form using the kernel-correct -F dir= field (NOT -F path=,
+    // which would be the wrong single-inode construct for a directory)
+    // against V-230410 (RHEL-08-030172, RHEL8_REQUIRED: "-w
+    // /etc/sudoers.d/ -p wa -k identity") currently gets a false "missing".
+    //
+    // RED today: `is_pure_path_watch_shaped` only recognises path/perm/arch
+    // fields, so a Dir field falls outside its shape set and the
+    // Watch-vs-Syscall fold never even attempts to compare this candidate.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a dual-arch syscall pair spelled with -F dir= (the kernel-correct \
+         form for a directory watch, per auditctl(8)) must satisfy \
+         V-230410's directory-watch requirement (RHEL-08-030172): {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_requirement_satisfied_by_plain_directory_watch() {
+    // Positive, direction B (Syscall required, Watch candidate -- the
+    // REVERSE of the test above): a REQUIRED line spelled with the syscall
+    // -F dir= form (the shape a `-w DIR/` compiles to, per auditctl(8))
+    // must be satisfiable by the classic `-w DIR/ -p perms -k key`
+    // candidate too. No shipped RHEL8/9/10 table row happens to REQUIRE
+    // -F dir= (every real directory-audit STIG row this project has
+    // transcribed spells it -F path= instead -- a separate, tracked
+    // DISA-authoring quirk confirmed against the real V2R9 XCCDF fixture,
+    // see `stig_baseline_rhel9_v2r9_content_pins` above and the module doc
+    // for why that is NOT re-litigated here), so this uses a synthetic
+    // test-local requirement (the established pattern for matcher-grammar
+    // scenarios with no real shipped analog, e.g. the perm-bit completeness
+    // tests above).
+    //
+    // RED today: same root cause as the test above, from the OTHER
+    // cross-variant arm (`is_pure_path_watch_shaped` called on the
+    // REQUIRED side this time).
+    let baseline = vec![bl(
+        "SYNTHETIC-DIR-REVERSE",
+        "TEST-DIR-REVERSE",
+        "-a always,exit -F dir=/etc/synthetic-dir -F perm=wa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-dir/ -p wa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a classic directory watch must satisfy a required -F dir= \
+         syscall-form requirement (the reverse direction of the dir-shape \
+         equivalence fold): {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_does_not_satisfy_a_file_shaped_watch_requirement() {
+    // ANTI-COLLAPSE GUARD #1 (the single most important test in this file,
+    // #571): V-230406 (RHEL-08-030150, RHEL8_REQUIRED) is a FILE watch --
+    // "-w /etc/passwd -p wa -k identity" (auditctl(8): a watch on a FILE
+    // compiles to "-F path=", a single-inode watch). A candidate spelled
+    // with -F dir= instead of -F path= is a RECURSIVE SUBTREE watch -- a
+    // structurally DIFFERENT kernel construct -- and must NOT be credited
+    // as satisfying this file-shaped requirement, even though the path
+    // string and perms match exactly.
+    //
+    // Kills the naive implementation that just adds AuditField::Dir to
+    // is_pure_path_watch_shaped's allowed field set (and/or teaches
+    // watch_equivalent_axes_match to look up "Path OR Dir, whichever is
+    // present" as if the two fields were the same concept): that naive
+    // impl would recognise this candidate as "pure path-watch shaped" and
+    // extract /etc/passwd as "the effective path" regardless of which
+    // field it came from, wrongly satisfying a single-inode requirement
+    // with a recursive-subtree watch.
+    //
+    // A discriminating-negative CONTROL (mirrors this file's existing
+    // `watch_equivalent_wrong_path_does_not_satisfy_v258222_passwd`-style
+    // pins): passes BOTH before and after a CORRECT fix lands -- today
+    // nothing folds -F dir= at all, so this is trivially "missing"; after a
+    // correct, SEPARATE dir-shape arm lands, it is still "missing" because
+    // path-shape and dir-shape stay structurally distinct.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/passwd -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/passwd -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030150") && d.message.contains("is missing")),
+        "a -F dir= syscall rule must NOT satisfy V-230406's file-shaped \
+         (-w /etc/passwd) watch requirement -- dir is a recursive subtree \
+         watch, path is a single-inode watch: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_shaped_requirement_not_satisfied_by_a_file_watch() {
+    // ANTI-COLLAPSE GUARD #2 (the mirror of the guard above, from the
+    // OTHER cross-variant arm): a REQUIRED line that is genuinely
+    // dir-shaped (-F dir=, a recursive subtree watch) must NOT be
+    // satisfied by a candidate FILE watch (no trailing slash, so
+    // `is_dir == false`) spelled with the same directory string, perms,
+    // and key. No shipped table row requires -F dir= (see the reverse-
+    // direction positive test's comment above for why), so this uses the
+    // same synthetic test-local requirement pattern.
+    //
+    // Kills the same naive Dir-inclusive shape check as the guard above,
+    // exercised from the (Syscall-required, Watch-candidate) arm this
+    // time: `is_pure_path_watch_shaped` is called on the REQUIRED side
+    // here, so a naive implementation would wrongly recognise a
+    // dir=-required row as path-watch-shaped and credit a single-inode
+    // file watch against a recursive-subtree requirement.
+    let baseline = vec![bl(
+        "SYNTHETIC-DIR-VS-FILE",
+        "TEST-DIR-VS-FILE",
+        "-a always,exit -F dir=/etc/synthetic-mirror -F perm=wa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-mirror -p wa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        !diags.is_empty(),
+        "a plain FILE watch (no trailing slash) must NOT satisfy a -F dir= \
+         (recursive subtree) requirement, even with an identical directory \
+         string, perms, and key: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_equivalent_wrong_perms_does_not_satisfy_v230410_sudoers_d() {
+    // Perm-axis rigor for the new dir-shape fold, mirroring the existing
+    // path fold's `watch_equivalent_wrong_perms_does_not_satisfy_
+    // v258222_passwd`: V-230410 requires perm=wa. A candidate spelled with
+    // -F dir= (the RIGHT field this time) but a NARROWER perm set (perm=w
+    // only, missing the attribute-change bit) must still be reported
+    // missing -- the dir fold must not become a wildcard that credits
+    // anything naming the right directory regardless of perms.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=w -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=w -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a -F dir= rule with NARROWER perms (perm=w, missing 'a') than \
+         required (perm=wa) must not satisfy V-230410: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_equivalent_wrong_dir_value_does_not_satisfy_v230410_sudoers_d() {
+    // Directory-value axis (the dir-fold's analog of
+    // `distinct_watch_paths_are_not_normalized_to_the_same_value`): a
+    // candidate naming a DIFFERENT directory entirely must not satisfy
+    // V-230410's /etc/sudoers.d requirement, guarding against a fold that
+    // credits ANY -F dir= rule regardless of which directory it names.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/cron.d -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/cron.d -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a -F dir= rule naming a DIFFERENT directory (/etc/cron.d) must not \
+         satisfy V-230410's /etc/sudoers.d requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_equivalent_with_different_key_reports_key_differs_not_missing() {
+    // Key-axis rigor, mirroring `watch_equivalent_with_different_key_
+    // reports_key_differs_not_missing`: the SAME two-pass
+    // satisfied/key-differs/missing distinction (`w06_with_baseline`'s
+    // grounded matcher spec, step 3) must apply once dir+perm match across
+    // the new fold too. A candidate with V-230410's correct directory
+    // (/etc/sudoers.d) and perms (wa) but a DIFFERENT key must produce
+    // "present but with a different key", not "is missing".
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -k wrongkey\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -k wrongkey\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    let v230410: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("RHEL-08-030172"))
+        .collect();
+    assert!(
+        !v230410.is_empty(),
+        "V-230410 must still produce a finding when the key differs: {diags:?}"
+    );
+    assert!(
+        v230410.iter().all(|d| d.message.contains("different key")),
+        "a dir+perm-equivalent candidate with the WRONG key must produce \
+         the 'present but with a different key' message, not 'is missing': \
+         {v230410:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_wrong_arch_value_does_not_satisfy_requirement() {
+    // Arch-axis grounding control (same-variant Syscall-vs-Syscall,
+    // exercised through the NEW Dir field specifically): a candidate with
+    // the correct dir/perm/key but the WRONG -F arch= value must not
+    // satisfy the requirement. This is the EXISTING, generic
+    // fields_match_excluding_key/multiset_eq machinery (arch is just
+    // another -F field, handled identically regardless of field type) --
+    // pinned here through Dir specifically so a future refactor cannot
+    // special-case Dir handling in a way that accidentally bypasses the
+    // normal per-field comparison (e.g. matching on dir/perm/key only and
+    // silently ignoring arch whenever a Dir field is present).
+    let baseline = vec![bl(
+        "SYNTHETIC-DIR-ARCH-MISMATCH",
+        "TEST-DIR-ARCH-MISMATCH",
+        "-a always,exit -F arch=b64 -F dir=/etc/synthetic-archmismatch -F perm=wa -k synth",
+    )];
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/synthetic-archmismatch -F perm=wa -k synth\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        !diags.is_empty(),
+        "a -F dir= candidate with the WRONG -F arch= value must not \
+         satisfy the requirement, even with matching dir/perm/key: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_watch_shaped() {
+    // Closing an adjacent hole found while grounding this section: mirrors
+    // this file's EXISTING guard for the path arm (`is_pure_path_watch_
+    // shaped` requires the field set to be EXACTLY path/perm/arch, not "at
+    // least path" -- several real shipped rows, e.g. V-230412's
+    // "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F
+    // auid!=unset -k privileged-priv_change", deliberately stay
+    // Syscall-only for exactly this reason: the auid restriction takes
+    // them outside the pure path-watch shape). A naive dir-shape check
+    // that only tests "has a Dir field" (instead of "the field set
+    // consists ONLY of dir/perm/arch") would wrongly treat this
+    // auid-RESTRICTED directory rule as a plain, unconditional
+    // directory-watch equivalent, crediting it against V-230410's
+    // unconditional requirement even though it generates FEWER audit
+    // events than required (it silently misses auid<1000 users) -- the
+    // SAME "exact match, not superset/subset" rigor this file already
+    // establishes for perms
+    // (`watch_equivalent_requires_exact_perm_match_not_superset`) must
+    // extend to the field SET itself, not just individual field values.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F auid>=1000 -F auid!=unset -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F auid>=1000 -F auid!=unset -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "an auid-RESTRICTED -F dir= rule must NOT satisfy V-230410's \
+         unconditional directory-watch requirement -- it generates FEWER \
+         events than required (misses auid<1000 users), so it is not a \
+         kernel-equivalent form, even though dir/perm/key all match: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn dir_value_trailing_slash_is_normalized_before_comparison() {
+    // Trailing-slash normalisation for the dir-fold's directory-value
+    // compare, mirroring the EXISTING watch-path precedent
+    // (`normalize_watch_path`, grounding Part B.7.2) applied to the NEW
+    // -F dir= field's value too. Real-world grounding: RHEL10_REQUIRED's
+    // own sudoers.d row (stig_required.rs, RHEL10_REQUIRED table) carries a
+    // trailing slash directly on a -F path= field value ("-a always,exit
+    // -F arch=b32 -F path=/etc/sudoers.d/ -F perm=wa -F key=identity"),
+    // proving DISA's own check-content is just as inconsistent about
+    // trailing slashes on -F field values as it is on -w lines (B.7.2) --
+    // the same normalize-before-compare treatment must extend to -F dir=
+    // values, not just -w paths.
+    let baseline = vec![bl(
+        "SYNTHETIC-DIR-SLASH",
+        "TEST-DIR-SLASH",
+        "-a always,exit -F dir=/etc/synthetic-slash/ -F perm=wa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-slash -p wa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a -F dir= requirement value differing only by a trailing slash \
+         must still be satisfied by a watch on the same directory: {diags:?}"
     );
 }
