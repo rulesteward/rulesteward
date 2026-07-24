@@ -7,20 +7,35 @@
 # `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS`), re-gate (adversarial +
 # mutation), and confirm `sudoers-stig-update check` reports 0 drift.
 #
-# CURRENCY NOTE (updated 2026-07-24, post-adversarial-review, RULING 2): the
+# CURRENCY NOTE (updated 2026-07-24, post-adversarial-review round 3): the
 # initial test-author pass pinned V2R4/V2R7/V1R1 (the revisions cached locally
 # and used to build the committed fixtures) and left bumping to V2R8/V2R9/V1R2
-# as a follow-up, since sshd/auditd's own live pins had since moved there. The
-# adversarial reviewer independently fetched all three newer revisions and
-# byte-verified: all NINE sudo-W04 ids (AUTHENTICATE_CONTROLS /
-# PW_FAMILY_CONTROLS / TIMESTAMP_TIMEOUT_CONTROLS across RHEL-08/09/10) AND
-# every Group used by the committed fixtures (the 3 W04 + NOPASSWD-decoy
-# Groups per product, plus rhel8's 3 wholly-unrelated Groups) are BYTE-IDENTICAL
-# between the old and new revisions. This pin is therefore bumped to match
-# tools/sshd-stig-update / tools/auditd-stig-update's current live pin with
-# ZERO fixture or test changes required -- the committed
-# tests/fixtures/rhelN_sudoers_controls.xml remain accurate, verbatim extracts
-# of the CURRENT pinned revisions, not stale copies of a superseded one.
+# as a follow-up, since sshd/auditd's own live pins had since moved there.
+#
+# What is actually verified, and by whom:
+# - All NINE sudo-W04 ids (AUTHENTICATE_CONTROLS / PW_FAMILY_CONTROLS /
+#   TIMESTAMP_TIMEOUT_CONTROLS across RHEL-08/09/10) and the three per-product
+#   NOPASSWD decoy Groups are confirmed BYTE-IDENTICAL between the old and new
+#   revisions -- verified by an independent adversarial review pass
+#   (2026-07-24, round 1).
+# - rhel8's V-230221 (one of the 3 wholly-unrelated Groups) is ALSO confirmed
+#   byte-identical between revisions -- same review pass, round 3.
+# - rhel8's V-230222 and V-230223 (the other 2 wholly-unrelated Groups) are
+#   NOT identical between V2R4 and V2R8 (round-3 review finding: both Rule ids
+#   changed; V-230222's check-content gained a leading applicability note;
+#   V-230223's title/fixtext/check-content were rewritten entirely, unrelated
+#   to sudo either way). Rather than leave the committed fixture mixing a
+#   stale V2R4 copy with the pinned V2R8 revision, both Groups were
+#   RE-EXTRACTED fresh from the actual V2R8 XCCDF (this lane, round 3) so
+#   `tests/fixtures/rhel8_sudoers_controls.xml` is now what its own
+#   description claims: genuinely V2R8 content throughout. Neither revision
+#   of either Group contains any sudo-W04 keyword, so their role (a Group a
+#   correct selector must exclude) is unaffected either way.
+#
+# This pin matches tools/sshd-stig-update / tools/auditd-stig-update's current
+# live pin, and the committed tests/fixtures/rhelN_sudoers_controls.xml are
+# accurate, verbatim extracts of these CURRENT pinned revisions -- see
+# tests/fixtures/README.md for the full per-Group provenance.
 #
 # The public, no-auth CDN. Full URL = base_url + "/" + products.<p>.zip.
 # (public.cyber.mil/stigs/downloads/ is a JavaScript SPA that curl cannot read;

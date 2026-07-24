@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL8_STIG_V2R4_TEST_FIXTURE">
-<title>Trimmed test fixture: real DISA rhel8 RHEL 8 STIG V2R4 (02 Jul 2025) content in TRUE document order (adversarial round: never reordered into selector-output order). Carries the sudo-W04 directive Groups (authenticate / pw_family / timestamp_timeout), the sudo-W01/W05 NOPASSWD decoy Group (real sudoers content, wrong lint), and -- rhel8 only -- 3 further Groups with NO bearing on sudo at all, PRECEDING even the NOPASSWD decoy, so a positional/ordinal selector cannot pass by taking "the first N Groups" or "the first N after skipping sudo-flavored content". check-content, fixtext, and the Group-level + Rule-level titles are ALL verbatim (the Group-level title deliberately kept: it carries the SRG requirement id, a same-tag-different-meaning trap for a selector that reads the wrong title element); description/reference/ident stripped (the parser never reads them).</title>
-<!-- UNRELATED DECOY: vendor-supported release (not sudo at all) -->
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL8_STIG_V2R8_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel8 content in TRUE document order (adversarial round: never reordered into selector-output order). The 3 wholly-unrelated Groups (V-230221/222/223) are extracted from the CURRENTLY PINNED RHEL 8 STIG V2R8 (01 Jul 2026); the sudo-W04 directive Groups (authenticate / pw_family / timestamp_timeout) and the sudo-W01/W05 NOPASSWD decoy Group are extracted from RHEL 8 STIG V2R4 (02 Jul 2025) -- confirmed byte-identical to their V2R8 counterparts by an independent adversarial review pass (2026-07-24), so mixing sources here introduces no actual content drift; see tests/fixtures/README.md for the exact verification scope. check-content, fixtext, and the Group-level + Rule-level titles are ALL verbatim (the Group-level title deliberately kept: it carries the SRG requirement id, a same-tag-different-meaning trap for a selector that reads the wrong title element); description/reference/ident stripped (the parser never reads them).</title>
+<!-- UNRELATED DECOY: vendor-supported release (not sudo at all; V2R8) -->
 <Group id="V-230221"><title>SRG-OS-000480-GPOS-00227</title><Rule id="SV-230221r1017040_rule" weight="10.0" severity="high"><version>RHEL-08-010000</version><title>RHEL 8 must be a vendor-supported release.</title><fixtext fixref="F-32865r567410_fix">Upgrade to a supported version of RHEL 8.</fixtext><check system="C-32890r858733_chk"><check-content>Verify the version of the operating system is vendor supported.
 
 Note: The lifecycle time spans and dates are subject to adjustment.
@@ -31,8 +31,10 @@ Current End of Maintenance Support for RHEL 8.9 is 31 May 2024.
 Current End of Maintenance Support for RHEL 8.10 is 31 May 2029.
 
 If the release is not supported by the vendor, this is a finding.</check-content></check></Rule></Group>
-<!-- UNRELATED DECOY: vendor patches up to date (not sudo at all) -->
-<Group id="V-230222"><title>SRG-OS-000480-GPOS-00227</title><Rule id="SV-230222r1017041_rule" weight="10.0" severity="medium"><version>RHEL-08-010010</version><title>RHEL 8 vendor packaged system security patches and updates must be installed and up to date.</title><fixtext fixref="F-32866r567413_fix">Install the operating system patches or updated packages available from Red Hat within 30 days or sooner as local policy dictates.</fixtext><check system="C-32891r567412_chk"><check-content>Verify the operating system security patches and updates are installed and up to date. Updates are required to be applied with a frequency determined by the site or Program Management Office (PMO).
+<!-- UNRELATED DECOY: vendor patches up to date (not sudo at all; V2R8) -->
+<Group id="V-230222"><title>SRG-OS-000480-GPOS-00227</title><Rule id="SV-230222r1184233_rule" weight="10.0" severity="medium"><version>RHEL-08-010010</version><title>RHEL 8 vendor packaged system security patches and updates must be installed and up to date.</title><fixtext fixref="F-32866r567413_fix">Install the operating system patches or updated packages available from Red Hat within 30 days or sooner as local policy dictates.</fixtext><check system="C-32891r1184232_chk"><check-content>Note: If the system is not an internet connected system, this is not applicable.
+
+Verify the operating system security patches and updates are installed and up to date. Updates are required to be applied with a frequency determined by the site or Program Management Office (PMO).
 
 Obtain the list of available package security updates from Red Hat. The URL for updates is https://rhn.redhat.com/errata/. It is important to note that updates provided by Red Hat may not be present on the system if the underlying packages are not installed.
 
@@ -53,29 +55,49 @@ If package updates have not been performed on the system within the timeframe th
 Typical update frequency may be overridden by Information Assurance Vulnerability Alert (IAVA) notifications from CYBERCOM.
 
 If the operating system is in non-compliance with the Information Assurance Vulnerability Management (IAVM) process, this is a finding.</check-content></check></Rule></Group>
-<!-- UNRELATED DECOY: FIPS-validated cryptography (not sudo at all) -->
-<Group id="V-230223"><title>SRG-OS-000033-GPOS-00014</title><Rule id="SV-230223r1069327_rule" weight="10.0" severity="high"><version>RHEL-08-010020</version><title>RHEL 8 must implement NIST FIPS-validated cryptography for the following: To provision digital signatures, to generate cryptographic hashes, and to protect data requiring data-at-rest protections in accordance with applicable federal laws, Executive Orders, directives, policies, regulations, and standards.</title><fixtext fixref="F-32867r928584_fix">Configure the operating system to implement DOD-approved encryption by following the steps below:
+<!-- UNRELATED DECOY: FIPS-validated cryptography (not sudo at all; V2R8) -->
+<Group id="V-230223"><title>SRG-OS-000033-GPOS-00014</title><Rule id="SV-230223r1155356_rule" weight="10.0" severity="high"><version>RHEL-08-010020</version><title>RHEL 8 must implement a FIPS 140-3-compliant systemwide cryptographic policy.</title><fixtext fixref="F-32867r1155355_fix">Configure RHEL 8 to use a FIPS 140-3-compliant systemwide cryptographic policy.
 
-To enable strict FIPS compliance, the fips=1 kernel option needs to be added to the kernel boot parameters during system installation so key generation is done with FIPS-approved algorithms and continuous monitoring tests in place.
+Create a subpolicy for enhancements to the base systemwide crypto-policy by creating the file /etc/crypto-policies/policies/modules/STIG.pmod with the following content:
 
-Enable FIPS mode after installation (not strict FIPS-compliant) with the following command:
+# Define ciphers and MACs for OpenSSH and libssh
+cipher@SSH=AES-256-GCM AES-256-CTR AES-128-GCM AES-128-CTR
+mac@SSH=HMAC-SHA2-512 HMAC-SHA2-256
 
-     $ sudo fips-mode-setup --enable
+Apply the policy enhancements to the FIPS systemwide cryptographic policy level with the following command:
 
-Reboot the system for the changes to take effect.</fixtext><check system="C-32892r1069263_chk"><check-content>Verify the operating system implements DOD-approved encryption to protect the confidentiality of remote access sessions.
+$ sudo update-crypto-policies --set FIPS:STIG
 
-Show the configured systemwide cryptographic policy by running the following command:
+Note: If additional subpolicies are being employed, they must be added to the update-crypto-policies command.
+
+To make the cryptographic settings effective for already running services and applications, restart the system:
+
+$ sudo reboot</fixtext><check system="C-32892r1155354_chk"><check-content>Verify RHEL 8 is set to use a FIPS 140-3-compliant systemwide cryptographic policy with the following command:
 
 $ sudo update-crypto-policies --show
-FIPS
 
-If the main policy name is not "FIPS", this is a finding.
+FIPS:STIG
 
-If the AD-SUPPORT subpolicy module is included (e.g., "FIPS:AD-SUPPORT"), and Active Directory support is not documented as an operational requirement with the information system security officer (ISSO), this is a finding.
+If the systemwide crypto policy is not set to "FIPS", this is a finding.
 
-If the NO-ENFORCE-EMS subpolicy module is included (e.g., "FIPS:NO-ENFORCE-EMS"), and not enforcing EMS is not documented as an operational requirement with the ISSO, this is a finding.
+Note: If subpolicies have been configured, they could be listed in a colon-separated list starting with "FIPS" as follows FIPS:&lt;SUBPOLICY-NAME&gt;. This is not a finding.
 
-If any other subpolicy module is included, this is a finding.</check-content></check></Rule></Group>
+Note: Subpolicies like AD-SUPPORT must be configured according to the latest guidance from the operating system vendor.
+
+Verify the current minimum crypto-policy configuration with the following commands:
+
+$ sudo grep -E 'rsa_size|hash' /etc/crypto-policies/state/CURRENT.pol
+
+hash = SHA2-256 SHA2-384 SHA2-512 SHA2-224 SHA3-256 SHA3-384 SHA3-512
+min_rsa_size = 2048
+
+If the "hash" values do not include at least the following FIPS 140-3-compliant algorithms "SHA2-256 SHA2-384 SHA2-512 SHA2-224 SHA3-256 SHA3-384 SHA3-512", this is a finding.
+
+If there are algorithms that include "SHA1" or a hash value less than "224" this is a finding.
+
+If the "min_rsa_size" is not set to a value of at least "2048", this is a finding.
+
+If these commands do not return any output, this is a finding.</check-content></check></Rule></Group>
 <!-- DECOY: NOPASSWD (sudo-W01/W05, not W04) -->
 <Group id="V-230271"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-230271r1101896_rule" weight="10.0" severity="medium"><version>RHEL-08-010380</version><title>RHEL 8 must require users to provide a password for privilege escalation.</title><fixtext fixref="F-32915r854025_fix">Remove any occurrence of "NOPASSWD" found in "/etc/sudoers" file or files in the "/etc/sudoers.d" directory.</fixtext><check system="C-32940r1101895_chk"><check-content>Verify that "/etc/sudoers" has no occurrences of "NOPASSWD".
 

@@ -103,16 +103,25 @@ mod scope_tests {
     const CIS_FN: &str = concat!("cis", "_baseline");
     const CIS_VARIANT: &str = concat!("Framework::", "Cis");
 
+    /// The single source of truth for which source files the CIS-derivation
+    /// scan covers. Shared by [`no_source_file_references_cis_derivation_logic`]
+    /// (the actual scan) and [`scanned_file_list_covers_every_source_file`]
+    /// (the completeness check), so the two can never silently drift apart --
+    /// without that second test, a future `src/cis.rs` (or any new module)
+    /// would escape this guard entirely, since neither its filename nor its
+    /// content is in this list until someone remembers to add it by hand.
+    const SCANNED_FILES: &[(&str, &str)] = &[
+        ("lib.rs", LIB_RS),
+        ("main.rs", MAIN_RS),
+        ("config.rs", CONFIG_RS),
+        ("source.rs", SOURCE_RS),
+        ("derive.rs", DERIVE_RS),
+        ("xccdf.rs", XCCDF_RS),
+    ];
+
     #[test]
     fn no_source_file_references_cis_derivation_logic() {
-        for (name, src) in [
-            ("lib.rs", LIB_RS),
-            ("main.rs", MAIN_RS),
-            ("config.rs", CONFIG_RS),
-            ("source.rs", SOURCE_RS),
-            ("derive.rs", DERIVE_RS),
-            ("xccdf.rs", XCCDF_RS),
-        ] {
+        for &(name, src) in SCANNED_FILES {
             let code_only = non_comment_lines(src);
             assert!(
                 !code_only.contains(CIS_FN),
@@ -126,6 +135,41 @@ mod scope_tests {
                  -- this tool is DISA-only and must never derive or cite a CIS control"
             );
         }
+    }
+
+    /// Completeness check (adversarial round 3 concern): [`SCANNED_FILES`] is
+    /// a hand-maintained list, so a NEW top-level `src/*.rs` file (e.g. a
+    /// future `cis.rs`) would silently escape
+    /// [`no_source_file_references_cis_derivation_logic`] entirely -- neither
+    /// its name nor its content appears anywhere in that scan until someone
+    /// remembers to add it. This reads the REAL `src/` directory at test time
+    /// and fails loudly if it ever disagrees with [`SCANNED_FILES`]'s file
+    /// names, in either direction (a file added but not scanned, or a scanned
+    /// name that no longer exists). Scoped to files DIRECTLY under `src/`
+    /// (does not recurse into subdirectories); this crate has none today, and
+    /// this is a cheap-hardening guard, not a build-system dependency tracker.
+    #[test]
+    fn scanned_file_list_covers_every_source_file() {
+        let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut on_disk: Vec<String> = std::fs::read_dir(src_dir)
+            .unwrap_or_else(|e| panic!("read_dir({}): {e}", src_dir.display()))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("rs"))
+            .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        on_disk.sort();
+
+        let mut scanned: Vec<&str> = SCANNED_FILES.iter().map(|&(name, _)| name).collect();
+        scanned.sort_unstable();
+
+        assert_eq!(
+            on_disk, scanned,
+            "SCANNED_FILES must list EXACTLY the .rs files directly under src/ (found on \
+             disk: {on_disk:?}; currently scanned: {scanned:?}) -- a mismatch means either \
+             a new source file needs to be added to the CIS-derivation scan, or a stale \
+             entry needs removing"
+        );
     }
 
     #[test]

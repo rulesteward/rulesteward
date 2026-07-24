@@ -49,11 +49,25 @@ V2R4, RHEL 9 V2R7, RHEL 10 V1R1 -- gitignored docs tree; not part of this
 repo; the SAME cache `tools/auditd-stig-update`'s own fixtures README points
 at). An independent adversarial-test-review pass subsequently fetched the
 CURRENT pinned revisions (RHEL 8 V2R8, RHEL 9 V2R9, RHEL 10 V1R2 -- see
-`../stig-refs.toml`) and byte-verified every Group used by these fixtures is
-IDENTICAL across both revisions, so `../stig-refs.toml`'s live pin was bumped
-to match sshd/auditd's current pin with no fixture changes required. These
-fixtures remain accurate, verbatim extracts of the CURRENTLY pinned
-revisions, not stale copies of a superseded one.
+`../stig-refs.toml`) and confirmed BYTE-IDENTICAL between the old and new
+revisions:
+- all nine sudo-W04 STIG ids (the table below), and
+- all three per-product NOPASSWD decoy Groups, and
+- rhel8's `V-230221` (one of its 3 wholly-unrelated Groups).
+
+That same review pass found rhel8's OTHER two wholly-unrelated Groups,
+`V-230222` and `V-230223`, are NOT identical between V2R4 and V2R8 (both
+Rule ids changed; `V-230222`'s check-content gained a leading applicability
+note; `V-230223`'s title/fixtext/check-content were rewritten entirely).
+Neither revision of either Group contains any sudo-W04 keyword, so their
+role in this fixture (content a correct selector must exclude) is unaffected
+-- but rather than let the committed fixture mix a stale V2R4 copy with the
+otherwise-V2R8-pinned revision, both Groups were RE-EXTRACTED fresh from the
+actual V2R8 XCCDF (round 3 of this review). `rhel8_sudoers_controls.xml` is
+therefore genuinely V2R8 content throughout (its 3 unrelated Groups) plus
+V2R4 content confirmed byte-identical to V2R8 (its 4 real sudo-related
+Groups) -- not a claim that every byte was independently re-verified beyond
+what is listed above.
 
 ### Extracted STIG Rule ids (the nine ids these fixtures ground)
 
