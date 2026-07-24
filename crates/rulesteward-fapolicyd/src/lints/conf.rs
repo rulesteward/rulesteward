@@ -524,6 +524,74 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // Adversarial round 3 (impl-aware, grounded on upstream
+    // src/library/daemon-config.c): the daemon's own tokenizer, `_strsplit`,
+    // splits a value ONLY on the ASCII space byte (`ptr = strchr(str, ' ');`)
+    // and `get_line` strips ONLY a trailing 0x0a, never 0x0d. So a tab (or a
+    // stray `\r` from a CRLF-edited conf file) is NOT a token separator to
+    // the real daemon - it is part of the single value token handed to
+    // `unsigned_int_parser`, which does a byte-exact `isdigit` walk and
+    // rejects the whole token the moment it hits a non-digit byte, leaving
+    // the enforcing default in place. An impl that tokenizes with Rust's
+    // Unicode-whitespace-aware `split_whitespace()` / `.trim()` (which both
+    // treat TAB and CR as whitespace) diverges from that byte-exact
+    // behavior and wrongly fires on values the daemon itself would reject
+    // as unparsable. These pins are BLIND to the fix shape (they only
+    // assert observable behavior), so they hold regardless of whether the
+    // fix tokenizes by hand or reuses a shared byte-exact-digit predicate.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn tab_separated_second_token_does_not_leak_into_the_value() {
+        // The daemon's `_strsplit` splits only on the ASCII space byte, so
+        // "1\t2" is bound as ONE token to `unsigned_int_parser`, which
+        // rejects it outright at the tab byte (not a digit) -> parse error
+        // -> the enforcing default stays in place -> clean. A `split_whitespace()`-
+        // based impl would wrongly split off "1" as the first token and fire.
+        let diags = lint_conf("permissive = 1\t2\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "a TAB (not a space) between tokens is not a real daemon \
+             separator; the whole value \"1\\t2\" is an unsigned_int_parser \
+             error and must stay clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn tab_before_inline_hash_does_not_leak_a_bare_digit_value() {
+        // Same root cause as the bare-tab case above, but with the value
+        // followed by an inline `#` comment (which the daemon's `nv_split`
+        // never strips - see `inline_hash_is_part_of_the_value_not_a_comment`
+        // above). The raw resolved value is "1\t# note", which
+        // `unsigned_int_parser` rejects at the tab byte -> stays clean.
+        let diags = lint_conf("permissive = 1\t# note\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "\"1\\t# note\" is not a bare digit-only value to the real \
+             daemon's byte-exact parser; must stay clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn crlf_line_ending_leaves_a_trailing_cr_in_the_value() {
+        // `get_line` in the real daemon strips ONLY the trailing 0x0a; a
+        // CRLF-edited conf file leaves a trailing '\r' byte bound to the
+        // value token, e.g. "1\r". `unsigned_int_parser`'s byte-exact
+        // isdigit walk rejects that '\r' -> parse error -> the enforcing
+        // default stays in place -> clean. An impl whose scanner splits on
+        // '\n' and then Unicode-`.trim()`s the resulting line strips the
+        // '\r' as whitespace, wrongly recovering the bare value "1" and
+        // firing.
+        let diags = lint_conf("permissive = 1\r\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "a CRLF line ending leaves a trailing '\\r' bound to the value \
+             in the real daemon, which unsigned_int_parser rejects; must \
+             stay clean: {diags:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // ControlRefs: DenyAll family, ONLY when target resolves.
     // ---------------------------------------------------------------------
 
