@@ -34,15 +34,19 @@ use crate::version::TargetVersion;
 /// fapd-W14: an effectively-permissive `permissive=` value set in the
 /// `fapolicyd.conf` text at `path`.
 ///
-/// Fires whenever the LAST-WINS resolved value of the `permissive` key is a
+/// Fires whenever the LAST-WINS resolved value of the `permissive` key,
+/// reduced to its FIRST whitespace token (issue #569 - the daemon's
+/// `nv_split`/`_strsplit` binds `nv.value` to only the first token after
+/// `=`; a trailing `# comment` or other junk token is logged separately but
+/// never reaches the keyword's parser, so it must not be considered), is a
 /// non-empty, all-ASCII-digit string containing at least one nonzero digit -
 /// the daemon's `strtoul`-then-clamp semantics (see `is_effectively_permissive`
 /// below): `"1"`, `"2"`, `"10"`, `"01"`, `"007"`, etc. all fire - regardless
 /// of `target` (version-independent). Anchored at the WINNING line (the last
 /// non-whole-line-comment occurrence of the key, last-wins per fapolicyd's
 /// own config-loader semantics - see the module doc). Absent key, an
-/// all-zero digit string (e.g. `"0"`, `"00"`), or a non-numeric value (e.g.
-/// `"1x"`) is clean.
+/// all-zero digit string (e.g. `"0"`, `"00"`), or a non-numeric FIRST token
+/// (e.g. `"1x"`, `"foo 1"`) is clean.
 #[must_use]
 pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
     // Last-wins scan, mirroring `commands/conf.rs::conf_value` exactly (whole-line
@@ -69,7 +73,18 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
     let Some((line, span, value)) = winner else {
         return Vec::new();
     };
-    if !is_effectively_permissive(value) {
+    // Issue #569: mirror `rulesteward-cli`'s
+    // `doctor::probe::permissive_value_is_effectively_permissive` exactly.
+    // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, live-verified
+    // on fapolicyd 1.3.2 and 1.4.5): a config line is whitespace-tokenized
+    // and `nv.value` is bound to ONLY the FIRST token after `=` - a trailing
+    // `# comment` (or any further token) is separately logged as "Wrong
+    // number of arguments" but does not change which token the keyword's
+    // parser (`permissive_parser`) receives. So the value must be reduced to
+    // its first whitespace token BEFORE the digit-clamp predicate runs, not
+    // treated as effectively-permissive if ANY token qualifies.
+    let first_token = value.split_whitespace().next();
+    if !first_token.is_some_and(is_effectively_permissive) {
         return Vec::new();
     }
 
