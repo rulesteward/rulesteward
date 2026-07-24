@@ -437,26 +437,53 @@ fn narrower_watch_perms_does_not_satisfy_the_requirement() {
 }
 
 // ---------------------------------------------------------------------------
-// Variant confusion: a Watch-shaped requirement must never be satisfied by a
-// kernel-equivalent Syscall-shaped rule (same-variant matching only).
+// Path+Perm+Key syscall spelling satisfies its kernel-equivalent Watch-shaped
+// requirement (RE-DECIDED -- see the comment below).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn watch_requirement_not_satisfied_by_a_kernel_equivalent_syscall_spelling() {
-    // CONCERN 2 + grounding doc Part C.2's documented "known non-goal": a
-    // rules.d file could express a watch-equivalent effect via the raw
-    // syscall-rule spelling (`-a ... -F path=... -F perm=... -F key=...`, no
-    // `-S` at all) instead of `-w`. Kernel-functionally `auditctl -l` would
-    // print that back as `-w` (per audit-userspace's `is_watch()`), but our
-    // STATIC parser (reads rules.d text directly, never `-l` output)
-    // classifies it as `AuditRule::Syscall`, never `AuditRule::Watch` -- and
-    // this is not merely hypothetical: rhel10's real SV-281154 family
-    // (P2 grounding appendix.txt line 324) uses exactly this
-    // `-a ... -F path= -F perm= -F key=` shape for the SAME semantic that
-    // rhel8/rhel9 express with a plain `-w`. The au-W06 matcher must match a
-    // Watch-shaped baseline requirement ONLY against Watch-shaped AST nodes:
-    // a same-path/same-perm/same-key Syscall-shaped rule must NOT be accepted
-    // as satisfying it.
+fn watch_requirement_satisfied_by_a_kernel_equivalent_syscall_spelling() {
+    // RE-DECIDED (was `watch_requirement_not_satisfied_by_a_kernel_equivalent_
+    // syscall_spelling`, added in commit 43cfc5b, v0.6 Wave 3, #493 -- eight
+    // days BEFORE the path-watch equivalence fold (`is_pure_path_watch_shaped`
+    // / `watch_equivalent_axes_match`) existed at all). USER RULING
+    // (2026-07-24, session 9j lane 8, ATL round, issue #571 MISS-2b): this
+    // test predated the whole cross-variant fold, introduced 2026-07-17/18 in
+    // commit ea9f37c (#573, "USER RULING... watch<->syscall EQUIVALENCE"), and
+    // was accidentally missed by that commit's RE-DECIDED sweep -- which
+    // explicitly re-grounded three siblings
+    // (`w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` and its
+    // two neighbors below) but not this one. It kept passing only because of
+    // a SEPARATE bug (issue #571 MISS-2b): `is_pure_path_watch_shaped` forgot
+    // to allow `AuditField::Key` in its field-set membership check, so a
+    // candidate spelled `-F key=` (rather than `-k`) fell OUTSIDE the pure
+    // path-watch shape and never reached the fold at all. Once MISS-2b's fix
+    // landed, `-k KEY` and `-F key=KEY` are the SAME rule everywhere in this
+    // module (`auditctl`'s `setopt()` literally implements `-k` as
+    // `asprintf(&cmd, "key=%s", key)` before calling
+    // `audit_rule_fieldpair_data`, lib/libaudit.c) -- exactly as
+    // `effective_key`/`fields_match_excluding_key` already treat the two
+    // spellings elsewhere in this file. So the ORIGINAL claim ("a same-path/
+    // same-perm/same-key Syscall-shaped rule must NOT satisfy a Watch-shaped
+    // requirement") is WRONG for this shape specifically: the first candidate
+    // line below (no `-S`, fields limited to path/perm/key) IS a pure
+    // path-watch shape and DOES satisfy RHEL-09-654215, the same way the
+    // RE-DECIDED siblings' dual-arch forms satisfy V-258222/V-258223. Do NOT
+    // "restore" the old assertion -- this comment is why it changed.
+    //
+    // The genuinely-still-valid HALF of the original scenario -- that
+    // Syscall-shaped rules carrying real `-S` syscall lists are NOT pure
+    // path-watch shaped and never reach the cross-variant fold at all -- is
+    // preserved here, not deleted: the other three lines below keep their
+    // `-S`/`-S all` lists and still satisfy their OWN Syscall-shaped required
+    // rows (RHEL-09-654015, RHEL-09-654030) purely via the ordinary,
+    // unmodified same-variant match, exactly as before. With MISS-2b's fix,
+    // ALL FOUR lines are now satisfied, so the whole scenario is asserted
+    // fully compliant (zero findings) rather than "exactly one, naming
+    // RHEL-09-654215". Genuine negative coverage for a truly NON-equivalent
+    // shape (an `-S`-bearing rule that cannot fold into ANY Watch-shaped
+    // requirement) lives separately, unaffected by this change, in
+    // `crond_watch_does_not_satisfy_v279936_execve_requirement` below.
     let rules = parse(
         "-a always,exit -F path=/etc/sudoers -F perm=wa -F key=identity\n\
          -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 \
@@ -468,16 +495,13 @@ fn watch_requirement_not_satisfied_by_a_kernel_equivalent_syscall_spelling() {
     );
     let baseline = rhel9_sample_baseline();
     let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
-    assert_eq!(
-        diags.len(),
-        1,
-        "a kernel-equivalent Syscall-spelled rule must NOT satisfy a \
-         Watch-shaped requirement: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("RHEL-09-654215"),
-        "{:?}",
-        diags[0].message
+        diags.is_empty(),
+        "a Path+Perm+Key syscall-form candidate (no -S, -F key= spelling) is \
+         a pure path-watch shape and must satisfy RHEL-09-654215's \
+         Watch-shaped requirement -- -k and -F key= are the same \
+         kernel-level key axis (issue #571 MISS-2b); the other three lines \
+         satisfy their own Syscall-shaped required rows unchanged: {diags:?}"
     );
 }
 
@@ -2513,5 +2537,192 @@ fn dir_value_trailing_slash_is_normalized_before_comparison() {
         diags.is_empty(),
         "a -F dir= requirement value differing only by a trailing slash \
          must still be satisfied by a watch on the same directory: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial Testing Loop follow-up (issue #571, session 9j lane 8): an
+// impl-aware review of the dir-shape fold above found five miss-cases, each
+// grounded in primary source (kernel/audit_tree.c, audit-userspace
+// lib/libaudit.c + src/auditctl.c, man auditctl) and several verified
+// empirically against the host's installed audit-4.1.4 libaudit. See
+// `is_pure_dir_watch_shaped`/`is_pure_path_watch_shaped`/
+// `perm_bits_from_field_value`'s doc comments in stig_required.rs for the
+// fix-side grounding.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dir_wrong_operator_not_equal_does_not_satisfy_v230410_sudoers_d() {
+    // MISS-1 (forward direction): `audit_make_tree()` rejects any op other
+    // than `Audit_equal` on `AUDIT_DIR` with `-EINVAL` -- the rule never
+    // loads at all (kernel/audit_tree.c). A `-F dir!=` candidate therefore
+    // implements NOTHING at the kernel level and must not satisfy V-230410,
+    // even though the directory/perm/key VALUES look right.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir!=/etc/sudoers.d -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir!=/etc/sudoers.d -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a -F dir!= rule can never load at the kernel level (audit_make_tree \
+         rejects any op but `=` with -EINVAL) and must not satisfy V-230410, \
+         regardless of the dir/perm/key values matching: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_wrong_operator_not_equal_required_row_is_not_satisfied_by_a_watch_candidate() {
+    // MISS-1 (reverse direction): the SAME unloadable-shape reasoning
+    // applies when the `-F dir!=` rule is the REQUIRED row instead of the
+    // candidate -- a required rule that can never load at the kernel level
+    // has no watch-equivalent form for a plain `-w DIR -p perms -k key`
+    // candidate to satisfy.
+    let baseline = vec![bl(
+        "SYNTHETIC-DIR-NE-REVERSE",
+        "TEST-DIR-NE-REVERSE",
+        "-a always,exit -F dir!=/etc/synthetic -F perm=wa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic/ -p wa -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        !diags.is_empty(),
+        "a required `-F dir!=` row can never load at the kernel level and \
+         must not be satisfiable by a plain directory watch candidate: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_dash_f_key_spelling_satisfies_v230410_sudoers_d() {
+    // MISS-2: `-k KEY` and `-F key=KEY` are the SAME rule (`setopt()`
+    // literally builds `-F key=%s` from `-k`'s argument before calling
+    // `audit_rule_fieldpair_data` -- lib/libaudit.c). `effective_key` and
+    // `fields_match_excluding_key` already unify the two spellings
+    // elsewhere in this module; the dir-shape test's own allowed-field-set
+    // check forgot to exclude Key, so a `-F key=` spelling of an otherwise
+    // perfectly-equivalent candidate was wrongly falling OUTSIDE the
+    // dir-watch shape and reporting a false "missing".
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F key=identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F key=identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a dual-arch -F dir= pair spelled with -F key= (rather than -k) must \
+         still satisfy V-230410 -- -k and -F key= are the same kernel-level \
+         key axis: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_form_satisfies_v281155_sudoers_d_on_rhel10_whose_table_spells_the_key_as_dash_f() {
+    // MISS-2b: the IDENTICAL omission, in `is_pure_path_watch_shaped` (the
+    // pre-existing twin `is_pure_dir_watch_shaped` copied the bug from).
+    // RHEL10's shipped table (`RHEL10_REQUIRED`, V-281155/RHEL-10-500690)
+    // spells its `/etc/sudoers.d` row with `-F key=identity`
+    // (stig_required.rs:1150/1155), while RHEL8's analogous V-230410 row
+    // spells the SAME requirement with `-k identity` (stig_required.rs:183).
+    // A classic `-w /etc/sudoers.d/ -p wa -k identity` watch -- a real,
+    // reasonable admin config -- satisfies V-230410 on RHEL8 today but was
+    // wrongly reported "RHEL-10-500690 is missing" on RHEL10, purely
+    // because of DISA's own spelling choice for the key field, not any
+    // real difference in the ruleset.
+    let rules = parse("-w /etc/sudoers.d/ -p wa -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-10-500690")),
+        "a classic -w /etc/sudoers.d/ -p wa -k identity watch must satisfy \
+         V-281155/RHEL-10-500690 even though the shipped RHEL10 table spells \
+         the required row's key with -F key= rather than -k: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d() {
+    // MISS-3: `lib/libaudit.c`'s AUDIT_PERM case rejects any op but `=`
+    // with `-EAU_OPEQ` (verified rc=-29 against the installed audit-4.1.4
+    // libaudit) -- a `-F perm!=` rule never loads either, for the same
+    // reason a `-F dir!=` rule doesn't (MISS-1).
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm!=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm!=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a -F perm!= rule can never load at the kernel level (EAU_OPEQ \
+         rejects any op but `=`) and must not satisfy V-230410: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_two_dir_predicates_does_not_satisfy_v230410_regardless_of_field_order() {
+    // MISS-4: `audit_make_tree()` returns `-EINVAL` once a rule's `tree`
+    // pointer is already set -- one recursive-subtree watch per rule is a
+    // hard kernel limit, so a rule naming `-F dir=` TWICE never loads no
+    // matter which value comes first. Pinned in BOTH field orders so a
+    // `.find()`-based implementation (which returns whichever Dir predicate
+    // happens to come first) cannot pass by accident of iteration order --
+    // the correct verdict ("missing") must be identical either way.
+    let rules_dir_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F dir=/tmp/nope -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F dir=/tmp/nope -F perm=wa -k identity\n",
+    );
+    let diags_dir_first = w06(
+        &rules_dir_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_dir_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a -F dir= rule naming the CORRECT directory FIRST but a second, \
+         wrong -F dir= predicate must not satisfy V-230410 -- the rule never \
+         loads at all: {diags_dir_first:?}"
+    );
+
+    let rules_dir_second = parse(
+        "-a always,exit -F arch=b32 -F dir=/tmp/nope -F dir=/etc/sudoers.d -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/tmp/nope -F dir=/etc/sudoers.d -F perm=wa -k identity\n",
+    );
+    let diags_dir_second = w06(
+        &rules_dir_second,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_dir_second
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "reversing the field order (wrong -F dir= predicate FIRST, correct \
+         one second) must produce the SAME 'missing' verdict, not flip to \
+         satisfied: {diags_dir_second:?}"
+    );
+}
+
+#[test]
+fn dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d() {
+    // MISS-5: `lib/libaudit.c` case-folds `-F perm=` values with
+    // `tolower((unsigned char)v[i])` before building the bitmask (verified
+    // on the installed audit-4.1.4 libaudit: `perm=WA` and `perm=wa` both
+    // produce `values[0] == 10`). `perm_bits_from_field_value`'s
+    // hand-rolled parser must fold case the same way, not reject uppercase
+    // letters as unparseable.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=WA -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=WA -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a -F perm=WA (uppercase) rule must satisfy V-230410's perm=wa \
+         requirement -- libaudit case-folds perm letters before comparing: \
+         {diags:?}"
     );
 }

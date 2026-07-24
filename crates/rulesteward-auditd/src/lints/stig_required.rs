@@ -1308,14 +1308,16 @@ pub fn stig_baseline(target: TargetVersion) -> &'static [BaselineRule] {
 ///    `Watch`-vs-`Syscall` (or `Syscall`-vs-`Watch`) pair also matches when
 ///    the `Syscall` side is STRUCTURALLY a pure path-watch (empty `-S` list,
 ///    `always,exit`, no `-C`, and `-F` predicates limited to
-///    `path`/`perm`/`arch`) and its `path`/`perm` equal the `Watch` side's
-///    (arch is ignored on that side -- a watch has no arch axis, so it
-///    matches a b32 row and a b64 row independently). PLUS, in parallel, the
-///    dir-watch equivalence fold (issue #571): the SAME cross-variant match
-///    when the `Syscall` side is instead STRUCTURALLY a pure dir-watch
+///    `path`/`perm`/`arch`/`key`) and its `path`/`perm` equal the `Watch`
+///    side's (arch is ignored on that side -- a watch has no arch axis, so
+///    it matches a b32 row and a b64 row independently). PLUS, in parallel,
+///    the dir-watch equivalence fold (issue #571): the SAME cross-variant
+///    match when the `Syscall` side is instead STRUCTURALLY a pure dir-watch
 ///    (empty `-S` list, `always,exit`, no `-C`, `-F` predicates limited to
-///    `dir`/`perm`/`arch`, at least one `dir` predicate present) and its
-///    `dir`/`perm` equal the `Watch` side's. The path-shape and dir-shape
+///    `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate present with the
+///    `=` operator, and any `perm` predicate present also using `=` -- see
+///    [`is_pure_dir_watch_shaped`]'s doc comment for the full grounding) and
+///    its `dir`/`perm` equal the `Watch` side's. The path-shape and dir-shape
 ///    tests are mutually exclusive (a rule's field set cannot be
 ///    all-`path`-or-`perm`-or-`arch` AND all-`dir`-or-`perm`-or-`arch` unless
 ///    it has neither a `path` nor a `dir` predicate, which both shape tests
@@ -1522,12 +1524,15 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// twin of [`is_pure_path_watch_shaped`]) applies the identical structural
 /// test with `dir` swapped in for `path`: an EMPTY `-S` syscall list, the
 /// `always,exit` list/action pair, no `-C` field-comparisons, `-F` predicates
-/// limited to `dir`/`perm`/`arch`, and at least one `dir` predicate present.
-/// The two shape tests are mutually exclusive (a field set that is
-/// all-of-`{path,perm,arch}` cannot also be all-of-`{dir,perm,arch}` unless
-/// it has neither a `path` nor a `dir` predicate, which both shape tests'
-/// "at least one" guard rejects), so a rule is never credited by both arms at
-/// once. `-F dir=`/`-F path=` are NEVER unified with each other, in either
+/// limited to `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate present
+/// (using `=`), and any `perm` predicate present also using `=` (see
+/// [`is_pure_dir_watch_shaped`]'s doc comment for the full ATL-round
+/// grounding of the operator/multiplicity/key-membership refinements). The
+/// two shape tests are mutually exclusive (a field set that is
+/// all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
+/// unless it has neither a `path` nor a `dir` predicate, which both shape
+/// tests' presence guards reject), so a rule is never credited by both arms
+/// at once. `-F dir=`/`-F path=` are NEVER unified with each other, in either
 /// direction: an EXPLICIT `-F path=` requirement is never satisfied by an
 /// EXPLICIT `-F dir=` candidate or vice versa (both sides having declared a
 /// different kernel construct outright, with no cross-variant ambiguity to
@@ -1677,10 +1682,24 @@ fn normalize_watch_path(path: &str) -> &str {
 /// a purely structural test on the rule's own fields/syscalls/list/action, no
 /// per-V-number special-casing: an EMPTY `-S` list, the `always,exit`
 /// list/action pair, no `-C` field-comparisons, and every `-F` predicate one
-/// of `path`/`perm`/`arch` (with at least one `path` predicate present, so an
-/// empty field set does not vacuously pass). A rule with a non-empty `-S`
-/// list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
+/// of `path`/`perm`/`arch`/`key` (with at least one `path` predicate present,
+/// so an empty field set does not vacuously pass). A rule with a non-empty
+/// `-S` list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
 /// subj_type=crond_t`) fails this test and has no watch-equivalent form.
+/// `key` is allowed here despite never being named in the doc comment's
+/// "path-watch shape" description above: it is NOT a location/perm axis at
+/// all, so its presence must never disqualify the shape (fixed alongside the
+/// dir-flavored twin's identical bug, issue #571 MISS-2b, ATL round, session
+/// 9j lane 8) -- `-k KEY` and `-F key=KEY` are the SAME rule
+/// (`auditctl`'s `setopt()` builds `-F key=%s` from `-k`'s argument before
+/// calling `audit_rule_fieldpair_data`, lib/libaudit.c), and the key axis is
+/// already handled separately by [`effective_key`]/[`fields_match_excluding_key`].
+/// Measured regression this fixed: `RHEL10_REQUIRED`'s `/etc/sudoers.d` row
+/// (V-281155/RHEL-10-500690, `stig_required.rs`, spelled `-F key=identity`)
+/// wrongly reported a classic `-w /etc/sudoers.d/ -p wa -k identity` watch as
+/// missing, while the byte-identical config satisfied RHEL8's `-k`-spelled
+/// V-230410 -- the verdict flipped purely on DISA's spelling of the key
+/// field, not any real ruleset difference.
 fn is_pure_path_watch_shaped(
     list: &crate::ast::FilterList,
     action: &crate::ast::Action,
@@ -1697,7 +1716,7 @@ fn is_pure_path_watch_shaped(
         && fields.iter().all(|f| {
             matches!(
                 f.field,
-                AuditField::Path | AuditField::Perm | AuditField::Arch
+                AuditField::Path | AuditField::Perm | AuditField::Arch | AuditField::Key
             )
         })
         && fields.iter().any(|f| f.field == AuditField::Path)
@@ -1709,16 +1728,51 @@ fn is_pure_path_watch_shaped(
 /// down to at the kernel level for a RECURSIVE SUBTREE watch (see
 /// [`rules_match`]'s doc comment for the full grounding). A purely structural
 /// test, no per-V-number special-casing: an EMPTY `-S` list, the
-/// `always,exit` list/action pair, no `-C` field-comparisons, and every `-F`
-/// predicate one of `dir`/`perm`/`arch` (with at least one `dir` predicate
-/// present, so an empty field set does not vacuously pass). A rule with a
-/// non-empty `-S` list or any OTHER `-F` field fails this test and has no
-/// watch-equivalent form. Deliberately implemented as its own function
-/// rather than a parameterized/generic helper shared with
-/// [`is_pure_path_watch_shaped`]: `-F dir=` and `-F path=` are different
-/// enum variants naming genuinely different kernel constructs, and the two
-/// shape tests must never be unified into one "location field" concept (see
-/// [`rules_match`]'s doc comment for why that would be wrong).
+/// `always,exit` list/action pair, no `-C` field-comparisons, every `-F`
+/// predicate one of `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate
+/// present (not "at least one" -- see the MISS-4 grounding below), and any
+/// `dir`/`perm` predicate present using the `=` operator (see the MISS-1/
+/// MISS-3 grounding below). A rule with a non-empty `-S` list or any OTHER
+/// `-F` field fails this test and has no watch-equivalent form. Deliberately
+/// implemented as its own function rather than a parameterized/generic
+/// helper shared with [`is_pure_path_watch_shaped`]: `-F dir=` and `-F
+/// path=` are different enum variants naming genuinely different kernel
+/// constructs, and the two shape tests must never be unified into one
+/// "location field" concept (see [`rules_match`]'s doc comment for why that
+/// would be wrong).
+///
+/// Three fixes from the post-#571 Adversarial Testing Loop (session 9j lane
+/// 8, all grounded in primary source and several verified empirically
+/// against the host's installed audit-4.1.4 libaudit):
+/// - **MISS-1/MISS-3 (operator blindness, fail-open):** the ORIGINAL version
+///   of this test read only the field NAME, never the predicate's operator,
+///   so `-F dir!=X`/`-F perm!=X` (or any of `< > <= >= & &=`) were wrongly
+///   treated as dir-watch-shaped. But `kernel/audit_tree.c`'s
+///   `audit_make_tree()` returns `-EINVAL` for any `AUDIT_DIR` predicate
+///   whose op is not `Audit_equal`, and `lib/libaudit.c`'s `AUDIT_PERM` case
+///   returns `-EAU_OPEQ` for any op but `=` (verified rc=-29 against the
+///   installed audit-4.1.4 libaudit) -- a rule spelled with any other
+///   operator on either field NEVER LOADS at the kernel level at all, so it
+///   has no kernel-level meaning to be dir-watch-equivalent to. `arch`'s own
+///   operator restriction (`=`/`!=` only) is a DIFFERENT lint's job (au-E02)
+///   and irrelevant to whether the rule is dir-watch SHAPED.
+/// - **MISS-2 (Key membership, false "missing"):** the ORIGINAL version did
+///   not allow `AuditField::Key` in the field set at all, so a candidate
+///   spelled `-F key=` instead of `-k` fell OUTSIDE the shape and reported a
+///   false "missing" even though `-k`/`-F key=` are the SAME rule (see
+///   [`is_pure_path_watch_shaped`]'s doc comment for the full grounding,
+///   which this function shares).
+/// - **MISS-4 (Dir multiplicity, order-dependent verdict):** the ORIGINAL
+///   version accepted ANY NUMBER of `dir` predicates ("at least one"), so
+///   [`dir_watch_equivalent_axes_match`]'s `.find()` silently picked whichever
+///   `-F dir=` predicate happened to come FIRST, making the verdict flip
+///   depending on field order. But `audit_make_tree()` returns `-EINVAL` once
+///   a rule's `tree` pointer is already set -- one recursive-subtree watch
+///   per rule is a hard kernel limit -- so a rule naming `-F dir=` MORE THAN
+///   ONCE never loads either, regardless of which value comes first. Requiring
+///   EXACTLY one Dir predicate here both fixes the false-accept and makes
+///   `dir_watch_equivalent_axes_match`'s `.find()` deterministic (by the time
+///   it runs, at most one Dir predicate can be present).
 fn is_pure_dir_watch_shaped(
     list: &crate::ast::FilterList,
     action: &crate::ast::Action,
@@ -1726,19 +1780,24 @@ fn is_pure_dir_watch_shaped(
     fields: &[crate::ast::FieldFilter],
     field_compares: &[crate::ast::FieldComparison],
 ) -> bool {
-    use crate::ast::{Action, AuditField, FilterList};
+    use crate::ast::{Action, AuditField, CompareOp, FilterList};
 
     *list == FilterList::Exit
         && *action == Action::Always
         && syscalls.is_empty()
         && field_compares.is_empty()
-        && fields.iter().all(|f| {
-            matches!(
-                f.field,
-                AuditField::Dir | AuditField::Perm | AuditField::Arch
-            )
+        && fields.iter().all(|f| match f.field {
+            // MISS-1/MISS-3: `-F dir=`/`-F perm=` only ever LOAD with `=`.
+            AuditField::Dir | AuditField::Perm => f.op == CompareOp::Eq,
+            // `arch`'s own operator restriction is au-E02's job, not this
+            // shape test's; MISS-2: `-F key=` unifies with `-k` via
+            // `effective_key` (the key axis is handled separately), so its
+            // presence (with any op) never disqualifies the shape either.
+            AuditField::Arch | AuditField::Key => true,
+            _ => false,
         })
-        && fields.iter().any(|f| f.field == AuditField::Dir)
+        // MISS-4: EXACTLY one Dir predicate, not "at least one".
+        && fields.iter().filter(|f| f.field == AuditField::Dir).count() == 1
 }
 
 /// Compare a `Watch`'s `path`/`perms` against a (structurally pure-path-watch,
@@ -1822,11 +1881,17 @@ fn dir_watch_equivalent_axes_match(
 /// grammar itself is small and stable (4 letters, `permtab.h:28-31`). An
 /// unrecognized character means the value cannot represent valid perm bits at
 /// all, so it can never be perm-equivalent to a watch -- `None`, not a
-/// partial/best-effort parse.
+/// partial/best-effort parse. Case-folded before matching (issue #571
+/// MISS-5, ATL round, session 9j lane 8): `lib/libaudit.c` case-folds every
+/// `-F perm=` character with `tolower((unsigned char)v[i])` before building
+/// the bitmask, so `perm=WA` and `perm=wa` are the SAME rule at the kernel
+/// level (verified on the installed audit-4.1.4 libaudit: both produce
+/// `values[0] == 10`) -- rejecting uppercase letters as unparseable was a
+/// false "missing" for any admin who wrote perm letters in caps.
 fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
     let mut perms = crate::ast::PermBits::default();
     for ch in raw.trim().chars() {
-        match ch {
+        match ch.to_ascii_lowercase() {
             'r' => perms.read = true,
             'w' => perms.write = true,
             'x' => perms.exec = true,
@@ -2028,6 +2093,30 @@ mod pure_dir_watch_shape_tests {
         assert!(
             !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
             "a Path-only field set must not be dir-watch shaped"
+        );
+    }
+
+    #[test]
+    fn dir_and_path_together_is_not_dir_watch_shaped() {
+        // Test-adequacy strengthening (ATL round, issue #571, session 9j
+        // lane 8): `path_field_alone_is_not_dir_watch_shaped` above pins a
+        // Path-ONLY field set, which already fails BOTH the allowed-field-
+        // set conjunct AND the "has a Dir predicate" conjunct -- so it
+        // cannot distinguish this function's real allowed set
+        // (Dir|Perm|Arch|Key) from a wrong, over-broad one
+        // (Dir|Path|Perm|Arch): a mutant with that wider set still passes
+        // it. This test adds a Dir predicate ALONGSIDE the Path predicate
+        // so the "has a Dir predicate" conjunct is satisfied too, and only
+        // a correct allowed-field-set conjunct can still reject it.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers.d"),
+            field(AuditField::Dir, "/etc/sudoers.d"),
+            field(AuditField::Perm, "wa"),
+        ];
+        assert!(
+            !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a field set containing BOTH Path and Dir must not be dir-watch \
+             shaped -- Path is not in the {{Dir,Perm,Arch,Key}} allowed set"
         );
     }
 }
