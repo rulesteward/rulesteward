@@ -56,7 +56,58 @@ fn check_file_in_sync_exits_0() {
         Some(0),
         "in-sync must exit 0; stdout={stdout} err={err}"
     );
-    assert!(stdout.contains("OK (0 drift"), "stdout={stdout}");
+    // Narrowed (impl-aware adversarial review, round 1) from a loose
+    // `contains("OK (0 drift"` to the EXACT row count: the loose form matches
+    // "OK (0 drift, 4 controls)" just as happily as the correct "... 3
+    // controls)", so it cannot see a row-inflation regression (e.g. a
+    // duplicate-family guard that fails to fire) even on this happy path.
+    assert!(
+        stdout.contains("OK (0 drift, 3 controls)"),
+        "stdout={stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Impl-aware adversarial review (round 1, post-#551 GREEN), MISS 1: a future
+// DISA revision that ADDS a second Rule to an already-matched family (here,
+// a second Authenticate-family Rule alongside the real one) must fail LOUD
+// (exit 2), never silently resolve the duplicate via first-wins and report a
+// false-clean "OK (0 drift, ...)". A drift-detection tool that reports "no
+// drift" after silently dropping an upstream addition is worse than useless.
+// ---------------------------------------------------------------------------
+#[test]
+fn check_file_duplicate_family_exits_2_not_false_clean() {
+    assert_eq!(
+        GOOD_RHEL10.matches("</Benchmark>").count(),
+        1,
+        "fixture must have exactly one closing </Benchmark> to inject before"
+    );
+    let extra_group = r#"<Group id="V-281299"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-281299r9999999_rule" weight="10.0" severity="medium"><version>RHEL-10-600535</version><title>RHEL 10 sudoers.d drop-in files must not contain "!authenticate".</title><fixtext fixref="F-99999r9999998_fix">Remove any occurrence of "!authenticate" found in files in the "/etc/sudoers.d" directory.</fixtext><check system="C-99999r9999997_chk"><check-content>Verify RHEL 10 "/etc/sudoers.d" has no occurrences of "!authenticate" with the following command:
+
+$ sudo grep -ir '!authenticate' /etc/sudoers.d/
+
+If any occurrences of "!authenticate" are returned, this is a finding.</check-content></check></Rule></Group>
+"#;
+    let mutated = GOOD_RHEL10.replace("</Benchmark>", &format!("{extra_group}</Benchmark>"));
+    let f = temp_xccdf("dupfamily", &mutated);
+    let (code, stdout, err) = run(&[
+        "check",
+        "--product",
+        "rhel10",
+        "--file",
+        &f.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code,
+        Some(2),
+        "an upstream revision adding a SECOND Rule to an already-matched family must fail \
+         closed (exit 2), not silently drop the new Rule; stdout={stdout} err={err}"
+    );
+    assert!(
+        !stdout.contains("OK (0 drift"),
+        "must never present a duplicated/over-matched family as a silent clean pass; \
+         stdout={stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------

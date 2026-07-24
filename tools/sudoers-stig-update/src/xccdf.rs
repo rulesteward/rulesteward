@@ -41,14 +41,21 @@
 //!   is a live trap a wrong implementation can fall into, not an untested
 //!   claim -- see `tests::group_level_title_is_never_used_as_the_control_title`.
 //! * Fail CLOSED (return `Err`, never a silently-empty `Ok`) when FEWER than
-//!   all 3 families are matched -- see
-//!   `tests::zero_matched_families_is_an_error` and
-//!   `tests::fewer_than_three_matched_families_is_an_error` below. A parse
-//!   regression (or a wrong file being fed in) must never present as "0
-//!   drift, 0 controls" -- that is a silent false pass, not a clean one. The
-//!   error text must contain the literal substring `"found N"` where `N` is
-//!   the actual count (see those tests for why a looser substring check is
-//!   not enough).
+//!   all 3 DISTINCT families are matched -- see
+//!   `tests::zero_matched_families_is_an_error`,
+//!   `tests::fewer_than_three_matched_families_is_an_error`, and
+//!   `tests::three_rows_of_one_family_is_an_error` (3 rows can still be only 1
+//!   distinct family) below. A parse regression (or a wrong file being fed
+//!   in) must never present as "0 drift, 0 controls" -- that is a silent
+//!   false pass, not a clean one. The error text must contain the literal
+//!   substring `"found N"` where `N` is the actual count (see those tests for
+//!   why a looser substring check is not enough).
+//! * Fail CLOSED, symmetrically, when a family is matched MORE than once (a
+//!   future DISA revision adds a second Rule for an already-matched family) --
+//!   see `tests::duplicate_family_is_an_error`. Resolving the collision
+//!   silently (e.g. first-wins) would let an upstream addition vanish from the
+//!   derived table and present as a false "0 drift" clean pass, which is worse
+//!   than a loud error.
 //!
 //! # What this tool provably CANNOT see (not drift)
 //!
@@ -71,12 +78,15 @@ use crate::derive::{DerivedControl, Family};
 const GROUP_PATTERN: &str = r#"(?s)<Group id="(V-\d+)">(.*?)</Group>"#;
 
 /// Parse a full DISA XCCDF benchmark into the normalized sudo-W04 control
-/// table (exactly 3 rows: one per [`Family`]). Fails CLOSED (returns `Err`)
-/// when fewer than all 3 families are found -- see the module doc's
-/// anti-vacuity requirement. The error text must contain the literal
-/// substring `"found N"` (`N` = the actual count), per
+/// table (exactly 3 rows: one per [`Family`], on success). Fails CLOSED
+/// (returns `Err`) when fewer than all 3 DISTINCT families are found -- see
+/// the module doc's anti-vacuity requirement. The error text must contain the
+/// literal substring `"found N"` (`N` = the actual count), per
 /// `tests::zero_matched_families_is_an_error` /
-/// `tests::fewer_than_three_matched_families_is_an_error`.
+/// `tests::fewer_than_three_matched_families_is_an_error` /
+/// `tests::three_rows_of_one_family_is_an_error`. Also fails CLOSED, the other
+/// direction, when the SAME family is matched by two different Rules -- see
+/// `tests::duplicate_family_is_an_error`.
 pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     // Fixed regexes, compiled once. `unwrap` on a literal pattern is an invariant.
     let group_re = Regex::new(GROUP_PATTERN).unwrap();
@@ -146,7 +156,19 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
         });
     }
 
-    if out.len() < Family::ALL.len() {
+    // Anti-vacuity FIRST: count DISTINCT families present, not rows -- 3 rows
+    // can still be only 1 distinct family (see
+    // `tests::three_rows_of_one_family_is_an_error`), so this must run before
+    // the duplicate-family check below, or a document missing 2 of the 3
+    // mandatory families entirely (with the one present family repeated)
+    // would be misreported as an over-match rather than the more fundamental
+    // "found N" under-match (see `tests::fewer_than_three_matched_
+    // families_is_an_error`).
+    let matched_families = Family::ALL
+        .iter()
+        .filter(|f| out.iter().any(|c| c.family == **f))
+        .count();
+    if matched_families < Family::ALL.len() {
         return Err(format!(
             "sudo-W04: expected all {} families ({}), found {} in the XCCDF",
             Family::ALL.len(),
@@ -155,8 +177,28 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
                 .map(|f| f.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            out.len()
+            matched_families
         ));
+    }
+
+    // All 3 mandatory families ARE present -- now check the OTHER direction:
+    // a family matched by MORE than one Rule means the selector over-matched
+    // (an upstream revision added a second Rule for an already-covered
+    // family) -- fail closed rather than silently resolve the collision
+    // (e.g. via first-wins) and emit an ambiguous table that drops the new
+    // Rule. Mirrors `tools/sshd-stig-update`'s `duplicate directive ...;
+    // selector over-matched` guard, keyed by `Family` instead of keyword
+    // (see `tests::duplicate_family_is_an_error`).
+    for dup_family in Family::ALL {
+        let rows: Vec<&DerivedControl> = out.iter().filter(|c| c.family == dup_family).collect();
+        if rows.len() > 1 {
+            return Err(format!(
+                "sudo-W04: duplicate family {:?} ({} and {}); selector over-matched",
+                dup_family.as_str(),
+                rows[0].v_number,
+                rows[1].v_number
+            ));
+        }
     }
 
     Ok(out)
@@ -533,6 +575,100 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
             err.contains("found 1"),
             "the error must literally contain \"found 1\" (not merely SOME digit 1 \
              somewhere in echoed text, e.g. from \"RHEL-10-...\"); got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Impl-aware adversarial review, post-#551 GREEN (round 1): the anti-vacuity
+    // guard above (`out.len() < Family::ALL.len()`) counts ROWS, not DISTINCT
+    // families, so it is completely unguarded against the OVER-match direction.
+    // These two tests close that gap.
+    // -----------------------------------------------------------------------
+
+    /// MISS 1 (the serious one): a future DISA revision that ADDS a second
+    /// Rule to an already-matched family (two `!authenticate` Rules, plus one
+    /// Rule each for the other two mandatory families -- 4 rows, all 3
+    /// families "covered") must fail CLOSED, never silently resolve the
+    /// duplicate via first-wins and report a clean `Ok(4 rows)`. A
+    /// drift-detection tool reporting "no drift" when upstream added a
+    /// control it silently dropped is worse than useless. Mirrors
+    /// `tools/sshd-stig-update`'s `duplicate_keyword_is_error` (same shape,
+    /// keyed by `Family` instead of keyword): fail closed naming the
+    /// over-matched family and BOTH V-numbers.
+    #[test]
+    fn duplicate_family_is_an_error() {
+        let doc = r#"<Benchmark>
+            <Group id="V-281208"><Rule id="SV-281208r1166576_rule"><version>RHEL-10-600530</version>
+            <title>RHEL 10 must require users to reauthenticate for privilege escalation.</title>
+            <fixtext>Remove any occurrence of "!authenticate" found in "/etc/sudoers".</fixtext>
+            <check><check-content>Verify RHEL 10 "/etc/sudoers" has no occurrences of "!authenticate".
+            If any occurrences of "!authenticate" are returned, this is a finding.</check-content></check>
+            </Rule></Group>
+            <Group id="V-281299"><Rule id="SV-281299r9999999_rule"><version>RHEL-10-600535</version>
+            <title>RHEL 10 sudoers.d drop-in files must not contain "!authenticate".</title>
+            <fixtext>Remove any occurrence of "!authenticate" found in files in "/etc/sudoers.d".</fixtext>
+            <check><check-content>Verify RHEL 10 "/etc/sudoers.d" has no occurrences of "!authenticate".
+            If any occurrences of "!authenticate" are returned, this is a finding.</check-content></check>
+            </Rule></Group>
+            <Group id="V-281210"><Rule id="SV-281210r1166582_rule"><version>RHEL-10-600550</version>
+            <title>RHEL 10 must use the invoking user's password for privilege escalation.</title>
+            <fixtext>Defaults !targetpw
+            Defaults !rootpw
+            Defaults !runaspw</fixtext>
+            <check><check-content>Verify RHEL 10 sudoers uses targetpw/rootpw/runaspw.
+            If no results are returned, this is a finding.</check-content></check></Rule></Group>
+            <Group id="V-281209"><Rule id="SV-281209r1166579_rule"><version>RHEL-10-600540</version>
+            <title>RHEL 10 must require reauthentication when using the "sudo" command.</title>
+            <fixtext>Defaults timestamp_timeout=0</fixtext>
+            <check><check-content>Verify RHEL 10 requires reauthentication via timestamp_timeout.
+            If "timestamp_timeout" is set to a negative number, this is a finding.</check-content></check>
+            </Rule></Group>
+            </Benchmark>"#;
+        let err = parse_controls(doc).expect_err(
+            "a duplicated family (2 Rules for Authenticate) must fail closed, not Ok(4 rows)",
+        );
+        assert!(
+            err.contains("authenticate"),
+            "the error must name the over-matched family; got {err:?}"
+        );
+        assert!(
+            err.contains("V-281208") && err.contains("V-281299"),
+            "the error must name BOTH V-numbers of the duplicated family; got {err:?}"
+        );
+    }
+
+    /// MISS 2: a weaker but still-wrong classification. Three rows, but ALL
+    /// belonging to the SAME single family (Authenticate) -- 1 DISTINCT
+    /// family, 3 rows. The row-counting guard (`out.len() < 3`) sees 3 rows
+    /// and lets this through as `Ok`, which upstream's `diff_controls`
+    /// (keyed by `Family`, `.find()`) then reports as 3 `~`/`-`/`+` lines --
+    /// actively instructing a maintainer to DELETE two real, still-present
+    /// DISA citations for families this document never touched. The guard
+    /// must count DISTINCT families, not rows, and fail closed with the
+    /// literal substring "found 1" (the actual family count).
+    #[test]
+    fn three_rows_of_one_family_is_an_error() {
+        let one = |v: &str, rule_id: &str| {
+            format!(
+                r#"<Group id="{v}"><Rule id="SV-{v}_rule"><version>{rule_id}</version>
+                <title>t</title><fixtext>f</fixtext>
+                <check><check-content>!authenticate. If found, this is a finding.</check-content></check>
+                </Rule></Group>"#
+            )
+        };
+        let doc = format!(
+            "<Benchmark>{}{}{}</Benchmark>",
+            one("V-1", "RHEL-10-900000"),
+            one("V-2", "RHEL-10-900001"),
+            one("V-3", "RHEL-10-900002")
+        );
+        let err = parse_controls(&doc).expect_err(
+            "3 rows of ONE family (2 mandatory families entirely missing) must fail closed",
+        );
+        assert!(
+            err.contains("found 1"),
+            "the error must literally contain \"found 1\" (the DISTINCT family count, not \
+             the 3-row count); got {err:?}"
         );
     }
 }
