@@ -115,7 +115,10 @@ use crate::lints::{SshdLintContext, anchored};
 #[must_use]
 pub fn lint_drop_in(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let main_path = dir.join("sshd_config");
-    let Ok(main_src) = std::fs::read_to_string(&main_path) else {
+    // Routed through `rulesteward_core::fsread` (#560, closeout miss): the
+    // main config a directory target reads first must not hang/OOM when it
+    // is a special file (FIFO/socket/device node) rather than a regular file.
+    let Ok(main_src) = rulesteward_core::fsread::read_to_string(&main_path) else {
         // No readable main `sshd_config` -> nothing to evaluate. (A directory the
         // operator points at but that has no main file is not an F02 concern; the
         // CLI's directory routing only reaches here for the /etc/ssh layout.)
@@ -228,7 +231,10 @@ struct Provenance {
 #[must_use]
 pub fn lint_merged(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let base_path = dir.join("sshd_config");
-    let Ok(base_src) = std::fs::read_to_string(&base_path) else {
+    // Routed through `rulesteward_core::fsread` (#560, closeout miss): same
+    // guard as `lint_drop_in` above, for the merged-effective entrypoint's
+    // own main-config read.
+    let Ok(base_src) = rulesteward_core::fsread::read_to_string(&base_path) else {
         // No readable main `sshd_config` -> nothing to evaluate (matches
         // `lint_drop_in`'s tolerance of a directory with no main file).
         return Vec::new();

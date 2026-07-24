@@ -84,8 +84,11 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
     } else {
         // A single file: read it up front so a missing/unreadable TOP-LEVEL target
         // is an io::Error (a tool failure the CLI maps), distinct from a missing
-        // nested @include (which becomes a Malformed line).
-        let source = std::fs::read_to_string(path)?;
+        // nested @include (which becomes a Malformed line). Routed through
+        // `rulesteward_core::fsread` (#560) so a FIFO/socket/device-node top-level
+        // target fails fast with a clear error instead of hanging or reading
+        // unbounded data.
+        let source = rulesteward_core::fsread::read_to_string(path)?;
         let mut chain: Vec<PathBuf> = vec![canonical_or_as_is(path)];
         let parsed = parse(&source, path);
         resolve_parsed(&parsed, path, host, &mut chain, &mut out);
@@ -126,7 +129,11 @@ pub fn resolve_target_with_host(path: &Path, host: &str) -> io::Result<Vec<Sudoe
 /// are broken solely by the per-ancestry `chain` guard, which (being pushed/popped)
 /// blocks a true loop while still letting a non-cyclic diamond expand each branch.
 fn resolve_file(file: &Path, host: &str, chain: &mut Vec<PathBuf>, out: &mut Vec<SudoersFile>) {
-    let Ok(source) = std::fs::read_to_string(file) else {
+    // Routed through `rulesteward_core::fsread` (#560): a nested @include /
+    // @includedir target that is a FIFO/socket/device node is skipped
+    // best-effort just like any other unreadable drop-in, rather than
+    // hanging the whole lint run.
+    let Ok(source) = rulesteward_core::fsread::read_to_string(file) else {
         // An unreadable drop-in is skipped best-effort (matches the prior Phase-0
         // directory behavior; a top-level read error is handled by the caller).
         return;

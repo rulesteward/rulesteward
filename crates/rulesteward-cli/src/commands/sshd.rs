@@ -62,6 +62,24 @@ fn lint_with_probe(
     // drop-in file, which the human renderer reads directly). A file target keeps
     // the single-file pass path.
     if path.is_dir() {
+        // #560 closeout miss: `lint_drop_in`/`lint_merged` each read the main
+        // `sshd_config` inside `path` first; routed through `fsread` (below)
+        // they no longer hang/OOM on a special file, but their own contract
+        // silently tolerates ANY read failure as "nothing to evaluate" (so a
+        // directory with no main file stays a clean, diagnostic-free run,
+        // matching existing behavior). A special file (or any other read
+        // failure that is not a plain "missing") must instead surface as a
+        // tool failure here, mirroring the single-file arm's fsread handling
+        // below.
+        let main_path = path.join("sshd_config");
+        if let Err(e) = rulesteward_core::fsread::read_to_string(&main_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("sshd lint: cannot read {}: {e}", main_path.display());
+            emit_path_error_envelope(args.format);
+            return EXIT_TOOL_FAILURE;
+        }
+
         let mut diags = lints::drop_in::lint_drop_in(&path, &ctx);
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let no_op = crate::profile::apply_profile(&mut diags, profile);
@@ -83,13 +101,18 @@ fn lint_with_probe(
     // failure.
     if !path.is_file() {
         eprintln!("sshd lint: not a file or directory: {}", path.display());
+        emit_path_error_envelope(args.format);
         return EXIT_TOOL_FAILURE;
     }
 
-    let source = match std::fs::read_to_string(&path) {
+    // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+    // node target fails fast with a clear error instead of hanging or reading
+    // unbounded data.
+    let source = match rulesteward_core::fsread::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sshd lint: cannot read {}: {e}", path.display());
+            emit_path_error_envelope(args.format);
             return EXIT_TOOL_FAILURE;
         }
     };
@@ -121,6 +144,24 @@ fn lint_with_probe(
     }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
+}
+
+/// #561: a bad lint-target path (missing target, unreadable file, special
+/// file) must not silently drop `--format json`/`--format sarif` -- it must
+/// still emit a valid (empty) envelope on stdout, mirroring
+/// `commands::fapolicyd::lint`'s model. Called alongside (not instead of) the
+/// existing `eprintln!` diagnostic; human format is unaffected (`emit_lint`
+/// renders an empty diagnostics list as `""`, so nothing new prints to
+/// stdout there). Render failures are deliberately swallowed: the caller is
+/// already returning `EXIT_TOOL_FAILURE` for the original path error.
+fn emit_path_error_envelope(format: crate::cli::OutputFormat) {
+    let _ = crate::output::emit_lint(
+        format,
+        "sshd-lint",
+        SSHD_LINT_SCHEMA_VERSION,
+        &[],
+        &std::collections::BTreeMap::new(),
+    );
 }
 
 #[cfg(test)]
