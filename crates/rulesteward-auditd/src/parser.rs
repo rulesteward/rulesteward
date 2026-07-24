@@ -876,11 +876,11 @@ mod tests {
     // "extra"), which is REJECTED: "Wrong number of options for Delete all
     // request" (confirmed live via privileged fapolicyd8/9/10 containers,
     // rc 255, identical message on all three streams). Bare "-D" (`count ==
-    // 2`) is unaffected and stays DeleteAll. NOTE: parser.rs:294's comment
-    // ("-D (with or without trailing args) is DeleteAll per auditctl(8)")
-    // is now known FALSE per this grounding; left for the implementer to
-    // correct alongside the fix (production code, not a test-module edit --
-    // see the lane-8 report).
+    // 2`) is unaffected and stays DeleteAll. History: the old `-D` arm
+    // comment ("-D (with or without trailing args) is DeleteAll per
+    // auditctl(8)") was proven FALSE by this grounding and was corrected by
+    // the implementer alongside the fix (see the `-D` arm's current doc
+    // comment and the lane-8 report).
     #[test]
     fn delete_all_bare() {
         let parsed = parse_line("-D", 1).expect("-D should parse");
@@ -895,8 +895,9 @@ mod tests {
         // (never the implementer) to pin the real auditctl behavior: a
         // trailing token that is not "-k <key>" is REJECTED, not silently
         // absorbed into DeleteAll. (The "-D -k <key>" shape is a distinct,
-        // real auditctl allowance -- out of scope for #541, not pinned
-        // here.)
+        // real auditctl allowance -- initially scoped out of #541, then
+        // pinned in the strengthen round: see
+        // `delete_all_accepts_dash_k_key_shape` and its siblings below.)
         let err = parse_line("-D extra", 1)
             .expect_err("-D extra must be rejected: real auditctl refuses a trailing token here");
         assert_eq!(err.line, 1);

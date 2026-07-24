@@ -577,7 +577,8 @@ mod tests {
     fn tab_before_inline_hash_does_not_leak_a_bare_digit_value() {
         // Same root cause as the bare-tab case above, but with the value
         // followed by an inline `#` comment (which the daemon's `nv_split`
-        // never strips - see `inline_hash_is_part_of_the_value_not_a_comment`
+        // never strips - see
+        // `inline_hash_after_permissive_one_still_fires_first_token_wins`
         // above). The raw resolved value is "1\t# note", which
         // `unsigned_int_parser` rejects at the tab byte -> stays clean.
         let diags = lint_conf("permissive = 1\t# note\n", &p(), None);

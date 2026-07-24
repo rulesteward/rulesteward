@@ -39,8 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`rulesteward_core::fsread`: non-blocking open, then a type check on the
   opened descriptor) is routed into all six lint verbs' reads, including the
   three hang paths found adversarially during the wave: `sshd lint <dir>`'s
-  main-config read, `sysctl lint --system`'s masked drop-in read, and
-  `selinux lint`'s target read.
+  main-config read and `selinux lint`'s target read (both now fail fast,
+  exit 3), and `sysctl lint --system`'s masked drop-in read (a masked
+  special file is skipped cleanly - it has no assignments to shadow-check -
+  instead of hanging).
 - **JSON path-error envelopes for the four non-fapolicyd backends** (#561):
   `auditd`/`sshd`/`sysctl`/`sudoers` lint path errors under `--format json`
   now emit the backend's own schema-versioned envelope (empty `diagnostics`,
