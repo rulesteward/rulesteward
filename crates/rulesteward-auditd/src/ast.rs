@@ -71,11 +71,19 @@ pub enum ControlRule {
     /// grounded verbatim in `auditctl --help` / `man auditctl(8)`: "This
     /// option tells the kernel to make loginuids unchangeable once they are
     /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." `parser.rs`
-    /// recognizes `--loginuid-immutable` as a valueless control flag
-    /// (following the `-D` precedent: the match is on the flag token alone,
-    /// so any trailing tokens on the line are ignored) and constructs this
-    /// variant. STIG-required per RHEL8 V-230403 / RHEL-08-030122 and RHEL9
-    /// V-258228 / RHEL-09-654270.
+    /// recognizes `--loginuid-immutable` as a valueless control flag and
+    /// ignores any trailing tokens on the line -- grounded independently in
+    /// real auditctl's own dispatch for this flag (`src/auditctl.c` `case
+    /// 1:`, byte-identical across the RHEL8/9/10-shipped audit-userspace
+    /// tags v3.1.2/v3.1.5/v4.0.3): the handler calls
+    /// `audit_set_loginuid_immutable(fd)` and either `return`s directly on
+    /// success or leaves `retval == -1` on failure, so the generic leftover-
+    /// argument check never runs and a trailing token is never read,
+    /// validated, or rejected (confirmed CORRECT, lane-8 #541 report,
+    /// 2026-07-24). This is NOT the same shape as `-D`, which rejects a
+    /// trailing token via its own unconditional field-count check. STIG-
+    /// required per RHEL8 V-230403 / RHEL-08-030122 and RHEL9 V-258228 /
+    /// RHEL-09-654270.
     LoginuidImmutable,
 }
 

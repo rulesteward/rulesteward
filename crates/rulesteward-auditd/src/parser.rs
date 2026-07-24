@@ -291,8 +291,20 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     }
 
     match tokens[0].as_str() {
-        // `-D` (with or without trailing args) is DeleteAll per auditctl(8).
-        "-D" => Ok(AuditRule::Control(ControlRule::DeleteAll)),
+        // `-D` takes no arguments; a rules.d line "-D extra" is rejected by
+        // real auditctl's unconditional field-count check in `setopt()`
+        // before any netlink call (`src/auditctl.c` `case 'D':`, byte-
+        // identical across the RHEL8/9/10-shipped audit-userspace tags
+        // v3.1.2/v3.1.5/v4.0.3 -- see the lane-8 #541 report and the
+        // `delete_all_with_extra_token` test for the full grounding). The
+        // `-D -k <key>` shape is a separate, narrower auditctl allowance not
+        // implemented here (out of scope for #541).
+        "-D" => {
+            if let Some(other) = tokens.get(1) {
+                return Err(err(&format!("unexpected token in -D rule: '{other}'")));
+            }
+            Ok(AuditRule::Control(ControlRule::DeleteAll))
+        }
 
         "-b" => {
             let n = tokens.get(1).ok_or_else(|| err("-b requires a value"))?;
