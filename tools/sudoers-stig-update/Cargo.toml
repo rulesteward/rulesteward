@@ -1,0 +1,32 @@
+# Its OWN workspace (empty [workspace] table) so this dev/maintenance tool stays
+# OUT of the main workspace and `just ci` (`cargo {build,test,clippy} --workspace`).
+# It path-deps the sudoers crate purely to import `TargetVersion` (the RHEL8/9/10
+# index the derive tool compares each XCCDF-derived control against); that crate
+# resolves its own workspace inheritance against the repo root (cargo finds a
+# package's workspace by walking up from the package's OWN location), so the
+# path-dep builds cleanly from here.
+#
+# DISA ONLY (#551, locked 2026-07-24): this tool derive+drift-checks sudo-W04's
+# THREE DISA STIG control-id families (`!authenticate`, the `targetpw`/`rootpw`/
+# `runaspw` pw-family, and `timestamp_timeout`). It does NOT cover the sudo-CIS
+# baseline -- `tools/cis-update check --family sudoers` already drift-checks that
+# half end-to-end (see `tools/cis-update/src/registry.rs`). It also does NOT
+# replace sudo-W06's existing inline, hermetic cross-tool pin
+# (`crates/rulesteward-sudoers/src/lints/tags.rs`'s `w06_stig_drift_tests`
+# module, LOCKED 2026-07-15): a single-control family did not justify a whole
+# derive-tool crate for W06 specifically. W04 is different only because it spans
+# three DISA control families across three RHEL products (nine ids total).
+[workspace]
+
+[package]
+name = "sudoers-stig-update"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Dev tool: derive + drift-check the sudo-W04 DISA STIG control-id families (!authenticate / targetpw+rootpw+runaspw / timestamp_timeout) from the official DISA XCCDF. DISA-only; the separately-covered hardening baseline is drift-checked by a different tool instead (see crate-level docs)."
+
+[dependencies]
+rulesteward-sudoers = { path = "../../crates/rulesteward-sudoers" }
+regex = "1"
+toml = "1"

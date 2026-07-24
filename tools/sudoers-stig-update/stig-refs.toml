@@ -1,0 +1,45 @@
+# Pinned DISA STIG XCCDF zips for the sudo-W04 control-id drift check.
+#
+# DISA versions each RHEL STIG by FILENAME (there is no releases/latest API like
+# ComplianceAsCode has), so a bump = edit the `zip` filename below, then run
+# `sudoers-stig-update derive --product <p>`, review the diff, update
+# crates/rulesteward-sudoers/src/lints/stig.rs (`PW_FAMILY_CONTROLS` /
+# `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS`), re-gate (adversarial +
+# mutation), and confirm `sudoers-stig-update check` reports 0 drift.
+#
+# CURRENCY NOTE (2026-07-24, #551 lane 6 test-author phase): these three pins
+# are the SAME revisions the committed offline fixtures
+# (tests/fixtures/rhelN_sudoers_controls.xml) were trimmed from, and the SAME
+# revisions the shipped stig.rs ids are actually grounded against (RHEL-10 is
+# explicitly V1R1 per #563/9i-lane-7's citations table; RHEL-08/09 are
+# undated in stig.rs's own doc comment, but all nine ids ARE present verbatim
+# in these exact cached documents -- verified mechanically at authoring time).
+# `tools/sshd-stig-update` and `tools/auditd-stig-update` have SINCE bumped
+# their own live pins forward (RHEL 8 V2R4->V2R8, RHEL 9 V2R7->V2R9, RHEL 10
+# V1R1->V1R2); whether these NINE specific sudo-W04 ids are unchanged in the
+# newer revisions is UNVERIFIED (no network fetch was performed this lane --
+# never fabricate XCCDF content). Bumping this file's pins forward to
+# V2R8/V2R9/V1R2 -- and re-deriving the fixtures + re-verifying the nine ids --
+# is an explicit follow-up, not done here. Running `sudoers-stig-update check`
+# live (no `--file`) against these OLDER pins first is the honest, gradual path:
+# it establishes whether DISA has moved these ids at all before jumping straight
+# to the newest revision.
+#
+# The public, no-auth CDN. Full URL = base_url + "/" + products.<p>.zip.
+# (public.cyber.mil/stigs/downloads/ is a JavaScript SPA that curl cannot read;
+# dl.dod.cyber.mil is the machine-fetchable path.)
+base_url = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip"
+
+# Per-product pinned zip. The three RHEL STIGs version INDEPENDENTLY, so each has
+# its own pinned filename and can be bumped on its own.
+[products.rhel8]
+zip = "U_RHEL_8_V2R4_STIG.zip"
+benchmark = "RHEL 8 STIG V2R4 (02 Jul 2025)"
+
+[products.rhel9]
+zip = "U_RHEL_9_V2R7_STIG.zip"
+benchmark = "RHEL 9 STIG V2R7 (05 Jan 2026)"
+
+[products.rhel10]
+zip = "U_RHEL_10_V1R1_STIG.zip"
+benchmark = "RHEL 10 STIG V1R1 (26 Feb 2026)"
