@@ -30,13 +30,18 @@ use rulesteward_core::{Diagnostic, Framework, Severity};
 use crate::ast::{CmndItem, CmndSpec, LineKind, LogicalLine, RunasSpec, SudoersFile, Tag};
 use crate::lints::{SudoersLintContext, anchored};
 
-/// The DISA STIG NOPASSWD control pair (RHEL-08-010380 + RHEL-09-611085) cited by
-/// BOTH sudo-W01 and sudo-W05. Shared here so the two emit sites cannot drift;
-/// mapped to typed `ControlRef`s via [`crate::lints::stig::controls`] (the same
-/// single conversion point stig.rs's own emit sites use).
-const NOPASSWD_STIG_CONTROLS: [(Framework, &str); 2] = [
+/// The DISA STIG NOPASSWD control triple (RHEL-08-010380 + RHEL-09-611085 +
+/// RHEL-10-600560) cited by BOTH sudo-W01 and sudo-W05. Shared here so the
+/// two emit sites cannot drift; mapped to typed `ControlRef`s via
+/// [`crate::lints::stig::controls`] (the same single conversion point
+/// stig.rs's own emit sites use). RHEL-10-600560 (#563, 9i lane-7) grounded
+/// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
+/// SV-281211r1166585_rule, "RHEL 10 must require users to provide a
+/// password for privilege escalation"; see `lane-7-sudoersids-report.md`).
+const NOPASSWD_STIG_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010380"),
     (Framework::Stig, "RHEL-09-611085"),
+    (Framework::Stig, "RHEL-10-600560"),
 ];
 
 /// Shared forward NOPASSWD/PASSWD tag-state walker for the W01/W02/W05 family
@@ -106,11 +111,12 @@ fn for_each_nopasswd_command(
 ///
 /// # Grounding
 ///
-/// DISA STIG RHEL-08-010380 / RHEL-09-611085 (`ComplianceAsCode`
+/// DISA STIG RHEL-08-010380 / RHEL-09-611085 / RHEL-10-600560 (`ComplianceAsCode`
 /// `sudo_remove_nopasswd`), re-grounded 2026-06-29 (#363) at `ComplianceAsCode`/
-/// content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`. The finding message
-/// cites these ids; the firing logic (the tag-state machine below) is unchanged by
-/// the citation.
+/// content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`; RHEL-10-600560
+/// grounded #563 (9i lane-7) against the DISA RHEL 10 STIG V1R1 XCCDF. The
+/// finding message cites these ids; the firing logic (the tag-state machine
+/// below) is unchanged by the citation.
 ///
 /// # Anchoring
 ///
@@ -137,7 +143,7 @@ pub fn w01(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                     logical.span.clone(),
                     "NOPASSWD applies to the reserved ALL command: this grants \
                      passwordless authority to run any command \
-                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085 / RHEL-10-600560)"
                         .to_string(),
                     file.path.clone(),
                     logical.line,
@@ -221,10 +227,11 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 ///
 /// # Grounding
 ///
-/// DISA STIG RHEL-08-010380 / RHEL-09-611085 / OL08-00-010380
+/// DISA STIG RHEL-08-010380 / RHEL-09-611085 / OL08-00-010380 / RHEL-10-600560
 /// (`ComplianceAsCode` `sudo_remove_nopasswd`, commit
-/// `65ccea603ee2c305fdb4c6f54cb911449d969d55`) -- the SAME control W01 cites, with
-/// the BROADER trigger: the rule's OVAL check
+/// `65ccea603ee2c305fdb4c6f54cb911449d969d55`; RHEL-10-600560 grounded #563,
+/// 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF) -- the SAME control
+/// W01 cites, with the BROADER trigger: the rule's OVAL check
 /// (`^(?!#).*[\s]+NOPASSWD[\s]*\:.*$`), OCIL (`grep -ri nopasswd`), and fixtext
 /// ("Remove any occurrence of NOPASSWD") flag EVERY non-comment NOPASSWD usage,
 /// not only the NOPASSWD-on-`ALL` case that W01 flags.
@@ -248,7 +255,7 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
                     logical.span.clone(),
                     "NOPASSWD is in effect on this command: DISA STIG requires \
                      removing all NOPASSWD usage from sudoers \
-                     (DISA STIG RHEL-08-010380 / RHEL-09-611085)"
+                     (DISA STIG RHEL-08-010380 / RHEL-09-611085 / RHEL-10-600560)"
                         .to_string(),
                     file.path.clone(),
                     logical.line,
@@ -816,6 +823,15 @@ mod tests {
     /// `rulesteward_core::ControlRef`s, both `Framework::Stig`, in citation
     /// order (RHEL-08 first, then RHEL-09). The message stays byte-identical;
     /// only `Diagnostic::controls` gains the typed mapping.
+    ///
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600560` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
+    /// SV-281211r1166585_rule, "RHEL 10 must require users to provide a
+    /// password for privilege escalation"; see
+    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
+    /// that the RHEL-10 addition breaks, so it is updated in place per the
+    /// discipline in the lane-7 brief rather than left stale-red.
     #[test]
     fn w01_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -827,15 +843,47 @@ mod tests {
             .expect("W01 fires for alice");
         assert_eq!(
             d.controls.len(),
-            2,
-            "W01's dual RHEL-08/RHEL-09 citation must become two ControlRefs; \
-             got {:?}",
+            3,
+            "W01's triple RHEL-08/RHEL-09/RHEL-10 citation must become three \
+             ControlRefs; got {:?}",
             d.controls
         );
         assert_eq!(d.controls[0].framework, Framework::Stig);
         assert_eq!(d.controls[0].id, "RHEL-08-010380");
         assert_eq!(d.controls[1].framework, Framework::Stig);
         assert_eq!(d.controls[1].id, "RHEL-09-611085");
+        assert_eq!(d.controls[2].framework, Framework::Stig);
+        assert_eq!(d.controls[2].id, "RHEL-10-600560");
+    }
+
+    /// #563 (9i lane-7): the W01 finding's free-text message must ALSO cite
+    /// the new `RHEL-10-600560` id (mirroring
+    /// `w01_message_cites_grounded_stig_control`'s RHEL-08/RHEL-09 pin,
+    /// scoped to the RHEL-10 addition), grounded against the DISA RHEL 10
+    /// STIG V1R1 XCCDF (see `lane-7-sudoersids-report.md`).
+    #[test]
+    fn rhel10_w01_finding_cites_grounded_control() {
+        let diags = lint("alice ALL = NOPASSWD: ALL\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W01")
+            .expect("W01 fires for alice");
+        assert!(
+            d.message.contains("RHEL-10-600560"),
+            "W01 message must cite RHEL-10-600560; got {:?}",
+            d.message
+        );
+        // Per-control pin: W01 must NOT pick up a sibling RHEL-10 id from a
+        // different sudo-W04 control this same lane grounds (guards against
+        // NOPASSWD_STIG_CONTROLS getting the wrong new id), mirroring the
+        // stig.rs `must_not_cite` pattern.
+        for bad in ["RHEL-10-600530", "RHEL-10-600540", "RHEL-10-600550"] {
+            assert!(
+                !d.message.contains(bad),
+                "W01 message must NOT cite the sibling id '{bad}'; got {:?}",
+                d.message
+            );
+        }
     }
 }
 
@@ -1312,6 +1360,13 @@ mod w05_tests {
     /// citation order (RHEL-08 first, then RHEL-09). Uses a SPECIFIC-command
     /// NOPASSWD fixture so W05 (not W01) is the finding under test. The message
     /// stays byte-identical; only `Diagnostic::controls` gains the mapping.
+    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
+    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600560` grounded
+    /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
+    /// SV-281211r1166585_rule; same control W01 cites, broader trigger; see
+    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
+    /// that the RHEL-10 addition breaks, so it is updated in place per the
+    /// discipline in the lane-7 brief rather than left stale-red.
     #[test]
     fn w05_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1324,15 +1379,47 @@ mod w05_tests {
             .expect("W05 fires for the specific-command NOPASSWD");
         assert_eq!(
             d.controls.len(),
-            2,
-            "W05's dual RHEL-08/RHEL-09 citation must become two ControlRefs; \
-             got {:?}",
+            3,
+            "W05's triple RHEL-08/RHEL-09/RHEL-10 citation must become three \
+             ControlRefs; got {:?}",
             d.controls
         );
         assert_eq!(d.controls[0].framework, Framework::Stig);
         assert_eq!(d.controls[0].id, "RHEL-08-010380");
         assert_eq!(d.controls[1].framework, Framework::Stig);
         assert_eq!(d.controls[1].id, "RHEL-09-611085");
+        assert_eq!(d.controls[2].framework, Framework::Stig);
+        assert_eq!(d.controls[2].id, "RHEL-10-600560");
+    }
+
+    /// #563 (9i lane-7): the W05 finding's free-text message must ALSO cite
+    /// the new `RHEL-10-600560` id, grounded against the DISA RHEL 10 STIG
+    /// V1R1 XCCDF (see `lane-7-sudoersids-report.md`). Uses the same
+    /// specific-command NOPASSWD fixture as `w05_finding_carries_stig_controls`
+    /// so W05 (not W01) is the finding under test.
+    #[test]
+    fn rhel10_w05_finding_cites_grounded_control() {
+        let diags = lint_w05("alice ALL=(root) NOPASSWD: /usr/bin/systemctl\n");
+        let d = diags
+            .iter()
+            .find(|d| d.code == "sudo-W05")
+            .expect("W05 fires for the specific-command NOPASSWD");
+        assert!(
+            d.message.contains("RHEL-10-600560"),
+            "W05 message must cite RHEL-10-600560; got {:?}",
+            d.message
+        );
+        // Per-control pin: W05 must NOT pick up a sibling RHEL-10 id from a
+        // different sudo-W04 control this same lane grounds (guards against
+        // NOPASSWD_STIG_CONTROLS getting the wrong new id), mirroring the
+        // stig.rs `must_not_cite` pattern.
+        for bad in ["RHEL-10-600530", "RHEL-10-600540", "RHEL-10-600550"] {
+            assert!(
+                !d.message.contains(bad),
+                "W05 message must NOT cite the sibling id '{bad}'; got {:?}",
+                d.message
+            );
+        }
     }
 
     // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` used to MERGE two

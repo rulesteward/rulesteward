@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+use rulesteward_core::comment::{StripConfig, strip};
+
 use crate::ast::{
     Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
     FilterList, LocatedRule, PermBits,
@@ -75,7 +77,7 @@ pub fn parse_rules_str_located(
         let lineno = line_idx + 1; // 1-based
 
         // Strip inline comments: find the first unquoted `#` and truncate there.
-        let line = strip_comment(raw_line).trim().to_string();
+        let line = strip(raw_line, StripConfig::AUDITD).trim().to_string();
 
         if !line.is_empty() {
             match parse_line(&line, lineno) {
@@ -245,37 +247,23 @@ fn drop_error_provenance(errs: Vec<LocatedParseError>) -> Vec<ParseError> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// Cross-reference (#383): inline-`#` stripping exists in FOUR backends, each
-// tuned to its own grammar and deliberately NOT unified (importing one grammar's
-// quoting rule into another would be wrong for that file format). Peers:
-//   - fapolicyd inline_comment_index (parser/inline.rs): `#` after any
-//     non-whitespace token; no quote awareness.
-//   - auditd    strip_comment        (parser.rs): first `#` outside a SINGLE-
-//     quoted span (single quotes protect `-F 'auid>=1000'`).
-//   - sudoers   strip_inline_comment (parser.rs): DOUBLE-quote aware, plus a
-//     `#include` bypass and a `#<digits>` UID/GID-token exception.
-//   - sshd      algo_list_value      (lints/crypto.rs): token-level; the first
-//     `#`-prefixed arg ends an already-whitespace-split algorithm list.
+// Cross-reference (#383, updated by #562): inline-`#` stripping now has a
+// single parameterized implementation shared by three backends, plus one
+// deliberately-separate token-level stripper:
+//   - fapolicyd, auditd, sudoers all call `rulesteward_core::comment::strip`
+//     / `comment_index` with their own `StripConfig` (`StripConfig::AUDITD`
+//     here: single-quote aware, no `#include` concept, no UID/GID
+//     exception - ANY unquoted `#`, including column 0 and glued, starts a
+//     comment). See `rulesteward-core/src/comment.rs` for the parameterized
+//     scan and each backend's exact config.
+//   - sshd      algo_list_value (lints/crypto.rs): token-level, not
+//     line-level, and stays OUT of the shared helper by decision
+//     (2026-07-23) - it ends an already-whitespace-split algorithm list at
+//     the first `#`-prefixed arg, a different unit of work than a raw-line
+//     byte scan.
 // sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
-// mid-value is literal). If you fix an edge case in one stripper, check the peers.
-/// Strip everything from the first unquoted `#` onward.
-///
-/// Single-quoted regions (`'...'`) protect operators like `>=` from shell
-/// interpretation. The parser already handles stripped-quote values, so we
-/// only need to not strip a `#` inside quotes. In practice, `#` inside a
-/// quoted `-F 'auid>=1000'` argument is uncommon but handled correctly.
-fn strip_comment(line: &str) -> &str {
-    let mut in_single_quote = false;
-    for (i, ch) in line.char_indices() {
-        match ch {
-            '\'' => in_single_quote = !in_single_quote,
-            '#' if !in_single_quote => return &line[..i],
-            _ => {}
-        }
-    }
-    line
-}
-
+// mid-value is literal). If you fix an edge case in the shared stripper, check
+// sshd's separate implementation too.
 /// Parse a single non-comment, non-blank line into an `AuditRule`.
 fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     let err = |msg: &str| ParseError {
@@ -303,8 +291,31 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     }
 
     match tokens[0].as_str() {
-        // `-D` (with or without trailing args) is DeleteAll per auditctl(8).
-        "-D" => Ok(AuditRule::Control(ControlRule::DeleteAll)),
+        // `-D` takes no arguments except the one real auditctl allowance:
+        // `-D -k <key>` (fields count == 4, i.e. `tokens.len() == 3` with
+        // `tokens[1] == "-k"`), which is checked and still resolves to
+        // DeleteAll -- the key value itself is not carried in the AST, since
+        // real auditctl clears its own key buffer right after a successful
+        // delete, so it is functionally inert for a static parse. Every
+        // other trailing-token shape (a lone "-k" with no key, any other
+        // single token, or anything past the key) is rejected by real
+        // auditctl's unconditional field-count check in `setopt()` before
+        // any netlink call (`src/auditctl.c` `case 'D':`, byte-identical
+        // across the RHEL8/9/10-shipped audit-userspace tags
+        // v3.1.2/v3.1.5/v4.0.3 -- see the lane-8 #541 report and the
+        // `delete_all_accepts_dash_k_key_shape` / sibling tests for the full
+        // grounding and truth table).
+        "-D" => {
+            let key_shape = tokens.len() == 3 && tokens[1] == "-k";
+            if tokens.len() == 1 || key_shape {
+                Ok(AuditRule::Control(ControlRule::DeleteAll))
+            } else {
+                Err(err(&format!(
+                    "unexpected token in -D rule: '{}'",
+                    tokens[1]
+                )))
+            }
+        }
 
         "-b" => {
             let n = tokens.get(1).ok_or_else(|| err("-b requires a value"))?;
@@ -684,7 +695,7 @@ fn parse_audit_field(s: &str) -> Option<AuditField> {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::parse_line;
+    use super::{parse_line, parse_rules_str};
     use crate::ast::{AuditRule, ControlRule};
 
     // --- quote-stripping guard (parser.rs:180) ---
@@ -855,9 +866,21 @@ mod tests {
     }
 
     // --- -D control rule ---
-    // The `-D` arm is a single `Ok(...DeleteAll)`: the dead if/else that produced
-    // the parser.rs:194 equivalent mutant was collapsed (#115). These tests confirm
-    // both forms (bare and with trailing args) parse to DeleteAll:
+    // Issue #541 (lane-8 #541 report, 2026-07-23/24): source-grounded against
+    // audit-userspace src/auditctl.c `case 'D':` at v3.1.2/v3.1.5/v4.0.3 (the
+    // RHEL8/9/10-shipped audit versions per `rpm -q audit` in the project's
+    // own fapolicyd8/9/10 containers) -- byte-identical logic on all three.
+    // Real auditctl does an UNCONDITIONAL field-count check before any
+    // netlink call: a rules.d line "-D extra" maps to auditctl's per-line
+    // `count == 3` (the synthetic leading "auditctl" field, plus "-D", plus
+    // "extra"), which is REJECTED: "Wrong number of options for Delete all
+    // request" (confirmed live via privileged fapolicyd8/9/10 containers,
+    // rc 255, identical message on all three streams). Bare "-D" (`count ==
+    // 2`) is unaffected and stays DeleteAll. History: the old `-D` arm
+    // comment ("-D (with or without trailing args) is DeleteAll per
+    // auditctl(8)") was proven FALSE by this grounding and was corrected by
+    // the implementer alongside the fix (see the `-D` arm's current doc
+    // comment and the lane-8 report).
     #[test]
     fn delete_all_bare() {
         let parsed = parse_line("-D", 1).expect("-D should parse");
@@ -866,9 +889,102 @@ mod tests {
 
     #[test]
     fn delete_all_with_extra_token() {
-        // auditctl(8): -D with extra args is still DeleteAll.
-        let parsed = parse_line("-D extra", 1).expect("-D extra should parse");
+        // RED (#541): was `parse_line("-D extra", 1).expect("-D extra should
+        // parse")` asserting the lenient (WRONG) behavior -- see the section
+        // doc comment above for the grounding. Updated by the test author
+        // (never the implementer) to pin the real auditctl behavior: a
+        // trailing token that is not "-k <key>" is REJECTED, not silently
+        // absorbed into DeleteAll. (The "-D -k <key>" shape is a distinct,
+        // real auditctl allowance -- initially scoped out of #541, then
+        // pinned in the strengthen round: see
+        // `delete_all_accepts_dash_k_key_shape` and its siblings below.)
+        let err = parse_line("-D extra", 1)
+            .expect_err("-D extra must be rejected: real auditctl refuses a trailing token here");
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn delete_all_bare_survives_in_a_multiline_ruleset() {
+        // Green pin (#541): the -D fix must be scoped to THIS line's own
+        // trailing tokens (auditctl's per-line `setopt()` dispatch, per the
+        // lane-8 report) -- a bare "-D" elsewhere in a larger, otherwise
+        // valid ruleset must keep parsing to DeleteAll unchanged.
+        let input = "-w /etc/passwd -p wa -k identity\n-D\n-b 8192\n";
+        let rules = parse_rules_str(input).expect("a bare -D inside a valid ruleset must parse");
+        assert!(
+            rules.contains(&AuditRule::Control(ControlRule::DeleteAll)),
+            "bare -D inside a larger valid file must still resolve to DeleteAll: {rules:?}"
+        );
+    }
+
+    // --- Strengthen round (#541): the "-D -k <key>" allowance ---
+    // Grounding: auditctl.c `case 'D':` (v3.1.5 L1000-1024, v3.1.2 L982-1006,
+    // v4.0.3 L1005-1029 -- byte-identical on all three RHEL-target tags)
+    // does NOT do a blanket reject of every trailing token. The exact shape
+    // is: `count > 4 || count == 3` is an unconditional reject (any single
+    // trailing token, including a lone "-k" with no key value, or 3+
+    // trailing tokens); a fields count of exactly 4 (our
+    // `tokens.len() == 3`: "-D", "-k", "<key>") is the ONE allowed shape --
+    // checked only when `vars[optind] == "-k"` -- and still resolves to
+    // DeleteAll (falls through to the same `delete_all_rules(fd)` call as
+    // bare -D). The `key` value taken from vars[3] is functionally inert
+    // for a STATIC parse: real auditctl clears it to empty immediately
+    // after a successful delete (`key[0] = 0`), and this crate's AST has no
+    // field to carry it -- ControlRule::DeleteAll (no key payload) is the
+    // correct static result for this shape, not a gap.
+
+    #[test]
+    fn delete_all_accepts_dash_k_key_shape() {
+        // GREEN-target (RED against the current blanket-reject impl,
+        // commit 52ab817): "-D -k mykey" is fields count==4, the one real
+        // auditctl allowance -- must parse to DeleteAll, not error.
+        let parsed = parse_line("-D -k mykey", 1)
+            .expect("-D -k <key> is a real auditctl allowance and must parse");
         assert_eq!(parsed, AuditRule::Control(ControlRule::DeleteAll));
+    }
+
+    #[test]
+    fn delete_all_rejects_bare_dash_k_with_no_key() {
+        // RED-target per real auditctl (already GREEN against the current
+        // blanket-reject impl, for the wrong reason -- this pin locks in
+        // the CORRECT reason too): "-D -k" alone is fields count==3 (only
+        // ONE trailing token, "-k" itself), which hits the unconditional
+        // `count == 3` reject at the very top of case 'D' BEFORE the
+        // count==4 "-k" check is ever reached. A lone "-k" with no key
+        // value is not a partial match of the allowed shape.
+        let err = parse_line("-D -k", 1).expect_err(
+            "-D -k with no key value must be rejected, same as any other bare extra token",
+        );
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn delete_all_rejects_dash_k_key_plus_extra_token() {
+        // RED-target per real auditctl (already GREEN against the current
+        // blanket-reject impl, for the wrong reason -- this pin locks in
+        // the CORRECT reason too): "-D -k mykey extra" is fields count==5,
+        // which hits the unconditional `count > 4` reject at the very top
+        // of case 'D', regardless of the extra token's content. Only the
+        // EXACT "-D -k <key>" (count==4) shape is allowed; anything beyond
+        // it stays rejected.
+        let err = parse_line("-D -k mykey extra", 1)
+            .expect_err("-D -k <key> plus any further token must still be rejected");
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
     }
 }
 
@@ -944,6 +1060,29 @@ mod located_tests {
         assert!(
             errs[0].message.contains("unknown flag"),
             "message should name the failure, got {:?}",
+            errs[0].message
+        );
+    }
+
+    /// RED (#541, lane-8 report): a "-D extra" line must surface through the
+    /// SAME `LocatedParseError` -> au-F01 channel as every other malformed
+    /// line (mirrors `located_str_errors_carry_file_and_line`'s "-Z bogus"
+    /// case just above), not an invented side-channel. Grounded against real
+    /// auditctl's unconditional parameter-count rejection of a trailing
+    /// token on `-D` (see the parser.rs inline `tests` module's
+    /// `delete_all_with_extra_token` for the full citation).
+    #[test]
+    fn located_str_rejects_delete_all_with_extra_token() {
+        let input = "-w /etc/passwd -p wa -k identity\n-D extra\n";
+        let file = Path::new("rules.d/99-bad.rules");
+        let errs =
+            parse_rules_str_located(input, file).expect_err("-D extra must fail the whole file");
+        assert_eq!(errs.len(), 1, "exactly one failing line, got {errs:?}");
+        assert_eq!(errs[0].file, file);
+        assert_eq!(errs[0].line, 2);
+        assert!(
+            errs[0].message.contains("-D"),
+            "message should name the offending flag; got {:?}",
             errs[0].message
         );
     }

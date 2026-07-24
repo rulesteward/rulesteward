@@ -1,5 +1,6 @@
 //! Version-aware lint pass: fapolicyd checks whose verdict diverges by target
 //! release (fapd-W07 hash-keyword advice, `device=` subject-side validity,
+//! `filehash=` subject-side validity, `exe_device=` legacy-subject validity,
 //! `pattern=` value set, hash-value length).
 //!
 //! Runs only when a `--target` release is supplied (see `LintContext.target`);
@@ -11,7 +12,7 @@ use std::path::Path;
 use rulesteward_core::{Diagnostic, Severity};
 
 use super::anchored;
-use crate::ast::{Attr, AttrValue, Entry, Rule};
+use crate::ast::{Attr, AttrValue, Entry, Rule, SyntaxFlavor};
 use crate::version::TargetVersion;
 
 /// `pattern=` values accepted by fapolicyd on the rhel8 dialect (1.3.2). The
@@ -57,6 +58,7 @@ pub(crate) fn walk(
         let Entry::Rule(rule) = entry else { continue };
         check_filehash(rule, file, target, &mut diags);
         check_subject_device(rule, file, target, &mut diags);
+        check_subject_exe_device(rule, file, target, &mut diags);
         check_pattern(rule, file, target, &mut diags);
     }
     diags
@@ -80,29 +82,57 @@ fn e06(rule: &Rule, file: &Path, target: TargetVersion, what: &str) -> Diagnosti
     )
 }
 
-/// CHECK 1 - `filehash=` does not exist on fapolicyd 1.3.2 (rhel8); the canonical
-/// 1.3.2 spelling is `sha256hash=`. It is valid on 1.4.x (rhel9/rhel10), so this
-/// fires ONLY under rhel8. Scans both sides (filehash is normally an object attr).
+/// CHECK 1 / CHECK 1B - `filehash=` validity by target and side.
+///
+/// CHECK 1 (rhel8/1.3.2): the whole attribute does not exist on 1.3.2 (the
+/// canonical 1.3.2 spelling is `sha256hash=`), so it is rejected on EITHER
+/// side there.
+///
+/// CHECK 1B (rhel9/rhel10, issue #568): on 1.4.x `filehash=` exists but is
+/// object-only, mirroring `device=`'s CHECK 2 object/subject split - a
+/// subject-side `filehash=` is rejected, object-side stays canonical/clean.
+/// Per the barrier-rework ruling this check is None-closed (like CHECK 2):
+/// `walk` never calls this for `target == None`, so there is nothing further
+/// to gate here.
 fn check_filehash(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Vec<Diagnostic>) {
-    if target != TargetVersion::Rhel8 {
-        return;
-    }
-    // Name the offending side so the operator can locate it in a multi-attribute
-    // rule (`filehash` is normally an object attr, but is rejected on either side).
-    for (side, attrs) in [
-        ("subject-side", &rule.subject),
-        ("object-side", &rule.object),
-    ] {
-        for attr in attrs {
-            if let Attr::Kv { key, .. } = attr
-                && key == "filehash"
-            {
-                diags.push(e06(
-                    rule,
-                    file,
-                    target,
-                    &format!("{side} attribute `filehash=` (use `sha256hash=` instead)"),
-                ));
+    match target {
+        TargetVersion::Rhel8 => {
+            // Name the offending side so the operator can locate it in a
+            // multi-attribute rule (`filehash` is normally an object attr,
+            // but is rejected on either side on 1.3.2, since it does not
+            // exist there at all).
+            for (side, attrs) in [
+                ("subject-side", &rule.subject),
+                ("object-side", &rule.object),
+            ] {
+                for attr in attrs {
+                    if let Attr::Kv { key, .. } = attr
+                        && key == "filehash"
+                    {
+                        diags.push(e06(
+                            rule,
+                            file,
+                            target,
+                            &format!("{side} attribute `filehash=` (use `sha256hash=` instead)"),
+                        ));
+                    }
+                }
+            }
+        }
+        TargetVersion::Rhel9 | TargetVersion::Rhel10 => {
+            // filehash= exists and is canonical on the object side on 1.4.x;
+            // only the subject side is invalid there (#568).
+            for attr in &rule.subject {
+                if let Attr::Kv { key, .. } = attr
+                    && key == "filehash"
+                {
+                    diags.push(e06(
+                        rule,
+                        file,
+                        target,
+                        "subject-side attribute `filehash=` (object-only)",
+                    ));
+                }
             }
         }
     }
@@ -130,6 +160,54 @@ fn check_subject_device(
                 file,
                 target,
                 "subject-side attribute `device=` (object-only)",
+            ));
+        }
+    }
+}
+
+/// CHECK 4 - `exe_device=` (legacy-grammar subject attr; issue #570) exists
+/// in upstream's LEGACY subject table (`subject-attr.c` table1) on 1.3.2
+/// (rhel8) but was dropped from that table by 1.4.5 (rhel9/rhel10), so a
+/// subject-side `exe_device=` is rejected there. Target-gated (fires only on
+/// rhel9/rhel10) and None-closed (no `--target` means no version to evaluate
+/// the divergence against, matching `walk`'s overall None gate) - same shape
+/// as `check_subject_device`.
+///
+/// UNLIKE `device` (known to BOTH grammars' attribute tables, just
+/// version-divergent on the subject side - so `check_subject_device` fires
+/// regardless of `Rule.syntax`), `exe_device` does not exist in EITHER
+/// version's MODERN table (table2) at all; a modern-grammar rule using it
+/// (`allow exe_device=... : all`) is uniformly unknown on every target and
+/// is fapd-E01's territory, not a version divergence. So this check is
+/// ADDITIONALLY gated on `rule.syntax == SyntaxFlavor::Legacy`: `exe_device`
+/// can land in `rule.subject` purely by COLON POSITION in a modern-syntax
+/// rule (the modern grammar splits subject/object positionally, not by
+/// attribute-name classification - see `parser::grammar::modern_rule`), so
+/// without this gate a modern-position `exe_device=` would spuriously
+/// double-report alongside fapd-E01 on rhel9/rhel10. See
+/// `attrs::LEGACY_ONLY_SUBJECT_ATTRS` / `parser::grammar::legacy_classify`
+/// for where the legacy-only legality itself is established.
+fn check_subject_exe_device(
+    rule: &Rule,
+    file: &Path,
+    target: TargetVersion,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if rule.syntax != SyntaxFlavor::Legacy {
+        return;
+    }
+    if target < TargetVersion::Rhel9 {
+        return;
+    }
+    for attr in &rule.subject {
+        if let Attr::Kv { key, .. } = attr
+            && key == "exe_device"
+        {
+            diags.push(e06(
+                rule,
+                file,
+                target,
+                "subject-side attribute `exe_device=` (legacy-only, removed in 1.4.x)",
             ));
         }
     }
@@ -674,6 +752,243 @@ mod tests {
         assert!(
             diags.iter().all(|d| d.line == 9),
             "both fapd-E06 must carry the rule line (9); got {diags:?}",
+        );
+    }
+
+    // ===================================================================
+    // CHECK 1B - subject-side filehash= wrong-side gap (issue #568, lane-6)
+    //
+    // USER RULING (barrier rework round, 2026-07-23): option (a) NONE-CLOSED.
+    // Subject-side filehash= gets EXACTLY the same shape as `device=` (CHECK
+    // 2): fires fapd-E06 under an explicit --target rhel9/rhel10 (closing
+    // the "uncaught on rhel9/rhel10" half of #568's gap), but stays CLEAN
+    // under `None` - matching the established E06 None-convention (see
+    // `check2_none_accepts_subject_side_device_clean` above: with no
+    // --target, a version-conditional subject-side check does not fire,
+    // because there is no version to evaluate the condition against). This
+    // supersedes an earlier draft of this section that argued (via the
+    // fapd-E07 `type_compat.rs`/`ALL_TARGETS` outcome-invariance precedent)
+    // that filehash should fire under `None` too since it is invalid on
+    // EVERY version; the user overruled that reading in favor of the
+    // simpler, established device-shaped convention. The "uncaught under
+    // None" half of #568 is therefore an ACCEPTED, documented residual gap
+    // (consistent with how `device=`'s own None case already behaves), not
+    // something this fix closes.
+    //
+    // Grounding for filehash's existence/side, re-derived via a fresh
+    // `WebFetch` of upstream `src/library/subject-attr.c` at the pinned
+    // `v1.3.2`/`v1.4.5` tags (2026-07-23): the string "filehash" does NOT
+    // appear in EITHER version's subject attribute tables (table1/legacy or
+    // table2/modern) - filehash is never a recognized SUBJECT attribute on
+    // any supported version. This matches issue #568's own cited live
+    // differential ("`allow perm=any filehash=<hex> : all` is rejected by
+    // BOTH fapolicyd 1.3.2 and 1.4.5" - "Field type (filehash) is unknown" +
+    // "Subject is missing", confirmed 2026-07-17) and confirms CHECK 1's
+    // existing rhel8 behavior (E06 fires there today) is CORRECT, current
+    // behavior - not something the #568 fix changes. rhel8 is therefore a
+    // green pin (CHECK 1 already covers it for both sides), same as before.
+    //
+    // Contrast with `device`'s subject side (CHECK 2): `device` DOES appear
+    // in v1.3.2's subject-attr.c table2 (valid on the subject side on
+    // 1.3.2/rhel8) but is ABSENT from v1.4.5's subject-attr.c entirely
+    // (invalid on rhel9/rhel10) - genuinely version-DIVERGENT, which is why
+    // `check_subject_device` is target-gated and None-closed already.
+    // filehash is version-INVARIANT (never valid on the subject side on any
+    // version) but, per the ruling above, still gets the None-closed
+    // treatment rather than the E07-style None-fires treatment.
+    //
+    // RED expectation: today CHECK 1 (`check_filehash`) only fires under
+    // `target == Rhel8`, so a subject-side filehash= under an explicit
+    // --target rhel9/rhel10 is uncaught by ANYTHING (E01 defers it - see
+    // `SIDE_CHECK_EXCLUDED` in `walker.rs` - and CHECK 1 is rhel8-only). The
+    // rhel9/rhel10 "must fire" assertions below FAIL today; the rhel8 green
+    // pin, the None-clean pin (matches TODAY's silent behavior exactly - it
+    // is the ACCEPTED final behavior per the ruling, not a bug), and the
+    // object-side negative controls already pass and must keep passing.
+    // ===================================================================
+
+    #[test]
+    fn filehash_subject_side_fires_e06_on_rhel9() {
+        let diags = run(
+            11,
+            vec![kv("filehash", HEX64)],
+            vec![Attr::All],
+            Some(TargetVersion::Rhel9),
+        );
+        let e06 = diags
+            .iter()
+            .find(|d| d.code.as_ref() == "fapd-E06")
+            .unwrap_or_else(|| {
+                panic!(
+                    "subject-side filehash= must fire fapd-E06 under --target rhel9 \
+                     (filehash exists on 1.4.5 but is object-only there, per #568's \
+                     live differential); got codes={:?} diags={diags:?}",
+                    codes(&diags),
+                )
+            });
+        assert_eq!(e06.severity, Severity::Error);
+        assert_eq!(
+            e06.line, 11,
+            "fapd-E06 must carry the rule line (11), not a hardcoded 1; got {}",
+            e06.line,
+        );
+        assert!(
+            e06.message.contains("filehash"),
+            "fapd-E06 message must name the offending construct `filehash`: {}",
+            e06.message,
+        );
+    }
+
+    #[test]
+    fn filehash_subject_side_fires_e06_on_rhel10() {
+        let diags = run(
+            12,
+            vec![kv("filehash", HEX64)],
+            vec![Attr::All],
+            Some(TargetVersion::Rhel10),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_ref() == "fapd-E06" && d.line == 12),
+            "subject-side filehash= must fire fapd-E06 (line 12) under --target \
+             rhel10, mirroring the rhel9 case (rhel9/rhel10 share fapolicyd 1.4.5); \
+             got {diags:?}",
+        );
+    }
+
+    #[test]
+    fn filehash_subject_side_stays_clean_under_none() {
+        // USER RULING (barrier rework round, 2026-07-23): NONE-CLOSED.
+        // Mirrors `check2_none_accepts_subject_side_device_clean` above -
+        // with no `--target`, there is no version to evaluate a
+        // version-conditional subject-side check against, so nothing fires.
+        // This matches TODAY's actual (buggy, per #568) silent behavior
+        // exactly; the ruling accepts it as the final, intended None
+        // behavior rather than closing it via the fapd-E07 outcome-
+        // invariance route an earlier draft of this test used. Non-vacuity:
+        // this is a genuine green/negative-control pin (protect-against-
+        // over-widening), not a not-yet-implemented RED case - it must stay
+        // GREEN before and after the rhel9/rhel10 arms of the #568 fix land.
+        let diags = run(13, vec![kv("filehash", HEX64)], vec![Attr::All], None);
+        assert!(
+            diags.is_empty(),
+            "with no --target, subject-side filehash= must stay CLEAN \
+             (None-closed, matching device's established None convention - \
+             #568's 'uncaught under None' is an accepted residual, not \
+             closed by this fix); got {diags:?}",
+        );
+    }
+
+    #[test]
+    fn filehash_subject_side_rhel8_unaffected_green_pin() {
+        // Regression guard: rhel8 is NOT part of #568's gap (CHECK 1 already
+        // flags filehash= on either side there, since the whole attribute
+        // does not exist on 1.3.2). This must stay GREEN before and after
+        // the #568 fix - included here so the CHECK-1B group is a
+        // self-contained set spanning every target.
+        //
+        // Re-derived per the barrier rework ruling (2026-07-23): does 1.3.2
+        // accept subject-side filehash=? NO - a fresh `WebFetch` of upstream
+        // `src/library/subject-attr.c` at the `v1.3.2` tag confirms the
+        // string "filehash" does not appear in EITHER of that file's
+        // attribute tables (table1/legacy or table2/modern) - it is not a
+        // recognized subject attribute on 1.3.2 at all. Since 1.3.2 does
+        // NOT accept it, this pin correctly stays E06 (current behavior),
+        // not clean.
+        let diags = run(
+            14,
+            vec![kv("filehash", HEX64)],
+            vec![Attr::All],
+            Some(TargetVersion::Rhel8),
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_ref() == "fapd-E06"),
+            "subject-side filehash= must still fire fapd-E06 on rhel8 (CHECK 1, \
+             unaffected by the #568 fix); got {diags:?}",
+        );
+    }
+
+    #[test]
+    fn filehash_object_side_stays_clean_on_rhel9_rhel10_none() {
+        // Negative control / protect-against-over-widening (brief's "green
+        // pins... protect against over-widening"): filehash's CORRECT,
+        // canonical placement is the object side on 1.4.x. The #568 fix must
+        // not turn into a blanket "filehash always fires" - object-side
+        // filehash= stays completely clean on rhel9/rhel10/None. Duplicates
+        // (deliberately, as an explicit CHECK-1B-scoped pin)
+        // `check1_rhel9_rhel10_none_accept_filehash_clean`'s assertion.
+        for t in [
+            Some(TargetVersion::Rhel9),
+            Some(TargetVersion::Rhel10),
+            None,
+        ] {
+            let diags = run(1, vec![], vec![kv("filehash", HEX64)], t);
+            assert!(
+                diags.is_empty(),
+                "object-side filehash= is canonical usage on target {t:?} and must \
+                 stay CLEAN after the #568 fix; got {diags:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn filehash_subject_side_fix_does_not_disturb_subject_side_device() {
+        // Protect-against-over-widening (brief): a rule combining subject-
+        // side `device=` (CHECK 2, version-divergent, valid on rhel8, E06 on
+        // rhel9+) with subject-side `filehash=` (CHECK 1B, version-invariant,
+        // E06 everywhere) must fire exactly the RIGHT E06 per target, proving
+        // the two checks compose independently rather than one implementation
+        // accidentally coupling them (e.g. a fix that makes `check_filehash`
+        // ALSO start gating on `target >= Rhel9` the way `check_subject_device`
+        // does, silently reintroducing the rhel8/None gap this section closes).
+        let subj = vec![kv("device", "/dev/sda"), kv("filehash", HEX64)];
+
+        // rhel8: device (subject) is valid -> no E06 from CHECK 2; filehash
+        // (subject) is invalid (doesn't exist at all on 1.3.2) -> exactly one
+        // E06 from CHECK 1.
+        let diags8 = run(
+            15,
+            subj.clone(),
+            vec![Attr::All],
+            Some(TargetVersion::Rhel8),
+        );
+        assert_eq!(
+            count(&diags8, "fapd-E06"),
+            1,
+            "rhel8: only filehash= should fire fapd-E06 (device= is valid there); \
+             got codes={:?} diags={diags8:?}",
+            codes(&diags8),
+        );
+
+        // rhel9: BOTH device (subject, CHECK 2) and filehash (subject, CHECK
+        // 1B) are invalid there -> exactly two E06.
+        let diags9 = run(
+            16,
+            subj.clone(),
+            vec![Attr::All],
+            Some(TargetVersion::Rhel9),
+        );
+        assert_eq!(
+            count(&diags9, "fapd-E06"),
+            2,
+            "rhel9: both device= and filehash= on the subject side must fire \
+             fapd-E06 (one each); got codes={:?} diags={diags9:?}",
+            codes(&diags9),
+        );
+
+        // None: per the barrier rework ruling (2026-07-23), filehash's
+        // subject-side check is None-closed just like device's (CHECK 2) -
+        // with no --target there is no version to evaluate either
+        // version-conditional check against, so NEITHER fires -> zero E06.
+        let diags_none = run(17, subj, vec![Attr::All], None);
+        assert_eq!(
+            count(&diags_none, "fapd-E06"),
+            0,
+            "None: neither device= nor filehash= subject-side checks fire \
+             without an explicit --target (both None-closed); got codes={:?} \
+             diags={diags_none:?}",
+            codes(&diags_none),
         );
     }
 }

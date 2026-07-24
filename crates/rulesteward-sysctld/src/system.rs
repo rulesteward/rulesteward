@@ -437,7 +437,16 @@ fn w03c_masked_key_drops(
     let mut out = Vec::new();
     let mut emitted: HashSet<(PathBuf, String)> = HashSet::new();
     for mf in masked {
-        let Ok(src) = std::fs::read_to_string(&mf.path) else {
+        // Routed through `rulesteward_core::fsread` (#560, closeout round 3): a
+        // masked entry is collected without an `is_file()` filter (unlike the
+        // surviving-file push above, gated by `path.is_file()`), so it can be a
+        // FIFO/socket/device. A raw `std::fs::read_to_string` here blocks forever
+        // on a masked FIFO with no writer; `fsread::read_to_string` fails fast
+        // instead, and the pre-existing `else { continue }` already skips any read
+        // error (a masked file's own read failure is deliberately invisible - see
+        // the module doc above), so a skipped masked FIFO is correct: it has no
+        // assignments to drop.
+        let Ok(src) = rulesteward_core::fsread::read_to_string(&mf.path) else {
             continue;
         };
         let (asgns, _f01) = parse_file(&src, &mf.path);

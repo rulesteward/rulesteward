@@ -15,10 +15,10 @@
 
 mod error;
 mod grammar;
-pub mod inline;
 
 use chumsky::extra;
 use chumsky::prelude::*;
+use rulesteward_core::comment::{StripConfig, strip};
 use rulesteward_core::{Diagnostic, Severity, fill_columns};
 use std::path::Path;
 
@@ -124,7 +124,7 @@ fn parse_line(
         );
     }
 
-    let body = inline::strip_inline_comment(line);
+    let body = strip(line, StripConfig::FAPOLICYD);
     let first_nonws = body.trim_start_matches([' ', '\t']).chars().next();
 
     if first_nonws == Some('%') {

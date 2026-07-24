@@ -98,7 +98,10 @@ fn run_lint_resolved(
     // immediately; IO errors are surfaced but do not stop the other files.
     let mut staged: Vec<(PathBuf, String, Vec<Entry>)> = Vec::new();
     for path in &target_files {
-        match std::fs::read_to_string(path) {
+        // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+        // node target fails fast with a clear error instead of hanging or reading
+        // unbounded data.
+        match rulesteward_core::fsread::read_to_string(path) {
             Ok(source) => {
                 let (entries, parse_diags) = match parse_rules_file(&source, path) {
                     Ok(e) => (e, Vec::new()),
@@ -254,7 +257,10 @@ fn lint_conf_arg(
     target: Option<TargetVersionArg>,
     all_diags: &mut Vec<Diagnostic>,
 ) -> bool {
-    match std::fs::read_to_string(conf_path) {
+    // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+    // node `--conf` target fails fast with a clear error instead of hanging or
+    // reading unbounded data.
+    match rulesteward_core::fsread::read_to_string(conf_path) {
         Ok(text) => {
             all_diags.extend(lint_conf(&text, conf_path, target.map(Into::into)));
             false

@@ -34,15 +34,21 @@ use crate::version::TargetVersion;
 /// fapd-W14: an effectively-permissive `permissive=` value set in the
 /// `fapolicyd.conf` text at `path`.
 ///
-/// Fires whenever the LAST-WINS resolved value of the `permissive` key is a
+/// Fires whenever the LAST-WINS resolved value of the `permissive` key,
+/// reduced to its FIRST ASCII-space-delimited token (issue #569 - the
+/// daemon's `nv_split`/`_strsplit` binds `nv.value` to only the first token
+/// after `=`, splitting on the literal space byte `0x20` only - never a
+/// tab, CR, or other Unicode-whitespace byte; a trailing `# comment` or
+/// other junk token is logged separately but never reaches the keyword's
+/// parser, so it must not be considered), is a
 /// non-empty, all-ASCII-digit string containing at least one nonzero digit -
 /// the daemon's `strtoul`-then-clamp semantics (see `is_effectively_permissive`
 /// below): `"1"`, `"2"`, `"10"`, `"01"`, `"007"`, etc. all fire - regardless
 /// of `target` (version-independent). Anchored at the WINNING line (the last
 /// non-whole-line-comment occurrence of the key, last-wins per fapolicyd's
 /// own config-loader semantics - see the module doc). Absent key, an
-/// all-zero digit string (e.g. `"0"`, `"00"`), or a non-numeric value (e.g.
-/// `"1x"`) is clean.
+/// all-zero digit string (e.g. `"0"`, `"00"`), or a non-numeric FIRST token
+/// (e.g. `"1x"`, `"foo 1"`) is clean.
 #[must_use]
 pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<Diagnostic> {
     // Last-wins scan, mirroring `commands/conf.rs::conf_value` exactly (whole-line
@@ -62,14 +68,39 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
         if let Some((k, v)) = line.split_once('=')
             && k.trim() == "permissive"
         {
-            winner = Some((idx + 1, start..end, v.trim()));
+            // Issue #569 round 3 (byte-exact grounding on upstream
+            // daemon-config.c): strip only LEADING ASCII space (0x20)
+            // bytes here, mirroring `_strsplit`'s retry-on-leading-space
+            // skip in the real daemon's `nv_split` - never a trailing
+            // Unicode `.trim()`, which would wrongly strip a CRLF file's
+            // trailing '\r' byte (or any other non-space-but-whitespace
+            // byte) before the first-token split below ever sees it.
+            winner = Some((idx + 1, start..end, v.trim_start_matches(' ')));
         }
     }
 
     let Some((line, span, value)) = winner else {
         return Vec::new();
     };
-    if !is_effectively_permissive(value) {
+    // Issue #569, round 3 (byte-exact grounding on upstream
+    // `src/library/daemon-config.c`, superseding the round-1/round-2 fix's
+    // reliance on Rust's Unicode-whitespace-aware `split_whitespace()`): the
+    // daemon's own tokenizer, `_strsplit`, finds token boundaries by
+    // `strchr(str, ' ')` - the literal ASCII space byte (0x20) ONLY, never a
+    // tab or a CRLF file's trailing '\r'. `nv_split` binds `nv->value` to
+    // that FIRST space-delimited token; a further token (a trailing
+    // `# comment` or other junk) is logged separately as "Wrong number of
+    // arguments" but does not change which token `permissive_parser`
+    // receives. `unsigned_int_parser`'s own `isdigit` walk is byte-exact
+    // too, so a tab or stray '\r' embedded in that first token (because it
+    // was never a space-byte separator to the daemon) makes the WHOLE token
+    // a parse error, not a rescuable digit prefix. So the value must be
+    // reduced to its first ASCII-space-delimited token here - `split(' ')`,
+    // never `split_whitespace()`/`.trim()`, which would wrongly treat a tab
+    // or '\r' as a separator/trimmable byte and rescue a value the real
+    // daemon's byte-exact parser actually rejects.
+    let first_token = value.split(' ').next().unwrap_or(value);
+    if !is_effectively_permissive(first_token) {
         return Vec::new();
     }
 
@@ -215,24 +246,46 @@ mod tests {
     }
 
     #[test]
-    fn inline_hash_is_part_of_the_value_not_a_comment() {
-        // Adversarial round 1 (Finding 3): pins the module doc's "a trailing
-        // `#` is not stripped". Mirrors
-        // `commands/conf.rs::conf_value_does_not_strip_inline_comment`:
-        // fapolicyd's own `nv_split` (daemon-config.c) honors ONLY whole-line
-        // `#` comments, so the raw resolved value here is `"1 # note"`, which
-        // is NOT exactly `"1"` -> clean. An impl that strips inline comments
-        // (reading the value as `"1"`) would wrongly fire.
+    fn inline_hash_after_permissive_one_still_fires_first_token_wins() {
+        // CORRECTED (issue #569, doc-truth-decay fix): the scanner-level
+        // claim ("a trailing `#` is not stripped") is still true and
+        // unchanged - `winner`'s captured value is the raw, untrimmed-of-
+        // comment remainder `"1 # note"`. What was WRONG in the original
+        // version of this test (Adversarial round 1, Finding 3) was the
+        // conclusion drawn from that raw value: it assumed the daemon
+        // treats a non-exact-"1" raw remainder as a parse error and stays
+        // enforcing. Issue #567/#569's ATL round 2 grounding (live-verified
+        // on fapolicyd 1.3.2 and 1.4.5, see
+        // `rulesteward-cli/src/commands/doctor/probe.rs`'s
+        // `permissive_value_is_effectively_permissive` doc, ~line 280-298,
+        // and its `daemon-config.c` `nv_split`/`_strsplit` citation) proved
+        // the opposite: the daemon whitespace-tokenizes the raw remainder
+        // and binds `nv.value` to ONLY the FIRST token ("1"); a trailing
+        // `# note` (or any further token) is separately logged as "Wrong
+        // number of arguments" but does NOT stop `permissive_parser` from
+        // being called with the first-token value. So the real daemon runs
+        // PERMISSIVE for this line, and `lint_conf` must fire fapd-W14
+        // here, not report clean. The doctor probe was already corrected
+        // for this (9e-wave2c); this lint (`fapd-W14`, from PR #565) has
+        // the IDENTICAL miss and is fixed by the same first-token
+        // tokenization before `is_effectively_permissive` (issue #569).
         let diags = lint_conf("permissive = 1 # note\n", &p(), None);
-        assert!(
-            codes(&diags).is_empty(),
-            "raw value \"1 # note\" is not \"1\"; the inline `#` must not be \
-             stripped: {diags:?}"
+        assert_eq!(
+            diags.len(),
+            1,
+            "the daemon's nv_split takes only the first whitespace token \
+             (\"1\") as the value and runs permissive despite the trailing \
+             \"# note\" text (live-verified fapolicyd 1.3.2/1.4.5, issue \
+             #567/#569); lint_conf must fire fapd-W14: {diags:?}"
         );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
 
-        // And the inline-`#` line must not shadow a LATER bare occurrence:
-        // last-wins resolves line 2's `permissive = 1` to exactly "1" ->
-        // fires, anchored at that later WINNING line.
+        // And the inline-comment line must not shadow a LATER bare
+        // occurrence: last-wins resolves line 2's `permissive = 1` to
+        // exactly "1" -> fires, anchored at that later WINNING line (this
+        // outcome is unchanged by the #569 fix: both lines resolve
+        // permissive, but only the LAST occurrence is evaluated at all).
         let diags = lint_conf("permissive = 1 # note\npermissive = 1\n", &p(), None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, "fapd-W14");
@@ -240,6 +293,132 @@ mod tests {
             diags[0].line, 2,
             "must anchor at the later uncommented winning line, not the \
              inline-comment line"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #569: first-token tokenization before `is_effectively_permissive`,
+    // mirroring the already-fixed doctor probe
+    // (`rulesteward-cli/src/commands/doctor/probe.rs::
+    // permissive_value_is_effectively_permissive`, 9e-wave2c / ATL round 2
+    // MISS 1). Ground truth: fapolicyd's `daemon-config.c` `nv_split`/
+    // `_strsplit` whitespace-tokenizes the value text and binds `nv.value`
+    // to ONLY the first token after `=`; any further token (a `# comment`
+    // or otherwise) is logged as "Wrong number of arguments" but does NOT
+    // change which token the keyword's parser (here `permissive_parser`)
+    // receives. Live-verified on fapolicyd 1.3.2 (Rocky 8) and 1.4.5
+    // (Rocky 9) per the probe's grounding. These pins mirror the probe's
+    // `read_fapolicyd_mode_from_permissive_{one,five,zero}_with_inline_
+    // comment_returns_*` fixtures exactly, at the `lint_conf` surface.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn conf_inline_permissive_one_with_trailing_comment_fires() {
+        // First token "1" -> effectively permissive -> daemon runs
+        // permissive despite "Wrong number of arguments" being logged for
+        // the extra token.
+        let diags = lint_conf("permissive = 1 # temporarily on\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"1\" is effectively permissive in the real \
+             daemon (nv_split/_strsplit); the trailing comment text must \
+             not mask it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_five_with_trailing_comment_fires() {
+        // First token "5" -> strtoul("5") = 5, clamped to 1 by
+        // `permissive_parser`'s range check -> the real daemon runs
+        // permissive (live-confirmed WARNING "permissive value reset to 1"
+        // on fapolicyd9 for this exact fixture per the probe's grounding).
+        let diags = lint_conf("permissive = 5 # comment\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"5\" clamps to permissive-mode in the real \
+             daemon; the trailing comment text must not mask it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_zero_with_trailing_comment_is_clean() {
+        // Control (must pass both before and after the #569 fix): first
+        // token "0" -> strtoul("0") = 0 -> the daemon stays enforcing
+        // regardless of the trailing comment text ("Wrong number of
+        // arguments" is still logged, but no permissive/reset warning
+        // follows, per the probe's live-verified grounding).
+        let diags = lint_conf("permissive = 0 # off\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "first token \"0\" is enforcing in the real daemon regardless \
+             of the trailing comment text: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn conf_inline_permissive_one_with_trailing_word_fires() {
+        // Non-`#` trailing junk is the SAME daemon code path as an inline
+        // comment: `nv_split` tokenizes on whitespace generically, not on
+        // `#` specifically, so any second token (comment or otherwise)
+        // triggers the identical "Wrong number of arguments" logging while
+        // the first token ("1") still reaches `permissive_parser`. This
+        // pin defeats a narrow fix that special-cases only a `#`-prefixed
+        // trailing token instead of doing a true first-whitespace-token
+        // split.
+        let diags = lint_conf("permissive = 1 anything\n", &p(), None);
+        assert_eq!(
+            diags.len(),
+            1,
+            "first token \"1\" is effectively permissive regardless of \
+             what non-comment trailing token follows it: {diags:?}"
+        );
+        assert_eq!(diags[0].code, "fapd-W14");
+        assert_eq!(diags[0].line, 1, "must anchor at the winning line");
+    }
+
+    #[test]
+    fn conf_inline_permissive_zero_with_trailing_one_stays_clean() {
+        // ATL rework round (adversarial review, BLOCKER): pins the
+        // FIRST-token-only binding against a plausible-but-wrong
+        // "any token is effectively permissive" impl (e.g.
+        // `value.split_whitespace().any(is_effectively_permissive)`), which
+        // would wrongly fire here having found "1" as the SECOND token.
+        // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, same
+        // citation as `permissive_value_is_effectively_permissive` in
+        // `rulesteward-cli/src/commands/doctor/probe.rs`): `nv.value` is
+        // bound to ONLY the first whitespace token after `=` ("0"); the
+        // trailing "1" is a second token that only trips the daemon's
+        // separate "Wrong number of arguments" logging and is never passed
+        // to `permissive_parser`. So the real daemon stays enforcing for
+        // this line, and a correct first-token impl must report clean.
+        let diags = lint_conf("permissive = 0 1\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "the daemon binds nv.value to the FIRST token (\"0\", \
+             enforcing) and never inspects the trailing \"1\"; an \
+             any-token impl would wrongly fire here: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn conf_inline_permissive_non_numeric_with_trailing_one_stays_clean() {
+        // Mirror of the pin above with a non-numeric first token: "foo" is
+        // not all-ASCII-digits, so `is_effectively_permissive` rejects it
+        // (parse error, daemon stays at the enforcing default) regardless
+        // of the trailing "1" - again defeating an any-token impl that
+        // would find "1" as the second token and wrongly fire.
+        let diags = lint_conf("permissive = foo 1\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "the daemon binds nv.value to the FIRST token (\"foo\", a \
+             parse error that leaves the enforcing default in place) and \
+             never inspects the trailing \"1\": {diags:?}"
         );
     }
 
@@ -357,6 +536,75 @@ mod tests {
         assert!(
             codes(&diags).is_empty(),
             "permissive=1x is a parse error in the real daemon (stays enforcing): {diags:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Adversarial round 3 (impl-aware, grounded on upstream
+    // src/library/daemon-config.c): the daemon's own tokenizer, `_strsplit`,
+    // splits a value ONLY on the ASCII space byte (`ptr = strchr(str, ' ');`)
+    // and `get_line` strips ONLY a trailing 0x0a, never 0x0d. So a tab (or a
+    // stray `\r` from a CRLF-edited conf file) is NOT a token separator to
+    // the real daemon - it is part of the single value token handed to
+    // `unsigned_int_parser`, which does a byte-exact `isdigit` walk and
+    // rejects the whole token the moment it hits a non-digit byte, leaving
+    // the enforcing default in place. An impl that tokenizes with Rust's
+    // Unicode-whitespace-aware `split_whitespace()` / `.trim()` (which both
+    // treat TAB and CR as whitespace) diverges from that byte-exact
+    // behavior and wrongly fires on values the daemon itself would reject
+    // as unparsable. These pins are BLIND to the fix shape (they only
+    // assert observable behavior), so they hold regardless of whether the
+    // fix tokenizes by hand or reuses a shared byte-exact-digit predicate.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn tab_separated_second_token_does_not_leak_into_the_value() {
+        // The daemon's `_strsplit` splits only on the ASCII space byte, so
+        // "1\t2" is bound as ONE token to `unsigned_int_parser`, which
+        // rejects it outright at the tab byte (not a digit) -> parse error
+        // -> the enforcing default stays in place -> clean. A `split_whitespace()`-
+        // based impl would wrongly split off "1" as the first token and fire.
+        let diags = lint_conf("permissive = 1\t2\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "a TAB (not a space) between tokens is not a real daemon \
+             separator; the whole value \"1\\t2\" is an unsigned_int_parser \
+             error and must stay clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn tab_before_inline_hash_does_not_leak_a_bare_digit_value() {
+        // Same root cause as the bare-tab case above, but with the value
+        // followed by an inline `#` comment (which the daemon's `nv_split`
+        // never strips - see
+        // `inline_hash_after_permissive_one_still_fires_first_token_wins`
+        // above). The raw resolved value is "1\t# note", which
+        // `unsigned_int_parser` rejects at the tab byte -> stays clean.
+        let diags = lint_conf("permissive = 1\t# note\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "\"1\\t# note\" is not a bare digit-only value to the real \
+             daemon's byte-exact parser; must stay clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn crlf_line_ending_leaves_a_trailing_cr_in_the_value() {
+        // `get_line` in the real daemon strips ONLY the trailing 0x0a; a
+        // CRLF-edited conf file leaves a trailing '\r' byte bound to the
+        // value token, e.g. "1\r". `unsigned_int_parser`'s byte-exact
+        // isdigit walk rejects that '\r' -> parse error -> the enforcing
+        // default stays in place -> clean. An impl whose scanner splits on
+        // '\n' and then Unicode-`.trim()`s the resulting line strips the
+        // '\r' as whitespace, wrongly recovering the bare value "1" and
+        // firing.
+        let diags = lint_conf("permissive = 1\r\n", &p(), None);
+        assert!(
+            codes(&diags).is_empty(),
+            "a CRLF line ending leaves a trailing '\\r' bound to the value \
+             in the real daemon, which unsigned_int_parser rejects; must \
+             stay clean: {diags:?}"
         );
     }
 

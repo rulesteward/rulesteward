@@ -228,10 +228,24 @@ fn diagnostic_to_result(diag: &Diagnostic, taxonomy_groups: &[TaxonomyGroup]) ->
         // `Region` line/column are i64 in the SARIF schema; the Diagnostic
         // stores them as usize (1-based). The cast is lossless for any real
         // source file.
-        let region = Region::builder()
+        //
+        // `startColumn` is only emitted when `diag.column >= 1` (#581): the
+        // SARIF 2.1.0 schema requires `region.startColumn` >= 1 when present,
+        // so a `column == 0` (unreachable via any shipping backend today --
+        // every backend maintains line>0 => column>=1, but defensive
+        // hardening against a future one that doesn't) must omit the key
+        // entirely rather than emit the schema-invalid `startColumn: 0`.
+        // `start_column` is `strip_option, default` on the generated
+        // TypedBuilder, so leaving the setter off the chain and assigning the
+        // field directly afterward (same idiom as
+        // `control_reporting_descriptor`'s `descriptor.name`/`.properties`)
+        // keeps this a single build chain instead of a type-state branch.
+        let mut region = Region::builder()
             .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
-            .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
             .build();
+        if diag.column >= 1 {
+            region.start_column = Some(i64::try_from(diag.column).unwrap_or(i64::MAX));
+        }
         PhysicalLocation::builder()
             .artifact_location(artifact_location)
             .region(region)
@@ -611,6 +625,89 @@ mod tests {
             .collect();
         assert!(ref_ids.contains(&"RHEL-08-040110"));
         assert!(ref_ids.contains(&"1.5.3"));
+    }
+
+    #[test]
+    fn startcolumn_omitted_when_line_positive_column_zero() {
+        // Defensive-hardening pin (#581): `line == 0` already omits `region`
+        // entirely (see `region_is_omitted_for_unanchored_diagnostics...`
+        // above), but a diagnostic with `line > 0` and `column == 0` is a
+        // DIFFERENT case -- `region` IS built (because `diag.line != 0`), and
+        // today `start_column` is set unconditionally from `diag.column`,
+        // which would emit `"startColumn": 0`. That is schema-invalid: SARIF
+        // 2.1.0 requires `region.startColumn` >= 1 when present. No shipping
+        // backend constructs `line > 0, column == 0` today (every backend
+        // maintains line>0 => column>=1), so this is unreachable via any real
+        // lint path -- but the renderer must not lie about an invalid column
+        // if a future backend ever does. `startLine` must still be present
+        // (line>0 is a real, valid line).
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..0,
+            "defensive: unreachable via any backend today",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            0,
+        );
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let region = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation/region")
+            .expect("line>0 must still produce a region");
+        assert_eq!(
+            region.get("startLine").and_then(Value::as_i64),
+            Some(7),
+            "startLine must still be present and correct for line>0"
+        );
+        assert!(
+            region.get("startColumn").is_none(),
+            "column==0 must omit the startColumn key entirely, not emit \
+             startColumn: 0 (schema-invalid): {region}"
+        );
+    }
+
+    #[test]
+    fn startcolumn_present_when_line_and_column_positive() {
+        // Companion green pin: guards against over-guarding -- a normal
+        // anchored diagnostic (line>=1, column>=1) must still carry BOTH
+        // startLine and startColumn.
+        //
+        // column is pinned at 1 (the SARIF schema's minimal valid
+        // startColumn), not some larger value: a wrong guard written as
+        // `if diag.column > 1` (off-by-one on the boundary) would still
+        // emit startColumn for any column >= 2, so a test using column=3
+        // cannot distinguish `> 0` from `> 1`. column==1 is the smallest
+        // input that only the correct `>= 1` (equivalently `> 0`) guard
+        // accepts, so it is the only value that kills the off-by-one
+        // mutant. This case is an intentional green boundary control, not
+        // a RED pin -- current code emits startColumn whenever line>0
+        // (unconditionally), so it already passes pre-guard; the value is
+        // still the load-bearing choice because it locks the guard's
+        // eventual boundary to `>= 1`/`> 0`, not `> 1`.
+        let d = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W03",
+            0..0,
+            "normal anchored diagnostic",
+            "/etc/fapolicyd/rules.d/10-x.rules",
+            7,
+            1,
+        );
+        let out = render(&[d], None).expect("render");
+        let v: Value = serde_json::from_str(&out).expect("parse");
+
+        let region = v
+            .pointer("/runs/0/results/0/locations/0/physicalLocation/region")
+            .expect("line>0 must produce a region");
+        assert_eq!(region.get("startLine").and_then(Value::as_i64), Some(7));
+        assert_eq!(
+            region.get("startColumn").and_then(Value::as_i64),
+            Some(1),
+            "column==1 (the minimal valid SARIF startColumn) must still emit \
+             startColumn -- kills an off-by-one `> 1` guard"
+        );
     }
 
     #[test]

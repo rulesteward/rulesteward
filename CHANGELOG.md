@@ -26,8 +26,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RHEL 8 V2R8 keys (`net.ipv4.conf.default.rp_filter`,
   `net.ipv4.conf.all.log_martians`, `net.ipv4.conf.default.log_martians`);
   RHEL 8 table grows 28 -> 31 keys.
+- **sudoers RHEL 10 STIG control ids** (#563): the sudoers W04 weakening tables
+  and the NOPASSWD control set now cite the RHEL 10 V1R1 ids
+  (RHEL-10-600530/600540/600550/600560 alongside 600520), each grounded in the
+  official DISA XCCDF; RHEL 8/9 ids unchanged.
 
 ### Fixed
+
+- **Special-file read guard across every lint verb** (#560): a lint target that
+  is a FIFO, device node, or socket now fails fast with a clear error and exit 3
+  instead of hanging (or reading unboundedly). One shared loader
+  (`rulesteward_core::fsread`: non-blocking open, then a type check on the
+  opened descriptor) is routed into all six lint verbs' reads, including the
+  three hang paths found adversarially during the wave: `sshd lint <dir>`'s
+  main-config read and `selinux lint`'s target read (both now fail fast,
+  exit 3), and `sysctl lint --system`'s masked drop-in read (a masked
+  special file is skipped cleanly - it has no assignments to shadow-check -
+  instead of hanging).
+- **JSON path-error envelopes for the four non-fapolicyd backends** (#561):
+  `auditd`/`sshd`/`sysctl`/`sudoers` lint path errors under `--format json`
+  now emit the backend's own schema-versioned envelope (empty `diagnostics`,
+  trailing newline) instead of dropping structured output, matching the
+  fapolicyd model.
+- **fapolicyd `permissive` parsing is byte-exact to the daemon** (#569):
+  `lint_conf` now binds the first ASCII-space-delimited token exactly like
+  `daemon-config.c` (`_strsplit` splits only on the space byte; a tab or a
+  CRLF-introduced `\r` makes the value unparsable and the daemon stays
+  enforcing), so fapd-W14 fires on the inline-comment/trailing-junk lines the
+  daemon actually treats as permissive and stays quiet where it aborts.
+- **fapolicyd version-divergent attribute fidelity** (#568, #570): subject-side
+  `filehash=` now fires fapd-E06 on `--target rhel9`/`rhel10` (object-only on
+  1.4.5; clean under `--target` None per the established convention), and a
+  legacy-grammar `exe_device=` rule no longer false-fails with fapd-F01 on any
+  target: it parses on rhel8 (valid on 1.3.2) and fires fapd-E06 on
+  rhel9/rhel10, while modern-position `exe_device=` stays fapd-E01 only.
+- **auditd `-D` trailing-token fidelity** (#541): `-D extra` is now rejected
+  exactly as real auditctl rejects it ("Wrong number of options", verified
+  against `auditctl.c` at the el8/el9/el10 stream versions), while the real
+  `-D -k <key>` allowance is accepted; `--loginuid-immutable`'s trailing-token
+  leniency was source-verified as correct auditctl behavior and left unchanged.
+- **SARIF `startColumn` schema validity** (#581): a diagnostic with a line
+  anchor but column 0 no longer renders `startColumn: 0` (SARIF minimum is 1);
+  the column is omitted for that case. All reachable output is unchanged.
 
 - **fapolicyd SARIF schema validity for file-level findings**: diagnostics not
   anchored to a source line (e.g. `fapd-F02`/`fapd-C01`/`fapd-X01`) previously
@@ -58,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One shared inline-comment stripper** (#562): the fapolicyd, auditd, and
+  sudoers line-level `#`-stripping implementations are unified into a single
+  parameterized scan in `rulesteward-core` (`comment::strip` with per-backend
+  quote/bypass/UID-exception configs), proven behavior-preserving by
+  byte-for-byte equivalence tables derived from the deleted implementations.
+  sshd's token-level algorithm-list handling deliberately stays separate.
 - **sudoers `sudo-W04` CIS citations renumbered** from the stale
   `1.3.2`/`1.3.3` (an older benchmark generation) to `5.2.2` (`use_pty`) /
   `5.2.3` (I/O logging), now table-driven from the backend's first
@@ -77,7 +123,7 @@ provenance to a typed, first-class property of every finding and adds a
 `--profile` selector that turns the six independent linters into one
 framework-scoped compliance scanner. Control IDs previously reached the user
 only as inconsistent free text inside messages; they are now a structured
-`controls` field, surfaced identically across human, JSON, CSV, and SARIF
+`controls` field, surfaced identically across human, JSON, and SARIF
 output and machine-followable from a finding to its control. A dev-tooling
 gap is also closed: `tools/sshd-stig-update` now drift-guards the
 hand-authored sshd DISA Rule IDs against the upstream XCCDF.
@@ -95,7 +141,7 @@ hand-authored sshd DISA Rule IDs against the upstream XCCDF.
   is byte-identical to prior behavior. (#506)
 - **Typed control references** on findings: a structured `controls` array
   carrying each control's framework, ID, title, and (for DISA STIG) its
-  V-number alias, surfaced consistently in human, JSON, CSV, and SARIF
+  V-number alias, surfaced consistently in human, JSON, and SARIF
   output. (#500, #504)
 - **SARIF control taxonomies**: the SARIF renderer emits `runs[0].taxonomies`
   (one taxonomy component per framework) plus per-result `taxa` references -

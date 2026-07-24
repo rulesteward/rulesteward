@@ -734,6 +734,47 @@ mod tests {
     }
 
     #[test]
+    fn exe_device_is_subject_anchor_in_legacy_classify() {
+        // RED barrier test (issue #570, lane-6, grounded via a fresh
+        // WebFetch of upstream `src/library/subject-attr.c` at both pinned
+        // tags, 2026-07-23):
+        //
+        //   v1.3.2 (`v1.3.2` tag) table1 (LEGACY/ORIG-format subject table):
+        //     all, auid, uid, sessionid, pid, pattern, comm, exe, exe_dir,
+        //     exe_type, exe_device - EXE_DEVICE IS present, mapped to the
+        //     keyword string "exe_device".
+        //   v1.4.5 (`v1.4.5` tag) table1: all, auid, uid, sessionid, pid,
+        //     pattern, comm, exe, exe_dir, exe_type - EXE_DEVICE IS ABSENT
+        //     (dropped between 1.3.2 and 1.4.5). Neither version's table2
+        //     (MODERN/colon format) lists `exe_device` at all - table2 uses
+        //     `device` instead - so the modern dialect is UNAFFECTED by this
+        //     test (a modern `exe_device=... : ...` rule stays rejected by
+        //     `attrs::is_known`, exactly like today).
+        //
+        // So `exe_device` is a LEGACY-grammar, SUBJECT-only, VERSION-
+        // DIVERGENT (1.3.2-only) attribute - unlike `exe_dir`/`exe_type`
+        // (also legacy subject-only, but version-INVARIANT: valid on BOTH
+        // 1.3.2 and 1.4.5). Live differential cited in #570: legacy
+        // `allow exe_device=/dev/sda path=/usr/bin/sh` loads clean on
+        // fapolicyd 1.3.2 (fapolicyd8) but is rejected "Field type
+        // (exe_device) is unknown" on 1.4.5 (fapolicyd9).
+        //
+        // Today `legacy_classify("exe_device")` returns `None` (not in any
+        // match arm, including `LEGACY_ONLY_SUBJECT_ATTRS`), so both the
+        // modern AND legacy (`positional_split`, issue #546) parses fail for
+        // this rule. `parser::mod::parse_line` tries `modern_rule()` first
+        // and, on a dual failure, surfaces MODERN's diagnostic rather than
+        // legacy's "unknown or legacy-illegal attribute" message - so the
+        // rule is rejected outright as fapd-F01 Fatal carrying the MODERN
+        // "malformed rule syntax" message, RED until `legacy_classify` (and
+        // `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`, the shared const it
+        // consults) gain this entry. The RHEL9/RHEL10 version-divergence
+        // (post-parse E06 diagnostic) is a separate concern, pinned at the
+        // full-lint level in `tests/legacy_exe_device_test.rs`.
+        assert_eq!(legacy_classify("exe_device"), Some(AttrSide::Subject));
+    }
+
+    #[test]
     fn legacy_classify_gid_is_illegal_in_legacy() {
         // gid is legal in modern subject; illegal in legacy - not a split anchor.
         assert_eq!(legacy_classify("gid"), None);

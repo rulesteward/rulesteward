@@ -105,13 +105,18 @@ fn lint_with_probe(
     // failure.
     if !path.is_file() {
         eprintln!("sysctl lint: not a file or directory: {}", path.display());
+        emit_path_error_envelope(args.format);
         return EXIT_TOOL_FAILURE;
     }
 
-    let source = match std::fs::read_to_string(&path) {
+    // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+    // node target fails fast with a clear error instead of hanging or reading
+    // unbounded data.
+    let source = match rulesteward_core::fsread::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sysctl lint: cannot read {}: {e}", path.display());
+            emit_path_error_envelope(args.format);
             return EXIT_TOOL_FAILURE;
         }
     };
@@ -140,6 +145,24 @@ fn lint_with_probe(
     }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
+}
+
+/// #561: a bad lint-target path (missing target, unreadable file, special
+/// file) must not silently drop `--format json`/`--format sarif` -- it must
+/// still emit a valid (empty) envelope on stdout, mirroring
+/// `commands::fapolicyd::lint`'s model. Called alongside (not instead of) the
+/// existing `eprintln!` diagnostic; human format is unaffected (`emit_lint`
+/// renders an empty diagnostics list as `""`, so nothing new prints to
+/// stdout there). Render failures are deliberately swallowed: the caller is
+/// already returning `EXIT_TOOL_FAILURE` for the original path error.
+fn emit_path_error_envelope(format: crate::cli::OutputFormat) {
+    let _ = crate::output::emit_lint(
+        format,
+        "sysctl-lint",
+        SYSCTL_LINT_SCHEMA_VERSION,
+        &[],
+        &std::collections::BTreeMap::new(),
+    );
 }
 
 #[cfg(test)]

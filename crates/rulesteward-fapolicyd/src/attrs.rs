@@ -89,7 +89,18 @@ pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 /// entirely for these names on a `SyntaxFlavor::Legacy` rule, since
 /// `legacy_classify`'s per-token routing already guarantees they land on the
 /// subject side) - referenced by name from both so the two cannot drift.
-pub const LEGACY_ONLY_SUBJECT_ATTRS: &[&str] = &["exe_dir", "exe_type"];
+///
+/// `exe_device` (issue #570, lane-6, 2026-07-23): a fresh `WebFetch` of
+/// upstream `src/library/subject-attr.c` at the `v1.3.2` tag confirms table1
+/// (LEGACY/ORIG-format subject table) lists `exe_device`; the same fetch at
+/// `v1.4.5` confirms it is ABSENT there (dropped between 1.3.2 and 1.4.5).
+/// Unlike `exe_dir`/`exe_type` (also legacy subject-only, but version-
+/// INVARIANT - valid on both), `exe_device` is version-DIVERGENT, so its
+/// rhel9/rhel10 unavailability is additionally flagged by
+/// `version_target.rs::check_subject_exe_device` (a new fapd-E06 arm
+/// mirroring `check_subject_device`) - this list alone only controls
+/// parse-level/fapd-E01 legality, not per-version validity.
+pub const LEGACY_ONLY_SUBJECT_ATTRS: &[&str] = &["exe_dir", "exe_type", "exe_device"];
 
 /// fapolicyd's value-TYPE category for an attribute, used by fapd-E07 to predict
 /// load-time type rejection of a `%set` assigned to it.

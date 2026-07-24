@@ -4,7 +4,9 @@
 //! `selinux`, `auditd`, …) emits the same wire shape.
 
 pub mod audit;
+pub mod comment;
 pub mod diagnostic;
+pub mod fsread;
 pub mod lint_code;
 pub mod num;
 pub mod span;
