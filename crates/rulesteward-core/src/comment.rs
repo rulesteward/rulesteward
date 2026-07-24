@@ -93,9 +93,104 @@ impl StripConfig {
 /// `inline_comment_index` is consumed directly by `lints/source_scan.rs`,
 /// not just by the parser, so the index (not just the stripped slice) is
 /// part of the shared surface.
+///
+/// One parameterized left-to-right byte scan, unifying the three old
+/// line-level implementations (#562):
+/// - `config.include_bypass`: a leading `#include`/`#includedir` directive
+///   bypasses the whole scan (sudoers only; old `parser.rs:238-246`).
+/// - `config.quote`: which byte (if any) toggles a protected span where an
+///   embedded `#` is never a comment marker (auditd `'`, sudoers `"`).
+/// - `config.require_preceding_token`: a `#` counts as inline only after a
+///   preceding non-whitespace byte has been seen (fapolicyd only; old
+///   `inline.rs:27-37`).
+/// - `config.uid_gid_exception`: a `#<digits>` UID/GID token is kept rather
+///   than read as a comment start, per the runas-paren state machine and
+///   the `prev_allows_uid` byte-set (sudoers only; old `parser.rs:261-315`
+///   + `paren_opens_runas`).
 #[must_use]
-pub fn comment_index(_line: &str, _config: StripConfig) -> Option<usize> {
-    todo!("lane-3-stripper: implement the unified comment_index (#562)")
+pub fn comment_index(line: &str, config: StripConfig) -> Option<usize> {
+    if config.include_bypass {
+        let lead = line.trim_start();
+        if let Some(after) = lead.strip_prefix("#include")
+            && (after.starts_with("dir") || after.starts_with(char::is_whitespace))
+        {
+            return None;
+        }
+    }
+
+    let bytes = line.as_bytes();
+    let mut in_quote = false;
+    let mut in_runas_paren = false;
+    let mut seen_token = false;
+    let mut prev: Option<u8> = None;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        let is_quote_byte = match config.quote {
+            QuoteChar::Unquoted => false,
+            QuoteChar::Single => b == b'\'',
+            QuoteChar::Double => b == b'"',
+        };
+
+        if is_quote_byte {
+            in_quote = !in_quote;
+        } else if config.uid_gid_exception && !in_quote {
+            if b == b'(' {
+                in_runas_paren |= paren_opens_runas(bytes, i);
+            } else if b == b')' {
+                in_runas_paren = false;
+            }
+        }
+
+        if b == b'#' && !in_quote {
+            let is_inline = !config.require_preceding_token || seen_token;
+            if is_inline {
+                if config.uid_gid_exception {
+                    let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+                    let prev_allows_uid = match prev {
+                        None => true,
+                        Some(p) => {
+                            matches!(p, b',' | b'%' | b':' | b'(' | b'>' | b'@' | b'"')
+                                || (p as char).is_whitespace()
+                        }
+                    };
+                    if !(in_runas_paren || (next_is_digit && prev_allows_uid)) {
+                        return Some(i);
+                    }
+                } else {
+                    return Some(i);
+                }
+            }
+        }
+
+        if config.require_preceding_token {
+            match b {
+                b' ' | b'\t' => {}
+                _ => seen_token = true,
+            }
+        }
+        prev = Some(b);
+    }
+    None
+}
+
+/// True when the `(` at `paren_idx` opens a runas spec rather than sitting
+/// inside a command token. A runas open-paren follows the `host =`
+/// separator, a `,` command-list separator, or the start of the line
+/// (skipping intervening whitespace); a MID-command `(` is preceded by a
+/// command character. sudoers-only (`config.uid_gid_exception`); derived
+/// from the old `parser.rs::paren_opens_runas` (324-335).
+fn paren_opens_runas(bytes: &[u8], paren_idx: usize) -> bool {
+    let mut k = paren_idx;
+    while let Some(j) = k.checked_sub(1) {
+        if (bytes[j] as char).is_whitespace() {
+            k = j;
+        } else {
+            return bytes[j] == b'=' || bytes[j] == b',';
+        }
+    }
+    // Only whitespace (or nothing) precedes the `(`: it is the line's first
+    // token.
+    true
 }
 
 /// Strip an inline trailing `#` comment for parse purposes, per `config`.

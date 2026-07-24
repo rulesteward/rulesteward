@@ -26,6 +26,7 @@
 use std::path::Path;
 
 use rulesteward_core::Span;
+use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::ast::{
     AliasDef, AliasKind, AliasSpec, CmndItem, CmndSpec, DefaultSetting, DefaultsEntry,
@@ -74,7 +75,8 @@ struct RawLogicalLine {
 ///
 /// Per physical line, in order (grounded against `visudo -c` / `visudo -x -`,
 /// 1.9.17p2):
-///   1. Strip the inline `#` comment to EOL (see [`strip_inline_comment`]). The
+///   1. Strip the inline `#` comment to EOL (see [`rulesteward_core::comment::strip`]
+///      with [`StripConfig::SUDOERS`]). The
 ///      comment strip happens FIRST, so a `#`-comment whose text ends in `\`
 ///      cannot continue (the `\` is inside the comment and is removed). Decisive
 ///      grounding: `# disable \`<NL>`@@@bad@@@` -> line 2 is an independent syntax
@@ -105,7 +107,7 @@ fn join_physical_lines(source: &str) -> Vec<RawLogicalLine> {
         // Drop a trailing `\r` from a CRLF line ending, then strip any inline `#`
         // comment to EOL BEFORE the continuation check.
         let raw = phys.strip_suffix('\r').unwrap_or(phys);
-        let body = strip_inline_comment(raw);
+        let body = strip(raw, StripConfig::SUDOERS);
 
         // A wholly-comment physical line: the strip emptied the text but the raw
         // line had non-whitespace content (the comment). Distinguishes Comment from
@@ -159,8 +161,8 @@ fn join_physical_lines(source: &str) -> Vec<RawLogicalLine> {
 /// Grounding (visudo 1.9.17p2, line-1-invalid-alone probe): `\<NL>`, `\<TAB><NL>`,
 /// `\<SPACE><NL>`, `\<SP><SP><NL>` all continue; `\x<NL>` (a non-whitespace char
 /// after the backslash) does NOT (the `\` is literal). The `#` comment has already
-/// been stripped by [`strip_inline_comment`] before this runs, so a `\` that was
-/// inside a comment is already gone and cannot continue.
+/// been stripped by [`rulesteward_core::comment::strip`] before this runs, so a
+/// `\` that was inside a comment is already gone and cannot continue.
 fn split_continuation(body: &str) -> Option<&str> {
     // Everything from the last `\` onward must be the `\` plus only whitespace.
     let bslash = body.rfind('\\')?;
@@ -172,167 +174,44 @@ fn split_continuation(body: &str) -> Option<&str> {
     }
 }
 
-// Cross-reference (#383): inline-`#` stripping exists in FOUR backends, each
-// tuned to its own grammar and deliberately NOT unified (importing one grammar's
-// quoting rule into another would be wrong for that file format). Peers:
-//   - fapolicyd inline_comment_index (parser/inline.rs): `#` after any
-//     non-whitespace token; no quote awareness.
-//   - auditd    strip_comment        (parser.rs): first `#` outside a SINGLE-
-//     quoted span (single quotes protect `-F 'auid>=1000'`).
-//   - sudoers   strip_inline_comment (parser.rs): DOUBLE-quote aware, plus a
-//     `#include` bypass and a `#<digits>` UID/GID-token exception.
-//   - sshd      algo_list_value      (lints/crypto.rs): token-level; the first
-//     `#`-prefixed arg ends an already-whitespace-split algorithm list.
+// Cross-reference (#383, updated by #562): inline-`#` stripping now has a
+// single parameterized implementation shared by three backends, plus one
+// deliberately-separate token-level stripper:
+//   - fapolicyd, auditd, sudoers all call `rulesteward_core::comment::strip`
+//     / `comment_index` with their own `StripConfig` (`StripConfig::SUDOERS`
+//     here: double-quote aware, plus the `#include`/`#includedir` bypass and
+//     the `#<digits>` UID/GID-token exception with runas-paren state
+//     tracking, per the doc comment on `join_physical_lines` above and the
+//     grounding notes carried over into `rulesteward-core/src/comment.rs`'s
+//     `sudoers_table` tests). See that module for the parameterized scan and
+//     each backend's exact config.
+//   - sshd      algo_list_value (lints/crypto.rs): token-level, not
+//     line-level, and stays OUT of the shared helper by decision
+//     (2026-07-23) - it ends an already-whitespace-split algorithm list at
+//     the first `#`-prefixed arg, a different unit of work than a raw-line
+//     byte scan.
 // sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
-// mid-value is literal). If you fix an edge case in one stripper, check the peers.
-/// Strip an inline `#` comment (to end of the physical line) from `body`, honoring
-/// the sudoers exceptions. Returns the text with any comment removed (trailing
-/// whitespace before the comment is preserved; the caller trims as needed).
-///
-/// Grounding (visudo 1.9.17p2, `visudo -c` + `visudo -x -`): a `#` introduces a
-/// comment-to-EOL WHEREVER it appears, EXCEPT:
-///   1. `#include` / `#includedir` at the directive position (a line whose first
-///      non-whitespace run is `#include[dir]`): the WHOLE line is a directive, not
-///      a comment, so nothing is stripped.
-///   2. `#<digits>` UID/GID token: a `#` immediately followed by an ASCII digit and
-///      preceded by start-of-line / whitespace / `,` / `%` / `:` / `(` / `>` / `@`
-///      is a user-ID or group-ID (or host) token, not a comment (`#1000`,
-///      `root,#1000`, `%#1000`). Grounded: `visudo -x -` reports these as `userid` /
-///      `usergid` in user-list, runas-list AND alias-member positions (which appear
-///      both BEFORE and AFTER the `=`, e.g. `User_Alias FOO = #1000` -> userid 1000),
-///      so this exception is NOT gated on the `=`. The `:` (runas-group separator)
-///      and `(` (runas open-paren) cases are #407: `visudo -c` accepts `(root:#1000)`
-///      (a runas GID-group reference, `cvtsudoers -f json` -> `usergroup #1000`) and
-///      bare `(#1000)` (a runas UID reference, `-> userid 1000`) -- rc=0 for both.
-///      The `>` and `@` cases are the #407 Defaults-scope sigils: `Defaults>#1000`
-///      (runas UID, `-> userid 1000`) and `Defaults@#1000` (a host literally named
-///      `#1000`, `-> hostname "#1000"`) are both visudo rc=0. Before these arms were
-///      added, the `#` in any of these shapes was misread as a real comment, silently
-///      swallowing the REST OF THE LINE (including the command / scope target) rather
-///      than just the one token.
-///   3. A `#` INSIDE a double-quoted region is literal: a `"` toggles in/out of a
-///      quoted region and a `#` seen while inside it is NOT a comment
-///      (`Defaults passprompt="a # b"` -> value `a # b`). Single quotes do NOT
-///      protect (verified: `'` is not a sudoers quote char).
-///
-/// Phase-0 contract note: this is a CLASSIFIER, not a command-token validator.
-/// visudo treats `#<digits>` as a token EVERYWHERE in the lexer but then REJECTS it
-/// as a syntax error in command / `Defaults`-value position (`alice ALL = /bin/ls #2`
-/// and `Defaults env_reset #2 reasons` are `visudo -c` errors). This parser does
-/// NOT do that command-token validation - just as it keeps a relative path like
-/// `bin/ls` (also a visudo error) as a clean user-spec rather than rejecting it. So
-/// a `#<digits>` glued in command/value position is kept on the (already
-/// visudo-invalid) line rather than special-cased; faithful per-position token
-/// validation is a documented Phase-1 extension. (An earlier `=`-gated attempt to
-/// strip command/value `#<digits>` as comments WRONGLY stripped legitimate
-/// alias-member UIDs after the `=`, so the un-gated token rule is the correct
-/// Phase-0 behavior.)
-///
-/// KNOWN DIVERGENCE (documented, intentionally not handled here): sudo's COMMAND
-/// lexer does not protect a `#` with double quotes the way its Defaults-value lexer
-/// does, so a pathological `/bin/echo "a # b"` is truncated by real sudo at the `#`
-/// but the quote-balance rule here keeps `a # b`. This OVER-protects (it never
-/// corrupts a normal rule, and Phase-0 keeps command tokens verbatim), which is the
-/// safe direction; a position-aware lexer is a documented Phase-1 extension point.
-fn strip_inline_comment(body: &str) -> &str {
-    // Exception 1: a leading `#include` / `#includedir` directive is never a
-    // comment - leave the whole line intact for the include classifier.
-    let lead = body.trim_start();
-    if let Some(after) = lead.strip_prefix("#include") {
-        // `#include` / `#includedir` followed by whitespace (the path) or `dir`.
-        if after.starts_with("dir") || after.starts_with(char::is_whitespace) {
-            return body;
-        }
-    }
-
-    let bytes = body.as_bytes();
-    let mut in_quotes = false;
-    // Whether the scan is currently inside a runas paren `(...)` opened at a runas
-    // position (after `host =`, a `,` command-list separator, or line start).
-    // Inside such a paren visudo lexes a glued `#<tail>` as a UID/GID token in
-    // EVERY case -- a malformed tail (`(root:#abc)`, `(#abc)`, #424) is a syntax
-    // error, never a comment. A MID-command `(` (e.g. `/bin/echo a(#foo` or
-    // `/bin/echo (#foo`, both visudo rc=0 with `#foo` a real comment) is NOT a
-    // runas paren; `paren_opens_runas` draws that line so those comments still
-    // strip.
-    let mut in_runas_paren = false;
-    let mut prev: Option<u8> = None;
-    for (i, &c) in bytes.iter().enumerate() {
-        match c {
-            b'"' => in_quotes = !in_quotes,
-            b'(' if !in_quotes => in_runas_paren |= paren_opens_runas(bytes, i),
-            b')' if !in_quotes => in_runas_paren = false,
-            b'#' if !in_quotes => {
-                // A `#` here is a UID/GID token (kept), not an inline comment
-                // (dropped), when EITHER:
-                //
-                //  * it is inside a runas paren (`in_runas_paren`): every `#<tail>`
-                //    there is a token regardless of the tail (#424 letter-first
-                //    `(root:#abc)` / `(#abc)`, which visudo rejects as tokens); OR
-                //  * a DIGIT immediately follows AND the preceding char introduces a
-                //    UID/GID token -- start / whitespace / `,` / `%` / `:` / `(` /
-                //    `>` / `@` / closing `"`. The `:` / `(` arms are #407 (the
-                //    runas-group separator `(root:#1000)` and open-paren `(#1000)`);
-                //    `>` / `@` are the #407 Defaults scope sigils (`Defaults>#1000`
-                //    runas userid, `Defaults@#1000` host named `#1000`, both visudo
-                //    rc=0). The `"` arm is #424: a `#<digits>` glued after a Defaults
-                //    value's CLOSING double quote (`passprompt="a"#5`) is an invalid
-                //    token OUTSIDE the quote (visudo rc=1), not a comment, so it must
-                //    survive the strip for the value check to flag it. `!` (command
-                //    scope) is deliberately absent: a `#<digits>` command target is
-                //    visudo-invalid in every form, so stripping it as a comment folds
-                //    the line to Malformed / sudo-F01, the correct outcome.
-                let next_is_digit = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
-                let prev_allows_uid = match prev {
-                    None => true,
-                    Some(p) => {
-                        // `char::is_whitespace` (NOT `is_ascii_whitespace`): a
-                        // `#<digits>` after a non-ASCII whitespace byte (0x0B / 0x85
-                        // / 0xA0) is still a token visudo rejects, exactly like the
-                        // ASCII-space case, so it must be KEPT (not stripped as a
-                        // comment). Narrowing to ASCII here is a false-negative
-                        // regression (#426 adversarial review).
-                        matches!(p, b',' | b'%' | b':' | b'(' | b'>' | b'@' | b'"')
-                            || (p as char).is_whitespace()
-                    }
-                };
-                if in_runas_paren || (next_is_digit && prev_allows_uid) {
-                    // A UID/GID token: NOT a comment. The tail bytes that follow are
-                    // ordinary bytes; the scan walks over them harmlessly (they
-                    // never re-trigger this arm), so no separate skip loop is needed
-                    // (`for` over the bytes advances by exactly one each step).
-                    prev = Some(c);
-                    continue;
-                }
-                // A real comment: everything from here to EOL is dropped.
-                return &body[..i];
-            }
-            _ => {}
-        }
-        prev = Some(c);
-    }
-    body
-}
-
-/// True when the `(` at `paren_idx` opens a runas spec rather than sitting inside
-/// a command token. A runas open-paren follows the `host =` separator, a `,`
-/// command-list separator, or the start of the line (skipping intervening
-/// whitespace); a MID-command `(` (e.g. the `(` in `/bin/echo a(#foo` or
-/// `/bin/echo (#foo`) is preceded by a command character. Used by
-/// [`strip_inline_comment`] to keep a letter-first `(#abc)` runas UID token (#424)
-/// as a token without misreading a mid-command `#foo` comment (visudo rc=0).
-fn paren_opens_runas(bytes: &[u8], paren_idx: usize) -> bool {
-    let mut k = paren_idx;
-    while let Some(j) = k.checked_sub(1) {
-        if (bytes[j] as char).is_whitespace() {
-            k = j;
-        } else {
-            return bytes[j] == b'=' || bytes[j] == b',';
-        }
-    }
-    // Only whitespace (or nothing) precedes the `(`: it is the line's first token.
-    true
-}
+// mid-value is literal). If you fix an edge case in the shared stripper, check
+// sshd's separate implementation too.
+//
+// Phase-0 contract note (preserved from the old in-crate `strip_inline_comment`):
+// the shared stripper is a CLASSIFIER, not a command-token validator. visudo
+// treats `#<digits>` as a token EVERYWHERE in the lexer but then REJECTS it as a
+// syntax error in command / `Defaults`-value position (`alice ALL = /bin/ls #2`
+// and `Defaults env_reset #2 reasons` are `visudo -c` errors). This parser does
+// NOT do that command-token validation - just as it keeps a relative path like
+// `bin/ls` (also a visudo error) as a clean user-spec rather than rejecting it.
+// So a `#<digits>` glued in command/value position is kept on the (already
+// visudo-invalid) line rather than special-cased; faithful per-position token
+// validation is a documented Phase-1 extension.
+//
+// KNOWN DIVERGENCE (documented, intentionally not handled here): sudo's COMMAND
+// lexer does not protect a `#` with double quotes the way its Defaults-value
+// lexer does, so a pathological `/bin/echo "a # b"` is truncated by real sudo at
+// the `#` but the quote-balance rule here keeps `a # b`. This OVER-protects (it
+// never corrupts a normal rule, and Phase-0 keeps command tokens verbatim),
+// which is the safe direction; a position-aware lexer is a documented Phase-1
+// extension point.
 
 /// Stage 2: classify one joined logical line into a [`LineKind`].
 ///
@@ -1672,12 +1551,13 @@ mod tests {
 
     // The 11 tests that used to follow here (strip_keeps_percent_hash_gid_-
     // token_but_strips_a_letter_prefixed_hash through strip_ignores_a_-
-    // quoted_close_paren_for_runas_state) pinned `strip_inline_comment`'s
-    // `#<digits>` UID/GID exception and the `in_runas_paren` state machine at
-    // the unit level. Removed by lane-3 (#562): `strip_inline_comment` is
-    // being replaced by the shared `rulesteward_core::comment` helper
-    // (`StripConfig::SUDOERS`, `uid_gid_exception: true`), and every
-    // assertion above is reproduced byte-for-byte in
+    // quoted_close_paren_for_runas_state) pinned the old in-crate
+    // `strip_inline_comment`'s `#<digits>` UID/GID exception and the
+    // `in_runas_paren` state machine at the unit level. Removed by lane-3
+    // (#562): `strip_inline_comment` was deleted and replaced by the shared
+    // `rulesteward_core::comment` helper (`StripConfig::SUDOERS`,
+    // `uid_gid_exception: true`, now called from `join_physical_lines`
+    // above), and every assertion above is reproduced byte-for-byte in
     // `crates/rulesteward-core/src/comment.rs`'s `sudoers_table` unit tests
     // and in `crates/rulesteward-sudoers/tests/comment_strip_equivalence.rs`.
     // See the lane-3 report for the old-test -> new-table-row mapping.

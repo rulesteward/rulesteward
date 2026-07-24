@@ -5,9 +5,8 @@
 
 use std::path::Path;
 
+use rulesteward_core::comment::{StripConfig, comment_index};
 use rulesteward_core::{Diagnostic, Severity};
-
-use crate::parser::inline;
 
 /// fapd-W03 - inline trailing `# comment` past the first non-whitespace token.
 /// fapolicyd does NOT treat a trailing `#` as a comment: it parses `#` as a
@@ -39,7 +38,7 @@ pub fn w03_scan(source: &str, file: &Path) -> Vec<Diagnostic> {
             line_byte_offset += raw_line.len() + 1;
             continue;
         }
-        if let Some(hash_col_in_line) = inline::inline_comment_index(line) {
+        if let Some(hash_col_in_line) = comment_index(line, StripConfig::FAPOLICYD) {
             // Column is 1-based; span captures `#` through end-of-line in
             // file-relative byte coords.
             let span_start = line_byte_offset + hash_col_in_line;

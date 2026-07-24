@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+use rulesteward_core::comment::{StripConfig, strip};
+
 use crate::ast::{
     Action, AuditField, AuditRule, CompareOp, ControlRule, FieldComparison, FieldFilter,
     FilterList, LocatedRule, PermBits,
@@ -75,7 +77,7 @@ pub fn parse_rules_str_located(
         let lineno = line_idx + 1; // 1-based
 
         // Strip inline comments: find the first unquoted `#` and truncate there.
-        let line = strip_comment(raw_line).trim().to_string();
+        let line = strip(raw_line, StripConfig::AUDITD).trim().to_string();
 
         if !line.is_empty() {
             match parse_line(&line, lineno) {
@@ -245,37 +247,23 @@ fn drop_error_provenance(errs: Vec<LocatedParseError>) -> Vec<ParseError> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// Cross-reference (#383): inline-`#` stripping exists in FOUR backends, each
-// tuned to its own grammar and deliberately NOT unified (importing one grammar's
-// quoting rule into another would be wrong for that file format). Peers:
-//   - fapolicyd inline_comment_index (parser/inline.rs): `#` after any
-//     non-whitespace token; no quote awareness.
-//   - auditd    strip_comment        (parser.rs): first `#` outside a SINGLE-
-//     quoted span (single quotes protect `-F 'auid>=1000'`).
-//   - sudoers   strip_inline_comment (parser.rs): DOUBLE-quote aware, plus a
-//     `#include` bypass and a `#<digits>` UID/GID-token exception.
-//   - sshd      algo_list_value      (lints/crypto.rs): token-level; the first
-//     `#`-prefixed arg ends an already-whitespace-split algorithm list.
+// Cross-reference (#383, updated by #562): inline-`#` stripping now has a
+// single parameterized implementation shared by three backends, plus one
+// deliberately-separate token-level stripper:
+//   - fapolicyd, auditd, sudoers all call `rulesteward_core::comment::strip`
+//     / `comment_index` with their own `StripConfig` (`StripConfig::AUDITD`
+//     here: single-quote aware, no `#include` concept, no UID/GID
+//     exception - ANY unquoted `#`, including column 0 and glued, starts a
+//     comment). See `rulesteward-core/src/comment.rs` for the parameterized
+//     scan and each backend's exact config.
+//   - sshd      algo_list_value (lints/crypto.rs): token-level, not
+//     line-level, and stays OUT of the shared helper by decision
+//     (2026-07-23) - it ends an already-whitespace-split algorithm list at
+//     the first `#`-prefixed arg, a different unit of work than a raw-line
+//     byte scan.
 // sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
-// mid-value is literal). If you fix an edge case in one stripper, check the peers.
-/// Strip everything from the first unquoted `#` onward.
-///
-/// Single-quoted regions (`'...'`) protect operators like `>=` from shell
-/// interpretation. The parser already handles stripped-quote values, so we
-/// only need to not strip a `#` inside quotes. In practice, `#` inside a
-/// quoted `-F 'auid>=1000'` argument is uncommon but handled correctly.
-fn strip_comment(line: &str) -> &str {
-    let mut in_single_quote = false;
-    for (i, ch) in line.char_indices() {
-        match ch {
-            '\'' => in_single_quote = !in_single_quote,
-            '#' if !in_single_quote => return &line[..i],
-            _ => {}
-        }
-    }
-    line
-}
-
+// mid-value is literal). If you fix an edge case in the shared stripper, check
+// sshd's separate implementation too.
 /// Parse a single non-comment, non-blank line into an `AuditRule`.
 fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     let err = |msg: &str| ParseError {
