@@ -823,6 +823,143 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Issue #582: byte-exact tokenization divergence from the real daemon.
+    //
+    // Ground truth (`daemon-config.c`, the same citation already grounded
+    // for the sibling fapd-W14 lint's #569 fix at
+    // `rulesteward-fapolicyd/src/lints/conf.rs`): the daemon's own
+    // tokenizer, `_strsplit`, finds token boundaries with
+    // `strchr(str, ' ')` -- the literal ASCII space byte (0x20) ONLY, never
+    // a TAB or any other Unicode-whitespace byte. `get_line` strips ONLY a
+    // trailing 0x0a; a CRLF-edited conf file leaves the '\r' byte bound to
+    // the value token. `unsigned_int_parser`'s `isdigit` walk is byte-exact
+    // and rejects the WHOLE token at the first non-digit byte.
+    //
+    // `permissive_value_is_effectively_permissive` currently uses
+    // `raw.split_whitespace().next()`, which is Unicode-whitespace-aware
+    // (it treats TAB and CR as separators/trimmable bytes, unlike the real
+    // daemon) -- so it wrongly rescues a value the real daemon's
+    // byte-exact parser would reject outright, reporting PERMISSIVE for a
+    // daemon that is actually enforcing. This is the identical miss already
+    // fixed at the `lint_conf` seam (see `lints/conf.rs`'s
+    // `tab_separated_second_token_does_not_leak_into_the_value` and
+    // `crlf_line_ending_leaves_a_trailing_cr_in_the_value`); this probe
+    // seam has not yet been fixed.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_tab_separated_value_is_not_effectively_permissive()
+     {
+        // RED: the real daemon's `_strsplit` splits only on the ASCII space
+        // byte, so "1\t2" is bound as ONE token to `unsigned_int_parser`,
+        // which rejects it outright at the tab byte (not a digit) -> parse
+        // error -> enforcing. `split_whitespace()` wrongly splits off "1"
+        // as a first token and reports permissive.
+        assert!(
+            !permissive_value_is_effectively_permissive("1\t2"),
+            "a TAB is not a real daemon separator; the whole value \
+             \"1\\t2\" is an unsigned_int_parser error and must not be \
+             reported as effectively permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_crlf_value_is_not_effectively_permissive() {
+        // RED: simulates the value `conf_value` SHOULD return for a CRLF
+        // conf line (`get_line` strips only trailing 0x0a, leaving the
+        // '\r' bound to the value). `unsigned_int_parser`'s byte-exact
+        // isdigit walk rejects the '\r' byte -> parse error -> enforcing.
+        // `split_whitespace()` treats '\r' as whitespace and wrongly
+        // rescues "1", reporting permissive.
+        assert!(
+            !permissive_value_is_effectively_permissive("1\r"),
+            "a trailing '\\r' from a CRLF conf line is not a real daemon \
+             separator or a digit; the value \"1\\r\" must not be \
+             reported as effectively permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_space_separated_second_token_is_ignored_control()
+    {
+        // GREEN control: a REAL ASCII space IS a legitimate daemon
+        // separator, so "1 2" binds nv.value to the first token "1" only --
+        // effectively permissive. Guards against an overcorrected fix that
+        // also breaks legitimate space-based first-token extraction
+        // (mirrors `lints/conf.rs`'s
+        // `conf_inline_permissive_zero_with_trailing_one_stays_clean`
+        // first-token-only grounding, inverted to a permissive first
+        // token).
+        assert!(
+            permissive_value_is_effectively_permissive("1 2"),
+            "a real space separator binds the value to the first token \
+             \"1\", which is effectively permissive regardless of the \
+             discarded second token"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_control_tab_only_after_first_space_token_still_permissive()
+     {
+        // GREEN control (adversarial): the tab is in the DISCARDED second
+        // token ("1 2\t3" space-splits to first token "1"), so this must
+        // still report permissive. Defeats an over-broad "reject if the
+        // raw string contains any tab/CR anywhere" hack, which would
+        // wrongly report false here despite the first (real) token being
+        // clean digits.
+        assert!(
+            permissive_value_is_effectively_permissive("1 2\t3"),
+            "the tab appears only in the discarded second token; the real \
+             daemon's first-token-only binding still yields the clean \
+             digit \"1\" and must report effectively permissive (#582 \
+             adversarial control)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_tab_separated_value_returns_enforcing() {
+        // RED (#582 divergence 1): the real daemon's `_strsplit` splits
+        // only on the ASCII space byte, so "1\t2" is ONE token to
+        // `unsigned_int_parser`, rejected at the tab byte -> enforcing.
+        // Today's probe (`split_whitespace()`) wrongly reports permissive -
+        // a fail-open false negative for a health-check tool.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\t2\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "a TAB between \"1\" and \"2\" is not a real daemon separator; \
+             the whole value is an unsigned_int_parser error and the \
+             daemon stays enforcing, but the probe's split_whitespace() \
+             wrongly rescues \"1\" and reports permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_crlf_permissive_one_returns_enforcing() {
+        // RED (#582 divergence 2): a CRLF-edited conf file leaves a
+        // trailing '\r' bound to the value ("1\r" per the real daemon's
+        // `get_line`, which strips only trailing 0x0a).
+        // `unsigned_int_parser` rejects the '\r' byte -> parse error ->
+        // enforcing. Today's probe strips the '\r' twice over
+        // (`conf_value`'s `.lines()` and
+        // `permissive_value_is_effectively_permissive`'s
+        // `split_whitespace()`), recovering the bare "1" and wrongly
+        // reporting permissive - a fail-open false negative.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\r\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "a CRLF-edited conf file leaves a trailing '\\r' bound to the \
+             value in the real daemon, which unsigned_int_parser rejects; \
+             the probe must not be fooled into reporting permissive (#582)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // read_compiled_final_rule_from (#519, G1/G2 grounding).
     // -------------------------------------------------------------------------
 
