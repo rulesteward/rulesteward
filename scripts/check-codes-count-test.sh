@@ -77,9 +77,10 @@
 #   A "codes mention" is any of these three shapes, found anywhere in the
 #   scanned files, tied to one of the six prefixes/display names (real
 #   examples from the current README.md / cli/mod.rs, quoted verbatim):
-#     (a) `<N> `<prefix>-`? codes` (backtick-wrapping optional) -
+#     (a) `<N> `<prefix>`? codes` (backtick-wrapping optional; <prefix>
+#         already includes its own trailing dash, e.g. "fapd-") -
 #         "28 `fapd-` codes", "9 au- codes", "All 13 `sshd-` codes are active"
-#     (b) `` `<prefix>-`, <N> codes) `` - the README heading form -
+#     (b) `` `<prefix>`, <N> codes) `` - the README heading form -
 #         "### fapolicyd (`fapd-`, 28 codes)"
 #     (c) `<N> <display-name> codes` - "28 fapolicyd codes"
 #   Each mention's stated N must equal that backend's catalog length.
@@ -91,7 +92,9 @@
 #
 #   VIOLATION reporting: each unmatched mention is reported on one line as
 #   exactly:
-#       <file>:<line>: stated <N>, catalog length <M> for `<prefix>-`
+#       <file>:<line>: stated <N>, catalog length <M> for `<prefix>`
+#   (again, <prefix> already includes its own trailing dash, so this reads
+#   e.g. "... for `fapd-`", never "`fapd--`")
 #   so an operator can find and fix it, and so a test can assert BOTH
 #   numbers were actually computed rather than a bare file:line with no
 #   evidence the comparison happened.
@@ -323,6 +326,139 @@ pub const SE_CODES: &[LintCode] = &[
 EOF
 }
 
+# A 9-entry synthetic sudo- catalog and a 13-entry synthetic sshd- catalog,
+# used only by case_exclusions_are_honored. STRENGTHENED (round-3 BLOCKER):
+# without these, the exclusion fixture's out-of-scope CHANGELOG.md/cli_help.rs
+# mentions (which reference sudo-/sshd-) have no catalog to be evaluated
+# against at all, so NO implementation - correct or over-scanning - can
+# tell them apart; the assertions were vacuous. These lengths deliberately
+# DIFFER from the stated values in those two out-of-scope mentions (9 != 8,
+# 13 != 12), so an over-scanner that reads them WOULD find and report a
+# mismatch, making the not-contains assertions meaningful.
+synthetic_sudo_catalog() {
+    cat <<'EOF'
+pub const SUDO_CODES: &[LintCode] = &[
+    LintCode {
+        code: "sudo-F01",
+        severity: Severity::Fatal,
+        description: "fixture: parse failure",
+    },
+    LintCode {
+        code: "sudo-F02",
+        severity: Severity::Fatal,
+        description: "fixture: visudo-rejected token",
+    },
+    LintCode {
+        code: "sudo-E01",
+        severity: Severity::Error,
+        description: "fixture: undefined alias",
+    },
+    LintCode {
+        code: "sudo-W01",
+        severity: Severity::Warning,
+        description: "fixture: passwordless run-anything",
+    },
+    LintCode {
+        code: "sudo-W02",
+        severity: Severity::Warning,
+        description: "fixture: passwordless run-anything variant",
+    },
+    LintCode {
+        code: "sudo-W03",
+        severity: Severity::Warning,
+        description: "fixture: dead alias",
+    },
+    LintCode {
+        code: "sudo-W04",
+        severity: Severity::Warning,
+        description: "fixture: weakened Defaults",
+    },
+    LintCode {
+        code: "sudo-W05",
+        severity: Severity::Warning,
+        description: "fixture: missing use_pty",
+    },
+    LintCode {
+        code: "sudo-W06",
+        severity: Severity::Warning,
+        description: "fixture: missing timestamp_timeout",
+    },
+];
+EOF
+}
+
+synthetic_sshd_catalog() {
+    cat <<'EOF'
+pub const SSHD_CODES: &[LintCode] = &[
+    LintCode {
+        code: "sshd-F01",
+        severity: Severity::Fatal,
+        description: "fixture: parse failure",
+    },
+    LintCode {
+        code: "sshd-F02",
+        severity: Severity::Fatal,
+        description: "fixture: drop-in override of required global",
+    },
+    LintCode {
+        code: "sshd-E01",
+        severity: Severity::Error,
+        description: "fixture: unknown directive",
+    },
+    LintCode {
+        code: "sshd-E02",
+        severity: Severity::Error,
+        description: "fixture: duplicate global",
+    },
+    LintCode {
+        code: "sshd-E03",
+        severity: Severity::Error,
+        description: "fixture: unresolved Include",
+    },
+    LintCode {
+        code: "sshd-E04",
+        severity: Severity::Error,
+        description: "fixture: Match-illegal directive",
+    },
+    LintCode {
+        code: "sshd-W01",
+        severity: Severity::Warning,
+        description: "fixture: STIG-required missing",
+    },
+    LintCode {
+        code: "sshd-W02",
+        severity: Severity::Warning,
+        description: "fixture: weaker than baseline",
+    },
+    LintCode {
+        code: "sshd-W03",
+        severity: Severity::Warning,
+        description: "fixture: weak algorithm",
+    },
+    LintCode {
+        code: "sshd-W04",
+        severity: Severity::Warning,
+        description: "fixture: deprecated directive",
+    },
+    LintCode {
+        code: "sshd-W05",
+        severity: Severity::Warning,
+        description: "fixture: permissive Match override",
+    },
+    LintCode {
+        code: "sshd-W06",
+        severity: Severity::Warning,
+        description: "fixture: algorithm-prefix reintroduction",
+    },
+    LintCode {
+        code: "sshd-W07",
+        severity: Severity::Warning,
+        description: "fixture: cross-Match first-value-wins shadow",
+    },
+];
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Case 1: a seeded WRONG count (heading shape (b), stated 5, actual 3) ->
 # exit 1, naming the fixture README's file:line (line 5). STRENGTHENED
@@ -417,12 +553,23 @@ assert_output_contains "${c_cli}" "stated 5, catalog length 3 for \`sysctld-\`" 
 # REAL catalog files (so it also mechanically proves all six are actually
 # read - the CONCERN 2 minimum bar) and computes each "wrong" value as
 # (real length + 1), so it stays correct even if a catalog grows later.
+# STRENGTHENED (round-3 CONCERN): the sysctld-/sshd- rows are swapped to
+# shape (c)/(b) respectively (previously (b)/(c)) so shape (c) is exercised
+# with `sysctl.d` - the ONE display name containing a regex metacharacter
+# (the `.`). Unescaped, `sysctl.d` would also match `sysctlXd`; the live
+# shape-(c) mention at README.md:352 is currently CORRECT, so the pristine
+# real-tree case cannot detect that omission on its own - only a seeded
+# fixture can.
 #   fapd-     shape (a): "<N> `fapd-` codes"
 #   au-       shape (b): "### auditd (`au-`, <N> codes)"
-#   sshd-     shape (c): "<N> sshd_config codes"
+#   sshd-     shape (b): "### sshd_config (`sshd-`, <N> codes)"
 #   sudo-     shape (a): "<N> sudo- codes"
-#   sysctld-  shape (b): "### sysctl.d (`sysctld-`, <N> codes)"
+#   sysctld-  shape (c): "<N> sysctl.d codes"
 #   se-       shape (c): "<N> SELinux codes"
+# Also STRENGTHENED (round-3 CONCERN): assertions now check the FULL
+# canonical violation message (file:line + both numbers + prefix), not a
+# bare file:line - an impl that names the right line for the WRONG prefix
+# no longer passes.
 # ---------------------------------------------------------------------------
 c_matrix="case_all_six_prefixes_all_three_shapes"
 matrix_dir="${TMPROOT}/${c_matrix}"
@@ -450,22 +597,28 @@ ${m_wrong_fapd} \`fapd-\` codes
 
 ### auditd (\`au-\`, ${m_wrong_au} codes)
 
-${m_wrong_sshd} sshd_config codes
+### sshd_config (\`sshd-\`, ${m_wrong_sshd} codes)
 
 ${m_wrong_sudo} sudo- codes
 
-### sysctl.d (\`sysctld-\`, ${m_wrong_sysctld} codes)
+${m_wrong_sysctld} sysctl.d codes
 
 ${m_wrong_se} SELinux codes
 EOF
 
 run_case "${c_matrix}" "${matrix_dir}" 1
-assert_output_contains "${c_matrix}" "README.md:3" "names the fapd- shape-(a) violation (line 3)"
-assert_output_contains "${c_matrix}" "README.md:5" "names the au- shape-(b) violation (line 5)"
-assert_output_contains "${c_matrix}" "README.md:7" "names the sshd- shape-(c) violation (line 7)"
-assert_output_contains "${c_matrix}" "README.md:9" "names the sudo- shape-(a) violation (line 9)"
-assert_output_contains "${c_matrix}" "README.md:11" "names the sysctld- shape-(b) violation (line 11)"
-assert_output_contains "${c_matrix}" "README.md:13" "names the se- shape-(c) violation (line 13)"
+assert_output_contains "${c_matrix}" "README.md:3: stated ${m_wrong_fapd}, catalog length ${m_real_fapd} for \`fapd-\`" \
+    "names the fapd- shape-(a) violation with both numbers (line 3)"
+assert_output_contains "${c_matrix}" "README.md:5: stated ${m_wrong_au}, catalog length ${m_real_au} for \`au-\`" \
+    "names the au- shape-(b) violation with both numbers (line 5)"
+assert_output_contains "${c_matrix}" "README.md:7: stated ${m_wrong_sshd}, catalog length ${m_real_sshd} for \`sshd-\`" \
+    "names the sshd- shape-(b) violation with both numbers (line 7)"
+assert_output_contains "${c_matrix}" "README.md:9: stated ${m_wrong_sudo}, catalog length ${m_real_sudo} for \`sudo-\`" \
+    "names the sudo- shape-(a) violation with both numbers (line 9)"
+assert_output_contains "${c_matrix}" "README.md:11: stated ${m_wrong_sysctld}, catalog length ${m_real_sysctld} for \`sysctld-\`" \
+    "names the sysctld- shape-(c) violation with both numbers (line 11, exercises the sysctl.d dot-metacharacter display name)"
+assert_output_contains "${c_matrix}" "README.md:13: stated ${m_wrong_se}, catalog length ${m_real_se} for \`se-\`" \
+    "names the se- shape-(c) violation with both numbers (line 13)"
 
 # ---------------------------------------------------------------------------
 # Case: exact scanned-mentions count on a MULTI-mention fixture (4 mentions,
@@ -500,9 +653,23 @@ assert_scanned_count_exact "${c_multi}" 4
 # - both deliberately WRONG relative to what a naive broad scan would infer
 # - must NOT be flagged, and the one real in-scope mention (correct) means
 # the gate must exit 0.
+#
+# STRENGTHENED (round-3 BLOCKER): the fixture now ALSO ships a 9-entry
+# synthetic sudo- catalog and a 13-entry synthetic sshd- catalog (the
+# backends the two out-of-scope mentions reference), with lengths that
+# DIFFER from those mentions' stated values (8 != 9, 12 != 13). Without
+# these, an over-scanning implementation had nothing to compare the
+# out-of-scope mentions against and could never flag them - the two
+# assert_output_not_contains checks passed identically for a correct
+# implementation AND an over-scanner, making them vacuous. Do NOT call
+# stage_real_catalogs here: it would overwrite the synthetic 3-entry
+# sysctld- catalog with the real 5-entry one and break the one in-scope
+# mention's correctness.
 # ---------------------------------------------------------------------------
 c_excl="case_exclusions_are_honored"
 synthetic_sysctld_catalog | write_fixture "${c_excl}/crates/rulesteward-sysctld/src/catalog.rs"
+synthetic_sudo_catalog | write_fixture "${c_excl}/crates/rulesteward-sudoers/src/lints/catalog.rs"
+synthetic_sshd_catalog | write_fixture "${c_excl}/crates/rulesteward-sshd/src/lints/catalog.rs"
 write_fixture "${c_excl}/README.md" <<'EOF'
 # Fixture repo proving exclusions are honored
 
@@ -524,9 +691,9 @@ EOF
 
 run_case "${c_excl}" "${TMPROOT}/${c_excl}" 0
 assert_output_not_contains "${c_excl}" "CHANGELOG.md" \
-    "does not flag the historical CHANGELOG.md mention (out of scope)"
+    "does not flag the historical CHANGELOG.md mention (out of scope; its stated 8 differs from the fixture's 9-entry sudo- catalog, so an over-scanner WOULD flag it)"
 assert_output_not_contains "${c_excl}" "cli_help.rs" \
-    "does not flag the tests/cli_help.rs comment mention (out of scope, not one of the two scanned files)"
+    "does not flag the tests/cli_help.rs comment mention (out of scope, not one of the two scanned files; its stated 12 differs from the fixture's 13-entry sshd- catalog, so an over-scanner WOULD flag it)"
 
 # ---------------------------------------------------------------------------
 # Case: REAL catalogs (all six, copied verbatim) + the REAL README.md
@@ -553,6 +720,17 @@ seed_wrong_fapd=$((seed_real_fapd + 1000))
 } >>"${seed_dir}/README.md"
 
 seed_line="$(grep -n 'fapd-seeded-drift-probe' "${seed_dir}/README.md" | head -1 | cut -d: -f1)"
+# STRENGTHENED (round-3 CONCERN): guard against a latent self-satisfying
+# path - if seed_line ever resolved empty (e.g. the `cp`/append above
+# silently changed shape), an unguarded "README.md:${seed_line}" pattern
+# would degrade to the substring "README.md:" and be satisfied by ANY
+# violation line at all, not specifically the seeded one. Force a
+# non-numeric sentinel (which can never appear in real gate output) so a
+# resolution failure surfaces as an honest assertion failure instead.
+if ! [[ "${seed_line}" =~ ^[0-9]+$ ]]; then
+    note_fail "${c_seed}: could not resolve the seeded marker's line number in the copied README.md (got '${seed_line}')"
+    seed_line="UNRESOLVED"
+fi
 
 run_case "${c_seed}" "${seed_dir}" 1
 assert_output_contains "${c_seed}" "README.md:${seed_line}" \
