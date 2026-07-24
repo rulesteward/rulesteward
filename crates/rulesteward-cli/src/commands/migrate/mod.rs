@@ -1395,11 +1395,13 @@ mod tests {
                     "the error must name the offending path, got: {msg}"
                 );
                 assert!(
-                    msg.to_lowercase().contains("fifo"),
-                    "the error must ALSO name the actual file type found (FIFO), \
-                     proving the rejection routed through the shared \
-                     rulesteward_core::fsread guard rather than a path-only \
-                     generic I/O error; got: {msg}"
+                    msg.contains("refusing to read non-regular file"),
+                    "the error must ALSO carry the literal fsread rejection \
+                     wording, proving the rejection routed through the shared \
+                     rulesteward_core::fsread guard specifically (not a \
+                     hand-rolled is_fifo() precheck emitting its own \"is a \
+                     FIFO\"-style wording, and not a path-only generic I/O \
+                     error); got: {msg}"
                 );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

@@ -55,8 +55,10 @@
 //!   never had this fixed; it is not a "fifth backend that already works".
 //! - `fapolicyd lint <missing-dir>` (the POSITIONAL directory-scan mode,
 //!   distinct from `--file <missing-file>` single-file mode): `resolve_targets`
-//!   early-returns `Err("<dir>: not a directory")` BEFORE `output::emit_lint`
-//!   is ever reached, so this ALSO emits zero bytes of stdout under
+//!   early-returns `Err("<dir>: not a directory")` BEFORE `output::render`
+//!   (fapolicyd is NOT an `emit_lint` caller - see `output/mod.rs`'s own
+//!   comment - it calls the three-variant `render` directly) is ever
+//!   reached, so this ALSO emits zero bytes of stdout under
 //!   `--format json` (confirmed live) - even though `--file` mode already
 //!   works today (its per-file-tolerant loop always falls through to the
 //!   shared render call regardless of read errors, as the fapolicyd model
@@ -170,8 +172,9 @@ fn selinux_lint_missing_path_emits_json_envelope() {
 
 /// #583 half B (operator-ruled scope expansion): `fapolicyd lint`'s
 /// POSITIONAL directory-scan mode (no `--file`) hits `resolve_targets`'
-/// `Err("<dir>: not a directory")` early-return before `output::emit_lint`
-/// is ever reached, so this is ALSO zero bytes today - distinct from
+/// `Err("<dir>: not a directory")` early-return before `output::render`
+/// (fapolicyd is NOT an `emit_lint` caller) is ever reached, so this is
+/// ALSO zero bytes today - distinct from
 /// `--file <missing-file>` single-file mode, which already emits the
 /// envelope (per this file's "ground truth: the fapolicyd model" section
 /// above) because its per-file-tolerant loop always falls through to the

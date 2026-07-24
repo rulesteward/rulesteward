@@ -146,9 +146,11 @@ fn selinux_lint_missing_path_sarif_is_byte_identical() {
 }
 
 /// `fapolicyd lint <missing-dir>` (positional, no `--file`) early-returns
-/// before `output::emit_lint` is ever reached (see `path_error_json.rs`'s
-/// extension section for the full grounding); this is the SARIF counterpart
-/// of `path_error_json.rs::fapolicyd_lint_missing_dir_emits_json_envelope`.
+/// before `output::render` (fapolicyd is NOT an `emit_lint` caller - see
+/// `output/mod.rs`'s own comment - it calls the three-variant `render`
+/// directly) is ever reached (see `path_error_json.rs`'s extension section
+/// for the full grounding); this is the SARIF counterpart of
+/// `path_error_json.rs::fapolicyd_lint_missing_dir_emits_json_envelope`.
 #[test]
 fn fapolicyd_lint_missing_dir_sarif_is_byte_identical() {
     let out = run_missing_path_sarif(&["fapolicyd", "lint", "/nonexistent/583/rules.d"]);
