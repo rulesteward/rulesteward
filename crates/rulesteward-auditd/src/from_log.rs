@@ -52,7 +52,10 @@ pub struct MeasuredRates {
 /// # Errors
 /// I/O errors are wrapped in `LogReadError`.
 pub fn count_events_by_key(path: &Path) -> Result<MeasuredRates, LogReadError> {
-    let content = std::fs::read_to_string(path).map_err(|e| LogReadError {
+    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
+    // device node `--from-log` target fails fast with a clear error instead
+    // of hanging or reading unbounded data.
+    let content = rulesteward_core::fsread::read_to_string(path).map_err(|e| LogReadError {
         message: format!("cannot read {}: {e}", path.display()),
     })?;
 

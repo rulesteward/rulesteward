@@ -146,7 +146,10 @@ pub fn run(args: SimulateArgs) -> anyhow::Result<i32> {
             .context("reading workload from stdin")?;
         buf
     } else {
-        std::fs::read_to_string(&args.workload)
+        // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/
+        // socket/device node `--workload` target fails fast with a clear
+        // error instead of hanging or reading unbounded data.
+        rulesteward_core::fsread::read_to_string(&args.workload)
             .with_context(|| format!("reading workload file {}", args.workload.display()))?
     };
 

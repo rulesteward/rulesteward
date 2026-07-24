@@ -20,7 +20,10 @@ const EXPLAIN_SCHEMA_VERSION: u32 = 1;
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: ExplainArgs) -> anyhow::Result<i32> {
     // --- Read the record file ---
-    let record_input = match std::fs::read_to_string(&args.record) {
+    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
+    // device node `--record` target fails fast with a clear error instead of
+    // hanging or reading unbounded data.
+    let record_input = match rulesteward_core::fsread::read_to_string(&args.record) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: reading record file {}: {e}", args.record.display());

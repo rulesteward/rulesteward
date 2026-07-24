@@ -94,7 +94,11 @@ fn resolve_integrity_mode(
     // Determine which conf path to read.
     let conf_path = config_path.map_or_else(|| PathBuf::from(DEFAULT_CONF_PATH), Path::to_path_buf);
 
-    match std::fs::read_to_string(&conf_path) {
+    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
+    // device node `--config` target fails fast (surfaced below as an
+    // "unreadable conf" degrade to strict, same as any other read error)
+    // instead of hanging or reading unbounded data.
+    match rulesteward_core::fsread::read_to_string(&conf_path) {
         Ok(text) => {
             // Conf found: read the integrity key (absent key -> daemon default None).
             let raw = conf_value(&text, "integrity");

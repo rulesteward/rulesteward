@@ -69,6 +69,14 @@ fn run_lint_with_probe(
 /// the resolution boundary so the resolved target feeds BOTH the per-file lint
 /// context and the SARIF per-check coverage attestation (they never disagree),
 /// keeping each function within the line budget.
+// This function's `anyhow::Result` return stays for call-site uniformity with
+// its sibling `run_lint_with_probe`/`run_lint` (and their pre-existing tests,
+// which call them expecting a `Result`); every branch below returns `Ok(_)`
+// today (the sole prior `Err` path, `resolve_targets`'s `?` propagation, was
+// replaced by `resolve_targets_or_fail`'s exit-code-as-`Err` convention, see
+// `open_trustdb_arg` above for the same pattern), so clippy's
+// `unnecessary_wraps` would otherwise fire.
+#[allow(clippy::unnecessary_wraps)]
 fn run_lint_resolved(
     args: &LintArgs,
     target: Option<TargetVersionArg>,
@@ -79,7 +87,10 @@ fn run_lint_resolved(
         Err(code) => return Ok(code),
     };
 
-    let (target_files, layout_diag) = resolve_targets(args).map_err(anyhow::Error::from)?;
+    let (target_files, layout_diag) = match resolve_targets_or_fail(args) {
+        Ok(v) => v,
+        Err(code) => return Ok(code),
+    };
 
     let mut all_diags: Vec<Diagnostic> = layout_diag.into_iter().collect();
     let mut tool_err = false;
@@ -245,6 +256,34 @@ fn open_trustdb_arg(path: Option<&Path>) -> Result<Option<TrustDb>, i32> {
             Err(EXIT_LMDB_ERROR)
         }
     }
+}
+
+/// Resolve the lint targets, or emit the #561/#583 path-error envelope on
+/// failure. Mirrors [`open_trustdb_arg`]'s exit-code-as-`Err` convention.
+///
+/// A `resolve_targets` failure (the positional directory-scan mode's target
+/// isn't a directory, or its parent can't be read) used to propagate via `?`
+/// straight to `main.rs`'s `report()`, which prints the error but returns
+/// BEFORE `output::render` ever runs -- so `--format json`/`--format sarif`
+/// saw zero bytes on stdout (the same #561 gap the other four backends were
+/// fixed for). Handle it here instead: print the same diagnostic, emit the
+/// (empty) envelope, and hand the caller `EXIT_TOOL_FAILURE` to return
+/// directly, mirroring every other backend's path-error shape. fapolicyd is
+/// NOT an `emit_lint` caller for its normal render path (it calls the
+/// three-variant `render` directly, for the real `--sarif-include-pass`
+/// attestation) -- but for an EMPTY diagnostics set with `pass: None`, the
+/// shared path-error helper produces byte-identical output to `render`,
+/// including the existing, ruled-kept `kind: "lint"` (not `"fapolicyd-lint"`).
+fn resolve_targets_or_fail(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>), i32> {
+    resolve_targets(args).map_err(|e| {
+        eprintln!("error: {e}");
+        crate::output::emit_path_error_envelope(
+            args.format,
+            "lint",
+            output::json::LINT_SCHEMA_VERSION,
+        );
+        EXIT_TOOL_FAILURE
+    })
 }
 
 /// Lint the `--conf` fapolicyd.conf path (#519, fapd-W14), appending its

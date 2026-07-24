@@ -277,7 +277,12 @@ impl MigrateProbe for LiveMigrateProbe {
         ));
         let mut combined = String::new();
         for path in &rule_files {
-            match std::fs::read_to_string(path) {
+            // Routed through `rulesteward_core::fsread` (#560/#583): unlike
+            // `detect_layout`'s is_file()-gated helpers, this collection loop
+            // has no upstream file-type filter, so a FIFO/socket/device node
+            // named `*.rules` in `rules.d/` must fail fast here instead of
+            // hanging or reading unbounded data.
+            match rulesteward_core::fsread::read_to_string(path) {
                 Ok(content) => combined.push_str(&content),
                 Err(e) => return Err(format!("could not read {}: {e}", path.display())),
             }
