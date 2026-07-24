@@ -1,5 +1,6 @@
 //! Version-aware lint pass: fapolicyd checks whose verdict diverges by target
 //! release (fapd-W07 hash-keyword advice, `device=` subject-side validity,
+//! `filehash=` subject-side validity, `exe_device=` legacy-subject validity,
 //! `pattern=` value set, hash-value length).
 //!
 //! Runs only when a `--target` release is supplied (see `LintContext.target`);
@@ -57,6 +58,7 @@ pub(crate) fn walk(
         let Entry::Rule(rule) = entry else { continue };
         check_filehash(rule, file, target, &mut diags);
         check_subject_device(rule, file, target, &mut diags);
+        check_subject_exe_device(rule, file, target, &mut diags);
         check_pattern(rule, file, target, &mut diags);
     }
     diags
@@ -158,6 +160,39 @@ fn check_subject_device(
                 file,
                 target,
                 "subject-side attribute `device=` (object-only)",
+            ));
+        }
+    }
+}
+
+/// CHECK 4 - `exe_device=` (legacy-grammar subject attr; issue #570) exists
+/// in upstream's LEGACY subject table (`subject-attr.c` table1) on 1.3.2
+/// (rhel8) but was dropped from that table by 1.4.5 (rhel9/rhel10), so a
+/// subject-side `exe_device=` is rejected there. Mirrors
+/// `check_subject_device`'s shape exactly: target-gated (fires only on
+/// rhel9/rhel10) and None-closed (no `--target` means no version to
+/// evaluate the divergence against, matching `walk`'s overall None gate).
+/// `exe_device` reaching this check at all already implies a legacy-flavor
+/// rule (the modern grammar never classifies it as subject; see
+/// `attrs::LEGACY_ONLY_SUBJECT_ATTRS` / `parser::grammar::legacy_classify`).
+fn check_subject_exe_device(
+    rule: &Rule,
+    file: &Path,
+    target: TargetVersion,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if target < TargetVersion::Rhel9 {
+        return;
+    }
+    for attr in &rule.subject {
+        if let Attr::Kv { key, .. } = attr
+            && key == "exe_device"
+        {
+            diags.push(e06(
+                rule,
+                file,
+                target,
+                "subject-side attribute `exe_device=` (legacy-only, removed in 1.4.x)",
             ));
         }
     }
