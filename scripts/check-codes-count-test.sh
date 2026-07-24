@@ -739,6 +739,98 @@ assert_output_contains "${c_seed}" "stated ${seed_wrong_fapd}, catalog length ${
     "message reports both numbers for the seeded real-scale mismatch"
 
 # ---------------------------------------------------------------------------
+# ROUND-4 HARDENING (adversarial finding on #586): the anti-vacuity floor
+# above is `scanned == 0`, so a mention rewritten into ANY phrasing outside
+# the three precise shapes simply stops being scanned - `scanned` drops,
+# `violation_count` stays 0, exit 0. Coverage erosion one mention at a time
+# is silent. These cases freeze a new UNRECOGNIZED-MENTION rule: a line that
+# references a known backend (by prefix or display name) and says "codes"
+# (case-insensitive) and has a digit, but matches none of shapes (a)/(b)/(c),
+# is ITSELF a violation.
+#
+# Each fixture below pairs the seeded bad line with one correct, in-scope
+# sysctld- mention (the same synthetic 3-entry catalog used throughout this
+# file) so exit 1 is unambiguously attributable to the seeded line, not to
+# "no catalog to compare against" or an unrelated scanned-count mismatch.
+# ---------------------------------------------------------------------------
+
+# Case: `### auditd (au-, 99 codes)` - shape (b) hardcodes backticks around
+# the prefix; shape (a) needs the number BEFORE the prefix. Neither matches
+# this bare, reversed-relative-to-(a) heading, so a real 11-entry-vs-99 drift
+# here would have been invisible before this rule.
+c_unrec_au="case_unrecognized_mention_auditd_bare_prefix"
+synthetic_sysctld_catalog | write_fixture "${c_unrec_au}/crates/rulesteward-sysctld/src/catalog.rs"
+write_fixture "${c_unrec_au}/README.md" <<'EOF'
+# Fixture: unrecognized-mention rule, bare-prefix heading (#586 round 4)
+
+### auditd (au-, 99 codes)
+
+### sysctl.d (`sysctld-`, 3 codes)
+EOF
+
+run_case "${c_unrec_au}" "${TMPROOT}/${c_unrec_au}" 1
+assert_output_contains "${c_unrec_au}" "README.md:3: unrecognized \"codes\" mention for \`au-\`" \
+    "flags the bare-prefix auditd heading as an unrecognized mention, naming its file:line and prefix"
+
+# Case: `### sudoers (\`sudo-\` codes: 99)` - the REVERSED-ORDER variant: the
+# number appears AFTER "codes" instead of before it, so none of shapes
+# (a)/(b)/(c) (all of which require the number to precede "codes") match.
+c_unrec_sudo="case_unrecognized_mention_sudoers_reversed_order"
+synthetic_sysctld_catalog | write_fixture "${c_unrec_sudo}/crates/rulesteward-sysctld/src/catalog.rs"
+write_fixture "${c_unrec_sudo}/README.md" <<'EOF'
+# Fixture: unrecognized-mention rule, reversed-order heading (#586 round 4)
+
+### sudoers (`sudo-` codes: 99)
+
+### sysctl.d (`sysctld-`, 3 codes)
+EOF
+
+run_case "${c_unrec_sudo}" "${TMPROOT}/${c_unrec_sudo}" 1
+assert_output_contains "${c_unrec_sudo}" "README.md:3: unrecognized \"codes\" mention for \`sudo-\`" \
+    "flags the reversed-order sudoers heading as an unrecognized mention, naming its file:line and prefix"
+
+# Case: `99 fapolicyd Codes today` - the CASE-VARIANT: shape (c)'s "codes" is
+# a case-sensitive literal, so a capitalized "Codes" (a natural sentence-case
+# rewrite) slips past it entirely today.
+c_unrec_case="case_unrecognized_mention_fapolicyd_case_variant"
+synthetic_sysctld_catalog | write_fixture "${c_unrec_case}/crates/rulesteward-sysctld/src/catalog.rs"
+write_fixture "${c_unrec_case}/README.md" <<'EOF'
+# Fixture: unrecognized-mention rule, case-variant "Codes" (#586 round 4)
+
+99 fapolicyd Codes today
+
+### sysctl.d (`sysctld-`, 3 codes)
+EOF
+
+run_case "${c_unrec_case}" "${TMPROOT}/${c_unrec_case}" 1
+assert_output_contains "${c_unrec_case}" "README.md:3: unrecognized \"codes\" mention for \`fapd-\`" \
+    "flags the case-variant ('Codes') fapolicyd mention as unrecognized, naming its file:line and prefix"
+
+# ---------------------------------------------------------------------------
+# ROUND-4 HARDENING, second finding: `catalog_length` must count OCCURRENCES
+# of the literal substring `code: "<prefix>`, not LINES. A catalog with two
+# entries crammed onto one line (needs `#[rustfmt::skip]` to survive
+# `cargo fmt` in real code, hence synthetic-only here) must report catalog
+# length 2, not 1. This fixture's README states "2 codes"; a line-counting
+# implementation would compute catalog length 1 for this file (one matching
+# LINE) and wrongly flag stated(2) != catlen(1) as a violation.
+# ---------------------------------------------------------------------------
+c_occ="case_catalog_length_counts_occurrences_not_lines"
+write_fixture "${c_occ}/crates/rulesteward-sysctld/src/catalog.rs" <<'EOF'
+pub const SYSCTLD_CODES: &[LintCode] = &[
+    LintCode { code: "sysctld-F01", severity: Severity::Fatal, description: "a" }, LintCode { code: "sysctld-W01", severity: Severity::Warning, description: "b" },
+];
+EOF
+write_fixture "${c_occ}/README.md" <<'EOF'
+# Fixture: catalog_length counts occurrences, not lines (#586 round 4)
+
+### sysctl.d (`sysctld-`, 2 codes)
+EOF
+
+run_case "${c_occ}" "${TMPROOT}/${c_occ}" 0
+assert_scanned_count_exact "${c_occ}" 1
+
+# ---------------------------------------------------------------------------
 # Case: the REAL repo tree, invoked with NO arguments (default CWD), from
 # the repo root, unmodified. STRENGTHENED (Blocker 1, part B; replaces the
 # original case4's hardcoded-live-line assertions): mirrors
@@ -756,6 +848,26 @@ else
     note_fail "case_real_tree_pristine_eventually_clean: expected exit 0 once README.md's drift is fixed and the gate is implemented (same commit), got ${case_pristine_rc}"
     sed 's/^/    | /' "${case_pristine_out}" || true
 fi
+
+# ---------------------------------------------------------------------------
+# ROUND-4 HARDENING: a per-backend real-tree coverage floor. Reuses the
+# output already captured above (the real tree, invoked with no arguments)
+# rather than re-running the gate. For EACH of the six backends, the real
+# tree must carry at least one live "codes" mention - this is the mechanical
+# floor that kills every seeded row in the adversarial finding's table
+# individually (each seeded scenario replaces ALL of one backend's mentions,
+# dropping that backend's count to 0) WITHOUT hardcoding the current
+# aggregate total (14) or any single backend's exact count, both of which
+# drift as the docs legitimately grow.
+# ---------------------------------------------------------------------------
+for floor_prefix in fapd- au- sshd- sudo- sysctld- se-; do
+    floor_n="$(grep -oE "per-backend mentions: \`${floor_prefix}\` = [0-9]+" "${case_pristine_out}" 2>/dev/null | grep -oE '[0-9]+$' | head -1 || true)"
+    if [[ -n "${floor_n}" && "${floor_n}" -ge 1 ]]; then
+        note_pass "real-tree per-backend floor: \`${floor_prefix}\` has ${floor_n} >= 1 live mention(s)"
+    else
+        note_fail "real-tree per-backend floor: \`${floor_prefix}\` has '${floor_n:-<none>}' live mention(s), expected >= 1"
+    fi
+done
 
 echo ""
 echo "----------------------------------------"

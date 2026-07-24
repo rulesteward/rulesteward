@@ -31,8 +31,11 @@
 #   7th backend added later is silently invisible to this gate until the
 #   table is updated too.
 #
-#   A backend's CATALOG LENGTH is the count of lines matching the literal
-#   substring `code: "<prefix>` in its catalog file.
+#   A backend's CATALOG LENGTH is the count of OCCURRENCES (not lines) of the
+#   literal substring `code: "<prefix>` in its catalog file: two entries
+#   crammed onto one line count as 2, not 1. In practice this coincides with
+#   a line count today (rustfmt's one-field-per-line style puts one entry per
+#   line), but the occurrence count is the frozen, correct definition.
 #
 #   A "codes mention" is any of these three shapes, tied to one of the six
 #   prefixes/display names (backtick-wrapping in shape (a) is optional, but
@@ -46,13 +49,38 @@
 #   exactly:
 #       <file>:<line>: stated <N>, catalog length <M> for `<prefix>`
 #
+#   UNRECOGNIZED-MENTION rule (#586 round-4 hardening): partial coverage
+#   erosion - a mention rewritten into prose that isn't one of the three
+#   precise shapes above - used to go entirely unnoticed: `scanned` simply
+#   drops and the gate exits 0. A line in a scanned file is now ALSO a
+#   violation if it contains one of the six backends' PREFIX or DISPLAY NAME
+#   (word-bounded: the character immediately before/after must not be a
+#   letter, digit, or underscore - this is what stops "parse-error"'s
+#   embedded "se-" from false-triggering `se-`), AND the word "codes"
+#   (case-insensitive, so "Codes" counts), AND a digit, anywhere on that
+#   line, but the line was NOT claimed by any of shapes (a)/(b)/(c) for that
+#   backend. Reported as:
+#       <file>:<line>: unrecognized "codes" mention for `<prefix>` (matches no known shape)
+#   This does not change what counts toward the `scanned` summary line below
+#   (that stays shape-based, unchanged) - it is an independent violation
+#   source that also forces a non-zero exit.
+#
+#   PER-BACKEND MENTION COUNTS (#586 round-4 hardening): on every invocation,
+#   stdout also includes, once per backend, a line of the exact literal form:
+#       per-backend mentions: `<prefix>` = <N>
+#   (N = the count of shape-based mentions, i.e. this backend's share of the
+#   `scanned` total across both files) - lets tooling assert a per-backend
+#   coverage floor (e.g. "every backend has >= 1 live mention") without
+#   hardcoding the aggregate total, which drifts as docs legitimately grow.
+#
 #   ANTI-VACUITY: a scan that finds ZERO "codes" mentions across both files
 #   combined is ALSO a violation (exit non-zero). On every invocation, stdout
 #   MUST include a summary line of the exact literal form:
 #       scanned N "codes" mention(s)
 #
 #   EXIT CODE: 0 only when at least one mention was found AND every mention's
-#   stated N equals its backend's catalog length. 1 otherwise.
+#   stated N equals its backend's catalog length AND no unrecognized-mention
+#   violation was found. 1 otherwise.
 #
 # Implementation note: this is a fixed, small scan (2 files x 6 backends x 3
 # shapes), so it is done directly in bash + grep (one `grep -nEo` call per
@@ -89,12 +117,13 @@ SCAN_FILES=(
 )
 
 # catalog_length PREFIX FILE
-# Mirrors the frozen test's own helper: counts lines containing the literal
-# substring `code: "<prefix>` in FILE. A missing FILE yields 0, not an error.
+# Counts OCCURRENCES (not lines) of the literal substring `code: "<prefix>`
+# in FILE - two entries crammed onto one line count as 2. A missing FILE
+# yields 0, not an error.
 catalog_length() {
     local prefix="$1" file="$2"
     local n=""
-    n="$(grep -c "code: \"${prefix}" "${file}" 2>/dev/null || true)"
+    n="$(grep -o "code: \"${prefix}" "${file}" 2>/dev/null | wc -l || true)"
     echo "${n:-0}"
 }
 
@@ -106,6 +135,11 @@ done
 scanned=0
 violations=""
 violation_count=0
+
+PREFIX_MENTION_COUNT=()
+for i in "${!PREFIXES[@]}"; do
+    PREFIX_MENTION_COUNT[i]=0
+done
 
 for scan_rel in "${SCAN_FILES[@]}"; do
     scan_abs="${REPO_ROOT}/${scan_rel}"
@@ -123,17 +157,39 @@ for scan_rel in "${SCAN_FILES[@]}"; do
         # Shape (c): <N> <display-name> codes
         shape_c="[0-9]+[[:space:]]+${dispname_re}[[:space:]]+codes"
 
+        # Lines claimed by one of the three shapes above, for THIS backend on
+        # THIS file - space-padded so membership can be tested as a fixed
+        # substring (" ${lineno} ") without matching e.g. "1" inside "12".
+        claimed_lines=" "
+
         for shape_re in "${shape_a}" "${shape_b}" "${shape_c}"; do
             while IFS=: read -r lineno match; do
                 [[ -z "${lineno}" ]] && continue
                 stated="$(printf '%s' "${match}" | grep -oE '[0-9]+' | head -1)"
                 scanned=$((scanned + 1))
+                PREFIX_MENTION_COUNT[i]=$((PREFIX_MENTION_COUNT[i] + 1))
+                claimed_lines+="${lineno} "
                 if [[ "${stated}" != "${catlen}" ]]; then
                     violations+="${scan_rel}:${lineno}: stated ${stated}, catalog length ${catlen} for \`${prefix}\`"$'\n'
                     violation_count=$((violation_count + 1))
                 fi
             done < <(grep -nEo "${shape_re}" "${scan_abs}" 2>/dev/null || true)
         done
+
+        # UNRECOGNIZED-MENTION rule: a line that references this backend (by
+        # prefix or display name, word-bounded so "parse-error" cannot
+        # false-trigger `se-`) AND says "codes" (case-insensitive) AND has a
+        # digit, but was not claimed by any shape above, is itself a
+        # violation - silent shape-erosion must not silently pass.
+        signal_re="(^|[^A-Za-z0-9_])(${prefix}|${dispname_re})([^A-Za-z0-9_]|\$)"
+        while IFS=: read -r lineno rest; do
+            [[ -z "${lineno}" ]] && continue
+            printf '%s' "${rest}" | grep -qiE 'codes' || continue
+            printf '%s' "${rest}" | grep -qE '[0-9]' || continue
+            [[ "${claimed_lines}" == *" ${lineno} "* ]] && continue
+            violations+="${scan_rel}:${lineno}: unrecognized \"codes\" mention for \`${prefix}\` (matches no known shape)"$'\n'
+            violation_count=$((violation_count + 1))
+        done < <(grep -nE "${signal_re}" "${scan_abs}" 2>/dev/null || true)
     done
 done
 
@@ -142,6 +198,9 @@ if [[ -n "${violations}" ]]; then
 fi
 
 echo "scanned ${scanned} \"codes\" mention(s)"
+for i in "${!PREFIXES[@]}"; do
+    echo "per-backend mentions: \`${PREFIXES[i]}\` = ${PREFIX_MENTION_COUNT[i]}"
+done
 
 if [[ "${violation_count}" -gt 0 || "${scanned}" -eq 0 ]]; then
     echo ""
