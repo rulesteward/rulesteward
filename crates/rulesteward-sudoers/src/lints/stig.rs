@@ -1401,24 +1401,55 @@ mod tests {
         // between `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
         // `TIMESTAMP_TIMEOUT_CONTROLS`), mirroring the pre-existing
         // RHEL-08/RHEL-09 `must_not_cite` pattern above.
+        //
+        // Round-6 fix: the `!authenticate` and `targetpw` fixtures set no
+        // `timestamp_timeout` anywhere, so `lint_w04` ALSO emits the merged
+        // missing-required absence finding (#347/#363) for
+        // `timestamp_timeout` on those same fixtures -- and once the
+        // implementer appends the grounded `RHEL-10-600540` id to
+        // `TIMESTAMP_TIMEOUT_CONTROLS` (this same lane's own change), that
+        // absence finding's message legitimately contains "RHEL-10-600540".
+        // That is a DIFFERENT, correctly-cited finding, not
+        // cross-contamination of the `!authenticate`/`targetpw` weakening
+        // finding under test (same defect class as the use_pty/visiblepw
+        // guard fixed in round 4), so each check is scoped to the specific
+        // weakening finding by filtering on `focus` (a substring unique to
+        // that finding's own message -- "authenticate" / "targetpw" --
+        // which the merged timestamp-absence message never contains) before
+        // asserting the sibling-id ban. A non-empty positive-control assert
+        // guards against the filter itself silently matching nothing.
         let must_not_cite = [
-            ("Defaults !authenticate\n", "RHEL-10-600550"), // pw-family id, not authenticate's
-            ("Defaults !authenticate\n", "RHEL-10-600540"), // timestamp id, not authenticate's
-            ("Defaults targetpw\n", "RHEL-10-600530"),      // authenticate id, not pw-family's
-            ("Defaults targetpw\n", "RHEL-10-600540"),      // timestamp id, not pw-family's
-            ("Defaults timestamp_timeout=-1\n", "RHEL-10-600530"), // authenticate id, not timestamp's
-            ("Defaults timestamp_timeout=-1\n", "RHEL-10-600550"), // pw-family id, not timestamp's
+            ("Defaults !authenticate\n", "authenticate", "RHEL-10-600550"), // pw-family id, not authenticate's
+            ("Defaults !authenticate\n", "authenticate", "RHEL-10-600540"), // timestamp id, not authenticate's
+            ("Defaults targetpw\n", "targetpw", "RHEL-10-600530"), // authenticate id, not pw-family's
+            ("Defaults targetpw\n", "targetpw", "RHEL-10-600540"), // timestamp id, not pw-family's
+            (
+                "Defaults timestamp_timeout=-1\n",
+                "timestamp_timeout",
+                "RHEL-10-600530",
+            ), // authenticate id, not timestamp's
+            (
+                "Defaults timestamp_timeout=-1\n",
+                "timestamp_timeout",
+                "RHEL-10-600550",
+            ), // pw-family id, not timestamp's
         ];
-        for (defaults, bad) in must_not_cite {
+        for (defaults, focus, bad) in must_not_cite {
             let src = format!("{defaults}root ALL=(ALL:ALL) ALL\n");
             let diags = lint_w04(&src);
+            let scoped: Vec<_> = diags
+                .iter()
+                .filter(|d| d.code == "sudo-W04" && d.message.contains(focus))
+                .collect();
             assert!(
-                diags
-                    .iter()
-                    .filter(|d| d.code == "sudo-W04")
-                    .all(|d| !d.message.contains(bad)),
-                "W04 finding for {defaults:?} must NOT cite the sibling id \
-                 '{bad}'; got {diags:?}"
+                !scoped.is_empty(),
+                "W04 finding for {defaults:?} must include a '{focus}' \
+                 weakening finding to guard; got {diags:?}"
+            );
+            assert!(
+                scoped.iter().all(|d| !d.message.contains(bad)),
+                "W04 '{focus}' weakening finding for {defaults:?} must NOT \
+                 cite the sibling id '{bad}'; got {scoped:?}"
             );
         }
 
