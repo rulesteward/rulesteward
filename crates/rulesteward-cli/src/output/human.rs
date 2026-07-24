@@ -199,6 +199,191 @@ mod tests {
         BTreeMap::new()
     }
 
+    // -----------------------------------------------------------------
+    // Regression harness for the per-`source_id` `ariadne::Source` cache
+    // (#559). Every pre-existing `render(...)` test in this file passes
+    // exactly ONE diagnostic, so none of them exercise a cache at all - a
+    // cache keyed wrongly (or not keyed by `source_id` at all, e.g. a
+    // naive "hoist `Source::from` out of the loop entirely" refactor that
+    // builds a single `Source` once and reuses it for every diagnostic
+    // regardless of which `source_id` it belongs to) would sail through
+    // every existing test untouched. These two tests exist to close that
+    // gap: they pin the exact rendered bytes for (a) multiple diagnostics
+    // sharing one `source_id`, and (b) multiple diagnostics against
+    // DIFFERENT `source_id`s in the same `render()` call, interleaved so
+    // that input order also has to be preserved. Both are expected to
+    // PASS against today's pre-cache code (it is correct, just O(n * len)
+    // slow) - they are a regression harness, not a RED test, EXCEPT that
+    // (b) is precisely the case a naive whole-call hoist would break.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn human_render_multiple_diagnostics_same_source_id_exact_pin() {
+        // Two diagnostics anchored to the SAME source_id, at two different
+        // lines/spans. Guards against the classic caching bug where a
+        // cached `Source` is mutated or advanced by its first use (e.g. an
+        // internal cursor) so the SECOND diagnostic against the same
+        // source renders against stale state.
+        let source = "allow exe=/usr/bin/foo trust=1\nallow exe=/usr/bin/bar trust=0\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("same.rules".to_string(), source.to_string());
+
+        let byte_1 = source.find("foo").expect("foo present");
+        let d1 = Diagnostic::new(
+            Severity::Error,
+            "fapd-E02",
+            byte_1..byte_1 + 3,
+            "first same-source finding",
+            "same.rules",
+            1,
+            byte_1 + 1,
+        )
+        .with_source_id("same.rules");
+
+        let byte_2 = source.find("bar").expect("bar present");
+        let d2 = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W02",
+            byte_2..byte_2 + 3,
+            "second same-source finding",
+            "same.rules",
+            2,
+            byte_2 + 1,
+        )
+        .with_source_id("same.rules");
+
+        let out = render(&[d1, d2], &sources);
+
+        let expected = "Error: [fapd-E02] error: first same-source finding\n   \u{256d}\u{2500}[ same.rules:1:20 ]\n   \u{2502}\n 1 \u{2502} allow exe=/usr/bin/foo trust=1\n   \u{2502}                    \u{2500}\u{252c}\u{2500}  \n   \u{2502}                     \u{2570}\u{2500}\u{2500}\u{2500} first same-source finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nWarning: [fapd-W02] warning: second same-source finding\n   \u{256d}\u{2500}[ same.rules:2:20 ]\n   \u{2502}\n 2 \u{2502} allow exe=/usr/bin/bar trust=0\n   \u{2502}                    \u{2500}\u{252c}\u{2500}  \n   \u{2502}                     \u{2570}\u{2500}\u{2500}\u{2500} second same-source finding\n\u{2500}\u{2500}\u{2500}\u{256f}\n";
+        assert_eq!(
+            out, expected,
+            "exact-byte pin for two diagnostics sharing one source_id; any \
+             behavior change (including a caching regression) must be a \
+             deliberate, reviewed change to this expected string"
+        );
+
+        // Belt-and-suspenders content-isolation check, independent of the
+        // exact-pin above: the first diagnostic's snippet must anchor on
+        // line 1 ("foo") and not leak line 2's text, and vice versa.
+        let split_at = out.find("Warning:").expect("second report present");
+        let (first_report, second_report) = out.split_at(split_at);
+        assert!(
+            first_report.contains("foo") && !first_report.contains("bar"),
+            "first report must show its own line only, got {first_report:?}"
+        );
+        assert!(
+            second_report.contains("bar") && !second_report.contains("foo"),
+            "second report must show its own line only, got {second_report:?}"
+        );
+    }
+
+    #[test]
+    // Test helpers use byte_a1/byte_b1, d_a1/d_b1, idx_a1/idx_b1 (source-A
+    // vs source-B pairs, first/second finding) in the same scope; clippy
+    // false-positives on that pairing (same allow used in
+    // rulesteward-fapolicyd's explain_logic.rs / explain_fanotify_parse.rs
+    // for the analogous rule1/rule2 pattern).
+    #[allow(clippy::similar_names)]
+    fn human_render_multiple_distinct_source_ids_exact_pin_and_order() {
+        // THE key deliverable for #559: three diagnostics against TWO
+        // distinct source_ids, in input order A, B, A. A naive "hoist
+        // `Source::from` out of the loop" cache (one `Source` built once,
+        // reused for every diagnostic regardless of `source_id`) fails
+        // this test two ways: (1) the `b.rules` diagnostic would render
+        // against `a.rules`'s text (wrong content, or an out-of-bounds
+        // span causing a silent fallback to the plain non-ariadne line),
+        // and (2) a cache implementation that groups-by-source-id instead
+        // of preserving input order would emit A, A, B instead of A, B, A.
+        let source_a = "allow exe=/usr/bin/alpha trust=1\ndeny_audit perm=any : all\n";
+        let source_b = "deny_audit perm=open : all\nallow exe=/usr/bin/beta trust=0\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("a.rules".to_string(), source_a.to_string());
+        sources.insert("b.rules".to_string(), source_b.to_string());
+
+        let byte_a1 = source_a.find("alpha").expect("alpha present");
+        let d_a1 = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            byte_a1..byte_a1 + 5,
+            "first A finding",
+            "a.rules",
+            1,
+            byte_a1 + 1,
+        )
+        .with_source_id("a.rules");
+
+        let byte_b1 = source_b.find("open").expect("open present");
+        let d_b1 = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W01",
+            byte_b1..byte_b1 + 4,
+            "first B finding",
+            "b.rules",
+            1,
+            byte_b1 + 1,
+        )
+        .with_source_id("b.rules");
+
+        let byte_a2 = source_a.find("any").expect("any present");
+        let d_a2 = Diagnostic::new(
+            Severity::Style,
+            "fapd-S01",
+            byte_a2..byte_a2 + 3,
+            "second A finding",
+            "a.rules",
+            2,
+            byte_a2 + 1,
+        )
+        .with_source_id("a.rules");
+
+        // Input order: A, B, A. Neither source is fully processed before
+        // the other starts.
+        let out = render(&[d_a1, d_b1, d_a2], &sources);
+
+        let expected = "Error: [fapd-E01] error: first A finding\n   \u{256d}\u{2500}[ a.rules:1:20 ]\n   \u{2502}\n 1 \u{2502} allow exe=/usr/bin/alpha trust=1\n   \u{2502}                    \u{2500}\u{2500}\u{252c}\u{2500}\u{2500}  \n   \u{2502}                      \u{2570}\u{2500}\u{2500}\u{2500}\u{2500} first A finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nWarning: [fapd-W01] warning: first B finding\n   \u{256d}\u{2500}[ b.rules:1:17 ]\n   \u{2502}\n 1 \u{2502} deny_audit perm=open : all\n   \u{2502}                 \u{2500}\u{2500}\u{252c}\u{2500}  \n   \u{2502}                   \u{2570}\u{2500}\u{2500}\u{2500} first B finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nAdvice: [fapd-S01] style: second A finding\n   \u{256d}\u{2500}[ a.rules:2:17 ]\n   \u{2502}\n 2 \u{2502} deny_audit perm=any : all\n   \u{2502}                 \u{2500}\u{252c}\u{2500}  \n   \u{2502}                  \u{2570}\u{2500}\u{2500}\u{2500} second A finding\n\u{2500}\u{2500}\u{2500}\u{256f}\n";
+        assert_eq!(
+            out, expected,
+            "exact-byte pin for three diagnostics across two source_ids in \
+             A, B, A order; a naive whole-call `Source` hoist or a \
+             source-grouping cache must fail this assertion"
+        );
+
+        // Ordering, checked independently of the exact-pin above: each
+        // diagnostic's code must appear strictly before the next one's, in
+        // INPUT order (A, B, A), not grouped by source_id (which would
+        // produce A, A, B).
+        let idx_a1 = out.find("fapd-E01").expect("fapd-E01 present");
+        let idx_b1 = out.find("fapd-W01").expect("fapd-W01 present");
+        let idx_a2 = out.find("fapd-S01").expect("fapd-S01 present");
+        assert!(
+            idx_a1 < idx_b1 && idx_b1 < idx_a2,
+            "diagnostics must render in INPUT order (A, B, A): \
+             got offsets a1={idx_a1} b1={idx_b1} a2={idx_a2} in {out:?}"
+        );
+
+        // Content isolation, checked independently of the exact-pin above:
+        // each report must render against ITS OWN source text, never the
+        // other source's. This is the assertion a naive single-Source
+        // hoist breaks even if it somehow avoided the exact-pin diff (for
+        // example, by getting lucky with byte offsets that stay in bounds
+        // in the wrong source).
+        let (a1_segment, rest) = out.split_at(idx_b1);
+        let idx_a2_in_rest = rest.find("fapd-S01").expect("fapd-S01 present");
+        let (b1_segment, a2_segment) = rest.split_at(idx_a2_in_rest);
+        assert!(
+            a1_segment.contains("alpha") && !a1_segment.contains("open"),
+            "first A report must show a.rules text, not b.rules, got {a1_segment:?}"
+        );
+        assert!(
+            b1_segment.contains("open") && !b1_segment.contains("alpha"),
+            "B report must show b.rules text, not a.rules, got {b1_segment:?}"
+        );
+        assert!(
+            a2_segment.contains("any") && !a2_segment.contains("open"),
+            "second A report must show a.rules text, not b.rules, got {a2_segment:?}"
+        );
+    }
+
     #[test]
     fn format_controls_maps_every_framework_and_joins_multiple() {
         // Direct pin on format_controls: empty -> "" (byte-identical), each
