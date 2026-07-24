@@ -291,19 +291,30 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
     }
 
     match tokens[0].as_str() {
-        // `-D` takes no arguments; a rules.d line "-D extra" is rejected by
-        // real auditctl's unconditional field-count check in `setopt()`
-        // before any netlink call (`src/auditctl.c` `case 'D':`, byte-
-        // identical across the RHEL8/9/10-shipped audit-userspace tags
+        // `-D` takes no arguments except the one real auditctl allowance:
+        // `-D -k <key>` (fields count == 4, i.e. `tokens.len() == 3` with
+        // `tokens[1] == "-k"`), which is checked and still resolves to
+        // DeleteAll -- the key value itself is not carried in the AST, since
+        // real auditctl clears its own key buffer right after a successful
+        // delete, so it is functionally inert for a static parse. Every
+        // other trailing-token shape (a lone "-k" with no key, any other
+        // single token, or anything past the key) is rejected by real
+        // auditctl's unconditional field-count check in `setopt()` before
+        // any netlink call (`src/auditctl.c` `case 'D':`, byte-identical
+        // across the RHEL8/9/10-shipped audit-userspace tags
         // v3.1.2/v3.1.5/v4.0.3 -- see the lane-8 #541 report and the
-        // `delete_all_with_extra_token` test for the full grounding). The
-        // `-D -k <key>` shape is a separate, narrower auditctl allowance not
-        // implemented here (out of scope for #541).
+        // `delete_all_accepts_dash_k_key_shape` / sibling tests for the full
+        // grounding and truth table).
         "-D" => {
-            if let Some(other) = tokens.get(1) {
-                return Err(err(&format!("unexpected token in -D rule: '{other}'")));
+            let key_shape = tokens.len() == 3 && tokens[1] == "-k";
+            if tokens.len() == 1 || key_shape {
+                Ok(AuditRule::Control(ControlRule::DeleteAll))
+            } else {
+                Err(err(&format!(
+                    "unexpected token in -D rule: '{}'",
+                    tokens[1]
+                )))
             }
-            Ok(AuditRule::Control(ControlRule::DeleteAll))
         }
 
         "-b" => {
