@@ -60,6 +60,14 @@
 //! pinned - see that test's doc comment) rather than the loop tests that
 //! consume it.
 //!
+//! Byte-identical logic (and tests, below) to the sister tool's `pin.rs` (the
+//! revision scheme is generic, not tool-specific - both tools draw their pins
+//! from the same three DISA STIG documents, per each crate's `stig-refs.toml`
+//! comment); kept as a separate copy so neither tool depends on the other's
+//! crate, mirroring `config.rs`/`source.rs`'s existing duplication. The
+//! "cross-tool drift guard" test near the end of this file's `mod tests`
+//! makes that byte-identical claim mechanical.
+//!
 //! CI must not depend on the network, so the "does this candidate zip exist"
 //! check is abstracted behind [`Prober`]. The real implementation (a `curl`
 //! HEAD-ish probe, mirroring `source.rs`'s `run`/`fetch_status` shape) belongs
@@ -159,8 +167,8 @@ pub fn candidate_zip(_zip: &str, _rev: Revision) -> String {
 /// The two candidates tried immediately after `current` is confirmed to
 /// exist: `.0` increments the minor; `.1` is the major-rollover fallback
 /// (major + 1, minor reset to 1), tried only once `.0` 404s. Extracted so the
-/// ASSUMED rollover rule (see the module doc) is pinned in exactly ONE place
-/// - a future correction to the assumption touches this function's own tests,
+/// ASSUMED rollover rule (see the module doc) is pinned in exactly ONE place:
+/// a future correction to the assumption touches this function's own tests,
 /// not every `find_latest` loop test's literal `V3R1`/`V4R1` strings.
 pub fn next_candidates(_current: Revision) -> (Revision, Revision) {
     todo!("lane 5 (#550) impl: (minor+1, same major) and (major+1, minor=1)")
@@ -194,6 +202,22 @@ mod tests {
         assert_eq!(
             parse_revision("U_RHEL_10_V1R2_STIG.zip"),
             Some(Revision { major: 1, minor: 2 })
+        );
+        // #550 lane-5 round-2 rework, BLOCKER 1: every fixture above happens
+        // to have a SINGLE-DIGIT minor, so a fixed-offset parse (e.g. byte
+        // `i+1` for the major digit, `i+3` for the minor digit) passes both -
+        // and, worse under the pin-first ruling, silently mis-parses any real
+        // pin whose minor has rolled past 9 (e.g. the real rhel8 pin already
+        // reads `V2R10`) into the WRONG revision, so `find_latest` probes a
+        // URL it never intended to and can report an actionable false
+        // `PinNotFound` against a pin that is actually current. A genuinely
+        // multi-digit minor closes this.
+        assert_eq!(
+            parse_revision("U_RHEL_8_V2R10_STIG.zip"),
+            Some(Revision {
+                major: 2,
+                minor: 10
+            })
         );
     }
 
@@ -321,6 +345,20 @@ mod tests {
     impl Prober for AlwaysFoundProber {
         fn probe(&mut self, url: &str) -> Result<Probe, ProbeError> {
             self.probed.push(url.to_string());
+            // #550 lane-5 round-2 rework, CONCERN: a no-ceiling `find_latest`
+            // would otherwise grow `probed` unboundedly and this test would
+            // hang until CI kills it (or OOMs, which this repo's
+            // cargo-mutants experience shows can present as a runner-kill
+            // rather than a clean timeout - a fragile signal to gate a real
+            // mutant on). Turn that hang into an immediate, diagnostic
+            // failure well past any plausible correct stopping point.
+            if self.probed.len() > PROBE_CEILING * 2 {
+                panic!(
+                    "find_latest issued {} probes, exceeding PROBE_CEILING ({PROBE_CEILING}) - \
+                     it must stop at the ceiling, not loop unboundedly",
+                    self.probed.len()
+                );
+            }
             Ok(Probe::Found)
         }
     }
@@ -709,43 +747,54 @@ mod tests {
 
     // --- cross-tool drift guard ----------------------------------------------
 
-    // #550 lane-5 rework, CONCERN raised in review: this file and
-    // `tools/auditd-stig-update/src/pin.rs` are near-identical by
-    // construction (only the module doc above, and this section's
-    // necessarily-asymmetric `include_str!` path, differ), but nothing
-    // enforces that a future edit to one is mirrored in the other. Mirrors
-    // `rulesteward_sudoers::lints::tags`'s `SSHD_STIG_REFS`/
-    // `AUDITD_STIG_REFS` `include_str!` cross-check (a compile-time relative
-    // path read, NOT a cargo dependency, so this does not violate the "no
-    // dependency on the auditd crate/tool" intent `config.rs`/`source.rs`
-    // already state).
+    // #550 lane-5 rework, CONCERN raised in review: this file and the SISTER
+    // tool's `pin.rs` (whichever this crate does NOT belong to - see
+    // `OTHER_TOOL_PIN_RS`'s `include_str!` path just below) are near-identical
+    // by construction, but nothing enforces that a future edit to one is
+    // mirrored in the other. Mirrors `rulesteward_sudoers::lints::tags`'s
+    // `SSHD_STIG_REFS`/`AUDITD_STIG_REFS` `include_str!` cross-check (a
+    // compile-time relative path read, NOT a cargo dependency, so this does
+    // not violate the "no dependency on the sister crate/tool" intent
+    // `config.rs`/`source.rs` already state). This prose is deliberately
+    // crate-agnostic (never names "sshd" or "auditd" itself) so it reads
+    // correctly verbatim in EITHER copy - a prior draft hardcoded the sister's
+    // name here and one copy ended up self-referential (named itself as its
+    // own sister) when pasted into the other file; see the round-2 review
+    // note this fixes.
     const THIS_FILE: &str = include_str!("pin.rs");
     const OTHER_TOOL_PIN_RS: &str = include_str!("../../auditd-stig-update/src/pin.rs");
 
-    /// The slice of `src` from `start` (inclusive) up to `end` (exclusive).
-    /// Used to compare only the shared core (every `pub` item + every OTHER
-    /// test) between the two copies - this drift-guard SECTION itself is
-    /// necessarily excluded, since each copy's `include_str!` path points at
-    /// its OWN sister file (asymmetric by construction, not drift).
-    fn core_between<'a>(src: &'a str, start: &str, end: &str) -> &'a str {
-        let s = src.find(start).expect("start anchor missing");
-        let e = src.find(end).expect("end anchor missing");
-        &src[s..e]
+    /// Byte-for-byte comparison, from the doc-comment prefix through the end
+    /// of file, of `this` (THIS_FILE) against `other` (the sister's own
+    /// `pin.rs`) - EXCEPT the one line each copy's `include_str!` path
+    /// necessarily differs on (it must name ITS OWN sister to compile at all,
+    /// so that one line is asymmetric by construction, not drift). That line
+    /// is neutralized by replacing either crate's sister-path string with a
+    /// common placeholder BEFORE comparing, rather than by truncating the
+    /// compared region - round 2 review flagged that the prior version
+    /// stopped comparing right before this drift-guard section itself, so
+    /// anything appended after it (or a one-sided edit inside it) would have
+    /// gone unguarded. Comparing the doc-comment prefix too catches drift in
+    /// the ASSUMED-rollover labeling and the live-404 grounding evidence,
+    /// which round 2 flagged as otherwise invisible to any guard.
+    fn normalize_and_compare(this: &str, other: &str) -> (String, String) {
+        fn normalize(src: &str) -> String {
+            src.replace("../../auditd-stig-update/src/pin.rs", "<SISTER_PIN_RS>")
+                .replace("../../sshd-stig-update/src/pin.rs", "<SISTER_PIN_RS>")
+        }
+        (normalize(this), normalize(other))
     }
 
     #[test]
-    fn pin_rs_core_logic_and_tests_match_the_sister_tool_byte_for_byte() {
-        const START: &str = "pub enum Probe {";
-        const END: &str = "// --- cross-tool drift guard";
-        let this_core = core_between(THIS_FILE, START, END);
-        let other_core = core_between(OTHER_TOOL_PIN_RS, START, END);
+    fn pin_rs_matches_the_sister_tool_byte_for_byte_from_the_doc_comment_onward() {
+        let (this_all, other_all) = normalize_and_compare(THIS_FILE, OTHER_TOOL_PIN_RS);
         assert_eq!(
-            this_core, other_core,
+            this_all, other_all,
             "tools/sshd-stig-update/src/pin.rs and tools/auditd-stig-update/src/pin.rs \
-             must stay byte-identical from `pub enum Probe` up to the cross-tool \
-             drift-guard section (only the leading module doc-comment, and this \
-             section's own necessarily-asymmetric include_str! path, may differ) - \
-             if this fails, mirror whichever side changed into the other"
+             must stay byte-identical (module doc-comment, every `pub` item, every \
+             test - including this drift guard itself) except each copy's own \
+             `include_str!` sister-path line, normalized away above - if this fails, \
+             mirror whichever side changed into the other"
         );
     }
 }

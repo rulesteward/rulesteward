@@ -284,11 +284,19 @@ fn help_exits_0() {
 /// A minimal `stig-refs.toml` with a KNOWN, test-controlled pin + base_url
 /// (rather than the real shipped file, which is a live pin that will bump
 /// over time and would make these tests brittle against a future #550-
-/// unrelated pin bump).
+/// unrelated pin bump). TWO products (not one): the real `stig-refs.toml`
+/// has three, and the justfile recipe invokes `check-pin` with no
+/// `--product` at all, so a single-product config would let a handler that
+/// ignores `--product` entirely (always probing the first config entry)
+/// pass every test below - `check_pin_respects_product_selection` pins that
+/// `--product rhel10` really reaches rhel10's own pin, not rhel9's.
 const PIN_TEST_STIG_REFS: &str = "base_url = \"https://mirror.example.test/stigs\"\n\n\
      [products.rhel9]\n\
      zip = \"U_RHEL_9_V2R9_STIG.zip\"\n\
-     benchmark = \"test fixture\"\n";
+     benchmark = \"test fixture rhel9\"\n\n\
+     [products.rhel10]\n\
+     zip = \"U_RHEL_10_V1R2_STIG.zip\"\n\
+     benchmark = \"test fixture rhel10\"\n";
 
 #[test]
 fn check_pin_is_a_recognized_subcommand() {
@@ -375,6 +383,43 @@ fn check_pin_reports_newer_revision_and_still_exits_0() {
     assert!(
         stdout.contains("V2R10") || stdout.contains("U_RHEL_9_V2R10_STIG.zip"),
         "stdout must name the specific newer revision; stdout={stdout}"
+    );
+}
+
+#[test]
+fn check_pin_respects_product_selection() {
+    // #550 lane-5 round-2 rework, CONCERN: with only ONE product in
+    // `PIN_TEST_STIG_REFS`, a handler that ignores `--product` entirely and
+    // always probes the first config entry would still pass every test
+    // above - the same shape as round-1 blocker 1, moved to the
+    // config -> find_latest plumbing. Request rhel10 explicitly (a
+    // DIFFERENT pin, "U_RHEL_10_V1R2_STIG.zip") and assert the reported
+    // revision is rhel10's OWN next candidate (V1R3), not rhel9's (V2R10).
+    let cfg = temp_named("pin-cfg-multiproduct", PIN_TEST_STIG_REFS);
+    let fixture = temp_named(
+        "pin-fixture-multiproduct",
+        "FOUND\nFOUND\nNOTFOUND\nNOTFOUND\n",
+    );
+    let (code, stdout, err) = run(&[
+        "check-pin",
+        "--product",
+        "rhel10",
+        "--config",
+        &cfg.to_string_lossy(),
+        "--fixture",
+        &fixture.to_string_lossy(),
+    ]);
+    assert_eq!(code, Some(0), "stdout={stdout} err={err}");
+    assert!(
+        stdout.contains("V1R3") || stdout.contains("U_RHEL_10_V1R3_STIG.zip"),
+        "must report rhel10's OWN next revision when --product rhel10 was \
+         requested; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("V2R10") && !stdout.contains("U_RHEL_9_V2R10_STIG.zip"),
+        "must NOT report rhel9's revision when --product rhel10 was \
+         requested - --product must actually select which pin is checked; \
+         stdout={stdout}"
     );
 }
 
