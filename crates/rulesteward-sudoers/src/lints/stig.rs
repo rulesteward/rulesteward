@@ -23,13 +23,15 @@
 //! `tests::w04_weakening_findings_cite_grounded_controls` drift-guard pins these.
 //!
 //! - `!authenticate` -- bypasses per-invocation re-authentication.
-//!   DISA STIG RHEL-08-010381 / RHEL-09-432025
-//!   (ComplianceAsCode `sudo_remove_no_authenticate`).
+//!   DISA STIG RHEL-08-010381 / RHEL-09-432025 / RHEL-10-600530
+//!   (ComplianceAsCode `sudo_remove_no_authenticate`; RHEL-10-600530 grounded
+//!   #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
 //! - `targetpw` / `rootpw` / `runaspw` -- prompts for the target/root/runas
 //!   user's password rather than the invoking user's, breaking PAM/audit
 //!   accountability.
-//!   DISA STIG RHEL-08-010383 / RHEL-09-432020
-//!   (ComplianceAsCode `sudoers_validate_passwd`).
+//!   DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550
+//!   (ComplianceAsCode `sudoers_validate_passwd`; RHEL-10-600550 grounded
+//!   #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
 //! - `visiblepw` -- allows sudo to proceed when the password would be visible
 //!   (e.g. when a tty is not associated with stdin).
 //!   CIS / general hardening; no DISA sudo STIG control.
@@ -44,8 +46,9 @@
 //!   indefinitely. A non-negative value (0 or positive) is compliant. This is a
 //!   value-conditional weakening (handled in `check_file`'s non-negated arm, not
 //!   the name-presence `WEAKENING_PRESENT` table).
-//!   DISA STIG RHEL-08-010384 / RHEL-09-432015
-//!   (ComplianceAsCode `sudo_require_reauthentication`, #363).
+//!   DISA STIG RHEL-08-010384 / RHEL-09-432015 / RHEL-10-600540
+//!   (ComplianceAsCode `sudo_require_reauthentication`, #363; RHEL-10-600540
+//!   grounded #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
 //!
 //! ## Missing-required (merged, #347, #363) -- fire on absence / conflict
 //!
@@ -65,7 +68,8 @@
 //! were an older CIS benchmark generation's numbering).
 //!
 //! `timestamp_timeout` (#363) IS a DISA STIG control (RHEL-08-010384 /
-//! RHEL-09-432015, ComplianceAsCode `sudo_require_reauthentication`) and fires here
+//! RHEL-09-432015 / RHEL-10-600540, ComplianceAsCode
+//! `sudo_require_reauthentication`) and fires here
 //! in two merged ways: ABSENT (no explicit `timestamp_timeout` anywhere -- the
 //! STIG's PRIMARY trigger) and CONFLICTING (the key set to 2+ DISTINCT values
 //! across the merged files, leaving the effective timeout ambiguous). A single
@@ -131,7 +135,7 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
         "targetpw",
         "prompts for the target user's password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
-        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550",
         &PW_FAMILY_CONTROLS,
     ),
     // rootpw: prompts for root's password -- also breaks accountability.
@@ -139,7 +143,7 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
         "rootpw",
         "prompts for the root password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
-        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550",
         &PW_FAMILY_CONTROLS,
     ),
     // runaspw: prompts for the run-as user's password.
@@ -147,7 +151,7 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
         "runaspw",
         "prompts for the run-as user's password instead of the invoking user's; \
          breaks PAM accountability (re-auth must use the user's own credentials)",
-        "DISA STIG RHEL-08-010383 / RHEL-09-432020",
+        "DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550",
         &PW_FAMILY_CONTROLS,
     ),
     // visiblepw: allows sudo when the password would be echoed in plain text.
@@ -170,18 +174,28 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
 // find every site it backs).
 // ---------------------------------------------------------------------------
 
-/// `targetpw` / `rootpw` / `runaspw`: DISA STIG RHEL-08-010383 / RHEL-09-432020
-/// (`WEAKENING_PRESENT` rows above).
-const PW_FAMILY_CONTROLS: [(Framework, &str); 2] = [
+/// `targetpw` / `rootpw` / `runaspw`: DISA STIG RHEL-08-010383 /
+/// RHEL-09-432020 / RHEL-10-600550 (`WEAKENING_PRESENT` rows above).
+/// RHEL-10-600550 (#563, 9i lane-7) grounded against the DISA RHEL 10 STIG
+/// V1R1 XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use
+/// the invoking user's password for privilege escalation when using
+/// \"sudo\""; see `lane-7-sudoersids-report.md`).
+const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010383"),
     (Framework::Stig, "RHEL-09-432020"),
+    (Framework::Stig, "RHEL-10-600550"),
 ];
 
-/// `!authenticate`: DISA STIG RHEL-08-010381 / RHEL-09-432025 (`check_file`'s
-/// negated arm).
-const AUTHENTICATE_CONTROLS: [(Framework, &str); 2] = [
+/// `!authenticate`: DISA STIG RHEL-08-010381 / RHEL-09-432025 /
+/// RHEL-10-600530 (`check_file`'s negated arm). RHEL-10-600530 (#563, 9i
+/// lane-7) grounded against the DISA RHEL 10 STIG V1R1 XCCDF (Group
+/// V-281208 / SV-281208r1166576_rule, "RHEL 10 must require users to
+/// reauthenticate for privilege escalation"; see
+/// `lane-7-sudoersids-report.md`).
+const AUTHENTICATE_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010381"),
     (Framework::Stig, "RHEL-09-432025"),
+    (Framework::Stig, "RHEL-10-600530"),
 ];
 
 /// The verbatim CaC title for a product-invariant CIS control id, drawn from
@@ -222,13 +236,18 @@ fn io_log_controls() -> Vec<ControlRef> {
     ]
 }
 
-/// `timestamp_timeout`: DISA STIG RHEL-08-010384 / RHEL-09-432015. Shared by
-/// the per-file NEGATIVE-value weakening (`check_file`) and the merged
-/// ABSENT/CONFLICTING findings (`check_merged_required`) -- same control,
-/// three emit sites.
-const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 2] = [
+/// `timestamp_timeout`: DISA STIG RHEL-08-010384 / RHEL-09-432015 /
+/// RHEL-10-600540. Shared by the per-file NEGATIVE-value weakening
+/// (`check_file`) and the merged ABSENT/CONFLICTING findings
+/// (`check_merged_required`) -- same control, three emit sites.
+/// RHEL-10-600540 (#563, 9i lane-7) grounded against the DISA RHEL 10 STIG
+/// V1R1 XCCDF (Group V-281209 / SV-281209r1166579_rule, "RHEL 10 must
+/// require reauthentication when using the \"sudo\" command"; see
+/// `lane-7-sudoersids-report.md`).
+const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010384"),
     (Framework::Stig, "RHEL-09-432015"),
+    (Framework::Stig, "RHEL-10-600540"),
 ];
 
 /// Build the typed `ControlRef` vec for a `(Framework, id)` pair slice. The
@@ -299,7 +318,8 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
             // via the `WEAKENING_PRESENT` name table. A negative timeout (e.g. -1)
             // makes the sudo credential cache NEVER expire, so a user re-authenticates
             // once and is then trusted indefinitely. A non-negative value (0 or
-            // positive) is compliant. DISA STIG RHEL-08-010384 / RHEL-09-432015.
+            // positive) is compliant. DISA STIG RHEL-08-010384 / RHEL-09-432015 /
+            // RHEL-10-600540.
             if name == "timestamp_timeout"
                 && setting
                     .value
@@ -317,7 +337,7 @@ fn check_file(file: &SudoersFile) -> Vec<Diagnostic> {
                              the sudo credential cache never expires, so a user is \
                              re-authenticated once and trusted indefinitely; STIG requires \
                              re-authentication (a non-negative timeout) \
-                             (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                             (DISA STIG RHEL-08-010384 / RHEL-09-432015 / RHEL-10-600540)",
                             scope_paren(&defaults.scope),
                         ),
                         &file.path,
@@ -367,7 +387,7 @@ fn negated_weakening(
 ) -> Option<Diagnostic> {
     match name {
         // `!authenticate`: disables per-invocation password re-authentication.
-        // DISA STIG RHEL-08-010381 / RHEL-09-432025.
+        // DISA STIG RHEL-08-010381 / RHEL-09-432025 / RHEL-10-600530.
         "authenticate" => Some(
             anchored(
                 Severity::Warning,
@@ -377,7 +397,7 @@ fn negated_weakening(
                     "Defaults setting '!authenticate' {} disables \
                      per-invocation sudo re-authentication; \
                      STIG requires authentication for every invocation \
-                     (DISA STIG RHEL-08-010381 / RHEL-09-432025)",
+                     (DISA STIG RHEL-08-010381 / RHEL-09-432025 / RHEL-10-600530)",
                     scope_paren(scope),
                 ),
                 file,
@@ -555,8 +575,8 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
             .with_controls(io_log_controls()),
         );
     }
-    // timestamp_timeout (#363, DISA STIG RHEL-08-010384 / RHEL-09-432015,
-    // ComplianceAsCode `sudo_require_reauthentication`):
+    // timestamp_timeout (#363, DISA STIG RHEL-08-010384 / RHEL-09-432015 /
+    // RHEL-10-600540, ComplianceAsCode `sudo_require_reauthentication`):
     //
     // * ABSENT (no explicit `Defaults timestamp_timeout=` anywhere) is the STIG's
     //   PRIMARY trigger: the compiled-in default applies and the requirement is not
@@ -581,7 +601,7 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
                  resolved sudoers configuration; without an explicit re-authentication \
                  timeout sudo relies on the compiled-in default, so the policy does not \
                  demonstrably require re-authentication \
-                 (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                 (DISA STIG RHEL-08-010384 / RHEL-09-432015 / RHEL-10-600540)",
                 &top.path,
                 0,
             )
@@ -597,7 +617,7 @@ fn check_merged_required(files: &[SudoersFile]) -> Vec<Diagnostic> {
                 "conflicting 'Defaults timestamp_timeout' values are set across the \
                  resolved sudoers configuration (the key is given more than one distinct \
                  value); the effective re-authentication timeout is ambiguous \
-                 (DISA STIG RHEL-08-010384 / RHEL-09-432015)",
+                 (DISA STIG RHEL-08-010384 / RHEL-09-432015 / RHEL-10-600540)",
                 &top.path,
                 0,
             )
