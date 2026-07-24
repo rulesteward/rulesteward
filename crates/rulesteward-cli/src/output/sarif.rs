@@ -659,6 +659,19 @@ mod tests {
         // Companion green pin: guards against over-guarding -- a normal
         // anchored diagnostic (line>=1, column>=1) must still carry BOTH
         // startLine and startColumn.
+        //
+        // column is pinned at 1 (the SARIF schema's minimal valid
+        // startColumn), not some larger value: a wrong guard written as
+        // `if diag.column > 1` (off-by-one on the boundary) would still
+        // emit startColumn for any column >= 2, so a test using column=3
+        // cannot distinguish `> 0` from `> 1`. column==1 is the smallest
+        // input that only the correct `>= 1` (equivalently `> 0`) guard
+        // accepts, so it is the only value that kills the off-by-one
+        // mutant. This case is an intentional green boundary control, not
+        // a RED pin -- current code emits startColumn whenever line>0
+        // (unconditionally), so it already passes pre-guard; the value is
+        // still the load-bearing choice because it locks the guard's
+        // eventual boundary to `>= 1`/`> 0`, not `> 1`.
         let d = Diagnostic::new(
             Severity::Warning,
             "fapd-W03",
@@ -666,7 +679,7 @@ mod tests {
             "normal anchored diagnostic",
             "/etc/fapolicyd/rules.d/10-x.rules",
             7,
-            3,
+            1,
         );
         let out = render(&[d], None).expect("render");
         let v: Value = serde_json::from_str(&out).expect("parse");
@@ -677,8 +690,9 @@ mod tests {
         assert_eq!(region.get("startLine").and_then(Value::as_i64), Some(7));
         assert_eq!(
             region.get("startColumn").and_then(Value::as_i64),
-            Some(3),
-            "column>=1 must still emit startColumn"
+            Some(1),
+            "column==1 (the minimal valid SARIF startColumn) must still emit \
+             startColumn -- kills an off-by-one `> 1` guard"
         );
     }
 
