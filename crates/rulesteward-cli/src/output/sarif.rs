@@ -228,10 +228,24 @@ fn diagnostic_to_result(diag: &Diagnostic, taxonomy_groups: &[TaxonomyGroup]) ->
         // `Region` line/column are i64 in the SARIF schema; the Diagnostic
         // stores them as usize (1-based). The cast is lossless for any real
         // source file.
-        let region = Region::builder()
+        //
+        // `startColumn` is only emitted when `diag.column >= 1` (#581): the
+        // SARIF 2.1.0 schema requires `region.startColumn` >= 1 when present,
+        // so a `column == 0` (unreachable via any shipping backend today --
+        // every backend maintains line>0 => column>=1, but defensive
+        // hardening against a future one that doesn't) must omit the key
+        // entirely rather than emit the schema-invalid `startColumn: 0`.
+        // `start_column` is `strip_option, default` on the generated
+        // TypedBuilder, so leaving the setter off the chain and assigning the
+        // field directly afterward (same idiom as
+        // `control_reporting_descriptor`'s `descriptor.name`/`.properties`)
+        // keeps this a single build chain instead of a type-state branch.
+        let mut region = Region::builder()
             .start_line(i64::try_from(diag.line).unwrap_or(i64::MAX))
-            .start_column(i64::try_from(diag.column).unwrap_or(i64::MAX))
             .build();
+        if diag.column >= 1 {
+            region.start_column = Some(i64::try_from(diag.column).unwrap_or(i64::MAX));
+        }
         PhysicalLocation::builder()
             .artifact_location(artifact_location)
             .region(region)

@@ -1,5 +1,10 @@
 name: stig-check
 
+# Cross-reference (#580): the names read inverted at a glance. THIS workflow
+# ("check") is the OFFLINE PR gate (just recipe: stig-check-offline), and the
+# LIVE weekly probe against the pinned DISA zips is stig-drift.yml (just
+# recipe: stig-check). See tools/stig-update/README.md for the full table.
+#
 # PR-time drift gate for the sysctld-W02 STIG kernel-hardening baseline (issue #335).
 # Fail the build if crates/rulesteward-sysctld/src/lints/baseline.rs no longer
 # matches the official DISA XCCDF content that grounds it.
