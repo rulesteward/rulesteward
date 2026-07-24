@@ -53,7 +53,10 @@ fn run_lint_with_probe(
         .clone()
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SELINUX_CONFIG));
 
-    let text = match std::fs::read_to_string(&path) {
+    // Routed through `rulesteward_core::fsread` (#560): a FIFO/socket/device
+    // node target fails fast with a clear error instead of hanging or
+    // reading unbounded data.
+    let text = match rulesteward_core::fsread::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("selinux lint: cannot read {}: {e}", path.display());
