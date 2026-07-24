@@ -882,21 +882,26 @@ fn parse_target_dir_filter_excludes_non_rules_files() {
     }
 }
 
-/// parser.rs:158-159 `strip_comment` -- single-quote protection of `#`.
+/// Single-quote protection of `#` during comment stripping. The scan now
+/// lives in `rulesteward_core::comment` (`comment_index`/`strip` with
+/// `StripConfig::AUDITD`, `QuoteChar::Single` - see
+/// `rulesteward-core/src/comment.rs`); auditd's former local
+/// `strip_comment` was extracted there by the #562 unification (9i).
 ///
-/// Three mutation survivors target this function:
-///   - delete `'\''` match arm  (single-quote toggle removed)
-///   - replace guard `!in_single_quote` with `true`  (always treat `#` as comment)
-///   - delete `!` in guard  (same effect as above)
+/// History: three mutation survivors targeted the old local function
+/// (delete the `'\''` match arm; replace the `!in_single_quote` guard with
+/// `true`; delete the `!` in the guard). These pins killed them and remain
+/// the behavior-level kill coverage for the equivalent quote-toggle /
+/// guard mutants in the shared scan's single-quote arm.
 ///
-/// With any of these mutations, a `#` inside single quotes is incorrectly treated
-/// as a comment start, truncating the token at the `#` and producing a parse error
-/// or wrong value.
+/// With any such mutation, a `#` inside single quotes is incorrectly treated
+/// as a comment start, truncating the token at the `#` and producing a parse
+/// error or wrong value.
 ///
 /// Test A: `#` inside single-quoted `-F key` value -- must NOT be stripped.
 /// Test B: trailing `# comment` after a real token -- must BE stripped.
 ///
-/// Grounded: `strip_comment` doc comment + `man 7 audit.rules` section 2.
+/// Grounded: `StripConfig::AUDITD` doc + `man 7 audit.rules` section 2.
 #[test]
 fn strip_comment_hash_inside_single_quotes_not_stripped() {
     // `-F key='a#b'` -- the `#` is inside single quotes and must survive stripping.
