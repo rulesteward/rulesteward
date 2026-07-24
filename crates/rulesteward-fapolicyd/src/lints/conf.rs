@@ -35,10 +35,12 @@ use crate::version::TargetVersion;
 /// `fapolicyd.conf` text at `path`.
 ///
 /// Fires whenever the LAST-WINS resolved value of the `permissive` key,
-/// reduced to its FIRST whitespace token (issue #569 - the daemon's
-/// `nv_split`/`_strsplit` binds `nv.value` to only the first token after
-/// `=`; a trailing `# comment` or other junk token is logged separately but
-/// never reaches the keyword's parser, so it must not be considered), is a
+/// reduced to its FIRST ASCII-space-delimited token (issue #569 - the
+/// daemon's `nv_split`/`_strsplit` binds `nv.value` to only the first token
+/// after `=`, splitting on the literal space byte `0x20` only - never a
+/// tab, CR, or other Unicode-whitespace byte; a trailing `# comment` or
+/// other junk token is logged separately but never reaches the keyword's
+/// parser, so it must not be considered), is a
 /// non-empty, all-ASCII-digit string containing at least one nonzero digit -
 /// the daemon's `strtoul`-then-clamp semantics (see `is_effectively_permissive`
 /// below): `"1"`, `"2"`, `"10"`, `"01"`, `"007"`, etc. all fire - regardless
@@ -66,25 +68,39 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
         if let Some((k, v)) = line.split_once('=')
             && k.trim() == "permissive"
         {
-            winner = Some((idx + 1, start..end, v.trim()));
+            // Issue #569 round 3 (byte-exact grounding on upstream
+            // daemon-config.c): strip only LEADING ASCII space (0x20)
+            // bytes here, mirroring `_strsplit`'s retry-on-leading-space
+            // skip in the real daemon's `nv_split` - never a trailing
+            // Unicode `.trim()`, which would wrongly strip a CRLF file's
+            // trailing '\r' byte (or any other non-space-but-whitespace
+            // byte) before the first-token split below ever sees it.
+            winner = Some((idx + 1, start..end, v.trim_start_matches(' ')));
         }
     }
 
     let Some((line, span, value)) = winner else {
         return Vec::new();
     };
-    // Issue #569: mirror `rulesteward-cli`'s
-    // `doctor::probe::permissive_value_is_effectively_permissive` exactly.
-    // Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, live-verified
-    // on fapolicyd 1.3.2 and 1.4.5): a config line is whitespace-tokenized
-    // and `nv.value` is bound to ONLY the FIRST token after `=` - a trailing
-    // `# comment` (or any further token) is separately logged as "Wrong
-    // number of arguments" but does not change which token the keyword's
-    // parser (`permissive_parser`) receives. So the value must be reduced to
-    // its first whitespace token BEFORE the digit-clamp predicate runs, not
-    // treated as effectively-permissive if ANY token qualifies.
-    let first_token = value.split_whitespace().next();
-    if !first_token.is_some_and(is_effectively_permissive) {
+    // Issue #569, round 3 (byte-exact grounding on upstream
+    // `src/library/daemon-config.c`, superseding the round-1/round-2 fix's
+    // reliance on Rust's Unicode-whitespace-aware `split_whitespace()`): the
+    // daemon's own tokenizer, `_strsplit`, finds token boundaries by
+    // `strchr(str, ' ')` - the literal ASCII space byte (0x20) ONLY, never a
+    // tab or a CRLF file's trailing '\r'. `nv_split` binds `nv->value` to
+    // that FIRST space-delimited token; a further token (a trailing
+    // `# comment` or other junk) is logged separately as "Wrong number of
+    // arguments" but does not change which token `permissive_parser`
+    // receives. `unsigned_int_parser`'s own `isdigit` walk is byte-exact
+    // too, so a tab or stray '\r' embedded in that first token (because it
+    // was never a space-byte separator to the daemon) makes the WHOLE token
+    // a parse error, not a rescuable digit prefix. So the value must be
+    // reduced to its first ASCII-space-delimited token here - `split(' ')`,
+    // never `split_whitespace()`/`.trim()`, which would wrongly treat a tab
+    // or '\r' as a separator/trimmable byte and rescue a value the real
+    // daemon's byte-exact parser actually rejects.
+    let first_token = value.split(' ').next().unwrap_or(value);
+    if !is_effectively_permissive(first_token) {
         return Vec::new();
     }
 
