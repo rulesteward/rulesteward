@@ -6,8 +6,8 @@
 //! enumerates that search path (optionally rooted at a `--root` prefix for hermetic
 //! testing / chroot-linting), applies the grounded same-basename directory masking
 //! and global lexicographic merge, and runs the existing
-//! `sysctld-F01`/`sysctld-W01`/`sysctld-W02` passes over the merged,
-//! precedence-ordered assignment list plus the new cross-directory `sysctld-W03`
+//! `sysctld-F01`/`sysctld-W01`/`sysctld-W02`/`sysctld-W04` passes over the merged,
+//! precedence-ordered assignment list plus the cross-directory `sysctld-W03`
 //! pass. See the design doc
 //! `rulesteward-docs/2026-07-04-sysctld-cross-directory-precedence-420-design.md`
 //! for the full grounded model (verified against a Rocky Linux 9.7 container,
@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 use rulesteward_core::{Diagnostic, Severity, anchored};
 
 use crate::lints::baseline::{TargetVersion, w02_baseline};
+use crate::lints::cis::w04_baseline;
 use crate::parser::{ParsedAssignment, effective_values, parse_file, w01_last_wins};
 
 /// The standard `sysctl.d` search directories, highest precedence first. `/lib` is
@@ -485,8 +486,8 @@ fn w03c_masked_key_drops(
 /// `/lib/sysctl.d` alias) and `/etc/sysctl.conf`, optionally rooted at `root` (the
 /// `--root PREFIX` hermetic-testing / chroot surface), and run the full `sysctld-`
 /// pass set over the precedence-merged result: `sysctld-F01`/`sysctld-W01`, the
-/// version-aware `sysctld-W02` when `target` is `Some`, and the cross-directory
-/// `sysctld-W03` (a/b/c).
+/// version-aware `sysctld-W02` (STIG) and `sysctld-W04` (CIS) when `target` is
+/// `Some`, and the cross-directory `sysctld-W03` (a/b/c).
 ///
 /// Returns the diagnostics plus every read file's staged source (keyed by display
 /// path, the `source_id` convention `anchored` sets), so the human renderer can show
@@ -525,6 +526,7 @@ pub fn lint_system(
     diags.extend(w03a_and_w01(&merged, &ranks));
     if let Some(t) = target {
         diags.extend(w02_baseline(&merged, t, &prefix.join("etc/sysctl.d")));
+        diags.extend(w04_baseline(&merged, t, &prefix.join("etc/sysctl.d")));
     }
     diags.extend(w03c_masked_key_drops(&masked, &merged, &mut sources));
     diags.extend(applier);
