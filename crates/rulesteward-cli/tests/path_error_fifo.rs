@@ -58,24 +58,33 @@ fn make_fifo(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     fifo
 }
 
-/// Run `args` bounded by a generous timeout, panicking loudly (naming the
-/// hang explicitly) rather than letting the test binary wedge forever if the
-/// special-file guard regresses.
+/// Run `args` bounded by a generous timeout. NOTE: `assert_cmd`'s
+/// `.timeout()` does NOT make `.output()` return an `Err` when the bound is
+/// hit -- it kills the child and `.output()` still returns `Ok(Output)`,
+/// with `status.code() == None` (the process was killed by a signal rather
+/// than exiting normally). That `None` IS the hang signal in this suite; see
+/// `assert_fast_tool_failure` below, which asserts on it explicitly. The
+/// `unwrap_or_else` panic here is therefore dead for the timeout case (kept
+/// only for a genuine spawn/IO failure, an unrelated error class).
 fn run_bounded(args: &[&str]) -> std::process::Output {
     bin()
         .args(args)
         .timeout(Duration::from_secs(15))
         .output()
         .unwrap_or_else(|e| {
-            panic!(
-                "command {args:?} did not complete within 15s -- this IS the \
-                 #560 hang bug (a blocking FIFO read that never returns \
-                 because no writer ever opens the other end): {e}"
-            )
+            panic!("command {args:?} failed to run (spawn/IO error, not a timeout): {e}")
         })
 }
 
 fn assert_fast_tool_failure(out: &std::process::Output, fifo: &std::path::Path) {
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None, meaning \
+         the process was killed by a signal rather than exiting normally) -- \
+         this IS the #560 hang bug (a blocking FIFO read that never returns \
+         because no writer ever opens the other end); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(
         out.status.code(),
         Some(3),

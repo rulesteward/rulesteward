@@ -214,27 +214,55 @@ mod tests {
         }
     }
 
-    /// A Unix domain socket must be rejected exactly like any other
-    /// non-regular file. This kills a wrong implementation that guards only
-    /// against directories, FIFOs, and device nodes but forgets sockets
-    /// entirely (a real-world special file type any of the lint backends
-    /// could be pointed at by mistake, e.g. a stray systemd-notify socket).
+    /// A Unix domain socket must be rejected: opening a bound socket path
+    /// for reading returns `Err` promptly, never `Ok`, never a hang. Note:
+    /// on Linux, `open()` on a bound `AF_UNIX` socket fails with `ENXIO`
+    /// BEFORE any fd-metadata check ever runs -- empirically confirmed
+    /// against the canonical contract-following implementation (round 6
+    /// adversarial review) -- so, unlike the directory/FIFO/character-device
+    /// cases above, no TOCTOU-compliant impl (metadata-of-the-opened-fd,
+    /// never a separate `stat`/`lstat`) CAN produce an error whose message
+    /// names "socket" or "non-regular file" here: the OS itself refuses the
+    /// open before the guard's own type check gets a chance to run. This
+    /// test therefore pins only the real, impl-independent property (fails
+    /// fast, never succeeds, never hangs) and deliberately does NOT assert
+    /// on error wording for this one case. The general "no separate
+    /// stat/lstat, check the opened fd's metadata" TOCTOU contract stays as
+    /// documented in the module docs above, unchanged, and continues to be
+    /// enforced by the post-GREEN impl-aware adversarial review rather than
+    /// by a unit-level assertion here (it is inherently racy to pin
+    /// deterministically at this level).
     #[test]
     fn unix_domain_socket_is_rejected() {
         let dir = TempDir::new("socket");
         let sock_path = dir.path().join("test.sock");
         let _listener =
             std::os::unix::net::UnixListener::bind(&sock_path).expect("bind unix socket");
-        let err = read_to_string(&sock_path).expect_err("a unix domain socket must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("non-regular file"),
-            "error must explicitly name the non-regular-file condition, got: {msg}"
-        );
-        assert!(
-            msg.to_lowercase().contains("socket"),
-            "error must name the actual file type found (socket), got: {msg}"
-        );
+
+        let (tx, rx) = mpsc::channel();
+        let sock_for_thread = sock_path.clone();
+        std::thread::spawn(move || {
+            let result = read_to_string(&sock_for_thread);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => {
+                result.expect_err("a unix domain socket must be rejected, not read");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_to_string on a bound unix domain socket did not \
+                     return within 5s -- opening it must fail fast, never hang"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "worker thread ended without a result (the todo!() stub \
+                     panics today -- expected RED until #560 is implemented)"
+                );
+            }
+        }
     }
 
     /// #560's actual bug: a FIFO with no writer must fail FAST, never block.
