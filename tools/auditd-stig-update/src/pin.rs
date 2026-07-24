@@ -150,18 +150,67 @@ pub enum PinStatus {
 /// this tool's monthly scheduled `check-pin` runs).
 pub const PROBE_CEILING: usize = 64;
 
+/// Locate the first `V<major>R<minor>` token in `zip`, returning the byte span
+/// of the token itself (`zip[start..end]`, e.g. `"V2R9"`) alongside the parsed
+/// major/minor. Shared scan behind both [`parse_revision`] (which only needs
+/// the parsed value) and [`candidate_zip`] (which needs the span to splice a
+/// replacement in). Minor is matched GREEDILY (every following ASCII digit),
+/// not a fixed width, so a rolled-over multi-digit minor (`V2R10`) parses as
+/// `10`, not `1` - see `parse_revision_extracts_major_and_minor`'s BLOCKER 1.
+fn scan_revision(zip: &str) -> Option<(usize, usize, u32, u32)> {
+    let bytes = zip.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'V' {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        // Need at least one major digit, immediately followed by `R`.
+        if j == i + 1 || j >= bytes.len() || bytes[j] != b'R' {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < bytes.len() && bytes[k].is_ascii_digit() {
+            k += 1;
+        }
+        // Need at least one minor digit.
+        if k == j + 1 {
+            continue;
+        }
+        if let (Ok(major), Ok(minor)) = (zip[i + 1..j].parse(), zip[j + 1..k].parse()) {
+            return Some((i, k, major, minor));
+        }
+    }
+    None
+}
+
 /// Parse the `V<major>R<minor>` revision token out of a pinned zip filename
 /// (e.g. `"U_RHEL_9_V2R9_STIG.zip"` -> `Revision { major: 2, minor: 9 }`).
 /// `None` if no such token is present.
-pub fn parse_revision(_zip: &str) -> Option<Revision> {
-    todo!("lane 5 (#550) impl: extract V<major>R<minor> from the pinned zip filename")
+pub fn parse_revision(zip: &str) -> Option<Revision> {
+    scan_revision(zip).map(|(_, _, major, minor)| Revision { major, minor })
 }
 
 /// Build the candidate zip filename for `rev`, substituting into `zip`'s own
 /// `V<major>R<minor>` token and leaving every other character (the
 /// `U_RHEL_<n>_` prefix, the `_STIG.zip` suffix) unchanged.
-pub fn candidate_zip(_zip: &str, _rev: Revision) -> String {
-    todo!("lane 5 (#550) impl: substitute a new V<major>R<minor> into the pinned filename")
+pub fn candidate_zip(zip: &str, rev: Revision) -> String {
+    match scan_revision(zip) {
+        Some((start, end, ..)) => {
+            format!(
+                "{}V{}R{}{}",
+                &zip[..start],
+                rev.major,
+                rev.minor,
+                &zip[end..]
+            )
+        }
+        // No token to substitute into - nothing sensible to build; hand the
+        // filename back unchanged rather than fabricate a token position.
+        None => zip.to_string(),
+    }
 }
 
 /// The two candidates tried immediately after `current` is confirmed to
@@ -170,21 +219,117 @@ pub fn candidate_zip(_zip: &str, _rev: Revision) -> String {
 /// ASSUMED rollover rule (see the module doc) is pinned in exactly ONE place:
 /// a future correction to the assumption touches this function's own tests,
 /// not every `find_latest` loop test's literal `V3R1`/`V4R1` strings.
-pub fn next_candidates(_current: Revision) -> (Revision, Revision) {
-    todo!("lane 5 (#550) impl: (minor+1, same major) and (major+1, minor=1)")
+pub fn next_candidates(current: Revision) -> (Revision, Revision) {
+    (
+        Revision {
+            major: current.major,
+            minor: current.minor + 1,
+        },
+        Revision {
+            major: current.major + 1,
+            minor: 1,
+        },
+    )
 }
 
 /// Probe the pin itself, then successive candidates, per the module doc's
 /// numbered algorithm.
-pub fn find_latest(_base_url: &str, _pinned_zip: &str, _prober: &mut impl Prober) -> PinStatus {
-    todo!("lane 5 (#550) impl: the pin-first, then next-candidate, probe loop")
+pub fn find_latest(base_url: &str, pinned_zip: &str, prober: &mut impl Prober) -> PinStatus {
+    let Some(pin_rev) = parse_revision(pinned_zip) else {
+        return PinStatus::Unparseable {
+            pinned_zip: pinned_zip.to_string(),
+        };
+    };
+
+    let base = base_url.trim_end_matches('/');
+    let mut probes = 0usize;
+    let ceiling_status = || {
+        PinStatus::Unavailable(format!(
+            "gave up after {PROBE_CEILING} probes without a definitive answer \
+             (a misbehaving prober? DISA's CDN itself returns clean 404s)"
+        ))
+    };
+
+    // Point 2: probe the pin itself FIRST, before any candidate enumeration.
+    probes += 1;
+    match prober.probe(&format!("{base}/{pinned_zip}")) {
+        Err(e) => return PinStatus::Unavailable(e.0),
+        Ok(Probe::NotFound) => {
+            return PinStatus::PinNotFound {
+                pinned_zip: pinned_zip.to_string(),
+            };
+        }
+        Ok(Probe::Found) => {}
+    }
+
+    // Point 3: enumerate forward from the confirmed pin.
+    let mut last_confirmed = pin_rev;
+    loop {
+        let (next_minor, rollover) = next_candidates(last_confirmed);
+
+        if probes >= PROBE_CEILING {
+            return ceiling_status();
+        }
+        probes += 1;
+        let minor_zip = candidate_zip(pinned_zip, next_minor);
+        match prober.probe(&format!("{base}/{minor_zip}")) {
+            Err(e) => return PinStatus::Unavailable(e.0),
+            Ok(Probe::Found) => {
+                last_confirmed = next_minor;
+                continue;
+            }
+            Ok(Probe::NotFound) => {}
+        }
+
+        if probes >= PROBE_CEILING {
+            return ceiling_status();
+        }
+        probes += 1;
+        let rollover_zip = candidate_zip(pinned_zip, rollover);
+        match prober.probe(&format!("{base}/{rollover_zip}")) {
+            Err(e) => return PinStatus::Unavailable(e.0),
+            Ok(Probe::Found) => {
+                last_confirmed = rollover;
+                continue;
+            }
+            Ok(Probe::NotFound) => {
+                return if last_confirmed == pin_rev {
+                    PinStatus::Current
+                } else {
+                    PinStatus::Newer {
+                        revision: last_confirmed,
+                        zip: candidate_zip(pinned_zip, last_confirmed),
+                    }
+                };
+            }
+        }
+    }
 }
 
 /// Render a staleness check to a human-readable message + process exit code.
 /// Every branch exits `0` - see the module doc's closing paragraph for why,
 /// including why the CLI wiring (not just this function) must preserve it.
-pub fn report(_product: &str, _status: &PinStatus) -> (String, u8) {
-    todo!("lane 5 (#550) impl: format the check-pin message (exit code is always 0)")
+pub fn report(product: &str, status: &PinStatus) -> (String, u8) {
+    let msg = match status {
+        PinStatus::Current => format!("{product}: current (no newer DISA STIG revision found)"),
+        PinStatus::Newer { revision, zip } => format!(
+            "{product}: a newer DISA STIG revision exists - V{}R{} ({zip}); the pin in \
+             stig-refs.toml needs a bump",
+            revision.major, revision.minor
+        ),
+        PinStatus::PinNotFound { pinned_zip } => format!(
+            "{product}: the pinned zip {pinned_zip} was not found (404) - it has likely aged \
+             out of DISA's CDN retention window and needs a human re-pin"
+        ),
+        PinStatus::Unparseable { pinned_zip } => format!(
+            "{product}: the pinned zip filename {pinned_zip} has no V<major>R<minor> token - \
+             check stig-refs.toml for a typo"
+        ),
+        PinStatus::Unavailable(reason) => {
+            format!("{product}: could not determine staleness - {reason}")
+        }
+    };
+    (msg, 0)
 }
 
 #[cfg(test)]

@@ -1,0 +1,125 @@
+name: sshd-pin-staleness
+
+# Monthly upstream-pin staleness check for the sshd STIG tool (#550, 9j lane 5): probe
+# DISA's CDN for a newer `V<major>R<minor>` revision than each product's pinned zip in
+# tools/sshd-stig-update/stig-refs.toml. On a hit (a newer revision, or the pin itself
+# having aged out of DISA's retention window), open/update a tracking issue - it never
+# edits code. The on-demand path is `just sshd-stig-check-pin`.
+#
+# Unlike sshd-stig-drift.yml (which derives XCCDF CONTENT at the pinned zips and diffs
+# against the shipped tables), this workflow does not touch XCCDF content at all - it
+# only asks "does a newer filename exist" by probing candidate zip URLs. See
+# tools/sshd-stig-update/src/pin.rs's module doc for the full algorithm and why DISA
+# (unlike ComplianceAsCode) has no releases/latest API to query instead.
+#
+# `check-pin` is non-blocking BY DESIGN: pin::report's exit code is ALWAYS 0, for every
+# PinStatus (Current, Newer, PinNotFound, Unparseable, Unavailable alike) - a newer
+# revision or a retired pin is news for a human, not a build failure. So (unlike
+# sshd-stig-drift.yml's 0/1/2 rc dispatch) this workflow cannot use the exit code to
+# decide whether to open an issue; it greps the captured stdout for the two actionable
+# PinStatus messages instead (see the "Detect a staleness hit" step). A NON-zero exit
+# here is always a genuine tool error (a broken stig-refs.toml, an unknown --product, or
+# a `cargo run` compile failure), never a staleness signal, and fails the job loudly.
+#
+# Cron slot: monthly (1st, 08:00 UTC) - DISA STIG revisions move far slower than the
+# weekly XCCDF-content drift checks, so a monthly cadence is generous.
+on:
+  schedule:
+    - cron: "0 8 1 * *" # 1st of the month, 08:00 UTC
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the staleness tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pin-staleness:
+    name: sshd DISA STIG pin staleness (live CDN probe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The tool is its own workspace; cache it separately from the main build.
+          workspaces: tools/sshd-stig-update
+      - name: Live pin-staleness probe (all products)
+        id: check
+        run: |
+          set +e
+          cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- check-pin \
+            > pin.txt 2> pin.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat pin.err
+          cat pin.txt
+          # check-pin's own report() ALWAYS exits 0 (non-blocking by design, see
+          # pin.rs's module doc) - so rc is never itself the staleness signal. ANY
+          # non-zero exit here is a genuine tool error: a broken stig-refs.toml, an
+          # unknown --product, or a `cargo run` compile failure (101) if this
+          # out-of-workspace tool drifts from the rulesteward-sshd public API.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "sshd-stig-update check-pin did not exit cleanly (rc=$RC; see logs above):" \
+               "tools/sshd-stig-update/stig-refs.toml may be broken, or the tool may no" \
+               "longer compile against the rulesteward-sshd API. The tool needs a look." >&2
+          exit 1
+      - name: Detect a staleness hit
+        if: steps.check.outputs.rc == '0'
+        id: hit
+        run: |
+          set -uo pipefail
+          # Actionable PinStatus outcomes (see pin.rs::report's own message text):
+          # Newer -> "a newer DISA STIG revision exists"; PinNotFound -> "was not found
+          # (404)". Current/Unparseable/Unavailable are graceful, non-actionable
+          # outcomes (a transient prober failure or a probe-ceiling hit is NOT the same
+          # as a confirmed staleness finding) and do not open an issue.
+          if grep -qE "a newer DISA STIG revision exists|was not found \(404\)" pin.txt; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open or update the pin-staleness tracking issue
+        if: steps.hit.outputs.hit == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create sshd-pin-staleness --color FBCA04 \
+            --description "sshd DISA STIG pin is stale" 2>/dev/null || true
+          # Build the body in a FILE (cat copies pin.txt verbatim - no shell expansion
+          # of the tool's output) and pass it via --body-file.
+          {
+            echo "The monthly \`sshd-stig-update check-pin\` found at least one pinned DISA"
+            echo "STIG zip in \`tools/sshd-stig-update/stig-refs.toml\` is stale: either a newer"
+            echo "\`V<major>R<minor>\` revision exists, or the pinned zip itself has aged out of"
+            echo "DISA's CDN retention window (404) and needs a re-pin."
+            echo
+            echo "To update: check dl.dod.cyber.mil for the current RHEL 8 / 9 / 10 STIG"
+            echo "revisions, bump the affected \`zip\` value(s) in \`stig-refs.toml\`, then run"
+            echo "\`just sshd-stig-derive <product>\`, reconcile"
+            echo "\`crates/rulesteward-sshd/src/lints/stig.rs\`, refresh the committed"
+            echo "\`tools/sshd-stig-update/tests/fixtures/\`, re-gate (adversarial + mutation),"
+            echo "and confirm \`just sshd-stig-check\` reports 0 drift."
+            echo
+            echo '```'
+            cat pin.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label sshd-pin-staleness --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "sshd STIG pin staleness: a newer DISA revision or a retired pin" \
+              --label sshd-pin-staleness --body-file issue-body.md
+          fi
