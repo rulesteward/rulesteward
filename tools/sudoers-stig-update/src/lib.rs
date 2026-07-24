@@ -45,16 +45,91 @@ pub mod xccdf;
 
 #[cfg(test)]
 mod scope_tests {
-    //! Item 6 of the RED test contract (#551): this crate's own `Cargo.toml`
-    //! `description` must never claim CIS coverage (the sudo-CIS baseline is
-    //! drift-checked by `tools/cis-update` instead; see the crate doc above).
-    //! Complements `tests/cli.rs`'s `help_scopes_to_disa_w04_not_cis` (the
+    //! Item 6 of the RED test contract (#551), BEHAVIORAL form (adversarial
+    //! round, BLOCKER 4): a bare substring-absence guard on "CIS" cannot
+    //! detect a maintainer adding actual CIS derivation LOGIC (it only
+    //! catches a text mention), and is brittle against words that merely
+    //! CONTAIN "cis" (DECISION, PRECISE, EXCISE, ...). It also once forced
+    //! this tool's own disclaimer text to go VAGUE to dodge the substring
+    //! ban, which was itself a regression (a correct disclaimer legitimately
+    //! needs to say "CIS" to explain the exclusion). Replaced with:
+    //!
+    //! 1. [`no_source_file_references_cis_derivation_logic`]: a BEHAVIORAL
+    //!    guard -- this crate's own sources must never reference
+    //!    `cis_baseline` or construct a `Framework::Cis` `ControlRef` (the
+    //!    actual surface `tools/cis-update` uses to derive CIS controls).
+    //!    Catches real logic creeping in, not a word.
+    //! 2. [`cargo_toml_description_points_at_the_real_cis_tool`]: a POSITIVE
+    //!    assertion that the `Cargo.toml` description explicitly names
+    //!    `tools/cis-update` (the ACTUAL tool that covers CIS), so the
+    //!    disclaimer stays a real, checkable pointer instead of vague
+    //!    hand-waving.
+    //!
+    //! Complements `tests/cli.rs`'s
+    //! `help_points_at_the_real_cis_tool_and_the_real_w06_location` (the
     //! RUNTIME `--help` text) by pinning the STATIC package metadata too.
 
     const CARGO_TOML: &str = include_str!("../Cargo.toml");
+    const LIB_RS: &str = include_str!("lib.rs");
+    const MAIN_RS: &str = include_str!("main.rs");
+    const CONFIG_RS: &str = include_str!("config.rs");
+    const SOURCE_RS: &str = include_str!("source.rs");
+    const DERIVE_RS: &str = include_str!("derive.rs");
+    const XCCDF_RS: &str = include_str!("xccdf.rs");
+
+    /// Strip `//`-comment lines (both doc comments `//!`/`///` and plain `//`)
+    /// before scanning for CIS-derivation logic. Without this, the crate's OWN
+    /// scope-rationale doc comments (which must legitimately EXPLAIN what
+    /// `tools/cis-update` calls, in prose, to justify the exclusion) trip a
+    /// naive whole-file substring scan -- the exact class of false positive
+    /// this test replaced (BLOCKER 4). This filters PROSE, not CODE: an actual
+    /// `use` statement or function call is never itself a comment line.
+    fn non_comment_lines(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The two literal identifiers a real CIS-derivation usage would need:
+    /// `rulesteward_sudoers::lints::cis::cis_baseline`'s function name, and
+    /// the `Framework::Cis` enum-variant path. Named as constants (rather
+    /// than spelled out again in each assertion's failure message) so this
+    /// test's OWN messages can explain the finding WITHOUT reproducing the
+    /// exact banned substring inside a string literal -- which would
+    /// self-contaminate the scan of `lib.rs` (this very file, via
+    /// `include_str!`) with a false positive, the identical false-positive
+    /// class BLOCKER 4 already fixed once for prose in doc comments.
+    const CIS_FN: &str = concat!("cis", "_baseline");
+    const CIS_VARIANT: &str = concat!("Framework::", "Cis");
 
     #[test]
-    fn cargo_toml_description_is_disa_only_never_claims_cis() {
+    fn no_source_file_references_cis_derivation_logic() {
+        for (name, src) in [
+            ("lib.rs", LIB_RS),
+            ("main.rs", MAIN_RS),
+            ("config.rs", CONFIG_RS),
+            ("source.rs", SOURCE_RS),
+            ("derive.rs", DERIVE_RS),
+            ("xccdf.rs", XCCDF_RS),
+        ] {
+            let code_only = non_comment_lines(src);
+            assert!(
+                !code_only.contains(CIS_FN),
+                "{name} must never call the CIS baseline projection function in actual \
+                 code -- this tool is DISA-only; the sudo-CIS baseline is \
+                 `tools/cis-update`'s job, never this tool's"
+            );
+            assert!(
+                !code_only.contains(CIS_VARIANT),
+                "{name} must never construct a CIS-framework `ControlRef` in actual code \
+                 -- this tool is DISA-only and must never derive or cite a CIS control"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_toml_description_points_at_the_real_cis_tool() {
         let desc_line = CARGO_TOML
             .lines()
             .find(|l| l.trim_start().starts_with("description"))
@@ -64,10 +139,9 @@ mod scope_tests {
             "the crate description must name DISA explicitly; got {desc_line:?}"
         );
         assert!(
-            !desc_line.to_uppercase().contains("CIS"),
-            "this tool is DISA-only; its Cargo.toml description must never claim \
-             CIS coverage (tools/cis-update already drift-checks sudo-CIS); \
-             got {desc_line:?}"
+            desc_line.contains("tools/cis-update"),
+            "the description must POINT AT the real tool that covers CIS \
+             (tools/cis-update), not a vague disclaimer; got {desc_line:?}"
         );
     }
 }

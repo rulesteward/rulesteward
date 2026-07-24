@@ -7,23 +7,20 @@
 # `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS`), re-gate (adversarial +
 # mutation), and confirm `sudoers-stig-update check` reports 0 drift.
 #
-# CURRENCY NOTE (2026-07-24, #551 lane 6 test-author phase): these three pins
-# are the SAME revisions the committed offline fixtures
-# (tests/fixtures/rhelN_sudoers_controls.xml) were trimmed from, and the SAME
-# revisions the shipped stig.rs ids are actually grounded against (RHEL-10 is
-# explicitly V1R1 per #563/9i-lane-7's citations table; RHEL-08/09 are
-# undated in stig.rs's own doc comment, but all nine ids ARE present verbatim
-# in these exact cached documents -- verified mechanically at authoring time).
-# `tools/sshd-stig-update` and `tools/auditd-stig-update` have SINCE bumped
-# their own live pins forward (RHEL 8 V2R4->V2R8, RHEL 9 V2R7->V2R9, RHEL 10
-# V1R1->V1R2); whether these NINE specific sudo-W04 ids are unchanged in the
-# newer revisions is UNVERIFIED (no network fetch was performed this lane --
-# never fabricate XCCDF content). Bumping this file's pins forward to
-# V2R8/V2R9/V1R2 -- and re-deriving the fixtures + re-verifying the nine ids --
-# is an explicit follow-up, not done here. Running `sudoers-stig-update check`
-# live (no `--file`) against these OLDER pins first is the honest, gradual path:
-# it establishes whether DISA has moved these ids at all before jumping straight
-# to the newest revision.
+# CURRENCY NOTE (updated 2026-07-24, post-adversarial-review, RULING 2): the
+# initial test-author pass pinned V2R4/V2R7/V1R1 (the revisions cached locally
+# and used to build the committed fixtures) and left bumping to V2R8/V2R9/V1R2
+# as a follow-up, since sshd/auditd's own live pins had since moved there. The
+# adversarial reviewer independently fetched all three newer revisions and
+# byte-verified: all NINE sudo-W04 ids (AUTHENTICATE_CONTROLS /
+# PW_FAMILY_CONTROLS / TIMESTAMP_TIMEOUT_CONTROLS across RHEL-08/09/10) AND
+# every Group used by the committed fixtures (the 3 W04 + NOPASSWD-decoy
+# Groups per product, plus rhel8's 3 wholly-unrelated Groups) are BYTE-IDENTICAL
+# between the old and new revisions. This pin is therefore bumped to match
+# tools/sshd-stig-update / tools/auditd-stig-update's current live pin with
+# ZERO fixture or test changes required -- the committed
+# tests/fixtures/rhelN_sudoers_controls.xml remain accurate, verbatim extracts
+# of the CURRENT pinned revisions, not stale copies of a superseded one.
 #
 # The public, no-auth CDN. Full URL = base_url + "/" + products.<p>.zip.
 # (public.cyber.mil/stigs/downloads/ is a JavaScript SPA that curl cannot read;
@@ -31,15 +28,18 @@
 base_url = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip"
 
 # Per-product pinned zip. The three RHEL STIGs version INDEPENDENTLY, so each has
-# its own pinned filename and can be bumped on its own.
+# its own pinned filename and can be bumped on its own. Same three revisions
+# tools/sshd-stig-update/stig-refs.toml and tools/auditd-stig-update/stig-refs.toml
+# pin (the sshd/auditd/sudoers baselines are all drawn from the same three
+# benchmark documents).
 [products.rhel8]
-zip = "U_RHEL_8_V2R4_STIG.zip"
-benchmark = "RHEL 8 STIG V2R4 (02 Jul 2025)"
+zip = "U_RHEL_8_V2R8_STIG.zip"
+benchmark = "RHEL 8 STIG V2R8 (01 Jul 2026)"
 
 [products.rhel9]
-zip = "U_RHEL_9_V2R7_STIG.zip"
-benchmark = "RHEL 9 STIG V2R7 (05 Jan 2026)"
+zip = "U_RHEL_9_V2R9_STIG.zip"
+benchmark = "RHEL 9 STIG V2R9 (01 Jul 2026)"
 
 [products.rhel10]
-zip = "U_RHEL_10_V1R1_STIG.zip"
-benchmark = "RHEL 10 STIG V1R1 (26 Feb 2026)"
+zip = "U_RHEL_10_V1R2_STIG.zip"
+benchmark = "RHEL 10 STIG V1R2 (01 Jul 2026)"

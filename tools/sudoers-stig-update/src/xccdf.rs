@@ -12,8 +12,9 @@
 //!
 //! [`parse_controls`] is `todo!()`: this lane authors the RED test contract
 //! only. A GREEN implementation must, per the fixtures in
-//! `tests/fixtures/rhelN_sudoers_controls.xml` (real, trimmed DISA XCCDF
-//! extracts, verbatim `check-content`/`fixtext`, verified at authoring time):
+//! `tests/fixtures/rhelN_sudoers_controls.xml` (real DISA XCCDF extracts, in
+//! TRUE document order, verbatim `check-content`/`fixtext`/titles; see that
+//! directory's `README.md` for full provenance):
 //!
 //! * Select a `<Group>`/`<Rule>` as a sudo-W04 control IFF its `check-content`
 //!   (or `fixtext`) contains one of the three families' distinguishing text:
@@ -21,43 +22,70 @@
 //!   - [`crate::derive::Family::PwFamily`][]: `targetpw` / `rootpw` / `runaspw`
 //!     (any of the three; a single DISA Rule covers all three settings together).
 //!   - [`crate::derive::Family::TimestampTimeout`][]: `timestamp_timeout`.
+//!
+//!   This selection MUST be content-based, never positional/ordinal: the
+//!   fixtures deliberately do NOT present the 3 real families first, or in
+//!   `Family::ALL` order -- see `tests::selector_is_content_based_not_positional`.
 //! * EXCLUDE a `NOPASSWD`-checking Rule (the sudo-W01/W05 sibling control,
 //!   present as a decoy in every fixture) -- it shares the same `/etc/sudoers`
 //!   check-content idiom but is a DIFFERENT lint (`sudo-W01`/`sudo-W05`, not
 //!   `sudo-W04`), and must never be misclassified into one of the three
-//!   families above.
+//!   families above. The rhel8 fixture ALSO carries 3 Groups with no bearing
+//!   on sudo AT ALL, preceding even the NOPASSWD decoy.
 //! * The V-number is `<Group id="...">`; the STIG Rule id is `<Rule><version>`
-//!   (mirrors `tools/sshd-stig-update`'s `#507` convention); the title is
-//!   `<Rule><title>` (the FIRST `<title>` inside `<Rule>`, immediately after
-//!   `<version>` -- NOT the `<Group>`-level `<title>` on RHEL 8/9/10's real
-//!   XCCDF, which instead carries the SRG requirement id, not a human title;
-//!   verified against the committed fixtures at authoring time).
+//!   (mirrors `tools/sshd-stig-update`'s `#507` convention); the title is the
+//!   Rule's OWN `<title>` (the one immediately after `<version>`) -- NOT the
+//!   `<Group>`-level `<title>`, which on RHEL 8/9/10's real XCCDF instead
+//!   carries the SRG requirement id (e.g. `SRG-OS-000373-GPOS-00156`), not a
+//!   human title. The committed fixtures deliberately KEEP the `<Group>`-level
+//!   title verbatim (it is real DISA content) specifically so this distinction
+//!   is a live trap a wrong implementation can fall into, not an untested
+//!   claim -- see `tests::group_level_title_is_never_used_as_the_control_title`.
 //! * Fail CLOSED (return `Err`, never a silently-empty `Ok`) when FEWER than
 //!   all 3 families are matched -- see
 //!   `tests::zero_matched_families_is_an_error` and
 //!   `tests::fewer_than_three_matched_families_is_an_error` below. A parse
 //!   regression (or a wrong file being fed in) must never present as "0
-//!   drift, 0 controls" -- that is a silent false pass, not a clean one.
+//!   drift, 0 controls" -- that is a silent false pass, not a clean one. The
+//!   error text must contain the literal substring `"found N"` where `N` is
+//!   the actual count (see those tests for why a looser substring check is
+//!   not enough).
+//!
+//! # What this tool provably CANNOT see (not drift)
+//!
+//! [`crate::derive::diff_controls`] compares `rule_id` ONLY (per
+//! [`DerivedControl::rule_id`]'s doc). A changed Rule `<title>`, a changed
+//! `<Group>` V-number, or a changed `severity` attribute are NOT drift signals
+//! this tool detects -- unlike `tools/sshd-stig-update`, which DOES diff
+//! `v_number` (its `DerivedControl::v_number` is populated on both the
+//! upstream AND code side; sudo-W04's shipped consts carry no V-number to
+//! compare against). Only a changed STIG Rule id is drift.
 
 use crate::derive::DerivedControl;
 
 /// Parse a full DISA XCCDF benchmark into the normalized sudo-W04 control
 /// table (exactly 3 rows: one per [`Family`]). Fails CLOSED (returns `Err`)
 /// when fewer than all 3 families are found -- see the module doc's
-/// anti-vacuity requirement.
+/// anti-vacuity requirement. The error text must contain the literal
+/// substring `"found N"` (`N` = the actual count), per
+/// `tests::zero_matched_families_is_an_error` /
+/// `tests::fewer_than_three_matched_families_is_an_error`.
 pub fn parse_controls(_xccdf: &str) -> Result<Vec<DerivedControl>, String> {
     todo!(
         "GREEN (#551): select each of the 3 sudo-W04 families' Group/Rule by \
-         check-content keyword, extract v_number (<Group id>) / rule_id (<version>) / \
-         title (<Rule><title>), EXCLUDE the NOPASSWD decoy, and fail closed (Err) on \
-         fewer than 3 matched families -- see this module's doc comment"
+         check-content keyword (content-based, NEVER positional), extract v_number \
+         (<Group id>) / rule_id (<version>) / title (the Rule's OWN <title>, not the \
+         Group's), EXCLUDE the NOPASSWD decoy and any unrelated Groups, and fail closed \
+         (Err(\"... found N ...\")) on fewer than 3 matched families -- see this \
+         module's doc comment"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::derive::Family;
+    use crate::derive::{Family, code_table, diff_controls};
+    use rulesteward_sudoers::TargetVersion;
 
     const RHEL8_FIXTURE: &str = include_str!("../tests/fixtures/rhel8_sudoers_controls.xml");
     const RHEL9_FIXTURE: &str = include_str!("../tests/fixtures/rhel9_sudoers_controls.xml");
@@ -78,9 +106,17 @@ mod tests {
     // stig.rs's PW_FAMILY_CONTROLS / AUTHENTICATE_CONTROLS /
     // TIMESTAMP_TIMEOUT_CONTROLS ids are grounded against; RHEL-10 explicitly
     // per #563 / 9i lane-7's citations table, RHEL-08/09 mechanically
-    // cross-checked by grep at authoring time -- see this crate's
-    // stig-refs.toml CURRENCY NOTE for what is / is not independently
-    // re-verified against the newer V2R8/V2R9/V1R2 revisions).
+    // cross-checked by grep at authoring time; adversarial round: an
+    // independent reviewer additionally fetched and byte-verified all nine
+    // ids AND every fixture Group against the current V2R8/V2R9/V1R2 DISA
+    // revisions -- see this crate's stig-refs.toml).
+    //
+    // Each fixture is now in TRUE DOCUMENT ORDER (adversarial round, BLOCKER
+    // 1): a wrong impl that assigns Groups to families POSITIONALLY (e.g.
+    // "the Nth Group is the Nth family") must fail these, since the real
+    // per-product ordering is auth/ts/pw (rhel10), ts/pw/auth (rhel9), and
+    // [3 unrelated]/decoy/auth/pw/ts (rhel8) -- never `Family::ALL`'s own
+    // auth/pw/ts order in any fixture.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -105,6 +141,8 @@ mod tests {
         let ts = find(&d, Family::TimestampTimeout);
         assert_eq!(ts.v_number, "V-237643");
         assert_eq!(ts.rule_id, "RHEL-08-010384");
+        // RHEL 8's own hyphenation ("re-authentication") DIFFERS from RHEL
+        // 9/10's ("reauthentication") -- a real DISA wording quirk, verbatim.
         assert_eq!(
             ts.title,
             "RHEL 8 must require re-authentication when using the \"sudo\" command."
@@ -168,18 +206,156 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Decoy exclusion: every fixture carries a 4th Group (real DISA content,
-    // the sudo-W01/W05 NOPASSWD control) that a correctly-scoped selector must
-    // EXCLUDE. Exact-count assertion (not just "NOPASSWD's id is absent") so a
-    // selector that over-matches some OTHER, unexpected 4th row also fails.
+    // Item 3 (no-drift) + BLOCKER 3: the golden cross-check. The XCCDF-derived
+    // table for EACH of the three RHEL targets must reproduce
+    // `derive::code_table(target)` EXACTLY (0 drift) -- mirrors
+    // `tools/sshd-stig-update`'s `rhelN_fixture_reproduces_code_table_exactly`
+    // trio. Covering all THREE targets (not just rhel10) closes the gap a
+    // `code_table` that ignores its `target` argument (always returning one
+    // target's rows) would otherwise slip through undetected.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn decoy_nopasswd_group_excluded_exact_counts() {
+    fn rhel8_fixture_reproduces_code_table_exactly() {
+        let derived = parse_controls(RHEL8_FIXTURE).expect("parses");
+        let code = code_table(TargetVersion::Rhel8);
+        let diff = diff_controls(&derived, &code);
+        assert!(
+            diff.is_empty(),
+            "rhel8 fixture must reproduce the shipped code_table(Rhel8) exactly: {diff:?}"
+        );
+    }
+
+    #[test]
+    fn rhel9_fixture_reproduces_code_table_exactly() {
+        let derived = parse_controls(RHEL9_FIXTURE).expect("parses");
+        let code = code_table(TargetVersion::Rhel9);
+        let diff = diff_controls(&derived, &code);
+        assert!(
+            diff.is_empty(),
+            "rhel9 fixture must reproduce the shipped code_table(Rhel9) exactly: {diff:?}"
+        );
+    }
+
+    #[test]
+    fn rhel10_fixture_reproduces_code_table_exactly() {
+        let derived = parse_controls(RHEL10_FIXTURE).expect("parses");
+        let code = code_table(TargetVersion::Rhel10);
+        let diff = diff_controls(&derived, &code);
+        assert!(
+            diff.is_empty(),
+            "rhel10 fixture must reproduce the shipped code_table(Rhel10) exactly: {diff:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BLOCKER 1 (adversarial round): the selector must be CONTENT-based, never
+    // positional/ordinal. A wrong impl that assigns `Family::ALL[0..3]` to the
+    // first 3 `<Group>` blocks in document order passes every test ABOVE this
+    // point ONLY if every fixture happens to present the families in
+    // `Family::ALL` order with no other Groups mixed in -- which none of them
+    // do (see the per-fixture ordering note above `rhel8_fixture_extracts_
+    // exact_controls`). This test makes the requirement explicit and
+    // self-checking: assert the RAW document order of `<Group id="...">`
+    // never matches `Family::ALL`'s own order, so a future fixture edit that
+    // accidentally "fixes" the ordering back into alignment is caught here,
+    // not just silently re-opened.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn selector_is_content_based_not_positional() {
+        // Each fixture's first three real <Group id="..."> V-numbers, in
+        // RAW document order (via a simple linear scan, independent of
+        // `parse_controls` itself).
+        fn first_three_group_ids(xccdf: &str) -> Vec<&str> {
+            let mut out = Vec::new();
+            let mut rest = xccdf;
+            while out.len() < 3 {
+                let Some(start) = rest.find("<Group id=\"") else {
+                    break;
+                };
+                let after = &rest[start + "<Group id=\"".len()..];
+                let Some(end) = after.find('"') else { break };
+                out.push(&after[..end]);
+                rest = &after[end..];
+            }
+            out
+        }
+
+        // rhel10's raw document order is auth, ts, pw (V-281208, V-281209,
+        // V-281210) -- the first 3 Groups ARE the 3 real families, but in
+        // auth/ts/pw order, NOT `Family::ALL`'s auth/pw/ts order. A
+        // positional impl mapping Family::ALL[0..3] onto document order 0..3
+        // would assign V-281209 (the REAL timestamp_timeout Group) to
+        // Family::PwFamily, and V-281210 (the REAL pw_family Group) to
+        // Family::TimestampTimeout -- both wrong.
+        assert_eq!(
+            first_three_group_ids(RHEL10_FIXTURE),
+            vec!["V-281208", "V-281209", "V-281210"],
+            "rhel10's raw document order must be auth, ts, pw -- NOT Family::ALL's auth/pw/ts \
+             order -- so a positional selector is caught"
+        );
+
+        // rhel9's raw document order is ts, pw, auth (V-258084, V-258085,
+        // V-258086) -- fully reversed relative to Family::ALL.
+        assert_eq!(
+            first_three_group_ids(RHEL9_FIXTURE),
+            vec!["V-258084", "V-258085", "V-258086"],
+            "rhel9's raw document order must be ts, pw, auth"
+        );
+
+        // rhel8's first three Groups are NOT sudo-W04 controls AT ALL (3
+        // wholly-unrelated Groups precede even the NOPASSWD decoy) -- a
+        // positional impl taking "the first 3 Groups" fails immediately and
+        // obviously here.
+        assert_eq!(
+            first_three_group_ids(RHEL8_FIXTURE),
+            vec!["V-230221", "V-230222", "V-230223"],
+            "rhel8's first three Groups must be wholly unrelated to sudo-W04"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BLOCKER 2 (adversarial round): the Group-level <title> trap. Every
+    // fixture Group carries its REAL `<Group><title>` (the SRG requirement
+    // id, e.g. "SRG-OS-000373-GPOS-00156"), immediately followed by the
+    // Rule's own <title> (the real human-readable title). A selector reading
+    // "the first <title> inside the Group" (rather than the Rule's own
+    // <title>, after <version>) would extract the SRG id as the "title" --
+    // this test catches that directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn group_level_title_is_never_used_as_the_control_title() {
+        for fixture in [RHEL8_FIXTURE, RHEL9_FIXTURE, RHEL10_FIXTURE] {
+            let d = parse_controls(fixture).expect("parses");
+            for c in &d {
+                assert!(
+                    !c.title.starts_with("SRG-OS-"),
+                    "a derived control's title must be the Rule's OWN human-readable \
+                     title, never the Group-level SRG requirement id; got {:?}",
+                    c.title
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decoy exclusion: every fixture carries at least one non-W04 Group (real
+    // DISA content, the sudo-W01/W05 NOPASSWD control); rhel8 additionally
+    // carries 3 further Groups with no bearing on sudo at all. A
+    // correctly-scoped selector must EXCLUDE all of them. Exact-count
+    // assertion (not just "NOPASSWD's id is absent") so a selector that
+    // over-matches some OTHER, unexpected row also fails.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decoys_excluded_exact_counts() {
         assert_eq!(
             parse_controls(RHEL8_FIXTURE).unwrap().len(),
             3,
-            "rhel8: exactly 3 families, the NOPASSWD decoy (V-230271 / RHEL-08-010380) excluded"
+            "rhel8: exactly 3 families out of 7 total Groups (3 unrelated + the NOPASSWD \
+             decoy V-230271/RHEL-08-010380 all excluded)"
         );
         assert_eq!(
             parse_controls(RHEL9_FIXTURE).unwrap().len(),
@@ -194,17 +370,27 @@ mod tests {
     }
 
     #[test]
-    fn decoy_nopasswd_rule_id_never_appears_in_derived_table() {
-        for (fixture, decoy_id) in [
-            (RHEL8_FIXTURE, "RHEL-08-010380"),
-            (RHEL9_FIXTURE, "RHEL-09-611085"),
-            (RHEL10_FIXTURE, "RHEL-10-600560"),
+    fn decoy_rule_ids_never_appear_in_derived_table() {
+        for (fixture, decoy_ids) in [
+            (
+                RHEL8_FIXTURE,
+                vec![
+                    "RHEL-08-010380",
+                    "RHEL-08-010000",
+                    "RHEL-08-010010",
+                    "RHEL-08-010020",
+                ],
+            ),
+            (RHEL9_FIXTURE, vec!["RHEL-09-611085"]),
+            (RHEL10_FIXTURE, vec!["RHEL-10-600560"]),
         ] {
             let d = parse_controls(fixture).unwrap();
-            assert!(
-                d.iter().all(|c| c.rule_id != decoy_id),
-                "the NOPASSWD decoy id {decoy_id:?} must never appear in the derived W04 table; got {d:?}"
-            );
+            for decoy_id in decoy_ids {
+                assert!(
+                    d.iter().all(|c| c.rule_id != decoy_id),
+                    "the decoy id {decoy_id:?} must never appear in the derived W04 table; got {d:?}"
+                );
+            }
         }
     }
 
@@ -212,7 +398,13 @@ mod tests {
     // Item 4: anti-vacuity. A parse bug (or a wrong file) that finds 0 -- or
     // fewer than the mandatory 3 -- sudo-W04 families must fail CLOSED, never
     // silently report an empty/partial `Ok` that a caller could mistake for
-    // "0 drift".
+    // "0 drift". CONCERN (adversarial round): the error text must contain the
+    // literal substring "found 0" / "found 1" -- a looser `err.contains('0')`
+    // is satisfied by unrelated digits echoed into the message (e.g. the
+    // substring "sudo-W04" itself contains a '0'; any echoed "RHEL-10-..."
+    // contains a '1'), so a wrong impl that always reports "found 1" (never
+    // actually counting) could pass a weaker assertion for BOTH the zero and
+    // the one-of-three cases.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -229,15 +421,9 @@ mod tests {
         let err = parse_controls(doc)
             .expect_err("zero matched sudo-W04 families must fail closed, not Ok(empty)");
         assert!(
-            err.contains('0'),
-            "the error must name the count found (0); got {err:?}"
-        );
-        assert!(
-            err.to_lowercase().contains("sudo-w04")
-                || err.to_lowercase().contains("authenticate")
-                || err.to_lowercase().contains("family")
-                || err.to_lowercase().contains("families"),
-            "the error must explain what was being looked for; got {err:?}"
+            err.contains("found 0"),
+            "the error must literally contain \"found 0\" (not merely SOME digit 0 \
+             somewhere in unrelated text); got {err:?}"
         );
     }
 
@@ -263,8 +449,9 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
         let err = parse_controls(doc)
             .expect_err("only 1 of 3 mandatory families found must fail closed, not Ok(1 row)");
         assert!(
-            err.contains('1'),
-            "the error must name the count found (1); got {err:?}"
+            err.contains("found 1"),
+            "the error must literally contain \"found 1\" (not merely SOME digit 1 \
+             somewhere in echoed text, e.g. from \"RHEL-10-...\"); got {err:?}"
         );
     }
 }

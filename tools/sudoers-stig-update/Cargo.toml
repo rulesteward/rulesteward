@@ -24,7 +24,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-description = "Dev tool: derive + drift-check the sudo-W04 DISA STIG control-id families (!authenticate / targetpw+rootpw+runaspw / timestamp_timeout) from the official DISA XCCDF. DISA-only; the separately-covered hardening baseline is drift-checked by a different tool instead (see crate-level docs)."
+description = "Dev tool: derive + drift-check the sudo-W04 DISA STIG control-id families (!authenticate / targetpw+rootpw+runaspw / timestamp_timeout) from the official DISA XCCDF. DISA-only -- the sudo-CIS baseline is drift-checked by tools/cis-update instead."
 
 [dependencies]
 rulesteward-sudoers = { path = "../../crates/rulesteward-sudoers" }

@@ -12,6 +12,15 @@
 //! Rule id ONLY -- there is no per-directive VALUE assertion to derive (unlike
 //! sshd's `OwnedValueRule`), since a W04 DISA control is "does this id still
 //! match", not "does this keyword still require this value".
+//!
+//! # What this tool provably CANNOT see (not drift)
+//!
+//! [`diff_controls`] compares `rule_id` ONLY. A changed Rule `<title>`, a
+//! changed `<Group>` V-number, or a changed `severity` attribute are NOT
+//! drift signals this tool detects -- unlike `tools/sshd-stig-update`, whose
+//! own `diff_controls` DOES compare `v_number` (its shipped projection
+//! carries a real V-number per directive; sudo-W04's shipped consts carry
+//! none). Only a changed STIG Rule id is drift here.
 
 use rulesteward_sudoers::TargetVersion;
 
@@ -36,10 +45,14 @@ pub enum Family {
 }
 
 impl Family {
-    /// All three families, in the SAME order `stig.rs`'s `PW_FAMILY_CONTROLS` /
-    /// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` list their
-    /// RHEL-08/09/10 ids (an implementation detail of comparison ordering, not
-    /// semantic significance).
+    /// All three families. This array's own order (`Authenticate`,
+    /// `PwFamily`, `TimestampTimeout`) is an arbitrary enumeration order with
+    /// NO semantic significance -- it is NOT the order any committed fixture
+    /// presents the families in (see `xccdf.rs`'s per-fixture document-order
+    /// notes), and it is NOT necessarily `stig.rs`'s own `AUTHENTICATE_CONTROLS`
+    /// / `PW_FAMILY_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` const-declaration
+    /// order either (each of those is independently ordered `[RHEL-08, RHEL-09,
+    /// RHEL-10]` internally, unrelated to this array's family ordering).
     pub const ALL: [Family; 3] = [
         Family::Authenticate,
         Family::PwFamily,
@@ -295,5 +308,144 @@ mod tests {
     fn family_as_str_is_stable_and_distinct() {
         let strs: Vec<&str> = Family::ALL.iter().map(|f| f.as_str()).collect();
         assert_eq!(strs, ["authenticate", "pw_family", "timestamp_timeout"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // BLOCKER 3 (adversarial round): `code_table` must be a genuine LIVE read
+    // of the crate, never a copy frozen in this tool at authoring time -- the
+    // exact internal-self-consistency defect #551 exists to remove.
+    //
+    // `code_table_matches_stig_rs_source_for_all_targets` reads
+    // `crates/rulesteward-sudoers/src/lints/stig.rs`'s RAW source text via
+    // `include_str!` (the SAME cross-tool technique
+    // `tags.rs::w06_stig_drift_tests` already uses to keep sudo-W06 pinned
+    // against sshd/auditd's `stig-refs.toml`) as an INDEPENDENT oracle,
+    // extracted at every test run -- NOT a literal copy of the 9 ids frozen
+    // here. If a future PR bumps `stig.rs`'s consts (a real STIG revision, or
+    // a mistake) without updating `code_table`'s live read, this test's
+    // oracle moves and `code_table`'s stale hardcoded copy is caught
+    // immediately; a hardcoded copy that merely matches TODAY's ids cannot
+    // pass this by coincidence once the source changes.
+    //
+    // `code_table_differs_across_all_three_targets` guards the OTHER half of
+    // the same defect class: a `code_table` that ignores its `target`
+    // argument (e.g. always returning RHEL-10's rows) would still pass every
+    // single-target test in this crate if only one target were ever checked
+    // end-to-end -- this asserts all three targets are PAIRWISE distinct.
+    // -----------------------------------------------------------------------
+
+    const STIG_RS_SOURCE: &str =
+        include_str!("../../../crates/rulesteward-sudoers/src/lints/stig.rs");
+
+    /// Extract the 3 quoted ids following `const {const_name}: [(Framework, &str); 3] = [`
+    /// in `stig.rs`'s raw source text, in declaration order (index 0 = RHEL-08,
+    /// 1 = RHEL-09, 2 = RHEL-10, per that file's own `PW_FAMILY_CONTROLS` /
+    /// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` doc comments).
+    fn extract_ids_from_stig_rs(const_name: &str) -> [String; 3] {
+        let marker = format!("const {const_name}:");
+        let after_const = STIG_RS_SOURCE
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("stig.rs must define `const {const_name}`"))
+            .1;
+        let after_eq = after_const
+            .split_once(" = [")
+            .unwrap_or_else(|| panic!("no ` = [` array literal after `const {const_name}`"))
+            .1;
+        let body = after_eq
+            .split_once("];")
+            .unwrap_or_else(|| panic!("no closing `];` for `const {const_name}`"))
+            .0;
+        let quoted: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
+        assert_eq!(
+            quoted.len(),
+            3,
+            "`const {const_name}` must have exactly 3 quoted ids in its raw stig.rs source; \
+             got {quoted:?}"
+        );
+        [
+            quoted[0].to_string(),
+            quoted[1].to_string(),
+            quoted[2].to_string(),
+        ]
+    }
+
+    #[test]
+    fn code_table_matches_stig_rs_source_for_all_targets() {
+        let auth_ids = extract_ids_from_stig_rs("AUTHENTICATE_CONTROLS");
+        let pw_ids = extract_ids_from_stig_rs("PW_FAMILY_CONTROLS");
+        let ts_ids = extract_ids_from_stig_rs("TIMESTAMP_TIMEOUT_CONTROLS");
+
+        for (idx, target) in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let code = code_table(target);
+            let auth = code
+                .iter()
+                .find(|c| c.family == Family::Authenticate)
+                .unwrap_or_else(|| panic!("{target:?}: Authenticate row present"));
+            let pw = code
+                .iter()
+                .find(|c| c.family == Family::PwFamily)
+                .unwrap_or_else(|| panic!("{target:?}: PwFamily row present"));
+            let ts = code
+                .iter()
+                .find(|c| c.family == Family::TimestampTimeout)
+                .unwrap_or_else(|| panic!("{target:?}: TimestampTimeout row present"));
+
+            assert_eq!(
+                auth.rule_id, auth_ids[idx],
+                "{target:?}: code_table's Authenticate rule_id must match stig.rs's \
+                 AUTHENTICATE_CONTROLS[{idx}] read live from source, not a frozen copy"
+            );
+            assert_eq!(
+                pw.rule_id, pw_ids[idx],
+                "{target:?}: code_table's PwFamily rule_id must match stig.rs's \
+                 PW_FAMILY_CONTROLS[{idx}] read live from source, not a frozen copy"
+            );
+            assert_eq!(
+                ts.rule_id, ts_ids[idx],
+                "{target:?}: code_table's TimestampTimeout rule_id must match stig.rs's \
+                 TIMESTAMP_TIMEOUT_CONTROLS[{idx}] read live from source, not a frozen copy"
+            );
+        }
+    }
+
+    #[test]
+    fn code_table_differs_across_all_three_targets() {
+        let r8 = code_table(TargetVersion::Rhel8);
+        let r9 = code_table(TargetVersion::Rhel9);
+        let r10 = code_table(TargetVersion::Rhel10);
+        assert_ne!(
+            r8, r9,
+            "code_table must not ignore its `target` argument -- rhel8 and rhel9 must differ"
+        );
+        assert_ne!(
+            r9, r10,
+            "code_table must not ignore its `target` argument -- rhel9 and rhel10 must differ"
+        );
+        assert_ne!(
+            r8, r10,
+            "code_table must not ignore its `target` argument -- rhel8 and rhel10 must differ"
+        );
+    }
+
+    #[test]
+    fn code_table_returns_exactly_three_rows_per_target() {
+        for target in [
+            TargetVersion::Rhel8,
+            TargetVersion::Rhel9,
+            TargetVersion::Rhel10,
+        ] {
+            assert_eq!(
+                code_table(target).len(),
+                3,
+                "{target:?}: code_table must return exactly 3 rows (one per Family)"
+            );
+        }
     }
 }

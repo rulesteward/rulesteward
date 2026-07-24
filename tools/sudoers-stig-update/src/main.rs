@@ -61,8 +61,8 @@ fn print_help() {
         "sudoers-stig-update - derive + drift-check the sudo-W04 DISA STIG control-id \
          families\n\
          \n\
-         DISA-only: does not include the separately-covered hardening baseline (see \
-         crate-level docs) or sudo-W06 (pinned inline in crate-level docs).\n\
+         DISA-only: does NOT cover the sudo-CIS baseline (see tools/cis-update) or \
+         sudo-W06 (pinned inline in crates/rulesteward-sudoers/src/lints/tags.rs).\n\
          \n\
          USAGE:\n  \
            sudoers-stig-update check [--product P] [--file X]   drift gate (exit 1 on drift)\n  \

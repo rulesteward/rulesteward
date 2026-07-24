@@ -216,13 +216,19 @@ fn unknown_subcommand_exits_2() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 6: THE SCOPE GUARD. This tool's own --help text must scope itself to
-// DISA / sudo-W04 and must NEVER claim CIS coverage (tools/cis-update already
-// drift-checks the sudo-CIS baseline; duplicating that claim here would be
-// wrong). Never reaches a stub -- passes today.
+// Item 6: THE SCOPE GUARD, BEHAVIORAL form (adversarial round, BLOCKER 4). A
+// bare "--help must not contain the substring CIS" guard cannot detect a
+// maintainer adding actual CIS derivation logic (it only catches a text
+// mention) and is brittle against words that merely CONTAIN "cis". Replaced
+// with a POSITIVE assertion: help text must explicitly POINT AT the real
+// tool that covers CIS (tools/cis-update) and the real location sudo-W06 is
+// pinned (tags.rs), rather than either a vague disclaimer or an absent one.
+// The complementary BEHAVIORAL half (this tool's own sources never reference
+// `cis_baseline` / `Framework::Cis`) lives in `src/lib.rs`'s `scope_tests`
+// module. Never reaches a stub -- passes today.
 // ---------------------------------------------------------------------------
 #[test]
-fn help_scopes_to_disa_w04_not_cis() {
+fn help_points_at_the_real_cis_tool_and_the_real_w06_location() {
     let (code, _out, err) = run(&["--help"]);
     assert_eq!(code, Some(0));
     assert!(
@@ -230,9 +236,14 @@ fn help_scopes_to_disa_w04_not_cis() {
         "help text must name DISA explicitly; err={err}"
     );
     assert!(
-        !err.to_uppercase().contains("CIS"),
-        "this tool is DISA-only; it must never claim CIS coverage \
-         (tools/cis-update already drift-checks sudo-CIS); err={err}"
+        err.contains("tools/cis-update"),
+        "help text must POINT AT the real tool that covers sudo-CIS (tools/cis-update), \
+         not a vague disclaimer; err={err}"
+    );
+    assert!(
+        err.contains("crates/rulesteward-sudoers/src/lints/tags.rs"),
+        "help text must correctly name WHERE sudo-W06 is pinned (tags.rs), not a \
+         vague 'see docs' pointer; err={err}"
     );
 }
 
