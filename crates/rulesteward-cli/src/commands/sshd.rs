@@ -62,6 +62,24 @@ fn lint_with_probe(
     // drop-in file, which the human renderer reads directly). A file target keeps
     // the single-file pass path.
     if path.is_dir() {
+        // #560 closeout miss: `lint_drop_in`/`lint_merged` each read the main
+        // `sshd_config` inside `path` first; routed through `fsread` (below)
+        // they no longer hang/OOM on a special file, but their own contract
+        // silently tolerates ANY read failure as "nothing to evaluate" (so a
+        // directory with no main file stays a clean, diagnostic-free run,
+        // matching existing behavior). A special file (or any other read
+        // failure that is not a plain "missing") must instead surface as a
+        // tool failure here, mirroring the single-file arm's fsread handling
+        // below.
+        let main_path = path.join("sshd_config");
+        if let Err(e) = rulesteward_core::fsread::read_to_string(&main_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("sshd lint: cannot read {}: {e}", main_path.display());
+            emit_path_error_envelope(args.format);
+            return EXIT_TOOL_FAILURE;
+        }
+
         let mut diags = lints::drop_in::lint_drop_in(&path, &ctx);
         diags.extend(lints::drop_in::lint_merged(&path, &ctx));
         let no_op = crate::profile::apply_profile(&mut diags, profile);
