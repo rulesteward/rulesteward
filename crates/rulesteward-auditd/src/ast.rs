@@ -25,7 +25,20 @@ pub enum AuditRule {
 
     /// File-system watch: `-w path -p perms -k key`.
     ///
-    /// `is_dir` is true when `path` ends with `/` (recursive watch per `man 7 audit.rules`).
+    /// `is_dir` is `RuleSteward`'s OWN static-linter heuristic: true when the
+    /// rules.d text spells `path` with a trailing `/`. This is a bookkeeping
+    /// convention this project uses, NOT a kernel or `man auditctl` fact:
+    /// real auditctl trims any trailing slash and then `stat()`s the actual
+    /// filesystem object to decide file-vs-directory
+    /// (`audit_setup_watch_name()`) -- `man auditctl`'s `-w path` section
+    /// describes the behavior in terms of what the path IS ("if the path is
+    /// a file... if the watch is on a directory"), never how it is spelled.
+    /// A static linter has no access to the target host's filesystem, so
+    /// `is_dir` is an UNRELIABLE proxy, not ground truth: correctness-
+    /// affecting decisions must not gate on it (see
+    /// `lints::stig_required::rules_match`'s doc comment, grounding Part
+    /// B.7.2, and the dir-shape equivalence fold covered in
+    /// `tests/test_lints_stig_required.rs`, issue #571).
     Watch {
         path: String,
         perms: PermBits,
