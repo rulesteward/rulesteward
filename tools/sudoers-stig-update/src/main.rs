@@ -17,13 +17,12 @@
 //!                                # print the derived table + diff
 //! Common flags: --config <stig-refs.toml>
 //!
-//! STUBBED (9j lane 6, RED phase): the subcommand dispatch below is the real
-//! control flow (not itself stubbed -- it is pure glue, mirroring
-//! `tools/sshd-stig-update/src/main.rs`), but every call it makes into
+//! The subcommand dispatch below is pure glue, mirroring
+//! `tools/sshd-stig-update/src/main.rs`; the actual derivation logic lives in
 //! [`sudoers_stig_update::xccdf::parse_controls`] /
 //! [`sudoers_stig_update::derive::code_table`] /
-//! [`sudoers_stig_update::derive::diff_controls`] panics (`todo!()`) until a
-//! GREEN implementation lands -- see those modules' doc comments.
+//! [`sudoers_stig_update::derive::diff_controls`] -- see those modules' doc
+//! comments.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

@@ -23,6 +23,9 @@
 //! none). Only a changed STIG Rule id is drift here.
 
 use rulesteward_sudoers::TargetVersion;
+use rulesteward_sudoers::lints::stig::{
+    AUTHENTICATE_CONTROLS, PW_FAMILY_CONTROLS, TIMESTAMP_TIMEOUT_CONTROLS,
+};
 
 /// The three sudo-W04 DISA STIG control families (#551). Fixed and closed --
 /// unlike sshd's per-directive keyword set (which grows/shrinks as DISA STIG
@@ -96,34 +99,46 @@ pub struct DerivedControl {
 /// projected into the comparison shape, for ONE RHEL product. This is the
 /// "code" side of the drift diff -- exactly 3 rows (one per [`Family`]).
 ///
-/// # STUBBED (9j lane 6, RED phase, #551)
+/// # Cross-crate accessor (#551)
 ///
 /// `crates/rulesteward-sudoers/src/lints/stig.rs`'s `PW_FAMILY_CONTROLS` /
-/// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts are today
-/// PRIVATE to that module (no `pub` keyword) -- unlike
-/// `rulesteward_sshd::lints::stig::stig_baseline`, which `tools/sshd-stig-update`
-/// already depends on and which IS `pub`, sudo-W04 has no public accessor yet
-/// (nothing else in the crate currently needs one; these consts are consumed
-/// only by `stig.rs`'s own `check_file` / `negated_weakening`). A GREEN
-/// implementation must ALSO widen visibility in `stig.rs` (either `pub` the
-/// three consts, or add a `pub fn w04_disa_controls(target: TargetVersion) ->
-/// [(Family, &'static str); 3]`-shaped accessor) before this function can
-/// return real data instead of `todo!()`. This is a cross-crate change outside
-/// this lane's permitted edit surface (`tools/sudoers-stig-update/` + the root
-/// `Cargo.toml` exclude list only), so it is left for the implementer phase.
+/// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts were widened
+/// to `pub` (the minimal legal change: the frozen `code_table_matches_stig_rs_
+/// source_for_all_targets` oracle below anchors on `const {NAME}:` as a
+/// substring, which still matches `pub const {NAME}:`) so this function can
+/// read them directly instead of carrying a frozen copy.
 ///
-/// The three consts are ordered `[RHEL-08, RHEL-09, RHEL-10]`; a correct
-/// implementation indexes by `target` (`Rhel8` -> `[0]`, `Rhel9` -> `[1]`,
-/// `Rhel10` -> `[2]`) for each of the three families, producing exactly 3 rows
-/// with empty `v_number` / `title` (see the field docs on [`DerivedControl`]).
+/// The three consts are ordered `[RHEL-08, RHEL-09, RHEL-10]`; this indexes by
+/// `target` (`Rhel8` -> `[0]`, `Rhel9` -> `[1]`, `Rhel10` -> `[2]`) for each of
+/// the three families, producing exactly 3 rows with empty `v_number` /
+/// `title` (see the field docs on [`DerivedControl`]).
 #[must_use]
-pub fn code_table(_target: TargetVersion) -> Vec<DerivedControl> {
-    todo!(
-        "GREEN (#551): project stig.rs's PW_FAMILY_CONTROLS/AUTHENTICATE_CONTROLS/\
-         TIMESTAMP_TIMEOUT_CONTROLS for `_target` into 3 DerivedControl rows; \
-         requires widening their visibility in crates/rulesteward-sudoers/src/lints/stig.rs \
-         first (see this fn's doc comment)"
-    )
+pub fn code_table(target: TargetVersion) -> Vec<DerivedControl> {
+    let idx = match target {
+        TargetVersion::Rhel8 => 0,
+        TargetVersion::Rhel9 => 1,
+        TargetVersion::Rhel10 => 2,
+    };
+    vec![
+        DerivedControl {
+            family: Family::Authenticate,
+            v_number: String::new(),
+            rule_id: AUTHENTICATE_CONTROLS[idx].1.to_string(),
+            title: String::new(),
+        },
+        DerivedControl {
+            family: Family::PwFamily,
+            v_number: String::new(),
+            rule_id: PW_FAMILY_CONTROLS[idx].1.to_string(),
+            title: String::new(),
+        },
+        DerivedControl {
+            family: Family::TimestampTimeout,
+            v_number: String::new(),
+            rule_id: TIMESTAMP_TIMEOUT_CONTROLS[idx].1.to_string(),
+            title: String::new(),
+        },
+    ]
 }
 
 /// Human-readable diff of an `upstream` (XCCDF-derived) table against the
@@ -138,21 +153,41 @@ pub fn code_table(_target: TargetVersion) -> Vec<DerivedControl> {
 /// regression class -- two ids swapped between families still shows as TWO
 /// `~` lines, one per affected family).
 ///
-/// # STUBBED (9j lane 6, RED phase, #551)
-///
-/// See [`code_table`]'s doc comment for why the comparison side is not yet
-/// real. This function's OWN logic (the diff itself) has no DISA-specific
-/// decision-making -- it is a pure `Family`-keyed comparison, structurally
-/// identical to `tools/sshd-stig-update/src/derive.rs::diff_controls` keyed by
-/// keyword instead of `Family` -- but is left stubbed rather than implemented,
-/// per this lane's "tests only, no implementation" scope.
+/// This function's own logic has no DISA-specific decision-making -- it is a
+/// pure `Family`-keyed comparison, structurally identical to
+/// `tools/sshd-stig-update/src/derive.rs::diff_controls` keyed by keyword
+/// instead of `Family`.
 #[must_use]
-pub fn diff_controls(_upstream: &[DerivedControl], _code: &[DerivedControl]) -> Vec<String> {
-    todo!(
-        "GREEN (#551): Family-keyed diff of _upstream vs _code, comparing rule_id only; \
-         mirror tools/sshd-stig-update/src/derive.rs::diff_controls's shape, keyed by \
-         Family instead of keyword"
-    )
+pub fn diff_controls(upstream: &[DerivedControl], code: &[DerivedControl]) -> Vec<String> {
+    let mut out = Vec::new();
+    for family in Family::ALL {
+        let c = code.iter().find(|d| d.family == family);
+        let u = upstream.iter().find(|d| d.family == family);
+        match (c, u) {
+            (Some(c), None) => out.push(format!(
+                "- {} (in code, absent in the DISA XCCDF): {}",
+                family.as_str(),
+                c.rule_id
+            )),
+            (None, Some(u)) => out.push(format!(
+                "+ {} = {} (new in the DISA XCCDF)",
+                family.as_str(),
+                u.rule_id
+            )),
+            (Some(c), Some(u)) => {
+                if c.rule_id != u.rule_id {
+                    out.push(format!(
+                        "~ {} rule id: code {} -> DISA {}",
+                        family.as_str(),
+                        c.rule_id,
+                        u.rule_id
+                    ));
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]

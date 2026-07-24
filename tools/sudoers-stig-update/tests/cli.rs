@@ -2,13 +2,10 @@
 //! and assert the exit-code contract - 0 in sync, 1 on drift, 2 on error.
 //!
 //! Several tests here reach [`sudoers_stig_update::xccdf::parse_controls`] /
-//! [`sudoers_stig_update::derive::code_table`] / `diff_controls`, which are
-//! STUBBED (`todo!()`) as of this commit (9j lane 6, RED phase, #551) -- those
-//! tests currently fail via an unwinding panic (not the asserted exit code),
-//! which is the correct RED state for a test-author barrier. The tests that
-//! never reach a stub (missing file, `--file` without `--product`, unknown
-//! subcommand, `--help`) already pass today, since the surrounding CLI glue
-//! (argument parsing, `Config`, `source::read_local`) is implemented for real.
+//! [`sudoers_stig_update::derive::code_table`] / `diff_controls` (#551). The
+//! tests that never reach those (missing file, `--file` without `--product`,
+//! unknown subcommand, `--help`) exercise only the surrounding CLI glue
+//! (argument parsing, `Config`, `source::read_local`).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,8 +39,7 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 
 // ---------------------------------------------------------------------------
 // Item 3: no-drift passes (the real, current fixture vs the real, current
-// shipped table exits 0). RED today: reaches the stubbed `parse_controls` /
-// `code_table` / `diff_controls`, panics (exit != 0) instead.
+// shipped table exits 0).
 // ---------------------------------------------------------------------------
 #[test]
 fn check_file_in_sync_exits_0() {
@@ -66,7 +62,7 @@ fn check_file_in_sync_exits_0() {
 // ---------------------------------------------------------------------------
 // Item 2: THE POSITIVE CONTROL. A single mutated STIG Rule id must be caught
 // as drift and exit non-zero, naming the specific mismatched control -- a
-// drift checker that only ever passes is worthless. RED today (same reason).
+// drift checker that only ever passes is worthless.
 // ---------------------------------------------------------------------------
 #[test]
 fn check_file_drift_on_mutated_id_exits_1() {
@@ -107,7 +103,6 @@ fn check_file_drift_on_mutated_id_exits_1() {
 // Simulate the identical swap against the real rhel8 fixture and confirm
 // `check` reports drift (the id SET is unchanged, only which family owns
 // which id -- a naive "is the id set the same" check would wrongly pass this).
-// RED today (same reason as above).
 // ---------------------------------------------------------------------------
 #[test]
 fn check_file_regression_355_swapped_ids_exits_1() {
@@ -149,7 +144,7 @@ fn check_file_regression_355_swapped_ids_exits_1() {
 // The injected document is a small, clearly-synthetic edge-case fixture (not
 // claimed as real DISA text), mirroring the same convention
 // tools/sshd-stig-update/tests/cli.rs uses for its own
-// `check_unclassifiable_rule_exits_2` test. RED today (same reason).
+// `check_unclassifiable_rule_exits_2` test.
 // ---------------------------------------------------------------------------
 #[test]
 fn check_file_zero_matched_families_exits_2() {

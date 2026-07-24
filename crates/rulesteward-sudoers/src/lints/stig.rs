@@ -180,7 +180,7 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
 /// V1R1 XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use
 /// the invoking user's password for privilege escalation when using
 /// \"sudo\""; see `lane-7-sudoersids-report.md`).
-const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
+pub const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010383"),
     (Framework::Stig, "RHEL-09-432020"),
     (Framework::Stig, "RHEL-10-600550"),
@@ -192,7 +192,7 @@ const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
 /// V-281208 / SV-281208r1166576_rule, "RHEL 10 must require users to
 /// reauthenticate for privilege escalation"; see
 /// `lane-7-sudoersids-report.md`).
-const AUTHENTICATE_CONTROLS: [(Framework, &str); 3] = [
+pub const AUTHENTICATE_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010381"),
     (Framework::Stig, "RHEL-09-432025"),
     (Framework::Stig, "RHEL-10-600530"),
@@ -244,7 +244,7 @@ fn io_log_controls() -> Vec<ControlRef> {
 /// V1R1 XCCDF (Group V-281209 / SV-281209r1166579_rule, "RHEL 10 must
 /// require reauthentication when using the \"sudo\" command"; see
 /// `lane-7-sudoersids-report.md`).
-const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 3] = [
+pub const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010384"),
     (Framework::Stig, "RHEL-09-432015"),
     (Framework::Stig, "RHEL-10-600540"),

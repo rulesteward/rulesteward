@@ -8,13 +8,12 @@
 //! fetch that hands it the XCCDF bytes lives behind the seam in
 //! [`crate::source`].
 //!
-//! # STUBBED (9j lane 6, RED phase, #551)
+//! # How a control is selected + classified (#551)
 //!
-//! [`parse_controls`] is `todo!()`: this lane authors the RED test contract
-//! only. A GREEN implementation must, per the fixtures in
-//! `tests/fixtures/rhelN_sudoers_controls.xml` (real DISA XCCDF extracts, in
-//! TRUE document order, verbatim `check-content`/`fixtext`/titles; see that
-//! directory's `README.md` for full provenance):
+//! Grounded in the fixtures in `tests/fixtures/rhelN_sudoers_controls.xml`
+//! (real DISA XCCDF extracts, in TRUE document order, verbatim
+//! `check-content`/`fixtext`/titles; see that directory's `README.md` for full
+//! provenance):
 //!
 //! * Select a `<Group>`/`<Rule>` as a sudo-W04 control IFF its `check-content`
 //!   (or `fixtext`) contains one of the three families' distinguishing text:
@@ -61,7 +60,15 @@
 //! upstream AND code side; sudo-W04's shipped consts carry no V-number to
 //! compare against). Only a changed STIG Rule id is drift.
 
-use crate::derive::DerivedControl;
+use regex::Regex;
+
+use crate::derive::{DerivedControl, Family};
+
+/// DISA's `<Group id="V-...">...</Group>` element; captures the V-number in group 1
+/// and the full inner content (Group-level title + the nested `<Rule>...</Rule>`) in
+/// group 2. Groups never nest in these benchmarks, so a non-greedy match up to the
+/// first `</Group>` is unambiguous.
+const GROUP_PATTERN: &str = r#"(?s)<Group id="(V-\d+)">(.*?)</Group>"#;
 
 /// Parse a full DISA XCCDF benchmark into the normalized sudo-W04 control
 /// table (exactly 3 rows: one per [`Family`]). Fails CLOSED (returns `Err`)
@@ -70,15 +77,89 @@ use crate::derive::DerivedControl;
 /// substring `"found N"` (`N` = the actual count), per
 /// `tests::zero_matched_families_is_an_error` /
 /// `tests::fewer_than_three_matched_families_is_an_error`.
-pub fn parse_controls(_xccdf: &str) -> Result<Vec<DerivedControl>, String> {
-    todo!(
-        "GREEN (#551): select each of the 3 sudo-W04 families' Group/Rule by \
-         check-content keyword (content-based, NEVER positional), extract v_number \
-         (<Group id>) / rule_id (<version>) / title (the Rule's OWN <title>, not the \
-         Group's), EXCLUDE the NOPASSWD decoy and any unrelated Groups, and fail closed \
-         (Err(\"... found N ...\")) on fewer than 3 matched families -- see this \
-         module's doc comment"
-    )
+pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
+    // Fixed regexes, compiled once. `unwrap` on a literal pattern is an invariant.
+    let group_re = Regex::new(GROUP_PATTERN).unwrap();
+    let version_re = Regex::new(r"<version>([^<]+)</version>").unwrap();
+    let title_re = Regex::new(r"<title>([^<]+)</title>").unwrap();
+    let check_re = Regex::new(r"(?s)<check-content[^>]*>(.*?)</check-content>").unwrap();
+    let fixtext_re = Regex::new(r"(?s)<fixtext[^>]*>(.*?)</fixtext>").unwrap();
+
+    let mut out: Vec<DerivedControl> = Vec::new();
+    for caps in group_re.captures_iter(xccdf) {
+        let v_number = caps[1].to_string();
+        let group_body = &caps[2];
+
+        // Scope every subsequent extraction to the Rule's OWN content (everything
+        // after the literal `<Rule` tag), never the Group-level `<title>` that
+        // precedes it -- the Group-level title carries the SRG requirement id
+        // (e.g. `SRG-OS-000373-GPOS-00156`), a same-tag-different-meaning trap for
+        // a selector that reads "the first <title> in the Group" (see
+        // `tests::group_level_title_is_never_used_as_the_control_title`).
+        let Some((_, rule_body)) = group_body.split_once("<Rule") else {
+            continue; // no Rule element in this Group at all -- not a control.
+        };
+
+        let check = check_re
+            .captures(rule_body)
+            .map_or("", |c| c.get(1).map_or("", |m| m.as_str()));
+        let fixtext = fixtext_re
+            .captures(rule_body)
+            .map_or("", |c| c.get(1).map_or("", |m| m.as_str()));
+
+        // Selector: content-based, never positional (see module doc + BLOCKER 1 --
+        // `tests::selector_is_content_based_not_positional`). Checked against BOTH
+        // check-content and fixtext, case-insensitively.
+        let haystack = format!("{check} {fixtext}").to_lowercase();
+        let family = if haystack.contains("!authenticate") {
+            Family::Authenticate
+        } else if haystack.contains("targetpw")
+            || haystack.contains("rootpw")
+            || haystack.contains("runaspw")
+        {
+            Family::PwFamily
+        } else if haystack.contains("timestamp_timeout") {
+            Family::TimestampTimeout
+        } else {
+            continue; // decoy (NOPASSWD) or wholly-unrelated Group -- excluded.
+        };
+
+        let rule_id = version_re
+            .captures(rule_body)
+            .map(|c| c[1].trim().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "{v_number} ({}): no <version> (STIG Rule id) found",
+                    family.as_str()
+                )
+            })?;
+        let title = title_re
+            .captures(rule_body)
+            .map(|c| c[1].trim().to_string())
+            .ok_or_else(|| format!("{v_number} ({}): no Rule <title> found", family.as_str()))?;
+
+        out.push(DerivedControl {
+            family,
+            v_number,
+            rule_id,
+            title,
+        });
+    }
+
+    if out.len() < Family::ALL.len() {
+        return Err(format!(
+            "sudo-W04: expected all {} families ({}), found {} in the XCCDF",
+            Family::ALL.len(),
+            Family::ALL
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            out.len()
+        ));
+    }
+
+    Ok(out)
 }
 
 #[cfg(test)]

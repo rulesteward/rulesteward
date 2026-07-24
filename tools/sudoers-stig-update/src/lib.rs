@@ -27,16 +27,14 @@
 //! into the `derive` / `check` subcommands. The network fetch is isolated
 //! behind the [`source`] seam so the core is tested offline with fixtures.
 //!
-//! # Test-authoring note (9j lane 6, RED phase)
+//! # GREEN (9j lane 6, #551)
 //!
-//! [`xccdf::parse_controls`] and [`derive::code_table`] / [`derive::diff_controls`]
-//! are STUBBED (`todo!()`) as of this commit: this lane authors the RED test
-//! contract only, per the parallel-orchestration test-author barrier. See each
-//! stub's doc comment for what a GREEN implementation must satisfy, and
-//! `derive::code_table`'s doc comment for the one cross-crate gap the
-//! implementer must also close (the sudoers crate's `PW_FAMILY_CONTROLS` /
-//! `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts are private
-//! today).
+//! [`xccdf::parse_controls`], [`derive::code_table`], [`derive::diff_controls`],
+//! and [`source::fetch_xccdf`] are implemented. `derive::code_table` reads
+//! `crates/rulesteward-sudoers/src/lints/stig.rs`'s `PW_FAMILY_CONTROLS` /
+//! `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts directly (they
+//! were widened to `pub` for this -- the minimal cross-crate visibility change
+//! the test-author's RED-phase doc comment called for).
 
 pub mod config;
 pub mod derive;
