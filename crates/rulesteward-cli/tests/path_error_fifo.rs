@@ -20,8 +20,15 @@
 //! confirmed live: `sshd lint <fifo>` -> "not a file or directory" (exit 3, no
 //! hang); `sysctl lint <fifo>` -> same; `auditd lint <fifo>` -> "path does not
 //! exist" (exit 3, no hang, though that specific wording is arguably
-//! misleading for a path that demonstrably exists). Only `fapolicyd lint
-//! --file` (no pre-check at all in single-file mode) and `sudoers lint`
+//! misleading for a path that demonstrably exists). `selinux lint` does NOT
+//! join that gated group: `commands/selinux/lint.rs:56` calls raw
+//! `std::fs::read_to_string` on the resolved path unconditionally, with no
+//! `is_file()`/`is_dir()` check first -- so a bare top-level FIFO argument
+//! (or a FIFO at the default `/etc/selinux/config` path) hangs exactly like
+//! the fapolicyd and sudoers cases described next, and is pinned as a fifth
+//! load-bearing regression test in the "A FIFTH hang" section further down.
+//! Only `fapolicyd lint --file` (no pre-check at all in single-file mode)
+//! and `sudoers lint`
 //! (`resolve::resolve_target`'s non-directory branch calls
 //! `std::fs::read_to_string` unconditionally) hang TODAY without the #560
 //! fix, so those are the two backends pinned here as the load-bearing RED
@@ -62,6 +69,20 @@
 //! (man fifo(7): a read-only open of a FIFO blocks until a writer appears),
 //! exactly like the cases above, and is pinned as a fourth load-bearing
 //! regression test below.
+//!
+//! # A FIFTH hang: `selinux lint`'s unguarded top-level read
+//!
+//! Unlike `sshd lint`/`sysctl lint`/`auditd lint` above, `selinux lint`
+//! has NO `is_file()`/`is_dir()` gate before its single read call:
+//! `run_lint_with_probe` (`commands/selinux/lint.rs:56`) calls raw
+//! `std::fs::read_to_string(&path)` unconditionally on whatever `path`
+//! resolves to (the caller-supplied positional argument, or the default
+//! `/etc/selinux/config` when omitted) -- the same unguarded shape as the
+//! `fapolicyd lint --file` and `sudoers lint` cases above, not the gated
+//! sshd/sysctl/auditd shape. A FIFO named `config` (the default basename)
+//! with no writer hangs forever on that blocking `open()` (man fifo(7): a
+//! read-only open of a FIFO blocks until a writer appears), and is pinned
+//! as a fifth load-bearing regression test below.
 
 use std::time::Duration;
 
@@ -222,4 +243,17 @@ fn sysctl_lint_system_masked_fifo_fails_fast() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// The unguarded top-level read miss (9i lane-2 closeout round 4, issue
+/// #560): `selinux lint <fifo>`'s single read call
+/// (`commands/selinux/lint.rs:56`) has no `is_file()`/`is_dir()` gate
+/// before it, so this hangs identically to the fapolicyd/sudoers cases
+/// above.
+#[test]
+fn selinux_lint_fifo_fails_fast() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "config");
+    let out = run_bounded(&["selinux", "lint", fifo.to_str().unwrap()]);
+    assert_fast_tool_failure(&out, &fifo);
 }
