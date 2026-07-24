@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use rulesteward_core::extract_audit_field;
-use rulesteward_fapolicyd::is_effectively_permissive;
+use rulesteward_fapolicyd::permissive_value_is_effectively_permissive;
 
 use super::model::{
     CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts, ServiceState, SystemProbe,
@@ -213,7 +213,9 @@ impl SystemProbe for LiveProbe {
 
     fn fapolicyd_conf(&self, rules_dir: &Path) -> Result<FapolicydConf, String> {
         let conf_path = Path::new("/etc/fapolicyd/fapolicyd.conf");
-        let conf_text = std::fs::read_to_string(conf_path)
+        // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+        // device-node conf path must be rejected fast, not block forever.
+        let conf_text = rulesteward_core::fsread::read_to_string(conf_path)
             .map_err(|e| format!("cannot read {}: {e}", conf_path.display()))?;
         let permissive_set = conf_value(&conf_text, "permissive")
             .is_some_and(permissive_value_is_effectively_permissive);
@@ -265,36 +267,21 @@ fn read_fapolicyd_mode() -> Option<String> {
 /// value, and `None` if the file cannot be read. Shares the `conf_value`
 /// reader with the misconfiguration check so the two cannot disagree on a
 /// line like `permissive =1` (issue #192, D2), and shares
-/// `permissive_value_is_effectively_permissive` with `LiveProbe::
-/// fapolicyd_conf`'s `permissive_set` so the two probe sites cannot drift on
-/// the fail-open predicate itself.
+/// `rulesteward_fapolicyd::permissive_value_is_effectively_permissive` with
+/// `LiveProbe::fapolicyd_conf`'s `permissive_set` AND with the fapd-W14 lint's
+/// `lint_conf` (issue #582 - previously a private duplicate in this file that
+/// had drifted onto a Unicode-whitespace-aware `split_whitespace()`, unlike
+/// the lint's byte-exact `split(' ')`; now the single shared seam) so none of
+/// the three sites can drift on the fail-open predicate itself.
 fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(conf_path).ok()?;
+    // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+    // device-node conf path must be rejected fast, not block forever.
+    let text = rulesteward_core::fsread::read_to_string(conf_path).ok()?;
     if conf_value(&text, "permissive").is_some_and(permissive_value_is_effectively_permissive) {
         Some("permissive".to_string())
     } else {
         Some("enforcing".to_string())
     }
-}
-
-/// True iff the raw `permissive=` value text (as returned by `conf_value`,
-/// which may include a trailing inline comment - see its doc) resolves to an
-/// effectively-permissive value in the real daemon (issue #567, ATL round 2
-/// MISS 1).
-///
-/// Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, live-verified on
-/// fapolicyd 1.3.2 and 1.4.5): a config line is whitespace-tokenized, and
-/// `nv.value` is bound to ONLY the FIRST token after `=` - a trailing
-/// `# comment` (or any further token) is separately logged as "Wrong number
-/// of arguments" but does not change which token the keyword's parser
-/// receives. So `"1 # temporarily on"` is interpreted exactly as `"1"` by
-/// the real daemon, not rejected as garbage. The single shared seam for both
-/// `read_fapolicyd_mode_from` and `LiveProbe::fapolicyd_conf`'s
-/// `permissive_set`, so the two probe sites cannot drift.
-fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
-    raw.split_whitespace()
-        .next()
-        .is_some_and(is_effectively_permissive)
 }
 
 /// The last non-empty, non-comment line of the `fapolicyd.conf`-style rules
@@ -307,7 +294,9 @@ fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
 /// nor a member of group `fapolicyd`): the caller must treat `None` as "could
 /// not assess", never as "no rule".
 fn read_compiled_final_rule_from(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
+    // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+    // device-node path must be rejected fast, not block forever.
+    let text = rulesteward_core::fsread::read_to_string(path).ok()?;
     text.lines().rev().find_map(|line| {
         let trimmed = line.trim();
         (!trimmed.is_empty() && !trimmed.starts_with('#')).then(|| trimmed.to_string())
@@ -327,7 +316,10 @@ fn check_sha256hash_in_dir(rules_dir: &Path) -> bool {
         if p.extension().and_then(|e| e.to_str()) != Some("rules") {
             continue;
         }
-        if let Ok(text) = std::fs::read_to_string(&p)
+        // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO
+        // `.rules` entry must be skipped fast (as unreadable), not hang the
+        // whole scan open()-ing it for read.
+        if let Ok(text) = rulesteward_core::fsread::read_to_string(&p)
             && text.contains("sha256hash=")
         {
             return true;

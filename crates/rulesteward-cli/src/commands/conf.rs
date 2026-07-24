@@ -14,13 +14,21 @@
 /// from the daemon would make `doctor`/`container-check` misreport the effective
 /// config.
 ///
-/// Tolerant of any whitespace around `=` (`permissive=1`, `permissive = 1`,
-/// `permissive =1`, `permissive= 1` all read as value `"1"`). The key is matched
-/// EXACTLY (so `permissive_debug=1` is NOT read as the `permissive` key). Only
-/// WHOLE-LINE `#` comments are skipped (a line whose first token starts with
-/// `#` is dropped entirely); a trailing `#` on an otherwise-live line is NOT
-/// stripped, so this function returns the RAW remainder verbatim, including
-/// any inline comment text.
+/// Tolerant of a run of ASCII space (0x20) characters around `=` (`permissive=1`,
+/// `permissive = 1`, `permissive =1`, `permissive= 1` all read as value `"1"`).
+/// The key is matched EXACTLY (so `permissive_debug=1` is NOT read as the
+/// `permissive` key). Only WHOLE-LINE `#` comments are skipped (a line whose
+/// first token starts with `#` is dropped entirely); a trailing `#` on an
+/// otherwise-live line is NOT stripped, so this function returns the RAW
+/// remainder verbatim, including any inline comment text.
+///
+/// Only ASCII space is trimmed from the value's edges (issue #582): a
+/// CRLF-edited file's trailing `\r` (and any tab) is deliberately preserved
+/// verbatim, mirroring the real daemon's `get_line`, which strips only a
+/// trailing `0x0a` -- see the `#582` test-block comment below for the full
+/// `daemon-config.c` grounding. The scan splits on a bare `'\n'` (not
+/// `str::lines`, which would silently conflate a `\r\n` terminator and drop
+/// the `\r` before this function ever saw it).
 ///
 /// IMPORTANT (doc-truth-decay correction, ATL round 2 MISS 1): this raw
 /// remainder is NOT the same string the fapolicyd daemon itself uses as the
@@ -40,7 +48,11 @@
 #[must_use]
 pub(crate) fn conf_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let mut value = None;
-    for line in text.lines() {
+    // Split on a bare `'\n'`, never `str::lines()` (which silently strips a
+    // trailing `\r` from each line, conflating a CRLF terminator into a
+    // single line ending): issue #582 requires a CRLF file's trailing `\r`
+    // to survive into the returned value.
+    for line in text.split('\n') {
         // Whole-line comments only: fapolicyd skips a line whose first token starts
         // with `#`. A trailing inline comment on a live line is NOT stripped here -
         // this function's contract is the raw remainder, not the daemon's
@@ -52,8 +64,12 @@ pub(crate) fn conf_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
         if let Some((k, v)) = line.split_once('=')
             && k.trim() == key
         {
-            // Last occurrence wins (fapolicyd parity): keep overwriting.
-            value = Some(v.trim());
+            // Last occurrence wins (fapolicyd parity): keep overwriting. ASCII
+            // space (0x20) only, both ends - never a Unicode `.trim()`, which
+            // would also eat a CRLF file's trailing `\r` (issue #582); a run of
+            // leading spaces mirrors the daemon's own retry-on-leading-space
+            // skip in `_strsplit`.
+            value = Some(v.trim_matches(' '));
         }
     }
     value

@@ -82,25 +82,13 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
     let Some((line, span, value)) = winner else {
         return Vec::new();
     };
-    // Issue #569, round 3 (byte-exact grounding on upstream
-    // `src/library/daemon-config.c`, superseding the round-1/round-2 fix's
-    // reliance on Rust's Unicode-whitespace-aware `split_whitespace()`): the
-    // daemon's own tokenizer, `_strsplit`, finds token boundaries by
-    // `strchr(str, ' ')` - the literal ASCII space byte (0x20) ONLY, never a
-    // tab or a CRLF file's trailing '\r'. `nv_split` binds `nv->value` to
-    // that FIRST space-delimited token; a further token (a trailing
-    // `# comment` or other junk) is logged separately as "Wrong number of
-    // arguments" but does not change which token `permissive_parser`
-    // receives. `unsigned_int_parser`'s own `isdigit` walk is byte-exact
-    // too, so a tab or stray '\r' embedded in that first token (because it
-    // was never a space-byte separator to the daemon) makes the WHOLE token
-    // a parse error, not a rescuable digit prefix. So the value must be
-    // reduced to its first ASCII-space-delimited token here - `split(' ')`,
-    // never `split_whitespace()`/`.trim()`, which would wrongly treat a tab
-    // or '\r' as a separator/trimmable byte and rescue a value the real
-    // daemon's byte-exact parser actually rejects.
-    let first_token = value.split(' ').next().unwrap_or(value);
-    if !is_effectively_permissive(first_token) {
+    // Issue #582: the byte-exact tokenize-then-check step is a shared helper
+    // (`permissive_value_is_effectively_permissive`, below) also consumed by
+    // the CLI doctor probe (`rulesteward-cli/src/commands/doctor/probe.rs`),
+    // so the lint and the probe cannot silently drift apart on this
+    // tokenization rule. See that function's doc for the full
+    // `daemon-config.c` grounding.
+    if !permissive_value_is_effectively_permissive(value) {
         return Vec::new();
     }
 
@@ -149,6 +137,35 @@ pub fn is_effectively_permissive(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|b| b.is_ascii_digit())
         && value.bytes().any(|b| b != b'0')
+}
+
+/// True iff `raw` -- an untokenized `permissive=` value as returned by a raw
+/// per-line scan (this lint's own scanner, or the CLI's `commands::conf::
+/// conf_value` reader) -- resolves, via fapolicyd's own byte-exact
+/// tokenizer, to an effectively-permissive first token.
+///
+/// Ground truth (upstream `src/library/daemon-config.c`): the daemon's own
+/// tokenizer, `_strsplit`, finds token boundaries with `strchr(str, ' ')` -
+/// the literal ASCII space byte (0x20) ONLY, never a tab or a CRLF file's
+/// trailing '\r'. `nv_split` binds `nv->value` to that FIRST space-delimited
+/// token; a further token (a trailing `# comment` or other junk) is logged
+/// separately as "Wrong number of arguments" but does not change which
+/// token `permissive_parser` receives. `unsigned_int_parser`'s own `isdigit`
+/// walk is byte-exact too, so a tab or stray '\r' embedded in that first
+/// token (because it was never a space-byte separator to the daemon) makes
+/// the WHOLE token a parse error, not a rescuable digit prefix. So `raw`
+/// must be reduced to its first ASCII-space-delimited token here -
+/// `split(' ')`, never `split_whitespace()`/`.trim()`, which would wrongly
+/// treat a tab or '\r' as a separator/trimmable byte and rescue a value the
+/// real daemon's byte-exact parser actually rejects.
+///
+/// The single shared seam between `lint_conf` (fapd-W14, this module) and
+/// the CLI's doctor-probe mode/misconfiguration checks
+/// (`rulesteward-cli/src/commands/doctor/probe.rs`), so the lint and the
+/// probe cannot silently drift apart on this tokenization (issue #582).
+#[must_use]
+pub fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
+    raw.split(' ').next().is_some_and(is_effectively_permissive)
 }
 
 #[cfg(test)]

@@ -31,7 +31,9 @@ pub use fanotify::{
     AuditEvent, FanotifyRecord, ParseError, TrustVal, parse_audit_event, parse_fanotify_record,
 };
 pub use lints::catalog;
-pub use lints::conf::{is_effectively_permissive, lint_conf};
+pub use lints::conf::{
+    is_effectively_permissive, lint_conf, permissive_value_is_effectively_permissive,
+};
 pub use lints::cross_db::lint_orphans;
 pub use lints::deny_all::w13;
 pub use lints::stig;
