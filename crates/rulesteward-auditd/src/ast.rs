@@ -36,8 +36,9 @@ pub enum AuditRule {
     /// A static linter has no access to the target host's filesystem, so
     /// `is_dir` is an UNRELIABLE proxy, not ground truth: correctness-
     /// affecting decisions must not gate on it (see
-    /// `lints::stig_required::rules_match`'s doc comment, grounding Part
-    /// B.7.2, and the dir-shape equivalence fold covered in
+    /// `lints::stig_required::normalize_watch_path`'s doc comment and
+    /// `lints::stig_required::w06_with_baseline`'s doc comment, grounding
+    /// Part B.7.2, and the dir-shape equivalence fold covered in
     /// `tests/test_lints_stig_required.rs`, issue #571).
     Watch {
         path: String,
