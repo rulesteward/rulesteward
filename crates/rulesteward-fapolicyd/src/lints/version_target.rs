@@ -80,29 +80,57 @@ fn e06(rule: &Rule, file: &Path, target: TargetVersion, what: &str) -> Diagnosti
     )
 }
 
-/// CHECK 1 - `filehash=` does not exist on fapolicyd 1.3.2 (rhel8); the canonical
-/// 1.3.2 spelling is `sha256hash=`. It is valid on 1.4.x (rhel9/rhel10), so this
-/// fires ONLY under rhel8. Scans both sides (filehash is normally an object attr).
+/// CHECK 1 / CHECK 1B - `filehash=` validity by target and side.
+///
+/// CHECK 1 (rhel8/1.3.2): the whole attribute does not exist on 1.3.2 (the
+/// canonical 1.3.2 spelling is `sha256hash=`), so it is rejected on EITHER
+/// side there.
+///
+/// CHECK 1B (rhel9/rhel10, issue #568): on 1.4.x `filehash=` exists but is
+/// object-only, mirroring `device=`'s CHECK 2 object/subject split - a
+/// subject-side `filehash=` is rejected, object-side stays canonical/clean.
+/// Per the barrier-rework ruling this check is None-closed (like CHECK 2):
+/// `walk` never calls this for `target == None`, so there is nothing further
+/// to gate here.
 fn check_filehash(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Vec<Diagnostic>) {
-    if target != TargetVersion::Rhel8 {
-        return;
-    }
-    // Name the offending side so the operator can locate it in a multi-attribute
-    // rule (`filehash` is normally an object attr, but is rejected on either side).
-    for (side, attrs) in [
-        ("subject-side", &rule.subject),
-        ("object-side", &rule.object),
-    ] {
-        for attr in attrs {
-            if let Attr::Kv { key, .. } = attr
-                && key == "filehash"
-            {
-                diags.push(e06(
-                    rule,
-                    file,
-                    target,
-                    &format!("{side} attribute `filehash=` (use `sha256hash=` instead)"),
-                ));
+    match target {
+        TargetVersion::Rhel8 => {
+            // Name the offending side so the operator can locate it in a
+            // multi-attribute rule (`filehash` is normally an object attr,
+            // but is rejected on either side on 1.3.2, since it does not
+            // exist there at all).
+            for (side, attrs) in [
+                ("subject-side", &rule.subject),
+                ("object-side", &rule.object),
+            ] {
+                for attr in attrs {
+                    if let Attr::Kv { key, .. } = attr
+                        && key == "filehash"
+                    {
+                        diags.push(e06(
+                            rule,
+                            file,
+                            target,
+                            &format!("{side} attribute `filehash=` (use `sha256hash=` instead)"),
+                        ));
+                    }
+                }
+            }
+        }
+        TargetVersion::Rhel9 | TargetVersion::Rhel10 => {
+            // filehash= exists and is canonical on the object side on 1.4.x;
+            // only the subject side is invalid there (#568).
+            for attr in &rule.subject {
+                if let Attr::Kv { key, .. } = attr
+                    && key == "filehash"
+                {
+                    diags.push(e06(
+                        rule,
+                        file,
+                        target,
+                        "subject-side attribute `filehash=` (object-only)",
+                    ));
+                }
             }
         }
     }
