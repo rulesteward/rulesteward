@@ -47,6 +47,21 @@
 //! target hangs forever on the blocking `open()` (man fifo(7): a read-only
 //! open of a FIFO blocks until a writer appears), exactly like the two cases
 //! above, and is pinned as a third load-bearing regression test below.
+//!
+//! # A FOURTH hang: `sysctl lint --system`'s masked-file read
+//!
+//! `sysctl lint --system --root <root>` enumerates the standard `sysctl.d`
+//! search-path directories and applies same-basename directory masking
+//! (`etc/sysctl.d` beats `run/sysctl.d`, highest precedence first). The
+//! masked-file push in `rulesteward-sysctld/src/system.rs`'s `enumerate` has
+//! no `is_file()` filter before it collects a masked entry, unlike the
+//! surviving-file push a few lines below it, which IS gated by `path.is_file()`.
+//! `w03c_masked_key_drops` (same file) then calls raw `std::fs::read_to_string`
+//! on every masked entry to check whether it silently drops a key. A masked
+//! `.conf`-named FIFO with no writer hangs forever on that blocking `open()`
+//! (man fifo(7): a read-only open of a FIFO blocks until a writer appears),
+//! exactly like the cases above, and is pinned as a fourth load-bearing
+//! regression test below.
 
 use std::time::Duration;
 
@@ -155,4 +170,56 @@ fn sshd_lint_directory_main_config_fifo_fails_fast() {
     let fifo = make_fifo(dir.path(), "sshd_config");
     let out = run_bounded(&["sshd", "lint", dir.path().to_str().unwrap()]);
     assert_fast_tool_failure(&out, &fifo);
+}
+
+/// The masked-file read miss (9i lane-2 closeout round 3, issue #560):
+/// `sysctl lint --system --root <root>` where `<root>/run/sysctl.d/50-x.conf`
+/// is a FIFO masked by a same-basename regular file at
+/// `<root>/etc/sysctl.d/50-x.conf` (etc/sysctl.d has higher precedence than
+/// run/sysctl.d). `w03c_masked_key_drops` reads every masked entry with raw
+/// `std::fs::read_to_string`, so the masked FIFO hangs exactly like the
+/// cases above. After the fix, the masked FIFO read is skipped cleanly (a
+/// FIFO has no assignments to drop, so no `sysctld-W03` fires for it) and
+/// the single surviving assignment is clean, so the run must exit 0
+/// (`EXIT_CLEAN`) -- never hang, never any other code.
+#[test]
+fn sysctl_lint_system_masked_fifo_fails_fast() {
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(root.path().join("etc/sysctl.d")).expect("mkdir etc/sysctl.d");
+    std::fs::create_dir_all(root.path().join("run/sysctl.d")).expect("mkdir run/sysctl.d");
+    std::fs::write(
+        root.path().join("etc/sysctl.d/50-x.conf"),
+        "kernel.pid_max = 65536\n",
+    )
+    .expect("write etc/sysctl.d/50-x.conf");
+    let fifo = make_fifo(&root.path().join("run/sysctl.d"), "50-x.conf");
+
+    let out = run_bounded(&[
+        "sysctl",
+        "lint",
+        "--system",
+        "--root",
+        root.path().to_str().unwrap(),
+    ]);
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None, meaning \
+         the process was killed by a signal rather than exiting normally) -- \
+         this IS the #560 miss (w03c_masked_key_drops's raw \
+         std::fs::read_to_string on a masked FIFO with no writer, at {}); \
+         stderr: {}",
+        fifo.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the masked FIFO must be skipped cleanly (a FIFO has no assignments \
+         to drop, so no sysctld-W03-c fires for it) and the single surviving \
+         etc/sysctl.d/50-x.conf assignment is clean, so the run must exit 0; \
+         stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
