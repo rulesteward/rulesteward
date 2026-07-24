@@ -237,5 +237,14 @@ fn modern_exe_device_stays_unknown_on_every_target() {
              stay fapd-E01 'unknown attribute' under --target {target:?}; \
              got {diags:?}"
         );
+        assert!(
+            !diags.iter().any(|d| d.code.as_ref() == "fapd-E06"),
+            "modern exe_device= is uniformly unknown across all fapolicyd \
+             versions (RULE_FMT_COLON table2 lacks it on both 1.3.2 and \
+             1.4.5, confirmed via WebFetch of upstream subject-attr.c at \
+             both tags) - it is fapd-E01's territory, not a version \
+             divergence, so fapd-E06 must NOT also fire under --target \
+             {target:?}; got {diags:?}"
+        );
     }
 }
