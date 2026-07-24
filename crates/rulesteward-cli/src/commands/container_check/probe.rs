@@ -380,6 +380,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_conf_detects_mark_enabled_with_trailing_space_control() {
+        // GREEN regression pin (rulesteward-cli issue #582, adversarial
+        // review round 2, BLOCKER 4): this file is not owned by the #582
+        // lane, but its behavior CHANGES through the shared
+        // `commands::conf::conf_value` helper that lane's fix touches. That
+        // fix must switch `conf_value` off a full Unicode `.trim()` (to
+        // preserve a CRLF file's trailing '\r') without also dropping the
+        // trailing-ASCII-space trim this exact-string `== Some("1")`
+        // compare depends on -- a hand-edited conf with one trailing space
+        // must not silently flip `allow_filesystem_mark` to `false`. This
+        // test is GREEN today; it must stay GREEN after that fix lands.
+        let c = parse_effective_conf("allow_filesystem_mark = 1 \n", true);
+        assert!(
+            c.allow_filesystem_mark,
+            "a trailing ASCII space after the value must not flip \
+             allow_filesystem_mark to false (#582 adversarial round 2, \
+             BLOCKER 4)"
+        );
+    }
+
+    #[test]
     fn parse_conf_ignores_commented_lines() {
         let c = parse_effective_conf("# watch_fs = tmpfs\n#allow_filesystem_mark = 1\n", true);
         assert!(c.watch_fs.is_empty());
