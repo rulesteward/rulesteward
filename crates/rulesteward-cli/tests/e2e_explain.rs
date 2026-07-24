@@ -33,6 +33,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -345,4 +346,81 @@ fn explain_rule_file_unreadable_exits_tool_failure() {
         .failure()
         .code(3)
         .stderr(predicate::str::contains("reading rule file"));
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+/// Mirrors `path_error_fifo.rs`'s `make_fifo` helper (test files are separate
+/// binaries and cannot share it directly).
+fn make_fifo(dir: &Path, name: &str) -> PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `explain --record <fifo>` must fail FAST, never hang: `run`'s very first
+/// read (`commands/explain.rs:23`, raw `std::fs::read_to_string(&args.record)`)
+/// has no special-file guard today. Bounded by a 15s `assert_cmd` timeout so a
+/// wrong (hanging) implementation fails this ONE test instead of wedging the
+/// suite; `status.code().is_some()` is the hang signal (`assert_cmd`'s
+/// `.timeout()` kills the child on expiry, which `.output()` still reports as
+/// `Ok(Output)` with `status.code() == None`, never an `Err`).
+///
+/// NOTE: unlike this call site, the SECOND read in `explain.rs` (the
+/// ruleset-directory loop at `commands/explain.rs:72`) is reached only for
+/// entries that pass `p.is_file()` in the loop's own collection filter
+/// (`commands/explain.rs:58`), which already excludes a FIFO before the read
+/// -- so a bare `*.rules` FIFO placed in `--ruleset` cannot reach that second
+/// call site at all, and no hang test is written for it here (a test that
+/// cannot fail regardless of the implementation would be a vacuous positive
+/// control, not a regression pin).
+#[test]
+fn explain_record_file_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "record.fifo");
+    let ruleset = ruleset_13_dir();
+
+    let out = bin()
+        .args(["fapolicyd", "explain", "--record"])
+        .arg(&fifo)
+        .args(["--ruleset"])
+        .arg(ruleset.path())
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None, meaning the \
+         process was killed by a signal rather than exiting normally) -- this IS \
+         the #583 gap: explain::run's raw std::fs::read_to_string(&args.record) \
+         has no special-file guard, so a FIFO with no writer hangs forever; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --record must be a tool failure (EXIT_TOOL_FAILURE=3), not a hang \
+         or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
 }

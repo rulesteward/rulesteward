@@ -35,6 +35,35 @@ fn lint_missing_path_exits_three_with_message() {
         .stderr(predicate::str::contains("does not exist"));
 }
 
+/// #583 half B: pins the EXACT byte-for-byte path-error JSON envelope so a
+/// later refactor extracting `sshd.rs`'s/`sysctl.rs`'s/`sudoers.rs`'s/
+/// `auditd.rs`'s four near-identical private `emit_path_error_envelope`
+/// helpers into ONE shared helper (bringing `selinux lint` into the same
+/// contract) cannot silently change this verb's output. Captured empirically
+/// against the real binary (2026-07-24) before any refactor - not guessed.
+#[test]
+fn lint_missing_path_json_envelope_is_byte_identical() {
+    let out = lint_cmd()
+        .args(["auditd", "lint", "/nonexistent/6a/nothing"])
+        .args(["--format", "json"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a missing path stays a tool failure; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let expected =
+        "{\n  \"schemaVersion\": 1,\n  \"kind\": \"auditd-lint\",\n  \"diagnostics\": []\n}\n";
+    assert_eq!(
+        stdout, expected,
+        "the path-error JSON envelope must stay byte-identical across the \
+         emit_path_error_envelope extraction"
+    );
+}
+
 /// An EXISTING file the process cannot read is a distinct arm from the
 /// missing-path case above: `resolve_lint_target` succeeds (the file exists),
 /// but the per-file `std::fs::read_to_string` inside the staging loop fails.

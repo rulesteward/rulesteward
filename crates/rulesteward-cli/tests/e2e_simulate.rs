@@ -36,6 +36,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1230,4 +1231,75 @@ fn unparseable_json_workload_is_a_tool_failure() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("parsing workload"));
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+fn make_fifo(dir: &std::path::Path, name: &str) -> PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `simulate --workload <fifo>` must fail FAST, never hang: `run`'s workload
+/// read (`commands/simulate/mod.rs:149`, raw
+/// `std::fs::read_to_string(&args.workload)`) has no special-file guard and no
+/// upstream `is_file()` gate -- the only pre-check is the literal `"-"` stdin
+/// marker, which a FIFO path never matches. Bounded by a 15s `assert_cmd`
+/// timeout so a wrong (hanging) implementation fails this ONE test instead of
+/// wedging the suite; `status.code().is_some()` is the hang signal.
+///
+/// NOTE: the sibling ruleset-directory loop (`--rules <dir>`,
+/// `commands/simulate/evaluate.rs::load_ruleset`) filters entries through
+/// `p.is_file()` before collecting them, so a bare `*.rules` FIFO placed in
+/// `--rules` cannot reach that read at all - only the gate-free `--workload`
+/// path is exercised here.
+#[test]
+fn workload_fifo_fails_fast_not_hang() {
+    let (_rules_dir_guard, rules_path) = write_rules_dir("deny_audit perm=open all : all\n");
+    let dir = tempfile::tempdir().expect("tempdir for the workload fifo");
+    let fifo = make_fifo(dir.path(), "workload.fifo");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary")
+        .args(["fapolicyd", "simulate", "--rules"])
+        .arg(&rules_path)
+        .args(["--workload"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: simulate's --workload read has no special-file guard; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --workload target must be a tool failure (EXIT_TOOL_FAILURE=3), not \
+         a hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
 }

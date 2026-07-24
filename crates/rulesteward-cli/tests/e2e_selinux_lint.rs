@@ -87,6 +87,59 @@ fn lint_json_kind_and_schema_version_are_pinned() {
     assert_eq!(v["schemaVersion"].as_u64(), Some(1));
 }
 
+/// #583 half B / #561: a path-error under `--format json` must emit a
+/// schema-versioned envelope with EMPTY diagnostics (mirroring the other five
+/// lint verbs' `emit_path_error_envelope` contract), not empty stdout.
+/// `commands/selinux/lint.rs`'s `run_lint_with_probe` today only does
+/// `eprintln!(...); return EXIT_TOOL_FAILURE;` on a read failure - no envelope
+/// call at all - so `--format json` on a bad path currently produces ZERO
+/// bytes of stdout (confirmed empirically against the real binary,
+/// 2026-07-24). This is the RED half of this lane; the four sibling verbs'
+/// `path_error_json_envelope_is_byte_identical` tests (`e2e_sshd_lint.rs`,
+/// `e2e_sysctl_lint.rs`, `e2e_sudoers_lint.rs`, `e2e_auditd_lint.rs`) are the
+/// GREEN safety net proving the shared-helper extraction does not disturb
+/// their already-correct output.
+#[test]
+fn lint_json_path_error_emits_versioned_envelope_with_empty_diagnostics() {
+    let out = bin()
+        .args(["selinux", "lint", "/nonexistent/583/selinux-config"])
+        .args(["--format", "json"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "an unreadable path stays a tool failure (EXIT_TOOL_FAILURE=3); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("cannot read"),
+        "stderr must still name the failed read; got: {stderr}"
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        !stdout.is_empty(),
+        "#561 gap: a path-error under --format json must still emit a versioned \
+         envelope, not empty stdout (today it is empty - the other five lint \
+         verbs already emit one via their own/shared emit_path_error_envelope \
+         helper); stderr was: {stderr}"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "JSON output must end with a trailing newline; got: {stdout:?}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout must be a valid JSON envelope, got {stdout:?}: {e}"));
+    assert_eq!(v["kind"].as_str(), Some("selinux-lint"));
+    assert_eq!(v["schemaVersion"].as_u64(), Some(1));
+    assert_eq!(
+        v["diagnostics"].as_array().map(Vec::len),
+        Some(0),
+        "diagnostics must be an empty array on a path error, got: {v}"
+    );
+}
+
 #[test]
 fn lint_profile_stig_passthrough_is_non_empty_for_a_controls_bearing_finding() {
     let f = write_config("SELINUX=permissive\nSELINUXTYPE=targeted\n");

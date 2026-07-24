@@ -7,6 +7,7 @@
 
 use assert_cmd::Command;
 use std::io::Write as _;
+use std::time::Duration;
 
 fn bin() -> Command {
     Command::cargo_bin("rulesteward").expect("rulesteward binary")
@@ -590,6 +591,64 @@ fn auditd_cost_from_log_unreadable_exits_tool_failure() {
         .failure()
         .code(3)
         .stderr(predicates::str::contains("cannot read --from-log"));
+}
+
+/// `--from-log` pointing at a writerless FIFO must fail FAST, never hang:
+/// `count_events_by_key` (`rulesteward-auditd/src/from_log.rs:55`, raw
+/// `std::fs::read_to_string(path)`) has no special-file guard - the crate
+/// depends on `rulesteward-core` already (per #560/#583), it just is not
+/// routed through `fsread::read_to_string` yet. Bounded by a 15s `assert_cmd`
+/// timeout so a wrong (hanging) implementation fails this ONE test instead of
+/// wedging the suite; `status.code().is_some()` is the hang signal.
+#[test]
+fn auditd_cost_from_log_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+    let fifo = dir.path().join("audit.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+
+    let out = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: count_events_by_key's raw std::fs::read_to_string has no \
+         special-file guard; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --from-log target must be a tool failure (EXIT_TOOL_FAILURE=3), not \
+         a hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot read --from-log"),
+        "the diagnostic must keep the same 'cannot read --from-log' prefix the \
+         nonexistent-file case above already asserts; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
 }
 
 /// Control-directive rules (`-D`, `-b <n>`) are NOT `Watch`/`Syscall` rules:

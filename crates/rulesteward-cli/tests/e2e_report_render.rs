@@ -46,7 +46,8 @@
 
 use assert_cmd::Command;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -566,4 +567,119 @@ fn report_against_trustdb_invalid_env_exits_lmdb_error() {
         .failure()
         .code(4)
         .stderr(predicates::str::contains("opening trust DB"));
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arms - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+fn make_fifo(dir: &Path, name: &str) -> PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `report --file <fifo>` must fail FAST, never hang: `resolve_targets`'
+/// single-file branch (`commands/report.rs:246-248`) returns the path
+/// unconditionally with no `is_file()` gate, so the read loop's raw
+/// `std::fs::read_to_string(path)` (`commands/report.rs:56`) is the actual
+/// #560/#583 hang mechanism on a FIFO with no writer. Bounded by a 15s
+/// `assert_cmd` timeout so a wrong (hanging) implementation fails this ONE
+/// test instead of wedging the suite; `status.code().is_some()` is the hang
+/// signal (a killed child still yields `Ok(Output)` from `.output()`, with
+/// `status.code() == None`).
+///
+/// NOTE: the sibling DIRECTORY-mode loop (`--path <dir>`, `commands/report.rs`
+/// `resolve_targets`' `read_dir` branch) filters entries through `p.is_file()`
+/// (`commands/report.rs:261`) before ever reading them, so a bare `*.rules`
+/// FIFO placed in a `--path` directory cannot reach that read at all - only
+/// the gate-free `--file` single-file mode is exercised here.
+#[test]
+fn report_file_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "policy.rules");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: report's target-file read loop has no special-file guard; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --file target must be a tool failure (EXIT_TOOL_FAILURE=3), not a \
+         hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
+}
+
+/// `report --file <valid> --diff-against <fifo>` must fail FAST, never hang:
+/// the drift-comparison read (`commands/report.rs:197`,
+/// `std::fs::read_to_string(snapshot_path)`) has no special-file guard and no
+/// upstream `is_file()` gate on `--diff-against` at all, so this is reached
+/// unconditionally once the primary register build succeeds.
+#[test]
+fn report_diff_against_fifo_fails_fast_not_hang() {
+    let rules_dir = tempfile::tempdir().expect("tempdir for a valid single rules file");
+    let rules_file = rules_dir.path().join("10-x.rules");
+    fs::write(&rules_file, "allow uid=0 : all\n").expect("write valid rules file");
+
+    let fifo_dir = tempfile::tempdir().expect("tempdir for the snapshot fifo");
+    let fifo = make_fifo(fifo_dir.path(), "snapshot.json");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&rules_file)
+        .args(["--diff-against"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: report's --diff-against snapshot read has no special-file \
+         guard; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --diff-against target must be a tool failure (EXIT_TOOL_FAILURE=3), \
+         not a hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
 }

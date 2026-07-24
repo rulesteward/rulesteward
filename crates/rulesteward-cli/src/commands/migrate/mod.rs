@@ -1328,6 +1328,84 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // LiveMigrateProbe special-file guard (#583 half A)
+    // -----------------------------------------------------------------------
+
+    /// `LiveMigrateProbe::check_rules`'s `rules.d/*.rules` collection loop
+    /// (`impl MigrateProbe for LiveMigrateProbe` above) reads every matching
+    /// file with raw `std::fs::read_to_string`, with NO `is_file()` filter --
+    /// unlike `detect_layout`'s NARROW/BROAD helpers (`directory_has_rules_files`
+    /// / `directory_has_nondotfile_entry`, both gated on file type) and unlike
+    /// this file's OWN top-level legacy-file read (`legacy_path.is_file()` is
+    /// checked upstream by `detect_layout`, so a FIFO substituted for
+    /// `fapolicyd.rules` itself can never reach that second read at all - only
+    /// a genuine race could, which is not a deterministic test). A FIFO named
+    /// `*.rules` sitting in `rules.d/` alongside a real rule file therefore
+    /// hangs the post-apply verification forever (the actual #560/#583 hang
+    /// mechanism: opening a FIFO for reading with no writer blocks per
+    /// fifo(7)).
+    ///
+    /// Driven directly against `LiveMigrateProbe` (bypassing the full
+    /// apply/layout dance, which is orthogonal to this bug) off a background
+    /// thread with a bounded `recv_timeout`, mirroring
+    /// `rulesteward-core/src/fsread.rs`'s own FIFO test, so a hanging (wrong)
+    /// implementation fails this ONE test instead of wedging the whole suite.
+    #[test]
+    fn live_probe_check_rules_fifo_in_rules_d_fails_fast_not_hang() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules_d = dir.path().join(MODERN_DIR);
+        std::fs::create_dir_all(&rules_d).unwrap();
+        std::fs::write(rules_d.join("10-good.rules"), "allow uid=0 : all\n").unwrap();
+        let fifo = rules_d.join("20-fifo.rules");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(
+            status.success(),
+            "mkfifo must succeed for {}",
+            fifo.display()
+        );
+
+        let rules_dir_for_thread = dir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let probe = LiveMigrateProbe;
+            let result = probe.check_rules(&rules_dir_for_thread);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(result) => {
+                // A correct implementation rejects the special file fast: Err,
+                // never silently skipped, never a successful "read" of FIFO
+                // content passed to fapolicyd-cli.
+                let msg = result.expect_err(
+                    "a FIFO in rules.d/*.rules must surface as an Err (fapolicyd-cli \
+                     is never even reached), not a successful check_rules outcome",
+                );
+                assert!(
+                    msg.to_lowercase().contains("fifo")
+                        || msg.contains(&fifo.display().to_string()),
+                    "the error must name the FIFO file type or the offending path, \
+                     got: {msg}"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "check_rules blocked for 10s+ reading a FIFO in rules.d/*.rules -- \
+                     this IS the #583 gap: LiveMigrateProbe::check_rules's raw \
+                     std::fs::read_to_string loop has no special-file guard, unlike \
+                     detect_layout's is_file()-gated helpers"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result (it panicked)");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // #211 probe tests (must be RED against the skeleton)
     // -----------------------------------------------------------------------
 

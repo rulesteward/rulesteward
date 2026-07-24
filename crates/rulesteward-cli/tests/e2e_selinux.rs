@@ -12,6 +12,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::time::Duration;
 
 /// Write `contents` to a temp file and return the guard (keeps the file alive
 /// for the duration of the test). Mirrors `e2e_selinux_authoritative.rs`'s
@@ -143,5 +144,67 @@ fn triage_output_flag_writes_to_file_not_stdout() {
     assert!(
         contents.contains("RBAC role constraint"),
         "the rendered report must land in the -o file, got: {contents}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+fn make_fifo(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `selinux triage --record <fifo>` must fail FAST, never hang: `triage`'s
+/// input read (`commands/selinux/triage.rs:72`, raw
+/// `std::fs::read_to_string(input_path)`) has no special-file guard and no
+/// upstream `is_file()`/`is_dir()` gate at all - `input_path` is used exactly
+/// as resolved from `--record`/`--audit-log`. Bounded by a 15s `assert_cmd`
+/// timeout so a wrong (hanging) implementation fails this ONE test instead of
+/// wedging the suite; `status.code().is_some()` is the hang signal.
+#[test]
+fn triage_record_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "avc.fifo");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: selinux triage's --record read has no special-file guard; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --record target must be a tool failure (EXIT_TOOL_FAILURE=3), not a \
+         hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
     );
 }

@@ -338,3 +338,32 @@ fn sarif_include_pass_is_rejected_for_sudoers_lint() {
         "clap's error must name the rejected flag; got: {stderr}"
     );
 }
+
+/// #583 half B: pins the EXACT byte-for-byte path-error JSON envelope so a
+/// later refactor extracting `sshd.rs`'s/`sysctl.rs`'s/`sudoers.rs`'s/
+/// `auditd.rs`'s four near-identical private `emit_path_error_envelope`
+/// helpers into ONE shared helper (bringing `selinux lint` into the same
+/// contract) cannot silently change this verb's output. Captured empirically
+/// against the real binary (2026-07-24) before any refactor - not guessed.
+#[test]
+fn path_error_json_envelope_is_byte_identical() {
+    let out = bin()
+        .args(["sudoers", "lint", "/nonexistent/583/sudoers"])
+        .args(["--format", "json"])
+        .output()
+        .expect("binary ran");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a missing path stays a tool failure; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let expected =
+        "{\n  \"schemaVersion\": 1,\n  \"kind\": \"sudoers-lint\",\n  \"diagnostics\": []\n}\n";
+    assert_eq!(
+        stdout, expected,
+        "the path-error JSON envelope must stay byte-identical across the \
+         emit_path_error_envelope extraction"
+    );
+}

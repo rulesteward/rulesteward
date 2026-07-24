@@ -22,6 +22,7 @@ use assert_cmd::Command;
 use rulesteward_fapolicyd::trustdb::write_trustdb_fixture_kv;
 use std::io::Write as _;
 use std::path::Path;
+use std::time::Duration;
 
 /// A real, sha256sum-verified (bytes, size, hex) triple. Computed with coreutils
 /// `printf 'hello trustdb\n' | sha256sum`, so the recorded value the impl
@@ -1505,5 +1506,95 @@ fn unknown_integrity_flag_value_is_rejected_not_silently_none() {
          exit; got exit {:?} stderr={:?}",
         out_hyphen.status.code(),
         String::from_utf8_lossy(&out_hyphen.stderr),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+fn make_fifo(dir: &Path, name: &str) -> std::path::PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `trustdb check --config <fifo>` must fail FAST, never hang:
+/// `resolve_integrity_mode`'s conf read (`commands/fapolicyd/trustdb.rs:97`,
+/// raw `std::fs::read_to_string(&conf_path)`) has no special-file guard. The
+/// `Err(e) if e.kind() == NotFound` fast path never applies to a FIFO (opening
+/// it just blocks, it never returns `NotFound`), so this is the actual
+/// #560/#583 hang mechanism. Bounded by a 15s `assert_cmd` timeout so a wrong
+/// (hanging) implementation fails this ONE test instead of wedging the suite.
+///
+/// Unlike the other FIFO regressions in this suite, a bad `--config` is a
+/// NON-FATAL degrade (`resolve_integrity_mode`'s generic `Err(e)` arm falls
+/// back to STRICT/sha256 and keeps running - mirroring how an EACCES-unreadable
+/// conf is already handled today), so the queried path here is a
+/// KNOWN-MATCHING file (`write_known_file` + a fixture DB row with the exact
+/// recorded size/hash): under sha256 a `Match` verdict is never a divergence,
+/// so the overall run must still exit 0 - proving the read failure was
+/// absorbed (fast) rather than hanging or aborting the whole command.
+#[test]
+fn trustdb_check_config_fifo_fails_fast_not_hang() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_match = files.path().join("match");
+    write_known_file(&path_match);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_match.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, KNOWN_SHA256).as_slice(),
+        )],
+    );
+
+    let conf_dir = tempfile::tempdir().expect("conf tempdir");
+    let fifo = make_fifo(conf_dir.path(), "fapolicyd.conf");
+
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(&fifo)
+        .arg(&path_match)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: resolve_integrity_mode's --config read has no special-file \
+         guard; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --config must degrade gracefully (fall back to strict/sha256, like \
+         an unreadable conf already does) rather than hang or abort the whole run; \
+         the queried path matches the fixture DB exactly, so a correct degrade \
+         still exits 0; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.to_lowercase().contains("fifo") || stdout.contains(&fifo.display().to_string()),
+        "the human 'integrity: ...' header must surface the read failure (naming \
+         the FIFO file type or the conf path), not silently vanish; stdout: {stdout}"
     );
 }
