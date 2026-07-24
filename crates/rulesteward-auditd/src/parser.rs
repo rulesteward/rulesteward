@@ -909,6 +909,71 @@ mod tests {
             "bare -D inside a larger valid file must still resolve to DeleteAll: {rules:?}"
         );
     }
+
+    // --- Strengthen round (#541): the "-D -k <key>" allowance ---
+    // Grounding: auditctl.c `case 'D':` (v3.1.5 L1000-1024, v3.1.2 L982-1006,
+    // v4.0.3 L1005-1029 -- byte-identical on all three RHEL-target tags)
+    // does NOT do a blanket reject of every trailing token. The exact shape
+    // is: `count > 4 || count == 3` is an unconditional reject (any single
+    // trailing token, including a lone "-k" with no key value, or 3+
+    // trailing tokens); a fields count of exactly 4 (our
+    // `tokens.len() == 3`: "-D", "-k", "<key>") is the ONE allowed shape --
+    // checked only when `vars[optind] == "-k"` -- and still resolves to
+    // DeleteAll (falls through to the same `delete_all_rules(fd)` call as
+    // bare -D). The `key` value taken from vars[3] is functionally inert
+    // for a STATIC parse: real auditctl clears it to empty immediately
+    // after a successful delete (`key[0] = 0`), and this crate's AST has no
+    // field to carry it -- ControlRule::DeleteAll (no key payload) is the
+    // correct static result for this shape, not a gap.
+
+    #[test]
+    fn delete_all_accepts_dash_k_key_shape() {
+        // GREEN-target (RED against the current blanket-reject impl,
+        // commit 52ab817): "-D -k mykey" is fields count==4, the one real
+        // auditctl allowance -- must parse to DeleteAll, not error.
+        let parsed = parse_line("-D -k mykey", 1)
+            .expect("-D -k <key> is a real auditctl allowance and must parse");
+        assert_eq!(parsed, AuditRule::Control(ControlRule::DeleteAll));
+    }
+
+    #[test]
+    fn delete_all_rejects_bare_dash_k_with_no_key() {
+        // RED-target per real auditctl (already GREEN against the current
+        // blanket-reject impl, for the wrong reason -- this pin locks in
+        // the CORRECT reason too): "-D -k" alone is fields count==3 (only
+        // ONE trailing token, "-k" itself), which hits the unconditional
+        // `count == 3` reject at the very top of case 'D' BEFORE the
+        // count==4 "-k" check is ever reached. A lone "-k" with no key
+        // value is not a partial match of the allowed shape.
+        let err = parse_line("-D -k", 1).expect_err(
+            "-D -k with no key value must be rejected, same as any other bare extra token",
+        );
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn delete_all_rejects_dash_k_key_plus_extra_token() {
+        // RED-target per real auditctl (already GREEN against the current
+        // blanket-reject impl, for the wrong reason -- this pin locks in
+        // the CORRECT reason too): "-D -k mykey extra" is fields count==5,
+        // which hits the unconditional `count > 4` reject at the very top
+        // of case 'D', regardless of the extra token's content. Only the
+        // EXACT "-D -k <key>" (count==4) shape is allowed; anything beyond
+        // it stays rejected.
+        let err = parse_line("-D -k mykey extra", 1)
+            .expect_err("-D -k <key> plus any further token must still be rejected");
+        assert_eq!(err.line, 1);
+        assert!(
+            err.message.contains("-D"),
+            "the error should name the offending flag; got {:?}",
+            err.message
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
