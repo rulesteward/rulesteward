@@ -32,6 +32,21 @@
 //! to regular files, directories, FIFOs, character devices (`/dev/null`,
 //! plus a bounded-thread `/dev/zero` case mirroring the FIFO hang guard
 //! below), and Unix domain sockets are all covered there.
+//!
+//! # A THIRD hang: `sshd lint <dir>`'s directory-mode main-config read
+//!
+//! The "no top-level-FIFO hang" claim above is about the ARGUMENT itself
+//! being a FIFO. It does not cover a DIRECTORY argument whose main config
+//! FILE inside it is a FIFO. `sshd lint <dir>`'s directory dispatch
+//! (`commands/sshd.rs:64`, `path.is_dir()`) runs BEFORE the single-file arm's
+//! `!path.is_file()` fast-fail (`commands/sshd.rs:84`) and the #560
+//! `rulesteward_core::fsread` guard it routes through (`commands/sshd.rs:93`).
+//! `lint_drop_in`/`lint_merged` (`rulesteward-sshd/src/lints/drop_in.rs:118`,
+//! `:231`) each call raw `std::fs::read_to_string(dir.join("sshd_config"))`
+//! directly, unguarded -- so a FIFO named `sshd_config` inside a directory
+//! target hangs forever on the blocking `open()` (man fifo(7): a read-only
+//! open of a FIFO blocks until a writer appears), exactly like the two cases
+//! above, and is pinned as a third load-bearing regression test below.
 
 use std::time::Duration;
 
@@ -117,5 +132,27 @@ fn sudoers_lint_fifo_fails_fast() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fifo = make_fifo(dir.path(), "sudoers");
     let out = run_bounded(&["sudoers", "lint", fifo.to_str().unwrap()]);
+    assert_fast_tool_failure(&out, &fifo);
+}
+
+/// The impl-aware adversarial review's miss (9i lane-2 closeout):
+/// `sshd lint <dir>` where `<dir>/sshd_config` (the main config the
+/// directory-mode dispatch always reads first) is a FIFO with no writer.
+/// Unlike a bare top-level FIFO argument (already rejected without blocking
+/// by the `is_dir()`/`is_file()` gates in `commands/sshd.rs`, see the module
+/// docs above), the directory dispatch (`commands/sshd.rs:64`) is entered
+/// BEFORE any special-file check, and `lint_drop_in`/`lint_merged`
+/// (`rulesteward-sshd/src/lints/drop_in.rs:118`, `:231`) each read the main
+/// config with raw `std::fs::read_to_string`, not
+/// `rulesteward_core::fsread::read_to_string` -- so this hangs identically
+/// to the two cases above. A wedged process yields `status.code() == None`
+/// (killed by the bounded timeout, not exited normally);
+/// `assert_fast_tool_failure` treats that `None` as the hang signal, exactly
+/// as it does for the fapolicyd/sudoers cases above.
+#[test]
+fn sshd_lint_directory_main_config_fifo_fails_fast() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "sshd_config");
+    let out = run_bounded(&["sshd", "lint", dir.path().to_str().unwrap()]);
     assert_fast_tool_failure(&out, &fifo);
 }
