@@ -1,5 +1,11 @@
 name: stig-drift
 
+# Cross-reference (#580): the names read inverted at a glance. THIS workflow
+# ("drift") is the LIVE weekly probe against the pinned DISA zips (just
+# recipe: stig-check); the OFFLINE PR gate against committed fixtures is
+# stig-check.yml (just recipe: stig-check-offline). See
+# tools/stig-update/README.md for the full table.
+#
 # Weekly nudge for the sysctld-W02 STIG kernel-hardening baseline (issue #335): fetch
 # the pinned DISA XCCDF zips LIVE and compare against the shipped tables. On drift,
 # open/update a tracking issue (it never edits code). The on-demand path is
