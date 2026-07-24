@@ -19,6 +19,18 @@
 //! `-a always,exit -F arch=bXX -F path= -F perm= -k key` syscall pair), both
 //! directions, all targets -- see [`rules_match`]'s doc comment for the full
 //! grounding and the structural "pure path-watch shape" definition.
+//!
+//! Session 9j lane 8, USER RULING (2026-07-24, issue #571): the SAME
+//! equivalence, in parallel, for the OTHER field a `-w` watch compiles down
+//! to: a directory-shaped STIG requirement is satisfied by EITHER a classic
+//! `-w dir -p perms -k key` watch or its dual-arch
+//! `-a always,exit -F arch=bXX -F dir= -F perm= -k key` syscall pair, both
+//! directions, all targets. `-F dir=` (a recursive subtree watch) and
+//! `-F path=` (a single-inode watch) are genuinely distinct kernel
+//! constructs and are NEVER folded into each other, in either direction --
+//! see [`rules_match`]'s doc comment for the full grounding, the "pure
+//! dir-watch shape" definition, and why `is_dir` plays no part in either
+//! fold (`ast.rs`'s `Watch::is_dir` doc comment).
 //! `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` are the grounded
 //! per-RHEL-major required-rules tables (63/81/77 rules.d lines respectively
 //! as of the #549 RHEL9 V2R7->V2R9 pin bump, session 9e-wave2c pipeline P2;
@@ -1298,7 +1310,18 @@ pub fn stig_baseline(target: TargetVersion) -> &'static [BaselineRule] {
 ///    `always,exit`, no `-C`, and `-F` predicates limited to
 ///    `path`/`perm`/`arch`) and its `path`/`perm` equal the `Watch` side's
 ///    (arch is ignored on that side -- a watch has no arch axis, so it
-///    matches a b32 row and a b64 row independently). See [`rules_match`]'s
+///    matches a b32 row and a b64 row independently). PLUS, in parallel, the
+///    dir-watch equivalence fold (issue #571): the SAME cross-variant match
+///    when the `Syscall` side is instead STRUCTURALLY a pure dir-watch
+///    (empty `-S` list, `always,exit`, no `-C`, `-F` predicates limited to
+///    `dir`/`perm`/`arch`, at least one `dir` predicate present) and its
+///    `dir`/`perm` equal the `Watch` side's. The path-shape and dir-shape
+///    tests are mutually exclusive (a rule's field set cannot be
+///    all-`path`-or-`perm`-or-`arch` AND all-`dir`-or-`perm`-or-`arch` unless
+///    it has neither a `path` nor a `dir` predicate, which both shape tests
+///    reject), and `-F dir=`/`-F path=` are never unified with each other or
+///    with a `Watch`'s `path` slot in the generic field comparison -- each
+///    cross-variant arm reads its OWN field kind only. See [`rules_match`]'s
 ///    doc comment for the axis definitions:
 ///    - **Watch path:** plain string compare (or trailing-slash-normalized;
 ///      `is_dir` is NOT part of the comparison - grounding Part B.7.2).
@@ -1487,6 +1510,43 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// Key handling is UNCHANGED: `effective_key` already works generically over
 /// either variant, so the trailing `include_key` check below needs no new
 /// logic once `axes_match` crosses variants.
+///
+/// Dir-watch equivalence fold (USER RULING, 2026-07-24, issue #571): a
+/// SEPARATE, PARALLEL arm for the OTHER field a `-w` watch compiles down to.
+/// `auditctl(8)`'s own EXAMPLES section shows this side by side with the
+/// path case: "To recursively watch a directory for changes: `auditctl -w
+/// /etc/ -p wa`" compiles to "`auditctl -a always,exit -F arch=b64 -F
+/// dir=/etc/ -F perm=wa`" -- `-F dir=` places a RECURSIVE SUBTREE watch,
+/// genuinely distinct from `-F path=`'s SINGLE-INODE watch. "Pure dir-watch
+/// shape" (the structural test [`is_pure_dir_watch_shaped`], the Dir-flavored
+/// twin of [`is_pure_path_watch_shaped`]) applies the identical structural
+/// test with `dir` swapped in for `path`: an EMPTY `-S` syscall list, the
+/// `always,exit` list/action pair, no `-C` field-comparisons, `-F` predicates
+/// limited to `dir`/`perm`/`arch`, and at least one `dir` predicate present.
+/// The two shape tests are mutually exclusive (a field set that is
+/// all-of-`{path,perm,arch}` cannot also be all-of-`{dir,perm,arch}` unless
+/// it has neither a `path` nor a `dir` predicate, which both shape tests'
+/// "at least one" guard rejects), so a rule is never credited by both arms at
+/// once. `-F dir=`/`-F path=` are NEVER unified with each other, in either
+/// direction: an EXPLICIT `-F path=` requirement is never satisfied by an
+/// EXPLICIT `-F dir=` candidate or vice versa (both sides having declared a
+/// different kernel construct outright, with no cross-variant ambiguity to
+/// resolve) -- that discrimination falls out of the existing, UNMODIFIED
+/// Syscall-vs-Syscall arm above (`AuditField::Path` and `AuditField::Dir` are
+/// different enum variants, so [`fields_match_excluding_key`]'s per-field-type
+/// set compare never merges them) and needs no change here. Dir compares via
+/// [`normalize_watch_path`] (the SAME trailing-slash normalization the
+/// path-fold and Watch-vs-Watch axis use -- DISA's own check-content is just
+/// as inconsistent about trailing slashes on `-F` field values as it is on
+/// `-w` lines); perm compares via [`perm_bits_from_field_value`], identically
+/// to the path arm. `is_dir` plays NO part in this fold either (see
+/// `ast.rs`'s `Watch::is_dir` doc comment): a static linter cannot `stat()`
+/// the target host to resolve file-vs-directory, so the fold cannot and must
+/// not gate on the trailing-slash spelling convention in either direction --
+/// this is an accepted, deliberate over-credit (a `-F dir=` candidate can
+/// satisfy a file-shaped `Watch` requirement) rather than a bug, since a
+/// recursive subtree watch naming a regular file is a kernel-level no-op the
+/// fold never needs to distinguish in practice.
 fn rules_match(
     required: &crate::ast::AuditRule,
     candidate: &crate::ast::AuditRule,
@@ -1546,7 +1606,12 @@ fn rules_match(
         // Path-watch equivalence fold (USER RULING, 2026-07-17; see the doc
         // comment above): a Watch-shaped requirement, satisfied by a
         // structurally pure-path-watch Syscall candidate with matching
-        // path/perm (arch ignored).
+        // path/perm (arch ignored). PLUS, in parallel, the dir-watch
+        // equivalence fold (USER RULING, 2026-07-24, issue #571): the SAME
+        // requirement satisfied instead by a structurally pure-dir-watch
+        // Syscall candidate with matching dir/perm (arch ignored). The two
+        // shape tests are mutually exclusive (see the doc comment above), so
+        // at most one disjunct is ever true for a given candidate.
         (
             AuditRule::Watch {
                 path: rp,
@@ -1562,12 +1627,15 @@ fn rules_match(
                 ..
             },
         ) => {
-            is_pure_path_watch_shaped(cl, ca, cs, cf, cfc)
-                && watch_equivalent_axes_match(rp, rpe, cf)
+            (is_pure_path_watch_shaped(cl, ca, cs, cf, cfc)
+                && watch_equivalent_axes_match(rp, rpe, cf))
+                || (is_pure_dir_watch_shaped(cl, ca, cs, cf, cfc)
+                    && dir_watch_equivalent_axes_match(rp, rpe, cf))
         }
         // Reverse direction: a Syscall-shaped requirement (e.g. V-258222's
-        // b32/b64 rows) satisfied by a classic Watch candidate, same shape
-        // test applied to the REQUIRED side this time.
+        // b32/b64 rows, or a synthetic `-F dir=` requirement) satisfied by a
+        // classic Watch candidate, same shape tests applied to the REQUIRED
+        // side this time.
         (
             AuditRule::Syscall {
                 list: rl,
@@ -1583,8 +1651,10 @@ fn rules_match(
                 ..
             },
         ) => {
-            is_pure_path_watch_shaped(rl, ra, rs, rf, rfc)
-                && watch_equivalent_axes_match(cp, cpe, rf)
+            (is_pure_path_watch_shaped(rl, ra, rs, rf, rfc)
+                && watch_equivalent_axes_match(cp, cpe, rf))
+                || (is_pure_dir_watch_shaped(rl, ra, rs, rf, rfc)
+                    && dir_watch_equivalent_axes_match(cp, cpe, rf))
         }
         _ => false,
     };
@@ -1633,6 +1703,44 @@ fn is_pure_path_watch_shaped(
         && fields.iter().any(|f| f.field == AuditField::Path)
 }
 
+/// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure dir-watch" -- the
+/// Dir-flavored twin of [`is_pure_path_watch_shaped`] (issue #571, USER
+/// RULING 2026-07-24): the shape a classic `-w dir -p perms -k key` compiles
+/// down to at the kernel level for a RECURSIVE SUBTREE watch (see
+/// [`rules_match`]'s doc comment for the full grounding). A purely structural
+/// test, no per-V-number special-casing: an EMPTY `-S` list, the
+/// `always,exit` list/action pair, no `-C` field-comparisons, and every `-F`
+/// predicate one of `dir`/`perm`/`arch` (with at least one `dir` predicate
+/// present, so an empty field set does not vacuously pass). A rule with a
+/// non-empty `-S` list or any OTHER `-F` field fails this test and has no
+/// watch-equivalent form. Deliberately implemented as its own function
+/// rather than a parameterized/generic helper shared with
+/// [`is_pure_path_watch_shaped`]: `-F dir=` and `-F path=` are different
+/// enum variants naming genuinely different kernel constructs, and the two
+/// shape tests must never be unified into one "location field" concept (see
+/// [`rules_match`]'s doc comment for why that would be wrong).
+fn is_pure_dir_watch_shaped(
+    list: &crate::ast::FilterList,
+    action: &crate::ast::Action,
+    syscalls: &[String],
+    fields: &[crate::ast::FieldFilter],
+    field_compares: &[crate::ast::FieldComparison],
+) -> bool {
+    use crate::ast::{Action, AuditField, FilterList};
+
+    *list == FilterList::Exit
+        && *action == Action::Always
+        && syscalls.is_empty()
+        && field_compares.is_empty()
+        && fields.iter().all(|f| {
+            matches!(
+                f.field,
+                AuditField::Dir | AuditField::Perm | AuditField::Arch
+            )
+        })
+        && fields.iter().any(|f| f.field == AuditField::Dir)
+}
+
 /// Compare a `Watch`'s `path`/`perms` against a (structurally pure-path-watch,
 /// per [`is_pure_path_watch_shaped`]) `Syscall`'s `-F path=`/`-F perm=`
 /// fields, for the path-watch equivalence fold. `-F arch=` is deliberately
@@ -1663,6 +1771,43 @@ fn watch_equivalent_axes_match(
     };
 
     normalize_watch_path(watch_path) == normalize_watch_path(sp)
+        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+}
+
+/// Compare a `Watch`'s `path`/`perms` against a (structurally pure-dir-watch,
+/// per [`is_pure_dir_watch_shaped`]) `Syscall`'s `-F dir=`/`-F perm=` fields,
+/// for the dir-watch equivalence fold (issue #571). The Dir-flavored twin of
+/// [`watch_equivalent_axes_match`]: `-F arch=` is deliberately never read
+/// here -- a watch has no arch axis, so the SAME watch candidate
+/// independently satisfies a b32 required row and a b64 required row (the
+/// caller's per-required-row loop checks each separately; see
+/// [`rules_match`]'s doc comment). Directory-value compares via
+/// [`normalize_watch_path`] (the SAME trailing-slash normalization the path
+/// arm uses -- DISA's own check-content is just as inconsistent about
+/// trailing slashes on `-F` field values as it is on `-w` lines). Returns
+/// `false` if the syscall side has no `dir` or `perm` predicate at all, or
+/// the perm value cannot parse as permission-bit letters.
+fn dir_watch_equivalent_axes_match(
+    watch_path: &str,
+    watch_perms: &crate::ast::PermBits,
+    syscall_fields: &[crate::ast::FieldFilter],
+) -> bool {
+    use crate::ast::AuditField;
+
+    let syscall_dir = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Dir)
+        .map(|f| f.value.as_str());
+    let syscall_perm = syscall_fields
+        .iter()
+        .find(|f| f.field == AuditField::Perm)
+        .map(|f| f.value.as_str());
+
+    let (Some(sd), Some(sperm)) = (syscall_dir, syscall_perm) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sd)
         && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
 }
 
@@ -1811,6 +1956,78 @@ mod pure_path_watch_shape_tests {
         assert!(
             is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
             "path+perm+arch, empty -S, empty -C must be path-watch shaped"
+        );
+    }
+}
+
+/// Direct unit tests for [`is_pure_dir_watch_shaped`]'s OWN return value, the
+/// Dir-flavored twin of [`pure_path_watch_shape_tests`] above (issue #571).
+/// Not filtered through [`dir_watch_equivalent_axes_match`] for the SAME
+/// reason `pure_path_watch_shape_tests`'s doc comment gives for the path arm:
+/// every caller immediately follows this shape test with
+/// `dir_watch_equivalent_axes_match`, which independently re-derives dir/perm
+/// presence via its OWN `.find` calls and forces `false` whenever either is
+/// absent -- so a mutant flipping the trailing `any(|f| f.field ==
+/// AuditField::Dir)` guard's `==` to `!=` would be unobservable through
+/// `w06`/`w06_with_baseline` alone. Testing the private function directly
+/// pins the "at least one Dir predicate present" guard's own correctness.
+#[cfg(test)]
+mod pure_dir_watch_shape_tests {
+    use super::is_pure_dir_watch_shaped;
+    use crate::ast::{Action, AuditField, CompareOp, FieldFilter, FilterList};
+
+    fn field(f: AuditField, value: &str) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op: CompareOp::Eq,
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn perm_and_arch_without_any_dir_predicate_is_not_dir_watch_shaped() {
+        // Mirrors `perm_and_arch_without_any_path_predicate_is_not_path_watch_
+        // shaped`: every OTHER conjunct passes, but there is NO Dir predicate
+        // at all -- Perm and Arch alone must NOT count as "dir-watch shaped".
+        let fields = vec![
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "Perm+Arch with no Dir predicate must not be dir-watch shaped"
+        );
+    }
+
+    #[test]
+    fn dir_perm_arch_is_dir_watch_shaped() {
+        // Positive control, mirroring `path_perm_arch_is_path_watch_shaped`:
+        // dir + perm + arch, empty -S, empty -C must pass. Without this, an
+        // "always reject" impl would vacuously pass the negative test above.
+        let fields = vec![
+            field(AuditField::Dir, "/etc/sudoers.d"),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "dir+perm+arch, empty -S, empty -C must be dir-watch shaped"
+        );
+    }
+
+    #[test]
+    fn path_field_alone_is_not_dir_watch_shaped() {
+        // Guards the "limited to dir/perm/arch" conjunct specifically for
+        // the Dir arm: a Path field is not in the allowed set, so a
+        // path-only field list must never be dir-watch shaped -- this is
+        // the structural half of the anti-collapse boundary the integration
+        // tests (`dir_syscall_form_does_not_satisfy_an_explicit_path_shaped_
+        // requirement` / `dir_shaped_requirement_not_satisfied_by_an_
+        // explicit_path_syscall`) pin at the public-API level.
+        let fields = vec![field(AuditField::Path, "/etc/passwd")];
+        assert!(
+            !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a Path-only field set must not be dir-watch shaped"
         );
     }
 }
