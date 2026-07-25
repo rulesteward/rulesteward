@@ -96,6 +96,63 @@ before it even though both are lexically inside the same outer fn - place
 the marker before the nested item (or use the `dac-override-exempt:`
 hatch) if you hit this shape.
 
+## Differential oracle contract
+
+A "differential" here means checking RuleSteward's answer against the real
+subsystem's answer (the fapolicyd daemon, `checkmodule`, `auditctl`,
+`systemd-sysctl`, `visudo`) rather than against a hand-authored expectation.
+Hand-authored expectations have repeatedly frozen the wrong answer; a daemon
+cannot.
+
+Every differential is built in **two tiers, and only the live tier may skip**:
+
+- **Tier 1, the replay test** (`crates/<crate>/tests/<x>_oracle.rs`). Pure Rust.
+  Reads a committed corpus of `(input, recorded-oracle-verdict)` pairs and
+  asserts the product agrees. No docker, no root, no network, no tool on PATH,
+  **so there is no skip path at all.** Runs in `just test` / `just ci` and in
+  every CI container. Model: `crates/rulesteward-selinux/tests/selinux_corpus_oracle.rs`.
+- **Tier 2, the capture/drift tool.** Re-derives the oracle from the live
+  subsystem and fails on drift. The only part allowed to skip. Model:
+  `tools/sshd-probe-update` + `just diff-sshd`.
+
+This split is why a missing docker daemon degrades the guarantee from "nothing
+was checked" to "the oracle was not re-derived."
+
+### Exit codes
+
+| rc | meaning |
+|---|---|
+| 0 | verified clean. The success line MUST carry a non-zero count, e.g. `OK (0 drift, 214 scenarios)` |
+| 1 | drift: the product and the oracle disagree |
+| 2 | tool/environment error: unparseable transcript, zero data rows, or the oracle was required but missing |
+| 3 | precondition unmet, a legitimate skip (no docker, image absent) |
+
+`3` exists so a developer without docker gets an honest skip while CI, which
+sets `RS_ORACLE_REQUIRED=1`, turns the same condition into a hard failure.
+Collapsing it into `0` is exactly the bug that made `just diff-fapolicyd` report
+success for six weeks while checking nothing (#572).
+
+### Three rules every harness must satisfy
+
+1. **Assert the count, do not merely print it.** `assert!(scenarios.len() >= FLOOR)`
+   before reporting success. The older `tools/*-update` print
+   `OK (0 drift, {N} controls)` but never assert `N > 0`; new harnesses must.
+   `OK (0 drift, 0 scenarios)` has to be unreachable by construction.
+2. **Carry a positive control.** Every corpus holds at least one input the
+   oracle must REJECT and one it must ACCEPT. If both come back with the same
+   verdict, the *oracle* is broken: exit 2, never 0 and never 1. Where an oracle
+   is captured per-version, add a control pinning a known version divergence -
+   it is the only thing that detects "all three transcripts are secretly the
+   same file".
+3. **Parse fail-closed.** Empty body, header-only input, or zero data rows must
+   return an error, never `Ok(vec![])`. See
+   `tools/fapolicyd-probe-update/src/transcript.rs`.
+
+The through-line: **an instrument must prove it saw something.** "Nothing fired"
+and "nothing ran" produce identical output otherwise, and every one of this
+project's silent-gate failures has been that confusion. The mechanical guard for
+the narrower case of out-of-repo inputs is `just no-mnt-guard`.
+
 ## Commit authorship
 
 All commits are user-authored. Do not add `Co-Authored-By: Claude` or

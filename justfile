@@ -51,14 +51,26 @@ dac-guard:
 codes-guard:
     bash scripts/check-codes-count.sh
 
+# (#572) No-mnt guard: no repo-invoked command may reference a path outside the
+# repo. The wave3 fapolicyd corpus lived at an absolute /mnt path, was destroyed
+# in the 2026-07-13 NFS rebuild, and `just diff-fapolicyd` then exited 0 with a
+# skip message on every run - reporting success while checking nothing. A
+# violation is `/mnt/` in EXECUTABLE position; comment lines and data files are
+# provenance, not dependencies. Same shape as dac-guard and codes-guard:
+# standalone bash (grep-based, no cargo build), so it belongs in the lint tier.
+#
+# Assert no repo-invoked command depends on a path outside the repo. (#572)
+no-mnt-guard:
+    bash scripts/check-no-mnt-paths.sh
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + test + cov).
-ci: fmt clippy dac-guard codes-guard test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + test + cov).
+ci: fmt clippy dac-guard codes-guard no-mnt-guard test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:

@@ -116,6 +116,17 @@ jobs:
       - name: Codes-count guard (doc-truth "N codes" drift)
         run: bash scripts/check-codes-count.sh
 
+      # (#572) No-mnt guard: no repo-invoked command may reference a path
+      # outside the repo. The wave3 fapolicyd corpus lived at an absolute /mnt
+      # path, was destroyed in the 2026-07-13 NFS rebuild, and
+      # `just diff-fapolicyd` then exited 0 with a skip message on every run -
+      # reporting success while checking nothing. The gate refuses to report
+      # clean if it scanned zero files, so it cannot fail the same way. Cheap
+      # static check (bash + grep, no cargo build), so it lives here in the
+      # lint tier alongside fmt/clippy/dac-guard/codes-guard.
+      - name: No-mnt guard (out-of-repo dependency paths)
+        run: bash scripts/check-no-mnt-paths.sh
+
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
   # matrix, the dnf bootstrap, the bash shell override, and the
@@ -238,14 +249,27 @@ jobs:
         #
         # `--setopt=install_weak_deps=False` skips recommended/suggested
         # packages that dnf would otherwise pull in alongside the
-        # explicit list. The 10-package list above is intentional; weak
+        # explicit list. The 11-package list above is intentional; weak
         # deps would add a few more unneeded RPMs.
+        #
+        # `checkpolicy` provides /usr/bin/checkmodule, the compile oracle for
+        # crates/rulesteward-selinux/tests/te_emit_checkmodule.rs. Before #572's
+        # session those six tests skipped on EVERY CI run (checkpolicy was
+        # installed nowhere in this repo) while the module doc claimed they
+        # executed. With it present the matrix also gives a free el8/el9/el10
+        # checkmodule version differential: 2.9 / 3.6 / 3.10.
+        #
+        # Later corpus lanes (session 9k-1: auditd, sysctld, sudoers) need
+        # `audit`, `systemd-udev` and `sudo` here. They are deliberately NOT
+        # pre-added: unused packages would install in all nine containers on
+        # every run until those lanes land, and that session's own serial
+        # Phase 0 can add them in one line without lane contention.
         #
         # `--setopt=tsflags=nodocs` skips installing documentation files
         # (man pages, /usr/share/doc/*). Saves a small amount of disk
         # I/O per package install with zero CI impact.
         run: |
-          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates
+          dnf --disablerepo=extras --setopt=fastestmirror=True --setopt=keepcache=True --setopt=install_weak_deps=False --setopt=tsflags=nodocs -y install bash tar gzip xz findutils gcc glibc-devel make git ca-certificates checkpolicy
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
