@@ -1521,13 +1521,23 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// dir=/etc/ -F perm=wa`" -- `-F dir=` places a RECURSIVE SUBTREE watch,
 /// genuinely distinct from `-F path=`'s SINGLE-INODE watch. "Pure dir-watch
 /// shape" (the structural test [`is_pure_dir_watch_shaped`], the Dir-flavored
-/// twin of [`is_pure_path_watch_shaped`]) applies the identical structural
-/// test with `dir` swapped in for `path`: an EMPTY `-S` syscall list, the
-/// `always,exit` list/action pair, no `-C` field-comparisons, `-F` predicates
-/// limited to `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate present
-/// (using `=`), and any `perm` predicate present also using `=` (see
-/// [`is_pure_dir_watch_shaped`]'s doc comment for the full ATL-round
-/// grounding of the operator/multiplicity/key-membership refinements). The
+/// twin of [`is_pure_path_watch_shaped`]) applies the SAME test with `dir`
+/// swapped in for `path`, plus two guards the path twin does NOT yet have: an
+/// EMPTY `-S` syscall list, the `always,exit` list/action pair, no `-C`
+/// field-comparisons, `-F` predicates limited to `dir`/`perm`/`arch`/`key`,
+/// EXACTLY ONE `dir` predicate present (using `=`), and any `perm` predicate
+/// present also using `=` (see [`is_pure_dir_watch_shaped`]'s doc comment for
+/// the full ATL-round grounding of the operator/multiplicity/key-membership
+/// refinements).
+///
+/// NOT SYMMETRIC, deliberately, pending issue #600: the operator guard
+/// (`=`-only) and the exactly-one-predicate guard were added to the DIR twin
+/// only, because #571's scope was the dir-shape arm. The path twin still
+/// accepts `-F path!=` / `-F perm!=` and more than one `-F path=`, none of
+/// which can load on a real host (`-EAU_OPEQ`; `audit_to_watch` returns
+/// `-EINVAL` when `krule->watch` is already set). That is over-crediting, so
+/// do NOT read the path twin's laxness as intentional permissiveness -- it is
+/// an untightened copy, tracked on #600. The
 /// two shape tests are mutually exclusive (a field set that is
 /// all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
 /// unless it has neither a `path` nor a `dir` predicate, which both shape
@@ -2032,10 +2042,17 @@ mod pure_path_watch_shape_tests {
 /// every caller immediately follows this shape test with
 /// `dir_watch_equivalent_axes_match`, which independently re-derives dir/perm
 /// presence via its OWN `.find` calls and forces `false` whenever either is
-/// absent -- so a mutant flipping the trailing `any(|f| f.field ==
-/// AuditField::Dir)` guard's `==` to `!=` would be unobservable through
-/// `w06`/`w06_with_baseline` alone. Testing the private function directly
-/// pins the "at least one Dir predicate present" guard's own correctness.
+/// absent -- so a mutant flipping the trailing guard's `==` to `!=` is
+/// unobservable through `w06`/`w06_with_baseline` for the PRESENCE half.
+/// Testing the private function directly pins the guard's own correctness.
+///
+/// Note the guard is `filter(|f| f.field == AuditField::Dir).count() == 1` --
+/// EXACTLY one Dir predicate, not "at least one" (the MISS-4 refinement; an
+/// earlier revision of this comment described the superseded `any(..)` form).
+/// The count form is only PARTLY unobservable at the public API: a rule
+/// carrying two `-F dir=` predicates IS distinguishable through `w06`, and
+/// this module's sibling integration test covers that case. The direct unit
+/// tests remain the sharper pin.
 #[cfg(test)]
 mod pure_dir_watch_shape_tests {
     use super::is_pure_dir_watch_shaped;
