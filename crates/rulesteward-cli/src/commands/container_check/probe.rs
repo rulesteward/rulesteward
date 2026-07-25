@@ -37,6 +37,13 @@ const RUNTIME_DENIAL_SUBJECTS: [&str; 4] = [
 /// `watch_fs` is a comma-separated list (e.g. `watch_fs = ext4,tmpfs,xfs`);
 /// `allow_filesystem_mark = 1` enables overlay marking. Lines may have spaces
 /// around `=` and may be commented with a leading `#` (ignored).
+///
+/// `allow_filesystem_mark` is compared against the value's FIRST
+/// ASCII-space-delimited token (issue #582): `conf_value` returns the raw
+/// remainder verbatim, including any extra token the daemon's own tokenizer
+/// (`nv_split`/`_strsplit`) would discard -- a CRLF-edited conf's trailing
+/// `'\r'` after a real space (`"1 \r"`) must still resolve to `"1"`, matching
+/// what the real daemon loads and runs.
 #[must_use]
 pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
     let watch_fs = conf_value(conf_text, "watch_fs")
@@ -47,7 +54,9 @@ pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
                 .collect()
         })
         .unwrap_or_default();
-    let allow_filesystem_mark = conf_value(conf_text, "allow_filesystem_mark") == Some("1");
+    let allow_filesystem_mark = conf_value(conf_text, "allow_filesystem_mark")
+        .and_then(|v| v.split(' ').next())
+        == Some("1");
     EffectiveConf {
         watch_fs,
         allow_filesystem_mark,
@@ -397,6 +406,26 @@ mod tests {
             "a trailing ASCII space after the value must not flip \
              allow_filesystem_mark to false (#582 adversarial round 2, \
              BLOCKER 4)"
+        );
+    }
+
+    /// MISS 3 (#582, empirically verified live on fapolicyd8/9/10):
+    /// `allow_filesystem_mark = 1 \r\n` (a CRLF-edited conf with a real
+    /// ASCII space before the '\r') is a conf the real daemon LOADS FINE,
+    /// enabling the mark -- the daemon's tokenizer binds the value to the
+    /// FIRST ASCII-space-delimited token, `"1"`; the stray `"\r"` is a
+    /// discarded extra token. `conf_value`'s CR-preserving fix leaves the
+    /// raw value `"1 \r"`; the old EXACT-string `== Some("1")` compare
+    /// missed this and reported `false`, silently suppressing the container-
+    /// check HIGH finding that overlay mediation can be bypassed.
+    #[test]
+    fn parse_conf_detects_mark_enabled_with_crlf_and_trailing_space_control() {
+        let c = parse_effective_conf("allow_filesystem_mark = 1 \r\n", true);
+        assert!(
+            c.allow_filesystem_mark,
+            "a CRLF conf's raw value \"1 \\r\" must resolve via its first \
+             daemon-recognised token \"1\" -> allow_filesystem_mark must be \
+             true (#582 MISS 3)"
         );
     }
 

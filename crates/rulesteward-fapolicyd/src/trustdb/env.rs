@@ -44,24 +44,62 @@ pub enum IntegrityMode {
 }
 
 impl IntegrityMode {
-    /// Parse the trimmed value string from `fapolicyd.conf` (already extracted by
-    /// `conf_value`). Exact matches only: `"none"` -> `None`, `"size"` -> `Size`,
-    /// `"ima"` -> `Ima`, `"sha256"` -> `Sha256`. Any other string (including
-    /// whitespace-only, garbage, or unknown variant) maps to `IntegrityMode::None`
-    /// (daemon default when the key is absent). A trailing inline `#` is part of
-    /// the literal value (per `conf_value` semantics); a raw value of
-    /// e.g. `"sha256 # important"` does NOT match `"sha256"` and returns `None`.
+    /// Attempt to resolve `v` -- the RAW (untokenized) `integrity=` value text
+    /// as returned by `conf_value`, or `None` when the key is absent -- against
+    /// the fapolicyd daemon's own `integrity_parser`.
+    ///
+    /// Ground truth (`daemon-config.c`, issue #582, empirically verified live
+    /// on fapolicyd 1.3.2 and 1.4.5): the daemon's tokenizer
+    /// (`nv_split`/`_strsplit`) binds `nv->value` to only the FIRST
+    /// ASCII-space-delimited token -- the same reduction
+    /// [`permissive_value_is_effectively_permissive`](crate::permissive_value_is_effectively_permissive)
+    /// applies to the sibling `permissive=` key -- and `integrity_parser` then
+    /// matches that token via `strcasecmp` (case-INsensitive). So `"SHA256"`
+    /// and `"sha256"` resolve identically, and a value like
+    /// `"sha256 # important"` or `"sha256 \r"` (an extra token after a real
+    /// ASCII space) resolves via its first token, `"sha256"`.
+    ///
+    /// Returns `None` -- meaning "the daemon does not recognise this as any of
+    /// {none, size, ima, sha256}" -- for an absent key, an empty/whitespace-
+    /// only value, or a first token that fails the case-insensitive keyword
+    /// match (including a token POLLUTED by a byte the daemon's tokenizer
+    /// never splits on, e.g. `"sha256\r"` with no preceding space, or
+    /// `"\tsha256"`). This return does NOT distinguish "key absent" from "key
+    /// present but unrecognised": a caller that needs that distinction (to
+    /// implement "never weaken enforcement because the conf could not be
+    /// resolved") must inspect the original `Option<&str>` itself -- see
+    /// `resolve_integrity_mode` in `rulesteward-cli`.
+    #[must_use]
+    pub fn try_from_conf_value(v: Option<&str>) -> Option<Self> {
+        let token = v?.split(' ').next()?;
+        if token.eq_ignore_ascii_case("none") {
+            Some(Self::None)
+        } else if token.eq_ignore_ascii_case("size") {
+            Some(Self::Size)
+        } else if token.eq_ignore_ascii_case("ima") {
+            Some(Self::Ima)
+        } else if token.eq_ignore_ascii_case("sha256") {
+            Some(Self::Sha256)
+        } else {
+            None
+        }
+    }
+
+    /// Parse the raw (untokenized) `integrity=` value text from
+    /// `fapolicyd.conf` (as returned by `conf_value`) into an `IntegrityMode`,
+    /// folding "the daemon doesn't recognise this value" into the daemon's own
+    /// default, `IntegrityMode::None`.
+    ///
+    /// See [`try_from_conf_value`](Self::try_from_conf_value) for the full
+    /// first-token, case-insensitive matching rule this applies. This
+    /// convenience wrapper cannot distinguish an absent key from a present-
+    /// but-unrecognised value (both fold to `None` here); a caller that needs
+    /// that distinction should call `try_from_conf_value` directly.
     ///
     /// Pass `None` when the key is absent from the conf (daemon default: `None`).
     #[must_use]
     pub fn from_conf_value(v: Option<&str>) -> Self {
-        match v {
-            Some("size") => Self::Size,
-            Some("ima") => Self::Ima,
-            Some("sha256") => Self::Sha256,
-            // "none", absent key, unknown value, whitespace -> daemon default None.
-            _ => Self::None,
-        }
+        Self::try_from_conf_value(v).unwrap_or(Self::None)
     }
 
     /// The canonical lowercase `fapolicyd.conf` `integrity=` keyword for this
