@@ -47,14 +47,10 @@ dac-guard:
 # (#586) Guard against doc-truth decay in the per-backend "N codes" prose: every
 # "N `<prefix>-` codes" mention in README.md and in the clap doc-comments must equal
 # the corresponding catalog length (FAPD_CODES, AU_CODES, SSHD_CODES, SUDO_CODES,
-# SYSCTLD_CODES, SE_CODES). The counts have drifted three times (#556 and its two
-# predecessors); each fix was manual. Same shape as dac-guard: standalone bash + awk,
-# no cargo build, so it belongs in the lint tier.
-#
-# NOTE (9j Phase 0): the recipe is declared here so no fan-out lane has to edit this
-# file, but it is deliberately NOT yet in `ci:` - scripts/check-codes-count.sh does
-# not exist until lane 4 (#586) lands. Lane 4 adds the script and the `ci:`
-# dependency in the same commit, so `just ci` is never transiently broken.
+# SYSCTLD_CODES, SE_CODES). The counts have drifted four times (#556, its two
+# predecessors, and the three-line au-/sudo-/sysctld- drift this same lane fixed);
+# each fix before this one was manual. Same shape as dac-guard: standalone bash
+# (grep-based, no cargo build), so it belongs in the lint tier.
 #
 # Assert every "N codes" doc mention matches its lint catalog's length. (#586)
 codes-guard:
@@ -66,8 +62,8 @@ musl:
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + test + cov).
-ci: fmt clippy dac-guard test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + test + cov).
+ci: fmt clippy dac-guard codes-guard test cov
 
 # (#287) Cross-version fapolicyd differential harness (opt-in, dev-only; NOT part of
 # `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10} images and validate.sh.
