@@ -23,9 +23,7 @@
 //! none). Only a changed STIG Rule id is drift here.
 
 use rulesteward_sudoers::TargetVersion;
-use rulesteward_sudoers::lints::stig::{
-    AUTHENTICATE_CONTROLS, PW_FAMILY_CONTROLS, TIMESTAMP_TIMEOUT_CONTROLS,
-};
+use rulesteward_sudoers::lints::stig::{ControlFamily, w04_control_ref};
 
 /// The three sudo-W04 DISA STIG control families (#551). Fixed and closed --
 /// unlike sshd's per-directive keyword set (which grows/shrinks as DISA STIG
@@ -52,10 +50,9 @@ impl Family {
     /// `PwFamily`, `TimestampTimeout`) is an arbitrary enumeration order with
     /// NO semantic significance -- it is NOT the order any committed fixture
     /// presents the families in (see `xccdf.rs`'s per-fixture document-order
-    /// notes), and it is NOT necessarily `stig.rs`'s own `AUTHENTICATE_CONTROLS`
-    /// / `PW_FAMILY_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` const-declaration
-    /// order either (each of those is independently ordered `[RHEL-08, RHEL-09,
-    /// RHEL-10]` internally, unrelated to this array's family ordering).
+    /// notes), and it is unrelated to whatever internal order
+    /// `stig.rs`'s own per-family tables happen to use (an implementation
+    /// detail this tool no longer depends on -- see [`w04_control_ref`]).
     pub const ALL: [Family; 3] = [
         Family::Authenticate,
         Family::PwFamily,
@@ -69,6 +66,23 @@ impl Family {
             Family::Authenticate => "authenticate",
             Family::PwFamily => "pw_family",
             Family::TimestampTimeout => "timestamp_timeout",
+        }
+    }
+
+    /// Map this tool's own family enum (the shared currency between the
+    /// XCCDF-derived and code-derived sides of the comparison, see
+    /// [`DerivedControl::family`]) to `rulesteward_sudoers`'s
+    /// [`ControlFamily`], the boundary [`code_table`] crosses to call
+    /// [`w04_control_ref`]. Kept as a separate type (rather than importing
+    /// `ControlFamily` as this tool's shared currency directly) because
+    /// `xccdf.rs`'s content-based classification of a DISA XCCDF Rule needs a
+    /// value BEFORE any library call happens, and does not need to depend on
+    /// the library crate to do it.
+    fn to_control_family(self) -> ControlFamily {
+        match self {
+            Family::Authenticate => ControlFamily::Authenticate,
+            Family::PwFamily => ControlFamily::PwFamily,
+            Family::TimestampTimeout => ControlFamily::TimestampTimeout,
         }
     }
 }
@@ -102,43 +116,37 @@ pub struct DerivedControl {
 /// # Cross-crate accessor (#551)
 ///
 /// `crates/rulesteward-sudoers/src/lints/stig.rs`'s `PW_FAMILY_CONTROLS` /
-/// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts were widened
-/// to `pub` (the minimal legal change: the frozen `code_table_matches_stig_rs_
-/// source_for_all_targets` oracle below anchors on `const {NAME}:` as a
-/// substring, which still matches `pub const {NAME}:`) so this function can
-/// read them directly instead of carrying a frozen copy.
+/// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts stay PRIVATE
+/// to that crate (an earlier version of this tool widened them to `pub` so it
+/// could index them directly by declaration order -- that leaked an
+/// unenforced "index 0 = RHEL-8" convention across a crate boundary, and
+/// nothing inside `rulesteward-sudoers` itself relies on that order, since
+/// `w04`'s own findings cite all three ids at once, version-agnostically).
+/// Instead, this function calls the crate's own public, domain-typed
+/// accessor, [`w04_control_ref`], mapping [`Family`] to
+/// [`ControlFamily`] at the boundary via [`Family::to_control_family`] --
+/// mirroring `rulesteward_selinux::stig::{ControlFamily, control_refs}`'s
+/// shape. The frozen `code_table_matches_stig_rs_source_for_all_targets`
+/// oracle below still anchors on `const {NAME}:` as a substring of the raw
+/// source, which matches a private `const {NAME}:` exactly as well as a
+/// `pub const {NAME}:` -- this change does not affect it.
 ///
-/// The three consts are ordered `[RHEL-08, RHEL-09, RHEL-10]`; this indexes by
-/// `target` (`Rhel8` -> `[0]`, `Rhel9` -> `[1]`, `Rhel10` -> `[2]`) for each of
-/// the three families, producing exactly 3 rows with empty `v_number` /
-/// `title` (see the field docs on [`DerivedControl`]).
+/// Producing exactly 3 rows with empty `v_number` / `title` (see the field
+/// docs on [`DerivedControl`]) -- one per [`Family::ALL`].
 #[must_use]
 pub fn code_table(target: TargetVersion) -> Vec<DerivedControl> {
-    let idx = match target {
-        TargetVersion::Rhel8 => 0,
-        TargetVersion::Rhel9 => 1,
-        TargetVersion::Rhel10 => 2,
-    };
-    vec![
-        DerivedControl {
-            family: Family::Authenticate,
-            v_number: String::new(),
-            rule_id: AUTHENTICATE_CONTROLS[idx].1.to_string(),
-            title: String::new(),
-        },
-        DerivedControl {
-            family: Family::PwFamily,
-            v_number: String::new(),
-            rule_id: PW_FAMILY_CONTROLS[idx].1.to_string(),
-            title: String::new(),
-        },
-        DerivedControl {
-            family: Family::TimestampTimeout,
-            v_number: String::new(),
-            rule_id: TIMESTAMP_TIMEOUT_CONTROLS[idx].1.to_string(),
-            title: String::new(),
-        },
-    ]
+    Family::ALL
+        .into_iter()
+        .map(|family| {
+            let control = w04_control_ref(family.to_control_family(), target);
+            DerivedControl {
+                family,
+                v_number: String::new(),
+                rule_id: control.id,
+                title: String::new(),
+            }
+        })
+        .collect()
 }
 
 /// Human-readable diff of an `upstream` (XCCDF-derived) table against the

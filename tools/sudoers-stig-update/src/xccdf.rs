@@ -110,6 +110,16 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
             continue; // no Rule element in this Group at all -- not a control.
         };
 
+        // Unlike `tools/sshd-stig-update::xccdf::decode_entities`, `check` /
+        // `fixtext` / `title` below are taken VERBATIM, with no XML entity
+        // decoding. DELIBERATE for now: all three committed fixtures contain
+        // zero entities, and none of the three families' selector keywords
+        // (`!authenticate` / `targetpw` / `rootpw` / `runaspw` /
+        // `timestamp_timeout`) contains an XML-special character an entity
+        // could hide. This breaks the moment a future DISA revision puts an
+        // entity (e.g. `&amp;` / `&gt;`) in a Rule `<title>` -- `title` is
+        // emitted verbatim into [`DerivedControl::title`] -- or, more
+        // seriously, inside the selector text itself.
         let check = check_re
             .captures(rule_body)
             .map_or("", |c| c.get(1).map_or("", |m| m.as_str()));
