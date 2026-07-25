@@ -139,10 +139,10 @@ pub fn is_effectively_permissive(value: &str) -> bool {
         && value.bytes().any(|b| b != b'0')
 }
 
-/// True iff `raw` -- an untokenized `permissive=` value as returned by a raw
-/// per-line scan (this lint's own scanner, or the CLI's `commands::conf::
-/// conf_value` reader) -- resolves, via fapolicyd's own byte-exact
-/// tokenizer, to an effectively-permissive first token.
+/// Reduce `raw` -- an untokenized conf value as returned by a raw per-line
+/// scan (this lint's own scanner, the CLI's `commands::conf::conf_value`
+/// reader, or `container_check::probe::parse_effective_conf`) -- to the
+/// daemon-effective first token.
 ///
 /// Ground truth (upstream `src/library/daemon-config.c`): the daemon's own
 /// tokenizer, `_strsplit`, finds token boundaries with `strchr(str, ' ')` -
@@ -150,22 +150,41 @@ pub fn is_effectively_permissive(value: &str) -> bool {
 /// trailing '\r'. `nv_split` binds `nv->value` to that FIRST space-delimited
 /// token; a further token (a trailing `# comment` or other junk) is logged
 /// separately as "Wrong number of arguments" but does not change which
-/// token `permissive_parser` receives. `unsigned_int_parser`'s own `isdigit`
-/// walk is byte-exact too, so a tab or stray '\r' embedded in that first
-/// token (because it was never a space-byte separator to the daemon) makes
-/// the WHOLE token a parse error, not a rescuable digit prefix. So `raw`
-/// must be reduced to its first ASCII-space-delimited token here -
-/// `split(' ')`, never `split_whitespace()`/`.trim()`, which would wrongly
-/// treat a tab or '\r' as a separator/trimmable byte and rescue a value the
-/// real daemon's byte-exact parser actually rejects.
+/// token the keyword's own parser receives. So a raw value must be reduced
+/// with `split(' ')`, never `split_whitespace()`/`.trim()` (both of which
+/// treat a tab or '\r' as a separator/trimmable byte and would wrongly
+/// rescue a value the real daemon's byte-exact parser rejects).
+///
+/// This is the SINGLE shared seam for that reduction across the crate graph
+/// (this module's `permissive_value_is_effectively_permissive`,
+/// `trustdb::env::IntegrityMode::try_from_conf_value`, and
+/// `rulesteward-cli`'s `container_check::probe::parse_effective_conf`) - do
+/// not re-hand-roll `split(' ').next()` at a new call site; call this
+/// function instead, so a future correction to the tokenizer has only one
+/// place to fix (issue #582).
+///
+/// `str::split(' ').next()` is ALWAYS `Some` (even for `""`, which yields
+/// `Some("")`), so this returns `&str` rather than `Option<&str>`.
+#[must_use]
+pub fn first_conf_token(raw: &str) -> &str {
+    raw.split(' ').next().unwrap_or(raw)
+}
+
+/// True iff `raw` -- an untokenized `permissive=` value as returned by a raw
+/// per-line scan (this lint's own scanner, or the CLI's `commands::conf::
+/// conf_value` reader) -- resolves, via fapolicyd's own byte-exact
+/// tokenizer ([`first_conf_token`]), to an effectively-permissive first
+/// token.
 ///
 /// The single shared seam between `lint_conf` (fapd-W14, this module) and
 /// the CLI's doctor-probe mode/misconfiguration checks
 /// (`rulesteward-cli/src/commands/doctor/probe.rs`), so the lint and the
-/// probe cannot silently drift apart on this tokenization (issue #582).
+/// probe cannot silently drift apart on this tokenization (issue #582). See
+/// [`first_conf_token`]'s doc for the daemon-grounding of the tokenization
+/// rule itself.
 #[must_use]
 pub fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
-    raw.split(' ').next().is_some_and(is_effectively_permissive)
+    is_effectively_permissive(first_conf_token(raw))
 }
 
 #[cfg(test)]
@@ -623,6 +642,47 @@ mod tests {
              in the real daemon, which unsigned_int_parser rejects; must \
              stay clean: {diags:?}"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #582 (BLOCKER fix): `first_conf_token` is now the single shared
+    // seam consumed by THREE sites (this module, `trustdb::env`, and the
+    // CLI's `container_check::probe`). Pin its daemon-grounded behavior
+    // directly so a future edit to any one of those three sites cannot
+    // silently drift from the other two without also breaking these.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn first_conf_token_reduces_a_space_separated_value_to_its_first_token() {
+        // The daemon's `_strsplit` binds `nv.value` to only the first
+        // ASCII-space-delimited token; a trailing token (comment or
+        // otherwise) is discarded by this seam, matching what the real
+        // parser ever sees.
+        assert_eq!(first_conf_token("1 # note"), "1");
+        assert_eq!(first_conf_token("sha256 extra"), "sha256");
+    }
+
+    #[test]
+    fn first_conf_token_does_not_split_on_a_tab() {
+        // `_strsplit` finds boundaries with `strchr(str, ' ')` - the literal
+        // 0x20 byte only - so a TAB is not a separator to the real daemon;
+        // it stays embedded in the single returned token.
+        assert_eq!(first_conf_token("1\t2"), "1\t2");
+    }
+
+    #[test]
+    fn first_conf_token_lets_a_trailing_cr_survive_into_the_value() {
+        // `get_line` strips only a trailing 0x0a; a CRLF-edited conf's
+        // trailing '\r' is not a space byte, so it survives as part of the
+        // returned token rather than being trimmed away.
+        assert_eq!(first_conf_token("1\r"), "1\r");
+    }
+
+    #[test]
+    fn first_conf_token_of_an_empty_string_is_empty() {
+        // `"".split(' ').next()` is `Some("")`, never `None`, so the empty
+        // input reduces to the empty token rather than needing a fallback.
+        assert_eq!(first_conf_token(""), "");
     }
 
     // ---------------------------------------------------------------------

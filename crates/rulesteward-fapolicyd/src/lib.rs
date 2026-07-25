@@ -32,7 +32,8 @@ pub use fanotify::{
 };
 pub use lints::catalog;
 pub use lints::conf::{
-    is_effectively_permissive, lint_conf, permissive_value_is_effectively_permissive,
+    first_conf_token, is_effectively_permissive, lint_conf,
+    permissive_value_is_effectively_permissive,
 };
 pub use lints::cross_db::lint_orphans;
 pub use lints::deny_all::w13;

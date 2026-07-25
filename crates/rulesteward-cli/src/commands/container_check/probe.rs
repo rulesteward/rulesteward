@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use rulesteward_fapolicyd::{Attr, AttrValue, Decision, Entry, parse_rules_file};
+use rulesteward_fapolicyd::{Attr, AttrValue, Decision, Entry, first_conf_token, parse_rules_file};
 
 use super::model::{
     ContainerProbe, CrunRuleCoverage, DeepDenials, DeepTrust, EffectiveConf, FapolicydState,
@@ -39,11 +39,12 @@ const RUNTIME_DENIAL_SUBJECTS: [&str; 4] = [
 /// around `=` and may be commented with a leading `#` (ignored).
 ///
 /// `allow_filesystem_mark` is compared against the value's FIRST
-/// ASCII-space-delimited token (issue #582): `conf_value` returns the raw
-/// remainder verbatim, including any extra token the daemon's own tokenizer
-/// (`nv_split`/`_strsplit`) would discard -- a CRLF-edited conf's trailing
-/// `'\r'` after a real space (`"1 \r"`) must still resolve to `"1"`, matching
-/// what the real daemon loads and runs.
+/// ASCII-space-delimited token, via the shared
+/// `rulesteward_fapolicyd::first_conf_token` seam (issue #582): `conf_value`
+/// returns the raw remainder verbatim, including any extra token the
+/// daemon's own tokenizer (`nv_split`/`_strsplit`) would discard -- a
+/// CRLF-edited conf's trailing `'\r'` after a real space (`"1 \r"`) must
+/// still resolve to `"1"`, matching what the real daemon loads and runs.
 #[must_use]
 pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
     let watch_fs = conf_value(conf_text, "watch_fs")
@@ -54,9 +55,8 @@ pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
                 .collect()
         })
         .unwrap_or_default();
-    let allow_filesystem_mark = conf_value(conf_text, "allow_filesystem_mark")
-        .and_then(|v| v.split(' ').next())
-        == Some("1");
+    let allow_filesystem_mark =
+        conf_value(conf_text, "allow_filesystem_mark").map(first_conf_token) == Some("1");
     EffectiveConf {
         watch_fs,
         allow_filesystem_mark,

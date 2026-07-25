@@ -51,13 +51,14 @@ impl IntegrityMode {
     /// Ground truth (`daemon-config.c`, issue #582, empirically verified live
     /// on fapolicyd 1.3.2 and 1.4.5): the daemon's tokenizer
     /// (`nv_split`/`_strsplit`) binds `nv->value` to only the FIRST
-    /// ASCII-space-delimited token -- the same reduction
-    /// [`permissive_value_is_effectively_permissive`](crate::permissive_value_is_effectively_permissive)
-    /// applies to the sibling `permissive=` key -- and `integrity_parser` then
-    /// matches that token via `strcasecmp` (case-INsensitive). So `"SHA256"`
-    /// and `"sha256"` resolve identically, and a value like
-    /// `"sha256 # important"` or `"sha256 \r"` (an extra token after a real
-    /// ASCII space) resolves via its first token, `"sha256"`.
+    /// ASCII-space-delimited token -- reduced here via the shared
+    /// [`first_conf_token`](crate::first_conf_token) seam, the same one
+    /// `permissive_value_is_effectively_permissive` applies to the sibling
+    /// `permissive=` key -- and `integrity_parser` then matches that token
+    /// via `strcasecmp` (case-INsensitive). So `"SHA256"` and `"sha256"`
+    /// resolve identically, and a value like `"sha256 # important"` or
+    /// `"sha256 \r"` (an extra token after a real ASCII space) resolves via
+    /// its first token, `"sha256"`.
     ///
     /// Returns `None` -- meaning "the daemon does not recognise this as any of
     /// {none, size, ima, sha256}" -- for an absent key, an empty/whitespace-
@@ -71,7 +72,7 @@ impl IntegrityMode {
     /// `resolve_integrity_mode` in `rulesteward-cli`.
     #[must_use]
     pub fn try_from_conf_value(v: Option<&str>) -> Option<Self> {
-        let token = v?.split(' ').next()?;
+        let token = crate::first_conf_token(v?);
         if token.eq_ignore_ascii_case("none") {
             Some(Self::None)
         } else if token.eq_ignore_ascii_case("size") {

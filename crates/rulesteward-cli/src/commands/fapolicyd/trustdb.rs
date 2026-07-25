@@ -103,30 +103,27 @@ fn resolve_integrity_mode(
     match std::fs::read_to_string(&conf_path) {
         Ok(text) => {
             let raw = conf_value(&text, "integrity");
-            match IntegrityMode::try_from_conf_value(raw) {
-                Some(mode) => {
-                    let src = format!(
-                        "{} (integrity={})",
-                        conf_path.display(),
-                        raw.unwrap_or("absent")
-                    );
-                    (mode, src)
-                }
-                // Key absent: daemon default (no integrity checking).
-                None if raw.is_none() => {
-                    let src = format!("{} (integrity=absent)", conf_path.display());
-                    (IntegrityMode::None, src)
-                }
+            // Key absent: daemon default (no integrity checking). Bind `val`
+            // here (rather than re-deriving it with a fallback below) so the
+            // present-but-unrecognised branch below never needs a placeholder
+            // for a case (`raw` being absent) this early return already ruled
+            // out.
+            let Some(val) = raw else {
+                let src = format!("{} (integrity=absent)", conf_path.display());
+                return (IntegrityMode::None, src);
+            };
+            if let Some(mode) = IntegrityMode::try_from_conf_value(raw) {
+                let src = format!("{} (integrity={val})", conf_path.display());
+                (mode, src)
+            } else {
                 // Key present but not a value the daemon's integrity_parser
                 // recognises (#582 RULING 1, empirically verified: e.g. a
                 // CRLF- or tab-mangled token). The real daemon REFUSES TO
                 // START on such a conf, so - exactly like the unreadable-conf
                 // arm below - never weaken enforcement because the conf's
                 // intended mode could not be resolved: assume the strictest.
-                None => {
-                    let src = "invalid integrity value - assuming strict (sha256)".to_string();
-                    (IntegrityMode::Sha256, src)
-                }
+                let src = "invalid integrity value - assuming strict (sha256)".to_string();
+                (IntegrityMode::Sha256, src)
             }
         }
         // No conf file at the path: STRICT (treat as sha256).
