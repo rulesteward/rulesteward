@@ -94,31 +94,53 @@ else
     done
 fi
 
+# Comment syntax is LANGUAGE-SPECIFIC. Getting this wrong is how the first two
+# cuts of this gate leaked: `#` was treated as a comment everywhere, but in Rust
+# `#` starts an ATTRIBUTE. `#[path = "/mnt/..."]` makes rustc read that file at
+# compile time, so it is a hard build dependency, not provenance.
+comment_style_for() {
+    case "$1" in
+    *.rs) echo rust ;;
+    *) echo hash ;;
+    esac
+}
+
 scanned=0
 violations=0
 report=""
+unreadable=()
 
 for f in "${files[@]:-}"; do
     [[ -z "${f}" ]] && continue
-    [[ -r "${f}" ]] || continue
+    # An eligible file we cannot open is NOT a pass for that file. Record it;
+    # a partial scan must not be reported as authoritative.
+    if [[ ! -r "${f}" ]]; then
+        unreadable+=("${f}")
+        continue
+    fi
     scanned=$((scanned + 1))
+    style="$(comment_style_for "${f}")"
     while IFS= read -r hit; do
         [[ -z "${hit}" ]] && continue
         # `hit` is "LINENO:CONTENT" from grep -n.
         line_content="${hit#*:}"
-        # Carve-out (a): the line is a comment.
-        #
-        # A SHEBANG is explicitly NOT a comment. `#!` is the most literal
-        # executable position there is - the kernel's binfmt_script handler
-        # execs the named interpreter (execve(2)) - so a `#!/mnt/...` line is a
-        # hard runtime dependency on an out-of-repo path, not provenance. It
-        # applies at any indent, because `just` shebang recipes put it inside an
-        # indented recipe body (ten such recipes live in this repo's justfile).
-        if [[ "${line_content}" =~ ^[[:space:]]*# && ! "${line_content}" =~ ^[[:space:]]*#! ]]; then
-            continue
-        fi
-        if [[ "${line_content}" =~ ^[[:space:]]*// ]]; then
-            continue
+        # Carve-out (a): the line is a comment IN THIS FILE'S LANGUAGE.
+        if [[ "${style}" == rust ]]; then
+            # Rust: only `//` (covers `//`, `///`, `//!`). A leading `#` is an
+            # attribute - both the outer `#[...]` and inner `#![...]` forms.
+            if [[ "${line_content}" =~ ^[[:space:]]*// ]]; then
+                continue
+            fi
+        else
+            # sh / yaml / justfile: `#` comments, EXCEPT a shebang. `#!` is the
+            # most literal executable position there is - the kernel's
+            # binfmt_script handler execs the named interpreter (execve(2)) - so
+            # `#!/mnt/...` is a hard runtime dependency. It applies at any
+            # indent, because `just` shebang recipes are indented (ten such
+            # recipes live in this repo's justfile).
+            if [[ "${line_content}" =~ ^[[:space:]]*# && ! "${line_content}" =~ ^[[:space:]]*#! ]]; then
+                continue
+            fi
         fi
         # Carve-out (b): the line carries the explicit exemption marker.
         if [[ "${line_content}" == *"${EXEMPT_MARKER}"* ]]; then
@@ -129,8 +151,18 @@ for f in "${files[@]:-}"; do
     done < <(grep -nF -- "${MNT_PREFIX}" "${f}" 2>/dev/null || true)
 done
 
+# Scan-integrity checks. A run that could not read everything it was asked to
+# read, or that read nothing at all, must never be reported as clean. Violations
+# are reported first because they are the more actionable signal.
+if [[ "${violations}" -eq 0 && "${#unreadable[@]}" -gt 0 ]]; then
+    echo "check-no-mnt-paths: ERROR - ${#unreadable[@]} eligible file(s) could not be read;" >&2
+    echo "  the scan is INCOMPLETE, so a clean result would not be authoritative:" >&2
+    printf '    %s\n' "${unreadable[@]}" >&2
+    exit 2
+fi
+
 # ANTI-VACUITY: scanning nothing must never read as clean.
-if [[ "${scanned}" -eq 0 ]]; then
+if [[ "${violations}" -eq 0 && "${scanned}" -eq 0 ]]; then
     echo "check-no-mnt-paths: ERROR - scanned 0 eligible files; refusing to report clean." >&2
     echo "  A run that measured nothing is not a pass. Check the scan target." >&2
     exit 2

@@ -301,6 +301,81 @@ mkdir -p "${TMPROOT}/case14"
 run_case "case14_shebang_in_just_recipe" "${TMPROOT}/case14/justfile" 1
 
 # ---------------------------------------------------------------------------
+# Case 15: a Rust ATTRIBUTE is not a comment -> exit 1.
+#
+# `#[path = "..."]` makes rustc read that file at compile time; if it vanishes,
+# `cargo build` fails outright ("couldn't read ...: No such file or directory").
+# That is the #572 class exactly, with cargo as the repo-invoked command.
+#
+# In Rust, `#` starts an ATTRIBUTE and `//` starts a comment. Comment syntax is
+# language-specific, and the first two cuts of this gate treated `#` as a
+# comment in every file type. Round 1 carved out `#!`, which produced an
+# indefensible asymmetry: the inner form `#![doc = include_str!("/mnt/...")]`
+# was flagged while the outer form `#[doc = ...]`, one byte shorter, was not.
+# ---------------------------------------------------------------------------
+write_fixture "case15/crates/fake/src/lib.rs" <<EOF
+#[path = "${BAD}/harness.rs"]
+mod harness;
+EOF
+run_case "case15_rust_path_attribute" "${TMPROOT}/case15" 1
+
+# ---------------------------------------------------------------------------
+# Case 16: BOTH attribute forms must behave identically, so they cannot drift
+# apart again. Inner (`#!`) and outer (`#`) are pinned in one fixture.
+# ---------------------------------------------------------------------------
+write_fixture "case16/crates/fake/src/outer.rs" <<EOF
+#[doc = include_str!("${BAD}/README.md")]
+pub struct Outer;
+EOF
+run_case "case16a_rust_outer_doc_include" "${TMPROOT}/case16" 1
+write_fixture "case16/crates/fake/src/inner.rs" <<EOF
+#![doc = include_str!("${BAD}/README.md")]
+EOF
+run_case "case16b_rust_inner_doc_include" "${TMPROOT}/case16" 1
+
+# ---------------------------------------------------------------------------
+# Case 17: a `#` comment in a SHELL file is still a comment -> exit 0.
+# The per-language rule must not over-correct: `#` really is a comment in sh,
+# yaml and justfiles. Only Rust reassigns it.
+# ---------------------------------------------------------------------------
+write_fixture "case17/scripts/notes.sh" <<EOF
+#!/usr/bin/env bash
+# historical: the corpus used to live at ${BAD}/wave3
+echo ok
+EOF
+run_case "case17_shell_hash_comment_still_ok" "${TMPROOT}/case17" 0
+
+# ---------------------------------------------------------------------------
+# Case 18: an eligible file the gate FOUND but could not READ must not be
+# silently dropped from the count.
+#
+# The gate's own header commits to "a run that scanned ZERO eligible files is a
+# TOOL ERROR" because nothing-fired and nothing-ran must be distinguishable. A
+# file skipped by the `-r` test is nothing-ran for that file, and reporting
+# "OK (0 violations, 1 files scanned)" while silently dropping the second file
+# is the same confusion at a smaller scale.
+#
+# Root-safe per CONTRIBUTING's DAC guard: RHEL-family CI runs as root, where
+# CAP_DAC_OVERRIDE makes 0o000 readable, so probe first and skip cleanly.
+# ---------------------------------------------------------------------------
+write_fixture "case18/crates/fake/src/clean.rs" <<'EOF'
+pub fn ok() -> u8 { 1 }
+EOF
+write_fixture "case18/crates/fake/src/dirty.rs" <<EOF
+const CORPUS: &str = "${BAD}/corpus";
+EOF
+chmod 000 "${TMPROOT}/case18/crates/fake/src/dirty.rs"
+if [[ -r "${TMPROOT}/case18/crates/fake/src/dirty.rs" ]]; then
+    chmod 644 "${TMPROOT}/case18/crates/fake/src/dirty.rs"
+    echo "SKIP case18_unreadable_file_is_tool_error: 0o000 is readable here \
+(running as root / CAP_DAC_OVERRIDE); cannot exercise the deny arm"
+else
+    run_case "case18_unreadable_file_is_tool_error" "${TMPROOT}/case18" 2
+    assert_output_contains "case18_unreadable_file_is_tool_error" "dirty.rs" \
+        "message names the unreadable file"
+fi
+
+# ---------------------------------------------------------------------------
 # Case 12: THE REAL TREE, with no arguments, must be clean.
 #
 # This case is RED until Phase 0b deletes justfile:16. That failing run is the

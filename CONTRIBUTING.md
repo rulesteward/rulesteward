@@ -112,13 +112,19 @@ Every differential is built in **two tiers, and only the live tier may skip**:
   **so there is no skip path at all.** Runs in `just test` / `just ci` and in
   every CI container. Model: `crates/rulesteward-selinux/tests/selinux_corpus_oracle.rs`.
 - **Tier 2, the capture/drift tool.** Re-derives the oracle from the live
-  subsystem and fails on drift. The only part allowed to skip. Model:
-  `tools/sshd-probe-update` + `just diff-sshd`.
+  subsystem and fails on drift. The only part allowed to skip. Model for the
+  tool/recipe SHAPE: `tools/sshd-probe-update` + `just diff-sshd`.
 
 This split is why a missing docker daemon degrades the guarantee from "nothing
 was checked" to "the oracle was not re-derived."
 
 ### Exit codes
+
+Applies to NEW dev-tooling harnesses (`tools/*-update`, `just diff-*`). This is
+a separate numbering from the `rulesteward` binary's own exit codes in
+`crates/rulesteward-cli/src/exit_code.rs` (spec 12.4), where `3` is
+`EXIT_TOOL_FAILURE`. Different programs, different contracts; do not conflate
+them when reading a CI log.
 
 | rc | meaning |
 |---|---|
@@ -130,6 +136,14 @@ was checked" to "the oracle was not re-derived."
 `3` exists so a developer without docker gets an honest skip while CI turns the
 same condition into a hard failure. Collapsing it into `0` is exactly the bug
 that made `just diff-fapolicyd` report success while checking nothing (#572).
+
+**Status, stated plainly: no shipped recipe implements `3` yet.** The existing
+LIVE recipes (`just diff-sshd`, `just fapolicyd-probe-check`) predate this
+contract and `exit 0` on missing prerequisites. So `diff-sshd` is the model for
+the two-tier SHAPE, not for this rc table - its offline tier is what makes its
+skip survivable, since the assertion still runs without docker. New harnesses
+use `3`; retrofitting the existing recipes is tracked separately rather than
+done silently here.
 
 Each harness declares its own `RS_REQUIRE_<ORACLE>` environment variable for
 this, and **CI must set it** wherever the oracle is actually installed. The one
