@@ -62,12 +62,16 @@ pub fn render(
 /// `json::render` fapolicyd uses, so the envelope stays byte-identical to
 /// before SARIF was added (#511). The SARIF arm always passes `pass: None`:
 /// `--sarif-include-pass` per-check coverage attestation stays fapolicyd-only
-/// (CC-4); these five verbs are findings-only. fapolicyd is NOT a caller: it
-/// uses the three-variant [`render`] directly (with the real
-/// `--sarif-include-pass` attestation). Exit-code mapping stays in the caller
-/// (`exit_code::compute`); a rendering failure here is reported to the caller
-/// so it can override that mapping to a tool failure (mirrors the
-/// `output::render` error-handling convention in `commands::fapolicyd::lint`).
+/// (CC-4); these five verbs are findings-only. fapolicyd is not a caller for
+/// its NORMAL render path (it uses the three-variant [`render`] directly,
+/// with the real `--sarif-include-pass` attestation) -- but it does reach
+/// this function through [`emit_path_error_envelope`] for the empty
+/// path-error envelope (#561/#583), since an empty diagnostics set with
+/// `pass: None` renders byte-identical either way. Exit-code mapping stays
+/// in the caller (`exit_code::compute`); a rendering failure here is
+/// reported to the caller so it can override that mapping to a tool failure
+/// (mirrors the `output::render` error-handling convention in
+/// `commands::fapolicyd::lint`).
 pub fn emit_lint(
     format: OutputFormat,
     kind: &str,

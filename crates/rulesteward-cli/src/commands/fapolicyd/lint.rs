@@ -82,7 +82,7 @@ fn run_lint_resolved(
     target: Option<TargetVersionArg>,
     profile: Option<Framework>,
 ) -> anyhow::Result<i32> {
-    let trustdb = match open_trustdb_arg(args) {
+    let trustdb = match open_trustdb_arg(args.against_trustdb.as_deref(), args.format) {
         Ok(db) => db,
         Err(code) => return Ok(code),
     };
@@ -238,9 +238,12 @@ fn run_lint_resolved(
     ))
 }
 
-/// Open the `--against-trustdb` path, if given. `Ok(None)` when the flag is
-/// absent; `Ok(Some(db))` on success; `Err(exit_code)` with the exit code the
+/// Open the `--against-trustdb` path, if given. `Ok(None)` when `path` is
+/// `None`; `Ok(Some(db))` on success; `Err(exit_code)` with the exit code the
 /// caller should return immediately on a directory/LMDB-open failure.
+///
+/// Takes only the two `LintArgs` fields it actually uses (the narrowest-input
+/// convention) rather than the whole struct.
 ///
 /// On failure this ALSO emits the #561/#583 path-error envelope (mirroring
 /// [`resolve_targets_or_fail`] below), because `open_trustdb_arg` runs BEFORE
@@ -249,17 +252,13 @@ fn run_lint_resolved(
 /// revert `--format json`/`--format sarif` to zero stdout bytes, silently
 /// re-breaking the guarantee `resolve_targets_or_fail` establishes for the
 /// target-path case (adversarial-review miss 2, session 9j lane 3).
-fn open_trustdb_arg(args: &LintArgs) -> Result<Option<TrustDb>, i32> {
-    let Some(p) = args.against_trustdb.as_deref() else {
+fn open_trustdb_arg(path: Option<&Path>, format: OutputFormat) -> Result<Option<TrustDb>, i32> {
+    let Some(p) = path else {
         return Ok(None);
     };
     if !p.is_dir() {
         eprintln!("error: opening trust DB {}: not a directory", p.display());
-        crate::output::emit_path_error_envelope(
-            args.format,
-            "lint",
-            output::json::LINT_SCHEMA_VERSION,
-        );
+        crate::output::emit_path_error_envelope(format, "lint", output::json::LINT_SCHEMA_VERSION);
         return Err(EXIT_TOOL_FAILURE);
     }
     match open_trustdb_readonly(p) {
@@ -267,7 +266,7 @@ fn open_trustdb_arg(args: &LintArgs) -> Result<Option<TrustDb>, i32> {
         Err(e) => {
             eprintln!("error: opening trust DB {}: {e}", p.display());
             crate::output::emit_path_error_envelope(
-                args.format,
+                format,
                 "lint",
                 output::json::LINT_SCHEMA_VERSION,
             );
