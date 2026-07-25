@@ -44,19 +44,48 @@ not part of the standard `just ci` gate; reach for them for the specific job:
 Run noisy invocations through `rtk` (generic passthrough); use `rtk proxy <cmd>`
 when the output feeds another tool.
 
-## Differential verification (fapolicyd, dev-only)
+## Differential verification (dev-only)
 
-The three prebuilt docker images `fapolicyd8`, `fapolicyd9`, `fapolicyd10` run
-Rocky Linux 8/9/10 with fapolicyd pre-installed. Their Dockerfiles live in the
-docs tree (`/home/runner/rulesteward-docs/`). The cross-version validation harness
-lives at `/mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined/tools/validate.sh`
-alongside the wave3 corpus (135 valid + 20 rejected scenarios). Run it via:
-`just diff-fapolicyd /mnt/side-projects/fapolicyd-corpus/20260601T013116Z-wave3-combined 'adversarial/*'`
-(override the harness path: `just validate_sh=/other/path diff-fapolicyd /corpus 'glob/*'`).
-The recipe skips gracefully with a clear message if docker, the images, or validate.sh
-are absent. Note: `fapolicyd-cli --check-rules` does NOT exist on any shipping RHEL
-image (it is a v1.5+ upstream feature absent from RHEL 1.3.2 and 1.4.5); the harness
-uses `fapolicyd --debug --permissive` as the ground-truth parse gate instead.
+**Corpora and harnesses live IN GIT, never under `/mnt`.** This is enforced
+mechanically by `just no-mnt-guard` (`scripts/check-no-mnt-paths.sh`), which fails
+on any `/mnt/` path in executable position. The rule exists because the wave3
+fapolicyd corpus lived at an absolute `/mnt` path, was destroyed in the 2026-07-13
+NFS rebuild (#572), and `just diff-fapolicyd` then exited 0 with a skip message on
+every run: reporting success while checking nothing.
+
+Every differential is built in two tiers, and **only the live tier may skip**:
+
+- **OFFLINE (the gate).** A Rust integration test replaying a committed corpus of
+  `(input, recorded-oracle-verdict)` against the lint engine. No docker, no root,
+  no tool on PATH, so there is no skip path at all. Runs in `just test` / `just ci`
+  and in every CI EL container. Model: `crates/rulesteward-selinux/tests/selinux_corpus_oracle.rs`.
+- **LIVE (opt-in).** Re-derives the oracle from the real subsystem and fails on
+  drift. Model: `just diff-sshd` + `tools/sshd-probe-update`.
+
+A missing docker daemon therefore degrades the guarantee from "nothing was checked"
+to "the oracle was not re-derived". Harness exit codes: `0` clean (and the success
+line MUST carry a non-zero count), `1` drift, `2` tool error, `3` precondition
+unmet. See CONTRIBUTING "Differential oracle contract".
+
+| backend | live oracle | status |
+|---|---|---|
+| fapolicyd | `fagenrules --load` + `fapolicyd --debug --permissive` in `fapolicyd8/9/10` | corpus pending (session 9k-2, #572) |
+| selinux | `checkmodule -M -m` compile oracle; libsepol vs vendored binary policies | corpus in git; CI wiring in this session |
+| sshd | `sshd -G` / `ssh -Q` probes in `sshd-probe8/9/10` | shipped (`just diff-sshd`) |
+| auditd | `auditctl -R`, one line per invocation, classified by stderr | pending (session 9k-1) |
+| sysctld | `systemd-sysctl --cat-config` (package `systemd-udev`, NOT `systemd`) | pending (session 9k-1) |
+| sudoers | `visudo -c -f -` + `cvtsudoers -f json` (both read stdin) | pending (session 9k-1) |
+
+**Measured fapolicyd daemon facts (2026-07-25), so no later session re-derives them:**
+- ACCEPT iff a `Loaded N rules` line appears. `fapolicyd-cli --check-rules` does NOT
+  exist on any shipping RHEL (a v1.5+ upstream feature, absent from 1.3.2 and
+  1.4.5), so the daemon itself is the only rule-syntax oracle.
+- **The exit code is useless**: the unprivileged teardown exits 1 on accept and
+  reject alike.
+- **fapolicyd 1.3.2 (el8) emits no `[ LEVEL ]` tags at all**, so `grep ERROR` is
+  inert there. Only `Loaded N rules` is portable across 1.3.2 and 1.4.5.
+- An empty ruleset is a **third** outcome (`No rules in file - exiting`), neither an
+  accept nor a parse-reject. A two-valued gate mislabels it.
 
 
 # MCP Servers - tool-augmented lookups
