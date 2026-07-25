@@ -2050,7 +2050,8 @@ mod tests {
 
     /// CORRECTED (issue #582 RULING 2, empirically refuted against fapolicyd
     /// 8/9/10; the ORIGINAL test here asserted `IntegrityMode::None` and was
-    /// itself the doc-truth-decay bug). `conf_value` still returns the raw
+    /// itself the doc-truth-decay bug; the full evidence matrix and container
+    /// versions are recorded in issue #596). `conf_value` still returns the raw
     /// value with the inline `#` text attached (it does NOT strip inline
     /// comments -- that claim about `conf_value` stays true); the daemon's
     /// own tokenizer (`nv_split`/`_strsplit`) then binds `nv->value` to only
@@ -2073,10 +2074,11 @@ mod tests {
 
     /// CORRECTED (issue #582 RULING 2, empirically refuted against fapolicyd
     /// 8/9/10; the ORIGINAL test here asserted `IntegrityMode::None` and was
-    /// itself the doc-truth-decay bug). The daemon's `integrity_parser` uses
-    /// `strcasecmp` (case-INsensitive), so `"SHA256"` matches the `"sha256"`
-    /// keyword and the daemon loads and runs sha256 (verified live on
-    /// fapolicyd 1.3.2 and 1.4.5).
+    /// itself the doc-truth-decay bug; the full evidence matrix and container
+    /// versions are recorded in issue #596). The daemon's `integrity_parser`
+    /// uses `strcasecmp` (case-INsensitive), so `"SHA256"` matches the
+    /// `"sha256"` keyword and the daemon loads and runs sha256 (verified live
+    /// on fapolicyd 1.3.2 and 1.4.5).
     #[test]
     fn integrity_mode_from_conf_uppercase_sha256_maps_to_sha256() {
         assert_eq!(
