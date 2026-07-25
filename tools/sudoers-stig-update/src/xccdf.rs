@@ -671,4 +671,97 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
              the 3-row count); got {err:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Mutation-gate hardening (post-#551 GREEN, round 2): the PwFamily branch
+    // is a 3-way disjunction (`targetpw || rootpw || runaspw`), but every real
+    // DISA fixture's pw-family Rule enumerates ALL THREE keywords in the same
+    // check-content/fixtext (measured: rhel8/9/10 each contain targetpw=4,
+    // rootpw=4, runaspw=4 occurrences), so replacing either `||` with `&&`
+    // still matches every fixture-driven test above and survives mutation
+    // testing -- the disjunction's branching is never actually exercised by
+    // any of them. These three tests use a synthetic Rule whose check-content
+    // mentions ONLY ONE of the three keywords -- the realistic case of a
+    // future DISA revision rewording the check text down to a single option
+    // -- and assert the classifier still resolves it to `Family::PwFamily`.
+    // Each synthetic document also carries a real Authenticate and
+    // TimestampTimeout Rule so the mandatory-3-family anti-vacuity gate above
+    // is satisfied and `parse_controls` reaches `Ok` rather than failing
+    // closed on an unrelated ground (see `fewer_than_three_matched_families_
+    // is_an_error`, which already covers the "too few families" path).
+    // -----------------------------------------------------------------------
+
+    /// Build a synthetic 3-family XCCDF document where the pw-family Rule's
+    /// check-content is exactly `pw_check_content` (so the caller controls
+    /// which of the three keywords, if any, appear). The other two Rules
+    /// (Authenticate, TimestampTimeout) are fixed and unrelated to the pw
+    /// keywords, so only the pw-family classification varies across callers.
+    fn synthetic_doc_with_pw_check_content(pw_check_content: &str) -> String {
+        format!(
+            r#"<Benchmark>
+            <Group id="V-900001"><Rule id="SV-900001_rule"><version>RHEL-10-900010</version>
+            <title>Synthetic authenticate control.</title>
+            <fixtext>Remove any occurrence of "!authenticate" found in "/etc/sudoers".</fixtext>
+            <check><check-content>Verify no occurrences of "!authenticate" are present.
+            If any occurrences of "!authenticate" are returned, this is a finding.</check-content></check>
+            </Rule></Group>
+            <Group id="V-900002"><Rule id="SV-900002_rule"><version>RHEL-10-900020</version>
+            <title>Synthetic pw-family control.</title>
+            <fixtext>Synthetic fixtext, deliberately naming none of the three pw keywords itself.</fixtext>
+            <check><check-content>{pw_check_content}</check-content></check>
+            </Rule></Group>
+            <Group id="V-900003"><Rule id="SV-900003_rule"><version>RHEL-10-900030</version>
+            <title>Synthetic timestamp_timeout control.</title>
+            <fixtext>Defaults timestamp_timeout=0</fixtext>
+            <check><check-content>Verify timestamp_timeout is set appropriately.
+            If "timestamp_timeout" is set to a negative number, this is a finding.</check-content></check>
+            </Rule></Group>
+            </Benchmark>"#
+        )
+    }
+
+    #[test]
+    fn pw_family_matches_on_targetpw_alone() {
+        let doc = synthetic_doc_with_pw_check_content(
+            "Verify sudoers uses targetpw. If no results are returned, this is a finding.",
+        );
+        let d = parse_controls(&doc)
+            .expect("all 3 mandatory families present (one keyword each) -- must parse");
+        let pw = find(&d, Family::PwFamily);
+        assert_eq!(
+            pw.rule_id, "RHEL-10-900020",
+            "a check-content naming ONLY \"targetpw\" (no rootpw, no runaspw) must still \
+             classify as Family::PwFamily"
+        );
+    }
+
+    #[test]
+    fn pw_family_matches_on_rootpw_alone() {
+        let doc = synthetic_doc_with_pw_check_content(
+            "Verify sudoers uses rootpw. If no results are returned, this is a finding.",
+        );
+        let d = parse_controls(&doc)
+            .expect("all 3 mandatory families present (one keyword each) -- must parse");
+        let pw = find(&d, Family::PwFamily);
+        assert_eq!(
+            pw.rule_id, "RHEL-10-900020",
+            "a check-content naming ONLY \"rootpw\" (no targetpw, no runaspw) must still \
+             classify as Family::PwFamily"
+        );
+    }
+
+    #[test]
+    fn pw_family_matches_on_runaspw_alone() {
+        let doc = synthetic_doc_with_pw_check_content(
+            "Verify sudoers uses runaspw. If no results are returned, this is a finding.",
+        );
+        let d = parse_controls(&doc)
+            .expect("all 3 mandatory families present (one keyword each) -- must parse");
+        let pw = find(&d, Family::PwFamily);
+        assert_eq!(
+            pw.rule_id, "RHEL-10-900020",
+            "a check-content naming ONLY \"runaspw\" (no targetpw, no rootpw) must still \
+             classify as Family::PwFamily"
+        );
+    }
 }
