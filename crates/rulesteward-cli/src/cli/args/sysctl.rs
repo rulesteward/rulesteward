@@ -15,7 +15,7 @@ pub struct SysctlLintArgs {
     /// `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus
     /// `/etc/sysctl.conf`, instead of a single `<path>` (issue #420). Models the
     /// grounded same-basename directory masking + global lexicographic merge and
-    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02. Mutually
+    /// adds the cross-directory `sysctld-W03` pass to F01/W01/W02/W04. Mutually
     /// exclusive with the positional `<path>`.
     #[arg(long, conflicts_with = "path")]
     pub system: bool,
@@ -32,13 +32,15 @@ pub struct SysctlLintArgs {
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
 
-    /// Target RHEL release for the STIG hardening baseline (auto|rhel8|rhel9|rhel10).
-    /// Enables the version-aware `sysctld-W02` check: a STIG-required kernel-hardening
-    /// key that is unset across the effective config, or set to an insecure value, is
-    /// flagged against the selected release's baseline. `auto` detects the release from
-    /// the host's /etc/os-release, falling back (with a warning) to version-agnostic
-    /// when detection fails. With no `--target`, W02 does not run (version-agnostic:
-    /// only sysctld-F01 / sysctld-W01).
+    /// Target RHEL release for the version-aware hardening baselines
+    /// (auto|rhel8|rhel9|rhel10). Enables BOTH `sysctld-W02` (STIG) and
+    /// `sysctld-W04` (CIS Benchmark): a baseline-required kernel-hardening key that
+    /// is unset across the effective config, or set to a value the baseline does not
+    /// accept, is flagged against the selected release. `auto` detects the release
+    /// from the host's /etc/os-release, falling back (with a warning) to
+    /// version-agnostic when detection fails. With no `--target`, neither W02 nor W04
+    /// runs (version-agnostic: only sysctld-F01 / sysctld-W01, plus sysctld-W03 in
+    /// `--system` mode, which does not depend on `--target`).
     #[arg(long, value_enum)]
     pub target: Option<TargetSelector>,
 }

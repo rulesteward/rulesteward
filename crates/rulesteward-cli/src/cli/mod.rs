@@ -509,7 +509,7 @@ pub enum SysctlCommand {
     /// standard search path (`/etc/sysctl.d`, `/run/sysctl.d`,
     /// `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`) plus `/etc/sysctl.conf`,
     /// applies same-basename directory masking and the global lexicographic merge,
-    /// reruns F01/W01/W02 over the merged set, and adds sysctld-W03 (a key's
+    /// reruns F01/W01/W02/W04 over the merged set, and adds sysctld-W03 (a key's
     /// effective winner sits in a lower-precedence directory, a masked drop-in
     /// silently drops a key, or the procps/systemd appliers disagree).
     ///
