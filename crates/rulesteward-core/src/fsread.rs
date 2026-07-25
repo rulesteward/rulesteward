@@ -265,6 +265,18 @@ pub fn read_stream_to_string(path: &Path) -> io::Result<String> {
         // writerless discriminator rather than a racy one, without ever
         // risking an indefinite wait (the ceiling is a hard bound, not a
         // return of the #560 hang).
+        //
+        // The `replace < with <=` mutant on the comparison below is a
+        // documented, parked survivor. It is NOT semantically equivalent (on
+        // an exact-nanosecond tie the mutant performs one extra sleep-and-read
+        // before the same verdict, and that read could in principle observe a
+        // just-arrived writer) -- it is UNREACHABLE, which is the same
+        // disposition for a different reason: `Instant` wraps nanosecond
+        // CLOCK_MONOTONIC, so distinguishing the two forms requires forcing
+        // `now()` to land on `deadline` to the nanosecond, which no test can
+        // construct without a clock seam this module does not have. Same class
+        // as the two `fcntl` sentinel survivors documented in
+        // `clear_nonblock` below.
         let deadline = Instant::now() + FIFO_EMPTY_RETRY_BUDGET;
         while contents.is_empty() && Instant::now() < deadline {
             std::thread::sleep(FIFO_EMPTY_RETRY_INTERVAL);
