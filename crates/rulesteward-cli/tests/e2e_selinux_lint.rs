@@ -87,6 +87,15 @@ fn lint_json_kind_and_schema_version_are_pinned() {
     assert_eq!(v["schemaVersion"].as_u64(), Some(1));
 }
 
+// The #583 half B / #561 path-error-envelope RED test for `selinux lint`
+// (and its `sarif` counterpart) lives in `path_error_json.rs` /
+// `path_error_sarif.rs`, consolidated alongside the sshd/sysctl/sudoers/
+// auditd/fapolicyd siblings via the SAME shared `run_missing_path_json`/
+// `assert_path_error_envelope` helpers, rather than as a standalone copy
+// here - see those files for the up-to-date accounting of exactly which
+// verbs already had an envelope (FOUR: sshd/sysctl/sudoers/auditd) versus
+// which still needed one (selinux; fapolicyd's positional dir-scan mode).
+
 #[test]
 fn lint_profile_stig_passthrough_is_non_empty_for_a_controls_bearing_finding() {
     let f = write_config("SELINUX=permissive\nSELINUXTYPE=targeted\n");
