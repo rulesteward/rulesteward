@@ -230,3 +230,43 @@ fn sshd_lint_help_lists_all_codes_including_w07() {
         .stdout(predicate::str::contains("13 sshd-"))
         .stdout(predicate::str::contains("sshd-W07"));
 }
+
+#[test]
+fn sysctl_lint_help_target_names_both_baselines_not_just_stig() {
+    // #576 (spec-review finding, lane-7-sysctld-system-cis): the `--target`
+    // flag help described only the STIG baseline ("Target RHEL release for the
+    // STIG hardening baseline ... Enables the version-aware `sysctld-W02`
+    // check ... With no `--target`, W02 does not run ... only sysctld-F01 /
+    // sysctld-W01"). `--target` in fact gates BOTH W02 and the CIS baseline
+    // W04, in all three modes, so the help understated what an operator gives
+    // up by omitting the flag. Predates this lane (#527 added W04), but it is
+    // the exact false belief #576 exists to kill, in a file this lane edits.
+    //
+    // clap HARD-WRAPS help text at the terminal width, so this normalises runs
+    // of whitespace to single spaces before matching. A phrase assertion
+    // against raw stdout would pass or fail depending on where the wrap landed,
+    // which is a flake waiting to happen rather than a real invariant.
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sysctl", "lint", "--help"])
+        .output()
+        .expect("`sysctl lint --help` runs");
+    assert!(out.status.success(), "--help must exit 0");
+    let help = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(
+        help.contains("neither W02 nor W04 runs"),
+        "--target help must state that BOTH baselines are gated by --target; got:\n{help}"
+    );
+    assert!(
+        !help.contains("W02 does not run"),
+        "stale --target help: says only W02 is gated, but --target also gates W04"
+    );
+    assert!(
+        !help.contains("Target RHEL release for the STIG hardening baseline"),
+        "stale --target help: names only STIG, but --target also selects the CIS baseline"
+    );
+}
