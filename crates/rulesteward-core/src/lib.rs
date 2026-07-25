@@ -9,6 +9,7 @@ pub mod diagnostic;
 pub mod fsread;
 pub mod lint_code;
 pub mod num;
+pub mod oracle_corpus;
 pub mod span;
 
 pub use audit::extract_audit_field;
