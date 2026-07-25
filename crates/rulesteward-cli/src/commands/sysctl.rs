@@ -36,9 +36,10 @@ fn lint_with_probe(
     profile: Option<Framework>,
 ) -> i32 {
     // Resolve --target in the command layer (epic #251): explicit value as-is,
-    // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
-    // `auto` degrades to version-agnostic with a warning, never an error (read-only
-    // tool). The concrete domain target is what the W02 baseline pass consumes.
+    // `auto` from the host probe, omitted -> version-agnostic (neither W02 nor
+    // W04). A failed `auto` degrades to version-agnostic with a warning, never an
+    // error (read-only tool). The concrete domain target is what the W02 (STIG)
+    // and W04 (CIS) baseline passes both consume.
     let resolved = resolve_target(args.target, probe);
     if let Some(warning) = &resolved.warning {
         eprintln!("sysctl lint: {warning}");
@@ -50,7 +51,8 @@ fn lint_with_probe(
     // instead of a single <path>, adding the cross-directory sysctld-W03 pass
     // (lower-precedence-directory override, masked-drop-in key drop, and
     // procps/systemd applier divergence). `lint_system` performs the real
-    // enumerate/mask/merge and reruns F01/W01/W02 over the merged set. clap's
+    // enumerate/mask/merge and reruns F01/W01/W02/W04 over the merged set (#576
+    // added W04, the CIS baseline, alongside the STIG W02 rerun). clap's
     // `conflicts_with`/`requires` on SysctlLintArgs already reject --system + a
     // positional path, and --root without --system.
     if args.system {
