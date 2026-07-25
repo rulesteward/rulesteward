@@ -31,9 +31,11 @@
 #
 #   Comment syntax is LANGUAGE-SPECIFIC, and treating `#` as universal leaked
 #   twice before this contract said so:
-#     - `.rs`: `//`, `///`, `//!` and `/* */` blocks are comments. A leading `#`
-#       is an ATTRIBUTE - `#[path = "/mnt/..."]` is a compile-time file read, so
-#       both it and the inner `#![...]` form are violations.
+#     - `.rs`: ONLY `//`, `///`, `//!` are comments. A leading `#` is an
+#       ATTRIBUTE - `#[path = "/mnt/..."]` is a compile-time file read, so both
+#       it and the inner `#![...]` form are violations. `/* */` blocks are a
+#       DELIBERATE, documented false positive (case 21): recognising them needs
+#       a Rust lexer, and the attempt without one silenced ~3400 live lines.
 #     - `.sh` / `.yml` / `.yaml` / `justfile`: `#` is a comment, EXCEPT a
 #       shebang. `#!/mnt/...` is executable position; the kernel execs it.
 #
@@ -57,13 +59,17 @@
 #   success line carries the file count. This mirrors the repo's
 #   `OK (0 drift, 3 controls)` idiom.
 #
-#   Coverage can shrink silently in THREE ways, and all are errors. Fixing only
-#   the first two left the third open for a round, so they are listed together:
-#     - zero eligible files matched;
-#     - an enumerated file could not be opened;
+#   Coverage can shrink silently in several ways. Each round of review found
+#   another sibling of the one before, so they are listed together rather than
+#   counted (an earlier version of this comment led with a number that was wrong
+#   by the next round):
+#     - zero eligible files matched -> rc 2;
+#     - an enumerated file could not be opened -> rc 2;
 #     - a directory could not be TRAVERSED, so its contents were never
-#       enumerated. The per-file readability probe structurally cannot see
-#       these, since it only inspects files that were already found.
+#       enumerated -> rc 2. The per-file readability probe structurally cannot
+#       see these, since it only inspects files that were already found;
+#     - grep declining to PRINT a match it found, which it does by default on
+#       NUL bytes or invalid encoding. Prevented by `-a` (cases 24 and 25).
 #
 #   EXIT CODES (the rc 0/1/2/3 convention this session introduces)
 #     0 - clean. MUST print a line containing `0 violations` AND the number of
@@ -446,13 +452,29 @@ run_case "case20a_symlink_walked" "${TMPROOT}/case20" 1
 run_case "case20b_symlink_explicit" "${TMPROOT}/case20/crates/fake/src/linked.rs" 1
 
 # ---------------------------------------------------------------------------
-# Case 21: a Rust BLOCK comment is still a comment -> exit 0.
+# Case 21: a Rust BLOCK comment is a KNOWN, DOCUMENTED false positive -> exit 1.
 #
-# Rust has `//`, `///`, `//!` line comments AND `/* */`, `/** */`, `/*! */`
-# block comments (Rust Reference, "Comments"). The per-language rule initially
-# recognised only the line forms, so provenance in a block comment was flagged -
-# a false positive, and this gate's own header warns that a gate needing
-# exemptions everywhere trains people to blanket-add them.
+# This expectation was DELIBERATELY REVERSED after being written, and the
+# reasoning matters more than the case.
+#
+# Round 3 added a `/* */` scanner so provenance in a block comment would not be
+# flagged. That fixed a LOUD false positive which has never once occurred in
+# this repo. It also introduced a SILENT false negative that was live on nine
+# real files: the scanner had no string-literal state, so a `/*` inside an
+# ordinary string - `"both legacy and rules.d/*.rules exist"`, an idiom a config
+# linter uses constantly - opened a phantom block comment that exempted every
+# following line to EOF. Roughly 3400 lines of tracked Rust stopped being
+# checked, and the gate still printed OK.
+#
+# Trading a loud false positive for a silent false negative is exactly backwards
+# for a gate whose entire purpose is that silence and success must not look
+# alike. So the scanner is gone and `//` is the only Rust comment form the gate
+# recognises. Block-comment provenance is a one-line `mnt-path-exempt:` away,
+# and unlike the alternative it fails in the direction that gets noticed.
+#
+# This is a corrected contract, not a weakened test: the assertion is stronger
+# now (it pins a specific documented behavior) and the case that proves the
+# reversal was necessary is case23 below.
 # ---------------------------------------------------------------------------
 write_fixture "case21/crates/fake/src/block.rs" <<EOF
 /*
@@ -460,7 +482,55 @@ write_fixture "case21/crates/fake/src/block.rs" <<EOF
  */
 pub fn ok() -> u8 { 1 }
 EOF
-run_case "case21_rust_block_comment_is_comment" "${TMPROOT}/case21" 0
+run_case "case21_rust_block_comment_is_known_false_positive" "${TMPROOT}/case21" 1
+
+# ---------------------------------------------------------------------------
+# Case 23: a `/*` inside a STRING LITERAL must not exempt anything.
+#
+# The regression pin for case 21's reasoning. Two lines: a harmless glob string,
+# then a real violation. Rust lexes string literals as tokens, so the `/*` in
+# `rules.d/*.rules` does not open a comment.
+# ---------------------------------------------------------------------------
+write_fixture "case23/crates/fake/src/glob.rs" <<EOF
+const MSG: &str = "both legacy and rules.d/*.rules exist";
+const CORPUS: &str = "${BAD}/corpus";
+EOF
+run_case "case23_glob_in_string_does_not_exempt" "${TMPROOT}/case23" 1
+
+# ---------------------------------------------------------------------------
+# Case 24: a matching line must not be suppressed by BINARY content.
+#
+# The fourth way coverage shrinks silently, after zero-files, unreadable file
+# and untraversable directory. grep defaults to --binary-files=binary: once it
+# sees a NUL it suppresses matching LINES, reporting only to stderr (and on some
+# versions not even that). The file is still counted, so the anti-vacuity count
+# reads perfectly healthy while the violation is invisible.
+#
+# A NUL byte in Rust source is legal and compiles, so this is a buildable file.
+# ---------------------------------------------------------------------------
+mkdir -p "${TMPROOT}/case24/scripts"
+printf '# marker\000\n' >"${TMPROOT}/case24/scripts/capture.sh"
+printf 'CORPUS="%s/corpus"\n' "${BAD}" >>"${TMPROOT}/case24/scripts/capture.sh"
+run_case "case24_binary_content_cannot_suppress" "${TMPROOT}/case24" 1
+
+# ---------------------------------------------------------------------------
+# Case 25: the same, for improperly-encoded bytes, asserted under BOTH locales.
+#
+# grep also suppresses matching lines containing invalid encoding, which makes
+# the verdict depend on LANG. Pinning both locales explicitly is the assertion;
+# relying on the ambient locale is not.
+# ---------------------------------------------------------------------------
+mkdir -p "${TMPROOT}/case25/scripts"
+printf 'CORPUS="%s/caf\xe9-corpus"\n' "${BAD}" >"${TMPROOT}/case25/scripts/c.sh"
+for loc in C en_US.UTF-8; do
+    rc=0
+    LC_ALL="${loc}" "${GATE}" "${TMPROOT}/case25" >"${TMPROOT}/case25-${loc}.out" 2>&1 || rc=$?
+    if [[ "${rc}" -eq 1 ]]; then
+        note_pass "case25_invalid_utf8_LC_ALL=${loc} (exit ${rc})"
+    else
+        note_fail "case25_invalid_utf8_LC_ALL=${loc}: expected exit 1, got ${rc}"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Case 22: but a Rust ATTRIBUTE after a block comment is still a violation, so

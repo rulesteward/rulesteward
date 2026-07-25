@@ -13,9 +13,12 @@
 # THAT FILE'S LANGUAGE, or carries the `mnt-path-exempt:` marker.
 #
 # Comment syntax is language-specific, and getting that wrong leaked twice:
-#   - Rust: `//`, `///`, `//!` and `/* */` blocks. A leading `#` is an
-#     ATTRIBUTE, so `#[path = "/mnt/..."]` (a compile-time file read) is a
-#     violation, as is the inner `#![...]` form.
+#   - Rust: ONLY `//`, `///`, `//!`. A leading `#` is an ATTRIBUTE, so
+#     `#[path = "/mnt/..."]` (a compile-time file read) is a violation, as is
+#     the inner `#![...]` form. `/* */` blocks are deliberately NOT recognised
+#     - see the note at the check itself; recognising them correctly needs a
+#     Rust lexer, and the attempt that did not have one silenced ~3400 live
+#     lines. Block-comment provenance takes an `mnt-path-exempt:` marker.
 #   - sh / yaml / justfile: `#`, EXCEPT a shebang. `#!/mnt/...` is the most
 #     literal executable position there is.
 #
@@ -37,12 +40,17 @@
 # clean" is distinguishable from "scanned nothing" - the same reason the drift
 # tools print `OK (0 drift, 3 controls)` rather than a bare `0 drift`.
 #
-# Three ways coverage can silently shrink, all of which are errors here:
-#   - zero eligible files matched;
-#   - an enumerated file could not be opened;
+# The ways coverage can silently shrink, each closed here. (Stated as a list
+# rather than a count: an earlier version of this comment led with a number that
+# was already wrong by the next round.)
+#   - zero eligible files matched -> rc 2;
+#   - an enumerated file could not be opened -> rc 2;
 #   - a directory could not be TRAVERSED, so its files were never enumerated at
-#     all (the per-file readability probe cannot see these, which is why find's
-#     stderr is captured rather than discarded).
+#     all -> rc 2. The per-file readability probe structurally cannot see these,
+#     which is why find's stderr is captured rather than discarded;
+#   - grep declining to PRINT a match it found, which it does by default once it
+#     sees a NUL byte or invalid encoding. Prevented outright by `-a` rather
+#     than reported, since there is no reason to tolerate it.
 #
 # EXIT CODES
 #   0 - clean; prints `OK (0 violations, N files scanned)` with N > 0
@@ -137,28 +145,6 @@ comment_style_for() {
     esac
 }
 
-# Line numbers of a Rust file that sit inside a `/* ... */` block comment,
-# space-separated. Scans character-pairs so a `*/` mid-line ends the block
-# correctly, and ignores `/*` appearing after a `//` line comment on the same
-# line. Rust block comments nest, so the depth is counted rather than toggled.
-rust_block_comment_lines() {
-    awk '
-    {
-        line = $0; n = length(line); i = 1
-        while (i <= n) {
-            two = substr(line, i, 2)
-            if (depth == 0 && two == "//") break          # rest of line is a line comment
-            if (two == "/*") { depth++; i += 2; continue }
-            if (two == "*/" && depth > 0) { depth--; i += 2; continue }
-            i++
-        }
-        # Emit if the line ENDS inside a block, or STARTED inside one (so the
-        # closing `*/` line counts too).
-        if (depth > 0 || was > 0) { printf "%d ", NR }
-        was = depth
-    }' "$1"
-}
-
 scanned=0
 violations=0
 report=""
@@ -174,27 +160,31 @@ for f in "${files[@]:-}"; do
     fi
     scanned=$((scanned + 1))
     style="$(comment_style_for "${f}")"
-    unset block_lines
     while IFS= read -r hit; do
         [[ -z "${hit}" ]] && continue
         # `hit` is "LINENO:CONTENT" from grep -n.
         line_content="${hit#*:}"
         # Carve-out (a): the line is a comment IN THIS FILE'S LANGUAGE.
         if [[ "${style}" == rust ]]; then
-            # Rust: `//` line comments (covers `//`, `///`, `//!`) and `/* */`
-            # block comments (covers `/** */`, `/*! */`). A leading `#` is an
-            # ATTRIBUTE, not a comment - both `#[...]` and `#![...]`.
+            # Rust: ONLY `//` line comments (covers `//`, `///`, `//!`). A
+            # leading `#` is an ATTRIBUTE, not a comment - both `#[...]` and
+            # `#![...]`, since `#[path = "/mnt/..."]` is a compile-time read.
+            #
+            # `/* */` blocks are DELIBERATELY not recognised. A scanner for them
+            # was written and then removed: without string-literal state, a `/*`
+            # inside an ordinary string ("...rules.d/*.rules...", an idiom a
+            # config linter uses constantly) opened a phantom block that
+            # exempted every following line to EOF. That was live on nine
+            # tracked files and silenced roughly 3400 lines while still printing
+            # OK. Getting it right needs a Rust lexer, and the failure mode of
+            # getting it wrong is SILENT.
+            #
+            # So this is a deliberate, documented false POSITIVE: provenance
+            # inside a `/* */` block gets flagged and needs a one-line
+            # `mnt-path-exempt:` marker. That direction fails loudly and is
+            # fixed in seconds; the other direction hides violations. No such
+            # block exists in the tree today.
             if [[ "${line_content}" =~ ^[[:space:]]*// ]]; then
-                continue
-            fi
-            # Block comments need real state, not a leading-character guess: a
-            # line starting with `*` may be a continuation OR a deref
-            # assignment. So the line numbers inside `/* */` are computed once
-            # per file by an actual scanner.
-            if [[ -z "${block_lines+x}" ]]; then
-                block_lines=" $(rust_block_comment_lines "${f}") "
-            fi
-            if [[ "${block_lines}" == *" ${hit%%:*} "* ]]; then
                 continue
             fi
         else
@@ -214,7 +204,14 @@ for f in "${files[@]:-}"; do
         fi
         violations=$((violations + 1))
         report+="  ${f}:${hit%%:*}: ${line_content}"$'\n'
-    done < <(grep -nF -- "${MNT_PREFIX}" "${f}" 2>/dev/null || true)
+        # -a (--binary-files=text) is load-bearing, not cosmetic. By default
+        # grep SUPPRESSES matching lines once it sees a NUL byte or invalid
+        # encoding, reporting only to stderr (and on some versions not even
+        # that) while the file still counts toward `scanned`. That is a fourth
+        # way coverage shrinks silently, alongside zero-files, unreadable file
+        # and untraversable directory. A NUL byte in Rust source is legal and
+        # compiles, so the input is not hypothetical.
+    done < <(grep -a -nF -- "${MNT_PREFIX}" "${f}" 2>/dev/null || true)
 done
 
 # Scan-integrity checks. A run that could not read everything it was asked to
