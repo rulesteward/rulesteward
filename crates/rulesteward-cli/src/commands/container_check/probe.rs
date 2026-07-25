@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use rulesteward_fapolicyd::{Attr, AttrValue, Decision, Entry, parse_rules_file};
+use rulesteward_fapolicyd::{Attr, AttrValue, Decision, Entry, first_conf_token, parse_rules_file};
 
 use super::model::{
     ContainerProbe, CrunRuleCoverage, DeepDenials, DeepTrust, EffectiveConf, FapolicydState,
@@ -37,6 +37,14 @@ const RUNTIME_DENIAL_SUBJECTS: [&str; 4] = [
 /// `watch_fs` is a comma-separated list (e.g. `watch_fs = ext4,tmpfs,xfs`);
 /// `allow_filesystem_mark = 1` enables overlay marking. Lines may have spaces
 /// around `=` and may be commented with a leading `#` (ignored).
+///
+/// `allow_filesystem_mark` is compared against the value's FIRST
+/// ASCII-space-delimited token, via the shared
+/// `rulesteward_fapolicyd::first_conf_token` seam (issue #582): `conf_value`
+/// returns the raw remainder verbatim, including any extra token the
+/// daemon's own tokenizer (`nv_split`/`_strsplit`) would discard -- a
+/// CRLF-edited conf's trailing `'\r'` after a real space (`"1 \r"`) must
+/// still resolve to `"1"`, matching what the real daemon loads and runs.
 #[must_use]
 pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
     let watch_fs = conf_value(conf_text, "watch_fs")
@@ -47,7 +55,8 @@ pub fn parse_effective_conf(conf_text: &str, readable: bool) -> EffectiveConf {
                 .collect()
         })
         .unwrap_or_default();
-    let allow_filesystem_mark = conf_value(conf_text, "allow_filesystem_mark") == Some("1");
+    let allow_filesystem_mark =
+        conf_value(conf_text, "allow_filesystem_mark").map(first_conf_token) == Some("1");
     EffectiveConf {
         watch_fs,
         allow_filesystem_mark,
@@ -377,6 +386,47 @@ mod tests {
     fn parse_conf_detects_mark_enabled() {
         let c = parse_effective_conf("allow_filesystem_mark = 1\n", true);
         assert!(c.allow_filesystem_mark);
+    }
+
+    #[test]
+    fn parse_conf_detects_mark_enabled_with_trailing_space_control() {
+        // GREEN regression pin (rulesteward-cli issue #582, adversarial
+        // review round 2, BLOCKER 4): this file is not owned by the #582
+        // lane, but its behavior CHANGES through the shared
+        // `commands::conf::conf_value` helper that lane's fix touches. That
+        // fix must switch `conf_value` off a full Unicode `.trim()` (to
+        // preserve a CRLF file's trailing '\r') without also dropping the
+        // trailing-ASCII-space trim this exact-string `== Some("1")`
+        // compare depends on -- a hand-edited conf with one trailing space
+        // must not silently flip `allow_filesystem_mark` to `false`. This
+        // test is GREEN today; it must stay GREEN after that fix lands.
+        let c = parse_effective_conf("allow_filesystem_mark = 1 \n", true);
+        assert!(
+            c.allow_filesystem_mark,
+            "a trailing ASCII space after the value must not flip \
+             allow_filesystem_mark to false (#582 adversarial round 2, \
+             BLOCKER 4)"
+        );
+    }
+
+    /// MISS 3 (#582, empirically verified live on fapolicyd8/9/10):
+    /// `allow_filesystem_mark = 1 \r\n` (a CRLF-edited conf with a real
+    /// ASCII space before the '\r') is a conf the real daemon LOADS FINE,
+    /// enabling the mark -- the daemon's tokenizer binds the value to the
+    /// FIRST ASCII-space-delimited token, `"1"`; the stray `"\r"` is a
+    /// discarded extra token. `conf_value`'s CR-preserving fix leaves the
+    /// raw value `"1 \r"`; the old EXACT-string `== Some("1")` compare
+    /// missed this and reported `false`, silently suppressing the container-
+    /// check HIGH finding that overlay mediation can be bypassed.
+    #[test]
+    fn parse_conf_detects_mark_enabled_with_crlf_and_trailing_space_control() {
+        let c = parse_effective_conf("allow_filesystem_mark = 1 \r\n", true);
+        assert!(
+            c.allow_filesystem_mark,
+            "a CRLF conf's raw value \"1 \\r\" must resolve via its first \
+             daemon-recognised token \"1\" -> allow_filesystem_mark must be \
+             true (#582 MISS 3)"
+        );
     }
 
     #[test]

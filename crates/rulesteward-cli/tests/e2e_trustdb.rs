@@ -571,6 +571,18 @@ fn write_conf(integrity_value: &str) -> tempfile::NamedTempFile {
     f
 }
 
+/// Write a synthetic fapolicyd.conf with the EXACT caller-supplied bytes --
+/// no `writeln!` LF normalization. `write_conf` above always emits LF line
+/// endings and cannot express a CRLF-edited or tab-containing conf line;
+/// this is the byte-exact counterpart needed to pin issue #582's CRLF/tab
+/// `integrity=` regressions.
+fn write_conf_raw_bytes(bytes: &[u8]) -> tempfile::NamedTempFile {
+    let mut f = tempfile::NamedTempFile::new().expect("named tempfile");
+    f.write_all(bytes).expect("write raw conf bytes");
+    f.flush().expect("flush");
+    f
+}
+
 /// Build a fixture DB with three kinds of entries controlled by caller-supplied
 /// path variables:
 ///
@@ -831,6 +843,295 @@ fn integrity_sha256_hash_mismatch_exit_one() {
         .arg(&path_hash)
         .assert()
         .code(1);
+}
+
+/// Issue #582 RULING 1 + the empirical fapolicyd8/9/10 matrix: `integrity =
+/// sha256 \r\n` (a CRLF-edited conf with a real ASCII space before the '\r')
+/// is a conf the real daemon LOADS FINE, running sha256 -- the daemon's
+/// tokenizer (`nv_split`/`_strsplit`) binds the keyword to the FIRST
+/// ASCII-space-delimited token, `"sha256"`; the stray `"\r"` is a discarded
+/// extra token (merely logged as "Wrong number of arguments"). So a hash
+/// mismatch under this conf MUST be enforced -> exit 1.
+///
+/// RED before the fix: `conf_value` returns the raw `"sha256 \r"`, and the
+/// OLD `from_conf_value` did an exact-string match against `"sha256"`,
+/// missed, and fell back to `IntegrityMode::None` (unenforced) -> exit 0.
+#[test]
+fn integrity_crlf_sha256_trailing_space_before_cr_enforces_hash_mismatch() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("hash_mismatch_crlf_space");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    let conf = write_conf_raw_bytes(b"integrity = sha256 \r\n");
+
+    bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .assert()
+        .code(1);
+}
+
+/// Issue #582 RULING 1 + the empirical matrix: `integrity = sha256\r\n` (NO
+/// space before the '\r', so the daemon's byte-exact tokenizer binds the
+/// WHOLE `"sha256\r"` as one token) is a conf the real daemon REFUSES TO
+/// START with (verified live on fapolicyd 1.3.2/1.4.5). Per the user ruling,
+/// `resolve_integrity_mode` must never weaken enforcement because it could
+/// not resolve the conf's intended mode -- exactly like the pre-existing
+/// unreadable-conf arm -- so it assumes the strictest mode (sha256), and a
+/// hash mismatch is enforced -> exit 1.
+///
+/// RED before the fix: falls back to `IntegrityMode::None` (unenforced) ->
+/// exit 0, which is NOT parity with a daemon that never even starts under
+/// this conf.
+#[test]
+fn integrity_crlf_sha256_no_space_before_cr_assumes_strict_enforces_hash_mismatch() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("hash_mismatch_crlf_no_space");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    let conf = write_conf_raw_bytes(b"integrity = sha256\r\n");
+
+    bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .assert()
+        .code(1);
+}
+
+/// Issue #582 RULING 1 + the empirical matrix: `integrity =\tsha256\n` (a TAB
+/// immediately after `=` instead of a space) is a conf the real daemon
+/// REFUSES TO START with ("Missing equal sign", verified live on fapolicyd
+/// 1.3.2/1.4.5) -- `conf_value`'s ASCII-space-only trim leaves the tab bound
+/// into the same token as `"sha256"`, so it never matches a known keyword.
+/// Same "never weaken enforcement" ruling as above -> assume strict sha256
+/// -> hash mismatch enforced -> exit 1.
+#[test]
+fn integrity_tab_after_equals_assumes_strict_enforces_hash_mismatch() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("hash_mismatch_tab");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    let conf = write_conf_raw_bytes(b"integrity =\tsha256\n");
+
+    bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .assert()
+        .code(1);
+}
+
+// ---------------------------------------------------------------------------
+// Mutation-gate hardening (issue #582/#596): `resolve_integrity_mode`'s match
+// has THREE arms -- (1) key present + recognised, (2) key present but
+// UNRECOGNISED (assume strict sha256), (3) key ABSENT from a found conf
+// (daemon default: none). Every fixture above writes an `integrity = <value>`
+// line via `write_conf`/`write_conf_raw_bytes`, so arm 3 (a conf that EXISTS
+// but never mentions `integrity` at all) was untested: a mutant collapsing
+// the `None if raw.is_none()` guard to `false` makes that arm unreachable and
+// silently promotes an absent key to full sha256 enforcement. The three tests
+// below pin all three arms structurally, asserting BOTH the resolved MODE
+// (via exit code) and the exact operator-visible SOURCE STRING the `integrity:
+// ...` human-output header reports -- asserting only the mode would let a
+// wrong message ship unnoticed.
+// ---------------------------------------------------------------------------
+
+/// Arm 3: the conf file EXISTS but has NO `integrity` key at all
+/// (`raw.is_none()`). Per the doc contract this is the daemon's OWN default
+/// (`IntegrityMode::None`, no checking) -- a DIFFERENT resolution than "key
+/// present but unrecognised" (arm 2, which assumes STRICT sha256). This is
+/// the test that kills the survivor: the mutated guard falls through to arm
+/// 2's "invalid integrity value" branch instead, flipping both the resolved
+/// mode (None -> Sha256) and the reported source string.
+#[test]
+fn integrity_conf_exists_but_key_absent_defaults_to_none_and_reports_absent_source() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("absent_key_hash_only_drift");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    // Conf EXISTS (`std::fs::read_to_string` succeeds) but never mentions
+    // `integrity` at all -- unlike every other fixture in this file.
+    let conf =
+        write_conf_raw_bytes(b"# synthetic fapolicyd.conf with no integrity key\npermissive = 0\n");
+
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .output()
+        .expect("run check");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an absent `integrity` key must default to IntegrityMode::None (hash \
+         mismatch NOT enforced) -- exit 1 here means the absent key was wrongly \
+         treated as an unrecognised PRESENT value (assumed strict sha256); \
+         got: {:?} stdout={:?}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    let expected_source = format!("integrity: {} (integrity=absent)", conf.path().display());
+    assert!(
+        stdout.contains(&expected_source),
+        "the integrity header must report the absent-key source verbatim as \
+         `{expected_source}`; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.to_lowercase().contains("invalid integrity value"),
+        "an absent key must NOT be reported as an invalid/unrecognised value; got:\n{stdout}"
+    );
+}
+
+/// Arm 1 companion: a RECOGNISED `integrity=` value's source string names the
+/// raw value verbatim (`"<path> (integrity=<value>)"`). Exit-code coverage
+/// for a recognised value already exists elsewhere in this file (e.g.
+/// `integrity_sha256_hash_mismatch_exit_one`); this test closes the gap on
+/// the SOURCE STRING, which no existing test asserted before this hardening
+/// pass.
+#[test]
+fn integrity_recognised_value_reports_value_in_source() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("recognised_value_hash_mismatch");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    let conf = write_conf("sha256");
+
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .output()
+        .expect("run check");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a recognised sha256 value must enforce hash mismatch; got: {:?}",
+        out.status
+    );
+
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    let expected_source = format!("integrity: {} (integrity=sha256)", conf.path().display());
+    assert!(
+        stdout.contains(&expected_source),
+        "the integrity header must report the recognised raw value verbatim \
+         as `{expected_source}`; got:\n{stdout}"
+    );
+}
+
+/// Arm 2 companion: a PRESENT but UNRECOGNISED `integrity=` value. The
+/// CRLF/tab tests above already pin this arm's MODE (exit code, via a
+/// byte-mangled but otherwise-valid keyword); this test uses a plainly
+/// unrecognised keyword (no daemon-recognised token is a prefix or case-fold
+/// of it) to close the gap on the literal message text, which -- per the
+/// current implementation -- deliberately omits the conf path, unlike every
+/// other `resolve_integrity_mode` arm.
+#[test]
+fn integrity_unrecognised_value_reports_invalid_source_verbatim() {
+    let files = tempfile::tempdir().expect("files tempdir");
+    let path_hash = files.path().join("unrecognised_value_hash_mismatch");
+    write_known_file(&path_hash);
+
+    let db_dir = tempfile::tempdir().expect("db tempdir");
+    let wrong_hash = "0".repeat(64);
+    write_trustdb_fixture_kv(
+        db_dir.path(),
+        &[(
+            path_hash.to_str().unwrap(),
+            value_bytes(1, KNOWN_SIZE, &wrong_hash).as_slice(),
+        )],
+    );
+
+    let conf = write_conf("bogus");
+
+    let out = bin()
+        .args(["fapolicyd", "trustdb", "check", "--db"])
+        .arg(db_dir.path())
+        .arg("--config")
+        .arg(conf.path())
+        .arg(&path_hash)
+        .output()
+        .expect("run check");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "an unrecognised present value must assume strict sha256 (hash \
+         mismatch enforced); got: {:?}",
+        out.status
+    );
+
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    assert!(
+        stdout.contains("integrity: invalid integrity value - assuming strict (sha256)"),
+        "the integrity header for an unrecognised present value must read \
+         verbatim 'invalid integrity value - assuming strict (sha256)'; got:\n{stdout}"
+    );
 }
 
 /// `integrity=size` enforces size mismatch (exit 1) but NOT hash mismatch
@@ -1452,9 +1753,18 @@ fn integrity_size_stale_size_mismatch_exits_one() {
 /// the four keywords, after which an invalid value is a clap parse error.
 ///
 /// SCOPE NOTE: this rejection applies ONLY to the explicit `--integrity` FLAG.
-/// An unknown value inside a `--config` FILE keeps the daemon-faithful
-/// unknown->none behavior (fapolicyd.conf(5) parity) and is deliberately NOT
-/// tested as a rejection here.
+/// An unknown/unparseable `integrity=` value inside a `--config` FILE is a
+/// DIFFERENT failure mode from this test's flag rejection (issue #582 RULING
+/// 1, corrected from an earlier "keeps the daemon-faithful unknown->none
+/// behavior" claim that the empirical fapolicyd8/9/10 matrix refuted): the
+/// real daemon REFUSES TO START on such a conf, so `resolve_integrity_mode`
+/// maps it to the STRICT `Sha256` mode (never weaken enforcement because the
+/// conf's intended mode could not be resolved) rather than to `none` -- see
+/// `resolve_integrity_mode`'s "invalid integrity value" arm and the
+/// `integrity_crlf_*`/`integrity_tab_after_equals_*` tests above. This test's
+/// scope stays narrower: it only pins that an invalid `--integrity` FLAG
+/// value is a clap parse error, a distinct code path from that conf-file
+/// fallback.
 #[test]
 fn unknown_integrity_flag_value_is_rejected_not_silently_none() {
     let files = tempfile::tempdir().expect("files tempdir");
