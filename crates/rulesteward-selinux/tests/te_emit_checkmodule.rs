@@ -80,19 +80,53 @@ fn find_checkmodule() -> Option<std::path::PathBuf> {
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
             let candidate = dir.join("checkmodule");
-            if candidate.is_file() {
+            if is_executable(&candidate) {
                 return Some(candidate);
             }
         }
     }
     // Fallback: known install location, for a caller with an unusual PATH.
     let fallback = std::path::PathBuf::from("/usr/bin/checkmodule");
-    fallback.is_file().then_some(fallback)
+    is_executable(&fallback).then_some(fallback)
+}
+
+/// A regular file with at least one execute bit.
+///
+/// The mode check is load-bearing, not belt-and-braces. `execvp` SKIPS a
+/// non-executable candidate and keeps searching PATH, so an `is_file()`-only
+/// lookup could report `/some/dir/checkmodule` as the oracle while the compile
+/// silently ran `/usr/bin/checkmodule` instead - an anti-vacuity instrument
+/// naming a binary it never executed.
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Does this raw environment value declare the oracle required?
+///
+/// Pure and total so it can be pinned by a table test without mutating process
+/// environment (which is global and would race the other tests here).
+///
+/// **Fail-closed.** Any non-empty value that is not an explicit off-switch means
+/// required. The first cut of this compared `v == "1"`, which is fail-OPEN: a
+/// later session writing `RS_REQUIRE_CHECKMODULE: true` in YAML (unquoted, so it
+/// arrives as the string `true` - and ci.yml:40 already uses that unquoted
+/// scalar style for `RUST_BACKTRACE: 1`) would silently get a fully green suite
+/// in which nothing ran. That is the exact failure this file exists to prevent,
+/// so the predicate has to lean the other way: ambiguous means required.
+fn requirement_declared(raw: Option<&str>) -> bool {
+    let Some(value) = raw else { return false };
+    let value = value.trim();
+    !(value.is_empty()
+        || value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off"))
 }
 
 /// True when the environment declares that the oracle MUST be present.
 fn checkmodule_required() -> bool {
-    std::env::var(REQUIRE_ENV).is_ok_and(|v| v == "1")
+    requirement_declared(std::env::var(REQUIRE_ENV).ok().as_deref())
 }
 
 /// Resolve the oracle for a single test, or explain why the test is not running.
@@ -148,12 +182,26 @@ fn checkmodule_compile(te_source: &str, label: &str) -> (bool, String) {
             .expect("failed to write temp .te file");
     }
 
-    let output = Command::new("checkmodule")
+    // Run the path `find_checkmodule` actually resolved, NOT the bare name.
+    // `Command::new("checkmodule")` would re-resolve through PATH, which
+    // diverges from discovery in two ways: the documented `/usr/bin/checkmodule`
+    // fallback is unreachable via PATH (so every test panicked with the ironic
+    // "it was found via find_checkmodule" message when PATH lacked it), and a
+    // shadowing entry could make the compile run a different binary than the one
+    // reported. Resolve once, run that.
+    let oracle = find_checkmodule()
+        .expect("checkmodule_compile called without an oracle; use checkmodule_or_skip first");
+    let output = Command::new(&oracle)
         .args(["-M", "-m", "-o"])
         .arg(&mod_path)
         .arg(&te_path)
         .output()
-        .expect("failed to spawn checkmodule (it was found via find_checkmodule)");
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn the resolved oracle {}: {e}",
+                oracle.display()
+            )
+        });
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
@@ -393,5 +441,77 @@ fn checkmodule_availability_declared() {
         "checkmodule oracle: AVAILABLE at {} (two-sided control OK: accepts valid, \
          rejects malformed)",
         path.display()
+    );
+}
+
+/// Pin the requirement predicate's whole decision table.
+///
+/// The interesting rows are the ones a four-state manual matrix does not reach:
+/// an unset variable and `=1` are the two INTERIOR points, and sampling only
+/// those is how the fail-open `v == "1"` comparison survived its first review.
+/// Every "truthy but not literally 1" spelling must require the oracle, because
+/// the cost of being wrong is asymmetric: a spurious hard failure is loud and
+/// takes one commit to fix, while a spurious skip is silent and hid this whole
+/// harness from CI for months.
+#[test]
+fn requirement_declaration_is_fail_closed() {
+    // Off: absent, or an explicit off-switch.
+    for raw in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("0"),
+        Some("false"),
+        Some("FALSE"),
+        Some("no"),
+        Some("off"),
+    ] {
+        assert!(
+            !requirement_declared(raw),
+            "{raw:?} must NOT require the oracle"
+        );
+    }
+    // On: the documented spelling, plus every plausible near-miss.
+    for raw in [
+        Some("1"),
+        Some("1 "),
+        Some(" 1"),
+        Some("true"),
+        Some("True"),
+        Some("yes"),
+        Some("on"),
+        Some("required"),
+    ] {
+        assert!(
+            requirement_declared(raw),
+            "{raw:?} must require the oracle (fail-closed: ambiguous means required)"
+        );
+    }
+}
+
+/// Whatever `find_checkmodule` returns must be runnable.
+///
+/// Its doc says "present and executable", but the first cut only checked
+/// `is_file()`. A non-executable file named `checkmodule` earlier on PATH was
+/// therefore reported as the oracle while `Command` actually ran a different
+/// binary (execvp skips non-executable candidates), so the anti-vacuity
+/// instrument named a binary it had never executed.
+#[test]
+fn resolved_oracle_path_is_executable() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Some(path) = find_checkmodule() else {
+        eprintln!("SKIP resolved_oracle_path_is_executable: checkmodule not present");
+        return;
+    };
+    let mode = std::fs::metadata(&path)
+        .expect("resolved oracle path must be stat-able")
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "find_checkmodule returned {} but it is not executable (mode {:o}); \
+         Command would silently resolve a DIFFERENT binary via PATH",
+        path.display(),
+        mode
     );
 }

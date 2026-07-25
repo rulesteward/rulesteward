@@ -107,7 +107,17 @@ for f in "${files[@]:-}"; do
         # `hit` is "LINENO:CONTENT" from grep -n.
         line_content="${hit#*:}"
         # Carve-out (a): the line is a comment.
-        if [[ "${line_content}" =~ ^[[:space:]]*(#|//) ]]; then
+        #
+        # A SHEBANG is explicitly NOT a comment. `#!` is the most literal
+        # executable position there is - the kernel's binfmt_script handler
+        # execs the named interpreter (execve(2)) - so a `#!/mnt/...` line is a
+        # hard runtime dependency on an out-of-repo path, not provenance. It
+        # applies at any indent, because `just` shebang recipes put it inside an
+        # indented recipe body (ten such recipes live in this repo's justfile).
+        if [[ "${line_content}" =~ ^[[:space:]]*# && ! "${line_content}" =~ ^[[:space:]]*#! ]]; then
+            continue
+        fi
+        if [[ "${line_content}" =~ ^[[:space:]]*// ]]; then
             continue
         fi
         # Carve-out (b): the line carries the explicit exemption marker.

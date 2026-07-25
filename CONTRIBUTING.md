@@ -127,10 +127,22 @@ was checked" to "the oracle was not re-derived."
 | 2 | tool/environment error: unparseable transcript, zero data rows, or the oracle was required but missing |
 | 3 | precondition unmet, a legitimate skip (no docker, image absent) |
 
-`3` exists so a developer without docker gets an honest skip while CI, which
-sets `RS_ORACLE_REQUIRED=1`, turns the same condition into a hard failure.
-Collapsing it into `0` is exactly the bug that made `just diff-fapolicyd` report
-success for six weeks while checking nothing (#572).
+`3` exists so a developer without docker gets an honest skip while CI turns the
+same condition into a hard failure. Collapsing it into `0` is exactly the bug
+that made `just diff-fapolicyd` report success while checking nothing (#572).
+
+Each harness declares its own `RS_REQUIRE_<ORACLE>` environment variable for
+this, and **CI must set it** wherever the oracle is actually installed. The one
+shipped example is `RS_REQUIRE_CHECKMODULE`, used by
+`crates/rulesteward-selinux/tests/te_emit_checkmodule.rs` and set in `ci.yml` on
+both the EL matrix and the `selinux-feature` job.
+
+Parse that variable **fail-closed**: treat any non-empty value that is not an
+explicit off-switch (`0`, `false`, `no`, `off`) as "required". Comparing against
+the literal `"1"` is fail-OPEN, because a later session writing
+`RS_REQUIRE_X: true` in YAML gets the string `true` and silently re-disables the
+requirement. That mistake was made and caught in this contract's own first
+implementation.
 
 ### Three rules every harness must satisfy
 

@@ -270,6 +270,37 @@ assert_output_contains "case11_clean_reports_count" "2 files" \
     "success line states how many files were scanned"
 
 # ---------------------------------------------------------------------------
+# Case 13: a SHEBANG naming an out-of-repo interpreter -> exit 1.
+#
+# `#!` is the most literal executable position there is: the kernel's
+# binfmt_script handler execs the named interpreter (execve(2), "Interpreter
+# scripts"). A script with this shebang fails to run at all - verified: chmod +x
+# then execute gives "bad interpreter: No such file or directory", rc 126.
+#
+# The first cut of this gate treated it as a comment, because it matched the
+# `^[[:space:]]*#` carve-out. Cases 2/3/5 all sampled the INTERIOR of that
+# carve-out and none sampled its boundary, so the suite was 16/16 green while
+# the single most executable form of the defect walked straight through.
+# ---------------------------------------------------------------------------
+write_fixture "case13/scripts/capture.sh" <<EOF
+#!${BAD}/venv/bin/python3
+print("capture corpus")
+EOF
+run_case "case13_shebang_interpreter" "${TMPROOT}/case13" 1
+
+# ---------------------------------------------------------------------------
+# Case 14: the same, in a `just` shebang recipe body (indented, not line 1).
+# This repo has ten such recipes, so the indented form is the live shape here.
+# ---------------------------------------------------------------------------
+mkdir -p "${TMPROOT}/case14"
+{
+    printf 'capture:\n'
+    printf '    #!%s/venv/bin/python3\n' "${BAD}"
+    printf '    print("x")\n'
+} >"${TMPROOT}/case14/justfile"
+run_case "case14_shebang_in_just_recipe" "${TMPROOT}/case14/justfile" 1
+
+# ---------------------------------------------------------------------------
 # Case 12: THE REAL TREE, with no arguments, must be clean.
 #
 # This case is RED until Phase 0b deletes justfile:16. That failing run is the

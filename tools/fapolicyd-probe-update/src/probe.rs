@@ -10,7 +10,7 @@
 //! (openssh-server is absent from the base fapolicyd differential images), this tool
 //! probes the EXISTING prebuilt `fapolicyd8` / `fapolicyd9` / `fapolicyd10` images
 //! directly - fapolicyd already ships on them (see this repo's CLAUDE.md
-//! "Differential verification (fapolicyd, dev-only)" section) - so no `dockerfiles/`
+//! "Differential verification (dev-only)" section) - so no `dockerfiles/`
 //! directory is needed here.
 //!
 //! Live probe mode: the embedded [`PROBE_SCRIPT`] (`src/probe_fapd.sh`, adapted from

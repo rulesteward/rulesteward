@@ -1,6 +1,6 @@
 //! `fapolicyd-probe-update` - probe the prebuilt `fapolicyd8` / `fapolicyd9` /
 //! `fapolicyd10` docker images (Rocky Linux 8/9/10 with fapolicyd pre-installed; see
-//! this repo's CLAUDE.md "Differential verification (fapolicyd, dev-only)" section -
+//! this repo's CLAUDE.md "Differential verification (dev-only)" section -
 //! these images are NOT built by this tool, unlike `tools/sshd-probe-update`'s
 //! `dockerfiles/`, since fapolicyd already ships on the base differential image) and
 //! drift-check three shipped `rulesteward-fapolicyd` tables (#478):
