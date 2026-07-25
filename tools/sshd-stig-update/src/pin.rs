@@ -8,9 +8,15 @@
 //!
 //! # Algorithm (adversarial-review rework, 2026-07-24)
 //!
-//! 1. Parse the pin's own `V<major>R<minor>` token. Unparseable ->
+//! 1. Parse the pin's own `V<major>R<minor>` token. Unparseable, OR a parsed
+//!    major/minor of exactly `u32::MAX` (so large that [`next_candidates`]
+//!    could never safely compute "the next one" without overflowing) ->
 //!    [`PinStatus::Unparseable`], nothing probed (a config/typo problem, not
-//!    a network one).
+//!    a network one - no real DISA STIG revision will ever approach
+//!    `u32::MAX`, so a pin carrying one is unambiguously bad, not a
+//!    legitimate value this tool must gracefully degrade over the network;
+//!    see [`scan_revision`]'s own doc for the ATL finding this closes and
+//!    its documented scope).
 //! 2. Probe the PINNED zip's own URL FIRST, before enumerating any candidate
 //!    (USER RULING). This is direct, convention-independent evidence: a live
 //!    check (2026-07-24) found DISA's CDN retains only a WINDOW of revisions
@@ -157,6 +163,19 @@ pub const PROBE_CEILING: usize = 64;
 /// replacement in). Minor is matched GREEDILY (every following ASCII digit),
 /// not a fixed width, so a rolled-over multi-digit minor (`V2R10`) parses as
 /// `10`, not `1` - see `parse_revision_extracts_major_and_minor`'s BLOCKER 1.
+///
+/// A candidate whose major OR minor parses to exactly `u32::MAX` is treated
+/// as absent (the scan keeps looking) rather than returned - #550 lane-5 ATL
+/// MISS-4: [`next_candidates`]'s `+ 1` would overflow on such a value (a
+/// debug-build panic; the workflow's `cargo run` has overflow checks ON), and
+/// no real DISA STIG revision will ever approach this magnitude, so it is
+/// unambiguously a bad pin, not a value to probe. Scoped deliberately to the
+/// STARTING pin's own token (the miss case reported): this does not, by
+/// itself, prove no `u32` addition anywhere in enumeration can ever overflow
+/// for a pin crafted arbitrarily close to (but not at) `u32::MAX` - that
+/// residual is bounded by [`PROBE_CEILING`] (currently 64) and is not
+/// defended against separately, since doing so would guard against a
+/// deliberately contrived input beyond what was found.
 fn scan_revision(zip: &str) -> Option<(usize, usize, u32, u32)> {
     let bytes = zip.as_bytes();
     for i in 0..bytes.len() {
@@ -179,7 +198,11 @@ fn scan_revision(zip: &str) -> Option<(usize, usize, u32, u32)> {
         if k == j + 1 {
             continue;
         }
-        if let (Ok(major), Ok(minor)) = (zip[i + 1..j].parse(), zip[j + 1..k].parse()) {
+        if let (Ok(major), Ok(minor)) = (zip[i + 1..j].parse::<u32>(), zip[j + 1..k].parse::<u32>())
+        {
+            if major == u32::MAX || minor == u32::MAX {
+                continue;
+            }
             return Some((i, k, major, minor));
         }
     }
@@ -322,11 +345,18 @@ pub fn report(product: &str, status: &PinStatus) -> (String, u8) {
              out of DISA's CDN retention window and needs a human re-pin"
         ),
         PinStatus::Unparseable { pinned_zip } => format!(
-            "{product}: the pinned zip filename {pinned_zip} has no V<major>R<minor> token - \
-             check stig-refs.toml for a typo"
+            "{product}: the pinned zip filename {pinned_zip} has no usable V<major>R<minor> \
+             token - check stig-refs.toml for a typo"
         ),
         PinStatus::Unavailable(reason) => {
-            format!("{product}: could not determine staleness - {reason}")
+            // #550 lane-5 ATL, cosmetic nit: an empty `reason` (a bare `ERR:`
+            // fixture line, see `main.rs::FixtureProber`) must not render a
+            // dangling "... - " with nothing after the separator.
+            if reason.is_empty() {
+                format!("{product}: could not determine staleness (no reason given)")
+            } else {
+                format!("{product}: could not determine staleness - {reason}")
+            }
         }
     };
     (msg, 0)
@@ -352,11 +382,20 @@ mod tests {
         // to have a SINGLE-DIGIT minor, so a fixed-offset parse (e.g. byte
         // `i+1` for the major digit, `i+3` for the minor digit) passes both -
         // and, worse under the pin-first ruling, silently mis-parses any real
-        // pin whose minor has rolled past 9 (e.g. the real rhel8 pin already
-        // reads `V2R10`) into the WRONG revision, so `find_latest` probes a
-        // URL it never intended to and can report an actionable false
-        // `PinNotFound` against a pin that is actually current. A genuinely
-        // multi-digit minor closes this.
+        // pin whose minor has rolled past 9 into the WRONG revision, so
+        // `find_latest` probes a URL it never intended to and can report an
+        // actionable false `PinNotFound` against a pin that is actually
+        // current. A genuinely multi-digit minor closes this.
+        //
+        // [CORRECTED, #550 lane-5 ATL] An earlier draft of this comment
+        // claimed "the real rhel8 pin already reads V2R10" - false:
+        // `stig-refs.toml` pins `U_RHEL_8_V2R8_STIG.zip` (confirmed via
+        // `git log -p` to have never read anything else), and
+        // `U_RHEL_8_V2R10_STIG.zip` 404s live. The concern is still genuine,
+        // just needed regrounding: rhel9's own pin (`V2R9`) is one bump away
+        // from a two-digit minor (`V2R10`), and `U_RHEL_7_V3R15_STIG.zip` -
+        // an EXISTING DISA filename with a two-digit minor - returns HTTP 200
+        // live (verified 2026-07-24).
         assert_eq!(
             parse_revision("U_RHEL_8_V2R10_STIG.zip"),
             Some(Revision {
@@ -505,6 +544,41 @@ mod tests {
                 );
             }
             Ok(Probe::Found)
+        }
+    }
+
+    /// A pathological prober that answers `NotFound` for every MINOR-
+    /// increment probe and `Found` for every ROLLOVER probe (alternating,
+    /// starting with `Found` for the pin-itself probe). #550 lane-5 ATL
+    /// MISS-5: `AlwaysFoundProber` (above) answers Found on EVERY probe, so
+    /// the minor probe never 404s and the rollover branch's OWN
+    /// [`PROBE_CEILING`] check (immediately before the rollover probe) is
+    /// never reached by any test built on it - deleting that second check
+    /// left every test in this project green while silently shifting the
+    /// effective ceiling from `PROBE_CEILING` to `PROBE_CEILING + 1`. This
+    /// prober forces `find_latest` to walk BOTH probes of every loop
+    /// iteration, closing that gap.
+    struct AlternatingProber {
+        probed: Vec<String>,
+    }
+
+    impl Prober for AlternatingProber {
+        fn probe(&mut self, url: &str) -> Result<Probe, ProbeError> {
+            self.probed.push(url.to_string());
+            let call = self.probed.len();
+            if call > PROBE_CEILING * 2 {
+                panic!(
+                    "find_latest issued {call} probes, exceeding PROBE_CEILING \
+                     ({PROBE_CEILING}) - it must stop at the ceiling, not loop unboundedly"
+                );
+            }
+            if call == 1 {
+                Ok(Probe::Found) // the pin itself
+            } else if call.is_multiple_of(2) {
+                Ok(Probe::NotFound) // minor probe: never found
+            } else {
+                Ok(Probe::Found) // rollover probe: always found -> never 404-terminates
+            }
         }
     }
 
@@ -716,6 +790,35 @@ mod tests {
     }
 
     #[test]
+    fn find_latest_enforces_the_rollover_probes_own_ceiling_check_too() {
+        // #550 lane-5 ATL MISS-5: the ceiling test above uses
+        // `AlwaysFoundProber`, which answers Found on EVERY probe - the minor
+        // probe never 404s, so the rollover branch's own ceiling check
+        // (immediately before the rollover probe) is never exercised by it.
+        // Deleting that second check left all 142 tests in this project
+        // green while shifting the effective ceiling from `PROBE_CEILING`
+        // (64) to 65. `AlternatingProber` (NotFound on every minor probe,
+        // Found on every rollover probe) forces BOTH checks to run every
+        // iteration, closing this gap.
+        let mut alternating = AlternatingProber { probed: Vec::new() };
+        let status = find_latest(BASE_URL, PINNED, &mut alternating);
+        assert_eq!(
+            alternating.probed.len(),
+            PROBE_CEILING,
+            "must stop at exactly the documented ceiling (not 65), even when \
+             it is the ROLLOVER probe - not just the minor probe - that keeps \
+             succeeding"
+        );
+        assert_eq!(
+            status,
+            PinStatus::Unavailable(format!(
+                "gave up after {PROBE_CEILING} probes without a definitive answer \
+                 (a misbehaving prober? DISA's CDN itself returns clean 404s)"
+            ))
+        );
+    }
+
+    #[test]
     fn find_latest_stops_after_one_probe_when_the_pin_probe_itself_is_unavailable() {
         // curl-absent case: the prober cannot even attempt the FIRST probe,
         // which (per the pin-first ruling) is now the pin itself.
@@ -765,6 +868,77 @@ mod tests {
     }
 
     #[test]
+    fn find_latest_treats_an_error_at_the_rollover_probe_as_unavailable_not_a_404() {
+        // #550 lane-5 ATL MISS-3: the test above only ever places the `Err`
+        // at a MINOR-increment probe, never the ROLLOVER probe - so a mutant
+        // collapsing the rollover arm's `Err(e) => return
+        // Unavailable(e.0)` / `Ok(Probe::NotFound) => {...}` into a catch-all
+        // `_ => {...}` (falling through to the NotFound branch) would report
+        // `Current` on a transient DNS failure at the rollover probe, with
+        // every OTHER test in this file still green. pin (Found) -> V2R10
+        // minor (NotFound) -> V3R1 rollover (Err).
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (r10, rollover_from_pin) = next_candidates(pin_rev);
+        let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),                                     // pin itself
+            Ok(Probe::NotFound),                                  // V2R10 (minor)
+            Err(ProbeError("DNS resolution failed".to_string())), // V3R1 (rollover)
+        ]);
+        let status = find_latest(BASE_URL, PINNED, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unavailable("DNS resolution failed".to_string())
+        );
+        assert_eq!(
+            fake.probed,
+            vec![
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, r10)),
+                url_for(&candidate_zip(PINNED, rollover_from_pin)),
+            ],
+            "must stop immediately at the rollover probe's Err (exactly 3 \
+             probes), not continue or fold the failure into the rollover's \
+             NotFound branch"
+        );
+    }
+
+    #[test]
+    fn find_latest_treats_an_error_at_a_post_rollover_probe_as_unavailable_not_a_404() {
+        // #550 lane-5 ATL MISS-3, the sharper case: the `Err` lands on a
+        // rollover probe AFTER an earlier rollover already succeeded,
+        // proving the short-circuit holds no matter how far enumeration has
+        // already advanced. pin (Found) -> V2R10 minor (NotFound) -> V3R1
+        // rollover (Found) -> V3R2 minor (NotFound) -> V4R1 rollover (Err).
+        let pin_rev = Revision { major: 2, minor: 9 };
+        let (r10, rollover_from_pin) = next_candidates(pin_rev);
+        let (v3r2, rollover_from_rollover) = next_candidates(rollover_from_pin);
+        let mut fake = FakeProber::new(vec![
+            Ok(Probe::Found),                                     // pin itself
+            Ok(Probe::NotFound),                                  // V2R10 (minor)
+            Ok(Probe::Found),                                     // V3R1 (rollover)
+            Ok(Probe::NotFound),                                  // V3R2 (minor under new major)
+            Err(ProbeError("DNS resolution failed".to_string())), // V4R1 (rollover, 2nd)
+        ]);
+        let status = find_latest(BASE_URL, PINNED, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unavailable("DNS resolution failed".to_string())
+        );
+        assert_eq!(
+            fake.probed,
+            vec![
+                url_for(PINNED),
+                url_for(&candidate_zip(PINNED, r10)),
+                url_for(&candidate_zip(PINNED, rollover_from_pin)),
+                url_for(&candidate_zip(PINNED, v3r2)),
+                url_for(&candidate_zip(PINNED, rollover_from_rollover)),
+            ],
+            "must stop immediately at the post-rollover probe's Err (exactly \
+             5 probes), even after an earlier rollover already succeeded"
+        );
+    }
+
+    #[test]
     fn find_latest_reports_unparseable_when_the_pinned_filename_has_no_version_token_and_probes_nothing()
      {
         // CONCERN raised in review: an unparseable pin (a config/typo error,
@@ -785,6 +959,59 @@ mod tests {
         assert!(
             fake.probed.is_empty(),
             "an unparseable pin must not trigger any network probe; probed={:?}",
+            fake.probed
+        );
+    }
+
+    #[test]
+    fn find_latest_rejects_a_minor_at_u32_max_as_unparseable_without_probing_or_panicking() {
+        // #550 lane-5 ATL MISS-4: a pin whose minor has (however implausibly)
+        // reached `u32::MAX` (e.g. a hand-edit typo like
+        // `U_RHEL_9_V1R4294967295_STIG.zip`) DOES parse - `scan_revision`'s
+        // digit scan has no upper bound on digit count - but
+        // `next_candidates`'s `minor + 1` would overflow computing the very
+        // first candidate: a debug-build panic (`attempt to add with
+        // overflow`), and the workflow's `cargo run` (no `--release`) leaves
+        // overflow checks ON. DESIGN CHOICE (see module doc, point 1, and
+        // `scan_revision`'s own doc): reject this BEFORE any probe, as
+        // `Unparseable` - a revision this large is unambiguously a
+        // config/typo problem, not a legitimate value to gracefully degrade
+        // over the network.
+        let mut fake = FakeProber::new(vec![]);
+        let pinned = "U_RHEL_9_V1R4294967295_STIG.zip";
+        let status = find_latest(BASE_URL, pinned, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unparseable {
+                pinned_zip: pinned.to_string()
+            }
+        );
+        assert!(
+            fake.probed.is_empty(),
+            "an unusably-large minor must not trigger any network probe or panic; probed={:?}",
+            fake.probed
+        );
+    }
+
+    #[test]
+    fn find_latest_rejects_a_major_at_u32_max_as_unparseable_without_probing_or_panicking() {
+        // Mirrors the minor-side test above for the OTHER overflow-prone
+        // field: `next_candidates`'s rollover arm computes `major + 1`
+        // unconditionally every loop iteration (even before any rollover
+        // probe is actually reached), so a major at `u32::MAX` must be
+        // rejected too.
+        let mut fake = FakeProber::new(vec![]);
+        let pinned = "U_RHEL_9_V4294967295R1_STIG.zip";
+        let status = find_latest(BASE_URL, pinned, &mut fake);
+        assert_eq!(
+            status,
+            PinStatus::Unparseable {
+                pinned_zip: pinned.to_string()
+            }
+        );
+        assert!(
+            fake.probed.is_empty(),
+            "an unusably-large major must not trigger any network probe or panic; probed={:?}",
             fake.probed
         );
     }
@@ -890,6 +1117,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn report_exits_0_and_avoids_a_dangling_separator_when_the_unavailable_reason_is_empty() {
+        // Cosmetic nit (#550 lane-5 ATL): a bare `ERR:` fixture line (see
+        // `main.rs::FixtureProber`) yields an EMPTY `ProbeError` payload,
+        // which the naive `"... - {reason}"` format would render as a
+        // dangling "could not determine staleness - " with nothing after the
+        // separator. An empty reason must not produce that dangling
+        // separator.
+        let status = PinStatus::Unavailable(String::new());
+        let (msg, code) = report("rhel9", &status);
+        assert_eq!(code, 0);
+        assert!(
+            !msg.trim_end().ends_with('-'),
+            "message must not end in a dangling separator with an empty reason; message={msg:?}"
+        );
+    }
+
     // --- cross-tool drift guard ----------------------------------------------
 
     // #550 lane-5 rework, CONCERN raised in review: this file and the SISTER
@@ -932,6 +1176,25 @@ mod tests {
 
     #[test]
     fn pin_rs_matches_the_sister_tool_byte_for_byte_from_the_doc_comment_onward() {
+        // Anti-vacuity guard (#550 lane-5 ATL, L5-a): a self-referential
+        // `include_str!` (OTHER_TOOL_PIN_RS accidentally pointing at THIS
+        // file instead of the sister tool's `pin.rs`) makes THIS_FILE and
+        // OTHER_TOOL_PIN_RS literally the same content, so the byte-for-byte
+        // comparison below would pass trivially FOREVER regardless of real
+        // drift between the two tools. Verified live: with this guard
+        // removed and OTHER_TOOL_PIN_RS's path pointed at itself, both
+        // crates' full suites stayed green (76/76 sshd, 66/66 auditd). Catch
+        // it before normalization can hide it: a CORRECTLY wired pair
+        // differs on at least the include_str! path line itself (this file's
+        // OWN path vs the sister's), so the RAW (unnormalized) contents must
+        // never be literally identical.
+        assert!(
+            THIS_FILE != OTHER_TOOL_PIN_RS,
+            "drift-guard vacuity: OTHER_TOOL_PIN_RS reads the SAME content as \
+             THIS_FILE - the include_str! path likely points at this file \
+             itself instead of the sister tool's pin.rs, which would make the \
+             byte-identical comparison below pass trivially forever"
+        );
         let (this_all, other_all) = normalize_and_compare(THIS_FILE, OTHER_TOOL_PIN_RS);
         assert_eq!(
             this_all, other_all,

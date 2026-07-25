@@ -81,10 +81,15 @@ jobs:
           set -uo pipefail
           # Actionable PinStatus outcomes (see pin.rs::report's own message text):
           # Newer -> "a newer DISA STIG revision exists"; PinNotFound -> "was not found
-          # (404)". Current/Unparseable/Unavailable are graceful, non-actionable
-          # outcomes (a transient prober failure or a probe-ceiling hit is NOT the same
-          # as a confirmed staleness finding) and do not open an issue.
-          if grep -qE "a newer DISA STIG revision exists|was not found \(404\)" pin.txt; then
+          # (404)"; Unparseable -> "no usable V<major>R<minor> token" (USER RULING,
+          # #550 lane-5 ATL: an unparseable pin is a config/typo problem a human must
+          # still act on - report()'s own message already says so, and if DISA ever
+          # changes its filename scheme, the pin legitimately becomes unparseable while
+          # check/derive keep working, silently switching staleness detection off
+          # forever if this stayed non-actionable). Current/Unavailable are graceful,
+          # non-actionable outcomes (a transient prober failure or a probe-ceiling hit
+          # is NOT the same as a confirmed staleness finding) and do not open an issue.
+          if grep -qE "a newer DISA STIG revision exists|was not found \(404\)|no usable V<major>R<minor> token" pin.txt; then
             echo "hit=true" >> "$GITHUB_OUTPUT"
           else
             echo "hit=false" >> "$GITHUB_OUTPUT"
@@ -101,9 +106,11 @@ jobs:
           # of the tool's output) and pass it via --body-file.
           {
             echo "The monthly \`sshd-stig-update check-pin\` found at least one pinned DISA"
-            echo "STIG zip in \`tools/sshd-stig-update/stig-refs.toml\` is stale: either a newer"
-            echo "\`V<major>R<minor>\` revision exists, or the pinned zip itself has aged out of"
-            echo "DISA's CDN retention window (404) and needs a re-pin."
+            echo "STIG zip in \`tools/sshd-stig-update/stig-refs.toml\` needs a human look:"
+            echo "either a newer \`V<major>R<minor>\` revision exists, the pinned zip itself"
+            echo "has aged out of DISA's CDN retention window (404) and needs a re-pin, or"
+            echo "the pinned zip filename has no usable revision token (a possible typo, or"
+            echo "an upstream DISA filename-scheme change)."
             echo
             echo "To update: check dl.dod.cyber.mil for the current RHEL 8 / 9 / 10 STIG"
             echo "revisions, bump the affected \`zip\` value(s) in \`stig-refs.toml\`, then run"
