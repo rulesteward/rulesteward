@@ -17,8 +17,11 @@
 #   - With no PATH arguments: scans, relative to the caller's CWD (the gate is
 #     always invoked from the repo root by `just` and by CI):
 #       * the `justfile` at the root, if present
-#       * every *.rs and *.sh under crates/, tools/ and scripts/
-#       * every *.yml and *.yaml under .github/workflows/
+#       * under crates/, tools/, scripts/ and .github/workflows/: every *.rs,
+#         *.sh, *.yml, *.yaml, and any file named `justfile`
+#     One uniform extension set is applied to all four roots (a *.yml under
+#     crates/ IS scanned). Do not "restore" a per-directory split - that would
+#     narrow coverage.
 #   - With one or more PATH arguments: scans each PATH instead of the default.
 #     A PATH may be a file (scanned directly, whatever its extension) or a
 #     directory (walked with the same extension rule as above).
@@ -38,6 +41,12 @@
 #       a Rust lexer, and the attempt without one silenced ~3400 live lines.
 #     - `.sh` / `.yml` / `.yaml` / `justfile`: `#` is a comment, EXCEPT a
 #       shebang. `#!/mnt/...` is executable position; the kernel execs it.
+#
+#   Precisely: the carve-out is "the line BEGINS with a comment marker", not
+#   "the line is a comment". A TRAILING provenance comment on a code line
+#   (`let n = 1; // grounded in /mnt/x/notes.md`) is therefore flagged too - the
+#   second documented false positive alongside `/* */`, with the same cause and
+#   the same one-line `mnt-path-exempt:` remedy.
 #
 #   The comment carve-out is deliberate and was measured, not assumed. On the
 #   tree at 34d18ac there are 40 `/mnt/` references; exactly ONE

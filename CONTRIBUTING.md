@@ -142,8 +142,10 @@ LIVE recipes (`just diff-sshd`, `just fapolicyd-probe-check`) predate this
 contract and `exit 0` on missing prerequisites. So `diff-sshd` is the model for
 the two-tier SHAPE, not for this rc table - its offline tier is what makes its
 skip survivable, since the assertion still runs without docker. New harnesses
-use `3`; retrofitting the existing recipes is tracked separately rather than
-done silently here.
+use `3`; retrofitting the existing recipes is a behavior change to shipped
+tooling, so it was deliberately not done inside the branch that wrote this
+contract. Owner decision (2026-07-25): grandfather them and retrofit under its
+own issue.
 
 Each harness declares its own `RS_REQUIRE_<ORACLE>` environment variable for
 this, and **CI must set it** wherever the oracle is actually installed. The one
@@ -160,19 +162,39 @@ implementation.
 
 ### Three rules every harness must satisfy
 
-1. **Assert the count, do not merely print it.** `assert!(scenarios.len() >= FLOOR)`
-   before reporting success. The older `tools/*-update` print
-   `OK (0 drift, {N} controls)` but never assert `N > 0`; new harnesses must.
-   `OK (0 drift, 0 scenarios)` has to be unreachable by construction.
+These apply to BOTH tiers, but the two tiers fail differently and the remedy
+differs with them. A Tier-1 replay test is a `cargo test`: it has no exit-code
+control (a failed assertion exits 101) and its stdout is swallowed unless it
+fails. A Tier-2 tool owns its exit code and its stdout. So each rule below gives
+the Tier-1 form and the Tier-2 form; do not apply the Tier-2 remedy to a test.
+
+1. **Assert the count, do not merely print it.**
+   - *Both:* `assert!(scenarios.len() >= FLOOR)` before reporting success, so
+     "compared nothing" cannot be reported as "compared everything, all clean".
+     `FLOOR` is a named constant beside the test or in the tool's config; raise
+     it deliberately when the corpus grows, in the same commit.
+   - *Tier 2 additionally:* the rc-0 success line MUST carry the count, e.g.
+     `OK (0 drift, 214 scenarios)`. The older `tools/*-update` print such a line
+     but never assert `N > 0`; new tools must do both.
+   - *Tier 1:* print the count too (`eprintln!`, visible under `--nocapture`),
+     but the assertion is what carries the guarantee, since cargo hides stdout
+     for passing tests. Do not rely on a human noticing the number.
 2. **Carry a positive control.** Every corpus holds at least one input the
    oracle must REJECT and one it must ACCEPT. If both come back with the same
-   verdict, the *oracle* is broken: exit 2, never 0 and never 1. Where an oracle
-   is captured per-version, add a control pinning a known version divergence -
-   it is the only thing that detects "all three transcripts are secretly the
-   same file".
+   verdict the *oracle* is broken, not the product, and the run must fail rather
+   than report either clean or drift.
+   - *Tier 1:* a failed assertion naming the control (see
+     `checkmodule_availability_declared` in
+     `crates/rulesteward-selinux/tests/te_emit_checkmodule.rs`, which is the
+     shipped example).
+   - *Tier 2:* exit 2, never 0 and never 1.
+   - Where an oracle is captured per-version, add a control pinning a known
+     version divergence: it is the only thing that detects "all three
+     transcripts are secretly the same file".
 3. **Parse fail-closed.** Empty body, header-only input, or zero data rows must
    return an error, never `Ok(vec![])`. See
-   `tools/fapolicyd-probe-update/src/transcript.rs`.
+   `tools/fapolicyd-probe-update/src/transcript.rs`. Applies wherever a
+   transcript is read, in either tier.
 
 The through-line: **an instrument must prove it saw something.** "Nothing fired"
 and "nothing ran" produce identical output otherwise, and every one of this

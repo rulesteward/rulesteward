@@ -22,6 +22,14 @@
 #   - sh / yaml / justfile: `#`, EXCEPT a shebang. `#!/mnt/...` is the most
 #     literal executable position there is.
 #
+# Precisely: the carve-out is "the line BEGINS with a comment marker", not "the
+# line is a comment". So a TRAILING provenance comment on a code line -
+# `let n = 1; // grounded in /mnt/x/notes.md` - is also flagged, in both
+# languages. That is the second documented false positive alongside `/* */`, and
+# it has the same cause: deciding whether the path sits before or after an
+# inline marker needs the lexing that is deliberately not attempted here. Both
+# fail loudly and take a one-line `mnt-path-exempt:` marker.
+#
 # The comment carve-out was MEASURED, not assumed. On the tree at 34d18ac there
 # are 40 such references and exactly ONE is load-bearing (justfile:16, a
 # `validate_sh :=` assignment the recipe actually reads). The rest are
@@ -69,17 +77,17 @@ set -uo pipefail
 readonly MNT_PREFIX='/mnt/'  # mnt-path-exempt: the gate's own pattern
 readonly EXEMPT_MARKER='mnt-path-exempt:'
 
+# Anything `find` could not traverse lands here. A directory the walk cannot
+# enter hides its contents from enumeration entirely, so the per-file `-r` probe
+# can never see them: that check guards files we FOUND, and this guards files we
+# could not find in the first place. Both halves are needed.
+FIND_ERRORS="$(mktemp)"
+trap 'rm -f "${FIND_ERRORS}"' EXIT
+
 # collect_files DIR
 # Emits the eligible files under DIR, one per line. Eligible = *.rs, *.sh,
 # *.yml, *.yaml, or a file literally named `justfile`. Data files and corpus
 # fixtures are deliberately excluded.
-# Anything `find` could not traverse lands here. A directory the walk cannot
-# enter hides its contents from enumeration entirely, so the per-file `-r` probe
-# below can never see them: that check guards files we FOUND, and this guards
-# files we could not find in the first place. Both halves are needed.
-FIND_ERRORS="$(mktemp)"
-trap 'rm -f "${FIND_ERRORS}"' EXIT
-
 collect_files() {
     local dir="$1"
     # -L follows symlinks. Without it (find's -P default) `-type f` tests the
