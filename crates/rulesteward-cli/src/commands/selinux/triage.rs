@@ -69,10 +69,13 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
         (Some(_), Some(_)) => unreachable!("clap conflicts_with prevents both"),
     };
 
-    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
-    // device node `--record`/`--audit-log` target fails fast with a clear
-    // error instead of hanging or reading unbounded data.
-    let input = rulesteward_core::fsread::read_to_string(input_path)
+    // Routed through `rulesteward_core::fsread::read_stream_to_string`
+    // (#560/#561/#583): a socket/device-node `--record`/`--audit-log` target
+    // fails fast with a clear error instead of hanging or reading unbounded
+    // data, and a FIFO with a live writer is accepted and read to EOF --
+    // restoring the pipe / process-substitution support a plain
+    // `read_to_string` conversion would remove for this stream-shaped input.
+    let input = rulesteward_core::fsread::read_stream_to_string(input_path)
         .map_err(|e| anyhow!("reading {}: {e}", input_path.display()))?;
 
     let denials = match parse_avc(&input) {

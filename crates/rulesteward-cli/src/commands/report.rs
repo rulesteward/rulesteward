@@ -52,10 +52,16 @@ pub fn run(args: crate::cli::ReportArgs) -> anyhow::Result<i32> {
     // 2. Parse each file; abort on any parse error (treat as fatal).
     let mut files_with_entries: Vec<(String, Vec<Entry>)> = Vec::new();
     for path in &target_files {
-        // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/
-        // socket/device node `--file`/directory target fails fast with a
-        // clear error instead of hanging or reading unbounded data.
-        let source = rulesteward_core::fsread::read_to_string(path)
+        // Routed through `rulesteward_core::fsread::read_stream_to_string`
+        // (#560/#561/#583): a socket/device-node `--file`/directory target
+        // fails fast with a clear error instead of hanging or reading
+        // unbounded data, and a FIFO with a live writer (`--file <(...)`) is
+        // accepted and read to EOF -- restoring the pipe / process-
+        // substitution support a plain `read_to_string` conversion would
+        // remove for this stream-shaped input. Directory-mode entries are
+        // already filtered through `p.is_file()` before reaching here (see
+        // `resolve_targets` below), so this only changes `--file`'s behavior.
+        let source = rulesteward_core::fsread::read_stream_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         let entries = match parse_rules_file(&source, path) {
             Ok(e) => e,
@@ -197,10 +203,13 @@ pub fn run(args: crate::cli::ReportArgs) -> anyhow::Result<i32> {
 
     // 5. --diff-against: compute drift.
     if let Some(ref snapshot_path) = args.diff_against {
-        // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/
-        // socket/device node `--diff-against` target fails fast instead of
-        // hanging or reading unbounded data.
-        let snap_text = rulesteward_core::fsread::read_to_string(snapshot_path)
+        // Routed through `rulesteward_core::fsread::read_stream_to_string`
+        // (#560/#561/#583): a socket/device-node `--diff-against` target
+        // fails fast instead of hanging or reading unbounded data, and a FIFO
+        // with a live writer is accepted and read to EOF -- restoring the
+        // pipe / process-substitution support a plain `read_to_string`
+        // conversion would remove for this stream-shaped input.
+        let snap_text = rulesteward_core::fsread::read_stream_to_string(snapshot_path)
             .with_context(|| format!("reading snapshot {}", snapshot_path.display()))?;
         let snapshot: RegisterSnapshot = serde_json::from_str(&snap_text)
             .with_context(|| format!("parsing snapshot {}", snapshot_path.display()))?;

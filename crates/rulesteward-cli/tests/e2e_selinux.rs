@@ -251,3 +251,82 @@ fn triage_record_dev_null_is_a_tool_failure_not_a_parse_error() {
          guard (not a FIFO-only special case); stderr: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
+// `--record`/`--audit-log` are stream-shaped inputs operators legitimately
+// pipe in. `read_stream_to_string` accepts a FIFO with a live writer; this
+// test pins that a pipe round-trips byte-identically to the same fixture
+// read from a regular file.
+// ---------------------------------------------------------------------------
+
+/// Spawn a background thread that opens `fifo` for writing, writes `content`,
+/// then drops the file (closing the write end so the reader sees EOF). Not
+/// joined: by the time the reading child process exits (what `.output()`
+/// below awaits), the writer must already have completed its blocking write +
+/// close -- that IS what produces the EOF the reader is waiting for -- so
+/// there is nothing left to wait for; the OS thread is reclaimed when the
+/// test binary exits. Mirrors `e2e_explain.rs`'s identical helper (test files
+/// are separate binaries and cannot share it directly).
+fn spawn_fifo_writer(fifo: std::path::PathBuf, content: Vec<u8>) {
+    use std::io::Write as _;
+    std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write");
+        f.write_all(&content)
+            .expect("write fixture content to fifo");
+    });
+}
+
+/// `selinux triage --record <fifo-with-a-live-writer>` must be accepted, not
+/// rejected: reading the same AVC record through a pipe must produce
+/// BYTE-IDENTICAL output to reading it from a regular file. An exit-0-only
+/// assertion would also pass a silently truncated 64KB read; comparing full
+/// stdout catches that.
+#[test]
+fn triage_record_fifo_with_live_writer_round_trips_byte_identical() {
+    let record = write_record(AVC_ROLE_CONSTRAINT);
+
+    let baseline = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(record.path())
+        .args(["--format", "json"])
+        .output()
+        .expect("baseline regular-file run");
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline regular-file run must succeed; stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "avc.fifo");
+    spawn_fifo_writer(fifo.clone(), AVC_ROLE_CONSTRAINT.as_bytes().to_vec());
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(&fifo)
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --record with a live writer must round-trip successfully, not \
+         be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, baseline.stdout,
+        "a readable pipe --record must produce BYTE-IDENTICAL output to the \
+         same fixture read from a regular file"
+    );
+}

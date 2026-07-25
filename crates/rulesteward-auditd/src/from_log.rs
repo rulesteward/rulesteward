@@ -52,12 +52,16 @@ pub struct MeasuredRates {
 /// # Errors
 /// I/O errors are wrapped in `LogReadError`.
 pub fn count_events_by_key(path: &Path) -> Result<MeasuredRates, LogReadError> {
-    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
-    // device node `--from-log` target fails fast with a clear error instead
-    // of hanging or reading unbounded data.
-    let content = rulesteward_core::fsread::read_to_string(path).map_err(|e| LogReadError {
-        message: format!("cannot read {}: {e}", path.display()),
-    })?;
+    // Routed through `rulesteward_core::fsread::read_stream_to_string`
+    // (#560/#561/#583): a socket/device-node `--from-log` target fails fast
+    // with a clear error instead of hanging or reading unbounded data, and a
+    // FIFO with a live writer is accepted and read to EOF -- restoring the
+    // pipe / process-substitution support a plain `read_to_string` conversion
+    // would remove for this stream-shaped input.
+    let content =
+        rulesteward_core::fsread::read_stream_to_string(path).map_err(|e| LogReadError {
+            message: format!("cannot read {}: {e}", path.display()),
+        })?;
 
     // First pass: group records by audit serial. For each serial we accumulate
     // (a) its total on-disk bytes -- every record sharing the serial, companions

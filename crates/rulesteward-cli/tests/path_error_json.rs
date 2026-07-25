@@ -185,3 +185,118 @@ fn fapolicyd_lint_missing_dir_emits_json_envelope() {
     let out = run_missing_path_json("fapolicyd", "/nonexistent/583/rules.d");
     assert_path_error_envelope(&out, "lint");
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 2 (session 9j lane 3): `open_trustdb_arg`
+// (`commands/fapolicyd/lint.rs:85`) runs BEFORE `resolve_targets_or_fail`
+// (`:90`), so a bad `--against-trustdb` on an otherwise-good lint target must
+// ALSO emit the envelope -- the exact #561 gap `fapolicyd_lint_missing_dir_
+// emits_json_envelope` above already fixed for the target-path case, but
+// which the `--against-trustdb` arm had not been.
+// ---------------------------------------------------------------------------
+
+/// Like `assert_path_error_envelope` above, but for an exit code OTHER than
+/// `EXIT_TOOL_FAILURE` (3) -- specifically the `--against-trustdb`
+/// LMDB-open-failure arm, which returns `EXIT_LMDB_ERROR` (4). A separate
+/// sibling rather than a parameter on the existing helper: that helper's
+/// signature is frozen and shared by every test above.
+fn assert_path_error_envelope_with_code(
+    out: &std::process::Output,
+    expected_kind: &str,
+    expected_code: i32,
+) {
+    assert_eq!(
+        out.status.code(),
+        Some(expected_code),
+        "expected exit {expected_code}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "--format json on a path error must still emit a JSON envelope on \
+             stdout; parse error: {e}; stdout was: {stdout:?}; stderr was: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    assert_eq!(v["kind"], expected_kind, "envelope kind, full body: {v}");
+    assert_eq!(
+        v["schemaVersion"], 1,
+        "envelope schemaVersion, full body: {v}"
+    );
+    assert_eq!(
+        v["diagnostics"],
+        serde_json::json!([]),
+        "diagnostics must be an EMPTY array; full body: {v}"
+    );
+    assert!(
+        stdout.ends_with('\n'),
+        "JSON output must end with a newline; got: {stdout:?}"
+    );
+}
+
+/// `--against-trustdb <not-a-directory>` on an otherwise-good lint target
+/// must emit the same envelope shape as a bad target path -- exit
+/// `EXIT_TOOL_FAILURE` (3), `kind: "lint"` (fapolicyd's existing, ruled-kept
+/// inconsistency, not a typo), empty `diagnostics`.
+#[test]
+fn fapolicyd_lint_against_trustdb_not_a_directory_emits_json_envelope() {
+    let rules_d = tempfile::tempdir().expect("tempdir for a valid rules.d");
+    std::fs::write(rules_d.path().join("10-x.rules"), "allow uid=0 : all\n")
+        .expect("write a clean rules file");
+
+    let out = bin()
+        .args(["fapolicyd", "lint"])
+        .arg(rules_d.path())
+        .arg("--against-trustdb")
+        .arg("/nonexistent/583/trustdb")
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("`fapolicyd lint --against-trustdb` did not complete: {e}"));
+    assert_path_error_envelope(&out, "lint");
+}
+
+/// Combination case: BOTH the positional rules.d target AND
+/// `--against-trustdb` are bad. `open_trustdb_arg` runs FIRST
+/// (`commands/fapolicyd/lint.rs:85`, before `resolve_targets_or_fail` at
+/// `:90`), so its own envelope call fires and `resolve_targets_or_fail`'s is
+/// never reached -- proving the fix does not depend on the target path also
+/// being valid, and that stacking two bad inputs never silently drops back to
+/// zero stdout bytes.
+#[test]
+fn fapolicyd_lint_missing_dir_and_against_trustdb_not_a_directory_still_emits_json_envelope() {
+    let out = bin()
+        .args(["fapolicyd", "lint", "/nonexistent/583/rules.d"])
+        .arg("--against-trustdb")
+        .arg("/nonexistent/583/trustdb")
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("`fapolicyd lint` (double-bad-input) did not complete: {e}"));
+    assert_path_error_envelope(&out, "lint");
+}
+
+/// The LMDB-open-failure arm (a real directory, but not a valid LMDB
+/// environment -- no `data.mdb`/`lock.mdb`) exits `EXIT_LMDB_ERROR` (4), NOT
+/// `EXIT_TOOL_FAILURE` (3) like every other case in this file, but must ALSO
+/// emit a non-empty envelope rather than reverting to zero stdout bytes.
+#[test]
+fn fapolicyd_lint_against_trustdb_invalid_lmdb_env_emits_json_envelope() {
+    let rules_d = tempfile::tempdir().expect("tempdir for a valid rules.d");
+    std::fs::write(rules_d.path().join("10-x.rules"), "allow uid=0 : all\n")
+        .expect("write a clean rules file");
+    let not_lmdb = tempfile::tempdir().expect("tempdir for the non-LMDB trust DB dir");
+
+    let out = bin()
+        .args(["fapolicyd", "lint"])
+        .arg(rules_d.path())
+        .arg("--against-trustdb")
+        .arg(not_lmdb.path())
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("`fapolicyd lint --against-trustdb` did not complete: {e}"));
+    // EXIT_LMDB_ERROR = 4 (crate::exit_code::EXIT_LMDB_ERROR).
+    assert_path_error_envelope_with_code(&out, "lint", 4);
+}

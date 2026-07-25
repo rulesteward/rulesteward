@@ -778,3 +778,150 @@ fn report_file_is_a_directory_stays_a_tool_failure_across_the_fsread_conversion(
          of which error wording follows it; stderr: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
+// `--file` and `--diff-against` are stream-shaped inputs operators
+// legitimately pipe in. `read_stream_to_string` accepts a FIFO with a live
+// writer; these tests pin that a pipe round-trips byte-identically to the
+// same fixture read from a regular file.
+// ---------------------------------------------------------------------------
+
+/// Spawn a background thread that opens `fifo` for writing, writes `content`,
+/// then drops the file (closing the write end so the reader sees EOF). Not
+/// joined: by the time the reading child process exits (what `.output()`
+/// below awaits), the writer must already have completed its blocking write +
+/// close -- that IS what produces the EOF the reader is waiting for -- so
+/// there is nothing left to wait for; the OS thread is reclaimed when the
+/// test binary exits. Mirrors `e2e_explain.rs`'s identical helper (test files
+/// are separate binaries and cannot share it directly).
+fn spawn_fifo_writer(fifo: PathBuf, content: Vec<u8>) {
+    use std::io::Write as _;
+    std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write");
+        f.write_all(&content)
+            .expect("write fixture content to fifo");
+    });
+}
+
+/// `report --file <fifo-with-a-live-writer>` must be accepted, not rejected:
+/// reading the same rules file through a pipe must produce BYTE-IDENTICAL
+/// output to reading it from a regular file. An exit-0-only assertion would
+/// also pass a silently truncated 64KB read; comparing full stdout catches
+/// that.
+#[test]
+fn report_file_fifo_with_live_writer_round_trips_byte_identical() {
+    const CONTENT: &str = "allow uid=0 : all\n";
+    let tmp = make_rules_dir("10-x.rules", CONTENT);
+    let regular_file = tmp.path().join("rules.d").join("10-x.rules");
+
+    let baseline = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&regular_file)
+        .args(["--format", "json"])
+        .output()
+        .expect("baseline regular-file run");
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline regular-file run must succeed; stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    // Same basename as the regular-file fixture above ("10-x.rules"), NOT an
+    // arbitrary name: `report`'s register embeds the source path's
+    // `file_name()` into each grant's `source.file` JSON field, so a
+    // differently-named FIFO would make the two runs' JSON differ in that
+    // field alone -- a false positive for THIS test, not a real behavioral
+    // difference.
+    let fifo_dir = tempfile::tempdir().expect("tempdir for the fifo");
+    let fifo = make_fifo(fifo_dir.path(), "10-x.rules");
+    spawn_fifo_writer(fifo.clone(), CONTENT.as_bytes().to_vec());
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&fifo)
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --file with a live writer must round-trip successfully, not \
+         be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, baseline.stdout,
+        "a readable pipe --file must produce BYTE-IDENTICAL output to the \
+         same fixture read from a regular file"
+    );
+}
+
+/// `report --file <valid> --diff-against <fifo-with-a-live-writer>` must be
+/// accepted: the drift-comparison read must produce a result BYTE-IDENTICAL
+/// to the same snapshot read from a regular file.
+#[test]
+fn report_diff_against_fifo_with_live_writer_round_trips_byte_identical() {
+    const SNAPSHOT: &str = r#"{"grants": []}"#;
+
+    let rules_dir = tempfile::tempdir().expect("tempdir for a valid single rules file");
+    let rules_file = rules_dir.path().join("10-x.rules");
+    fs::write(&rules_file, "allow uid=0 : all\n").expect("write valid rules file");
+
+    let snapshot_dir = tempfile::tempdir().expect("tempdir for the regular snapshot");
+    let snapshot_regular = snapshot_dir.path().join("snapshot.json");
+    fs::write(&snapshot_regular, SNAPSHOT).expect("write snapshot");
+
+    let baseline = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&rules_file)
+        .args(["--diff-against"])
+        .arg(&snapshot_regular)
+        .args(["--format", "json"])
+        .output()
+        .expect("baseline regular-file run");
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline regular-file run must succeed; stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let fifo_dir = tempfile::tempdir().expect("tempdir for the snapshot fifo");
+    let fifo = make_fifo(fifo_dir.path(), "snapshot.json");
+    spawn_fifo_writer(fifo.clone(), SNAPSHOT.as_bytes().to_vec());
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("rulesteward binary")
+        .args(["fapolicyd", "report", "--file"])
+        .arg(&rules_file)
+        .args(["--diff-against"])
+        .arg(&fifo)
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --diff-against with a live writer must round-trip \
+         successfully, not be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, baseline.stdout,
+        "a readable pipe --diff-against must produce BYTE-IDENTICAL output to \
+         the same snapshot read from a regular file"
+    );
+}

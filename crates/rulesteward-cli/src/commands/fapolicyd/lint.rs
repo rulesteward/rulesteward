@@ -82,7 +82,7 @@ fn run_lint_resolved(
     target: Option<TargetVersionArg>,
     profile: Option<Framework>,
 ) -> anyhow::Result<i32> {
-    let trustdb = match open_trustdb_arg(args.against_trustdb.as_deref()) {
+    let trustdb = match open_trustdb_arg(args) {
         Ok(db) => db,
         Err(code) => return Ok(code),
     };
@@ -241,18 +241,36 @@ fn run_lint_resolved(
 /// Open the `--against-trustdb` path, if given. `Ok(None)` when the flag is
 /// absent; `Ok(Some(db))` on success; `Err(exit_code)` with the exit code the
 /// caller should return immediately on a directory/LMDB-open failure.
-fn open_trustdb_arg(path: Option<&Path>) -> Result<Option<TrustDb>, i32> {
-    let Some(p) = path else {
+///
+/// On failure this ALSO emits the #561/#583 path-error envelope (mirroring
+/// [`resolve_targets_or_fail`] below), because `open_trustdb_arg` runs BEFORE
+/// `resolve_targets_or_fail` in [`run_lint_resolved`] -- without this, an
+/// otherwise-good lint target combined with a bad `--against-trustdb` would
+/// revert `--format json`/`--format sarif` to zero stdout bytes, silently
+/// re-breaking the guarantee `resolve_targets_or_fail` establishes for the
+/// target-path case (adversarial-review miss 2, session 9j lane 3).
+fn open_trustdb_arg(args: &LintArgs) -> Result<Option<TrustDb>, i32> {
+    let Some(p) = args.against_trustdb.as_deref() else {
         return Ok(None);
     };
     if !p.is_dir() {
         eprintln!("error: opening trust DB {}: not a directory", p.display());
+        crate::output::emit_path_error_envelope(
+            args.format,
+            "lint",
+            output::json::LINT_SCHEMA_VERSION,
+        );
         return Err(EXIT_TOOL_FAILURE);
     }
     match open_trustdb_readonly(p) {
         Ok(db) => Ok(Some(db)),
         Err(e) => {
             eprintln!("error: opening trust DB {}: {e}", p.display());
+            crate::output::emit_path_error_envelope(
+                args.format,
+                "lint",
+                output::json::LINT_SCHEMA_VERSION,
+            );
             Err(EXIT_LMDB_ERROR)
         }
     }

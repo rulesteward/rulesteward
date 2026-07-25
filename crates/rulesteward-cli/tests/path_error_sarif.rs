@@ -156,3 +156,91 @@ fn fapolicyd_lint_missing_dir_sarif_is_byte_identical() {
     let out = run_missing_path_sarif(&["fapolicyd", "lint", "/nonexistent/583/rules.d"]);
     assert_byte_identical_sarif(&out);
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 2 (session 9j lane 3): `open_trustdb_arg`
+// (`commands/fapolicyd/lint.rs:85`) runs BEFORE `resolve_targets_or_fail`
+// (`:90`), so a bad `--against-trustdb` on an otherwise-good lint target must
+// ALSO emit the SARIF envelope -- the SARIF counterpart of
+// `path_error_json.rs`'s equivalent new tests.
+// ---------------------------------------------------------------------------
+
+/// Like `assert_byte_identical_sarif` above, but for an exit code OTHER than
+/// `EXIT_TOOL_FAILURE` (3) -- specifically the `--against-trustdb`
+/// LMDB-open-failure arm, which returns `EXIT_LMDB_ERROR` (4). A separate
+/// sibling rather than a parameter on the existing helper: that helper's
+/// signature is frozen and shared by every test above.
+fn assert_byte_identical_sarif_with_code(out: &std::process::Output, expected_code: i32) {
+    assert_eq!(
+        out.status.code(),
+        Some(expected_code),
+        "expected exit {expected_code}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8 stdout");
+    assert_eq!(
+        stdout,
+        expected_sarif_payload(),
+        "the path-error SARIF payload must stay byte-identical regardless of \
+         which exit code produced it; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `--against-trustdb <not-a-directory>` on an otherwise-good lint target
+/// must emit the same byte-identical SARIF payload as a bad target path.
+#[test]
+fn fapolicyd_lint_against_trustdb_not_a_directory_sarif_is_byte_identical() {
+    let rules_d = tempfile::tempdir().expect("tempdir for a valid rules.d");
+    std::fs::write(rules_d.path().join("10-x.rules"), "allow uid=0 : all\n")
+        .expect("write a clean rules file");
+
+    let out = run_missing_path_sarif(&[
+        "fapolicyd",
+        "lint",
+        rules_d.path().to_str().expect("utf8 tempdir path"),
+        "--against-trustdb",
+        "/nonexistent/583/trustdb",
+    ]);
+    assert_byte_identical_sarif(&out);
+}
+
+/// Combination case: BOTH the positional rules.d target AND
+/// `--against-trustdb` are bad. `open_trustdb_arg` runs FIRST
+/// (`commands/fapolicyd/lint.rs:85`, before `resolve_targets_or_fail` at
+/// `:90`), so its own envelope call fires and `resolve_targets_or_fail`'s is
+/// never reached -- proving stacking two bad inputs never silently drops
+/// back to zero stdout bytes under SARIF either.
+#[test]
+fn fapolicyd_lint_missing_dir_and_against_trustdb_not_a_directory_still_sarif_byte_identical() {
+    let out = run_missing_path_sarif(&[
+        "fapolicyd",
+        "lint",
+        "/nonexistent/583/rules.d",
+        "--against-trustdb",
+        "/nonexistent/583/trustdb",
+    ]);
+    assert_byte_identical_sarif(&out);
+}
+
+/// The LMDB-open-failure arm (a real directory, but not a valid LMDB
+/// environment) exits `EXIT_LMDB_ERROR` (4), NOT `EXIT_TOOL_FAILURE` (3) like
+/// every other case in this file, but must ALSO emit the byte-identical SARIF
+/// payload rather than reverting to zero stdout bytes.
+#[test]
+fn fapolicyd_lint_against_trustdb_invalid_lmdb_env_sarif_is_byte_identical() {
+    let rules_d = tempfile::tempdir().expect("tempdir for a valid rules.d");
+    std::fs::write(rules_d.path().join("10-x.rules"), "allow uid=0 : all\n")
+        .expect("write a clean rules file");
+    let not_lmdb = tempfile::tempdir().expect("tempdir for the non-LMDB trust DB dir");
+
+    let out = run_missing_path_sarif(&[
+        "fapolicyd",
+        "lint",
+        rules_d.path().to_str().expect("utf8 tempdir path"),
+        "--against-trustdb",
+        not_lmdb.path().to_str().expect("utf8 tempdir path"),
+    ]);
+    // EXIT_LMDB_ERROR = 4 (crate::exit_code::EXIT_LMDB_ERROR).
+    assert_byte_identical_sarif_with_code(&out, 4);
+}

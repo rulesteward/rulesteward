@@ -20,10 +20,13 @@ const EXPLAIN_SCHEMA_VERSION: u32 = 1;
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: ExplainArgs) -> anyhow::Result<i32> {
     // --- Read the record file ---
-    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
-    // device node `--record` target fails fast with a clear error instead of
-    // hanging or reading unbounded data.
-    let record_input = match rulesteward_core::fsread::read_to_string(&args.record) {
+    // Routed through `rulesteward_core::fsread::read_stream_to_string`
+    // (#560/#561/#583): a socket/device-node `--record` target fails fast
+    // with a clear error instead of hanging or reading unbounded data, and a
+    // FIFO with a live writer (`--record <(...)`) is accepted and read to EOF
+    // -- restoring the pipe / process-substitution support a plain
+    // `read_to_string` conversion would remove for this stream-shaped input.
+    let record_input = match rulesteward_core::fsread::read_stream_to_string(&args.record) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: reading record file {}: {e}", args.record.display());
