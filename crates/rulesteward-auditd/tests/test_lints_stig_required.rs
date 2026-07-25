@@ -1788,6 +1788,58 @@ fn rhel8_watch_required_row_satisfied_by_dual_arch_syscall_equivalent() {
     );
 }
 
+#[test]
+fn path_syscall_form_wrong_perms_does_not_satisfy_v230406_passwd_watch() {
+    // Perm-axis boundary pin for THIS direction (Watch required, Syscall
+    // candidate -- the same arm `rhel8_watch_required_row_satisfied_by_
+    // dual_arch_syscall_equivalent` above exercises positively). Mirrors
+    // `watch_equivalent_wrong_perms_does_not_satisfy_v258222_passwd`'s
+    // perm-axis rigor, which only pins the OTHER direction (Syscall
+    // required, Watch candidate): V-230406 (RHEL-08-030150) requires
+    // perm=wa. A dual-arch -F path= syscall pair with a NARROWER perm set
+    // (perm=w only, missing the attribute-change bit) must still be
+    // reported missing -- `watch_equivalent_axes_match`'s perm compare is
+    // exact `PermBits` equality, not a subset/superset check, in this
+    // direction too.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=w -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=w -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030150") && d.message.contains("is missing")),
+        "a -F path= syscall pair with NARROWER perms (perm=w, missing 'a') \
+         than required (perm=wa) must not satisfy V-230406's /etc/passwd \
+         watch requirement: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_wrong_path_does_not_satisfy_v230406_passwd_watch() {
+    // Path-axis boundary pin for THIS direction, sibling of the perm-axis
+    // pin above. Mirrors `watch_equivalent_wrong_path_does_not_satisfy_
+    // v258222_passwd`'s path-axis rigor (also only pinned for the OTHER
+    // direction): a dual-arch -F path= syscall pair naming a DIFFERENT path
+    // (/etc/shadow -- itself a real RHEL8_REQUIRED watch target, V-230404/
+    // RHEL-08-030130, so this is a genuine sibling requirement's path, not
+    // an arbitrary string) must NOT satisfy V-230406's /etc/passwd
+    // requirement, even with matching perms and key.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030150") && d.message.contains("is missing")),
+        "a -F path= syscall pair naming a DIFFERENT path (/etc/shadow) must \
+         not satisfy V-230406's /etc/passwd watch requirement: {diags:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Equivalence-ruling perm-bit completeness (mutation-gate report, session
 // 9e-wave2c pipeline P2 round 3): `perm_bits_from_field_value` parses a `-F
