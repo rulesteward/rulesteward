@@ -1,0 +1,1 @@
+alice ALL = ROLE=sysadm_r TYPE=sysadm_t /usr/bin/vim

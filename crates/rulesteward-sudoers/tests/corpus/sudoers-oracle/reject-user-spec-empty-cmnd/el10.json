@@ -1,0 +1,8 @@
+{
+  "target": "el10",
+  "sudo_rpm": "sudo-1.9.17-4.p2.el10_2.x86_64",
+  "visudo": {"rc": 1, "stdout": "", "stderr": "stdin:1:12: syntax error\nalice ALL =\n           ^\n"},
+  "visudo_strict": {"rc": 1, "stdout": "", "stderr": "stdin:1:12: syntax error\nalice ALL =\n           ^\n"},
+  "cvtsudoers": {"rc": 1, "stdout": "", "stderr": "stdin:1:12: syntax error\nalice ALL =\n           ^\n"},
+  "cvtsudoers_expanded": {"rc": 1, "stdout": "", "stderr": "stdin:1:12: syntax error\nalice ALL =\n           ^\n"}
+}

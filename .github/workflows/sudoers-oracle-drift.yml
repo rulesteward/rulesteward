@@ -1,0 +1,132 @@
+name: sudoers-oracle-drift
+
+# Weekly nudge for the sudoers(5) parser/AST vs a REAL visudo/cvtsudoers (#538,
+# session 9k-1 Lane C): rebuild the rs-oracle{8,9,10} images (tools/oracle-images/)
+# and re-derive the four oracle results (visudo -c -f -, visudo -c -s -f -,
+# cvtsudoers -f json[-e]) for every committed corpus scenario, then replay the SAME
+# Tier-1 test (crates/rulesteward-sudoers/tests/sudoers_corpus_oracle.rs) against
+# the fresh capture via scripts/rs-oracle-diff.sh sudoers (`just diff-sudoers`). On
+# drift, open/update a tracking issue (it never edits code). The on-demand path is
+# `just diff-sudoers`.
+#
+# Unlike the offline Tier-1 gate (`cargo test -p rulesteward-sudoers`, which
+# replays the committed corpus - no docker, no skip path), this job rebuilds the
+# oracle images from tools/oracle-images/dockerfiles/ so it tracks the CURRENT
+# Rocky base images. It therefore catches:
+#   - an upstream sudo package update pulled into a Rocky base image (a new
+#     keyword recognized/rejected, an error-message wording change, a JSON shape
+#     change in cvtsudoers),
+#   - the committed corpus fixtures having themselves drifted from the live
+#     daemon,
+#   - the tool no longer compiling against rulesteward-sudoers (fail-closed - a
+#     build error is reported as rc 2, never masked as "0 drift").
+# See CONTRIBUTING.md "Differential oracle contract" and
+# crates/rulesteward-sudoers/tests/corpus/sudoers-oracle/PROVENANCE.md.
+on:
+  schedule:
+    - cron: "0 8 * * 5" # Fridays 08:00 UTC
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Promotes rc 3 (a legitimate local skip when docker/images are missing) to a
+  # hard rc 2 failure here, since this job always installs docker and builds the
+  # images itself - a missing prerequisite in THIS job is a tool error, not a
+  # skip. See scripts/rs-oracle-required.sh.
+  RS_ORACLE_REQUIRED: "1"
+
+jobs:
+  drift:
+    name: sudoers oracle drift vs live Rocky visudo/cvtsudoers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: sudoers-oracle-drift
+          save-if: ${{ github.event_name != 'pull_request' }}
+      # `just` is not on the GitHub-hosted runner; install it from the prebuilt
+      # release via taiki-e/install-action (same SHA-pinned action ci.yml uses)
+      # so the recipe stays the single source of truth.
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: just
+      - name: Build the rs-oracle{8,9,10} images
+        # A build failure here (e.g. a Rocky repo hiccup) fails the job distinctly
+        # from a drift; scripts/rs-oracle-diff.sh invokes `docker run rs-oracle{N}`
+        # itself once these exist.
+        run: |
+          set -euo pipefail
+          for v in 8 9 10; do
+            docker build -t "rs-oracle${v}" "tools/oracle-images/dockerfiles/${v}"
+          done
+      - name: Live capture + drift check vs the committed corpus
+        id: check
+        run: |
+          set +e
+          just diff-sudoers > drift.txt 2> drift.err
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.err
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 = tool /
+          # environment error - RS_ORACLE_REQUIRED promotes a missing-prerequisite
+          # rc 3 to this too, 101 would mean a cargo build failure) = fail the job
+          # loudly rather than mask it as clean.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "scripts/rs-oracle-diff.sh sudoers did not exit cleanly (rc=$RC; see logs" \
+               "above): docker may be unavailable, an rs-oracle image may have failed to" \
+               "build or run, the committed corpus may itself be red, or" \
+               "crates/rulesteward-sudoers/tests/sudoers_corpus_oracle.rs may no longer" \
+               "compile against the rulesteward-sudoers API. The tool needs a look." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create sudoers-oracle-drift --color FBCA04 \
+            --description "sudoers(5) parser/AST drift vs live visudo/cvtsudoers" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`just diff-sudoers\` run found RuleSteward's sudoers(5) parser/AST"
+            echo "no longer matches a live Rocky visudo/cvtsudoers verdict for one or more"
+            echo "committed corpus scenarios"
+            echo "(crates/rulesteward-sudoers/tests/corpus/sudoers-oracle/)."
+            echo
+            echo "To investigate: re-run \`just diff-sudoers\` locally (needs docker + the"
+            echo "rs-oracle{8,9,10} images, see tools/oracle-images/README.md), review the"
+            echo "failing assertion in"
+            echo "\`crates/rulesteward-sudoers/tests/sudoers_corpus_oracle.rs\`, and decide"
+            echo "whether it is a genuine RuleSteward gap (fix the parser/AST/oracle.rs), a"
+            echo "NEW xfail needing its own issue (do not fold it into #538 - that issue's"
+            echo "two gaps are closed scope), or a corpus scenario that needs re-capturing"
+            echo "(re-run \`capture_sudoers.sh\` and commit the refreshed"
+            echo "\`el8.json\`/\`el9.json\`/\`el10.json\`)."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label sudoers-oracle-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "sudoers oracle drift: live visudo/cvtsudoers disagrees with RuleSteward" \
+              --label sudoers-oracle-drift --body-file issue-body.md
+          fi

@@ -1,0 +1,2 @@
+User_Alias ADMINS = alice, bob
+ADMINS ALL = ALL

@@ -1,0 +1,3 @@
+User_Alias A = alice : B = bob
+A ALL=ALL
+B ALL=ALL

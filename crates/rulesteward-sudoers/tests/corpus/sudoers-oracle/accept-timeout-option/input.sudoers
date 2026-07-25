@@ -1,0 +1,1 @@
+bob ALL = (root) TIMEOUT=30 /usr/bin/ls
