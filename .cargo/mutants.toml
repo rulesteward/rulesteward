@@ -47,6 +47,14 @@ examine_globs = [
     # with per-backend StripConfig (fapolicyd/auditd/sudoers). New top-level
     # core file: list explicitly or its mutation gate passes vacuously.
     "crates/rulesteward-core/src/comment.rs",
+    # shared differential-corpus root resolver (session 9k-1): the unset/blank/set
+    # decision and the is_dir check that keep `just diff-<lane>` from re-verifying
+    # the committed corpus against itself. New top-level core file: list explicitly
+    # or its mutation gate passes vacuously (allowlist). Note the fail-open shapes
+    # here are exactly the mutants that matter - a `blank -> Committed` mutant
+    # reproduces the #572 silent-success bug - so this file must never be excluded
+    # on the grounds that it is "just config plumbing".
+    "crates/rulesteward-core/src/oracle_corpus.rs",
     "crates/rulesteward-fapolicyd/src/parser/**/*.rs",
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
@@ -131,6 +139,13 @@ examine_globs = [
     # times and its gate false-passes (the 4a vacuity lesson) - the allowlist
     # entry must precede the code, never follow it.
     "crates/rulesteward-auditd/src/lints/**/*.rs",
+    # Lane A differential oracle model + fail-closed transcript parse + compare
+    # (session 9k-1). Registered in Phase 0 BEFORE the file exists, per the same
+    # allowlist-precedes-code rule as the lints glob above: a file added outside
+    # examine_globs mutates zero times, and a "0 survivors" report from a run that
+    # mutated nothing is indistinguishable from a real pass. Matches nothing until
+    # the lane lands (the documented MigrateProbe pre-registration precedent).
+    "crates/rulesteward-auditd/src/oracle.rs",
     # sshd_config parser (#149 Phase 0): the hand-rolled tokenizer + Match-block
     # scoping + criteria parser is the real Phase-0 logic and the mutation target.
     "crates/rulesteward-sshd/src/parser.rs",
@@ -159,6 +174,11 @@ examine_globs = [
     # mutation gate is non-vacuous (the 4a lesson: a new file outside examine_globs
     # mutates zero times and false-passes).
     "crates/rulesteward-sysctld/src/system.rs",
+    # Lane B differential oracle: the manifest/tree-plan model, the canonical tree
+    # INVENTORY recomputation (the guard that catches a Rust-vs-bash materializer
+    # divergence without docker), and the compare. Same allowlist-precedes-code
+    # rule as system.rs above; matches nothing until the lane lands.
+    "crates/rulesteward-sysctld/src/oracle.rs",
     # sudoers backend (#329 Phase 0): the hand-rolled two-stage parser (physical-
     # line join + line classification), the include/dir resolution seam, and the
     # lints dispatcher + leaf passes are the real Phase-0 logic and the mutation
@@ -174,6 +194,11 @@ examine_globs = [
     "crates/rulesteward-sudoers/src/parser.rs",
     "crates/rulesteward-sudoers/src/resolve.rs",
     "crates/rulesteward-sudoers/src/lints/**/*.rs",
+    # Lane C differential oracle: the four-oracle verdict model (visudo -c / -s,
+    # cvtsudoers json / -e), the rc-vs-evidence agreement cross-check, and the
+    # structure-only AST projection. Same allowlist-precedes-code rule as the
+    # parser/lints entries above; matches nothing until the lane lands.
+    "crates/rulesteward-sudoers/src/oracle.rs",
     # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",

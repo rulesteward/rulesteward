@@ -199,6 +199,34 @@ pub fn resolve_corpus_root(env_var: &str, default_root: &Path) -> (PathBuf, Corp
     }
 }
 
+/// Render the banner a replay test MUST print before it asserts anything.
+///
+/// `just diff-<lane>` refuses to classify the fresh run's exit code until it has
+/// grepped for this line with `mode=fresh`. That grep is the only thing standing
+/// between the harness and its worst silent failure: if the recipe and the test
+/// disagree about the override variable's NAME, the "fresh" run reads the
+/// committed corpus, agrees with itself, and exits 0. No count floor, no positive
+/// control and no exit code can see that.
+///
+/// `mode` precedes `corpus` deliberately, so the recipe's guard is a single
+/// fixed-string match on a prefix (`"<SENTINEL>: mode=fresh corpus="`) and stays
+/// correct for a corpus path containing spaces.
+#[must_use]
+pub fn sentinel_banner(sentinel: &str, mode: CorpusMode, root: &Path) -> String {
+    format!("{sentinel}: mode={mode} corpus={}", root.display())
+}
+
+/// Render the scenario-count line a replay test MUST print alongside the banner.
+///
+/// CONTRIBUTING's rc-0 rule is that a success line carries a non-zero count; the
+/// recipe reads this line to satisfy it. The test still asserts its own floor
+/// independently -- this line is what lets the RECIPE refuse to report success
+/// for a run that compared nothing, without re-deriving the count itself.
+#[must_use]
+pub fn sentinel_count(sentinel: &str, scenarios: usize) -> String {
+    format!("{sentinel}: scenarios={scenarios}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +376,59 @@ mod tests {
             CorpusRootError::OverrideBlank {
                 env_var: VAR.to_string()
             }
+        );
+    }
+
+    /// Pins the exact byte shape the `just diff-<lane>` recipes match with
+    /// `grep -qF`. If this rendering changes without the recipe changing, the
+    /// guard silently stops guarding, so the literal is asserted here rather
+    /// than merely described.
+    #[test]
+    fn the_sentinel_banner_renders_the_shape_the_recipes_grep_for() {
+        let root = PathBuf::from("/tmp/fresh");
+        assert_eq!(
+            sentinel_banner("RS-DIFF-AUDITD", CorpusMode::Fresh, &root),
+            "RS-DIFF-AUDITD: mode=fresh corpus=/tmp/fresh"
+        );
+        assert_eq!(
+            sentinel_banner("RS-DIFF-AUDITD", CorpusMode::Committed, &root),
+            "RS-DIFF-AUDITD: mode=committed corpus=/tmp/fresh"
+        );
+    }
+
+    /// `mode` precedes `corpus` so the recipe's fixed-string guard is a prefix
+    /// match that survives a corpus path containing spaces. A committed run must
+    /// NOT match the fresh guard.
+    #[test]
+    fn the_fresh_guard_prefix_matches_only_a_fresh_run() {
+        let spaced = PathBuf::from("/tmp/a dir/fresh");
+        let guard = "RS-DIFF-SUDOERS: mode=fresh corpus=";
+
+        let fresh = sentinel_banner("RS-DIFF-SUDOERS", CorpusMode::Fresh, &spaced);
+        assert!(fresh.starts_with(guard), "fresh run must match: {fresh}");
+        assert!(
+            fresh.ends_with("/tmp/a dir/fresh"),
+            "the path must survive verbatim: {fresh}"
+        );
+
+        let committed = sentinel_banner("RS-DIFF-SUDOERS", CorpusMode::Committed, &spaced);
+        assert!(
+            !committed.contains(guard),
+            "a committed run must not satisfy the fresh guard: {committed}"
+        );
+    }
+
+    #[test]
+    fn the_count_line_carries_the_number_the_recipe_reads() {
+        assert_eq!(
+            sentinel_count("RS-DIFF-SYSCTLD", 22),
+            "RS-DIFF-SYSCTLD: scenarios=22"
+        );
+        // Zero must still RENDER; refusing it is the recipe's job, and a panic
+        // here would hide the vacuous run behind a different failure.
+        assert_eq!(
+            sentinel_count("RS-DIFF-SYSCTLD", 0),
+            "RS-DIFF-SYSCTLD: scenarios=0"
         );
     }
 

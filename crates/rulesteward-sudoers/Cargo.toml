@@ -10,6 +10,20 @@ rust-version.workspace = true
 
 [dependencies]
 rulesteward-core = { workspace = true }
+# (session 9k-1) Lane C's differential corpus is one JSON document per
+# (scenario, target), because two of the four oracle results already ARE JSON
+# ASTs emitted by `cvtsudoers -f json`. Declared here in Phase 0, ahead of
+# src/oracle.rs, so that Cargo.lock is regenerated ONCE on the session branch:
+# three lanes each adding a dependency would produce three conflicting lock
+# diffs to reconcile at merge time.
+#
+# A regular dependency rather than a dev-dependency because src/oracle.rs holds
+# the model, the fail-closed parse and the compare. Keeping that in src/ is what
+# subjects it to `just ci` clippy, the coverage floor and the mutation gate; a
+# tests/-only or feature-gated home would silently drop all three. serde_json is
+# already in the workspace graph (the SARIF renderer), so this adds no new
+# supply-chain surface.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

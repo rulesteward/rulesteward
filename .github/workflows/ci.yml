@@ -127,6 +127,27 @@ jobs:
       - name: No-mnt guard (out-of-repo dependency paths)
         run: bash scripts/check-no-mnt-paths.sh
 
+      # (session 9k-1) Oracle-harness self-tests: the two INSTRUMENTS behind the
+      # differential recipes are themselves gated here. scripts/rs-oracle-diff.sh
+      # maps a mess of exit codes onto the 0/1/2/3 dev-tooling contract and every
+      # wrong branch in it fails toward "clean", so a green `just diff-<lane>` run
+      # proves nothing about it; and the fail-closed RS_REQUIRE_<ORACLE> predicate
+      # has already been shipped wrong once as a `== "1"` comparison. Each suite
+      # ends by re-seeding its own worst bug into a copy of the script under test
+      # and requiring NAMED cases to catch it, so neither can pass having checked
+      # nothing. Pure bash - cargo and docker are stubbed, no containers, no
+      # network - so they belong in the lint tier alongside the other guards.
+      #
+      # Invoked as two direct `bash` steps rather than via `just
+      # oracle-harness-test` because `just` is not on the GitHub-hosted runner
+      # (see the trustdb-contention job, which installs it); separate steps also
+      # name which instrument failed without reading the log.
+      - name: Oracle-required predicate self-test (fail-closed parsing)
+        run: bash scripts/rs-oracle-required-test.sh
+
+      - name: Differential driver self-test (exit-code contract)
+        run: bash scripts/rs-oracle-diff-test.sh
+
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
   # matrix, the dnf bootstrap, the bash shell override, and the
@@ -259,11 +280,15 @@ jobs:
         # executed. With it present the matrix also gives a free el8/el9/el10
         # checkmodule version differential: 2.9 / 3.6 / 3.10.
         #
-        # Later corpus lanes (session 9k-1: auditd, sysctld, sudoers) need
-        # `audit`, `systemd-udev` and `sudo` here. They are deliberately NOT
-        # pre-added: unused packages would install in all nine containers on
-        # every run until those lanes land, and that session's own serial
-        # Phase 0 can add them in one line without lane contention.
+        # Session 9k-1 (auditd / sysctld / sudoers differential oracles) landed
+        # WITHOUT adding `audit`, `systemd-udev` or `sudo` here, and that is the
+        # settled posture rather than an omission. Those packages are needed only
+        # by the LIVE capture tier, which runs docker-only in the three scheduled
+        # `*-oracle-drift.yml` workflows against the `rs-oracle{8,9,10}` images
+        # (built from tools/oracle-images/). PR CI runs only the Tier-1 replay
+        # tests, which are pure Rust over a committed corpus: no docker, no root,
+        # nothing on PATH, and therefore no skip path. Adding the packages would
+        # install them in all nine containers on every run to serve nothing.
         #
         # `--setopt=tsflags=nodocs` skips installing documentation files
         # (man pages, /usr/share/doc/*). Saves a small amount of disk

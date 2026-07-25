@@ -72,9 +72,53 @@ unmet. See CONTRIBUTING "Differential oracle contract".
 | fapolicyd | `fagenrules --load` + `fapolicyd --debug --permissive` in `fapolicyd8/9/10` | corpus pending (session 9k-2, #572) |
 | selinux | `checkmodule -M -m` compile oracle; libsepol vs vendored binary policies | corpus in git; CI wiring in this session |
 | sshd | `sshd -G` / `ssh -Q` probes in `sshd-probe8/9/10` | shipped (`just diff-sshd`) |
-| auditd | `auditctl -R`, one line per invocation, classified by stderr | pending (session 9k-1) |
-| sysctld | `systemd-sysctl --cat-config` (package `systemd-udev`, NOT `systemd`) | pending (session 9k-1) |
-| sudoers | `visudo -c -f -` + `cvtsudoers -f json` (both read stdin) | pending (session 9k-1) |
+| auditd | `auditctl -R`, one rule line per invocation, in `rs-oracle8/9/10`; rc gates, stderr discriminates | `just diff-auditd` (session 9k-1) |
+| sysctld | `systemd-sysctl` `--cat-config` + `SYSTEMD_LOG_LEVEL=debug` apply, in `rs-oracle8/9/10` | `just diff-sysctld` (session 9k-1) |
+| sudoers | `visudo -c -f -` (+ `-s`) and `cvtsudoers -f json` (+ `-e`), all on stdin, in `rs-oracle8/9/10` | `just diff-sudoers` (session 9k-1) |
+
+The three `rs-oracle{8,9,10}` images are built from committed Dockerfiles in
+`tools/oracle-images/` and carry all three oracles; see that README for the build
+command, the measured version triple, and the Lane A netlink safety rules.
+
+**Measured auditd oracle facts (2026-07-25), so no later session re-derives them:**
+- **`--cap-add=AUDIT_CONTROL` is required, and `auditctl -s` is the mandatory
+  canary.** Audit netlink is NOT namespaced, so a container that can reach it
+  mutates the HOST ruleset. Never `--privileged`, never `--network host`, never
+  `-v /:/host`. The canary is a status READ with zero blast radius: if it SUCCEEDS,
+  netlink is live and the capture must refuse with rc 3.
+- Without the capability `auditctl` bails BEFORE parsing, so a valid and an invalid
+  rule are byte-identical (`rc 4`, `You must be root to run this program.`). With
+  it, the canary still gets EPERM and a valid rule's add is refused with
+  `Error sending add rule data request (Operation not permitted)` - nothing reaches
+  the host kernel.
+- **rc gates, stderr discriminates.** rc 4 = never ran (UNUSABLE); rc 0 = the rule
+  LOADED, so netlink is live (ABORT); rc 1 = ran, and then stderr decides:
+  `Error sending add rule data request` means it PARSED (ACCEPT), a parse complaint
+  means REJECT.
+- **`-R` swallows many parse diagnostics.** Fed via `-R`, both `-p zz` and a garbage
+  line give rc 1 with empty stdout AND stderr on all three EL majors, while
+  `-F perm=zz` and `-F nosuchfield=1` do emit complaints. The same `-p zz` passed
+  DIRECTLY does print `Permission z isn't supported`, which is how #601's truth
+  table was recorded - so `-p zz` cannot be the reject-side positive control under
+  `-R`. Use `-F perm=zz`.
+- `-R` is still the correct oracle: a rules FILE reaches the kernel via
+  `augenrules` -> `auditctl -R` -> `audit_strsplit` (splits only on the literal
+  space byte, quotes are literal), and that raw reader IS the subject of #584.
+  Direct argv invocation would exercise shell tokenization instead.
+
+**Measured sysctld oracle facts (2026-07-25):**
+- **`systemd-sysctl` has NO `--root`** on el8/el9/el10 (`--help` lists only
+  `--cat-config`, `--prefix=PATH`, `--no-pager`; el10 adds `--tldr`). The fixture
+  tree must therefore BE the container's `/`, via one throwaway
+  `docker run --rm --network=none` per scenario.
+- **`--cat-config` is a byte-cat** and cannot observe key grammar at all, and it
+  DISAGREES with the real applier on degenerate entries (it aborts on a
+  `.conf`-named directory or a dangling symlink where the applier logs and
+  continues). RuleSteward models the applier, so `SYSTEMD_LOG_LEVEL=debug` apply
+  mode is authoritative for masking / read-order / merge / grammar, and
+  `--cat-config` only for file bytes and the filesystem-determined rc.
+- Apply mode WRITES, so the capture must assert `/proc/sys` is mounted `ro` and
+  refuse `--privileged` / `--network=host`.
 
 **Measured fapolicyd daemon facts (2026-07-25), so no later session re-derives them:**
 - ACCEPT iff a `Loaded N rules` line appears. `fapolicyd-cli --check-rules` does NOT

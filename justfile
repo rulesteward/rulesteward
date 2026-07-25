@@ -70,7 +70,7 @@ musl:
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
 # Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + test + cov).
-ci: fmt clippy dac-guard codes-guard no-mnt-guard test cov
+ci: fmt clippy dac-guard codes-guard no-mnt-guard oracle-harness-test test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
@@ -641,3 +641,56 @@ sudoers-stig-derive product="all":
     else
         cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
+
+# (session 9k-1) LIVE differential drift checks for the auditd / sysctld / sudoers
+# backends: capture a fresh oracle corpus from the rs-oracle{8,9,10} containers and
+# replay the SAME Tier-1 test binary against it.
+#
+# These three are deliberately NOT in `just ci`. Their OFFLINE tier is an ordinary
+# `cargo test` over the committed corpus, which needs no docker and therefore has no
+# skip path at all, so it is already covered by `just test`. That split is the point:
+# a missing docker daemon degrades the guarantee from "nothing was checked" to "the
+# oracle was not re-derived". See CONTRIBUTING.md "Differential oracle contract".
+#
+# All three delegate to ONE driver, scripts/rs-oracle-diff.sh. The exit-code mapping
+# is the part of this harness whose every wrong branch fails toward "clean"; written
+# out three times it would be wrong in three different ways, which is how
+# `just diff-fapolicyd` came to report success while checking nothing for six weeks
+# (#572). The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
+# re-seeds that bug into a copy of it and requires named cases to catch it.
+#
+# Exit codes: 0 clean (the success line carries a non-zero scenario count), 1 drift,
+# 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane
+# RS_REQUIRE_AUDITCTL / RS_REQUIRE_SYSTEMD_SYSCTL / RS_REQUIRE_VISUDO - promotes every
+# rc-3 skip to a hard rc-2 failure, which is what the weekly drift workflows set.
+
+# LIVE: drift-check auditd rule-line verdicts against auditctl -R. (#584, #601)
+diff-auditd:
+    bash scripts/rs-oracle-diff.sh auditd
+
+# LIVE: drift-check the sysctl.d merge model against systemd-sysctl. (#593)
+diff-sysctld:
+    bash scripts/rs-oracle-diff.sh sysctld
+
+# LIVE: drift-check sudoers parse + AST against visudo / cvtsudoers. (#538)
+diff-sudoers:
+    bash scripts/rs-oracle-diff.sh sudoers
+
+# Self-test of the two differential INSTRUMENTS. In `just ci` because an unverified
+# instrument is the exact failure this contract exists to prevent: a harness that
+# reports clean having compared nothing is indistinguishable downstream from a real
+# pass. Pure bash - cargo and docker are stubbed - so it needs no toolchain, no
+# containers and no network, and runs in every CI container.
+#
+# Self-test the differential driver and the fail-closed oracle-required predicate.
+oracle-harness-test:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # Never chain these with && - a short-circuit would hide which one failed,
+    # and rc is the gate here, not the transcript.
+    bash scripts/rs-oracle-required-test.sh
+    req_rc=$?
+    bash scripts/rs-oracle-diff-test.sh
+    diff_rc=$?
+    echo "oracle-harness-test: rs-oracle-required-test rc=${req_rc}, rs-oracle-diff-test rc=${diff_rc}"
+    [ "${req_rc}" -eq 0 ] && [ "${diff_rc}" -eq 0 ]
