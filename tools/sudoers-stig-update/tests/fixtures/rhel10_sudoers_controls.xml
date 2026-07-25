@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="RHEL10_STIG_V1R1_TEST_FIXTURE">
+<title>Trimmed test fixture: real DISA rhel10 RHEL 10 STIG V1R1 (26 Feb 2026) content in TRUE document order (adversarial round: never reordered into selector-output order). Carries the sudo-W04 directive Groups (authenticate / pw_family / timestamp_timeout), the sudo-W01/W05 NOPASSWD decoy Group (real sudoers content, wrong lint), and -- rhel8 only -- 3 further Groups with NO bearing on sudo at all, PRECEDING even the NOPASSWD decoy, so a positional/ordinal selector cannot pass by taking "the first N Groups" or "the first N after skipping sudo-flavored content". check-content, fixtext, and the Group-level + Rule-level titles are ALL verbatim (the Group-level title deliberately kept: it carries the SRG requirement id, a same-tag-different-meaning trap for a selector that reads the wrong title element); description/reference/ident stripped (the parser never reads them).</title>
+<!-- authenticate -->
+<Group id="V-281208"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-281208r1166576_rule" weight="10.0" severity="medium"><version>RHEL-10-600530</version><title>RHEL 10 must require users to reauthenticate for privilege escalation.</title><fixtext fixref="F-85674r1166575_fix">Configure RHEL 10 to not allow users to execute privileged actions without authenticating.
+
+Remove any occurrence of "!authenticate" found in the "/etc/sudoers" file or files in the "/etc/sudoers.d" directory:
+
+$ sudo sed -i '/\!authenticate/ s/^/# /g' /etc/sudoers /etc/sudoers.d/*</fixtext><check system="C-85769r1166574_chk"><check-content>Verify RHEL 10 "/etc/sudoers" has no occurrences of "!authenticate" with the following command:
+
+$ sudo grep -ir '!authenticate' /etc/sudoers /etc/sudoers.d/
+
+If any occurrences of "!authenticate" are returned, this is a finding.</check-content></check></Rule></Group>
+<!-- timestamp_timeout -->
+<Group id="V-281209"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-281209r1166579_rule" weight="10.0" severity="medium"><version>RHEL-10-600540</version><title>RHEL 10 must require reauthentication when using the "sudo" command.</title><fixtext fixref="F-85675r1166578_fix">Configure RHEL 10 to reauthenticate "sudo" commands after the specified timeout.
+
+Add the following line to "/etc/sudoers" or a file in "/etc/sudoers.d":
+
+Defaults timestamp_timeout=0</fixtext><check system="C-85770r1166577_chk"><check-content>Verify RHEL 10 requires reauthentication when using the "sudo" command to elevate privileges with the following command:
+
+$ sudo grep -ir 'timestamp_timeout' /etc/sudoers /etc/sudoers.d/
+/etc/sudoers:Defaults timestamp_timeout=0
+
+If results are returned from more than one file location, this is a finding.
+
+If "timestamp_timeout" is set to a negative number, is commented out, or no results are returned, this is a finding.</check-content></check></Rule></Group>
+<!-- pw_family -->
+<Group id="V-281210"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-281210r1166582_rule" weight="10.0" severity="medium"><version>RHEL-10-600550</version><title>RHEL 10 must use the invoking user's password for privilege escalation when using "sudo".</title><fixtext fixref="F-85676r1166581_fix">Configure RHEL 10 to use the invoking user's password for privilege escalation when using "sudo".
+
+Define the following in the Defaults section of the /etc/sudoers file or a single configuration file in the /etc/sudoers.d/ directory:
+
+Defaults !targetpw
+Defaults !rootpw
+Defaults !runaspw</fixtext><check system="C-85771r1166580_chk"><check-content>Verify RHEL 10 sudoers security policy is configured to use the invoking user's password for privilege escalation with the following command:
+
+$ sudo grep -irE '(!rootpw|!targetpw|!runaspw)' /etc/sudoers /etc/sudoers.d/ | grep -v '#'
+/etc/sudoers:Defaults !targetpw
+/etc/sudoers:Defaults !rootpw
+/etc/sudoers:Defaults !runaspw
+
+If no results are returned, this is a finding.
+
+If results are returned from more than one file location, this is a finding.
+
+If "Defaults !targetpw" is not defined, this is a finding.
+
+If "Defaults !rootpw" is not defined, this is a finding.
+
+If "Defaults !runaspw" is not defined, this is a finding.</check-content></check></Rule></Group>
+<!-- DECOY: NOPASSWD (sudo-W01/W05, not W04) -->
+<Group id="V-281211"><title>SRG-OS-000373-GPOS-00156</title><Rule id="SV-281211r1166585_rule" weight="10.0" severity="high"><version>RHEL-10-600560</version><title>RHEL 10 must require users to provide a password for privilege escalation.</title><fixtext fixref="F-85677r1166584_fix">Configure RHEL 10 to not allow users to execute privileged actions without authenticating with a password.
+
+Remove any occurrence of "NOPASSWD" found in the "/etc/sudoers" file or files in the "/etc/sudoers.d" directory:
+
+$ sudo find /etc/sudoers /etc/sudoers.d -type f -exec sed -i '/NOPASSWD/ s/^/# /g' {} \;</fixtext><check system="C-85772r1166583_chk"><check-content>Verify RHEL 10 has no occurrences of "NOPASSWD" in "/etc/sudoers" with the following command:
+
+$ sudo grep -ir nopasswd /etc/sudoers /etc/sudoers.d/ | grep -v '#'
+
+If any occurrences of "NOPASSWD" are returned from the command and have not been documented with the information system security officer as an organizationally defined administrative group using multifactor authentication, this is a finding.</check-content></check></Rule></Group>
+</Benchmark>

@@ -97,7 +97,7 @@ use std::path::Path;
 use rulesteward_core::{ControlRef, Diagnostic, Framework, Severity, Span};
 
 use crate::ast::{DefaultsScope, LineKind, SudoersFile};
-use crate::lints::{SudoersLintContext, anchored};
+use crate::lints::{SudoersLintContext, TargetVersion, anchored};
 
 // ---------------------------------------------------------------------------
 // Weakening settings: fire when any of these appear (any scope).
@@ -180,6 +180,13 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
 /// V1R1 XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use
 /// the invoking user's password for privilege escalation when using
 /// \"sudo\""; see `lane-7-sudoersids-report.md`).
+///
+/// Private (#551): this crate's OWN uses (`WEAKENING_PRESENT` above) pass the
+/// whole array, version-agnostically -- `w04`'s findings cite all three RHEL
+/// ids at once, so nothing here ever indexes by RHEL product. A single
+/// product's id is available to OTHER crates only through [`w04_control_ref`],
+/// which selects content-based (never positional) and returns a typed
+/// [`ControlRef`] rather than a raw indexable array.
 const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010383"),
     (Framework::Stig, "RHEL-09-432020"),
@@ -192,6 +199,9 @@ const PW_FAMILY_CONTROLS: [(Framework, &str); 3] = [
 /// V-281208 / SV-281208r1166576_rule, "RHEL 10 must require users to
 /// reauthenticate for privilege escalation"; see
 /// `lane-7-sudoersids-report.md`).
+///
+/// Private (#551): see [`PW_FAMILY_CONTROLS`]'s doc for why -- same reasoning
+/// applies to all three of these per-family tables.
 const AUTHENTICATE_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010381"),
     (Framework::Stig, "RHEL-09-432025"),
@@ -244,6 +254,9 @@ fn io_log_controls() -> Vec<ControlRef> {
 /// V1R1 XCCDF (Group V-281209 / SV-281209r1166579_rule, "RHEL 10 must
 /// require reauthentication when using the \"sudo\" command"; see
 /// `lane-7-sudoersids-report.md`).
+///
+/// Private (#551): see [`PW_FAMILY_CONTROLS`]'s doc for why -- same reasoning
+/// applies to all three of these per-family tables.
 const TIMESTAMP_TIMEOUT_CONTROLS: [(Framework, &str); 3] = [
     (Framework::Stig, "RHEL-08-010384"),
     (Framework::Stig, "RHEL-09-432015"),
@@ -258,6 +271,83 @@ pub(crate) fn controls(pairs: &[(Framework, &str)]) -> Vec<ControlRef> {
         .iter()
         .map(|&(framework, id)| ControlRef::new(framework, id))
         .collect()
+}
+
+/// Which of the three sudo-W04 DISA STIG control families a `target`-scoped
+/// query is asking about (#551). Distinct from `w04`'s OWN findings above
+/// ([`WEAKENING_PRESENT`], the negated `!authenticate` arm, and the merged
+/// `timestamp_timeout` checks), which all cite every RHEL id for a control at
+/// once, version-agnostically (see the module doc's "Version-agnostic"
+/// section) -- nothing internal to this crate ever needs a single
+/// product's id. This type exists purely so an external caller CAN ask for
+/// one, without depending on [`PW_FAMILY_CONTROLS`] / [`AUTHENTICATE_CONTROLS`]
+/// / [`TIMESTAMP_TIMEOUT_CONTROLS`]'s declaration order (an internal detail
+/// of this module with no meaning outside it). Mirrors
+/// `rulesteward_selinux::stig::ControlFamily`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFamily {
+    /// `!authenticate` -- see [`AUTHENTICATE_CONTROLS`].
+    Authenticate,
+    /// `targetpw` / `rootpw` / `runaspw` -- see [`PW_FAMILY_CONTROLS`].
+    PwFamily,
+    /// `timestamp_timeout` -- see [`TIMESTAMP_TIMEOUT_CONTROLS`].
+    TimestampTimeout,
+}
+
+/// Project ONE sudo-W04 DISA STIG [`ControlRef`] for `family` at `target`
+/// (#551).
+///
+/// Selection is CONTENT-based, never positional: each id in
+/// [`AUTHENTICATE_CONTROLS`] / [`PW_FAMILY_CONTROLS`] /
+/// [`TIMESTAMP_TIMEOUT_CONTROLS`] already carries its own RHEL version as a
+/// literal prefix (`RHEL-08-` / `RHEL-09-` / `RHEL-10-`, e.g.
+/// `RHEL-09-432020`), so this finds the entry whose id starts with
+/// `target`'s prefix instead of indexing by declaration order. That order is
+/// an implementation detail of these three tables -- used elsewhere in this
+/// module only as a whole, unordered, version-agnostic set (see
+/// [`PW_FAMILY_CONTROLS`]'s doc) -- so a future reorder of any one of them
+/// can never mis-assign a control to the wrong RHEL version.
+///
+/// # Callers
+///
+/// Only `tools/sudoers-stig-update` (#551) calls this today: it drift-checks
+/// the shipped table per RHEL product against the official DISA XCCDF, which
+/// needs a single id per (family, target) pair. Kept as a domain-typed
+/// accessor -- mirroring
+/// `rulesteward_selinux::stig::{ControlFamily, control_refs}` -- rather than
+/// a `pub const` array, so the per-product mapping is enforced INSIDE this
+/// crate instead of depending on caller discipline about array position.
+///
+/// # Panics
+///
+/// If the table for `family` does not carry exactly one entry whose id
+/// starts with `target`'s prefix. All three tables are compile-time
+/// constants owned by this module, so this is only reachable if a future
+/// edit to one of them drops or renames a product's entry -- a programming
+/// error in this crate, not bad input, so it fails loudly rather than
+/// returning an empty or mismatched `ControlRef`.
+#[must_use]
+pub fn w04_control_ref(family: ControlFamily, target: TargetVersion) -> ControlRef {
+    let table: &[(Framework, &str); 3] = match family {
+        ControlFamily::Authenticate => &AUTHENTICATE_CONTROLS,
+        ControlFamily::PwFamily => &PW_FAMILY_CONTROLS,
+        ControlFamily::TimestampTimeout => &TIMESTAMP_TIMEOUT_CONTROLS,
+    };
+    let prefix = match target {
+        TargetVersion::Rhel8 => "RHEL-08-",
+        TargetVersion::Rhel9 => "RHEL-09-",
+        TargetVersion::Rhel10 => "RHEL-10-",
+    };
+    let &(framework, id) = table
+        .iter()
+        .find(|(_, id)| id.starts_with(prefix))
+        .unwrap_or_else(|| {
+            panic!(
+                "{family:?}: no entry with STIG Rule id prefix {prefix:?} for {target:?}; a const \
+             may have been edited without preserving one entry per RHEL version"
+            )
+        });
+    ControlRef::new(framework, id)
 }
 
 /// sudo-W04: a `Defaults` setting is weaker than the sudo STIG baseline.
@@ -2535,5 +2625,112 @@ mod tests {
             "the one resolved segment is the parent's own content, not a \
              phantom for the empty child; got {files:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // `w04_control_ref` / `ControlFamily` (#551): the domain-typed, per-target
+    // accessor that replaces an EARLIER version of `tools/sudoers-stig-update`
+    // which widened `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
+    // `TIMESTAMP_TIMEOUT_CONTROLS` to `pub` and indexed them by POSITION
+    // (`Rhel8 -> [0]`, `Rhel9 -> [1]`, `Rhel10 -> [2]`) from outside this
+    // crate -- an ordering these three tables carry only as an internal
+    // convention, enforced NOWHERE inside `rulesteward-sudoers` itself (every
+    // internal use, e.g. `WEAKENING_PRESENT`, passes the whole array,
+    // version-agnostically), and invisible from the caller's point of view.
+    // -----------------------------------------------------------------------
+
+    /// Exact per-`(family, target)` id pin, mirroring the grounded ids in
+    /// each table's own doc comment ([`PW_FAMILY_CONTROLS`] /
+    /// [`AUTHENTICATE_CONTROLS`] / [`TIMESTAMP_TIMEOUT_CONTROLS`]). Guards
+    /// the match arms in [`w04_control_ref`] and its `target` prefix table
+    /// against a wrong family/target/id association.
+    #[test]
+    fn w04_control_ref_exact_ids_per_family_and_target() {
+        let cases = [
+            (
+                ControlFamily::Authenticate,
+                TargetVersion::Rhel8,
+                "RHEL-08-010381",
+            ),
+            (
+                ControlFamily::Authenticate,
+                TargetVersion::Rhel9,
+                "RHEL-09-432025",
+            ),
+            (
+                ControlFamily::Authenticate,
+                TargetVersion::Rhel10,
+                "RHEL-10-600530",
+            ),
+            (
+                ControlFamily::PwFamily,
+                TargetVersion::Rhel8,
+                "RHEL-08-010383",
+            ),
+            (
+                ControlFamily::PwFamily,
+                TargetVersion::Rhel9,
+                "RHEL-09-432020",
+            ),
+            (
+                ControlFamily::PwFamily,
+                TargetVersion::Rhel10,
+                "RHEL-10-600550",
+            ),
+            (
+                ControlFamily::TimestampTimeout,
+                TargetVersion::Rhel8,
+                "RHEL-08-010384",
+            ),
+            (
+                ControlFamily::TimestampTimeout,
+                TargetVersion::Rhel9,
+                "RHEL-09-432015",
+            ),
+            (
+                ControlFamily::TimestampTimeout,
+                TargetVersion::Rhel10,
+                "RHEL-10-600540",
+            ),
+        ];
+        for (family, target, expected_id) in cases {
+            let control = w04_control_ref(family, target);
+            assert_eq!(control.framework, Framework::Stig);
+            assert_eq!(
+                control.id, expected_id,
+                "{family:?} at {target:?} must resolve to {expected_id}; got {control:?}"
+            );
+        }
+    }
+
+    /// THE STRUCTURAL GUARD for #551 (the actual finding): `w04_control_ref`
+    /// selects CONTENT-based (by each id's own `RHEL-0N-` prefix), never
+    /// positionally, so this invariant holds independent of
+    /// [`AUTHENTICATE_CONTROLS`] / [`PW_FAMILY_CONTROLS`] /
+    /// [`TIMESTAMP_TIMEOUT_CONTROLS`]'s declaration order in this file --
+    /// unlike a `[idx]` lookup keyed `Rhel8 -> 0`, `Rhel9 -> 1`, `Rhel10 -> 2`,
+    /// which would silently mis-assign a control to the wrong RHEL version if
+    /// any one of those three tables were ever reordered.
+    #[test]
+    fn w04_control_ref_ids_carry_the_matching_rhel_prefix() {
+        for (target, prefix) in [
+            (TargetVersion::Rhel8, "RHEL-08-"),
+            (TargetVersion::Rhel9, "RHEL-09-"),
+            (TargetVersion::Rhel10, "RHEL-10-"),
+        ] {
+            for family in [
+                ControlFamily::Authenticate,
+                ControlFamily::PwFamily,
+                ControlFamily::TimestampTimeout,
+            ] {
+                let control = w04_control_ref(family, target);
+                assert!(
+                    control.id.starts_with(prefix),
+                    "{family:?} at {target:?}: id {:?} must start with {prefix:?} -- a reorder \
+                     of this table must never mis-assign a control to the wrong RHEL version",
+                    control.id
+                );
+            }
+        }
     }
 }

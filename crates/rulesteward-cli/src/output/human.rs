@@ -12,7 +12,7 @@
 //! operators can grep the output uniformly regardless of whether a snippet is
 //! present.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal as _;
 
 use core::fmt::Write as _;
@@ -63,12 +63,33 @@ fn color_enabled() -> bool {
 /// Returns `false` when the source text is not available and the caller
 /// should fall back to plain rendering.
 ///
+/// `source_cache` holds one lazily-built `ariadne::Source` per `source_id`,
+/// populated on first use via the `HashMap` entry API (#559). Building a
+/// `Source` line-indexes the whole source text, so the pre-cache code (which
+/// called `Source::from(source_text)` inside this function, once per
+/// diagnostic) cost O(diagnostics x `source_length`) when many diagnostics
+/// anchored to one large file. `render` (below) owns `source_cache` for the
+/// lifetime of one call and passes it in by mutable reference, so it is
+/// shared across every diagnostic in that call but never persists beyond
+/// it, and it is populated only for `source_id`s a diagnostic actually
+/// references, never eagerly for the whole `sources` map.
+///
+/// ariadne implements `Cache<Id>` for `(Id, &Source<I>)` as well as for
+/// `(Id, Source<I>)`, so passing a reference to the cached `Source` here
+/// costs nothing beyond the initial cache miss.
+///
 /// The `Report::with_message` title intentionally omits `file:line:col` -
 /// ariadne's own bracket header (`[ <source_id>:<line>:<col> ]`) already
 /// shows that. Including both produced visible duplication in the rendered
 /// output. Plain mode (the fallback branch in `render`) still emits the full
 /// `file:line:col [CODE] sev: msg` for grep parity.
-fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut Vec<u8>) -> bool {
+fn render_ariadne<'src>(
+    d: &Diagnostic,
+    source_id: &'src str,
+    source_text: &'src str,
+    source_cache: &mut HashMap<&'src str, Source<&'src str>>,
+    out: &mut Vec<u8>,
+) -> bool {
     let config = Config::default().with_color(color_enabled());
     // Convert byte offsets to char offsets: ariadne 0.6 indexes its `Source`
     // by character position. For ASCII-only sources byte offset == char offset,
@@ -76,6 +97,9 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
     // may exceed the char-length and ariadne silently omits the snippet.
     let cspan = byte_span_to_char_span(&d.span, source_text);
     let mut report_buf: Vec<u8> = Vec::new();
+    let source = source_cache
+        .entry(source_id)
+        .or_insert_with(|| Source::from(source_text));
     let result = Report::build(report_kind(d.severity), (source_id, cspan.clone()))
         .with_config(config)
         .with_message(format!(
@@ -87,7 +111,7 @@ fn render_ariadne(d: &Diagnostic, source_id: &str, source_text: &str, out: &mut 
         ))
         .with_label(label_for(source_id, cspan.clone(), d.message.as_str()))
         .finish()
-        .write((source_id, Source::from(source_text)), &mut report_buf);
+        .write((source_id, &*source), &mut report_buf);
     match result {
         Ok(()) => {
             out.extend_from_slice(&report_buf);
@@ -110,11 +134,16 @@ pub fn render(diags: &[Diagnostic], sources: &BTreeMap<String, String>) -> Strin
     }
     let mut out_bytes: Vec<u8> = Vec::new();
     let mut out_plain = String::new();
+    // One `ariadne::Source` per unique `source_id`, built lazily on first
+    // use and reused for every later diagnostic against that same id in
+    // this call (#559). Scoped to this single `render()` call, not hoisted
+    // any wider - see `render_ariadne`'s doc comment.
+    let mut source_cache: HashMap<&str, Source<&str>> = HashMap::new();
 
     for d in diags {
         let used_ariadne = if let Some(ref id) = d.source_id {
             if let Some(text) = sources.get(id) {
-                render_ariadne(d, id.as_str(), text, &mut out_bytes)
+                render_ariadne(d, id.as_str(), text, &mut source_cache, &mut out_bytes)
             } else {
                 false
             }
@@ -194,9 +223,570 @@ pub(crate) fn format_controls(controls: &[ControlRef]) -> String {
 mod tests {
     use super::*;
     use rulesteward_core::{ControlRef, Framework, Severity};
+    use std::time::{Duration, Instant};
 
     fn empty_sources() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    /// Strip ANSI CSI escape sequences (`ESC '[' ... final-byte`, the
+    /// general form covering ariadne's SGR color codes) from `s`.
+    ///
+    /// `render()`'s ariadne path colors its output whenever `color_enabled()`
+    /// (human.rs:57) is true, which happens whenever the CALLING PROCESS's
+    /// own stdout is a real terminal - including `cargo test` run
+    /// interactively (not piped/CI-captured). An exact-byte `assert_eq!`
+    /// pin taken against raw `render()` output is therefore fragile: it
+    /// passes in CI (stdout piped -> colors off) but fails under a real
+    /// pty for reasons that have nothing to do with correctness. Stripping
+    /// ANSI before comparing makes the pin identical either way (a no-op
+    /// when colors are already off).
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Parameter bytes 0x30-0x3F, then intermediate bytes 0x20-0x2F.
+                while let Some(&next) = chars.peek() {
+                    if ('0'..='?').contains(&next) || (' '..='/').contains(&next) {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                // Final byte 0x40-0x7E, if present.
+                if let Some(&next) = chars.peek()
+                    && ('@'..='~').contains(&next)
+                {
+                    chars.next();
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn strip_ansi_is_identity_when_no_escape_present() {
+        let plain = "no escapes here: [1] just brackets\n";
+        assert_eq!(strip_ansi(plain), plain);
+    }
+
+    #[test]
+    fn strip_ansi_removes_sgr_color_codes() {
+        let colored = "\u{1b}[1;31merror\u{1b}[0m: plain text \u{1b}[32mok\u{1b}[0m";
+        assert_eq!(strip_ansi(colored), "error: plain text ok");
+    }
+
+    /// Build a synthetic fapolicyd-shaped source of at least `min_bytes`
+    /// bytes, returning the text plus a byte span (into a distinct token)
+    /// for each of at least `min_spans` lines - so scaling tests can anchor
+    /// many independent, valid diagnostics without a fragile hand-computed
+    /// offset table.
+    fn synthetic_source_with_spans(
+        min_bytes: usize,
+        min_spans: usize,
+    ) -> (String, Vec<std::ops::Range<usize>>) {
+        let mut text = String::new();
+        let mut spans = Vec::new();
+        let mut i = 0usize;
+        while text.len() < min_bytes || spans.len() < min_spans {
+            let prefix = "allow exe=/usr/bin/prog";
+            let token = format!("{i:06}");
+            let start = text.len() + prefix.len();
+            text.push_str(prefix);
+            text.push_str(&token);
+            text.push_str(" trust=1\n");
+            spans.push(start..start + token.len());
+            i += 1;
+        }
+        (text, spans)
+    }
+
+    /// Run `f` `reps` times (plus one untimed warm-up) and return the
+    /// MINIMUM elapsed duration observed. Minimum-of-N is the standard
+    /// micro-benchmark technique for filtering out scheduler / GC / page-
+    /// fault noise: real cost never makes a run FASTER than its true floor,
+    /// so the minimum is the least-noisy honest estimate.
+    fn min_duration_over<F: FnMut()>(mut f: F, reps: usize) -> Duration {
+        f(); // untimed warm-up
+        let mut best: Option<Duration> = None;
+        for _ in 0..reps {
+            let start = Instant::now();
+            f();
+            let elapsed = start.elapsed();
+            best = Some(match best {
+                Some(b) if b <= elapsed => b,
+                _ => elapsed,
+            });
+        }
+        best.expect("reps must be > 0")
+    }
+
+    // -----------------------------------------------------------------
+    // Regression harness for the per-`source_id` `ariadne::Source` cache
+    // (#559). Every pre-existing `render(...)` test in this file passes
+    // exactly ONE diagnostic, so none of them exercise a cache at all - a
+    // cache keyed wrongly (or not keyed by `source_id` at all, e.g. a
+    // naive "hoist `Source::from` out of the loop entirely" refactor that
+    // builds a single `Source` once and reuses it for every diagnostic
+    // regardless of which `source_id` it belongs to) would sail through
+    // every existing test untouched. These two tests exist to close that
+    // gap: they pin the exact rendered bytes for (a) multiple diagnostics
+    // sharing one `source_id`, and (b) multiple diagnostics against
+    // DIFFERENT `source_id`s in the same `render()` call, interleaved so
+    // that input order also has to be preserved. Both are expected to
+    // PASS against today's pre-cache code (it is correct, just O(n * len)
+    // slow) - they are a regression harness, not a RED test, EXCEPT that
+    // (b) is precisely the case a naive whole-call hoist would break.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn human_render_multiple_diagnostics_same_source_id_exact_pin() {
+        // Two diagnostics anchored to the SAME source_id, at two different
+        // lines/spans. Guards against the classic caching bug where a
+        // cached `Source` is mutated or advanced by its first use (e.g. an
+        // internal cursor) so the SECOND diagnostic against the same
+        // source renders against stale state.
+        let source = "allow exe=/usr/bin/foo trust=1\nallow exe=/usr/bin/bar trust=0\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("same.rules".to_string(), source.to_string());
+
+        let byte_1 = source.find("foo").expect("foo present");
+        let d1 = Diagnostic::new(
+            Severity::Error,
+            "fapd-E02",
+            byte_1..byte_1 + 3,
+            "first same-source finding",
+            "same.rules",
+            1,
+            byte_1 + 1,
+        )
+        .with_source_id("same.rules");
+
+        let byte_2 = source.find("bar").expect("bar present");
+        let d2 = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W02",
+            byte_2..byte_2 + 3,
+            "second same-source finding",
+            "same.rules",
+            2,
+            byte_2 + 1,
+        )
+        .with_source_id("same.rules");
+
+        // Strip ANSI before comparing: `color_enabled()` (human.rs:57) is
+        // true whenever THIS test process's own stdout is a real terminal
+        // (e.g. `cargo test` run interactively), which would otherwise
+        // inject SGR color codes and break an exact-byte pin for reasons
+        // unrelated to correctness. Stripping is a no-op when colors are
+        // already off (CI, piped stdout), so the pin stays exact everywhere.
+        let out = strip_ansi(&render(&[d1, d2], &sources));
+
+        let expected = "Error: [fapd-E02] error: first same-source finding\n   \u{256d}\u{2500}[ same.rules:1:20 ]\n   \u{2502}\n 1 \u{2502} allow exe=/usr/bin/foo trust=1\n   \u{2502}                    \u{2500}\u{252c}\u{2500}  \n   \u{2502}                     \u{2570}\u{2500}\u{2500}\u{2500} first same-source finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nWarning: [fapd-W02] warning: second same-source finding\n   \u{256d}\u{2500}[ same.rules:2:20 ]\n   \u{2502}\n 2 \u{2502} allow exe=/usr/bin/bar trust=0\n   \u{2502}                    \u{2500}\u{252c}\u{2500}  \n   \u{2502}                     \u{2570}\u{2500}\u{2500}\u{2500} second same-source finding\n\u{2500}\u{2500}\u{2500}\u{256f}\n";
+        assert_eq!(
+            out, expected,
+            "exact-byte pin for two diagnostics sharing one source_id; any \
+             behavior change (including a caching regression) must be a \
+             deliberate, reviewed change to this expected string"
+        );
+
+        // Belt-and-suspenders content-isolation check, independent of the
+        // exact-pin above: the first diagnostic's snippet must anchor on
+        // line 1 ("foo") and not leak line 2's text, and vice versa.
+        let split_at = out.find("Warning:").expect("second report present");
+        let (first_report, second_report) = out.split_at(split_at);
+        assert!(
+            first_report.contains("foo") && !first_report.contains("bar"),
+            "first report must show its own line only, got {first_report:?}"
+        );
+        assert!(
+            second_report.contains("bar") && !second_report.contains("foo"),
+            "second report must show its own line only, got {second_report:?}"
+        );
+    }
+
+    #[test]
+    // Test helpers use byte_a1/byte_b1, d_a1/d_b1, idx_a1/idx_b1 (source-A
+    // vs source-B pairs, first/second finding) in the same scope; clippy
+    // false-positives on that pairing (same allow used in
+    // rulesteward-fapolicyd's explain_logic.rs / explain_fanotify_parse.rs
+    // for the analogous rule1/rule2 pattern).
+    #[allow(clippy::similar_names)]
+    fn human_render_multiple_distinct_source_ids_exact_pin_and_order() {
+        // THE key deliverable for #559: three diagnostics against TWO
+        // distinct source_ids, in input order A, B, A. A naive "hoist
+        // `Source::from` out of the loop" cache (one `Source` built once,
+        // reused for every diagnostic regardless of `source_id`) fails
+        // this test two ways: (1) the `b.rules` diagnostic would render
+        // against `a.rules`'s text - EITHER wrong content (if the byte
+        // offsets happen to stay in-bounds against the wrong source), OR a
+        // HEADER-ONLY report with no caret snippet (ariadne 0.6's
+        // `write()` treats both an id-mismatched `Cache::fetch` and an
+        // out-of-range span by skipping just that label/note and still
+        // returning `Ok(())` - see source.rs's `Cache for (Id, Source)`
+        // and write.rs's span-bounds checks - it does NOT fall back to
+        // this crate's plain `file:line:col` format, which only ever comes
+        // from the separate `!used_ariadne` branch in `render()`);
+        // and (2) a cache implementation that groups-by-source-id instead
+        // of preserving input order would emit A, A, B instead of A, B, A.
+        let source_a = "allow exe=/usr/bin/alpha trust=1\ndeny_audit perm=any : all\n";
+        let source_b = "deny_audit perm=open : all\nallow exe=/usr/bin/beta trust=0\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("a.rules".to_string(), source_a.to_string());
+        sources.insert("b.rules".to_string(), source_b.to_string());
+
+        let byte_a1 = source_a.find("alpha").expect("alpha present");
+        let d_a1 = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            byte_a1..byte_a1 + 5,
+            "first A finding",
+            "a.rules",
+            1,
+            byte_a1 + 1,
+        )
+        .with_source_id("a.rules");
+
+        let byte_b1 = source_b.find("open").expect("open present");
+        let d_b1 = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W01",
+            byte_b1..byte_b1 + 4,
+            "first B finding",
+            "b.rules",
+            1,
+            byte_b1 + 1,
+        )
+        .with_source_id("b.rules");
+
+        let byte_a2 = source_a.find("any").expect("any present");
+        let d_a2 = Diagnostic::new(
+            Severity::Style,
+            "fapd-S01",
+            byte_a2..byte_a2 + 3,
+            "second A finding",
+            "a.rules",
+            2,
+            byte_a2 + 1,
+        )
+        .with_source_id("a.rules");
+
+        // Input order: A, B, A. Neither source is fully processed before
+        // the other starts.
+        //
+        // Strip ANSI before comparing (see the sibling same-source-id test
+        // for why): this test process's own stdout may be a real terminal,
+        // and an unstripped pin would fail under a pty for reasons
+        // unrelated to #559.
+        let out = strip_ansi(&render(&[d_a1, d_b1, d_a2], &sources));
+
+        let expected = "Error: [fapd-E01] error: first A finding\n   \u{256d}\u{2500}[ a.rules:1:20 ]\n   \u{2502}\n 1 \u{2502} allow exe=/usr/bin/alpha trust=1\n   \u{2502}                    \u{2500}\u{2500}\u{252c}\u{2500}\u{2500}  \n   \u{2502}                      \u{2570}\u{2500}\u{2500}\u{2500}\u{2500} first A finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nWarning: [fapd-W01] warning: first B finding\n   \u{256d}\u{2500}[ b.rules:1:17 ]\n   \u{2502}\n 1 \u{2502} deny_audit perm=open : all\n   \u{2502}                 \u{2500}\u{2500}\u{252c}\u{2500}  \n   \u{2502}                   \u{2570}\u{2500}\u{2500}\u{2500} first B finding\n\u{2500}\u{2500}\u{2500}\u{256f}\nAdvice: [fapd-S01] style: second A finding\n   \u{256d}\u{2500}[ a.rules:2:17 ]\n   \u{2502}\n 2 \u{2502} deny_audit perm=any : all\n   \u{2502}                 \u{2500}\u{252c}\u{2500}  \n   \u{2502}                  \u{2570}\u{2500}\u{2500}\u{2500} second A finding\n\u{2500}\u{2500}\u{2500}\u{256f}\n";
+        assert_eq!(
+            out, expected,
+            "exact-byte pin for three diagnostics across two source_ids in \
+             A, B, A order; a naive whole-call `Source` hoist or a \
+             source-grouping cache must fail this assertion"
+        );
+
+        // Ordering, checked independently of the exact-pin above: each
+        // diagnostic's code must appear strictly before the next one's, in
+        // INPUT order (A, B, A), not grouped by source_id (which would
+        // produce A, A, B).
+        let idx_a1 = out.find("fapd-E01").expect("fapd-E01 present");
+        let idx_b1 = out.find("fapd-W01").expect("fapd-W01 present");
+        let idx_a2 = out.find("fapd-S01").expect("fapd-S01 present");
+        assert!(
+            idx_a1 < idx_b1 && idx_b1 < idx_a2,
+            "diagnostics must render in INPUT order (A, B, A): \
+             got offsets a1={idx_a1} b1={idx_b1} a2={idx_a2} in {out:?}"
+        );
+
+        // Content isolation, checked independently of the exact-pin above:
+        // each report must render against ITS OWN source text, never the
+        // other source's. This is the assertion a naive single-Source
+        // hoist breaks even if it somehow avoided the exact-pin diff (for
+        // example, by getting lucky with byte offsets that stay in bounds
+        // in the wrong source).
+        let (a1_segment, rest) = out.split_at(idx_b1);
+        let idx_a2_in_rest = rest.find("fapd-S01").expect("fapd-S01 present");
+        let (b1_segment, a2_segment) = rest.split_at(idx_a2_in_rest);
+        assert!(
+            a1_segment.contains("alpha") && !a1_segment.contains("open"),
+            "first A report must show a.rules text, not b.rules, got {a1_segment:?}"
+        );
+        assert!(
+            b1_segment.contains("open") && !b1_segment.contains("alpha"),
+            "B report must show b.rules text, not a.rules, got {b1_segment:?}"
+        );
+        assert!(
+            a2_segment.contains("any") && !a2_segment.contains("open"),
+            "second A report must show a.rules text, not b.rules, got {a2_segment:?}"
+        );
+    }
+
+    #[test]
+    fn human_render_source_id_present_but_missing_from_sources_falls_back_to_plain() {
+        // The THIRD `render()` path, untested until now: `source_id` is
+        // `Some(..)` but ABSENT from `sources` (the `else { false }` arm
+        // feeding `used_ariadne`). A cache using e.g.
+        // `.cloned().unwrap_or_default()` on a missing key would silently
+        // render a header-only ariadne report against an EMPTY source
+        // instead of falling back to the plain `file:line:col` line.
+        let sources: BTreeMap<String, String> = BTreeMap::new(); // "missing.rules" absent
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E03",
+            0..0,
+            "orphaned source_id",
+            "missing.rules",
+            4,
+            1,
+        )
+        .with_source_id("missing.rules");
+
+        let out = strip_ansi(&render(&[d], &sources));
+        let expected = "missing.rules:4:1 [fapd-E03] error: orphaned source_id\n";
+        assert_eq!(
+            out, expected,
+            "a source_id absent from `sources` must fall back to the exact plain line"
+        );
+        assert!(
+            !out.contains('\u{2500}'),
+            "no ariadne box-drawing underline must appear for the missing-source \
+             fallback, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn human_render_mixed_plain_and_ariadne_groups_plain_first_regardless_of_input_order() {
+        // BLOCKER: plain-vs-ariadne interleaving was previously unpinned.
+        // `render()` collects ALL plain lines into one buffer and ALL
+        // ariadne snippets into a separate buffer, then always emits
+        // plain-buffer-then-ariadne-buffer (human.rs ~142-154) - REGARDLESS
+        // of each diagnostic's position in the input slice. A refactor that
+        // instead collects everything into ONE buffer in strict input
+        // order would silently change these exact bytes while passing
+        // every single-kind test in this file. This test also doubles as
+        // the missing-source_id-in-a-mixed-batch case (the same shape the
+        // sibling single-diagnostic test above covers alone).
+        //
+        // Input order here is ariadne-diagnostic FIRST, plain-diagnostic
+        // SECOND - the opposite of the expected OUTPUT order below.
+        let source = "allow exe=/usr/bin/present trust=1\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("present.rules".to_string(), source.to_string());
+
+        let byte_p = source.find("present").expect("present token present");
+        let d_ariadne = Diagnostic::new(
+            Severity::Error,
+            "fapd-E04",
+            byte_p..byte_p + 7,
+            "present-source finding",
+            "present.rules",
+            1,
+            byte_p + 1,
+        )
+        .with_source_id("present.rules");
+
+        let d_plain = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W05",
+            0..0,
+            "missing text",
+            "orphan.rules",
+            9,
+            1,
+        )
+        .with_source_id("orphan.rules"); // absent from `sources`
+
+        let out = strip_ansi(&render(&[d_ariadne, d_plain], &sources));
+
+        let expected = "orphan.rules:9:1 [fapd-W05] warning: missing text\nError: [fapd-E04] error: present-source finding\n   \u{256d}\u{2500}[ present.rules:1:20 ]\n   \u{2502}\n 1 \u{2502} allow exe=/usr/bin/present trust=1\n   \u{2502}                    \u{2500}\u{2500}\u{2500}\u{252c}\u{2500}\u{2500}\u{2500}  \n   \u{2502}                       \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} present-source finding\n\u{2500}\u{2500}\u{2500}\u{256f}\n";
+        assert_eq!(
+            out, expected,
+            "the plain line must appear BEFORE the ariadne snippet even though the \
+             ariadne diagnostic came FIRST in the input slice"
+        );
+    }
+
+    #[test]
+    fn human_render_distinct_source_ids_with_identical_text_render_independently() {
+        // CONCERN: a cache keyed by SOURCE TEXT rather than `source_id`
+        // (e.g. a `HashMap<String, (Id, Source)>` deduplicating by
+        // content) is byte-correct only when ids never collide.
+        // `ariadne::Cache for (Id, Source)` errors on an id mismatch
+        // (`fetch` returns `Err` unless the requested id equals the
+        // cache's stored id), so a text-keyed cache would silently drop
+        // the SECOND id's snippet down to a header-only report (no caret
+        // box) even though the underlying bytes are identical to the
+        // first.
+        let source = "allow exe=/usr/bin/twin trust=1\n";
+        let mut sources = BTreeMap::new();
+        sources.insert("a.rules".to_string(), source.to_string());
+        sources.insert("c.rules".to_string(), source.to_string()); // byte-identical to a.rules
+
+        let byte_twin = source.find("twin").expect("twin present");
+        let d_a = Diagnostic::new(
+            Severity::Error,
+            "fapd-E05",
+            byte_twin..byte_twin + 4,
+            "first twin finding",
+            "a.rules",
+            1,
+            byte_twin + 1,
+        )
+        .with_source_id("a.rules");
+        let d_c = Diagnostic::new(
+            Severity::Warning,
+            "fapd-W06",
+            byte_twin..byte_twin + 4,
+            "second twin finding",
+            "c.rules",
+            1,
+            byte_twin + 1,
+        )
+        .with_source_id("c.rules");
+
+        let out = strip_ansi(&render(&[d_a, d_c], &sources));
+
+        assert!(
+            out.contains("a.rules:1"),
+            "first report header must reference a.rules, got {out:?}"
+        );
+        assert!(
+            out.contains("c.rules:1"),
+            "second report header must reference c.rules, got {out:?}"
+        );
+
+        let split_at = out.find("fapd-W06").expect("fapd-W06 present");
+        let (a_segment, c_segment) = out.split_at(split_at);
+        assert!(
+            a_segment.contains('\u{2500}'),
+            "a.rules report must render its full box-drawing snippet, got {a_segment:?}"
+        );
+        assert!(
+            c_segment.contains('\u{2500}'),
+            "c.rules report must ALSO render its full box-drawing snippet, not a \
+             header-only report from an id-mismatched cache lookup, got {c_segment:?}"
+        );
+    }
+
+    #[test]
+    fn human_render_diagnostic_count_on_one_source_scales_sublinearly() {
+        // #559 perf regression harness (this is the RED case against
+        // TODAY's code - it is expected to FAIL until a per-source_id
+        // cache lands). `render()` rebuilds `ariadne::Source` PER
+        // DIAGNOSTIC today (human.rs ~90), so N diagnostics against the
+        // SAME source_id cost roughly N x the per-`Source::from` build
+        // time. A per-source_id cache should cost close to 1x regardless
+        // of N. Measured in the debug profile (what `cargo test` runs):
+        // `Source::from` ~21.5ms @ 50KB. This is a RATIO check - never an
+        // absolute wall-clock threshold - specifically so it cannot flake
+        // on a loaded CI box: today the ratio is ~24x; a per-source_id
+        // cache brings it to ~1-2x. The 6x cutoff leaves generous margin
+        // above the cached case while still well below the uncached one.
+        let (source, spans) = synthetic_source_with_spans(50_000, 24);
+        let mut sources = BTreeMap::new();
+        sources.insert("scaling.rules".to_string(), source);
+
+        let one_diag = vec![
+            Diagnostic::new(
+                Severity::Warning,
+                "fapd-W03",
+                spans[0].clone(),
+                "scaling probe",
+                "scaling.rules",
+                1,
+                1,
+            )
+            .with_source_id("scaling.rules"),
+        ];
+        let many_diags: Vec<Diagnostic> = spans[..24]
+            .iter()
+            .enumerate()
+            .map(|(i, span)| {
+                Diagnostic::new(
+                    Severity::Warning,
+                    "fapd-W03",
+                    span.clone(),
+                    "scaling probe",
+                    "scaling.rules",
+                    i + 1,
+                    1,
+                )
+                .with_source_id("scaling.rules")
+            })
+            .collect();
+
+        let t_one = min_duration_over(|| drop(render(&one_diag, &sources)), 3);
+        let t_many = min_duration_over(|| drop(render(&many_diags, &sources)), 3);
+
+        assert!(
+            t_many < t_one * 6,
+            "24 diagnostics on ONE source_id took {t_many:?}, vs {t_one:?} for 1 \
+             diagnostic (ratio {:.1}x) - expected < 6x if the Source is cached per \
+             source_id rather than rebuilt per diagnostic (#559)",
+            t_many.as_secs_f64() / t_one.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn human_render_cost_scales_with_used_sources_not_map_size() {
+        // #559 perf regression harness targeting a DIFFERENT wrong "fix"
+        // than the sibling scaling test above: an EAGER whole-map cache
+        // (e.g. `ariadne::sources()`, which iterates and builds a `Source`
+        // for EVERY map entry up front - ariadne-0.6.0 src/source.rs
+        // ~398-410) would pass the single-source-id scaling test above
+        // (only one source_id is used there) yet still be a real
+        // regression on a directory-mode lint run, where `sources` holds
+        // one entry PER SCANNED FILE regardless of how many carry
+        // findings (commands/fapolicyd/lint.rs:139 inserts every staged
+        // file). The right invariant: render() cost should track how many
+        // DISTINCT source_ids actually have a diagnostic pointed at them,
+        // not how many entries `sources` holds. Today's pre-cache code
+        // already passes this (it never looks at unused map entries), so
+        // this is a GREEN-BY-DESIGN regression guard, not a RED test - its
+        // job is to fail a plausible wrong "fix", not today's code.
+        let (used_source, spans) = synthetic_source_with_spans(50_000, 1);
+
+        let mut small_map = BTreeMap::new();
+        small_map.insert("used.rules".to_string(), used_source.clone());
+
+        let mut large_map = BTreeMap::new();
+        large_map.insert("used.rules".to_string(), used_source);
+        for i in 0..39 {
+            let (unused_source, _) = synthetic_source_with_spans(50_000, 1);
+            large_map.insert(format!("unused-{i:02}.rules"), unused_source);
+        }
+
+        let diags = vec![
+            Diagnostic::new(
+                Severity::Warning,
+                "fapd-W03",
+                spans[0].clone(),
+                "scaling probe",
+                "used.rules",
+                1,
+                1,
+            )
+            .with_source_id("used.rules"),
+        ];
+
+        let t_small = min_duration_over(|| drop(render(&diags, &small_map)), 3);
+        let t_large = min_duration_over(|| drop(render(&diags, &large_map)), 3);
+
+        assert!(
+            t_large < t_small * 6,
+            "one diagnostic against a 40-entry sources map took {t_large:?}, vs \
+             {t_small:?} for the SAME diagnostic against a 1-entry map (ratio {:.1}x) - \
+             expected < 6x; an eager whole-map cache fails this even though its output \
+             is byte-identical to today's (#559)",
+            t_large.as_secs_f64() / t_small.as_secs_f64()
+        );
     }
 
     #[test]

@@ -74,9 +74,15 @@ fn source_matches(filter: TrustSourceFilter, source: TrustSource) -> bool {
 ///    flag is never silently weakened to `none` (#292). This is intentionally
 ///    stricter than the conf-file path below, which stays daemon-faithful.
 /// 2. `integrity` key from `--config <path>` (or default `/etc/fapolicyd/fapolicyd.conf`)
-///    - Key present in a found conf: use its value (`from_conf_value`, which
-///      maps an unknown/`none` value to `IntegrityMode::None` for daemon parity)
-///    - Key absent in a found conf: daemon default `IntegrityMode::None`
+///    - Key present and its value is one the daemon actually recognises
+///      (`IntegrityMode::try_from_conf_value`, first-token + case-insensitive
+///      per the daemon's own tokenizer/`strcasecmp`): use that mode.
+///    - Key absent in a found conf: daemon default `IntegrityMode::None`.
+///    - Key present but its value is one the real daemon does NOT recognise
+///      (issue #582 RULING 1, empirically verified: such a conf makes the
+///      daemon REFUSE TO START): assume STRICT (`IntegrityMode::Sha256`) --
+///      never weaken enforcement because the conf's intended mode could not
+///      be resolved, mirroring the unreadable-conf arm below.
 /// 3. No conf file found at the path: STRICT (`IntegrityMode::Sha256`)
 ///
 /// Returns `(mode, source_description)` so callers can emit an informational header.
@@ -94,17 +100,35 @@ fn resolve_integrity_mode(
     // Determine which conf path to read.
     let conf_path = config_path.map_or_else(|| PathBuf::from(DEFAULT_CONF_PATH), Path::to_path_buf);
 
-    match std::fs::read_to_string(&conf_path) {
+    // Routed through `rulesteward_core::fsread` (#560/#583): a FIFO/socket/
+    // device node `--config` target fails fast (surfaced below as an
+    // "unreadable conf" degrade to strict, same as any other read error)
+    // instead of hanging or reading unbounded data.
+    match rulesteward_core::fsread::read_to_string(&conf_path) {
         Ok(text) => {
-            // Conf found: read the integrity key (absent key -> daemon default None).
             let raw = conf_value(&text, "integrity");
-            let mode = IntegrityMode::from_conf_value(raw);
-            let src = format!(
-                "{} (integrity={})",
-                conf_path.display(),
-                raw.unwrap_or("absent")
-            );
-            (mode, src)
+            // Key absent: daemon default (no integrity checking). Bind `val`
+            // here (rather than re-deriving it with a fallback below) so the
+            // present-but-unrecognised branch below never needs a placeholder
+            // for a case (`raw` being absent) this early return already ruled
+            // out.
+            let Some(val) = raw else {
+                let src = format!("{} (integrity=absent)", conf_path.display());
+                return (IntegrityMode::None, src);
+            };
+            if let Some(mode) = IntegrityMode::try_from_conf_value(raw) {
+                let src = format!("{} (integrity={val})", conf_path.display());
+                (mode, src)
+            } else {
+                // Key present but not a value the daemon's integrity_parser
+                // recognises (#582 RULING 1, empirically verified: e.g. a
+                // CRLF- or tab-mangled token). The real daemon REFUSES TO
+                // START on such a conf, so - exactly like the unreadable-conf
+                // arm below - never weaken enforcement because the conf's
+                // intended mode could not be resolved: assume the strictest.
+                let src = "invalid integrity value - assuming strict (sha256)".to_string();
+                (IntegrityMode::Sha256, src)
+            }
         }
         // No conf file at the path: STRICT (treat as sha256).
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

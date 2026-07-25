@@ -32,28 +32,137 @@
 //!   A metadata check alone, performed AFTER a blocking open, is therefore
 //!   not sufficient. The implementation must open non-blocking (e.g.
 //!   `std::os::unix::fs::OpenOptionsExt::custom_flags` with the platform
-//!   `O_NONBLOCK` value -- a plain `i32`, no new crate dependency needed) so
+//!   `O_NONBLOCK` value, aliased from `libc` by the constant below) so
 //!   the open call itself cannot hang, check the resolved type, reject a
 //!   non-regular file immediately, and only then perform a normal buffered
 //!   read of an accepted regular file.
 //!
 //! Consumed via the full path (`rulesteward_core::fsread::read_to_string`);
 //! `lib.rs` re-exports are consolidated at integration, not per-lane.
+//!
+//! # `read_stream_to_string` (#583/#561 lane 3)
+//!
+//! [`read_to_string`] rejects EVERY FIFO, including one with a live writer on
+//! the other end -- correct for a config-file target (a real config file is
+//! never a pipe), but wrong for the small set of call sites that read a
+//! STREAM-shaped input the operator legitimately pipes in (`fapolicyd explain
+//! --record`, `report --file`/`--diff-against`, `simulate --workload`,
+//! `selinux triage --record`/`--audit-log`, `auditd cost --from-log`).
+//! Converting those six sites to `read_to_string` silently regressed pipe /
+//! process-substitution / `/dev/stdin` support that worked one commit earlier
+//! (`74dea9e`), while `simulate --workload -` kept a `-`-means-stdin escape
+//! hatch the other five flags never had -- so the tool accepted a pipe under
+//! one spelling and rejected it under another. [`read_stream_to_string`] is
+//! the sibling those six call sites route through instead; it is strictly
+//! MORE permissive than `read_to_string` (accepts everything `read_to_string`
+//! accepts, plus a FIFO with a live writer), never less.
+//!
+//! Directory / socket / char device / block device stay rejected exactly as
+//! before (same error shape, same [`describe_file_type`] wording). A FIFO is
+//! special-cased:
+//!
+//! 1. Opened non-blocking (the same [`O_NONBLOCK`] this module already uses),
+//!    so `open()` can never hang.
+//! 2. `O_RDONLY|O_NONBLOCK` open SUCCEEDS on every FIFO on Linux, writer or
+//!    not -- measured: a writerless FIFO's non-blocking open succeeds and the
+//!    first read returns `b""` immediately (EOF), so the open call alone
+//!    cannot distinguish "has a writer" from "does not". Emptiness of a
+//!    single read is therefore a NECESSARY but not, by itself, SUFFICIENT
+//!    signal: a writer whose `open()` call is merely in flight (scheduled but
+//!    not yet executed -- races real callers under CPU contention; MEASURED
+//!    on this branch running `read_stream_to_string_writer_ful_fifo_reads_ok`
+//!    alone: unloaded 20/20 pass, under 6 CPU spinners 19/20 pass with a false
+//!    `InvalidInput` rejection) has not registered with the kernel at read
+//!    time, so that first read legitimately sees zero writers and returns EOF
+//!    even though a writer is about to attach. `POLLHUP` cannot disambiguate
+//!    this either: it only reports "no writer *right now*", the same instant
+//!    a plain read already samples. There is no race-free primitive here, so
+//!    the operator has ruled (#583 lane 3): retry the read within a FIXED,
+//!    small ceiling ([`FIFO_EMPTY_RETRY_BUDGET`], `thread::sleep`-spaced by
+//!    [`FIFO_EMPTY_RETRY_INTERVAL`] -- never a busy-spin) before concluding
+//!    the FIFO is genuinely writerless. The ceiling bounds only how long an
+//!    EMPTY FIFO is retried before rejection -- it is NOT a total-wall-time
+//!    guarantee for this function (this is NOT a return of the #560 hang,
+//!    which was a writerless FIFO that never gets a writer at all; the
+//!    ceiling does bound that case). Once a writer HAS attached, the read
+//!    that observes it blocks normally until every writer closes -- e.g.
+//!    `mkfifo f; sleep 999 > f` then a caller reading `f` waits out the full
+//!    999s. That is correct, unavoidable stream semantics (you cannot read
+//!    to EOF without waiting for EOF), not a bound violation. The deadline
+//!    is also checked BEFORE each sleep
+//!    (`while contents.is_empty() && Instant::now() < deadline`), so the
+//!    retry window itself can run up to one [`FIFO_EMPTY_RETRY_INTERVAL`]
+//!    past the nominal [`FIFO_EMPTY_RETRY_BUDGET`]. Both sit far below every
+//!    writerless-FIFO regression test's own bound (5s at the unit level, 15s
+//!    at the e2e level), so a genuinely writerless FIFO still ends in the
+//!    SAME rejection, just marginally later. A FIFO
+//!    whose read is STILL empty once the ceiling elapses is rejected with the
+//!    SAME `"refusing to read non-regular file (found FIFO)"` error
+//!    `read_to_string` already produces for a writerless FIFO -- this is what
+//!    keeps every existing writerless-FIFO regression test (six of them,
+//!    across `explain`/`report`/`simulate`/`selinux triage`/`auditd cost`/
+//!    `path_error_fifo.rs`) green while still accepting a live pipe (and,
+//!    with the retry, a slightly-slow-to-attach one).
+//! 3. Before that read (and every retried read), `O_NONBLOCK` is CLEARED on
+//!    the already-open fd via `fcntl(F_GETFL)`/`fcntl(F_SETFL)`. Measured:
+//!    reading a 2 MB stream WITHOUT clearing the flag returns exactly 65536
+//!    bytes (one pipe buffer) then fails with `EAGAIN` -- silent truncation,
+//!    not merely slow. The flag must be cleared for the buffered read to
+//!    block normally until the writer is done, exactly like a blocking
+//!    `open()` would have.
+//!
+//! Clearing `O_NONBLOCK` is a real syscall (`fcntl`), not just a constant, so
+//! `read_stream_to_string`'s FIFO path needs the `libc` crate for the
+//! `fcntl`/`F_GETFL`/`F_SETFL` FFI declarations (the `O_NONBLOCK` constant
+//! below is aliased from the same crate). `libc` is already a normal
+//! (non-dev) dependency of the shipped binary via `heed -> lmdb-master-sys`
+//! (see the workspace `Cargo.toml`), so this adds no new code to the musl
+//! static binary.
 
 use std::fs::{FileType, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::io::{AsFd, AsRawFd};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
-/// `O_NONBLOCK`, Linux's value (`asm-generic/fcntl.h`, shared by every
-/// architecture the `x86_64-unknown-linux-musl` distribution target and the
-/// project's other Linux targets build for). Passed via
+/// `O_NONBLOCK`, Linux's value on `x86_64`/`aarch64` (`asm-generic/fcntl.h`, the
+/// project's `x86_64-unknown-linux-musl` distribution target). Passed via
 /// [`OpenOptionsExt::custom_flags`] so the `open()` call on a FIFO with no
 /// writer returns immediately instead of blocking -- see the module docs
 /// above for why a metadata check performed only AFTER a blocking open is
-/// not sufficient. No new crate dependency (e.g. `libc`) is pulled in for a
-/// single well-known platform constant.
-const O_NONBLOCK: i32 = 0o4000;
+/// not sufficient.
+///
+/// Defined as an alias for `libc::O_NONBLOCK` rather than a hand-rolled
+/// `0o4000`. An earlier revision hardcoded the literal and justified it by
+/// claiming that consolidating onto `libc::O_NONBLOCK` would mean touching
+/// frozen test source (the tests build their fixture readers with
+/// `super::O_NONBLOCK`). That justification was false: keeping the NAME
+/// `O_NONBLOCK` and changing only what it is bound to leaves every
+/// `super::O_NONBLOCK` use site compiling unchanged, so no test source is
+/// touched and the #583/#561 frozen-tests rule is not engaged. The literal's
+/// only real effect was a latent portability gap -- `0o4000` is correct on
+/// `x86_64`/`aarch64` but wrong on mips/sparc/parisc/alpha Linux, which use a
+/// different `O_NONBLOCK` bit pattern -- so the alias closes that gap at zero
+/// cost. `libc` is linked either way for [`clear_nonblock`]'s `fcntl` calls.
+const O_NONBLOCK: i32 = libc::O_NONBLOCK;
+
+/// Hard ceiling on how long [`read_stream_to_string`] will retry an empty FIFO
+/// read before concluding the FIFO is genuinely writerless (#583 lane 3
+/// operator ruling; see the module docs' "WHY" section for the race this
+/// closes and the measurement behind the number). 200ms is comfortably above
+/// realistic scheduler jitter -- the measured flake (1/20 under 6 CPU
+/// spinners, 0/20 unloaded) is a single missed scheduling window, not a
+/// seconds-scale delay -- while staying far below every writerless-FIFO
+/// regression test's own bound (5s unit-level, 15s e2e-level), so this is a
+/// bound, never a path to waiting indefinitely: a genuinely writerless FIFO
+/// still ends in the same rejection, just marginally later.
+const FIFO_EMPTY_RETRY_BUDGET: Duration = Duration::from_millis(200);
+
+/// Sleep between retries within [`FIFO_EMPTY_RETRY_BUDGET`]. A real
+/// `thread::sleep`, never a busy-spin, so the retry costs no CPU beyond a
+/// handful of periodic wakeups (at most ~20 over the full budget).
+const FIFO_EMPTY_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Drop-in replacement for [`std::fs::read_to_string`] that rejects any
 /// non-regular file (FIFO, directory, socket, block/character device)
@@ -82,13 +191,7 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
     // between this check and the read below (the module contract).
     let file_type = file.metadata()?.file_type();
     if !file_type.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "refusing to read non-regular file (found {})",
-                describe_file_type(file_type)
-            ),
-        ));
+        return Err(non_regular_file_error(file_type));
     }
 
     // `O_NONBLOCK` has no effect on regular files (open(2): "this flag has
@@ -98,6 +201,168 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(contents)
+}
+
+/// Like [`read_to_string`], but ALSO accepts a FIFO that has a live writer on
+/// the other end -- restoring the pipe / process-substitution / `/dev/stdin`
+/// support a plain `read_to_string` conversion removes for stream-shaped
+/// inputs. See the module docs above for the full contract and the measured
+/// "WHY" behind the empty-means-reject rule and the `O_NONBLOCK` clear.
+///
+/// Directory / socket / char device / block device are rejected exactly like
+/// `read_to_string` (same error shape). A regular file reads exactly like
+/// `read_to_string`. A FIFO is opened non-blocking (so `open()` can never
+/// hang), has `O_NONBLOCK` cleared, and is read to EOF: an empty read is
+/// retried within a small, fixed ceiling ([`FIFO_EMPTY_RETRY_BUDGET`]) to
+/// distinguish a genuinely writerless FIFO from one whose writer has not
+/// registered with the kernel yet (see the module docs' "WHY" section for
+/// the measured race and why the bound is what makes emptiness a sound
+/// discriminator, not just a fast one). A FIFO still empty once the ceiling
+/// elapses is rejected with the SAME
+/// `"refusing to read non-regular file (found FIFO)"` error `read_to_string`
+/// produces for it; a writer-ful FIFO yields its content and is accepted.
+///
+/// # Errors
+///
+/// Returns the underlying `io::Error` if `path` cannot be opened, or an
+/// `io::ErrorKind::InvalidInput` error naming the file type if the resolved
+/// target is not a regular file and (for a FIFO specifically) is still empty
+/// once the bounded retry ceiling elapses.
+pub fn read_stream_to_string(path: &Path) -> io::Result<String> {
+    // Same non-blocking open as `read_to_string`, for the same reason: the
+    // `open()` call itself must never be able to hang, regardless of what
+    // `path` resolves to.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(path)?;
+
+    // Metadata of the ALREADY-OPENED fd, never a separate stat/lstat -- same
+    // TOCTOU discipline as `read_to_string` (the module contract).
+    let file_type = file.metadata()?.file_type();
+
+    if file_type.is_fifo() {
+        // A non-blocking open() on a FIFO succeeds unconditionally, writer or
+        // not (measured; see module docs), so the type check alone cannot
+        // tell them apart. Clear `O_NONBLOCK` so the read below blocks
+        // normally to EOF (without this, a >64KB writer-ful stream silently
+        // truncates at one pipe buffer and errors with EAGAIN -- also
+        // measured; see module docs), then read fully.
+        clear_nonblock(&file)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        // An empty read is NOT, by itself, proof the FIFO is writerless -- it
+        // only proves "no writer at THIS instant" (module docs' "WHY"
+        // section: a writer whose open() is merely in flight has not
+        // registered with the kernel yet). Retry within a fixed, small
+        // ceiling before giving up: this is what turns "empty" into a sound
+        // writerless discriminator rather than a racy one, without ever
+        // risking an indefinite wait (the ceiling is a hard bound, not a
+        // return of the #560 hang).
+        //
+        // The `replace < with <=` mutant on the comparison below is a
+        // documented, parked survivor. It is NOT semantically equivalent (on
+        // an exact-nanosecond tie the mutant performs one extra sleep-and-read
+        // before the same verdict, and that read could in principle observe a
+        // just-arrived writer) -- it is UNREACHABLE, which is the same
+        // disposition for a different reason: `Instant` wraps nanosecond
+        // CLOCK_MONOTONIC, so distinguishing the two forms requires forcing
+        // `now()` to land on `deadline` to the nanosecond, which no test can
+        // construct without a clock seam this module does not have. Same class
+        // as the two `fcntl` sentinel survivors documented in
+        // `clear_nonblock` below.
+        let deadline = Instant::now() + FIFO_EMPTY_RETRY_BUDGET;
+        while contents.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(FIFO_EMPTY_RETRY_INTERVAL);
+            file.read_to_string(&mut contents)?;
+        }
+
+        return if contents.is_empty() {
+            Err(non_regular_file_error(file_type))
+        } else {
+            Ok(contents)
+        };
+    }
+
+    if !file_type.is_file() {
+        return Err(non_regular_file_error(file_type));
+    }
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+/// Clear `O_NONBLOCK` on `file`'s fd via `fcntl(F_GETFL)` + `fcntl(F_SETFL)`,
+/// so a subsequent buffered read on a FIFO blocks normally until EOF instead
+/// of stopping after one pipe buffer with `EAGAIN`. See the module docs'
+/// "WHY" section for the measured evidence this is required, not optional.
+fn clear_nonblock(file: &std::fs::File) -> io::Result<()> {
+    let fd = file.as_fd();
+    // SAFETY: `fd` is a `BorrowedFd<'_>` tied by the type system to `file`'s
+    // borrow, so it cannot outlive the open file descriptor it names (nothing
+    // else closes or reassigns the underlying descriptor concurrently).
+    // `fcntl(F_GETFL)`/`fcntl(F_SETFL)` are plain POSIX flag-query/flag-set
+    // operations that read/write only the kernel's per-open-file-description
+    // status flags for this one fd -- they touch no process memory beyond
+    // the returned/passed `c_int` flags.
+    #[allow(unsafe_code)]
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    // fcntl(2): "On error, -1 is returned" -- exactly -1, never some other
+    // negative value, is the documented failure sentinel; a successful
+    // F_GETFL always yields a non-negative flags word. Checking the precise
+    // contract (rather than `< 0`) also happens to remove a surviving
+    // mutant (`replace < with <=`): the two checks differ only at
+    // `flags == 0`, which cannot occur here because every fd this function
+    // is called on was opened with `O_NONBLOCK` set.
+    //
+    // A second mutant on this exact check (`delete -`, turning `== -1` into
+    // `== 1`) is a documented, parked survivor, not fixable here: F_GETFL
+    // only ever returns a non-negative flags word or exactly -1 on any real
+    // system, never 1, so killing this mutant would require making the real
+    // `fcntl(2)` syscall itself fail -- not reasonably reachable from a test
+    // at this level without a fault-injection seam this module does not
+    // have. The parallel `== -1` check on the `F_SETFL` call below has the
+    // same documented survivor for the same reason.
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: same fd-ownership invariant as the `F_GETFL` call above. This
+    // call additionally relies on `fcntl`'s C variadic signature
+    // (`fcntl(fd, cmd, ...)`): the caller must pass the argument type `cmd`
+    // expects, and `F_SETFL` expects an `int` -- `flags & !libc::O_NONBLOCK`
+    // is a `c_int` (both operands are), satisfying that obligation. (The
+    // `F_GETFL` call above passes no variadic argument at all, so this
+    // obligation is unique to this call.)
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    // Same fcntl(2) sentinel as the `F_GETFL` check above: exactly `-1` is
+    // the documented failure value for `F_SETFL` too, so both checks use the
+    // same `== -1` form (an earlier version of this function checked `< 0`
+    // here, which is looser than the documented contract with no behavioral
+    // difference on this fd -- but leaves a reader wondering whether the
+    // difference is meaningful). The `delete -` mutant on this check (see
+    // the `F_GETFL` check's comment above) is the same documented, parked
+    // survivor for the same reason.
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Build the shared `InvalidInput` rejection error both [`read_to_string`]
+/// and [`read_stream_to_string`] return for a non-regular (or, for the
+/// latter, writerless-FIFO) target. The path itself is deliberately NOT
+/// embedded (see the module docs' error-shape note).
+fn non_regular_file_error(file_type: FileType) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "refusing to read non-regular file (found {})",
+            describe_file_type(file_type)
+        ),
+    )
 }
 
 /// Name the resolved file type for the rejection message. Order matters only
@@ -124,7 +389,9 @@ fn describe_file_type(file_type: FileType) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::read_to_string;
+    use super::{read_stream_to_string, read_to_string};
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -372,5 +639,373 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // read_stream_to_string (#583/#561 lane 3 -- adversarial review miss 1)
+    // -------------------------------------------------------------------
+
+    /// The happy path is unchanged from `read_to_string`: a regular file
+    /// reads back byte-for-byte.
+    #[test]
+    fn read_stream_to_string_regular_file_reads_ok() {
+        let dir = TempDir::new("stream-regular");
+        let f = dir.path().join("plain.txt");
+        std::fs::write(&f, "hello stream\n").expect("write");
+        let got = read_stream_to_string(&f).expect("a regular file must read OK");
+        assert_eq!(got, "hello stream\n");
+    }
+
+    /// A directory is rejected with the same type-aware error `read_to_string`
+    /// produces -- `read_stream_to_string` is MORE permissive only for FIFOs,
+    /// never for any other non-regular type.
+    #[test]
+    fn read_stream_to_string_directory_is_rejected() {
+        let dir = TempDir::new("stream-directory");
+        let err = read_stream_to_string(dir.path()).expect_err("a directory must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-regular file") && msg.to_lowercase().contains("directory"),
+            "error must name the non-regular-file/directory condition, got: {msg}"
+        );
+    }
+
+    /// A FIFO with NO writer must still be rejected -- this is the frozen
+    /// contract every call site's e2e test pins (six sites, plus
+    /// `path_error_fifo.rs`): a writerless FIFO must never silently succeed
+    /// with empty content, and must never hang. Driven off a background
+    /// thread with a bounded `recv_timeout`, mirroring
+    /// `fifo_is_rejected_fast_no_hang` above.
+    #[test]
+    fn read_stream_to_string_writerless_fifo_is_rejected() {
+        let dir = TempDir::new("stream-fifo-writerless");
+        let fifo = dir.path().join("special.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        let (tx, rx) = mpsc::channel();
+        let fifo_for_thread = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_stream_to_string(&fifo_for_thread);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => {
+                let err = result.expect_err(
+                    "a writerless FIFO must be rejected, not silently accepted as empty",
+                );
+                assert!(
+                    err.to_string().to_lowercase().contains("fifo"),
+                    "error must name the FIFO file type, got: {err}"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_stream_to_string blocked for 5s+ on a writerless FIFO -- \
+                     a read-to-EOF with no writer must return promptly (EOF, empty \
+                     content), never hang"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+    }
+
+    /// A FIFO WITH a live writer must be accepted, with content read to EOF --
+    /// the whole point of this function (restoring pipe / process-substitution
+    /// support `read_to_string` removed for stream-shaped inputs).
+    ///
+    /// Deterministic BY CONSTRUCTION, not by luck. An earlier version of this
+    /// test spawned the writer and reader with no handshake and claimed "no
+    /// explicit handshake is needed" -- that claim was false: the writer's
+    /// blocking `open(O_WRONLY)` does unblock the instant a reader fd exists,
+    /// but the content write and the reader's first `read()` are then
+    /// UNORDERED, so under load the reader can call `read()` before the
+    /// writer's `open()` call has actually returned and the write has
+    /// happened, observing EOF instead of `CONTENT` (the same race Item 1's
+    /// bounded retry defends production callers against -- this test instead
+    /// removes the race at its root rather than relying on that retry to
+    /// paper over it). Fix: open a `O_RDONLY|O_NONBLOCK` `reader_placeholder`
+    /// FIRST. A non-blocking read-open on a FIFO always succeeds immediately,
+    /// writer or not (module docs above), so this placeholder registers as a
+    /// reader without ever blocking -- which lets the content-writer's own
+    /// blocking `open(O_WRONLY)` proceed immediately too (a write-only open
+    /// needs only SOME reader present, not specifically the reader that will
+    /// eventually call `read_stream_to_string`). The placeholder is a READER
+    /// only (never opened for write), so it never stands in the way of EOF
+    /// once the real writer closes; its sole job is keeping the FIFO's total
+    /// open-fd count above zero for as long as `CONTENT` sits in the pipe
+    /// buffer, so the kernel never discards that buffer (an all-fds-closed
+    /// FIFO's buffered data IS discarded -- the ordering hazard the module
+    /// docs warn about). By the time `read_stream_to_string`'s own reader
+    /// opens, `CONTENT` is already fully buffered and the content-writer has
+    /// already closed, so its `read()` deterministically returns `CONTENT`
+    /// then EOF regardless of scheduling.
+    #[test]
+    fn read_stream_to_string_writer_ful_fifo_reads_ok() {
+        const CONTENT: &str = "hello via a live pipe writer\n";
+
+        let dir = TempDir::new("stream-fifo-writer");
+        let fifo = dir.path().join("special.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        // Registers a reader without ever blocking (see doc comment above);
+        // kept alive until the content write below has landed so the FIFO's
+        // open-fd count never hits zero in the meantime.
+        let reader_placeholder = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(super::O_NONBLOCK)
+            .open(&fifo)
+            .expect("non-blocking read-only open of a fifo must never block");
+
+        // Proceeds immediately (a reader -- `reader_placeholder` -- already
+        // exists), writes, then closes -- deterministically, in the test's
+        // own thread, before the real reader ever starts.
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write (a reader already exists, so this cannot block)");
+        writer.write_all(CONTENT.as_bytes()).expect("write to fifo");
+        drop(writer); // closes this write end -> zero writers remain.
+
+        let (tx, rx) = mpsc::channel();
+        let fifo_for_reader = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_stream_to_string(&fifo_for_reader);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => {
+                let got =
+                    result.expect("a FIFO with a live writer must be accepted and read to EOF");
+                assert_eq!(got, CONTENT);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_stream_to_string on a writer-ful FIFO did not return within \
+                     5s -- clearing O_NONBLOCK must let the read block normally to EOF"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+
+        drop(reader_placeholder);
+    }
+
+    /// Kills the `clear_nonblock`'s `flags & !O_NONBLOCK` -> `flags |
+    /// !O_NONBLOCK` mutant (Item 3, survivor A): every OTHER FIFO test in
+    /// this module writes a payload that fits in one pipe buffer (64 KiB on
+    /// Linux), where a non-blocking read succeeds anyway regardless of
+    /// whether `O_NONBLOCK` was actually cleared -- so none of them can tell
+    /// "cleared" from "left set" apart. This test streams 2 MiB (comfortably
+    /// over one pipe buffer) through a FIFO and asserts the FULL content
+    /// round-trips byte-exact: with the real `&` (clear), the blocking read
+    /// waits out the writer and returns everything; with the mutant `|`
+    /// (leaves `O_NONBLOCK` set), the read returns only the first buffered
+    /// chunk and then fails with `EAGAIN` instead of completing (verified by
+    /// hand: hand-mutating `&` to `|` here and re-running only this test
+    /// fails with a `WouldBlock`-flavored `io::Error`; reverted after
+    /// confirming).
+    ///
+    /// Uses the same `reader_placeholder` construction as the test above so
+    /// this test is deterministic in its own right, independent of both
+    /// Item 1's retry and Item 2's fix to the sibling test.
+    #[test]
+    fn read_stream_to_string_writer_ful_fifo_exceeding_pipe_buffer_reads_ok() {
+        // Printable ASCII only (never a multi-byte UTF-8 sequence that a
+        // fixed-size stride could split), so the payload is guaranteed valid
+        // UTF-8 and `read_to_string` cannot fail on decoding.
+        const LEN: usize = 2 * 1024 * 1024;
+        let payload: String = (0..LEN)
+            .map(|i| {
+                let offset = u8::try_from(i % 26).expect("i % 26 is always < 26, fits in u8");
+                (b'a' + offset) as char
+            })
+            .collect();
+
+        let dir = TempDir::new("stream-fifo-writer-large");
+        let fifo = dir.path().join("special.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        // See `read_stream_to_string_writer_ful_fifo_reads_ok` above for why
+        // this placeholder makes the writer's open() and the buffered-data
+        // lifetime deterministic.
+        let reader_placeholder = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(super::O_NONBLOCK)
+            .open(&fifo)
+            .expect("non-blocking read-only open of a fifo must never block");
+
+        // 2 MiB exceeds the default 64 KiB pipe buffer, so this write blocks
+        // partway through until the reader below drains it -- hence a
+        // background thread rather than a synchronous write like the small
+        // sibling test above.
+        let fifo_for_writer = fifo.clone();
+        let payload_for_writer = payload.clone();
+        let writer_thread = std::thread::spawn(move || {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo_for_writer)
+                .expect("open fifo for write (a reader already exists, so this cannot block)");
+            f.write_all(payload_for_writer.as_bytes())
+                .expect("write full 2 MiB payload to fifo");
+            // `f` drops here, closing this write end.
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let fifo_for_reader = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_stream_to_string(&fifo_for_reader);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => {
+                let got = result.expect(
+                    "a FIFO with a live writer streaming >1 pipe buffer must be accepted and \
+                     read to EOF in full, not truncated",
+                );
+                assert_eq!(
+                    got.len(),
+                    LEN,
+                    "content must round-trip byte-exact, not truncate at one pipe buffer (65536 \
+                     bytes) -- got {} bytes",
+                    got.len()
+                );
+                assert_eq!(got, payload, "content must round-trip byte-exact");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_stream_to_string on a large writer-ful FIFO did not return within \
+                     10s -- clearing O_NONBLOCK must let the read block normally to EOF"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+
+        writer_thread.join().expect("writer thread must not panic");
+        drop(reader_placeholder);
+    }
+
+    /// Kills the deadline/retry-loop mutants at `read_stream_to_string`'s
+    /// empty-FIFO retry (`replace + with -` on the deadline computation;
+    /// `replace < with >`/`==`/`<=` on the retry condition). Every OTHER FIFO
+    /// test in this module either has a writer attached BEFORE the reader
+    /// starts (so the very first read already succeeds, never touching the
+    /// retry loop) or has no writer at all, ever (so the loop -- broken or
+    /// not -- ends in the same rejection once its budget elapses). Neither
+    /// shape can tell "the retry ran and picked up a just-attached writer"
+    /// apart from "the retry loop does not exist"; the only prior evidence
+    /// for that distinction was a statistical 20/20-under-load measurement
+    /// (module docs), not a deterministic assertion.
+    ///
+    /// This test inverts the ordering on purpose: the reader (under test)
+    /// starts with ZERO writers present, so its first, pre-retry read
+    /// genuinely observes no writer and returns empty; only THEN, after a
+    /// delay comfortably inside [`FIFO_EMPTY_RETRY_BUDGET`], does a writer
+    /// attach and write. A correct retry loop picks the content up on a
+    /// later poll; a disabled or broken one (any of the four mutants above)
+    /// has already returned the writerless-rejection error by then -- so the
+    /// two are deterministically distinguishable. Hand-confirmed at
+    /// introduction: hand-mutating the `+` on the deadline computation to
+    /// `-`, and separately hand-mutating the retry condition's `<` to `>`,
+    /// each made this ONE test fail (and only this test); both were reverted
+    /// after confirming.
+    ///
+    /// A never-reading `reader_placeholder` (same technique as
+    /// `read_stream_to_string_writer_ful_fifo_reads_ok` above) is opened
+    /// before the writer, so the writer's own blocking `open()` below can
+    /// never itself block on "no reader yet" -- this removes an ACCIDENTAL
+    /// race (has the tested reader's background thread been scheduled yet?)
+    /// while leaving the INTENTIONAL one (does the retry loop notice a
+    /// writer that attaches partway through its budget) untouched: the
+    /// placeholder never calls `read()`, so it never consumes a byte the
+    /// tested reader is meant to observe.
+    ///
+    /// Delay chosen (50ms, well inside the 200ms budget): comfortably above
+    /// realistic thread-spawn/scheduling jitter (the module docs' own
+    /// measured flake was a single missed ~10ms poll window under 6 CPU
+    /// spinners, an order of magnitude below 50ms) so the tested reader's
+    /// first read reliably happens before the writer attaches, and
+    /// comfortably below the 200ms budget (leaving ~150ms of margin, 15x the
+    /// 10ms poll interval) so the retry loop has ample room to notice the
+    /// writer within budget even under load.
+    #[test]
+    fn read_stream_to_string_fifo_slow_writer_within_retry_budget_reads_ok() {
+        const CONTENT: &str = "attached just after the reader started\n";
+        const WRITER_DELAY: Duration = Duration::from_millis(50);
+
+        let dir = TempDir::new("stream-fifo-slow-writer");
+        let fifo = dir.path().join("special.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        let reader_placeholder = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(super::O_NONBLOCK)
+            .open(&fifo)
+            .expect("non-blocking read-only open of a fifo must never block");
+
+        // The reader under test starts with zero writers present (only the
+        // never-reading placeholder above), so its first (pre-retry) read
+        // genuinely observes zero writers and returns empty.
+        let (tx, rx) = mpsc::channel();
+        let fifo_for_reader = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_stream_to_string(&fifo_for_reader);
+            let _ = tx.send(result);
+        });
+
+        // The writer attaches only after WRITER_DELAY -- see the doc comment
+        // above for the margin on both sides.
+        std::thread::sleep(WRITER_DELAY);
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write (the placeholder reader guarantees this cannot block)");
+        writer.write_all(CONTENT.as_bytes()).expect("write to fifo");
+        drop(writer); // closes this write end -> zero writers remain.
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => {
+                let got = result.expect(
+                    "a FIFO whose writer attaches within the retry budget must be accepted, \
+                     not rejected as writerless",
+                );
+                assert_eq!(got, CONTENT, "content must round-trip byte-exact");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_stream_to_string did not return within 5s -- a writer attaching \
+                     within the retry budget must be picked up promptly, not hang"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+
+        drop(reader_placeholder);
     }
 }

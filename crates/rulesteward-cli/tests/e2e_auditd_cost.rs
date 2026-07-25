@@ -7,6 +7,7 @@
 
 use assert_cmd::Command;
 use std::io::Write as _;
+use std::time::Duration;
 
 fn bin() -> Command {
     Command::cargo_bin("rulesteward").expect("rulesteward binary")
@@ -590,6 +591,205 @@ fn auditd_cost_from_log_unreadable_exits_tool_failure() {
         .failure()
         .code(3)
         .stderr(predicates::str::contains("cannot read --from-log"));
+}
+
+/// `--from-log` pointing at a writerless FIFO must fail FAST, never hang:
+/// `count_events_by_key` (`rulesteward-auditd/src/from_log.rs:55`, raw
+/// `std::fs::read_to_string(path)`) has no special-file guard - the crate
+/// depends on `rulesteward-core` already (per #560/#583), it just is not
+/// routed through `fsread::read_to_string` yet. Bounded by a 15s `assert_cmd`
+/// timeout so a wrong (hanging) implementation fails this ONE test instead of
+/// wedging the suite; `status.code().is_some()` is the hang signal.
+#[test]
+fn auditd_cost_from_log_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+    let fifo = dir.path().join("audit.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+
+    let out = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: count_events_by_key's raw std::fs::read_to_string has no \
+         special-file guard; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --from-log target must be a tool failure (EXIT_TOOL_FAILURE=3), not \
+         a hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot read --from-log"),
+        "the diagnostic must keep the same 'cannot read --from-log' prefix the \
+         nonexistent-file case above already asserts; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `auditd cost --from-log /dev/null` silently succeeds and prints a
+/// CONFIDENT, FABRICATED "MEASURED" cost report (measured live 2026-07-24:
+/// exit 0, "CONFIDENCE: rates are MEASURED from --from-log", all-zero
+/// events/GB), the same silent-wrong-answer class the `report --file
+/// /dev/null` and `simulate --workload /dev/null` cases pin. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes the
+/// FIFO test above yet still lets this exact case through. After the fix,
+/// `/dev/null` must be a tool failure instead.
+#[test]
+fn auditd_cost_from_log_dev_null_is_a_tool_failure_not_a_fabricated_measured_report() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write");
+
+    let out = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log", "/dev/null"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not silently read as an empty log yielding a fabricated \"MEASURED\" \
+         cost report; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
+// `--from-log` is a stream-shaped input operators legitimately pipe in.
+// `read_stream_to_string` accepts a FIFO with a live writer; this test pins
+// that a pipe round-trips byte-identically to the same fixture read from a
+// regular file.
+// ---------------------------------------------------------------------------
+
+/// Spawn a background thread that opens `fifo` for writing, writes `content`,
+/// then drops the file (closing the write end so the reader sees EOF). Not
+/// joined: by the time the reading child process exits (what `.output()`
+/// below awaits), the writer must already have completed its blocking write +
+/// close -- that IS what produces the EOF the reader is waiting for -- so
+/// there is nothing left to wait for; the OS thread is reclaimed when the
+/// test binary exits. Mirrors `e2e_explain.rs`'s identical helper (test files
+/// are separate binaries and cannot share it directly).
+fn spawn_fifo_writer(fifo: std::path::PathBuf, content: Vec<u8>) {
+    std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write");
+        f.write_all(&content)
+            .expect("write fixture content to fifo");
+    });
+}
+
+/// `auditd cost --from-log <fifo-with-a-live-writer>` must be accepted, not
+/// rejected: reading the same audit log through a pipe must produce
+/// BYTE-IDENTICAL output to reading it from a regular file. An exit-0-only
+/// assertion would also pass a silently truncated 64KB read; comparing full
+/// stdout catches that.
+#[test]
+fn auditd_cost_from_log_fifo_with_live_writer_round_trips_byte_identical() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rules = dir.path().join("audit.rules");
+    std::fs::write(&rules, "-w /etc/passwd -p wa -k identity\n").expect("write rules");
+    let log_content = "type=SYSCALL msg=audit(1780453999.100:5001): key=\"identity\"\n";
+    let log = dir.path().join("audit.log");
+    std::fs::write(&log, log_content).expect("write log");
+
+    let baseline = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&log)
+        .args(["--format", "json"])
+        .output()
+        .expect("baseline regular-file run");
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline regular-file run must succeed; stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let fifo = dir.path().join("audit.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    spawn_fifo_writer(fifo.clone(), log_content.as_bytes().to_vec());
+
+    let out = bin()
+        .args(["auditd", "cost", "--rules"])
+        .arg(&rules)
+        .args(["--from-log"])
+        .arg(&fifo)
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --from-log with a live writer must round-trip successfully, \
+         not be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, baseline.stdout,
+        "a readable pipe --from-log must produce BYTE-IDENTICAL output to the \
+         same fixture read from a regular file"
+    );
 }
 
 /// Control-directive rules (`-D`, `-b <n>`) are NOT `Watch`/`Syscall` rules:

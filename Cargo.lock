@@ -1096,6 +1096,7 @@ dependencies = [
 name = "rulesteward-core"
 version = "0.7.0"
 dependencies = [
+ "libc",
  "proptest",
  "serde",
  "serde_json",

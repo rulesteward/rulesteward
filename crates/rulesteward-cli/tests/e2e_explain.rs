@@ -33,6 +33,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -345,4 +346,201 @@ fn explain_rule_file_unreadable_exits_tool_failure() {
         .failure()
         .code(3)
         .stderr(predicate::str::contains("reading rule file"));
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+/// Mirrors `path_error_fifo.rs`'s `make_fifo` helper (test files are separate
+/// binaries and cannot share it directly).
+fn make_fifo(dir: &Path, name: &str) -> PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `explain --record <fifo>` must fail FAST, never hang: `run`'s very first
+/// read (`commands/explain.rs:23`, raw `std::fs::read_to_string(&args.record)`)
+/// has no special-file guard today. Bounded by a 15s `assert_cmd` timeout so a
+/// wrong (hanging) implementation fails this ONE test instead of wedging the
+/// suite; `status.code().is_some()` is the hang signal (`assert_cmd`'s
+/// `.timeout()` kills the child on expiry, which `.output()` still reports as
+/// `Ok(Output)` with `status.code() == None`, never an `Err`).
+///
+/// NOTE: unlike this call site, the SECOND read in `explain.rs` (the
+/// ruleset-directory loop at `commands/explain.rs:72`) is reached only for
+/// entries that pass `p.is_file()` in the loop's own collection filter
+/// (`commands/explain.rs:58`), which already excludes a FIFO before the read
+/// -- so a bare `*.rules` FIFO placed in `--ruleset` cannot reach that second
+/// call site at all, and no hang test is written for it here (a test that
+/// cannot fail regardless of the implementation would be a vacuous positive
+/// control, not a regression pin).
+#[test]
+fn explain_record_file_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "record.fifo");
+    let ruleset = ruleset_13_dir();
+
+    let out = bin()
+        .args(["fapolicyd", "explain", "--record"])
+        .arg(&fifo)
+        .args(["--ruleset"])
+        .arg(ruleset.path())
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None, meaning the \
+         process was killed by a signal rather than exiting normally) -- this IS \
+         the #583 gap: explain::run's raw std::fs::read_to_string(&args.record) \
+         has no special-file guard, so a FIFO with no writer hangs forever; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --record must be a tool failure (EXIT_TOOL_FAILURE=3), not a hang \
+         or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `explain --record /dev/null` silently succeeds past the read and
+/// hits the UNRELATED "no FANOTIFY record found" parse-error arm
+/// (`EXIT_ERRORS`=2, measured live 2026-07-24), not a crash. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes
+/// every FIFO test above yet still lets this character-device case through
+/// to the wrong error arm. After the fix (routing through the shared
+/// `rulesteward_core::fsread::read_to_string`, which rejects ANY
+/// non-regular file), `/dev/null` must be a tool failure BEFORE parsing is
+/// ever attempted.
+#[test]
+fn explain_record_dev_null_is_a_tool_failure_not_a_parse_error() {
+    let ruleset = ruleset_13_dir();
+    let out = bin()
+        .args(["fapolicyd", "explain", "--record", "/dev/null"])
+        .args(["--ruleset"])
+        .arg(ruleset.path())
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not read as an empty record and hit the unrelated parse-error arm \
+         (EXIT_ERRORS=2, today's behavior); stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
+// `--record` is a stream-shaped input operators legitimately pipe in
+// (`--record <(cat ausearch.raw.txt)`). `read_stream_to_string` accepts a
+// FIFO with a live writer; these tests pin that a pipe round-trips
+// byte-identically to the same fixture read from a regular file.
+// ---------------------------------------------------------------------------
+
+/// Spawn a background thread that opens `fifo` for writing, writes `content`,
+/// then drops the file (closing the write end so the reader sees EOF). Not
+/// joined: by the time the reading child process exits (what `.output()`
+/// below awaits), the writer must already have completed its blocking write +
+/// close -- that IS what produces the EOF the reader is waiting for -- so
+/// there is nothing left to wait for; the OS thread is reclaimed when the
+/// test binary exits.
+fn spawn_fifo_writer(fifo: PathBuf, content: Vec<u8>) {
+    use std::io::Write as _;
+    std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write");
+        f.write_all(&content)
+            .expect("write fixture content to fifo");
+    });
+}
+
+/// `explain --record <fifo-with-a-live-writer>` must be accepted, not
+/// rejected: reading the SAME real corpus record through a pipe must produce
+/// BYTE-IDENTICAL output to reading it from a regular file. An exit-0-only
+/// assertion would also pass a silently truncated 64KB read; comparing full
+/// stdout catches that.
+#[test]
+fn explain_record_fifo_with_live_writer_round_trips_byte_identical() {
+    let ruleset = ruleset_13_dir();
+    let regular = corpus_record("rocky9");
+    let content = std::fs::read(&regular).expect("read corpus fixture");
+
+    let (baseline_code, baseline_stdout) = run_explain(&regular, ruleset.path(), "json");
+    assert_eq!(
+        baseline_code, 0,
+        "baseline regular-file run must succeed, stdout: {baseline_stdout}"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "record.fifo");
+    spawn_fifo_writer(fifo.clone(), content);
+
+    let out = bin()
+        .args(["fapolicyd", "explain", "--record"])
+        .arg(&fifo)
+        .args(["--ruleset"])
+        .arg(ruleset.path())
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --record with a live writer must round-trip successfully, not \
+         be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert_eq!(
+        stdout, baseline_stdout,
+        "a readable pipe --record must produce BYTE-IDENTICAL output to the \
+         same fixture read from a regular file"
+    );
 }

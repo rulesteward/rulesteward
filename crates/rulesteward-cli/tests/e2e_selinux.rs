@@ -12,6 +12,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::time::Duration;
 
 /// Write `contents` to a temp file and return the guard (keeps the file alive
 /// for the duration of the test). Mirrors `e2e_selinux_authoritative.rs`'s
@@ -143,5 +144,189 @@ fn triage_output_flag_writes_to_file_not_stdout() {
     assert!(
         contents.contains("RBAC role constraint"),
         "the rendered report must land in the -o file, got: {contents}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Special-file (FIFO) arm - #583 half A
+// ---------------------------------------------------------------------------
+
+/// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever
+/// opened on it -- reading it in blocking mode is exactly the #560/#583 hang
+/// trigger (opening a read-only FIFO blocks until a writer appears, fifo(7)).
+fn make_fifo(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo(1) available on the Linux distribution target");
+    assert!(
+        status.success(),
+        "mkfifo must succeed for {}",
+        fifo.display()
+    );
+    fifo
+}
+
+/// `selinux triage --record <fifo>` must fail FAST, never hang: `triage`'s
+/// input read (`commands/selinux/triage.rs:72`, raw
+/// `std::fs::read_to_string(input_path)`) has no special-file guard and no
+/// upstream `is_file()`/`is_dir()` gate at all - `input_path` is used exactly
+/// as resolved from `--record`/`--audit-log`. Bounded by a 15s `assert_cmd`
+/// timeout so a wrong (hanging) implementation fails this ONE test instead of
+/// wedging the suite; `status.code().is_some()` is the hang signal.
+#[test]
+fn triage_record_fifo_fails_fast_not_hang() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "avc.fifo");
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(&fifo)
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert!(
+        out.status.code().is_some(),
+        "hang: child killed by 15s timeout (status.code() is None) -- this IS the \
+         #583 gap: selinux triage's --record read has no special-file guard; \
+         stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a FIFO --record target must be a tool failure (EXIT_TOOL_FAILURE=3), not a \
+         hang or a different exit code; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&fifo.display().to_string()),
+        "the diagnostic must name the offending FIFO path; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard specifically (not a hand-rolled is_file()/is_fifo() precheck \
+         that still does a raw, TOCTOU-vulnerable read afterwards); stderr: {stderr}"
+    );
+}
+
+/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// guard is not enough. `/dev/null` (a character device) never hangs under a
+/// raw `std::fs::read_to_string` - it reads back an instant empty string -
+/// so TODAY `selinux triage --record /dev/null` silently succeeds past the
+/// read and hits the UNRELATED "no type=AVC record found" parse-error arm
+/// (`EXIT_ERRORS`=2, measured live 2026-07-24), not a crash. A
+/// `if is_fifo(path) { reject } else { raw read }` implementation passes
+/// the FIFO test above yet still lets this character-device case through to
+/// the wrong error arm. After the fix (routing through the shared
+/// `rulesteward_core::fsread::read_to_string`), `/dev/null` must be a tool
+/// failure BEFORE parsing is ever attempted.
+#[test]
+fn triage_record_dev_null_is_a_tool_failure_not_a_parse_error() {
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record", "/dev/null"])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "/dev/null must be rejected as a non-regular file (EXIT_TOOL_FAILURE=3), \
+         not read as an empty record and hit the unrelated parse-error arm \
+         (EXIT_ERRORS=2, today's behavior); stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to read non-regular file"),
+        "the rejection must route through the shared rulesteward_core::fsread \
+         guard (not a FIFO-only special case); stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
+// `--record`/`--audit-log` are stream-shaped inputs operators legitimately
+// pipe in. `read_stream_to_string` accepts a FIFO with a live writer; this
+// test pins that a pipe round-trips byte-identically to the same fixture
+// read from a regular file.
+// ---------------------------------------------------------------------------
+
+/// Spawn a background thread that opens `fifo` for writing, writes `content`,
+/// then drops the file (closing the write end so the reader sees EOF). Not
+/// joined: by the time the reading child process exits (what `.output()`
+/// below awaits), the writer must already have completed its blocking write +
+/// close -- that IS what produces the EOF the reader is waiting for -- so
+/// there is nothing left to wait for; the OS thread is reclaimed when the
+/// test binary exits. Mirrors `e2e_explain.rs`'s identical helper (test files
+/// are separate binaries and cannot share it directly).
+fn spawn_fifo_writer(fifo: std::path::PathBuf, content: Vec<u8>) {
+    use std::io::Write as _;
+    std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo)
+            .expect("open fifo for write");
+        f.write_all(&content)
+            .expect("write fixture content to fifo");
+    });
+}
+
+/// `selinux triage --record <fifo-with-a-live-writer>` must be accepted, not
+/// rejected: reading the same AVC record through a pipe must produce
+/// BYTE-IDENTICAL output to reading it from a regular file. An exit-0-only
+/// assertion would also pass a silently truncated 64KB read; comparing full
+/// stdout catches that.
+#[test]
+fn triage_record_fifo_with_live_writer_round_trips_byte_identical() {
+    let record = write_record(AVC_ROLE_CONSTRAINT);
+
+    let baseline = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(record.path())
+        .args(["--format", "json"])
+        .output()
+        .expect("baseline regular-file run");
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline regular-file run must succeed; stderr: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = make_fifo(dir.path(), "avc.fifo");
+    spawn_fifo_writer(fifo.clone(), AVC_ROLE_CONSTRAINT.as_bytes().to_vec());
+
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["selinux", "triage", "--record"])
+        .arg(&fifo)
+        .args(["--format", "json"])
+        .timeout(Duration::from_secs(15))
+        .output()
+        .unwrap_or_else(|e| panic!("command failed to run (spawn/IO error, not a timeout): {e}"));
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a FIFO --record with a live writer must round-trip successfully, not \
+         be rejected like a writerless FIFO; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, baseline.stdout,
+        "a readable pipe --record must produce BYTE-IDENTICAL output to the \
+         same fixture read from a regular file"
     );
 }

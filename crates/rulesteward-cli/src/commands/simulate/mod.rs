@@ -146,7 +146,13 @@ pub fn run(args: SimulateArgs) -> anyhow::Result<i32> {
             .context("reading workload from stdin")?;
         buf
     } else {
-        std::fs::read_to_string(&args.workload)
+        // Routed through `rulesteward_core::fsread::read_stream_to_string`
+        // (#560/#561/#583): a socket/device-node `--workload` target fails
+        // fast with a clear error instead of hanging or reading unbounded
+        // data, and a FIFO with a live writer is accepted and read to EOF --
+        // matching the literal `"-"` stdin marker just above, which already
+        // accepts a pipe under that one spelling.
+        rulesteward_core::fsread::read_stream_to_string(&args.workload)
             .with_context(|| format!("reading workload file {}", args.workload.display()))?
     };
 

@@ -44,14 +44,26 @@ cov:
 dac-guard:
     bash scripts/check-dac-guard.sh
 
+# (#586) Guard against doc-truth decay in the per-backend "N codes" prose: every
+# "N `<prefix>-` codes" mention in README.md and in the clap doc-comments must equal
+# the corresponding catalog length (FAPD_CODES, AU_CODES, SSHD_CODES, SUDO_CODES,
+# SYSCTLD_CODES, SE_CODES). The counts have drifted four times (#556, its two
+# predecessors, and the three-line au-/sudo-/sysctld- drift this same lane fixed);
+# each fix before this one was manual. Same shape as dac-guard: standalone bash
+# (grep-based, no cargo build), so it belongs in the lint tier.
+#
+# Assert every "N codes" doc mention matches its lint catalog's length. (#586)
+codes-guard:
+    bash scripts/check-codes-count.sh
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + test + cov).
-ci: fmt clippy dac-guard test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + test + cov).
+ci: fmt clippy dac-guard codes-guard test cov
 
 # (#287) Cross-version fapolicyd differential harness (opt-in, dev-only; NOT part of
 # `just ci`). Requires docker + the prebuilt fapolicyd{8,9,10} images and validate.sh.
@@ -564,3 +576,91 @@ auditd-msgtype-derive:
         exit 0
     fi
     cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- derive
+
+# ---------------------------------------------------------------------------
+# 9j Phase 0: recipes declared ahead of the tooling they invoke.
+#
+# These are landed on the session branch BEFORE the fan-out so that no parallel
+# lane has to edit this file (justfile was the only surface three lanes would
+# otherwise have contended for). Each recipe below fails until its lane lands the
+# tool it calls; none is part of `just ci`, matching every other *-stig-* recipe,
+# so the gate is unaffected in the interim.
+# ---------------------------------------------------------------------------
+
+# (#550, 9j lane 5) Upstream-pin staleness detection for the two DISA-derived STIG
+# tools that lack it. Unlike ComplianceAsCode, DISA publishes no releases API: each
+# RHEL STIG is versioned by FILENAME (V<major>R<minor>), so staleness is detected by
+# probing the next candidate revision (increment minor, then major, until 404)
+# rather than by querying for "latest". That is why this is NOT the `cis-update
+# --latest` mechanism, which hits api.github.com/repos/.../releases/latest.
+#
+# Non-blocking by design: a newer upstream revision is news, not a build failure.
+# Both recipes skip gracefully (exit 0) when curl is absent. A monthly scheduled
+# workflow (also lane 5) mirrors mutants.yml's shape and opens an issue on a hit.
+#
+# LIVE: report whether a newer DISA sshd STIG revision than the pin exists. (#550)
+sshd-stig-check-pin:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "sshd-stig-check-pin: prerequisites missing - need curl + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/sshd-stig-update/Cargo.toml -- check-pin
+
+# LIVE: report whether a newer DISA auditd STIG revision than the pin exists. (#550)
+auditd-stig-check-pin:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "auditd-stig-check-pin: prerequisites missing - need curl + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- check-pin
+
+# (#551, 9j lane 6) Drift-check / refresh the sudo-W04 DISA control families against
+# the OFFICIAL DISA XCCDF. Mirrors the sshd-stig-* triad above.
+#
+# SCOPE: DISA ONLY. The CIS half of sudo-W04 is already drift-checked by
+# tools/cis-update (registry.rs registers Family::Sudoers against
+# rulesteward_sudoers::lints::cis::cis_baseline, gated by cis-check.yml /
+# cis-drift.yml), so this tool must not duplicate it.
+#
+# The sudo-W06 grounding stays OUT of this tool: it keeps the inline hermetic
+# pinning locked 2026-07-15 (see sudoers/lints/tags.rs w06_stig_drift_tests), which
+# cross-checks sshd/auditd stig-refs.toml via include_str!. Do not "unify" the two;
+# doing so silently drops W06's cross-tool revision check.
+#
+# LIVE: drift-check the sudo-W04 DISA control families vs the pinned zips. (#551)
+sudoers-stig-check:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "sudoers-stig-check: prerequisites missing - need curl + unzip + network to dl.dod.cyber.mil" >&2
+        exit 0
+    fi
+    cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- check
+
+sudoers-stig-check-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Offline drift gate: derive from the committed real-DISA fixtures and confirm
+    # stig.rs still matches. No network. Any product's drift (exit 1) or error (2)
+    # fails the recipe.
+    for p in rhel8 rhel9 rhel10; do
+        cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- \
+            check --product "$p" --file "tools/sudoers-stig-update/tests/fixtures/${p}_sudoers_controls.xml"
+    done
+
+sudoers-stig-derive product="all":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        echo "sudoers-stig-derive: prerequisites missing - need curl + unzip + network access" >&2
+        exit 0
+    fi
+    if [ "{{product}}" = "all" ]; then
+        cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- derive
+    else
+        cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- derive --product "{{product}}"
+    fi

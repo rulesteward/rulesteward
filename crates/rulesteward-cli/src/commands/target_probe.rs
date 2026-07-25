@@ -48,8 +48,16 @@ pub(crate) struct OsRelease {
 }
 
 /// Parse the identity fields out of `/etc/os-release` text, stripping the shell
-/// quotes os-release wraps values in. Reuses the comment-aware, whitespace-tolerant
-/// `conf_value` reader (os-release is a `key=value` file).
+/// quotes os-release wraps values in. Reuses the comment-aware `conf_value`
+/// reader (os-release is a `key=value` file).
+///
+/// NOTE (issue #582): `conf_value` is tolerant of whitespace only AROUND `=`,
+/// not universally -- it trims a leading/trailing ASCII SPACE but
+/// deliberately PRESERVES a CRLF file's trailing `\r` verbatim (see
+/// `conf_value`'s own doc comment). `strip_quotes` below assumes the closing
+/// quote is the value's LAST byte, which holds for an ordinary LF-only
+/// `os-release` file but would NOT hold if a value ever carried a trailing
+/// CR.
 pub(crate) fn parse_os_release(text: &str) -> OsRelease {
     let field = |key: &str| {
         super::conf::conf_value(text, key)
@@ -234,6 +242,32 @@ mod tests {
     fn strips_single_quotes_too() {
         let os = parse_os_release("VERSION_ID='8.10'\n");
         assert_eq!(os.version_id.as_deref(), Some("8.10"));
+    }
+
+    #[test]
+    fn version_id_with_trailing_space_still_strips_quotes_control() {
+        // GREEN regression pin (rulesteward-cli issue #582, adversarial
+        // review round 2, BLOCKER 4): this file is not owned by the #582
+        // lane, but its behavior CHANGES through the shared
+        // `commands::conf::conf_value` helper that lane's fix touches. A
+        // fix shaped as "just stop trimming the value's trailing edge"
+        // (rather than "keep trimming ASCII space, only stop trimming CR")
+        // would leave a trailing space after the closing quote here;
+        // `strip_quotes`'s `bytes[len-1] == bytes[0]` check would then see
+        // a space (not the closing quote) as the last byte, quotes would
+        // NOT be stripped, and `version_id` would become
+        // `Some("\"9.4\" ")` instead of `Some("9.4")` -- silently breaking
+        // RHEL target auto-detection, which cascades into every `ControlRef`
+        // attachment across the whole compliance surface. That fix has since
+        // landed (`conf_value` trims ASCII space only); this test was GREEN
+        // before it and stays GREEN after, which is the point.
+        let os = parse_os_release("VERSION_ID=\"9.4\" \n");
+        assert_eq!(
+            os.version_id.as_deref(),
+            Some("9.4"),
+            "a trailing ASCII space after the closing quote must not \
+             prevent quote-stripping (#582 adversarial round 2, BLOCKER 4)"
+        );
     }
 
     #[test]

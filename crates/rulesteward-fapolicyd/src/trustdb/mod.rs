@@ -2048,27 +2048,45 @@ mod tests {
         );
     }
 
-    /// A value with trailing inline `#` (literal per `conf_value` semantics) must
-    /// NOT match "sha256" -- `conf_value` already strips leading/trailing whitespace
-    /// around `=` but does NOT strip inline comments. So "sha256 # important"
-    /// is the raw value, which is unrecognised and maps to `IntegrityMode::None`.
+    /// CORRECTED (issue #582 RULING 2, empirically refuted against fapolicyd
+    /// 8/9/10; the ORIGINAL test here asserted `IntegrityMode::None` and was
+    /// itself the doc-truth-decay bug; the full evidence matrix and container
+    /// versions are recorded in issue #596). `conf_value` still returns the raw
+    /// value with the inline `#` text attached (it does NOT strip inline
+    /// comments -- that claim about `conf_value` stays true); the daemon's
+    /// own tokenizer (`nv_split`/`_strsplit`) then binds `nv->value` to only
+    /// the FIRST ASCII-space-delimited token, `"sha256"` -- the ` # important`
+    /// remainder is a discarded extra token, merely logged as "Wrong number
+    /// of arguments" -- so the daemon LOADS and RUNS sha256 for this exact
+    /// conf line (verified live on fapolicyd 1.3.2 and 1.4.5). See
+    /// `IntegrityMode::from_conf_value`'s doc for the first-token reduction
+    /// this pins.
     #[test]
-    fn integrity_mode_from_conf_trailing_hash_comment_maps_to_none() {
-        // conf_value returns the literal trimmed value including inline `#` text.
-        // "sha256 # inline" is NOT the keyword "sha256", so it maps to None.
+    fn integrity_mode_from_conf_trailing_hash_comment_maps_to_sha256() {
         assert_eq!(
             IntegrityMode::from_conf_value(Some("sha256 # important")),
-            IntegrityMode::None,
-            "a value with trailing inline # is literal (not a comment) and must not match sha256"
+            IntegrityMode::Sha256,
+            "the daemon binds nv->value to the FIRST space-delimited token; \
+             \"sha256 # important\" resolves via its first token \"sha256\" \
+             (issue #582 RULING 2, empirically verified)"
         );
     }
 
-    /// "SHA256" (uppercase) is not a valid fapolicyd.conf keyword; maps to `IntegrityMode::None`.
+    /// CORRECTED (issue #582 RULING 2, empirically refuted against fapolicyd
+    /// 8/9/10; the ORIGINAL test here asserted `IntegrityMode::None` and was
+    /// itself the doc-truth-decay bug; the full evidence matrix and container
+    /// versions are recorded in issue #596). The daemon's `integrity_parser`
+    /// uses `strcasecmp` (case-INsensitive), so `"SHA256"` matches the
+    /// `"sha256"` keyword and the daemon loads and runs sha256 (verified live
+    /// on fapolicyd 1.3.2 and 1.4.5).
     #[test]
-    fn integrity_mode_from_conf_uppercase_sha256_maps_to_none() {
+    fn integrity_mode_from_conf_uppercase_sha256_maps_to_sha256() {
         assert_eq!(
             IntegrityMode::from_conf_value(Some("SHA256")),
-            IntegrityMode::None
+            IntegrityMode::Sha256,
+            "the daemon's integrity_parser uses strcasecmp; \"SHA256\" must \
+             match \"sha256\" case-insensitively (issue #582 RULING 2, \
+             empirically verified)"
         );
     }
 

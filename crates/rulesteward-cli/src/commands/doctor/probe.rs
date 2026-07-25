@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use rulesteward_core::extract_audit_field;
-use rulesteward_fapolicyd::is_effectively_permissive;
+use rulesteward_fapolicyd::permissive_value_is_effectively_permissive;
 
 use super::model::{
     CommandOutcome, DenialStats, FapolicydConf, FsSpace, LintCounts, ServiceState, SystemProbe,
@@ -213,7 +213,9 @@ impl SystemProbe for LiveProbe {
 
     fn fapolicyd_conf(&self, rules_dir: &Path) -> Result<FapolicydConf, String> {
         let conf_path = Path::new("/etc/fapolicyd/fapolicyd.conf");
-        let conf_text = std::fs::read_to_string(conf_path)
+        // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+        // device-node conf path must be rejected fast, not block forever.
+        let conf_text = rulesteward_core::fsread::read_to_string(conf_path)
             .map_err(|e| format!("cannot read {}: {e}", conf_path.display()))?;
         let permissive_set = conf_value(&conf_text, "permissive")
             .is_some_and(permissive_value_is_effectively_permissive);
@@ -265,36 +267,21 @@ fn read_fapolicyd_mode() -> Option<String> {
 /// value, and `None` if the file cannot be read. Shares the `conf_value`
 /// reader with the misconfiguration check so the two cannot disagree on a
 /// line like `permissive =1` (issue #192, D2), and shares
-/// `permissive_value_is_effectively_permissive` with `LiveProbe::
-/// fapolicyd_conf`'s `permissive_set` so the two probe sites cannot drift on
-/// the fail-open predicate itself.
+/// `rulesteward_fapolicyd::permissive_value_is_effectively_permissive` with
+/// `LiveProbe::fapolicyd_conf`'s `permissive_set` AND with the fapd-W14 lint's
+/// `lint_conf` (issue #582 - previously a private duplicate in this file that
+/// had drifted onto a Unicode-whitespace-aware `split_whitespace()`, unlike
+/// the lint's byte-exact `split(' ')`; now the single shared seam) so none of
+/// the three sites can drift on the fail-open predicate itself.
 fn read_fapolicyd_mode_from(conf_path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(conf_path).ok()?;
+    // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+    // device-node conf path must be rejected fast, not block forever.
+    let text = rulesteward_core::fsread::read_to_string(conf_path).ok()?;
     if conf_value(&text, "permissive").is_some_and(permissive_value_is_effectively_permissive) {
         Some("permissive".to_string())
     } else {
         Some("enforcing".to_string())
     }
-}
-
-/// True iff the raw `permissive=` value text (as returned by `conf_value`,
-/// which may include a trailing inline comment - see its doc) resolves to an
-/// effectively-permissive value in the real daemon (issue #567, ATL round 2
-/// MISS 1).
-///
-/// Ground truth (`daemon-config.c`'s `nv_split`/`_strsplit`, live-verified on
-/// fapolicyd 1.3.2 and 1.4.5): a config line is whitespace-tokenized, and
-/// `nv.value` is bound to ONLY the FIRST token after `=` - a trailing
-/// `# comment` (or any further token) is separately logged as "Wrong number
-/// of arguments" but does not change which token the keyword's parser
-/// receives. So `"1 # temporarily on"` is interpreted exactly as `"1"` by
-/// the real daemon, not rejected as garbage. The single shared seam for both
-/// `read_fapolicyd_mode_from` and `LiveProbe::fapolicyd_conf`'s
-/// `permissive_set`, so the two probe sites cannot drift.
-fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
-    raw.split_whitespace()
-        .next()
-        .is_some_and(is_effectively_permissive)
 }
 
 /// The last non-empty, non-comment line of the `fapolicyd.conf`-style rules
@@ -307,7 +294,9 @@ fn permissive_value_is_effectively_permissive(raw: &str) -> bool {
 /// nor a member of group `fapolicyd`): the caller must treat `None` as "could
 /// not assess", never as "no rule".
 fn read_compiled_final_rule_from(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
+    // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO/socket/
+    // device-node path must be rejected fast, not block forever.
+    let text = rulesteward_core::fsread::read_to_string(path).ok()?;
     text.lines().rev().find_map(|line| {
         let trimmed = line.trim();
         (!trimmed.is_empty() && !trimmed.starts_with('#')).then(|| trimmed.to_string())
@@ -327,7 +316,10 @@ fn check_sha256hash_in_dir(rules_dir: &Path) -> bool {
         if p.extension().and_then(|e| e.to_str()) != Some("rules") {
             continue;
         }
-        if let Ok(text) = std::fs::read_to_string(&p)
+        // Routed through `rulesteward_core::fsread` (#560/#582): a FIFO
+        // `.rules` entry must be skipped fast (as unreadable), not hang the
+        // whole scan open()-ing it for read.
+        if let Ok(text) = rulesteward_core::fsread::read_to_string(&p)
             && text.contains("sha256hash=")
         {
             return true;
@@ -820,6 +812,567 @@ mod tests {
             "permissive=0 with a trailing inline comment still resolves to \
              the first token \"0\" and stays enforcing in the real daemon"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #582: byte-exact tokenization divergence from the real daemon.
+    //
+    // Ground truth (`daemon-config.c`, the same citation already grounded
+    // for the sibling fapd-W14 lint's #569 fix at
+    // `rulesteward-fapolicyd/src/lints/conf.rs`): the daemon's own
+    // tokenizer, `_strsplit`, finds token boundaries with
+    // `strchr(str, ' ')` -- the literal ASCII space byte (0x20) ONLY, never
+    // a TAB or any other Unicode-whitespace byte. `get_line` strips ONLY a
+    // trailing 0x0a; a CRLF-edited conf file leaves the '\r' byte bound to
+    // the value token. `unsigned_int_parser`'s `isdigit` walk is byte-exact
+    // and rejects the WHOLE token at the first non-digit byte.
+    //
+    // These pins exist because `permissive_value_is_effectively_permissive`
+    // once used `raw.split_whitespace().next()`, which is
+    // Unicode-whitespace-aware (it treats TAB and CR as separators/trimmable
+    // bytes, unlike the real daemon) -- so it wrongly rescued a value the
+    // real daemon's byte-exact parser would reject outright, reporting
+    // PERMISSIVE for a daemon that is actually enforcing. That was the
+    // identical miss already fixed at the `lint_conf` seam (see
+    // `lints/conf.rs`'s `tab_separated_second_token_does_not_leak_into_the_value`
+    // and `crlf_line_ending_leaves_a_trailing_cr_in_the_value`). Both seams
+    // now share `first_conf_token`; these pins hold that convergence in place.
+    //
+    // SCOPE NOTE: see `commands/conf.rs`'s dedicated scope-note comment for
+    // exactly what is (VALUE tokenization: space-splitting, CR retention,
+    // byte-exact digit rejection) and is NOT (fapolicyd's `nv_split`
+    // requirement that `=` be its own whitespace-delimited token, tracked
+    // as a separate follow-up issue) covered by these pins.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_tab_separated_value_is_not_effectively_permissive()
+     {
+        // RED: the real daemon's `_strsplit` splits only on the ASCII space
+        // byte, so "1\t2" is bound as ONE token to `unsigned_int_parser`,
+        // which rejects it outright at the tab byte (not a digit) -> parse
+        // error -> enforcing. `split_whitespace()` wrongly splits off "1"
+        // as a first token and reports permissive.
+        assert!(
+            !permissive_value_is_effectively_permissive("1\t2"),
+            "a TAB is not a real daemon separator; the whole value \
+             \"1\\t2\" is an unsigned_int_parser error and must not be \
+             reported as effectively permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_crlf_value_is_not_effectively_permissive() {
+        // RED: simulates the value `conf_value` SHOULD return for a CRLF
+        // conf line (`get_line` strips only trailing 0x0a, leaving the
+        // '\r' bound to the value). `unsigned_int_parser`'s byte-exact
+        // isdigit walk rejects the '\r' byte -> parse error -> enforcing.
+        // `split_whitespace()` treats '\r' as whitespace and wrongly
+        // rescues "1", reporting permissive.
+        assert!(
+            !permissive_value_is_effectively_permissive("1\r"),
+            "a trailing '\\r' from a CRLF conf line is not a real daemon \
+             separator or a digit; the value \"1\\r\" must not be \
+             reported as effectively permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_space_separated_second_token_is_ignored_control()
+    {
+        // GREEN control: a REAL ASCII space IS a legitimate daemon
+        // separator, so "1 2" binds nv.value to the first token "1" only --
+        // effectively permissive. Guards against an overcorrected fix that
+        // also breaks legitimate space-based first-token extraction
+        // (mirrors `lints/conf.rs`'s
+        // `conf_inline_permissive_zero_with_trailing_one_stays_clean`
+        // first-token-only grounding, inverted to a permissive first
+        // token).
+        assert!(
+            permissive_value_is_effectively_permissive("1 2"),
+            "a real space separator binds the value to the first token \
+             \"1\", which is effectively permissive regardless of the \
+             discarded second token"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_control_tab_only_after_first_space_token_still_permissive()
+     {
+        // GREEN control (adversarial): the tab is in the DISCARDED second
+        // token ("1 2\t3" space-splits to first token "1"), so this must
+        // still report permissive. Defeats an over-broad "reject if the
+        // raw string contains any tab/CR anywhere" hack, which would
+        // wrongly report false here despite the first (real) token being
+        // clean digits.
+        assert!(
+            permissive_value_is_effectively_permissive("1 2\t3"),
+            "the tab appears only in the discarded second token; the real \
+             daemon's first-token-only binding still yields the clean \
+             digit \"1\" and must report effectively permissive (#582 \
+             adversarial control)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_tab_separated_value_returns_enforcing() {
+        // RED (#582 divergence 1): the real daemon's `_strsplit` splits
+        // only on the ASCII space byte, so "1\t2" is ONE token to
+        // `unsigned_int_parser`, rejected at the tab byte -> enforcing.
+        // Today's probe (`split_whitespace()`) wrongly reports permissive -
+        // a fail-open false negative for a health-check tool.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\t2\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "a TAB between \"1\" and \"2\" is not a real daemon separator; \
+             the whole value is an unsigned_int_parser error and the \
+             daemon stays enforcing, but the probe's split_whitespace() \
+             wrongly rescues \"1\" and reports permissive (#582)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_crlf_permissive_one_returns_enforcing() {
+        // RED (#582 divergence 2): a CRLF-edited conf file leaves a
+        // trailing '\r' bound to the value ("1\r" per the real daemon's
+        // `get_line`, which strips only trailing 0x0a).
+        // `unsigned_int_parser` rejects the '\r' byte -> parse error ->
+        // enforcing. Today's probe strips the '\r' twice over
+        // (`conf_value`'s `.lines()` and
+        // `permissive_value_is_effectively_permissive`'s
+        // `split_whitespace()`), recovering the bare "1" and wrongly
+        // reporting permissive - a fail-open false negative.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\r\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "a CRLF-edited conf file leaves a trailing '\\r' bound to the \
+             value in the real daemon, which unsigned_int_parser rejects; \
+             the probe must not be fooled into reporting permissive (#582)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Adversarial review round 2, BLOCKER 1: `any()` instead of `next()`
+    // (`raw.split(' ').filter(|t| !t.is_empty()).any(is_effectively_permissive)`)
+    // passes every test above -- the earlier green control at
+    // `permissive_value_is_effectively_permissive_space_separated_second_token_is_ignored_control`
+    // used "1 2" (first token ALREADY permissive), which has zero
+    // discriminating power against `any()` (first-token and any-token agree
+    // when the first token is already permissive). The daemon binds
+    // `nv.value` to ONLY the first space-delimited token (nv_split,
+    // daemon-config.c) -- a permissive-looking LATER token must never
+    // resurrect a non-permissive first token.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_first_token_zero_with_permissive_second_token_control()
+     {
+        // RED against `any()`: the first token "0" is enforcing; the daemon
+        // never looks past it, so a permissive-looking second token ("1")
+        // must not flip the result. `any()` would wrongly return true here.
+        assert!(
+            !permissive_value_is_effectively_permissive("0 1"),
+            "the daemon binds nv.value to the FIRST token (\"0\", \
+             enforcing) and never inspects the trailing \"1\"; an any-token \
+             impl would wrongly report permissive here (#582 adversarial \
+             round 2, BLOCKER 1)"
+        );
+    }
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_first_token_non_numeric_with_permissive_second_token_control()
+     {
+        // Same kill, different first-token SHAPE (non-numeric parse error
+        // rather than a clean zero), defeating a narrower `any()` variant
+        // that only special-cases an all-zero first token.
+        assert!(
+            !permissive_value_is_effectively_permissive("foo 1"),
+            "the daemon binds nv.value to the FIRST token (\"foo\", a \
+             parse error), never the trailing \"1\"; an any-token impl \
+             would wrongly report permissive here (#582 adversarial round \
+             2, BLOCKER 1)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_zero_then_space_one_returns_enforcing_control() {
+        // Composed file-seam kill of `any()` (#582 adversarial round 2,
+        // BLOCKER 1): the daemon binds nv.value to the first token "0"
+        // (enforcing) and never looks at the trailing "1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 0 1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "the real daemon's first-token-only binding stays enforcing \
+             (\"0\"); an any-token impl would wrongly report permissive \
+             having found \"1\" as the second token (#582 adversarial round \
+             2, BLOCKER 1)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Adversarial review round 2, BLOCKER 2: every original tab pin put the
+    // tab AFTER the value ("1\t2"), so a fix shaped as
+    // `value = Some(v.trim_start())` (Unicode `trim_start`, stopping the
+    // Unicode `.trim()` only at the trailing end so the CR survives) passes
+    // everything above -- Unicode `trim_start()` still eats a LEADING tab,
+    // which is the identical TAB fail-open this lane exists to close, moved
+    // one byte left of every fixture written for round 1.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn permissive_value_is_effectively_permissive_leading_tab_value_is_not_effectively_permissive()
+    {
+        // RED: mirrors the trailing-tab pin
+        // (`..._tab_separated_value_is_not_effectively_permissive`) with the
+        // tab moved to the front. The whole token "\t1" is byte-exact
+        // rejected at the leading tab (not a digit) by the real daemon's
+        // `unsigned_int_parser` -- never split off as if the tab were a
+        // separator.
+        assert!(
+            !permissive_value_is_effectively_permissive("\t1"),
+            "a leading TAB is not a real daemon separator or a digit; the \
+             whole value \"\\t1\" must not be reported as effectively \
+             permissive (#582 adversarial round 2, BLOCKER 2)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_leading_tab_before_value_returns_enforcing() {
+        // RED (#582 adversarial round 2, BLOCKER 2): `conf_value` must NOT
+        // use a Unicode-whitespace-aware trim (`.trim()` or `.trim_start()`)
+        // that would eat this leading tab -- only a literal ASCII space
+        // (0x20) is a leading-whitespace separator to the real daemon
+        // (`_strsplit`'s retry-on-leading-space skip). The daemon's token
+        // is "\t1", byte-exact rejected at the tab -> enforcing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive =\t1\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "a leading TAB immediately after '=' is not a real daemon \
+             leading-space skip; the value \"\\t1\" is byte-exact rejected \
+             and the daemon stays enforcing, but a Unicode trim_start() \
+             would eat the tab and wrongly rescue \"1\" (#582 adversarial \
+             round 2, BLOCKER 2)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Adversarial review round 2, BLOCKER 3: a string-pattern hack with NO
+    // real tokenization --
+    //   if raw.contains('\t') && !raw.contains(' ') { return false; }
+    //   if raw.ends_with('\r') { return false; }
+    //   raw.split_whitespace().next().is_some_and(is_effectively_permissive)
+    // -- passes every test above because every prior tab/CR fixture put the
+    // problem byte in a position those two heuristics happen to catch. These
+    // four composed (file-seam) fixtures separate "tab/CR INSIDE the real
+    // first space-delimited token" (must be enforcing) from "tab/CR in a
+    // DISCARDED later token" (must stay permissive), which no pattern-match
+    // heuristic can get both halves of at once.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_tab_inside_first_token_before_a_later_space_returns_enforcing()
+     {
+        // RED: real space-only tokenization: "1\t2 3" splits on the ONE real
+        // space (between "2" and "3"), so the first token is "1\t2" --
+        // byte-exact rejected at the tab -> enforcing. The pattern hack's
+        // `contains('\t') && !contains(' ')` guard does NOT fire here (a
+        // real space IS present, just not adjacent to the tab), so the hack
+        // falls through to `split_whitespace()`, which wrongly finds "1" as
+        // the leading token and reports permissive.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\t2 3\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "the real first SPACE-delimited token is \"1\\t2\" (tab \
+             INSIDE it), byte-exact rejected; a pattern-match hack that \
+             only checks for a bare tab-without-any-space is fooled by the \
+             later real space and wrongly reports permissive (#582 \
+             adversarial round 2, BLOCKER 3)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_cr_inside_first_token_before_a_later_space_returns_enforcing()
+     {
+        // RED: mirrors the tab case above for CR. Real space-only
+        // tokenization: "1\r 2" splits on the ONE real space, first token
+        // "1\r" -- byte-exact rejected at the CR -> enforcing. The pattern
+        // hack's `ends_with('\r')` guard does not fire (the raw value ends
+        // in "2", not '\r'), so it falls through and wrongly reports
+        // permissive.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1\r 2\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("enforcing".to_string()),
+            "the real first SPACE-delimited token is \"1\\r\" (CR INSIDE \
+             it), byte-exact rejected; a pattern-match hack that only \
+             checks whether the whole raw value ENDS WITH '\\r' is fooled \
+             by the later real space and wrongly reports permissive (#582 \
+             adversarial round 2, BLOCKER 3)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_one_with_trailing_crlf_comment_returns_permissive_control()
+     {
+        // GREEN control: the tab/CR text lives in a DISCARDED later token
+        // ("# note\r"), not the real value token ("1"). The real daemon
+        // still runs permissive here (nv_split binds nv.value to "1"; the
+        // extra tokens only trigger a separate "Wrong number of arguments"
+        // log). A pattern hack whose `ends_with('\r')` check fires on the
+        // WHOLE raw remainder (which does end in '\r' once CR-retention is
+        // correctly fixed) would wrongly flip this to enforcing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1 # note\r\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "the real value token is \"1\" (clean); the trailing CRLF \
+             comment is a discarded later token, not the value -- must \
+             stay permissive despite the raw remainder ending in '\\r' \
+             (#582 adversarial round 2, BLOCKER 3)"
+        );
+    }
+
+    #[test]
+    fn read_fapolicyd_mode_from_permissive_one_with_later_tab_token_returns_permissive_control() {
+        // GREEN control: mirrors the case above for a tab in a later token
+        // rather than a comment. Real value token "1" (clean); the tab
+        // lives in the discarded second token "2\t3". A pattern hack whose
+        // `contains('\t') && !contains(' ')` guard is too broad (or a
+        // simpler "reject if raw contains any tab" hack) would wrongly flip
+        // this to enforcing even though a real space IS present.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conf = dir.path().join("fapolicyd.conf");
+        std::fs::write(&conf, "permissive = 1 2\t3\n").unwrap();
+        assert_eq!(
+            read_fapolicyd_mode_from(&conf),
+            Some("permissive".to_string()),
+            "the real value token is \"1\" (clean); the tab lives in the \
+             discarded second token \"2\\t3\" -- must stay permissive \
+             (#582 adversarial round 2, BLOCKER 3)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Adversarial review round 2, CONCERN: cross-seam agreement between the
+    // CLI's `read_fapolicyd_mode_from` and the fapd-W14 lint's `lint_conf`
+    // (`rulesteward-fapolicyd::lints::conf`). Both independently reimplement
+    // the identical daemon-matching predicate (module docs on both sides
+    // cite the same daemon-config.c grounding and explicitly disclaim
+    // sharing code across the crate boundary), so nothing today prevents the
+    // two from silently drifting apart on some future edit to just one side.
+    // This table drives the SAME fixture text through both seams and asserts
+    // they always agree on permissive-vs-enforcing.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_and_lint_conf_agree_on_every_fixture() {
+        let fixtures: &[(&str, bool)] = &[
+            ("permissive=0\n", false),
+            ("permissive=1\n", true),
+            ("integrity=sha256\n", false),
+            ("permissive = 1\t2\n", false),
+            ("permissive = 1\r\n", false),
+            ("permissive = 0 1\n", false),
+            ("permissive = 1 # note\r\n", true),
+            ("permissive = 1 2\t3\n", true),
+            ("permissive=0\npermissive=1\n", true),
+            ("# permissive=1\npermissive=0\n", false),
+        ];
+        for (text, expect_permissive) in fixtures {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let conf = dir.path().join("fapolicyd.conf");
+            std::fs::write(&conf, text).unwrap();
+            let probe_says_permissive =
+                read_fapolicyd_mode_from(&conf) == Some("permissive".to_string());
+            let lint_fires = !rulesteward_fapolicyd::lint_conf(
+                text,
+                Path::new("/etc/fapolicyd/fapolicyd.conf"),
+                None,
+            )
+            .is_empty();
+            assert_eq!(
+                probe_says_permissive, *expect_permissive,
+                "doctor probe disagrees with the expected value for {text:?}"
+            );
+            assert_eq!(
+                lint_fires, *expect_permissive,
+                "fapd-W14 lint disagrees with the expected value for {text:?}"
+            );
+            assert_eq!(
+                probe_says_permissive, lint_fires,
+                "doctor probe and fapd-W14 lint must agree on {text:?}: \
+                 probe={probe_says_permissive} lint={lint_fires} (#582 \
+                 adversarial round 2, cross-seam agreement)"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Adversarial review round 2, real gap: the #560 special-file guard
+    // (`rulesteward_core::fsread::read_to_string`) already covers every lint
+    // entry point (auditd.rs, fapolicyd/lint.rs, selinux/lint.rs, sshd.rs,
+    // sysctl.rs) but was never extended to these three testable read sites
+    // in `doctor/probe.rs`, which called raw `std::fs::read_to_string` /
+    // `std::fs::read_dir` -- blocking forever opening a FIFO with no writer
+    // (the exact #560 hang, reproduced against `fapolicyd lint` and
+    // documented in `fsread.rs`'s own module doc). The `read_to_string` sites
+    // are now routed through `fsread`; the `read_dir` half is unguarded
+    // still, since `fsread` covers file reads only. Driven off a background
+    // thread with a bounded `recv_timeout`, mirroring `fsread.rs`'s own
+    // `fifo_is_rejected_fast_no_hang`/`character_device_dev_zero_...` tests,
+    // so a hanging (today's real) implementation fails this ONE test
+    // instead of wedging the whole suite.
+    //
+    // NOTE: `LiveProbe::fapolicyd_conf`'s `conf_text` read (the fourth site)
+    // is NOT included here: unlike the other three, it reads a HARD-CODED
+    // path (`/etc/fapolicyd/fapolicyd.conf`) with no path parameter, and
+    // this file's own top-of-file doc already documents `LiveProbe` as "not
+    // unit-tested; covered by e2e / VM smoke" (see `doctor/mod.rs`'s module
+    // doc for the same DI boundary). Making it testable would require
+    // extracting a path-parameterized inner function first -- an
+    // implementation change, out of scope for a test-only lane. Flagged for
+    // the implementer as a follow-up alongside the fsread conversion itself.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn read_fapolicyd_mode_from_rejects_fifo_fast_no_hang() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("fapolicyd.conf");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let fifo_for_thread = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_fapolicyd_mode_from(&fifo_for_thread);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(result) => {
+                assert_eq!(
+                    result, None,
+                    "a FIFO with no writer must be rejected (read error), \
+                     not parsed as an empty/absent conf"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_fapolicyd_mode_from blocked for 10s+ on a FIFO \
+                     with no writer -- this IS the #560 hang bug; this read \
+                     site must route through rulesteward_core::fsread::\
+                     read_to_string like every lint entry point already \
+                     does (#582 adversarial round 2, real gap)"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+    }
+
+    #[test]
+    fn read_compiled_final_rule_from_rejects_fifo_fast_no_hang() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("compiled.rules");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let fifo_for_thread = fifo.clone();
+        std::thread::spawn(move || {
+            let result = read_compiled_final_rule_from(&fifo_for_thread);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(result) => {
+                assert_eq!(
+                    result, None,
+                    "a FIFO with no writer must be rejected (read error), \
+                     not parsed as an empty/absent ruleset"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "read_compiled_final_rule_from blocked for 10s+ on a \
+                     FIFO with no writer -- this IS the #560 hang bug; this \
+                     read site must route through \
+                     rulesteward_core::fsread::read_to_string like every \
+                     lint entry point already does (#582 adversarial round \
+                     2, real gap)"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
+    }
+
+    #[test]
+    fn check_sha256hash_in_dir_skips_fifo_entry_fast_no_hang() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("10-test.rules");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo(1) available on the Linux distribution target");
+        assert!(status.success(), "mkfifo must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_path = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            let result = check_sha256hash_in_dir(&dir_path);
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(found) => {
+                assert!(
+                    !found,
+                    "a FIFO .rules entry must be skipped as unreadable, \
+                     never reported as containing sha256hash="
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "check_sha256hash_in_dir blocked for 10s+ scanning a \
+                     FIFO .rules entry -- this IS the #560 hang bug; this \
+                     read site must route through \
+                     rulesteward_core::fsread::read_to_string like every \
+                     lint entry point already does (#582 adversarial round \
+                     2, real gap)"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("worker thread ended without a result");
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

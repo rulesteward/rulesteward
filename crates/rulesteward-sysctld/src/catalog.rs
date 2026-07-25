@@ -9,14 +9,15 @@
 //! (locked CC-4).
 //!
 //! # Frozen taxonomy
-//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Four passes
+//! The catalog lists the FULL `sysctld-` taxonomy in sorted order. Five passes
 //! are implemented - `sysctld-F01` (parse failure), `sysctld-W01` (last-wins
 //! conflict), the version-aware `sysctld-W02` (STIG hardening baseline,
-//! issue #335), and `sysctld-W03` (cross-directory precedence surprise, issue
-//! #420, emitted by the `--system` scan [`crate::system::lint_system`]) - plus
-//! the version-aware `sysctld-W04` (CIS-Benchmark hardening baseline, issue
-//! #527), catalogued ahead of its Wave-3 CIS emit pass. The catalog was frozen
-//! up front so the passes emit only already-catalogued codes and never edit this
+//! issue #335), `sysctld-W03` (cross-directory precedence surprise, issue
+//! #420, emitted by the `--system` scan [`crate::system::lint_system`]), and the
+//! version-aware `sysctld-W04` (CIS-Benchmark hardening baseline, issue #527),
+//! whose emit pass shipped in Wave 3 and which issue #576 wired into the
+//! `--system` scan over the merged effective set. The catalog was frozen up
+//! front so the passes emit only already-catalogued codes and never edit this
 //! shared file.
 
 use rulesteward_core::Severity;

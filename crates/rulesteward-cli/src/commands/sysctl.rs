@@ -36,9 +36,10 @@ fn lint_with_probe(
     profile: Option<Framework>,
 ) -> i32 {
     // Resolve --target in the command layer (epic #251): explicit value as-is,
-    // `auto` from the host probe, omitted -> version-agnostic (no W02). A failed
-    // `auto` degrades to version-agnostic with a warning, never an error (read-only
-    // tool). The concrete domain target is what the W02 baseline pass consumes.
+    // `auto` from the host probe, omitted -> version-agnostic (neither W02 nor
+    // W04). A failed `auto` degrades to version-agnostic with a warning, never an
+    // error (read-only tool). The concrete domain target is what the W02 (STIG)
+    // and W04 (CIS) baseline passes both consume.
     let resolved = resolve_target(args.target, probe);
     if let Some(warning) = &resolved.warning {
         eprintln!("sysctl lint: {warning}");
@@ -50,7 +51,8 @@ fn lint_with_probe(
     // instead of a single <path>, adding the cross-directory sysctld-W03 pass
     // (lower-precedence-directory override, masked-drop-in key drop, and
     // procps/systemd applier divergence). `lint_system` performs the real
-    // enumerate/mask/merge and reruns F01/W01/W02 over the merged set. clap's
+    // enumerate/mask/merge and reruns F01/W01/W02/W04 over the merged set (#576
+    // added W04, the CIS baseline, alongside the STIG W02 rerun). clap's
     // `conflicts_with`/`requires` on SysctlLintArgs already reject --system + a
     // positional path, and --root without --system.
     if args.system {
@@ -105,7 +107,11 @@ fn lint_with_probe(
     // failure.
     if !path.is_file() {
         eprintln!("sysctl lint: not a file or directory: {}", path.display());
-        emit_path_error_envelope(args.format);
+        crate::output::emit_path_error_envelope(
+            args.format,
+            "sysctl-lint",
+            SYSCTL_LINT_SCHEMA_VERSION,
+        );
         return EXIT_TOOL_FAILURE;
     }
 
@@ -116,7 +122,11 @@ fn lint_with_probe(
         Ok(s) => s,
         Err(e) => {
             eprintln!("sysctl lint: cannot read {}: {e}", path.display());
-            emit_path_error_envelope(args.format);
+            crate::output::emit_path_error_envelope(
+                args.format,
+                "sysctl-lint",
+                SYSCTL_LINT_SCHEMA_VERSION,
+            );
             return EXIT_TOOL_FAILURE;
         }
     };
@@ -145,24 +155,6 @@ fn lint_with_probe(
     }
 
     crate::profile::resolve_exit_code(no_op, &diags, false)
-}
-
-/// #561: a bad lint-target path (missing target, unreadable file, special
-/// file) must not silently drop `--format json`/`--format sarif` -- it must
-/// still emit a valid (empty) envelope on stdout, mirroring
-/// `commands::fapolicyd::lint`'s model. Called alongside (not instead of) the
-/// existing `eprintln!` diagnostic; human format is unaffected (`emit_lint`
-/// renders an empty diagnostics list as `""`, so nothing new prints to
-/// stdout there). Render failures are deliberately swallowed: the caller is
-/// already returning `EXIT_TOOL_FAILURE` for the original path error.
-fn emit_path_error_envelope(format: crate::cli::OutputFormat) {
-    let _ = crate::output::emit_lint(
-        format,
-        "sysctl-lint",
-        SYSCTL_LINT_SCHEMA_VERSION,
-        &[],
-        &std::collections::BTreeMap::new(),
-    );
 }
 
 #[cfg(test)]

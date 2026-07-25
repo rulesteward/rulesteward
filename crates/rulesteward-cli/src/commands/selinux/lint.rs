@@ -60,6 +60,15 @@ fn run_lint_with_probe(
         Ok(s) => s,
         Err(e) => {
             eprintln!("selinux lint: cannot read {}: {e}", path.display());
+            // #583 half B: unlike sshd/sysctl/sudoers/auditd (#561), this arm
+            // had NO envelope call at all -- `--format json`/`--format sarif`
+            // on a bad path emitted zero bytes. Bring it into the shared
+            // path-error-envelope contract.
+            crate::output::emit_path_error_envelope(
+                args.format,
+                "selinux-lint",
+                SELINUX_LINT_SCHEMA_VERSION,
+            );
             return EXIT_TOOL_FAILURE;
         }
     };

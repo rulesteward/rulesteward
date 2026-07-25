@@ -6,7 +6,9 @@
 //! shipped-projection side ([`derive::code_table`]), and the drift diff; [`config`]
 //! reads the pinned DISA zip refs. The `main` binary wires these into the `derive`
 //! / `check` subcommands. The network fetch is isolated behind the [`source`] seam
-//! so the core is tested offline with fixtures.
+//! so the core is tested offline with fixtures. [`pin`] is the upstream-pin
+//! staleness detector (#550): a next-candidate-filename probe, not a "latest"
+//! query - see that module's doc for why, and for the offline-testable seam.
 //!
 //! Mirrors `tools/sshd-stig-update`'s module layout (Cargo.toml, `.cargo/mutants.toml`,
 //! `stig-refs.toml`, `tests/cli.rs` exit-code contract) with ONE deliberate deviation:
@@ -15,5 +17,6 @@
 
 pub mod config;
 pub mod derive;
+pub mod pin;
 pub mod source;
 pub mod xccdf;

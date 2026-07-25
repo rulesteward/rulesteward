@@ -185,6 +185,37 @@ fn sudoers_lint_help_cites_renumbered_cis_ids() {
 }
 
 #[test]
+fn sysctl_lint_help_system_enumeration_includes_w04() {
+    // #576 (adversarial-impl-reviewer miss, lane-7-sysctld-system-cis): lane 7
+    // wired the sysctld-W04 CIS baseline into `--system` mode's merged-set
+    // rerun (`rulesteward_sysctld::system::lint_system` reruns
+    // F01/W01/W02/W04), but the operator-facing `sysctl lint --help` still
+    // enumerated only F01/W01/W02 in TWO places: the `Lint` subcommand's long
+    // doc comment (cli/mod.rs) and the `--system` flag's own help
+    // (cli/args/sysctl.rs) -- telling an operator that `--system` is
+    // W02-only, the exact false belief #576 existed to kill. Both sites must
+    // name W04.
+    //
+    // The negative assertions target the longer STALE phrase (not just
+    // "F01/W01/W02"), because the fixed text "F01/W01/W02/W04" contains
+    // "F01/W01/W02" as a substring -- a naive negative assertion on the short
+    // form would be unsatisfiable after the fix.
+    Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sysctl", "lint", "--help"])
+        .assert()
+        .success()
+        // cli/mod.rs long-about site: "reruns F01/W01/W02 over the merged set"
+        // must become "reruns F01/W01/W02/W04 over the merged set".
+        .stdout(predicate::str::contains("F01/W01/W02/W04"))
+        .stdout(predicate::str::contains("reruns F01/W01/W02 over").not())
+        // cli/args/sysctl.rs `--system` flag-help site: "pass to
+        // F01/W01/W02." must become "pass to F01/W01/W02/W04.".
+        .stdout(predicate::str::contains("pass to F01/W01/W02/W04."))
+        .stdout(predicate::str::contains("pass to F01/W01/W02.").not());
+}
+
+#[test]
 fn sshd_lint_help_lists_all_codes_including_w07() {
     // #414: sshd-W07 (#302) was added after this help block was written, which
     // still claimed "All 12 sshd- codes" and omitted W07 from the enumeration.
@@ -198,4 +229,44 @@ fn sshd_lint_help_lists_all_codes_including_w07() {
         .success()
         .stdout(predicate::str::contains("13 sshd-"))
         .stdout(predicate::str::contains("sshd-W07"));
+}
+
+#[test]
+fn sysctl_lint_help_target_names_both_baselines_not_just_stig() {
+    // #576 (spec-review finding, lane-7-sysctld-system-cis): the `--target`
+    // flag help described only the STIG baseline ("Target RHEL release for the
+    // STIG hardening baseline ... Enables the version-aware `sysctld-W02`
+    // check ... With no `--target`, W02 does not run ... only sysctld-F01 /
+    // sysctld-W01"). `--target` in fact gates BOTH W02 and the CIS baseline
+    // W04, in all three modes, so the help understated what an operator gives
+    // up by omitting the flag. Predates this lane (#527 added W04), but it is
+    // the exact false belief #576 exists to kill, in a file this lane edits.
+    //
+    // clap HARD-WRAPS help text at the terminal width, so this normalises runs
+    // of whitespace to single spaces before matching. A phrase assertion
+    // against raw stdout would pass or fail depending on where the wrap landed,
+    // which is a flake waiting to happen rather than a real invariant.
+    let out = Command::cargo_bin("rulesteward")
+        .expect("binary built")
+        .args(["sysctl", "lint", "--help"])
+        .output()
+        .expect("`sysctl lint --help` runs");
+    assert!(out.status.success(), "--help must exit 0");
+    let help = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(
+        help.contains("neither W02 nor W04 runs"),
+        "--target help must state that BOTH baselines are gated by --target; got:\n{help}"
+    );
+    assert!(
+        !help.contains("W02 does not run"),
+        "stale --target help: says only W02 is gated, but --target also gates W04"
+    );
+    assert!(
+        !help.contains("Target RHEL release for the STIG hardening baseline"),
+        "stale --target help: names only STIG, but --target also selects the CIS baseline"
+    );
 }
