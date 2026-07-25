@@ -398,8 +398,9 @@ mod tests {
         // preserve a CRLF file's trailing '\r') without also dropping the
         // trailing-ASCII-space trim this exact-string `== Some("1")`
         // compare depends on -- a hand-edited conf with one trailing space
-        // must not silently flip `allow_filesystem_mark` to `false`. This
-        // test is GREEN today; it must stay GREEN after that fix lands.
+        // must not silently flip `allow_filesystem_mark` to `false`. That fix
+        // has since landed (`conf_value` now trims ASCII space only); this
+        // test was GREEN before it and stays GREEN after, which is the point.
         let c = parse_effective_conf("allow_filesystem_mark = 1 \n", true);
         assert!(
             c.allow_filesystem_mark,

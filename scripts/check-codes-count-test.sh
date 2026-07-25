@@ -714,7 +714,17 @@ write_fixture "${c_excl}/README.md" <<'EOF'
 
 ### sysctl.d (`sysctld-`, 3 codes)
 
-This is the only in-scope mention, and it is correct.
+### sudoers (`sudo-`, 9 codes)
+
+### sshd_config (`sshd-`, 13 codes)
+
+All three in-scope mentions are correct. The `sudo-` and `sshd-` ones exist
+only to satisfy the per-backend coverage floor: this fixture stages those two
+catalogs as BAIT (so an over-scanner has something to compare the out-of-scope
+CHANGELOG.md / cli_help.rs mentions against), and the floor applies to every
+backend whose catalog is present. Their VALUES are what makes the bait work -
+9 and 13 differ from the out-of-scope mentions' 8 and 12, so an over-scanner
+still flags those and the two assertions below still discriminate.
 EOF
 write_fixture "${c_excl}/CHANGELOG.md" <<'EOF'
 ## [0.3.0]
@@ -980,6 +990,43 @@ assert_output_contains "${c_floor}" "per-backend mentions: \`sshd-\` = 0" \
     "per-backend mentions line confirms sshd- dropped to exactly 0"
 assert_output_not_contains "${c_floor}" "unrecognized \"codes\" mention for \`sshd-\`" \
     "the floor violation is NOT reported as an unrecognized-mention violation (the two failure classes stay distinguishable)"
+
+# ---------------------------------------------------------------------------
+# Case: the per-backend coverage floor STILL applies to the backends that ARE
+# present when a DIFFERENT backend's catalog is absent. Regression pin for the
+# session-9j senior integration review finding: an earlier revision gated the
+# whole floor loop on a single repo-wide ALL_CATALOGS_PRESENT boolean, so ONE
+# catalog going missing (a backend normalizing `src/lints/catalog.rs` to
+# `src/catalog.rs` - the shape sysctld already uses - or simply being renamed)
+# silently disarmed the floor for ALL SIX backends at once. A second backend's
+# mentions could then be reworded away entirely with the gate still green.
+#
+# Fully synthetic on purpose: it asserts nothing about the real README's
+# wording, so it cannot rot when that wording changes.
+#
+# Discriminating by construction - `sudo-`'s catalog is PRESENT with zero
+# mentions (floor must fire) while `se-`'s catalog is ABSENT with zero
+# mentions (floor must stay silent, since a missing catalog is deliberately
+# not an error). The old global-flag implementation exits 0 here; the
+# per-backend implementation exits 1 naming `sudo-` and only `sudo-`.
+# ---------------------------------------------------------------------------
+c_partial="case_per_backend_floor_survives_a_missing_sibling_catalog"
+synthetic_sysctld_catalog | write_fixture "${c_partial}/crates/rulesteward-sysctld/src/catalog.rs"
+synthetic_sudo_catalog | write_fixture "${c_partial}/crates/rulesteward-sudoers/src/lints/catalog.rs"
+write_fixture "${c_partial}/README.md" <<'EOF'
+# Fixture repo with one backend's catalog absent
+
+### sysctl.d (`sysctld-`, 3 codes)
+
+`sudo-`'s catalog is staged but has NO mention here - the floor must catch it.
+`se-`'s catalog is not staged at all - the floor must stay silent about it.
+EOF
+
+run_case "${c_partial}" "${TMPROOT}/${c_partial}" 1
+assert_output_contains "${c_partial}" "per-backend coverage floor violated: \`sudo-\` has 0 live \"codes\" mention(s)" \
+    "the floor still fires for the PRESENT-catalog backend even though a sibling catalog is missing"
+assert_output_not_contains "${c_partial}" "per-backend coverage floor violated: \`se-\`" \
+    "the floor stays silent for the ABSENT-catalog backend (a missing catalog is not an error)"
 
 echo ""
 echo "----------------------------------------"

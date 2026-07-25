@@ -150,17 +150,6 @@ for i in "${!PREFIXES[@]}"; do
     CATALOG_LEN[i]="$(catalog_length "${PREFIXES[i]}" "${REPO_ROOT}/${CATALOG_FILES[i]}")"
 done
 
-# ALL_CATALOGS_PRESENT gates the per-backend coverage floor below: it is only
-# meaningful to require "every backend has >= 1 mention" when every backend's
-# catalog file actually exists under REPO_ROOT (a full six-backend tree). A
-# narrow synthetic fixture that stages only one or two catalogs to exercise a
-# specific shape/exclusion behavior says nothing about the backends it never
-# staged, so the floor must not apply to it.
-ALL_CATALOGS_PRESENT=1
-for i in "${!PREFIXES[@]}"; do
-    [[ -f "${REPO_ROOT}/${CATALOG_FILES[i]}" ]] || ALL_CATALOGS_PRESENT=0
-done
-
 scanned=0
 violations=""
 violation_count=0
@@ -222,20 +211,29 @@ for scan_rel in "${SCAN_FILES[@]}"; do
     done
 done
 
-# PER-BACKEND COVERAGE FLOOR: only when every one of the six catalog files is
-# present (see ALL_CATALOGS_PRESENT above), require every backend to have
-# >= 1 live shape-based mention. This is what catches a backend whose every
-# mention has been reworded into prose naming it by neither its prefix nor
-# its display name - invisible to the UNRECOGNIZED-MENTION rule above too,
-# since that rule also keys off the prefix/display-name signal.
-if [[ "${ALL_CATALOGS_PRESENT}" -eq 1 ]]; then
-    for i in "${!PREFIXES[@]}"; do
-        if [[ "${PREFIX_MENTION_COUNT[i]}" -eq 0 ]]; then
-            violations+="per-backend coverage floor violated: \`${PREFIXES[i]}\` has 0 live \"codes\" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)"$'\n'
-            violation_count=$((violation_count + 1))
-        fi
-    done
-fi
+# PER-BACKEND COVERAGE FLOOR: for every backend whose catalog file is present
+# under REPO_ROOT, require >= 1 live shape-based mention. This is what catches
+# a backend whose every mention has been reworded into prose naming it by
+# neither its prefix nor its display name - invisible to the
+# UNRECOGNIZED-MENTION rule above too, since that rule also keys off the
+# prefix/display-name signal.
+#
+# Presence is checked PER BACKEND, not as one repo-wide flag. An earlier
+# revision gated this whole loop on a single ALL_CATALOGS_PRESENT boolean, so
+# ONE catalog moving (e.g. a backend normalizing `src/lints/catalog.rs` to
+# `src/catalog.rs`, the shape sysctld already uses) silently disarmed the
+# floor for all six backends at once - a second backend's mentions could then
+# be reworded away undetected. A missing catalog is deliberately not an error
+# (narrow synthetic fixtures stage only the catalogs they exercise), so the
+# per-backend skip preserves that while keeping every staged backend guarded.
+# Caught by the session-9j senior integration review.
+for i in "${!PREFIXES[@]}"; do
+    [[ -f "${REPO_ROOT}/${CATALOG_FILES[i]}" ]] || continue
+    if [[ "${PREFIX_MENTION_COUNT[i]}" -eq 0 ]]; then
+        violations+="per-backend coverage floor violated: \`${PREFIXES[i]}\` has 0 live \"codes\" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)"$'\n'
+        violation_count=$((violation_count + 1))
+    fi
+done
 
 if [[ -n "${violations}" ]]; then
     printf '%s' "${violations}"

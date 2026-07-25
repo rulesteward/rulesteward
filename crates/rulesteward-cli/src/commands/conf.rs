@@ -181,13 +181,14 @@ mod tests {
     // leaves the '\r' byte bound to the value, and `unsigned_int_parser`'s
     // byte-exact `isdigit` walk later rejects it.
     //
-    // `conf_value` currently scans with `text.lines()`, which conflates a
-    // `\r\n` terminator into a single line ending and silently drops the
-    // '\r' -- breaking this function's own documented "RAW remainder
-    // verbatim" contract (see the doc comment above) and producing a
-    // fail-open miss for every one of its callers (`doctor/probe.rs`,
-    // `fapolicyd/trustdb.rs`, `container_check/probe.rs`, and
-    // `target_probe.rs`).
+    // These pins exist because an earlier `conf_value` scanned with
+    // `text.lines()`, which conflates a `\r\n` terminator into a single line
+    // ending and silently drops the '\r' -- breaking this function's own
+    // documented "RAW remainder verbatim" contract (see the doc comment
+    // above) and producing a fail-open miss for every one of its callers
+    // (`doctor/probe.rs`, `fapolicyd/trustdb.rs`, `container_check/probe.rs`,
+    // and `target_probe.rs`). `conf_value` now splits on a bare `'\n'`; these
+    // pins hold that fix in place.
     //
     // SCOPE NOTE (adversarial review round 2, doc-truth-decay correction):
     // the pins below cover VALUE tokenization only -- leading/trailing

@@ -32,7 +32,7 @@
 //!   A metadata check alone, performed AFTER a blocking open, is therefore
 //!   not sufficient. The implementation must open non-blocking (e.g.
 //!   `std::os::unix::fs::OpenOptionsExt::custom_flags` with the platform
-//!   `O_NONBLOCK` value -- a plain `i32`, no new crate dependency needed) so
+//!   `O_NONBLOCK` value, aliased from `libc` by the constant below) so
 //!   the open call itself cannot hang, check the resolved type, reject a
 //!   non-regular file immediately, and only then perform a normal buffered
 //!   read of an accepted regular file.
@@ -111,13 +111,13 @@
 //!    block normally until the writer is done, exactly like a blocking
 //!    `open()` would have.
 //!
-//! Clearing `O_NONBLOCK` is a real syscall (`fcntl`), not a hardcodable
-//! platform constant like `O_NONBLOCK`'s own value below -- so, unlike the
-//! rest of this module, `read_stream_to_string`'s FIFO path pulls in the
-//! `libc` crate for the `fcntl`/`F_GETFL`/`F_SETFL` FFI declarations. `libc`
-//! is already a normal (non-dev) dependency of the shipped binary via
-//! `heed -> lmdb-master-sys` (see the workspace `Cargo.toml`), so this adds no
-//! new code to the musl static binary.
+//! Clearing `O_NONBLOCK` is a real syscall (`fcntl`), not just a constant, so
+//! `read_stream_to_string`'s FIFO path needs the `libc` crate for the
+//! `fcntl`/`F_GETFL`/`F_SETFL` FFI declarations (the `O_NONBLOCK` constant
+//! below is aliased from the same crate). `libc` is already a normal
+//! (non-dev) dependency of the shipped binary via `heed -> lmdb-master-sys`
+//! (see the workspace `Cargo.toml`), so this adds no new code to the musl
+//! static binary.
 
 use std::fs::{FileType, OpenOptions};
 use std::io::{self, Read};
@@ -133,24 +133,19 @@ use std::time::{Duration, Instant};
 /// above for why a metadata check performed only AFTER a blocking open is
 /// not sufficient.
 ///
-/// Hardcoded here rather than `libc::O_NONBLOCK` (the two are numerically
-/// identical on Linux) even though this module links `libc` anyway for
-/// [`clear_nonblock`]'s `fcntl` calls (which use `libc::O_NONBLOCK` directly)
-/// -- "avoids a new crate dependency" stopped being the reason for that split
-/// the moment `clear_nonblock` landed; `libc` is linked either way. The real
-/// reason this constant stays hand-rolled: its exact name is also the frozen
-/// test suite's own fixture-open flag (`super::O_NONBLOCK`, used to build
-/// `reader_placeholder` in two FIFO tests below), so consolidating these two
-/// `open()` sites onto `libc::O_NONBLOCK` would require touching frozen test
-/// source, which the #583/#561 frozen-tests rule forbids. On the only
-/// architecture this binary ships for (`x86_64`, per the workspace's
-/// `x86_64-unknown-linux-musl` distribution target) `0o4000` and
-/// `libc::O_NONBLOCK` are the identical value; on an architecture this
-/// project does not build for (mips/sparc/parisc/alpha Linux use a different
-/// `O_NONBLOCK` bit pattern), this hardcoded value would be wrong where
-/// `libc::O_NONBLOCK` would not -- a real, if currently moot, portability
-/// gap this split leaves in place.
-const O_NONBLOCK: i32 = 0o4000;
+/// Defined as an alias for `libc::O_NONBLOCK` rather than a hand-rolled
+/// `0o4000`. An earlier revision hardcoded the literal and justified it by
+/// claiming that consolidating onto `libc::O_NONBLOCK` would mean touching
+/// frozen test source (the tests build their fixture readers with
+/// `super::O_NONBLOCK`). That justification was false: keeping the NAME
+/// `O_NONBLOCK` and changing only what it is bound to leaves every
+/// `super::O_NONBLOCK` use site compiling unchanged, so no test source is
+/// touched and the #583/#561 frozen-tests rule is not engaged. The literal's
+/// only real effect was a latent portability gap -- `0o4000` is correct on
+/// `x86_64`/`aarch64` but wrong on mips/sparc/parisc/alpha Linux, which use a
+/// different `O_NONBLOCK` bit pattern -- so the alias closes that gap at zero
+/// cost. `libc` is linked either way for [`clear_nonblock`]'s `fcntl` calls.
+const O_NONBLOCK: i32 = libc::O_NONBLOCK;
 
 /// Hard ceiling on how long [`read_stream_to_string`] will retry an empty FIFO
 /// read before concluding the FIFO is genuinely writerless (#583 lane 3

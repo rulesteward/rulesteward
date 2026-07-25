@@ -475,9 +475,28 @@ const UNPARSEABLE_LITERAL: &str = "no usable V<major>R<minor> token";
 
 #[test]
 fn workflow_grep_literals_stay_coupled_to_report_actionable_messages() {
+    // Scope the haystack to the workflow's actual `grep -qE` line, NOT the
+    // whole file. Each literal below appears TWICE in that workflow: once in
+    // the explanatory comment block and once in the real grep. A whole-file
+    // `contains` therefore stays green when a maintainer narrows the real
+    // pattern and leaves the comment untouched -- which is precisely the
+    // #550 MISS-1 failure this test exists to prevent, reintroduced by the
+    // test itself (caught by the session-9j senior integration review).
+    let grep_lines = WORKFLOW_YML
+        .lines()
+        .filter(|l| l.contains("grep -qE"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !grep_lines.is_empty(),
+        "no `grep -qE` line in the workflow: the \"Detect a staleness hit\" \
+         step was renamed, restructured, or removed, so this coupling test \
+         has nothing to check and would pass vacuously; \
+         workflow=.github/workflows/sshd-pin-staleness.yml"
+    );
     for lit in [NEWER_LITERAL, PIN_NOT_FOUND_LITERAL, UNPARSEABLE_LITERAL] {
         assert!(
-            WORKFLOW_YML.contains(lit),
+            grep_lines.contains(lit),
             "the workflow's \"Detect a staleness hit\" grep must contain the \
              actionable literal {lit:?} that report() emits - otherwise a \
              report() reword silently breaks the workflow's detection \

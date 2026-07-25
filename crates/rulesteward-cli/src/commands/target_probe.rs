@@ -258,8 +258,9 @@ mod tests {
         // NOT be stripped, and `version_id` would become
         // `Some("\"9.4\" ")` instead of `Some("9.4")` -- silently breaking
         // RHEL target auto-detection, which cascades into every `ControlRef`
-        // attachment across the whole compliance surface. This test is
-        // GREEN today; it must stay GREEN after that fix lands.
+        // attachment across the whole compliance surface. That fix has since
+        // landed (`conf_value` trims ASCII space only); this test was GREEN
+        // before it and stays GREEN after, which is the point.
         let os = parse_os_release("VERSION_ID=\"9.4\" \n");
         assert_eq!(
             os.version_id.as_deref(),

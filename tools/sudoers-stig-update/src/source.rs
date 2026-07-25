@@ -6,9 +6,12 @@
 //! No unit tests here (mirroring `tools/sshd-stig-update`'s own convention
 //! that `source.rs` carries no unit tests and is excluded from the mutation
 //! gate, see `.cargo/mutants.toml`) -- this is the live network/filesystem
-//! seam, not the offline-testable derivation core. Mirrors
-//! `tools/sshd-stig-update/src/source.rs` / `tools/auditd-stig-update/src/source.rs`
-//! verbatim (same seam, same convention).
+//! seam, not the offline-testable derivation core. Follows the same seam and
+//! convention as `tools/sshd-stig-update/src/source.rs` /
+//! `tools/auditd-stig-update/src/source.rs`, but is NOT identical to them:
+//! those two additionally carry the `CurlProber`/`Prober` shape added by the
+//! #550 pin-staleness work, which this tool has no `check-pin` subcommand to
+//! use.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

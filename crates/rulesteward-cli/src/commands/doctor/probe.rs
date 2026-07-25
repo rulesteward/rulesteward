@@ -827,16 +827,16 @@ mod tests {
     // the value token. `unsigned_int_parser`'s `isdigit` walk is byte-exact
     // and rejects the WHOLE token at the first non-digit byte.
     //
-    // `permissive_value_is_effectively_permissive` currently uses
-    // `raw.split_whitespace().next()`, which is Unicode-whitespace-aware
-    // (it treats TAB and CR as separators/trimmable bytes, unlike the real
-    // daemon) -- so it wrongly rescues a value the real daemon's
-    // byte-exact parser would reject outright, reporting PERMISSIVE for a
-    // daemon that is actually enforcing. This is the identical miss already
-    // fixed at the `lint_conf` seam (see `lints/conf.rs`'s
-    // `tab_separated_second_token_does_not_leak_into_the_value` and
-    // `crlf_line_ending_leaves_a_trailing_cr_in_the_value`); this probe
-    // seam has not yet been fixed.
+    // These pins exist because `permissive_value_is_effectively_permissive`
+    // once used `raw.split_whitespace().next()`, which is
+    // Unicode-whitespace-aware (it treats TAB and CR as separators/trimmable
+    // bytes, unlike the real daemon) -- so it wrongly rescued a value the
+    // real daemon's byte-exact parser would reject outright, reporting
+    // PERMISSIVE for a daemon that is actually enforcing. That was the
+    // identical miss already fixed at the `lint_conf` seam (see
+    // `lints/conf.rs`'s `tab_separated_second_token_does_not_leak_into_the_value`
+    // and `crlf_line_ending_leaves_a_trailing_cr_in_the_value`). Both seams
+    // now share `first_conf_token`; these pins hold that convergence in place.
     //
     // SCOPE NOTE: see `commands/conf.rs`'s dedicated scope-note comment for
     // exactly what is (VALUE tokenization: space-splitting, CR retention,
@@ -1231,10 +1231,12 @@ mod tests {
     // (`rulesteward_core::fsread::read_to_string`) already covers every lint
     // entry point (auditd.rs, fapolicyd/lint.rs, selinux/lint.rs, sshd.rs,
     // sysctl.rs) but was never extended to these three testable read sites
-    // in `doctor/probe.rs` -- they still call raw `std::fs::read_to_string`
-    // / `std::fs::read_dir`, which blocks forever opening a FIFO with no
-    // writer (the exact #560 hang, reproduced against `fapolicyd lint` and
-    // documented in `fsread.rs`'s own module doc). Driven off a background
+    // in `doctor/probe.rs`, which called raw `std::fs::read_to_string` /
+    // `std::fs::read_dir` -- blocking forever opening a FIFO with no writer
+    // (the exact #560 hang, reproduced against `fapolicyd lint` and
+    // documented in `fsread.rs`'s own module doc). The `read_to_string` sites
+    // are now routed through `fsread`; the `read_dir` half is unguarded
+    // still, since `fsread` covers file reads only. Driven off a background
     // thread with a bounded `recv_timeout`, mirroring `fsread.rs`'s own
     // `fifo_is_rejected_fast_no_hang`/`character_device_dev_zero_...` tests,
     // so a hanging (today's real) implementation fails this ONE test

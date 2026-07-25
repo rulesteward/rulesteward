@@ -1183,7 +1183,9 @@ mod tests {
         // comparison below would pass trivially FOREVER regardless of real
         // drift between the two tools. Verified live: with this guard
         // removed and OTHER_TOOL_PIN_RS's path pointed at itself, both
-        // crates' full suites stayed green (76/76 sshd, 66/66 auditd). Catch
+        // crates' full suites stayed green (no test count quoted here on
+        // purpose -- the drift guard keeps this comment byte-identical in
+        // both tools forever, but nothing keeps a quoted count true). Catch
         // it before normalization can hide it: a CORRECTLY wired pair
         // differs on at least the include_str! path line itself (this file's
         // OWN path vs the sister's), so the RAW (unnormalized) contents must
