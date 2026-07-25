@@ -24,6 +24,12 @@ name: sshd-stig-check
 #     sshd-stig-drift.yml still catches drift independently on its own schedule)
 #   - tools/sshd-stig-update/**                   - the tool + its fixtures + stig-refs.toml
 #   - .github/workflows/sshd-stig-check.yml       - this workflow
+#   - .github/workflows/sshd-pin-staleness.yml    - NOT an input to the drift check, but
+#     tests/cli.rs `include_str!`s that workflow to pin its grep literals against
+#     `pin::report`'s output strings. This is the only PR-time job that runs those
+#     tests, so without this entry a PR editing ONLY the workflow's grep literals
+#     would never trigger the coupling test -- the exact drift it was written to
+#     catch (#550, lane-5 spec review).
 on:
   pull_request:
     paths:
@@ -31,6 +37,7 @@ on:
       - 'crates/rulesteward-sshd/src/lints/stig/**'
       - 'tools/sshd-stig-update/**'
       - '.github/workflows/sshd-stig-check.yml'
+      - '.github/workflows/sshd-pin-staleness.yml'
 
 # Least privilege: read the repo only. This job never writes back to GitHub (contrast
 # sshd-stig-drift.yml, which needs issues: write for its tracking issue).

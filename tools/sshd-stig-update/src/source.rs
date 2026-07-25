@@ -2,9 +2,18 @@
 //! `*Manual-xccdf.xml`. Isolated here (a `curl` + `unzip` shell-out) so the
 //! derivation core ([`crate::xccdf`]) stays offline-testable with fixtures; this
 //! module is exercised only by the live `check` / `derive` runs.
+//!
+//! [`CurlProber`] is the real, network-backed [`crate::pin::Prober`] for the
+//! `check-pin` subcommand (#550): a `curl` HEAD-ish existence check, per
+//! `pin.rs`'s own module doc ("belongs beside the other live-network code").
+//! Like the rest of this module, it is exercised only by a live run - every
+//! unit test in `pin.rs` uses the offline `FakeProber`/`AlwaysFoundProber`
+//! instead, so this struct has no test of its own (mirrors `fetch_xccdf`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::pin::{Probe, ProbeError, Prober};
 
 /// Download the DISA STIG zip at `url`, unzip it, and return the contents of the
 /// single `*Manual-xccdf.xml` inside. Uses a per-process temp dir under the system
@@ -85,4 +94,48 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The real [`Prober`] used by `check-pin` when no `--fixture` is given: a
+/// `curl` HEAD request (`-I`), following redirects, discarding any response
+/// body (`-o /dev/null`) and reading back only the HTTP status code
+/// (`-w '%{http_code}'`) - the same `-w '%{http_code}'` idiom
+/// `tools/stig-update/src/source.rs::fetch_status` uses for its own
+/// found/missing distinction, adapted here to a HEAD-ish existence check
+/// instead of a full GET.
+pub struct CurlProber;
+
+impl Prober for CurlProber {
+    fn probe(&mut self, url: &str) -> Result<Probe, ProbeError> {
+        let out = Command::new("curl")
+            .args([
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-L",
+                "-I",
+                "--max-time",
+                "60",
+                "-w",
+                "%{http_code}",
+                url,
+            ])
+            .output()
+            .map_err(|e| ProbeError(format!("spawn curl (is it installed?): {e}")))?;
+        if !out.status.success() {
+            return Err(ProbeError(format!(
+                "curl {url} (transport): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        let code_str = String::from_utf8_lossy(&out.stdout);
+        let code: u16 = code_str.trim().parse().map_err(|_| {
+            ProbeError(format!("curl {url}: unexpected status output {code_str:?}"))
+        })?;
+        match code {
+            200..=299 => Ok(Probe::Found),
+            404 => Ok(Probe::NotFound),
+            other => Err(ProbeError(format!("curl {url}: HTTP {other}"))),
+        }
+    }
 }
