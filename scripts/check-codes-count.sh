@@ -69,9 +69,26 @@
 #   stdout also includes, once per backend, a line of the exact literal form:
 #       per-backend mentions: `<prefix>` = <N>
 #   (N = the count of shape-based mentions, i.e. this backend's share of the
-#   `scanned` total across both files) - lets tooling assert a per-backend
-#   coverage floor (e.g. "every backend has >= 1 live mention") without
-#   hardcoding the aggregate total, which drifts as docs legitimately grow.
+#   `scanned` total across both files) - lets tooling assert this figure
+#   independently, without hardcoding the aggregate total, which drifts as
+#   docs legitimately grow.
+#
+#   PER-BACKEND COVERAGE FLOOR (#586 round-5 hardening): the gate itself now
+#   enforces N >= 1 for every one of the six backends, but ONLY when all six
+#   catalog files listed in the table above exist under REPO_ROOT - i.e. only
+#   against a full six-backend project tree, never against a narrow synthetic
+#   fixture that deliberately stages a subset of catalogs to exercise one
+#   specific shape/exclusion behavior (such a fixture asserts nothing about
+#   backends it never staged a catalog for, so the floor does not apply to
+#   it). This closes the gap the UNRECOGNIZED-MENTION rule above cannot: a
+#   backend whose every mention is reworded into prose naming it by NEITHER
+#   its prefix NOR its display name (e.g. "the sshd backend ships 13 lint
+#   codes") carries no signal for that rule to catch either, and previously
+#   drops to zero live mentions with no violation raised at all. A backend at
+#   exactly 0 (when the floor applies) is reported as its own violation line,
+#   syntactically distinct from a count mismatch or an unrecognized-mention
+#   violation (neither of which carries a `<file>:<line>:` prefix):
+#       per-backend coverage floor violated: `<prefix>` has 0 live "codes" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)
 #
 #   ANTI-VACUITY: a scan that finds ZERO "codes" mentions across both files
 #   combined is ALSO a violation (exit non-zero). On every invocation, stdout
@@ -80,7 +97,8 @@
 #
 #   EXIT CODE: 0 only when at least one mention was found AND every mention's
 #   stated N equals its backend's catalog length AND no unrecognized-mention
-#   violation was found. 1 otherwise.
+#   violation was found AND (when all six catalogs are present) no backend's
+#   live mention count is zero (the per-backend coverage floor). 1 otherwise.
 #
 # Implementation note: this is a fixed, small scan (2 files x 6 backends x 3
 # shapes), so it is done directly in bash + grep (one `grep -nEo` call per
@@ -130,6 +148,17 @@ catalog_length() {
 CATALOG_LEN=()
 for i in "${!PREFIXES[@]}"; do
     CATALOG_LEN[i]="$(catalog_length "${PREFIXES[i]}" "${REPO_ROOT}/${CATALOG_FILES[i]}")"
+done
+
+# ALL_CATALOGS_PRESENT gates the per-backend coverage floor below: it is only
+# meaningful to require "every backend has >= 1 mention" when every backend's
+# catalog file actually exists under REPO_ROOT (a full six-backend tree). A
+# narrow synthetic fixture that stages only one or two catalogs to exercise a
+# specific shape/exclusion behavior says nothing about the backends it never
+# staged, so the floor must not apply to it.
+ALL_CATALOGS_PRESENT=1
+for i in "${!PREFIXES[@]}"; do
+    [[ -f "${REPO_ROOT}/${CATALOG_FILES[i]}" ]] || ALL_CATALOGS_PRESENT=0
 done
 
 scanned=0
@@ -192,6 +221,21 @@ for scan_rel in "${SCAN_FILES[@]}"; do
         done < <(grep -nE "${signal_re}" "${scan_abs}" 2>/dev/null || true)
     done
 done
+
+# PER-BACKEND COVERAGE FLOOR: only when every one of the six catalog files is
+# present (see ALL_CATALOGS_PRESENT above), require every backend to have
+# >= 1 live shape-based mention. This is what catches a backend whose every
+# mention has been reworded into prose naming it by neither its prefix nor
+# its display name - invisible to the UNRECOGNIZED-MENTION rule above too,
+# since that rule also keys off the prefix/display-name signal.
+if [[ "${ALL_CATALOGS_PRESENT}" -eq 1 ]]; then
+    for i in "${!PREFIXES[@]}"; do
+        if [[ "${PREFIX_MENTION_COUNT[i]}" -eq 0 ]]; then
+            violations+="per-backend coverage floor violated: \`${PREFIXES[i]}\` has 0 live \"codes\" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)"$'\n'
+            violation_count=$((violation_count + 1))
+        fi
+    done
+fi
 
 if [[ -n "${violations}" ]]; then
     printf '%s' "${violations}"

@@ -70,9 +70,13 @@
 #   actually read and compared (not just a hardcoded subset), which is the
 #   strongest guarantee available without that redesign.
 #
-#   A backend's CATALOG LENGTH is the count of lines matching the literal
-#   substring `code: "<prefix>` in its catalog file (one entry per line,
-#   matching the repo's one-field-per-line struct-literal style).
+#   A backend's CATALOG LENGTH is the count of OCCURRENCES (not lines) of the
+#   literal substring `code: "<prefix>` in its catalog file: two entries
+#   crammed onto one line count as 2, not 1. In practice this coincides with
+#   a line count today (rustfmt's one-field-per-line struct-literal style
+#   puts one entry per line), but the occurrence count is the frozen, correct
+#   definition - see case_catalog_length_counts_occurrences_not_lines below,
+#   which seeds two entries on one line and requires catalog length 2.
 #
 #   A "codes mention" is any of these three shapes, found anywhere in the
 #   scanned files, tied to one of the six prefixes/display names (real
@@ -116,25 +120,58 @@
 #   "scanned 14" (or any other positive number) whenever it detected the
 #   real tree passed 10/10 without reading a single catalog file.
 #
+#   UNRECOGNIZED-MENTION rule (#586 round-4 hardening): a line in a scanned
+#   file that references one of the six backends (by prefix or display name,
+#   word-bounded so e.g. "parse-error" cannot false-trigger `se-`) AND
+#   contains the word "codes" (case-insensitive) AND a digit, but was not
+#   claimed by any of shapes (a)/(b)/(c) for that backend, is ITSELF a
+#   violation - reported as:
+#       <file>:<line>: unrecognized "codes" mention for `<prefix>` (matches no known shape)
+#   This is what catches coverage silently eroding one mention at a time: a
+#   mention reworded into unrecognized prose no longer just vanishes from
+#   `scanned` unnoticed. See case_unrecognized_mention_* below.
+#
+#   PER-BACKEND MENTION COUNTS: on every invocation, stdout also includes,
+#   once per backend, a line of the exact literal form:
+#       per-backend mentions: `<prefix>` = <N>
+#   (N = this backend's share of the shape-based `scanned` total across both
+#   files).
+#
+#   PER-BACKEND COVERAGE FLOOR (#586 round-5 hardening): the gate itself
+#   enforces N >= 1 for every backend, but ONLY when all six catalog files
+#   are present under REPO_ROOT (a full six-backend tree; a narrow synthetic
+#   fixture staging a subset of catalogs is not asserting anything about the
+#   backends it never staged). This closes the gap the UNRECOGNIZED-MENTION
+#   rule cannot: a backend whose every mention is reworded into prose naming
+#   it by NEITHER its prefix NOR its display name carries no signal for that
+#   rule either, and previously eroded to zero mentions with no violation at
+#   all - see case_per_backend_floor_all_mentions_reworded_away below, which
+#   reproduces exactly this against the real repo tree. Reported as:
+#       per-backend coverage floor violated: `<prefix>` has 0 live "codes" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)
+#   (no `<file>:<line>:` prefix - syntactically distinct from a count
+#   mismatch or an unrecognized-mention violation, both of which carry one).
+#
 #   EXIT CODE: 0 only when at least one mention was found AND every
-#   mention's stated N equals its backend's catalog length. 1 otherwise
-#   (any mismatch, or zero mentions found).
+#   mention's stated N equals its backend's catalog length AND no
+#   unrecognized-mention violation was found AND (when all six catalogs are
+#   present) no backend's live mention count is zero. 1 otherwise.
 #
 # This test script is self-contained: it builds synthetic README.md (+
-# synthetic catalog) fixtures in a mktemp dir per case, invokes the
-# (not-yet-implemented) gate against them, and asserts the exit code and,
-# where relevant, that the output names the right file:line, reports both
-# numbers, reports an exact scanned-mentions count, or (for the exclusion
-# case) does NOT name an out-of-scope file.
+# synthetic catalog) fixtures in a mktemp dir per case, invokes the real gate
+# (scripts/check-codes-count.sh) against them, and asserts the exit code
+# and, where relevant, that the output names the right file:line, reports
+# both numbers, reports an exact scanned-mentions count, or (for the
+# exclusion case) does NOT name an out-of-scope file.
 #
 # STRENGTHENED (real-tree handling, replacing the original
 # case4_real_tree_catches_known_live_bugs): the plan assigns README.md
 # exclusively to this lane and wires `codes-guard` into `just ci` in the
 # SAME commit the implementer adds the real script, so the implementer
-# MUST also fix README.md's three currently-live mismatches
-# (README.md:127 "9 au- codes" vs actual 11, README.md:139 "8 sudo- codes"
-# vs actual 9, README.md:286 "(`sysctld-`, 4 codes)" vs actual 5) or `just
-# ci` goes red. A frozen test that requires those exact lines to remain
+# MUST also fix README.md's three then-live mismatches (at authoring time:
+# README.md:127 "9 au- codes" vs actual 11, README.md:139 "8 sudo- codes" vs
+# actual 9, README.md:286 "(`sysctld-`, 4 codes)" vs actual 5 - all three
+# have since been fixed and now read 11/9/5 respectively) or `just ci` goes
+# red. A frozen test that requires those exact lines to remain
 # BROKEN would force the implementer to edit a frozen test the moment they
 # do their job correctly - there is no repo state where both `just ci` and
 # that old assertion are green. Two durable replacements, neither of which
@@ -150,10 +187,12 @@
 #   - case_real_tree_pristine_eventually_clean: runs the gate against the
 #     REAL repo tree, unmodified, with no arguments (mirrors
 #     check-dac-guard-test.sh:513-527's case7_real_tree exactly) and
-#     asserts exit 0. This is RED today (the three live mismatches above
-#     still exist) and is EXPECTED to turn green in the same commit that
-#     implements the gate and fixes README.md - that is the correct,
-#     durable, TDD-red state for a lane whose own job includes the fix.
+#     asserts exit 0. This WAS RED at authoring time (the three live
+#     mismatches above existed then) and turned GREEN in the same commit
+#     that implemented the gate and fixed README.md - that was the correct,
+#     durable, TDD-red-then-green state for a lane whose own job included
+#     the fix; the tree is clean now, so this case is a durable regression
+#     guard, not a still-open TODO.
 #
 # Run with no arguments; safe to run locally or in CI.
 
@@ -835,9 +874,11 @@ assert_scanned_count_exact "${c_occ}" 1
 # the repo root, unmodified. STRENGTHENED (Blocker 1, part B; replaces the
 # original case4's hardcoded-live-line assertions): mirrors
 # check-dac-guard-test.sh's case7_real_tree exactly - durable, asserts only
-# exit 0, no live content dependency. This is expected to be RED right now
-# (README.md:127/139/286 are still wrong) and to turn GREEN in the same
-# commit that implements the gate and fixes README.md, per the plan.
+# exit 0, no live content dependency. This WAS RED at authoring time
+# (README.md:127/139/286 were still wrong) and turned GREEN in the same
+# commit that implemented the gate and fixed README.md, per the plan; the
+# tree is clean now, so this case is a durable regression guard against
+# future drift, not a still-open TODO.
 # ---------------------------------------------------------------------------
 case_pristine_out="${TMPROOT}/case_real_tree_pristine.out"
 case_pristine_rc=0
@@ -845,7 +886,7 @@ case_pristine_rc=0
 if [[ "${case_pristine_rc}" -eq 0 ]]; then
     note_pass "case_real_tree_pristine_eventually_clean (exit 0)"
 else
-    note_fail "case_real_tree_pristine_eventually_clean: expected exit 0 once README.md's drift is fixed and the gate is implemented (same commit), got ${case_pristine_rc}"
+    note_fail "case_real_tree_pristine_eventually_clean: expected exit 0 (README.md's drift was fixed in the same commit that implemented the gate), got ${case_pristine_rc}"
     sed 's/^/    | /' "${case_pristine_out}" || true
 fi
 
@@ -859,6 +900,13 @@ fi
 # dropping that backend's count to 0) WITHOUT hardcoding the current
 # aggregate total (14) or any single backend's exact count, both of which
 # drift as the docs legitimately grow.
+#
+# NOTE: this loop only asserts that the REAL tree, as it stands, already
+# satisfies the floor - it does not prove the gate would REJECT a tree that
+# didn't. That enforcement gap (found on NEEDS_REWORK review: the floor was
+# printed but never asserted anywhere `just ci`/CI actually runs) is what
+# round-5 below closes, inside the gate itself; see
+# case_per_backend_floor_all_mentions_reworded_away.
 # ---------------------------------------------------------------------------
 for floor_prefix in fapd- au- sshd- sudo- sysctld- se-; do
     floor_n="$(grep -oE "per-backend mentions: \`${floor_prefix}\` = [0-9]+" "${case_pristine_out}" 2>/dev/null | grep -oE '[0-9]+$' | head -1 || true)"
@@ -868,6 +916,70 @@ for floor_prefix in fapd- au- sshd- sudo- sysctld- se-; do
         note_fail "real-tree per-backend floor: \`${floor_prefix}\` has '${floor_n:-<none>}' live mention(s), expected >= 1"
     fi
 done
+
+# ---------------------------------------------------------------------------
+# ROUND-5 HARDENING (adversarial finding on #586 NEEDS_REWORK review): the
+# per-backend floor loop above only proves the REAL tree currently satisfies
+# the floor - it never proves the GATE itself would reject a tree that
+# didn't. The review demonstrated, live against this repo, that rewording
+# all three real sshd- mentions into prose naming neither the `sshd-`
+# prefix nor the `sshd_config` display name (invisible to the
+# UNRECOGNIZED-MENTION rule too, since that rule keys off the same two
+# signals) dropped `scanned` from 14 to 11, `per-backend mentions: `sshd-`
+# = 0`, with exit STILL 0 - an entire backend's documentation silently
+# erased behind a green gate. This case reproduces that exact scenario
+# against a scratch copy of the real repo tree (all six real catalogs +
+# real README.md + real cli/mod.rs) and requires the gate now exit 1,
+# reporting the dedicated per-backend-floor message for `sshd-` - distinct
+# from a count-mismatch or unrecognized-mention violation, so an operator
+# can tell which failure class actually fired.
+# ---------------------------------------------------------------------------
+c_floor="case_per_backend_floor_all_mentions_reworded_away"
+floor_dir="${TMPROOT}/${c_floor}"
+mkdir -p "${floor_dir}/crates/rulesteward-cli/src/cli"
+stage_real_catalogs "${floor_dir}"
+cp "${REPO_ROOT}/README.md" "${floor_dir}/README.md"
+cp "${REPO_ROOT}/crates/rulesteward-cli/src/cli/mod.rs" "${floor_dir}/crates/rulesteward-cli/src/cli/mod.rs"
+
+floor_real_sshd="$(catalog_length "sshd-" "${floor_dir}/crates/rulesteward-sshd/src/lints/catalog.rs")"
+floor_readme_pat1="All ${floor_real_sshd} \`sshd-\` codes"
+floor_readme_pat2="### sshd_config (\`sshd-\`, ${floor_real_sshd} codes)"
+floor_climod_pat="All ${floor_real_sshd} sshd- codes are active"
+
+# Guard against a self-satisfying vacuous pass: confirm all three real live
+# sshd- mentions are present, in the exact form this case rewords, BEFORE
+# rewording - if the real README/cli-mod.rs wording ever drifts, this fails
+# loudly instead of silently testing nothing.
+if grep -qF "${floor_readme_pat1}" "${floor_dir}/README.md" \
+    && grep -qF "${floor_readme_pat2}" "${floor_dir}/README.md" \
+    && grep -qF "${floor_climod_pat}" "${floor_dir}/crates/rulesteward-cli/src/cli/mod.rs"; then
+    note_pass "${c_floor}: all three real live sshd- mentions found in their expected form before rewording"
+else
+    note_fail "${c_floor}: expected sshd- mention text not found verbatim in the real tree (README.md/cli/mod.rs wording has drifted) - update this fixture's sed patterns"
+fi
+
+sed -i "s/${floor_readme_pat1}/the sshd backend ships ${floor_real_sshd} lint codes/" "${floor_dir}/README.md"
+sed -i "s/${floor_readme_pat2}/### the sshd backend (${floor_real_sshd} lint codes total)/" "${floor_dir}/README.md"
+sed -i "s/${floor_climod_pat}/All of the sshd backend lint codes (${floor_real_sshd}) are active/" "${floor_dir}/crates/rulesteward-cli/src/cli/mod.rs"
+
+# Confirm the reword actually happened (no residual `sshd-`/`sshd_config`
+# signal left on any of the three rewritten lines) before trusting the exit
+# code below.
+if grep -qF "${floor_readme_pat1}" "${floor_dir}/README.md" \
+    || grep -qF "${floor_readme_pat2}" "${floor_dir}/README.md" \
+    || grep -qF "${floor_climod_pat}" "${floor_dir}/crates/rulesteward-cli/src/cli/mod.rs"; then
+    note_fail "${c_floor}: sed rewording of the sshd- mentions did not take effect"
+else
+    note_pass "${c_floor}: all three sshd- mentions successfully reworded to prose naming neither the prefix nor the display name"
+fi
+
+run_case "${c_floor}" "${floor_dir}" 1
+assert_output_contains "${c_floor}" "per-backend coverage floor violated: \`sshd-\` has 0 live \"codes\" mention(s)" \
+    "flags the per-backend floor violation once every sshd- mention is reworded away in both scanned files"
+assert_output_contains "${c_floor}" "per-backend mentions: \`sshd-\` = 0" \
+    "per-backend mentions line confirms sshd- dropped to exactly 0"
+assert_output_not_contains "${c_floor}" "unrecognized \"codes\" mention for \`sshd-\`" \
+    "the floor violation is NOT reported as an unrecognized-mention violation (the two failure classes stay distinguishable)"
 
 echo ""
 echo "----------------------------------------"
