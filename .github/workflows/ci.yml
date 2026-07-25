@@ -293,6 +293,12 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo test
+        # RS_REQUIRE_CHECKMODULE=1: the bootstrap above installs checkpolicy, so
+        # te_emit_checkmodule.rs must NOT skip in these nine containers. Without
+        # it a missing binary would silently turn six compile-oracle anchors into
+        # no-ops, which is exactly the state this repo was in until 2026-07-25.
+        env:
+          RS_REQUIRE_CHECKMODULE: "1"
         run: cargo test --workspace --locked
       # release-build step dropped: musl-build covers the release profile;
       # RuleSteward has no FFI / cfg-gated release-only paths that would surface a glibc-release-only bug.
@@ -605,6 +611,9 @@ jobs:
       # Used only by the musl entry's build.rs + linker; harmless on gnu.
       CC_x86_64_unknown_linux_musl: musl-gcc
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      # checkpolicy is installed below, so te_emit_checkmodule.rs must NOT skip
+      # here. Without this the six compile-oracle anchors pass by doing nothing.
+      RS_REQUIRE_CHECKMODULE: "1"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Ensure rustup is available
@@ -619,8 +628,11 @@ jobs:
           components: clippy
       # build.rs shells out to `make` + a C compiler to build vendored libsepol;
       # the musl target additionally needs musl-gcc (musl-tools).
-      - name: Install build deps (make, gcc, musl-tools)
-        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools
+      # checkpolicy provides /usr/bin/checkmodule, the compile oracle for
+      # te_emit_checkmodule.rs. Paired with RS_REQUIRE_CHECKMODULE=1 above so a
+      # missing binary fails loudly instead of silently skipping six tests.
+      - name: Install build deps (make, gcc, musl-tools, checkpolicy)
+        run: sudo apt-get update && sudo apt-get install -y make gcc musl-tools checkpolicy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: selinux-feature-${{ matrix.label }}
