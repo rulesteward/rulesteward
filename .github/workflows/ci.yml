@@ -127,26 +127,51 @@ jobs:
       - name: No-mnt guard (out-of-repo dependency paths)
         run: bash scripts/check-no-mnt-paths.sh
 
-      # (session 9k-1) Oracle-harness self-tests: the two INSTRUMENTS behind the
-      # differential recipes are themselves gated here. scripts/rs-oracle-diff.sh
-      # maps a mess of exit codes onto the 0/1/2/3 dev-tooling contract and every
-      # wrong branch in it fails toward "clean", so a green `just diff-<lane>` run
-      # proves nothing about it; and the fail-closed RS_REQUIRE_<ORACLE> predicate
-      # has already been shipped wrong once as a `== "1"` comparison. Each suite
-      # ends by re-seeding its own worst bug into a copy of the script under test
-      # and requiring NAMED cases to catch it, so neither can pass having checked
-      # nothing. Pure bash - cargo and docker are stubbed, no containers, no
-      # network - so they belong in the lint tier alongside the other guards.
+      # (session 9k-1) Capture-write guard: every Tier-2 capture script
+      # (crates/*/tests/corpus/*/capture_*.sh) must route every write through
+      # rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) instead of
+      # a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd or an unwrapped
+      # `cat >` redirect - the class of bug that let a Tier-2 capture continue
+      # past `cp: Disk quota exceeded` and exit 0 having written a truncated
+      # corpus. Cheap static check (bash + awk, no cargo build), so it lives
+      # here in the lint tier alongside the other guards. Zero capture scripts
+      # exist on this branch yet (the auditd/sysctld/sudoers lanes have not
+      # merged theirs), which is why the gate's own EXPECTED_CAPTURE_SCRIPTS
+      # floor is 0 today - see scripts/check-capture-writes.sh's header.
+      - name: Capture-write guard (bare writes in Tier-2 capture scripts)
+        run: bash scripts/check-capture-writes.sh
+
+      # (session 9k-1) Oracle-harness self-tests: the four INSTRUMENTS behind
+      # the differential recipes and the capture-write guard are themselves
+      # gated here. scripts/rs-oracle-diff.sh maps a mess of exit codes onto
+      # the 0/1/2/3 dev-tooling contract and every wrong branch in it fails
+      # toward "clean", so a green `just diff-<lane>` run proves nothing about
+      # it; the fail-closed RS_REQUIRE_<ORACLE> predicate has already been
+      # shipped wrong once as a `== "1"` comparison; and
+      # scripts/check-capture-writes.sh / scripts/rs-capture-guard.sh share the
+      # same "an unverified instrument can report clean having checked
+      # nothing" risk (see the Capture-write guard step's own comment above).
+      # Each suite proves it can catch a real, deliberately-seeded bad
+      # implementation with NAMED cases, so none of the four can pass having
+      # checked nothing. Pure bash - cargo and docker are stubbed, no
+      # containers, no network - so they belong in the lint tier alongside the
+      # other guards.
       #
-      # Invoked as two direct `bash` steps rather than via `just
+      # Invoked as four direct `bash` steps rather than via `just
       # oracle-harness-test` because `just` is not on the GitHub-hosted runner
-      # (see the trustdb-contention job, which installs it); separate steps also
-      # name which instrument failed without reading the log.
+      # (see the trustdb-contention job, which installs it); separate steps
+      # also name which instrument failed without reading the log.
       - name: Oracle-required predicate self-test (fail-closed parsing)
         run: bash scripts/rs-oracle-required-test.sh
 
       - name: Differential driver self-test (exit-code contract)
         run: bash scripts/rs-oracle-diff-test.sh
+
+      - name: Capture-guard helper self-test (rs_checked / rs_checked_write / rs_capture_verify_output)
+        run: bash scripts/rs-capture-guard-test.sh
+
+      - name: Capture-write gate self-test (bare-write detection)
+        run: bash scripts/check-capture-writes-test.sh
 
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10

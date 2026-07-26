@@ -261,6 +261,35 @@ case "${cap_rc}" in
     ;;
 esac
 
+# A capture that exits 0 having WRITTEN NOTHING is a tool error, not drift.
+#
+# Without this check the empty directory reaches B2, the replay test's own
+# fail-closed parse rejects it, libtest exits 101, and the driver would report
+# DRIFT: blaming the product for a capture that never ran. That is the wrong
+# verdict, the wrong exit code, and it points the reader at the wrong file.
+#
+# Not hypothetical. A lane's capture script ran `cp` under `set -uo pipefail`
+# with no `-e`, the copy failed with "Disk quota exceeded", and the script
+# carried on and exited 0. `scripts/rs-capture-guard.sh` is the fix on the
+# capture side; this is the driver refusing to interpret the result either way.
+#
+# Counted with bash globbing rather than `find` so the driver keeps working on a
+# minimal PATH (and so its own test suite can stay hermetic). `dir/**` under
+# globstar yields the directory itself plus every descendant, so the `-f` filter
+# is what makes this "at least one REGULAR FILE, at any depth" rather than the
+# weaker "the directory has an entry" - a tree of empty subdirectories is still
+# an empty corpus.
+shopt -s nullglob dotglob globstar
+FRESH_FILES=()
+for fresh_entry in "${FRESH}"/**; do
+    [ -f "${fresh_entry}" ] && FRESH_FILES+=("${fresh_entry}")
+done
+shopt -u nullglob dotglob globstar
+if [ "${#FRESH_FILES[@]}" -eq 0 ]; then
+    tail -20 "${LOG_CAP}" >&2
+    die 2 "the capture script exited 0 but wrote no files under ${FRESH}; an empty corpus is a capture failure, not oracle drift"
+fi
+
 # ---------------------------------------------------------------------------
 # B2: the drift check itself.
 # ---------------------------------------------------------------------------

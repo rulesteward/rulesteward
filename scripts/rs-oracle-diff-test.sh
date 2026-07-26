@@ -105,12 +105,24 @@ STUB
     fi
 
     # Stub capture script: creates one file so the corpus dir is non-empty.
+    #
+    # Two knobs model the real "reported success, produced nothing" failure:
+    # STUB_CAPTURE_WRITES_NOTHING leaves the directory bare, and
+    # STUB_CAPTURE_ONLY_DIRS leaves a tree of subdirectories with no regular file
+    # in it - the subtler shape a mere "is the directory non-empty" check misses.
     cat >"${box}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/capture_auditd.sh" <<'STUB'
 #!/usr/bin/env bash
 out="${1-}"
 [ -n "${out}" ] || exit 2
 rc="${STUB_CAPTURE_RC:-0}"
-[ "${rc}" -eq 0 ] && : >"${out}/captured.tsv"
+if [ "${rc}" -eq 0 ] &&
+    [ "${STUB_CAPTURE_WRITES_NOTHING:-0}" != "1" ] &&
+    [ "${STUB_CAPTURE_ONLY_DIRS:-0}" != "1" ]; then
+    : >"${out}/captured.tsv"
+fi
+if [ "${STUB_CAPTURE_ONLY_DIRS:-0}" = "1" ]; then
+    mkdir -p "${out}/scenario-a/nested"
+fi
 exit "${rc}"
 STUB
 
@@ -254,6 +266,16 @@ run_all_cases() {
     run_case unparseable_count 2 "unparseable scenario count" \
         STUB_TEST_FRESH_SCENARIOS=many
 
+    # A capture that exits 0 having written nothing must be rc 2, not rc 1. The
+    # stub test binary is indifferent to the corpus contents, so with the guard
+    # removed these two report `OK (0 drift, 7 scenarios)`: a clean verdict from
+    # a run that compared nothing. Only the driver inspecting the directory it
+    # just handed the test can tell the difference.
+    run_case capture_wrote_nothing 2 "exited 0 but wrote no files under" \
+        STUB_CAPTURE_WRITES_NOTHING=1
+    run_case capture_wrote_only_empty_dirs 2 "exited 0 but wrote no files under" \
+        STUB_CAPTURE_ONLY_DIRS=1
+
     # --- a broken oracle is neither clean nor drift --------------------------
     run_case oracle_broken_beats_clean 2 "the oracle itself is broken" \
         STUB_TEST_ORACLE_BROKEN=1
@@ -315,52 +337,69 @@ fi
 BASELINE_PASS="${PASS}"
 
 # ---------------------------------------------------------------------------
-# Pass 2: the positive control.
+# Pass 2: the positive controls.
 #
-# Seed the single most dangerous defect back into a COPY of the driver by
-# deleting the sentinel guard, and require that NAMED cases catch it. Asserting
-# merely that "some case failed" would be satisfied by a typo in the sandbox
-# builder, which is the count-as-pass-condition mistake this project has already
-# made once.
+# Each control seeds ONE real defect back into a COPY of the driver and requires
+# that NAMED cases catch it. Asserting merely that "some case failed" would be
+# satisfied by a typo in the sandbox builder, which is the
+# count-as-the-pass-condition mistake this project has already made once.
+#
+# One control per guard, rather than one copy with every guard removed: a single
+# multiply-broken driver could have one case failing for another guard's reason,
+# and the suite would still call the control satisfied.
+#
+# run_positive_control <label> <sed-expression> <must-catch-case>...
 # ---------------------------------------------------------------------------
-CONTROL_MUST_CATCH=(env_var_typo_caught no_banner_at_all)
+run_positive_control() {
+    local label="$1" sed_expr="$2"
+    shift 2
+    local must_catch=("$@")
 
-BROKEN="${SANDBOX_BASE}/rs-oracle-diff-FAIL-OPEN.sh"
-# Neutralise the guard exactly as a careless "simplification" would: keep the
-# grep, drop the refusal.
-# shellcheck disable=SC2016  # the literal ${SENTINEL}/${FRESH} text is the match
-# target: this pattern is matched against the DRIVER'S SOURCE, where those names
-# appear unexpanded. Double-quoting here would expand them in this shell and the
-# pattern would match nothing, which the cmp check below would then catch.
-sed 's|^if ! grep -qF "${SENTINEL}: mode=fresh corpus=${FRESH}" "${LOG_FRESH}"; then|if false; then|' \
-    "${DRIVER}" >"${BROKEN}"
-if cmp -s "${DRIVER}" "${BROKEN}"; then
-    echo "SUITE ERROR: the positive control edited nothing; the guard's source line moved" >&2
-    exit 2
-fi
+    local broken="${SANDBOX_BASE}/rs-oracle-diff-FAIL-OPEN-${label}.sh"
+    sed "${sed_expr}" "${DRIVER}" >"${broken}"
+    if cmp -s "${DRIVER}" "${broken}"; then
+        echo "SUITE ERROR: positive control '${label}' edited nothing; its guard's source line moved" >&2
+        exit 2
+    fi
 
-PASS=0
-FAIL=0
-FAILED_CASES=()
-DRIVER_UNDER_TEST="${BROKEN}"
-run_all_cases
+    PASS=0
+    FAIL=0
+    FAILED_CASES=()
+    DRIVER_UNDER_TEST="${broken}"
+    run_all_cases
 
-missed=()
-for want in "${CONTROL_MUST_CATCH[@]}"; do
-    found=0
-    for got in "${FAILED_CASES[@]+"${FAILED_CASES[@]}"}"; do
-        [ "${got}" = "${want}" ] && found=1
+    local missed=() want got found
+    for want in "${must_catch[@]}"; do
+        found=0
+        for got in "${FAILED_CASES[@]+"${FAILED_CASES[@]}"}"; do
+            [ "${got}" = "${want}" ] && found=1
+        done
+        [ "${found}" -eq 1 ] || missed+=("${want}")
     done
-    [ "${found}" -eq 1 ] || missed+=("${want}")
-done
 
-if [ "${#missed[@]}" -ne 0 ]; then
-    printf 'SUITE ERROR: the positive control did not catch: %s\n' "${missed[*]}" >&2
-    printf '             a fail-open driver passed these cases, so a green result\n' >&2
-    printf '             from this suite proves nothing.\n' >&2
-    exit 2
-fi
+    if [ "${#missed[@]}" -ne 0 ]; then
+        printf 'SUITE ERROR: positive control %s did not catch: %s\n' "${label}" "${missed[*]}" >&2
+        printf '             a fail-open driver passed these cases, so a green result\n' >&2
+        printf '             from this suite proves nothing.\n' >&2
+        exit 2
+    fi
+    printf '  control %-28s caught %s\n' "${label}" "${must_catch[*]}"
+}
 
-printf 'rs-oracle-diff-test: %d cases passed against the real driver; ' "${BASELINE_PASS}"
-printf 'positive control caught %s against a fail-open copy.\n' "${CONTROL_MUST_CATCH[*]}"
+printf 'rs-oracle-diff-test: %d cases passed against the real driver.\n' "${BASELINE_PASS}"
+
+# Both sed patterns below are matched against the DRIVER'S SOURCE, where the
+# shell variable names appear unexpanded, so they must stay single-quoted.
+# Double-quoting would expand them in THIS shell and the pattern would match
+# nothing - which the `cmp` check inside run_positive_control then catches.
+# shellcheck disable=SC2016
+run_positive_control sentinel-guard-removed \
+    's|^if ! grep -qF "${SENTINEL}: mode=fresh corpus=${FRESH}" "${LOG_FRESH}"; then|if false; then|' \
+    env_var_typo_caught no_banner_at_all
+
+# shellcheck disable=SC2016
+run_positive_control empty-capture-guard-removed \
+    's|^if \[ "${#FRESH_FILES\[@\]}" -eq 0 \]; then|if false; then|' \
+    capture_wrote_nothing capture_wrote_only_empty_dirs
+
 exit 0

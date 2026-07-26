@@ -63,14 +63,28 @@ codes-guard:
 no-mnt-guard:
     bash scripts/check-no-mnt-paths.sh
 
+# (session 9k-1) Capture-write guard: every Tier-2 capture script
+# (crates/*/tests/corpus/*/capture_*.sh) must route every write through
+# rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) rather than
+# performing a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd or an
+# unwrapped `cat >` redirect. This is layer 3 of that defense: a bare write
+# that skips both runtime layers is exactly how a Tier-2 capture continued
+# past `cp: Disk quota exceeded` and exited 0 having written a truncated
+# corpus. Same shape as dac-guard/codes-guard/no-mnt-guard: standalone bash
+# + awk (no cargo build), so it belongs in the lint tier alongside them.
+#
+# Assert every Tier-2 capture script routes its writes through the guard. (session 9k-1)
+capture-guard:
+    bash scripts/check-capture-writes.sh
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + test + cov).
-ci: fmt clippy dac-guard codes-guard no-mnt-guard oracle-harness-test test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + capture-guard + oracle-harness-test + test + cov).
+ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard oracle-harness-test test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
@@ -676,13 +690,16 @@ diff-sysctld:
 diff-sudoers:
     bash scripts/rs-oracle-diff.sh sudoers
 
-# Self-test of the two differential INSTRUMENTS. In `just ci` because an unverified
-# instrument is the exact failure this contract exists to prevent: a harness that
-# reports clean having compared nothing is indistinguishable downstream from a real
-# pass. Pure bash - cargo and docker are stubbed - so it needs no toolchain, no
-# containers and no network, and runs in every CI container.
+# Self-test of the differential/capture INSTRUMENTS. In `just ci` because an
+# unverified instrument is the exact failure this contract exists to prevent: a
+# harness that reports clean having compared (or scanned) nothing is
+# indistinguishable downstream from a real pass. Pure bash - cargo and docker
+# are stubbed, no containers, no network - so it needs no toolchain and runs in
+# every CI container. Covers both the two rs-oracle-diff.sh instruments and the
+# two rs-capture-guard.sh instruments (session 9k-1's write-discipline layer),
+# since all four share this same "prove you saw something" shape.
 #
-# Self-test the differential driver and the fail-closed oracle-required predicate.
+# Self-test the differential + capture-guard instruments (session 9k-1).
 oracle-harness-test:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -692,5 +709,9 @@ oracle-harness-test:
     req_rc=$?
     bash scripts/rs-oracle-diff-test.sh
     diff_rc=$?
-    echo "oracle-harness-test: rs-oracle-required-test rc=${req_rc}, rs-oracle-diff-test rc=${diff_rc}"
-    [ "${req_rc}" -eq 0 ] && [ "${diff_rc}" -eq 0 ]
+    bash scripts/rs-capture-guard-test.sh
+    guard_rc=$?
+    bash scripts/check-capture-writes-test.sh
+    capwrites_rc=$?
+    echo "oracle-harness-test: rs-oracle-required-test rc=${req_rc}, rs-oracle-diff-test rc=${diff_rc}, rs-capture-guard-test rc=${guard_rc}, check-capture-writes-test rc=${capwrites_rc}"
+    [ "${req_rc}" -eq 0 ] && [ "${diff_rc}" -eq 0 ] && [ "${guard_rc}" -eq 0 ] && [ "${capwrites_rc}" -eq 0 ]
