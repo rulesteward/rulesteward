@@ -42,7 +42,13 @@ pub enum VisudoVerdict {
 /// `rc` that nonetheless reports `parsed OK`, and for any rc outside `{0, 1}`.
 /// Guessing in any of those cases is how a broken oracle gets recorded as a
 /// clean one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Copy` is required by the frozen barrier test, which matches on a
+/// `(accept_verdict, reject_verdict)` tuple and then names both again in the
+/// failure message. Both fields are already `Copy`, so it costs nothing; the
+/// constraint it buys is that a future `reason` must stay a `&'static str`
+/// drawn from a fixed set rather than becoming a formatted `String`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnclassifiedVisudo {
     /// The exit code as captured.
     pub rc: i32,
