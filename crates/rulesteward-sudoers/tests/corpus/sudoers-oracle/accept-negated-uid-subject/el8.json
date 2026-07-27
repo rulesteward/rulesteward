@@ -1,0 +1,8 @@
+{
+  "target": "el8",
+  "sudo_rpm": "sudo-1.9.5p2-1.el8_10.5.x86_64",
+  "visudo": {"rc": 0, "stdout": "stdin: parsed OK", "stderr": "\n"},
+  "visudo_strict": {"rc": 0, "stdout": "stdin: parsed OK", "stderr": "\n"},
+  "cvtsudoers": {"rc": 0, "stdout": "{\n    \"User_Specs\": [\n        {\n            \"User_List\": [\n                {\n                    \"userid\": 1000,\n                    \"negated\": true\n                }\n            ],\n            \"Host_List\": [\n                { \"hostname\": \"ALL\" }\n            ],\n            \"Cmnd_Specs\": [\n                {\n                    \"Options\": [\n                        { \"setenv\": true }\n                    ],\n                    \"Commands\": [\n                        { \"command\": \"ALL\" }\n                    ]\n                }\n            ]\n        }\n    ]\n}", "stderr": "\n"},
+  "cvtsudoers_expanded": {"rc": 0, "stdout": "{\n    \"User_Specs\": [\n        {\n            \"User_List\": [\n                {\n                    \"userid\": 1000,\n                    \"negated\": true\n                }\n            ],\n            \"Host_List\": [\n                { \"hostname\": \"ALL\" }\n            ],\n            \"Cmnd_Specs\": [\n                {\n                    \"Options\": [\n                        { \"setenv\": true }\n                    ],\n                    \"Commands\": [\n                        { \"command\": \"ALL\" }\n                    ]\n                }\n            ]\n        }\n    ]\n}", "stderr": "\n"}
+}

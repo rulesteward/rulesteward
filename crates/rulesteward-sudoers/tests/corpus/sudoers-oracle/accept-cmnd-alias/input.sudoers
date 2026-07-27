@@ -1,0 +1,2 @@
+Cmnd_Alias OPS = /bin/systemctl, /bin/journalctl
+carol ALL = OPS

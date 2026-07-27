@@ -1,0 +1,1 @@
+carol ALL = NOTBEFORE=20260101000000Z /usr/bin/ls

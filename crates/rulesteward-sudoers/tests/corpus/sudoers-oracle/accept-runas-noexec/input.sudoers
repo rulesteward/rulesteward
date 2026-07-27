@@ -1,0 +1,1 @@
+bob ALL = (root) NOEXEC: /bin/ls
