@@ -318,11 +318,24 @@ const SILENT_SUCCESS_LEADING_FLAGS: &[&str] = &[
 /// so silence surviving to this point can only mean the line never reached that
 /// netlink call at all, i.e. it was refused during parsing.
 ///
-/// The leading flag is taken as the first whitespace-separated token, matching
-/// `audit_strsplit`'s own dispatch (see the images README): a leading flag is
-/// always the option `getopt_long` dispatches on regardless of what follows it
-/// on the line, so trailing tokens (`-D extra`, `-D -k mykey`) do not change
-/// which arm of `setopt()` handles the line.
+/// The leading flag is taken as the first `str::split_whitespace` token.
+///
+/// CORRECTED (post-implementation adversarial review, session 2026-07-26):
+/// this used to claim `split_whitespace` "matches `audit_strsplit`'s own
+/// dispatch". It does NOT - `common/strsplit.c`'s `audit_strsplit` splits on
+/// the literal space byte ONLY (`strchr(str, ' ')`), while `split_whitespace`
+/// also splits on TAB (and other Unicode whitespace). The two tokenizers
+/// agree for every leading flag this function currently enumerates (none is
+/// followed by a literal tab in this corpus), so the divergence has not yet
+/// produced a wrong `silence_is_conclusive` answer, but the claim itself was
+/// false and is corrected here rather than left to mislead a future reader
+/// or a future denylist entry. See `iss584-embedded-tab-glues-flag` /
+/// `iss584-all-tabs-separators` in the corpus for where this tokenizer gap
+/// DOES surface (as `product_verdict` divergences, not here). What IS true
+/// regardless of tokenizer choice: a leading flag is always the option
+/// `getopt_long` dispatches on regardless of what follows it on the line, so
+/// trailing tokens (`-D extra`, `-D -k mykey`) do not change which arm of
+/// `setopt()` handles the line.
 #[must_use]
 pub fn silence_is_conclusive(line: &str) -> bool {
     let leading = line.split_whitespace().next().unwrap_or("");
@@ -392,6 +405,45 @@ mod silence_is_conclusive_tests {
             silence_is_conclusive("garbage-not-a-flag"),
             "an unrecognised leading token is not on the denylist, so its \
              (also observed) silence is conclusive too"
+        );
+    }
+
+    /// MISS 2 (post-implementation adversarial review, session 2026-07-26):
+    /// an ENUMERATED denylist flag escapes its own entry by legal alternate
+    /// spelling. `getopt_long`'s optstring `"...e:f:r:b:..."` makes `-b8192`
+    /// (attached optarg, no space) a legal spelling of `-b 8192` - POSIX
+    /// getopt dispatches both to the SAME `case 'b':` arm with
+    /// `optarg == "8192"` - and `long_opts[]`'s `{"backlog_wait_time", 1,
+    /// NULL, 2}` makes `--backlog_wait_time=60` a legal spelling of
+    /// `--backlog_wait_time 60` for the same reason. `audit_strsplit` splits
+    /// only on the literal space byte (`common/strsplit.c`, `strchr(str,
+    /// ' ')`), so the glued form survives tokenization as ONE token, never
+    /// splitting into a bare `-b`. The current lookup is exact `&str`
+    /// equality on the first `split_whitespace` token, so it does not
+    /// recognise any of these as the denylisted flag they dispatch to -
+    /// `silence_is_conclusive` wrongly returns `true` (conclusive) for all
+    /// five, which is the WORSE failure mode: `classify_capture("-b8192", 1,
+    /// "", "")` then produces a silent Reject that happens to AGREE with
+    /// `product_verdict("-b8192")` (also Reject, for the unrelated reason
+    /// that `-b8192` is an unknown flag to `parser.rs`), so the corpus
+    /// comparison records a false MATCH instead of panicking - the same
+    /// failure class as the historical `-D`-as-REJECT bug this module was
+    /// built to fix, reached through a different spelling.
+    #[test]
+    fn enumerated_flags_with_an_attached_optarg_are_not_conclusive() {
+        assert!(
+            !silence_is_conclusive("-b8192"),
+            "-b8192 dispatches to the same silent-on-failure case 'b': arm as \
+             '-b 8192' (getopt_long attached-optarg form)"
+        );
+        assert!(!silence_is_conclusive("-e1"));
+        assert!(!silence_is_conclusive("-f1"));
+        assert!(!silence_is_conclusive("-r100"));
+        assert!(
+            !silence_is_conclusive("--backlog_wait_time=60"),
+            "--backlog_wait_time=60 dispatches to the same silent-on-failure \
+             case 2: arm as '--backlog_wait_time 60' (getopt_long long-option \
+             '=' form)"
         );
     }
 }
@@ -495,6 +547,62 @@ mod classify_capture_synthetic_tests {
             "the companion string alone (without 'Error sending add rule data \
              request') must never be read as an accept probe; got {result:?}"
         );
+    }
+
+    /// MISS 1 (post-implementation adversarial review, session 2026-07-26):
+    /// the accept probe only recognises the ADD half of
+    /// `handle_request()`'s netlink dispatch. `auditctl.c`'s
+    /// `else if (del != AUDIT_FILTER_UNSET)` branch (reached by `case 'W':`
+    /// and `case 'd':` in `setopt()`) carries the IDENTICAL
+    /// `set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
+    /// `set_aumessage_mode(MSG_STDERR)` sequence as the add branch, then
+    /// prints `Error sending delete rule data request (%s)` on failure - the
+    /// delete-side twin of `ADD_RULE_NETLINK_REFUSED`, and bit-for-bit the
+    /// same evidence that the line PARSED (reached netlink, refused only by
+    /// this sandbox's EPERM). A delete-shaped line refused this way must
+    /// classify `Accept`, not fall through to
+    /// `Unusable::UnrecognisedDiagnostic`, which is worse than a merely-unhit
+    /// branch: `record_unusable_hit` in the replay test gives
+    /// `UnrecognisedDiagnostic` NO allowlist, so the first delete-form corpus
+    /// row (`w-delete-watch` / `d-delete-syscall`) kills the whole run as
+    /// `ORACLE-BROKEN`, misdiagnosing a real product-too-strict parser gap
+    /// (`parser.rs`'s `parse_line` has no `-W`/`-d` arm at all) as a harness
+    /// fault instead.
+    #[test]
+    fn delete_shaped_netlink_refusal_is_recognised_as_accept() {
+        let delete_refused_stderr = "Error sending delete rule data request \
+             (Operation not permitted)\nThere was an error in line 1 of \
+             /tmp/rs-oracle-line.rules";
+        for line in ["-W /etc/passwd -p wa -k x", "-d always,exit -S execve -k x"] {
+            let result = classify_capture(line, 1, "", delete_refused_stderr);
+            assert!(
+                matches!(result, CaptureVerdict::Accept),
+                "a delete-shaped line ({line:?}) whose netlink send was refused is \
+                 proof it PARSED, exactly like the add-shaped accept probe \
+                 (handle_request()'s del != AUDIT_FILTER_UNSET branch mirrors the \
+                 add branch's MSG_QUIET/MSG_STDERR sequence); got {result:?}"
+            );
+        }
+    }
+
+    /// MISS 2's `classify_capture`-level consequence (see
+    /// `enumerated_flags_with_an_attached_optarg_are_not_conclusive` in
+    /// `silence_is_conclusive_tests` for the root cause): `-b8192` must
+    /// classify `Unusable::SilentNonAddLine`, identically to `-b 8192`. The
+    /// CURRENT wrong answer (`Reject` via the silent-refusal fallback) is
+    /// worse than merely wrong in isolation - `product_verdict("-b8192")` is
+    /// ALSO `Reject` (parser.rs has no "-b8192" flag, only "-b"), so this
+    /// specific miss produces a SILENT FALSE AGREEMENT in the replay test
+    /// (`compared += 1`, no panic, no XFAIL entry, nothing to triage) rather
+    /// than a loud failure - the same failure class as the historical
+    /// `-D`-as-REJECT bug, reached through a spelling the denylist's exact-
+    /// match lookup does not recognise as its own enumerated entry.
+    #[test]
+    fn glued_optarg_silent_control_flag_is_unusable_not_reject() {
+        assert!(matches!(
+            classify_capture("-b8192", 1, "", ""),
+            CaptureVerdict::Unusable(Unusable::SilentNonAddLine)
+        ));
     }
 }
 

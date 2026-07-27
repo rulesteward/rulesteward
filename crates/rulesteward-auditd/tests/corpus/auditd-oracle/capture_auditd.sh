@@ -395,6 +395,22 @@ add_new_grounding_scenarios() {
     # rocky9-filesystem-list's fstype finding, not the silent-success-path
     # ambiguity the other denylist entries share.
     add_scenario "reset-lost-probe" "541" '--reset-lost'
+
+    # --- Adversarial-impl review (post-implementation, MISS 1) additions ---
+    #
+    # Grounds a product-too-STRICT divergence the impl-aware review found:
+    # `-W`/`-d` (delete-form watch/syscall rules) reach the IDENTICAL
+    # MSG_QUIET->send->MSG_STDERR sequence as `-w`/`-a` inside
+    # handle_request()'s `else if (del != AUDIT_FILTER_UNSET)` branch
+    # (auditctl.c ~line 1570), printing "Error sending delete rule data
+    # request (%s)" on failure - the delete-side twin of
+    # ADD_RULE_NETLINK_REFUSED. A refused delete-form line is therefore proof
+    # it PARSED, exactly like the add probe. RuleSteward's parser (parser.rs
+    # parse_line) has no "-W"/"-d" arm at all - both fall to
+    # `other => Err("unknown flag")` - so product_verdict rejects while the
+    # real oracle accepts.
+    add_scenario "w-delete-watch" "584" '-W /etc/passwd -p wa -k x'
+    add_scenario "d-delete-syscall" "584" '-d always,exit -S execve -k x'
 }
 
 build_scenario_table() {

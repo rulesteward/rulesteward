@@ -1,4 +1,4 @@
-# Draft issue bodies for the 18 XFAIL product/oracle divergences
+# Draft issue bodies for the 20 XFAIL product/oracle divergences
 
 DRAFT ONLY. Nothing here has been filed. No GitHub issue, comment, or PR was
 created or touched while producing this file. If these are approved, file the
@@ -153,3 +153,49 @@ attempt it initially - flagging that scope question for whoever picks this up
 rather than prejudging it.
 
 Corpus row: `s-unknown-syscall`.
+
+---
+
+## New issue: the parser has no delete-form (`-W`/`-d`) support at all
+
+**Found by:** post-implementation adversarial review (impl-aware, session
+2026-07-26), MISS 1. Not predicted in any earlier estimate; the corpus had
+zero delete-form scenarios until this finding forced their addition
+(`w-delete-watch`, `d-delete-syscall`).
+
+**Rules:**
+- `-W /etc/passwd -p wa -k x` (delete a watch by path - the delete-form twin
+  of `-w`)
+- `-d always,exit -S execve -k x` (delete a syscall rule by
+  `list,action` - the delete-form twin of `-a`/`-A`)
+
+**Real `auditctl -R` behavior:** ACCEPT on both. `auditctl.c`'s
+`handle_request()` has an `else if (del != AUDIT_FILTER_UNSET)` branch,
+reached by `case 'W':` and `case 'd':` in `setopt()`, that carries the
+IDENTICAL `set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
+`set_aumessage_mode(MSG_STDERR)` sequence as the add-rule branch, printing
+`Error sending delete rule data request (%s)` on failure - the delete-side
+twin of the add probe's `Error sending add rule data request`. A refused
+delete-form line is therefore proof it parsed, the same evidence the add
+probe already recognises.
+
+**RuleSteward's behavior:** REJECT on both. `parser.rs`'s `parse_line`
+dispatch (`match tokens[0].as_str()`) has arms for
+`-D -b --backlog_wait_time -f -e -r --loginuid-immutable -w -a -A` and
+nothing else; `-W` and `-d` fall to `other => Err("unknown flag")`. The
+parser models only the ADD-shaped subset of `auditctl`'s rule grammar and has
+never had any delete-form support - this is a genuine, previously-unexamined
+gap, not a regression.
+
+**Scope note:** whether RuleSteward's PRODUCT should ever need to parse
+delete-form rules is a real design question (a `rules.d/` file that ships to
+a host is typically ADD-only; delete-form lines are more an interactive
+`auditctl` idiom than a rules-file idiom) - flagging that scope question for
+whoever picks this up rather than prejudging it. Either way, the DIFFERENTIAL
+ORACLE needed to recognise the real daemon's ACCEPT for these lines
+regardless of whether the parser ever grows delete-form support, since
+misclassifying a real accept as `Unusable::UnrecognisedDiagnostic` was a
+harness-correctness bug independent of the parser question (see
+`oracle.rs`'s `delete_shaped_netlink_refusal_is_recognised_as_accept`).
+
+Corpus rows: `w-delete-watch`, `d-delete-syscall`.

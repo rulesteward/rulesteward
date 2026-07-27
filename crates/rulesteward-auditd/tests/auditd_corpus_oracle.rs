@@ -92,24 +92,24 @@ use rulesteward_auditd::oracle::{
 };
 use rulesteward_core::oracle_corpus::{resolve_corpus_root, sentinel_banner, sentinel_count};
 
-/// Named floor: 74 scenario ids (71 from the first amendment + 3 round-2
-/// additions: `lead-list-first`, `lead-e-enable`, `reset-lost-probe` - the id
-/// count below is the ACTUAL captured count, verified against the corpus
-/// this commit ships), each captured against el8/el9/el10 = 222 rows. Raise
+/// Named floor: 76 scenario ids (74 after round-2 + 2 post-implementation
+/// adversarial-review additions: `w-delete-watch`, `d-delete-syscall` - the
+/// id count below is the ACTUAL captured count, verified against the corpus
+/// this commit ships), each captured against el8/el9/el10 = 228 rows. Raise
 /// this deliberately, in the same commit, when the corpus grows.
-const FLOOR_ROWS: usize = 222;
+const FLOOR_ROWS: usize = 228;
 
 /// Floor on the number of DISTINCT scenario ids (one per corpus target file).
-const FLOOR_SCENARIO_IDS: usize = 74;
+const FLOOR_SCENARIO_IDS: usize = 76;
 
 /// Floor on rows that actually reach the product-vs-oracle comparison, i.e.
 /// every row EXCEPT the `Unusable` ones on the [`UNOBSERVABLE`] table (10
 /// ids: 8 `SilentNonAddLine` + 2 `SandboxLimited`, x3 targets = 30 rows;
-/// 74 - 10 = 64 comparable ids x3 = 192). This is the fourth member of the
+/// 76 - 10 = 66 comparable ids x3 = 198). This is the fourth member of the
 /// "assert the count" family the first draft was missing: the
 /// `all_rows.len()` floor alone would be satisfied by a corpus that is
 /// entirely `Unusable` and compares nothing at all.
-const FLOOR_COMPARED: usize = 192;
+const FLOOR_COMPARED: usize = 198;
 
 /// The three target files every capture (committed or fresh) must produce.
 const EXPECTED_TARGETS: &[&str] = &["el8", "el9", "el10"];
@@ -280,6 +280,24 @@ const XFAIL: &[(&str, &str)] = &[
         "iss601-uppercase-perm-mixed",
         "#601, product too STRICT: same gap as iss601-uppercase-perm-all, \
          mixed-case 'Wa'. Open parser gap, tracked by #601.",
+    ),
+    (
+        "w-delete-watch",
+        "#584, product too STRICT (post-implementation adversarial review, \
+         MISS 1): -W (delete-form watch) reaches handle_request()'s \
+         `del != AUDIT_FILTER_UNSET` branch, the IDENTICAL MSG_QUIET->send-> \
+         MSG_STDERR sequence as the add path, printing 'Error sending \
+         delete rule data request' on refusal - proof the line parsed. \
+         RuleSteward's parser has no '-W' arm at all (parser.rs's parse_line \
+         dispatch); it falls to the unknown-flag arm and rejects. Open \
+         parser gap: the parser only ever models the ADD-shaped subset of \
+         auditctl's grammar, never delete-form rules.",
+    ),
+    (
+        "d-delete-syscall",
+        "#584, product too STRICT: same gap as w-delete-watch, the \
+         syscall-rule delete form (-d list,action, mirrors -a/-A). Open \
+         parser gap.",
     ),
 ];
 
@@ -1004,17 +1022,24 @@ fn is_sandbox_limited_stderr(stderr: &str) -> bool {
         || stderr.contains("Field option not supported by kernel:")
 }
 
-/// Independent of `classify_capture` (which remains `todo!()` for the
-/// implementer): reads the corpus directly and asserts every row whose raw
-/// facts have the SHAPE of a loud reject (`rc == 1`, non-empty stderr, not
-/// the add-rule accept string, not a sandbox-limited feature-bitmap message)
-/// carries a stderr matching at least one [`KNOWN_PARSE_COMPLAINTS`] entry,
-/// and that every entry in that table is actually hit by at least one row (no
-/// orphan entries). This is the test's own cross-check that the corpus does
-/// not contain an unrecognised loud-reject diagnostic that a future
-/// `classify_capture` implementation could silently mis-map - complementary
-/// to (not a replacement for) `oracle.rs`'s
-/// `rc_one_unrecognised_nonempty_stderr_is_unusable` synthetic pin.
+/// Independent of `classify_capture`'s own implementation: reads the corpus
+/// directly and asserts every row whose raw facts have the SHAPE of a loud
+/// reject (`rc == 1`, non-empty stderr, not an add-shaped OR delete-shaped
+/// accept string, not a sandbox-limited feature-bitmap message) carries a
+/// stderr matching at least one [`KNOWN_PARSE_COMPLAINTS`] entry, and that
+/// every entry in that table is actually hit by at least one row (no orphan
+/// entries). This is the test's own cross-check that the corpus does not
+/// contain an unrecognised loud-reject diagnostic that `classify_capture`
+/// could silently mis-map - complementary to (not a replacement for)
+/// `oracle.rs`'s `rc_one_unrecognised_nonempty_stderr_is_unusable` synthetic
+/// pin.
+///
+/// The delete-shaped exclusion (`w-delete-watch`/`d-delete-syscall`,
+/// post-implementation adversarial review MISS 1) matters here too: without
+/// it, those two rows' "Error sending delete rule data request" stderr looks
+/// exactly like an unrecognised loud reject to THIS test's own heuristic,
+/// which would make it fail forever (even once `classify_capture` is fixed
+/// to accept them) rather than only while the bug is unfixed.
 #[test]
 fn known_parse_complaints_cover_every_loud_reject_row() {
     let root = corpus_root();
@@ -1033,6 +1058,9 @@ fn known_parse_complaints_cover_every_loud_reject_row() {
         let is_loud_reject_shape = row.rc == 1
             && !row.stderr.is_empty()
             && !row.stderr.contains("Error sending add rule data request")
+            && !row
+                .stderr
+                .contains("Error sending delete rule data request")
             && !is_sandbox_limited_stderr(&row.stderr);
         if !is_loud_reject_shape {
             continue;

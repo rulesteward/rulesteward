@@ -90,6 +90,125 @@ detailed in its own section below):
 Corpus grew from 71 to 74 scenario ids (213 -> 222 rows): `lead-list-first`,
 `lead-e-enable`, `reset-lost-probe`.
 
+## ROUND-3 (2026-07-26/27): post-implementation impl-AWARE adversarial review
+
+The implementation landed (`bccd015`, `product_verdict` and `classify_capture`
+filled in) and passed the impl-BLIND round-2 barrier, `fmt`, `clippy`, and a
+12/12-clean mutation gate. The impl-AWARE adversarial review that follows
+GREEN (a DIFFERENT step from the impl-blind barrier review - see this
+project's Adversarial Testing Loop) found two misses neither the barrier nor
+the mutation gate could see, because both require reasoning about the ACTUAL
+implementation's specific shortcuts rather than a blind or coverage-driven
+probe. Per the loop's discipline, findings route to the TEST-AUTHOR to
+strengthen tests (this file's job); the implementer follows to make them
+green. `src/oracle.rs`'s BEHAVIOR (the three function bodies and the private
+tables `ADD_RULE_NETLINK_REFUSED`/`SANDBOX_LIMITED_SUBSTRINGS`/
+`KNOWN_PARSE_COMPLAINTS`/`SILENT_REFUSAL_COMPLAINT`/
+`SILENT_SUCCESS_LEADING_FLAGS`) was NOT touched this round - only its test
+modules (new synthetic pins, same convention as round 2) and one doc-comment
+correction.
+
+### MISS 1: the accept probe misses the DELETE half of `handle_request()`
+
+`classify_capture("-W /etc/passwd -p wa -k x", 1, "", "Error sending delete
+rule data request (Operation not permitted)\nThere was an error in line 1 of
+/tmp/rs-oracle-line.rules")` produced `Unusable(UnrecognisedDiagnostic)`;
+correct is `Accept`. Confirmed against re-fetched upstream source
+(`auditctl.c`, all three EL-shipped tags): `handle_request()`'s
+`else if (del != AUDIT_FILTER_UNSET)` branch (reached by `case 'W':` and
+`case 'd':` in `setopt()`) carries the IDENTICAL
+`set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
+`set_aumessage_mode(MSG_STDERR)` sequence as the add branch, then prints
+`Error sending delete rule data request (%s)` on failure - the delete-side
+twin of `ADD_RULE_NETLINK_REFUSED`, and the SAME evidence that the line
+PARSED.
+
+This is worse than a merely-unhit branch: `record_unusable_hit` gives
+`UnrecognisedDiagnostic` NO allowlist, so the first delete-form corpus row
+kills the whole run as `ORACLE-BROKEN` - inverting the true diagnosis (a
+real, previously-unexamined product-too-STRICT parser gap: `parser.rs`'s
+`parse_line` has no `-W`/`-d` arm at all, only
+`-D -b --backlog_wait_time -f -e -r --loginuid-immutable -w -a -A`) into "the
+oracle is broken". Zero of the 222 round-2 corpus rows were delete-form.
+
+Strengthened with: `oracle.rs`'s
+`delete_shaped_netlink_refusal_is_recognised_as_accept` synthetic test (both
+`-W` and `-d` forms), plus two new corpus scenarios `w-delete-watch` /
+`d-delete-syscall` (real captures: both ACCEPT, identical stderr shape to the
+one above), landing as new XFAIL entries in the "product too STRICT" group -
+see `XFAIL-ISSUES.md`'s new-issue draft.
+
+### MISS 2: an ENUMERATED flag escapes its own denylist by spelling
+
+`classify_capture("-b8192", 1, "", "")` produced
+`Reject { complaint: SILENT_REFUSAL_COMPLAINT }`; correct is
+`Unusable(SilentNonAddLine)`. Same for `-e1`, `-f1`, `-r100`,
+`--backlog_wait_time=60`. Confirmed against source: `setopt()`'s optstring is
+`"...e:f:r:b:..."` (each requires an argument) and `long_opts[]` carries
+`{"backlog_wait_time", 1, NULL, 2}`, so `getopt_long` dispatches `-b8192` to
+`case 'b':` with `optarg == "8192"` exactly as `-b 8192` does, and
+`--backlog_wait_time=60` to `case 2:` exactly as the spaced form does -
+standard POSIX `getopt_long` attached-optarg semantics. `audit_strsplit`
+(`common/strsplit.c`, `strchr(str, ' ')`) splits only on the literal space
+byte, so `-b8192` survives tokenization as one token. `silence_is_conclusive`'s
+lookup is exact `&str` equality on `split_whitespace().next()`, which does
+not recognise this legal alternate spelling of an ENUMERATED denylist entry.
+
+This is the WORSE of the two misses: `parser.rs`'s `parse_line` ALSO rejects
+`-b8192` (unknown flag, since it only matches the exact string `"-b"`), so
+`product_verdict` is `Reject` too. Oracle `Reject` (wrong) plus product
+`Reject` (right, for an unrelated reason) is a MATCH - `compared += 1`, no
+panic, no XFAIL entry, nothing to triage. The suite silently records a false
+agreement and inflates confidence in the differential, rather than failing
+loudly. This is the same failure class as the historical `-D`-as-REJECT bug
+this module was built to fix, reached through a spelling the denylist's
+exact-match lookup does not recognise as its own entry - explicitly NOT
+covered by the "an unenumerated new flag defaults to conclusive and gets
+triaged" design note, because the flag IS enumerated; the matcher simply
+fails to see it.
+
+Strengthened with: `oracle.rs`'s
+`enumerated_flags_with_an_attached_optarg_are_not_conclusive` (all five
+glued/`=` forms against `silence_is_conclusive`) and
+`glued_optarg_silent_control_flag_is_unusable_not_reject` (`classify_capture`
+end to end). No new corpus row needed - these are pure function calls; the
+minimal fix (normalising the leading token before lookup: truncate a long
+option at `=`, strip an attached optarg from the four `-X:` short flags) is
+the implementer's job, not the test-author's. Residual worth noting rather
+than testing: `getopt_long` also accepts unambiguous long-option
+abbreviations (`--backlog=60`, `--loginuid-imm`), which that normalisation
+would not cover.
+
+### Also fixed: a false doc claim on the tokenizer
+
+`oracle.rs`'s `silence_is_conclusive` doc claimed `split_whitespace` "matches
+`audit_strsplit`'s own dispatch". It does not: `common/strsplit.c` splits on
+the literal space byte only, while `split_whitespace` also splits on TAB.
+Corrected in place (no behavioral claim depended on the wrong wording - every
+denylisted flag in this corpus happens to agree between the two tokenizers -
+but a false comment is its own defect class in this project regardless of
+whether it currently causes a wrong answer).
+
+### Confirmed sound - not churned
+
+The impl-aware reviewer also checked, without finding a miss: `product_verdict`
+keying on rule text (genuine bare delegation, no `use crate::ast::`); the
+`Ok(_)`/`Err(_)` arm merge in `product_verdict` (behaviour-preserving,
+`Verdict` has no third variant); the rc-gate-before-silence evaluation order
+(pinned in both directions already); `is_sandbox_limited_stderr` misfiring
+off-sandbox (all four emitters gate solely on `audit_get_features()`, never on
+rule content); wrong-entry complaint matching in `KNOWN_PARSE_COMPLAINTS` (no
+entry's text is a substring of another's); and `SILENT_REFUSAL_COMPLAINT`'s
+placeholder value (zero consumers outside `oracle.rs` and the test file today,
+so a type-design smell with no reachable wrong output - not a miss, but
+flagged for later: if a recapture ever made `control-reject` silent,
+`assert_two_sided_positive_control`'s `stderr.contains(complaint)` would fail
+closed with a confusing message rather than passing).
+
+Corpus grew from 74 to 76 scenario ids (222 -> 228 rows): `w-delete-watch`,
+`d-delete-syscall`. `XFAIL` grew from 18 to 20 entries; `UNOBSERVABLE`
+unchanged at 10.
+
 ### Images and versions (captured 2026-07-25, images unchanged this amendment)
 
 | target file | image | `rpm -q audit` |
@@ -109,7 +228,7 @@ Audit netlink is NOT namespaced: a container that can reach it mutates the HOST
 kernel's ruleset. Every capture in this corpus was taken via
 `docker run --rm -i --network=none --cap-add=AUDIT_CONTROL rs-oracle<N>`, with
 the `auditctl -s` canary run FIRST, before EVERY rule line, inside the same
-container instantiation (this amendment batches all ~74 scenario lines into
+container instantiation (this amendment batches all ~76 scenario lines into
 ONE container per image rather than one container per line - see
 `capture_auditd.sh`'s "Batching" section - which means MORE canary checks per
 capture, not fewer). The canary got
@@ -147,7 +266,7 @@ nondeterminism inside the container is also gone, replaced by the fixed path
 `/tmp/rs-oracle-line.rules`, since the filename is an INPUT we choose rather
 than an observation).
 
-### Scenarios: 74 ids x 3 targets = 222 rows
+### Scenarios: 76 ids x 3 targets = 228 rows
 
 **33 `existing`-class scenarios** re-ground the pre-existing
 `tests/corpus/auditd/*/audit.rules` corpus with a REAL per-line capture: one
@@ -200,6 +319,16 @@ AMENDMENT" above):
   `UNOBSERVABLE`).
 - `reset-lost-probe` (`--reset-lost`): resolves blocker 5 - see "Blocker 5
   resolved" below. LOUD, `Unusable::SandboxLimited`, NOT silent.
+
+**2 round-3 grounding scenarios** (post-implementation adversarial review, see
+"ROUND-3" above):
+
+- `w-delete-watch` (`-W /etc/passwd -p wa -k x`): grounds MISS 1 - the
+  delete-form watch rule. Real oracle ACCEPTs (`Error sending delete rule
+  data request`); the parser has no `-W` dispatch arm, so `product_verdict`
+  rejects. XFAIL, product too STRICT.
+- `d-delete-syscall` (`-d always,exit -S execve -k x`): same MISS 1 gap, the
+  delete-form syscall rule (mirrors `-a`/`-A`). XFAIL, product too STRICT.
 
 ### The silent-rc1 blind spot (supersedes the old "standalone control-only
 line classifies REJECT" claim)
@@ -358,7 +487,7 @@ nosuchfield`, on BOTH sides - RuleSteward's own field-name table also has no
 divergence is still grounded, now under its own id: `f-perm-invalid-letter`
 (an XFAIL, not a control).
 
-### Product/oracle divergences: 18 XFAIL ids (see `auditd_corpus_oracle.rs`'s
+### Product/oracle divergences: 20 XFAIL ids (see `auditd_corpus_oracle.rs`'s
 `XFAIL` for the full per-id reasons)
 
 - **7 quote-stripping** (deliberate parser leniency, `parser.rs:277-287`):
@@ -382,8 +511,12 @@ divergence is still grounded, now under its own id: `f-perm-invalid-letter`
   rewrites a backslash-escaped space before tokenizing; the parser has no such
   preprocessing), `iss601-uppercase-perm-all`, `iss601-uppercase-perm-mixed`
   (`parse_perms` only matches lowercase `rwxa`).
+- **2 delete-form rules unsupported** (round-3, post-implementation
+  adversarial review MISS 1 - see above): `w-delete-watch` (`-W`),
+  `d-delete-syscall` (`-d`) - the parser has NO delete-form dispatch arm at
+  all, only the add-shaped subset of `auditctl`'s grammar.
 
-None of these 18 are caught by an existing `au-E02`/`E04`/`E05` lint: all three
+None of these 20 are caught by an existing `au-E02`/`E04`/`E05` lint: all three
 validate OPERATOR legality (is an operator valid for a field's TYPE, or a field
 valid for a filter LIST), never VALUE content, and none of today's divergences
 are an operator-legality question.
@@ -401,7 +534,7 @@ and in the dispatch report.
 
 ### Version divergence (CONTRIBUTING.md's per-version positive control)
 
-Re-confirmed on the expanded 74-id corpus: NONE of the 74 scenarios' captured
+Re-confirmed on the expanded 74-id corpus: NONE of the 76 scenarios' captured
 facts (`rc`/`rule`/`stdout`/`stderr`) differ AT ALL across `el8`/`el9`/`el10`
 (audit-userspace 3.1.2 / 3.1.5 / 4.0.3) - every data field is byte-identical
 across all three captures (`diff` on the three files' data rows, target column
@@ -432,4 +565,4 @@ bash crates/rulesteward-auditd/tests/corpus/auditd-oracle/capture_auditd.sh /tmp
 or via the full drift recipe: `just diff-auditd` (needs `rs-oracle8/9/10` built
 per `tools/oracle-images/README.md`). Measured wall-clock this session: under
 90 seconds for all three images combined (one batched container per image,
-canary run before every one of the ~74 lines).
+canary run before every one of the ~76 lines).
