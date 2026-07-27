@@ -1,0 +1,81 @@
+# rs-diff-auditd corpus
+# target=el9 image=rs-oracle9 audit_version=audit-3.1.5-8.el9.x86_64
+# captured=2026-07-27T03:54:58Z
+# columns: target id class rc rule_len out_len err_len rule stdout stderr (exact split('\t'), 10 fields)
+# rule/stdout/stderr use '\\'->'\', '\t'->TAB, '\n'->LF, '\r'->CR, '\xHH'->that byte, '\0'->the empty string (see capture_auditd.sh esc_field).
+rs-oracle9	rocky10-cis-benchmark	existing	1	32	0	119	-w /etc/passwd -p wa -k identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky10-module-ops	existing	1	85	0	119	-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k modules	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky10-rulesd-multifile	existing	1	2	0	0	-D	\0	\0
+rs-oracle9	rocky10-watch-vs-syscall-equiv	existing	1	36	0	119	-w /etc/passwd -p wa -k passwd_watch	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky8-cis-file-watches	existing	1	36	0	119	-w /etc/passwd -p wa -k cis_identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky8-pci-dss	existing	1	36	0	119	-w /etc/passwd -p wa -k pci_identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-arch-paired	existing	1	83	0	23	-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve_cmd	\0	-F unknown field: 'auid
+rs-oracle9	rocky9-deep-many-watches	existing	1	68	0	119	-w /etc/security/limits.d/99-custom-nofile.conf -p wa -k deepwatch_0	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-exclude-msgtype	existing	1	7	0	0	-b 8192	\0	\0
+rs-oracle9	rocky9-exclude-overlap	existing	1	32	0	119	-a always,exclude -F msgtype=CWD	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-execve-auid	existing	1	67	0	23	-a always,exit -S execve -F 'auid>=1000' -F 'auid!=unset' -k execve	\0	-F unknown field: 'auid
+rs-oracle9	rocky9-execve-unrestricted	existing	1	34	0	119	-a always,exit -S execve -k execve	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-field-compare	existing	1	58	0	22	-a always,exit -S execve -C 'uid!=euid' -k priv_escalation	\0	-C unknown field: 'uid
+rs-oracle9	rocky9-filesystem-list	existing	1	79	0	44	-a always,filesystem -F fstype=ext4 -F 'auid>=1000' -F 'auid!=unset' -k fs_ext4	\0	fstype filter is not supported by the kernel
+rs-oracle9	rocky9-huge-ruleset	existing	1	2	0	0	-D	\0	\0
+rs-oracle9	rocky9-identity-watches	existing	1	31	0	119	-w /etc/group -p wa -k identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-key-collision	existing	1	34	0	119	-a always,exit -S execve -k access	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-login-watches	existing	1	35	0	119	-w /var/log/lastlog -p wa -k logins	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-mac-policy	existing	1	36	0	119	-w /etc/selinux/ -p wa -k mac-policy	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-multi-S-or	existing	1	56	0	119	-a always,exit -S open -S openat -S openat2 -k file_open	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-never-below-always	existing	1	38	0	119	-a always,exit -S execve -k execve_all	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-never-suppress	existing	1	34	0	22	-a never,exit -S execve -F 'uid=0'	\0	-F unknown field: 'uid
+rs-oracle9	rocky9-no-key-rules	existing	1	24	0	119	-a always,exit -S execve	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-perm-watch-expansion	existing	1	34	0	119	-w /etc/passwd -p r -k passwd_read	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-prepend-vs-append	existing	1	38	0	119	-a always,exit -S execve -k execve_all	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-priv-commands	existing	1	93	0	23	-a always,exit -F path=/usr/bin/sudo -F perm=x -F 'auid>=1000' -F 'auid!=unset' -k privileged	\0	-F unknown field: 'auid
+rs-oracle9	rocky9-rare-syscall	existing	1	57	0	119	-a always,exit -S adjtimex -S settimeofday -k time_change	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-stig-finalize	existing	1	32	0	119	-w /etc/passwd -p wa -k identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-stig-hardened	existing	1	32	0	119	-w /etc/passwd -p wa -k identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-stock-control	existing	1	2	0	0	-D	\0	\0
+rs-oracle9	rocky9-task-list	existing	1	62	0	23	-a always,task -F 'auid>=1000' -F 'auid!=unset' -k task_create	\0	-F unknown field: 'auid
+rs-oracle9	rocky9-time-change	existing	1	86	0	119	-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	rocky9-whitespace-torture	existing	1	41	0	119	-a always,exit -S execve -k execve_all  \x20	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss584-quoted-path-space	584	1	33	0	0	-w "/etc/my dir/file" -p wa -k q1	\0	\0
+rs-oracle9	iss584-backslash-escaped-space	584	1	32	0	119	-w /etc/my\\ dir/file -p wa -k q2	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss584-embedded-tab-glues-flag	584	1	26	0	0	-w /etc/passwd\t-p wa -k q3	\0	\0
+rs-oracle9	iss584-all-tabs-separators	584	1	34	0	0	-a\talways,exit\t-S\texecve\t-k\ttabsep	\0	\0
+rs-oracle9	iss584-quoted-field-expr	584	1	58	0	23	-a always,exit -F arch=b64 -S execve -F 'auid>=1000' -k q6	\0	-F unknown field: 'auid
+rs-oracle9	iss601-uppercase-perm-all	601	1	26	0	119	-w /etc/passwd -p WA -k q4	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss601-uppercase-perm-mixed	601	1	26	0	119	-w /etc/passwd -p Wa -k q5	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss489-multi-key	489	1	52	0	119	-a always,exit -F arch=b64 -S execve -k key1 -k key2	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss489-key-at-cap-256	489	1	296	0	119	-a always,exit -F arch=b64 -S execve -k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss489-key-over-cap-257	489	1	297	0	0	-a always,exit -F arch=b64 -S execve -k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	\0	\0
+rs-oracle9	iss489-embedded-0x01-in-key	489	1	51	0	119	-a always,exit -F arch=b64 -S execve -k key\x01withsep	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss491-neg-a0	491	1	45	0	119	-a always,exit -F arch=b64 -S execve -F a0=-1	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss491-neg-a1	491	1	45	0	119	-a always,exit -F arch=b64 -S execve -F a1=-1	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss491-neg-a2	491	1	45	0	119	-a always,exit -F arch=b64 -S execve -F a2=-1	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss491-neg-a3	491	1	45	0	119	-a always,exit -F arch=b64 -S execve -F a3=-1	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	iss491-neg-pers	491	1	47	0	34	-a always,exit -F arch=b64 -S execve -F pers=-1	\0	-F value should be number for pers
+rs-oracle9	iss491-neg-devminor	491	1	51	0	38	-a always,exit -F arch=b64 -S execve -F devminor=-1	\0	-F value should be number for devminor
+rs-oracle9	control-accept	control	1	52	0	119	-a always,exit -F arch=b64 -S execve -k exec_control	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	control-reject	control	1	41	0	29	-a always,exit -F nosuchfield=1 -S execve	\0	-F unknown field: nosuchfield
+rs-oracle9	p-invalid-lower	601	1	30	0	0	-w /etc/passwd -p z -k pinvlow	\0	\0
+rs-oracle9	p-invalid-upper	601	1	29	0	0	-w /etc/passwd -p Z -k pinvup	\0	\0
+rs-oracle9	f-perm-invalid-letter	601	1	47	0	35	-a always,exit -F perm=zz -S execve -k fpermbad	\0	Permission can only contain  'rwxa'
+rs-oracle9	op-ne	op	1	42	0	119	-a always,exit -F uid!=0 -S execve -k opne	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-lt	op	1	44	0	119	-a always,exit -F uid<1000 -S execve -k oplt	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-gt	op	1	44	0	119	-a always,exit -F uid>1000 -S execve -k opgt	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-le	op	1	45	0	119	-a always,exit -F uid<=1000 -S execve -k ople	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-ge	op	1	45	0	119	-a always,exit -F uid>=1000 -S execve -k opge	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-and	op	1	46	0	119	-a always,exit -F success&1 -S execve -k opand	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	op-andeq	op	1	49	0	119	-a always,exit -F success&=1 -S execve -k opandeq	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	k-cap-valid-longer-line	489	1	317	0	119	-a always,exit -F arch=b64 -S execve -F uid=0 -F gid=0 -F pid=1 -F ppid=1 -k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	k-cap-invalid-shorter-line	489	1	300	0	0	-a always,exit -F arch=b64 -S execve -k kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	\0	\0
+rs-oracle9	d-extra-silent	541	1	8	0	0	-D extra	\0	\0
+rs-oracle9	d-k-only-silent	541	1	5	0	0	-D -k	\0	\0
+rs-oracle9	d-k-extra-silent	541	1	17	0	0	-D -k mykey extra	\0	\0
+rs-oracle9	f-unknown-field-unquoted	fld	1	52	0	28	-a always,exit -F bogusfield=1 -S execve -k funknown	\0	-F unknown field: bogusfield
+rs-oracle9	lead-A-prepend	lead	1	48	0	119	-A always,exit -F arch=b64 -S execve -k aprepend	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	lead-garbage	lead	1	18	0	0	garbage-not-a-flag	\0	\0
+rs-oracle9	s-unknown-syscall	syscall	1	60	0	0	-a always,exit -F arch=b64 -S totallynotasyscall -k sunknown	\0	\0
+rs-oracle9	lead-list-first	lead	1	37	0	119	-a exit,always -S execve -k listfirst	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	lead-e-enable	lead	1	4	0	0	-e 1	\0	\0
+rs-oracle9	reset-lost-probe	541	1	12	0	48	--reset-lost	\0	Field option not supported by kernel: reset-lost
+rs-oracle9	w-delete-watch	584	1	25	0	122	-W /etc/passwd -p wa -k x	\0	Error sending delete rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	d-delete-syscall	584	1	29	0	122	-d always,exit -S execve -k x	\0	Error sending delete rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
