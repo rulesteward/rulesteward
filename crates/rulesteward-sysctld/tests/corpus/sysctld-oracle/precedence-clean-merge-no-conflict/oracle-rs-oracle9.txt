@@ -1,0 +1,27 @@
+=== CAT-CONFIG ===
+# /etc/sysctl.d/10-a.conf
+kernel.randomize_va_space = 0
+
+# /run/sysctl.d/10-b.conf
+fs.suid_dumpable = 2
+
+# /usr/local/lib/sysctl.d/10-c.conf
+kernel.dmesg_restrict = 1
+
+# /usr/lib/sysctl.d/10-d.conf
+kernel.kptr_restrict = 1
+cat-config RC=0
+=== APPLY-DEBUG ===
+Parsing /etc/sysctl.d/10-a.conf
+Parsing /run/sysctl.d/10-b.conf
+Parsing /usr/local/lib/sysctl.d/10-c.conf
+Parsing /usr/lib/sysctl.d/10-d.conf
+Setting '/proc/sys/kernel/randomize_va_space' to '0'
+Couldn't write '0' to 'kernel/randomize_va_space', ignoring: Read-only file system
+Setting '/proc/sys/fs/suid_dumpable' to '2'
+Setting '/proc/sys/kernel/dmesg_restrict' to '1'
+Setting '/proc/sys/kernel/kptr_restrict' to '1'
+apply RC=0
+=== VERSION ===
+systemd 252 (252-67.el9_8.4.rocky.0.1)
++PAM +AUDIT +SELINUX -APPARMOR +IMA +SMACK +SECCOMP +GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT -QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK +XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified

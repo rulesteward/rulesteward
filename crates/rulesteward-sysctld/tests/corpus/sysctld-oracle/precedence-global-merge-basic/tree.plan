@@ -1,0 +1,10 @@
+f	etc/sysctl.d/10-a.conf	
+f	usr/lib/sysctl.d/99-z.conf	
+---
+d	etc/sysctl.d	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
+f	etc/sysctl.d/10-a.conf	
+f	usr/lib/sysctl.d/99-z.conf	

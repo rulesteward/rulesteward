@@ -1,0 +1,7 @@
+id: degenerate-devnull-disable-idiom
+category: degenerate
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: the man sysctl.d(5) '-> /dev/null' disable idiom: etc/sysctl.d/50-x.conf is a symlink to /dev/null, masking usr/lib/sysctl.d/50-x.conf's non-compliant assignment by NAME while contributing nothing itself (reads as empty). Confirmed: real oracle shows 'Skipping overridden file' and no Setting line at all - the key ends up completely unset on both sides. The ONE permitted absolute symlink target in this corpus's schema.

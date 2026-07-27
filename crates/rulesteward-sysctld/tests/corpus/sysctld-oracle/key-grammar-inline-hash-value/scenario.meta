@@ -1,0 +1,7 @@
+id: key-grammar-inline-hash-value
+category: key-grammar
+images: rs-oracle8
+targets: rhel8
+key: kernel.core_pattern
+xfail_issue: 
+comment: a value containing a mid-value '#' is NOT treated as an inline comment by the real oracle (confirmed: 'Setting ... to abc#def' verbatim), matching RuleSteward's no-inline-comments parser model exactly.

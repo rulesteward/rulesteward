@@ -1,0 +1,12 @@
+=== CAT-CONFIG ===
+# /etc/sysctl.d/10-val.conf
+kernel.core_pattern = abc#def
+cat-config RC=0
+=== APPLY-DEBUG ===
+Parsing /etc/sysctl.d/10-val.conf
+Setting 'kernel/core_pattern' to 'abc#def'
+Couldn't write 'abc#def' to 'kernel/core_pattern', ignoring: Read-only file system
+apply RC=0
+=== VERSION ===
+systemd 239 (239-82.el8_10.17)
++PAM +AUDIT +SELINUX +IMA -APPARMOR +SMACK +SYSVINIT +UTMP +LIBCRYPTSETUP +GCRYPT +GNUTLS +ACL +XZ +LZ4 +SECCOMP +BLKID +ELFUTILS +KMOD +IDN2 -IDN +PCRE2 default-hierarchy=legacy

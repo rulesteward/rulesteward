@@ -1,0 +1,7 @@
+id: degenerate-dangling-dropin
+category: degenerate
+images: rs-oracle9
+targets: rhel9
+key: kernel.dmesg_restrict
+xfail_issue: 
+comment: a DANGLING SYMLINK (not the 99-slot, an ordinary numbered drop-in): --cat-config aborts (never shows 60-after.conf's content, exits 1), while the real applier SILENTLY skips it entirely (no 'Parsing' line at all, no error, exits 0) and continues to 60-after.conf. Distinct from the .conf-directory case: here the applier does not even log the skip.

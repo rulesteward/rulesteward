@@ -1,0 +1,7 @@
+id: precedence-mask-run-over-usrlocallib
+category: precedence
+images: rs-oracle8
+targets: rhel8
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: same-basename masking of the adjacent rank pair: run/sysctl.d (rank 1) masks usr/local/lib/sysctl.d (rank 2).

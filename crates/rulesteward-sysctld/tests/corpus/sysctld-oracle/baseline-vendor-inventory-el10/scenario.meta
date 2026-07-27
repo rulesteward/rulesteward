@@ -1,0 +1,7 @@
+id: baseline-vendor-inventory-el10
+category: baseline-vendor-inventory
+images: rs-oracle10
+targets: rhel10
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: per-version control (el10): a single, simple NON-COMPLIANT assignment (kernel.randomize_va_space = 0) captured specifically on rs-oracle10. The oracle's own --version banner is captured verbatim in this scenario's oracle-rs-oracle10.txt; the Tier-1 test asserts the three baseline-vendor-inventory scenarios' captured banners are PAIRWISE DISTINCT, guarding against 'all three transcripts are secretly the same file'.

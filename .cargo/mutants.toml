@@ -174,10 +174,13 @@ examine_globs = [
     # mutation gate is non-vacuous (the 4a lesson: a new file outside examine_globs
     # mutates zero times and false-passes).
     "crates/rulesteward-sysctld/src/system.rs",
-    # Lane B differential oracle: the manifest/tree-plan model, the canonical tree
-    # INVENTORY recomputation (the guard that catches a Rust-vs-bash materializer
-    # divergence without docker), and the compare. Same allowlist-precedes-code
-    # rule as system.rs above; matches nothing until the lane lands.
+    # Lane B differential oracle (session 9k-1): the tree.plan model
+    # (parse_plan_line/parse_tree_plan), the materializer + canonical tree
+    # INVENTORY recomputation (the guard that catches a Rust-vs-bash
+    # materializer divergence without docker), and the oracle transcript
+    # classifier. Landed with the extraction from
+    # tests/sysctld_corpus_oracle.rs; mutation-tested against that test's
+    # corpus + its extraction_unit_tests module.
     "crates/rulesteward-sysctld/src/oracle.rs",
     # sudoers backend (#329 Phase 0): the hand-rolled two-stage parser (physical-
     # line join + line classification), the include/dir resolution seam, and the

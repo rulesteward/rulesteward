@@ -1,0 +1,15 @@
+=== CAT-CONFIG ===
+# /etc/sysctl.d/10-real.conf
+Failed to cat /etc/sysctl.d/50-dangling.conf: No such file or directory
+kernel.randomize_va_space = 2
+cat-config RC=1
+=== APPLY-DEBUG ===
+Parsing /etc/sysctl.d/10-real.conf
+Parsing /etc/sysctl.d/60-after.conf
+Setting '/proc/sys/kernel/randomize_va_space' to '2'
+Setting '/proc/sys/kernel/dmesg_restrict' to '2'
+Couldn't write '2' to 'kernel/dmesg_restrict', ignoring: Read-only file system
+apply RC=0
+=== VERSION ===
+systemd 252 (252-67.el9_8.4.rocky.0.1)
++PAM +AUDIT +SELINUX -APPARMOR +IMA +SMACK +SECCOMP +GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT -QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK +XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified
