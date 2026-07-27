@@ -24,7 +24,7 @@
 
 use serde_json::Value;
 
-use crate::ast::SudoersFile;
+use crate::ast::{CmndItem, LineKind, SudoersFile};
 
 /// The real `visudo -c -f -` answer for one sudoers document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +106,22 @@ pub fn classify_visudo(
     stdout: &str,
     stderr: &str,
 ) -> Result<VisudoVerdict, UnclassifiedVisudo> {
-    let _ = (rc, stdout, stderr);
-    todo!("session 9k-1 Lane C: fail-closed visudo classifier")
+    // stderr does not participate in the decision today (see the doc comment);
+    // accepted only so the corpus row can be passed whole.
+    let _ = stderr;
+    let parsed_ok = stdout.contains("parsed OK");
+    if rc == 0 && parsed_ok {
+        return Ok(VisudoVerdict::Accept);
+    }
+    if rc == 1 && !parsed_ok {
+        return Ok(VisudoVerdict::Reject);
+    }
+    let reason = if rc == 0 || rc == 1 {
+        "rc and parsed-OK evidence disagree"
+    } else {
+        "rc outside the visudo(8) 0/1 exit-code contract"
+    };
+    Err(UnclassifiedVisudo { rc, reason })
 }
 
 /// Projects `RuleSteward`'s parsed sudoers AST into the comparable structure view.
@@ -119,8 +133,49 @@ pub fn classify_visudo(
 /// duplication of `User_List`.
 #[must_use]
 pub fn project_ast(file: &SudoersFile) -> StructureProjection {
-    let _ = file;
-    todo!("session 9k-1 Lane C: AST structure projection")
+    let mut tuple_count = 0usize;
+    let mut users = Vec::new();
+    let mut hosts = Vec::new();
+    let mut commands = Vec::new();
+
+    for line in &file.lines {
+        let LineKind::UserSpec(spec) = &line.kind else {
+            continue;
+        };
+        let stripped_users: Vec<String> = spec.users.iter().map(|u| strip_sigil(u)).collect();
+        for group in &spec.host_groups {
+            tuple_count += 1;
+            users.extend(stripped_users.iter().cloned());
+            hosts.extend(group.hosts.iter().map(|h| strip_sigil(h)));
+            for cmnd_spec in &group.cmnd_specs {
+                let cmnd = match &cmnd_spec.cmnd {
+                    CmndItem::All => "ALL".to_string(),
+                    CmndItem::Cmnd(raw) => raw.clone(),
+                };
+                commands.push(cmnd);
+            }
+        }
+    }
+
+    StructureProjection {
+        tuple_count,
+        users,
+        hosts,
+        commands,
+    }
+}
+
+/// Strips a single optional leading `!` negation, then a single optional
+/// leading sigil among `%+#`, from a subject/host token - so it compares
+/// against `cvtsudoers`' bare values (see [`project_ast`]'s doc comment).
+fn strip_sigil(token: &str) -> String {
+    let after_bang = token.strip_prefix('!').unwrap_or(token);
+    let after_sigil = after_bang
+        .strip_prefix('%')
+        .or_else(|| after_bang.strip_prefix('+'))
+        .or_else(|| after_bang.strip_prefix('#'))
+        .unwrap_or(after_bang);
+    after_sigil.to_string()
 }
 
 /// Projects a `cvtsudoers -f json` document into the comparable structure view.
@@ -134,6 +189,94 @@ pub fn project_ast(file: &SudoersFile) -> StructureProjection {
 pub fn project_cvtsudoers_json(
     json: &Value,
 ) -> Result<StructureProjection, CvtsudoersProjectionError> {
-    let _ = json;
-    todo!("session 9k-1 Lane C: fail-closed cvtsudoers JSON projection")
+    let mut tuple_count = 0usize;
+    let mut users = Vec::new();
+    let mut hosts = Vec::new();
+    let mut commands = Vec::new();
+
+    // A file with no `User_Specs` at all (e.g. a Defaults-only document) omits
+    // the key entirely rather than emitting an empty array; that is zero
+    // tuples, not a shape error. `.into_iter().flatten()` on the
+    // `Option<&Vec<_>>` yields nothing in that case, with no need for a
+    // placeholder empty Vec.
+    let specs = json.get("User_Specs").and_then(Value::as_array);
+
+    for spec in specs.into_iter().flatten() {
+        tuple_count += 1;
+
+        let user_list = spec.get("User_List").and_then(Value::as_array);
+        for elem in user_list.into_iter().flatten() {
+            let value = extract_user_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                location: "User_List",
+                element: elem.to_string(),
+            })?;
+            users.push(value);
+        }
+
+        let host_list = spec.get("Host_List").and_then(Value::as_array);
+        for elem in host_list.into_iter().flatten() {
+            let value = extract_host_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                location: "Host_List",
+                element: elem.to_string(),
+            })?;
+            hosts.push(value);
+        }
+
+        let cmnd_specs = spec.get("Cmnd_Specs").and_then(Value::as_array);
+        for cmnd_spec in cmnd_specs.into_iter().flatten() {
+            let cmnd_list = cmnd_spec.get("Commands").and_then(Value::as_array);
+            for elem in cmnd_list.into_iter().flatten() {
+                let value =
+                    extract_command_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                        location: "Cmnd_Specs[].Commands",
+                        element: elem.to_string(),
+                    })?;
+                commands.push(value);
+            }
+        }
+    }
+
+    Ok(StructureProjection {
+        tuple_count,
+        users,
+        hosts,
+        commands,
+    })
+}
+
+/// Extracts a `User_List[]` element's bare value: `username` / `useralias` /
+/// `usergroup` / `netgroup` (all strings), or `userid` (a JSON number,
+/// stringified). Any companion `"negated": true` is ignored - it mirrors
+/// [`project_ast`]'s own sigil-strip normalization and does not change the
+/// extracted value.
+fn extract_user_list_value(elem: &Value) -> Option<String> {
+    for key in ["username", "useralias", "usergroup", "netgroup"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    elem.get("userid")
+        .filter(|v| v.is_number())
+        .map(ToString::to_string)
+}
+
+/// Extracts a `Host_List[]` element's bare value: `hostname` / `hostalias`.
+fn extract_host_list_value(elem: &Value) -> Option<String> {
+    for key in ["hostname", "hostalias"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+/// Extracts a `Cmnd_Specs[].Commands[]` element's bare value: `command` /
+/// `cmndalias`.
+fn extract_command_value(elem: &Value) -> Option<String> {
+    for key in ["command", "cmndalias"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    None
 }
