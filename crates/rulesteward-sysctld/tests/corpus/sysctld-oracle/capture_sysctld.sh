@@ -115,10 +115,67 @@ meta_field() {
     grep -m1 "^${key}:" "${file}" 2>/dev/null | cut -d: -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
+# Read a scenario's vendored `---` inventory block from its tree.plan and
+# reprint it field-normalized (TYPE\tRELPATH\tARG, always 3 tab-separated
+# fields even if the source line omits a trailing tab on an empty ARG - a
+# byte-for-byte comparison would otherwise trip on that harmless cosmetic
+# variance, which `rulesteward_sysctld::oracle::parse_plan_line`'s splitn(3)
+# never sees because it treats a missing third field as empty either way).
+# Blank lines and `#`-comments are dropped, matching the Rust side's parser.
+vendored_inventory_of() {
+    local plan="$1"
+    awk -F'\t' '
+        BEGIN { in_inv = 0 }
+        $0 == "---" { in_inv = 1; next }
+        !in_inv { next }
+        /^$/ { next }
+        /^#/ { next }
+        { printf "%s\t%s\t%s\n", $1, $2, $3 }
+    ' "${plan}" | LC_ALL=C sort
+}
+
+# Read the `=== COMPUTED-INVENTORY ===` section out of a captured transcript
+# (between that marker and the next `=== ` marker), same field-normalization
+# as above, sorted the same way so the two sides compare byte-for-byte.
+computed_inventory_of() {
+    local transcript="$1"
+    awk -F'\t' '
+        /^=== COMPUTED-INVENTORY ===$/ { capture = 1; next }
+        capture && /^=== / { capture = 0 }
+        capture { printf "%s\t%s\t%s\n", $1, $2, $3 }
+    ' "${transcript}" | LC_ALL=C sort
+}
+
+# The LIVE half of the materializer equivalence guard (Tier-1's Rust half is
+# `rulesteward_sysctld::oracle::compute_inventory` vs the same vendored
+# block - see materialize.sh's module doc). Compares what `materialize.sh
+# --inventory` actually found on the rs-oracleN container's real filesystem
+# against the scenario's own vendored expectation, so a BASH materializer bug
+# - the class the Rust-only guard cannot see, since it never executes this
+# file - fails the capture immediately instead of silently seeding a
+# transcript built from the wrong tree.
+check_computed_inventory() {
+    local scen_dir="$1" out_file="$2"
+    local vendored computed
+    vendored="$(vendored_inventory_of "${scen_dir}/tree.plan")"
+    computed="$(computed_inventory_of "${out_file}")"
+    if [ -z "${computed}" ]; then
+        echo "capture_sysctld: ${scen_dir}: no '=== COMPUTED-INVENTORY ===' section in the transcript - the bash materializer probe did not run or was not captured" >&2
+        return 2
+    fi
+    if [ "${vendored}" != "${computed}" ]; then
+        echo "capture_sysctld: ${scen_dir}: the LIVE bash materializer's inventory disagrees with tree.plan's vendored '---' block (a materialize.sh bug, or the vendored block itself is wrong):" >&2
+        diff <(printf '%s\n' "${vendored}") <(printf '%s\n' "${computed}") >&2 || true
+        return 2
+    fi
+    return 0
+}
+
 run_one_capture() {
     local image="$1" scen_dir="$2" out_file="$3"
     local cmd
     cmd='
+(
 set -u
 rm -rf /etc/sysctl.d/* /run/sysctl.d/* /usr/local/lib/sysctl.d/* /usr/lib/sysctl.d/* /etc/sysctl.conf 2>/dev/null || true
 # payload text executed by the container shell via sh -c, not a write this
@@ -126,6 +183,8 @@ rm -rf /etc/sysctl.d/* /run/sysctl.d/* /usr/local/lib/sysctl.d/* /usr/lib/sysctl
 # container. capture-write-exempt: container-shell-payload
 mkdir -p /etc/sysctl.d /run/sysctl.d /usr/local/lib/sysctl.d /usr/lib/sysctl.d
 sh /rs-payload/materialize.sh /rs-payload/tree.plan /rs-payload/content ""
+echo "=== COMPUTED-INVENTORY ==="
+sh /rs-payload/materialize.sh --inventory ""
 echo "=== CAT-CONFIG ==="
 /usr/lib/systemd/systemd-sysctl --cat-config
 echo "cat-config RC=$?"
@@ -134,7 +193,29 @@ SYSTEMD_LOG_LEVEL=debug /usr/lib/systemd/systemd-sysctl
 echo "apply RC=$?"
 echo "=== VERSION ==="
 /usr/lib/systemd/systemd-sysctl --version
+) 2>&1
 '
+    # The whole payload script above runs inside ONE subshell whose stderr is
+    # merged into its stdout AT THE SOURCE (the "2>&1" on the closing paren),
+    # before it ever reaches docker's demuxing layer. This is load-bearing:
+    # systemd-sysctl writes every line this differential asserts on (Parsing,
+    # Setting, Overwriting, Skipping overridden file, and every parse/file
+    # complaint) to STDERR, while every "=== ... ===" marker and "RC=" line
+    # here is written by THIS shell to stdout. `docker start -a` attaches the
+    # container's stdout and stderr as two independently-demuxed streams;
+    # merging them with a host-side "2>&1" races their arrival order across
+    # two kernel pipes and is NOT deterministic - measured directly: three
+    # capture runs against unchanged images and unchanged product produced
+    # 2/22, 0/22, and 1/22 scenarios with a stderr block landing on the wrong
+    # side of a "=== " marker. A race-emptied APPLY-DEBUG section reads as
+    # "key unset", which silently HIDES real drift for exactly the scenarios
+    # whose correct verdict is "unset" (precedence-masked-key-drop,
+    # degenerate-devnull-disable-idiom, slot-symlink-absent-divergence) - the
+    # single most dangerous failure shape for a differential to have. Merging
+    # inside the container makes it genuinely one stream, so the kernel
+    # serializes every write() to that one fd in true program order; nothing
+    # is left on the container's own stderr for `docker start -a`'s
+    # "2>&1" below to race against.
     rs_capture_context "$(basename "${scen_dir}")@${image}"
 
     local payload
@@ -163,6 +244,9 @@ echo "=== VERSION ==="
     rm -rf "${payload}"
     if [ "${rc}" -ne 0 ]; then
         echo "capture_sysctld: docker start failed for ${scen_dir} on ${image} (rc=${rc})" >&2
+        return 2
+    fi
+    if ! check_computed_inventory "${scen_dir}" "${out_file}"; then
         return 2
     fi
     return 0

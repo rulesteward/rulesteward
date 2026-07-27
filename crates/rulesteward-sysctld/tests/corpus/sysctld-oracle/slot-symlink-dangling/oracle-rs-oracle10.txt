@@ -1,3 +1,11 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/10-real.conf	
+l	etc/sysctl.d/99-sysctl.conf	../sysctl.conf
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
 === CAT-CONFIG ===
 # /etc/sysctl.d/10-real.conf
 Failed to cat /etc/sysctl.d/99-sysctl.conf: No such file or directory

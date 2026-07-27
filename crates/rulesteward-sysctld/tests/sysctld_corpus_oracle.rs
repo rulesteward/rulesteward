@@ -27,12 +27,34 @@
 //! comparison and not part of the reusable oracle adapter), and the
 //! data-driven test itself.
 //!
+//! # Why `rulesteward_verdict` stays in this file, not the oracle adapter
+//!
+//! Defensible to extract too in principle, but [`rulesteward_verdict`] is
+//! called by 20 of this corpus's 22 scenarios: only
+//! `key-grammar-malformed-line-reject` (`key: NONE`, comparing the REJECT
+//! signal instead of a merged value) and `key-grammar-asymmetric-separator`
+//! (comparing the raw transcript's canonical-key handling directly, since its
+//! key is not necessarily STIG/CIS tracked in dotted-slash form for an
+//! interface name) skip it. `key-grammar-dash-prefix-identity` and
+//! `slot-symlink-absent-divergence` both call it despite ALSO comparing a
+//! transcript signal directly, precisely so `RuleSteward`'s own value is pinned
+//! alongside the oracle's rather than the oracle side being checked alone.
+//! Keeping it here (rather than moving it beside `oracle_setting_value` in
+//! [`rulesteward_sysctld::oracle`]) is still the right call: it reads
+//! DIAGNOSTIC MESSAGE TEXT (`sysctld-W02`/`W04`), which is specific to what
+//! THIS test compares, not a reusable adapter capability - and it is still
+//! exercised by `just ci`'s ordinary `cargo test`, just not by `cargo
+//! mutants`'s `src/`-scoped glob.
+//!
 //! # XFAIL policy
 //!
 //! One scenario ([`XFAIL`]) asserts the CURRENT (wrong) behavior rather than
 //! oracle agreement: `slot-symlink-misdirected-593` (issue #593). Landing it
 //! xfailed documents a real, already-verified bug without blocking on a fix
-//! this test-author must not make (impl-blind barrier).
+//! this test-author must not make (impl-blind barrier). The XFAIL branch
+//! below pins the SPECIFIC expected values for this scenario (oracle stays
+//! `Some("2")`, `RuleSteward` stays `None`), not merely that the two sides
+//! differ - a bare "not equal" is satisfiable by any two wrong values.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -44,7 +66,8 @@ use rulesteward_core::oracle_corpus::{resolve_corpus_root, sentinel_banner, sent
 use rulesteward_sysctld::TargetVersion;
 use rulesteward_sysctld::oracle::{
     apply_debug_section, compute_inventory, dotted_to_procpath, materialize, oracle_overwrote,
-    oracle_setting_value, oracle_shows_accept_signal, oracle_shows_reject_signal, parse_tree_plan,
+    oracle_setting_value, oracle_shows_accept_signal, oracle_shows_reject_signal, parse_plan_line,
+    parse_tree_plan,
 };
 use rulesteward_sysctld::system::lint_system;
 
@@ -297,14 +320,24 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                 .unwrap_or_else(|e| panic!("{}: read {}: {e}", meta.id, oracle_file.display()));
             let apply_section = apply_debug_section(&transcript);
 
-            if let Some(idx) = transcript.find("=== VERSION ===") {
+            // Per-version control (below): read the banner ONLY from the
+            // scenario the control names, keyed by SCENARIO id, not by image.
+            // Keying by image previously let the LAST scenario alphabetically
+            // to use a given image silently win that image's entry - every
+            // scenario sharing an image happens to capture the identical real
+            // banner, so the bug was invisible until a reviewer corrupted the
+            // baseline scenarios' OWN transcripts specifically and the control
+            // still passed (it was never reading those transcripts at all).
+            if meta.id.starts_with("baseline-vendor-inventory-")
+                && let Some(idx) = transcript.find("=== VERSION ===")
+            {
                 let banner = transcript[idx + "=== VERSION ===".len()..]
                     .lines()
                     .find(|l| !l.trim().is_empty())
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                version_banners.insert(image.clone(), banner);
+                version_banners.insert(meta.id.clone(), banner);
             }
 
             if oracle_shows_accept_signal(apply_section) {
@@ -359,6 +392,27 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                      recognized as the SAME canonical key by the real oracle",
                     meta.id
                 );
+                let oracle_value = oracle_setting_value(apply_section, proc_path);
+                assert_eq!(
+                    oracle_value.as_deref(),
+                    Some("0"),
+                    "{}: expected the real oracle's winning value to be 0 (the later, \
+                     plain-form assignment)",
+                    meta.id
+                );
+                // Pin RuleSteward's OWN value too, not just the oracle's: a corruption
+                // sweep found this scenario's recorded value was otherwise unchecked
+                // (flipping the transcript's `to '0'` to any other digit left the suite
+                // green), which the `oracle_overwrote` identity check alone cannot see
+                // since it only tests for the presence of the "Overwriting" line.
+                let (diags, _sources) = lint_system(Some(tmp.path()), Some(*target));
+                let rs_value = rulesteward_verdict(&diags, key);
+                assert_eq!(
+                    rs_value, oracle_value,
+                    "{}: RuleSteward's effective value for `{key}` ({rs_value:?}) disagrees \
+                     with the real oracle's ({oracle_value:?})",
+                    meta.id
+                );
                 continue;
             }
 
@@ -386,6 +440,35 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                      (no 99-sysctl.conf slot, so systemd never reads /etc/sysctl.conf)",
                     meta.id
                 );
+                // Pin RuleSteward's own PROCPS-view value too, not just the oracle's
+                // side: an assertion naming only `oracle_value` is satisfiable
+                // VACUOUSLY by anything that makes the oracle read as unset,
+                // including a corrupted/race-emptied apply-debug section. Computing
+                // and pinning `rs_value` independently (it never reads the
+                // transcript at all - it comes from `lint_system` over the
+                // materialized filesystem) makes this a genuine two-sided pin of the
+                // documented procps/systemd divergence, not a one-sided guess.
+                let (diags, _sources) = lint_system(Some(tmp.path()), Some(*target));
+                let rs_value = rulesteward_verdict(&diags, key);
+                assert_eq!(
+                    rs_value.as_deref(),
+                    Some("0"),
+                    "{}: expected RuleSteward's own PROCPS-view answer to be Some(\"0\") - if \
+                     this changed, either the scenario's content changed or system.rs's merged \
+                     view no longer includes /etc/sysctl.conf unconditionally; re-ground this \
+                     scenario's pin rather than silently adjusting it",
+                    meta.id
+                );
+                assert_ne!(
+                    rs_value, oracle_value,
+                    "{}: RuleSteward's own PROCPS-view answer ({rs_value:?}) now matches the \
+                     real systemd oracle's ({oracle_value:?}) - the documented procps/systemd \
+                     applier divergence (sysctld-W03-b's whole reason for existing) that this \
+                     scenario exists to pin has disappeared. That is a real regression (or a \
+                     deliberate model change this test must be updated to reflect), not \
+                     something to skip past",
+                    meta.id
+                );
                 continue;
             }
 
@@ -400,6 +483,35 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                      this scenario from XFAIL, not the assertion",
                     meta.id
                 );
+                // Pin the SPECIFIC expected values, not just "not equal": a
+                // corruption sweep found that flipping the recorded oracle
+                // value (e.g. the transcript's `to '2'` to `to '7'`) still
+                // satisfies a bare `assert_ne!`, since any two DIFFERENT wrong
+                // values still differ from each other. #593's divergence shape
+                // is specific and already grounded in the scenario's own
+                // comment: the real oracle follows the misdirected 99-slot
+                // symlink and applies a COMPLIANT value (2), while
+                // RuleSteward's `enumerate()` unconditionally skips ANY
+                // symlink at that path (path equality only, ignoring the
+                // actual target) and reports the key completely UNSET.
+                if meta.id == "slot-symlink-misdirected-593" {
+                    assert_eq!(
+                        oracle_value.as_deref(),
+                        Some("2"),
+                        "{}: XFAIL #{issue}: expected the real oracle's value to remain 2 (it \
+                         follows the misdirected symlink to a compliant value) - if this \
+                         changed, re-ground the XFAIL pin rather than widening it",
+                        meta.id
+                    );
+                    assert_eq!(
+                        rs_value, None,
+                        "{}: XFAIL #{issue}: expected RuleSteward's value to remain unset \
+                         (enumerate() unconditionally skips the 99-slot symlink by path alone) \
+                         - if this changed, the bug's shape has changed and the XFAIL pin needs \
+                         re-grounding, not silent widening",
+                        meta.id
+                    );
+                }
                 xfail_hit.push(meta.id.clone());
             } else {
                 assert_eq!(
@@ -431,11 +543,14 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
     // Per-version control: the three baseline-vendor-inventory scenarios'
     // captured `--version` banners must be PAIRWISE DISTINCT, guarding against
     // "all three transcripts are secretly the same file" (CONTRIBUTING: "add a
-    // control pinning a known version divergence").
+    // control pinning a known version divergence"). Keyed by scenario id (not
+    // image), and read only from those three scenarios' own transcripts above -
+    // see that collection site for why keying by image was wrong.
     let banners: Vec<(&String, &String)> = version_banners.iter().collect();
     assert!(
         banners.len() >= 3,
-        "expected >= 3 captured --version banners (one per rs-oracle8/9/10), got {}: {:?}",
+        "expected >= 3 captured --version banners (one per baseline-vendor-inventory-el{{8,9,10}} \
+         scenario), got {}: {:?}",
         banners.len(),
         banners
     );
@@ -475,7 +590,7 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
 mod extraction_unit_tests {
     use super::{
         apply_debug_section, dotted_to_procpath, oracle_overwrote, oracle_setting_value,
-        oracle_shows_accept_signal, oracle_shows_reject_signal, parse_tree_plan,
+        oracle_shows_accept_signal, oracle_shows_reject_signal, parse_plan_line, parse_tree_plan,
         rulesteward_verdict,
     };
     use rulesteward_core::{Diagnostic, Severity};
@@ -534,6 +649,22 @@ mod extraction_unit_tests {
             "Overwriting earlier assignment of kernel/randomize_va_space at 'x.conf:1'.\n";
         assert!(oracle_overwrote(transcript, "kernel/randomize_va_space"));
         assert!(!oracle_overwrote(transcript, "fs/suid_dumpable"));
+    }
+
+    #[test]
+    fn oracle_overwrote_does_not_confuse_a_prefix_key_with_the_target() {
+        // A DIFFERENT key that happens to share a prefix
+        // (kernel/randomize_va_space_extra) must not satisfy a search for
+        // kernel/randomize_va_space - the trailing space baked into
+        // `oracle_overwrote`'s own format string ("...assignment of {proc_path} ")
+        // is the anchor that prevents this false match, mirroring
+        // `oracle_setting_value_does_not_confuse_a_prefix_key_with_the_target`.
+        let transcript =
+            "Overwriting earlier assignment of kernel/randomize_va_space_extra at 'x.conf:1'.\n";
+        assert!(
+            !oracle_overwrote(transcript, "kernel/randomize_va_space"),
+            "a longer key sharing this key's prefix must not be mistaken for it"
+        );
     }
 
     #[test]
@@ -629,8 +760,48 @@ mod extraction_unit_tests {
     fn parse_tree_plan_splits_at_the_marker() {
         let text = "f\tetc/sysctl.d/x.conf\t\n---\nd\tetc/sysctl.d\t\nf\tetc/sysctl.d/x.conf\t\n";
         let (materialize_entries, inventory) = parse_tree_plan(text);
-        assert_eq!(materialize_entries.len(), 1);
-        assert_eq!(inventory.len(), 2);
+        // Assert the actual entries, not just counts: a corruption that swapped
+        // the type or relpath of an entry while preserving vector LENGTHS would
+        // pass a lengths-only assertion silently.
+        assert_eq!(
+            materialize_entries,
+            vec![parse_plan_line("f\tetc/sysctl.d/x.conf\t")]
+        );
+        assert_eq!(
+            inventory,
+            vec![
+                parse_plan_line("d\tetc/sysctl.d\t"),
+                parse_plan_line("f\tetc/sysctl.d/x.conf\t"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_tree_plan_skips_blank_and_comment_lines_in_both_sections() {
+        // Adversarial-sweep finding: `parse_tree_plan`'s blank-line/comment-line
+        // skip used `line.is_empty() || line.starts_with('#')`; a mutant
+        // replacing `||` with `&&` survived because no test exercised a
+        // tree.plan with a blank or `#`-comment line in EITHER section. Under
+        // that mutant the guard can never be true (a line cannot be both empty
+        // AND start with '#'), so every blank/comment line would be fed to
+        // `parse_plan_line` instead of being skipped - panicking outright on a
+        // blank line, and silently fabricating a bogus entry for a comment line.
+        let text = "f\tetc/sysctl.d/x.conf\t\n\n# a materialize comment\n---\n\
+                    d\tetc/sysctl.d\t\n\n# an inventory comment\nf\tetc/sysctl.d/x.conf\t\n";
+        let (materialize_entries, inventory) = parse_tree_plan(text);
+        assert_eq!(
+            materialize_entries,
+            vec![parse_plan_line("f\tetc/sysctl.d/x.conf\t")],
+            "blank/comment lines must not become materialize entries"
+        );
+        assert_eq!(
+            inventory,
+            vec![
+                parse_plan_line("d\tetc/sysctl.d\t"),
+                parse_plan_line("f\tetc/sysctl.d/x.conf\t"),
+            ],
+            "blank/comment lines must not become inventory entries"
+        );
     }
 
     #[test]

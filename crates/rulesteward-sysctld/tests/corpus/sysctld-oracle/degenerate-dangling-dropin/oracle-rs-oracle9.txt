@@ -1,3 +1,12 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/10-real.conf	
+l	etc/sysctl.d/50-dangling.conf	nonexistent-target.conf
+f	etc/sysctl.d/60-after.conf	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
 === CAT-CONFIG ===
 # /etc/sysctl.d/10-real.conf
 Failed to cat /etc/sysctl.d/50-dangling.conf: No such file or directory

@@ -1,3 +1,13 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/05-a.conf	
+d	run/sysctl.d	
+f	run/sysctl.d/50-b.conf	
+d	usr/local/lib/sysctl.d	
+f	usr/local/lib/sysctl.d/30-c.conf	
+d	usr/lib/sysctl.d	
+f	usr/lib/sysctl.d/99-d.conf	
+l	lib	usr/lib
 === CAT-CONFIG ===
 # /etc/sysctl.d/05-a.conf
 kernel.randomize_va_space = 2

@@ -1,3 +1,10 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
+f	etc/sysctl.conf	
 === CAT-CONFIG ===
 cat-config RC=0
 === APPLY-DEBUG ===

@@ -1,3 +1,11 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/50-x.conf	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+f	usr/lib/sysctl.d/50-x.conf	
+l	lib	usr/lib
 === CAT-CONFIG ===
 # /etc/sysctl.d/50-x.conf
 fs.suid_dumpable = 0

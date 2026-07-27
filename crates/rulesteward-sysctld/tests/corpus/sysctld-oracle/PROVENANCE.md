@@ -8,8 +8,9 @@ transcript captured from a REAL `systemd-sysctl` binary
 RuleSteward's answer to a primary source rather than a hand-authored
 expectation. `capture_sysctld.sh` (Tier-2) re-derives these transcripts live
 from the `rs-oracle{8,9,10}` containers; this file documents the corpus
-format, the two real bugs the corpus exists to pin, and the measured facts
-about the oracle binary itself so no later session re-derives them.
+format, the real oracle-fidelity findings and harness bugs the corpus and its
+tooling exist to pin, and the measured facts about the oracle binary itself
+so no later session re-derives them.
 
 ## Corpus format
 
@@ -31,19 +32,38 @@ Each scenario is a directory containing:
     or `p` (FIFO via `mkfifo`, `ARG` ignored - see finding (b) below for why no
     committed scenario actually uses this type live).
   - **Vendored inventory section** (after `---`): the EXPECTED filesystem
-    shape, recomputed via globs by both materializers, never by replaying the
-    plan (see `rulesteward_sysctld::oracle`'s module doc "The materializer
-    equivalence guard"). This section must list every entry the equivalence
-    guard covers - including a masked file that a same-basename
-    higher-precedence entry hides, since masking is a merge-time decision, not
-    a filesystem-absence. A materializer bug that creates an extra or
-    wrongly-typed entry is caught here, with no docker required.
+    shape, recomputed via globs, never by replaying the plan. This section
+    must list every entry EITHER cross-check below covers - including a
+    masked file that a same-basename higher-precedence entry hides, since
+    masking is a merge-time decision, not a filesystem-absence.
+    **Two independent cross-checks, run at different times, each catching a
+    DIFFERENT materializer's bug:**
+    - Tier-1 (Rust, docker-free, every `cargo test`):
+      `rulesteward_sysctld::oracle::compute_inventory` globs the `tempdir()`
+      tree the Rust port of the materializer built and compares it to this
+      vendored block. Catches a bug in the RUST materializer.
+    - Tier-2 (bash, LIVE captures only): `capture_sysctld.sh`'s
+      `check_computed_inventory` runs `sh materialize.sh --inventory <root>`
+      inside the `rs-oracleN` container right after materializing, and
+      compares ITS output to this SAME vendored block on the host before
+      accepting the capture. Catches a bug in the BASH materializer - the
+      class the Rust-only check cannot see, since Tier-1 never executes
+      `materialize.sh` at all. A prior version of this file claimed "both
+      materializers recompute a filesystem inventory afterward and compare it
+      to a vendored expectation" when only the Rust side actually did; that
+      was an aspirational doc-comment, not a description of running code
+      (`materialize.sh` had no `--inventory` mode and `capture_sysctld.sh`
+      performed no comparison at all). It is now true because both sides were
+      built, not merely reworded - proved by both a positive capture-time run
+      (all 22 scenarios pass `check_computed_inventory`) and by hand-seeding a
+      one-line mismatch between a scenario's tree.plan and its content, which
+      makes the capture fail with rc 2 naming the diff.
   - **Symlink target schema rule**: a symlink's `ARG` (ie its target) must be
     a relative path UNLESS it is exactly `/dev/null` - the one permitted
     absolute target in this corpus, used by the man `sysctl.d(5)` disable
     idiom (`degenerate-devnull-disable-idiom`). Both materializers
-    (`materialize.sh` and `rulesteward_sysctld::oracle::materialize`) assert
-    this.
+    (`materialize.sh`'s `l)` case and `rulesteward_sysctld::oracle::materialize`)
+    assert this and abort on any other absolute target.
 - `content/<relpath>` - the real bytes for every `f`-typed materialize entry.
 - `oracle-<image>.txt` - the captured transcript, three `=== ... ===`-delimited
   sections:
@@ -72,9 +92,13 @@ general-purpose parser.
 
 ## Oracle-fidelity findings
 
-Two real divergences between `--cat-config` and the real applier, found while
-authoring this corpus and pinned by dedicated scenarios so they are never
-silently lost:
+Findings (a) and (b) are real divergences between `--cat-config` and the real
+applier, found while authoring this corpus and pinned by dedicated scenarios
+so they are never silently lost. Finding (c) is a capture-HARNESS bug (not an
+oracle-fidelity finding in the same sense) that was found and fixed during
+review; it is grouped here because, like (a) and (b), it is a real,
+already-verified defect this file's job is to make sure no future session
+re-derives from scratch.
 
 **(a) `--cat-config` ABORTS where the real applier CONTINUES.**
 Confirmed on two distinct degenerate shapes:
@@ -106,6 +130,55 @@ materializers (`materialize.sh` and
 `rulesteward_sysctld::oracle::materialize`) explicitly refuse an unsupported
 plan type rather than silently skipping it, so an accidental `p` entry fails
 loudly at materialization time instead of hanging a live capture.
+
+**(c) Merging the container's stdout and stderr AT THE HOST is nondeterministic
+- fixed by merging at the SOURCE instead.**
+`systemd-sysctl` writes every line this differential asserts on (`Parsing`,
+`Setting`, `Overwriting earlier assignment of`, `Skipping overridden file`,
+and every parse/file-level complaint) to STDERR, while `capture_sysctld.sh`'s
+own `=== ... ===` section markers and `RC=` lines are STDOUT written by the
+capture's own shell. The original capture merged the two AT THE HOST
+(`docker start -a "${cid}" >"${out_file}" 2>&1`), which races their arrival
+order across docker's two independently-demuxed container streams. Measured
+directly: three capture runs against unchanged images and an unchanged
+product produced 2/22, 0/22, and 1/22 scenarios with a stderr block landing
+on the wrong side of a `=== ` marker. A race-emptied `APPLY-DEBUG` section
+reads as "key unset" - which silently HIDES real drift for exactly the
+scenarios whose CORRECT verdict is "unset" (`precedence-masked-key-drop`,
+`degenerate-devnull-disable-idiom`, `slot-symlink-absent-divergence`), proved
+directly: rewriting `precedence-masked-key-drop`'s transcript to contain BOTH
+a genuine oracle drift and the observed race shape (the stderr block landing
+after `=== VERSION ===`) made the suite report PASS.
+
+Fixed by merging stderr into stdout INSIDE the container, at the source,
+before docker's demuxing layer ever sees two streams to race
+(`run_one_capture`'s payload script is wrapped in `( ... ) 2>&1`, so the
+kernel serializes every write to the one remaining fd in true program order).
+Verified, not merely argued: three independent full capture runs after the
+fix are pairwise byte-for-byte identical across all 22 scenarios (`cmp`,
+never `rtk diff`, which false-reports IDENTICAL on genuinely different
+files).
+
+## A structural blind spot this corpus cannot close
+
+`rulesteward_verdict` in `tests/sysctld_corpus_oracle.rs` reads
+RuleSteward's own answer out of DIAGNOSTIC MESSAGE TEXT (`sysctld-W02`/`W04`
+"insecure"/"unset"), which only exists when the tracked key is NOT compliant
+for its target - a compliant value emits no diagnostic at all, and
+`rulesteward_verdict` panics fail-closed rather than guess. Every scenario in
+this corpus therefore MUST choose a non-compliant value for its tracked key
+(this drove four `content/` corrections during review: a scenario had
+accidentally picked a compliant value, so no diagnostic fired and the panic
+caught it exactly as designed). The systematic consequence: **this corpus
+can never hold a scenario whose correct merged answer is a COMPLIANT value**
+- there is no way, with `rulesteward_verdict` as written, to differentially
+test "RuleSteward correctly recognizes a compliant configuration as
+compliant" for any scenario that goes through the generic comparison path.
+That gap is real and not closed by this session; a future lane wanting to
+cover it needs either a different oracle-reading mechanism (e.g. asserting
+the ABSENCE of a W02/W04 diagnostic for a key, rather than reading one) or an
+explicit acceptance that this corpus only exercises the non-compliant half of
+the state space.
 
 ## Measured sysctld oracle facts (2026-07-25/26, so no later session re-derives them)
 
@@ -159,12 +232,35 @@ loudly at materialization time instead of hanging a live capture.
 | `baseline-vendor-inventory` | 3 | one per RHEL major (8/9/10); the corpus-wide per-version positive control (pairwise-distinct `--version` banners) |
 | `degenerate` | 4 | a `.conf`-named directory, a dangling drop-in symlink, the `-> /dev/null` disable idiom, and a `.conf`-named non-regular masked entry |
 
-## Corpus stability
+## Corpus stability and reproducibility (what was actually measured)
 
-`degenerate-conf-named-directory` and `degenerate-dangling-dropin` are
-considered STABLE and should not be re-captured casually: their transcripts,
-`scenario.meta`, and materialized content already agree with each other and
-with a fresh live capture (verified 2026-07-26 via a full `capture_sysctld.sh`
-run compared byte-for-byte against the committed corpus - zero drift across
-all 22 scenarios). A prior in-session report that these two were stale was
-incorrect; do not act on that claim without re-verifying mechanically first.
+A prior version of this section claimed one clean capture run as a general
+reproducibility property. That claim was wrong: independent re-runs against
+the PRE-FIX script (see finding (c) above) produced 2/22, 0/22, and 1/22
+scenarios with byte-level stream-ordering drift - one clean run is not the
+same thing as "reproducible", and reporting it as such was the mistake.
+
+What is actually true, stated narrowly:
+
+- **After finding (c)'s fix** (merging stdout/stderr inside the container,
+  not at the host), three independent full `capture_sysctld.sh` runs are
+  pairwise byte-for-byte identical across all 22 scenarios (`cmp`). The
+  transcripts committed in this directory are one of those three runs.
+- **Before that fix**, per the review that found finding (c) (an independent
+  live re-capture and corruption sweep, not re-derived by this note): the
+  CONTENT this differential actually asserts on (values, overwrite/skip/reject
+  signals) never disagreed across the pre-fix runs it examined - only
+  stream-ordering (which section a stderr line landed in relative to a
+  marker) drifted, in 2 of 22 scenarios in the worst observed run. The corpus
+  DATA corrections made during review (four `content/` value fixes so a
+  tracked key is genuinely non-compliant, and two `tree.plan`
+  vendored-inventory additions for a masked file) are independent of the race
+  and remain valid: that same review separately confirmed the corpus DATA
+  itself against a live run.
+- `degenerate-conf-named-directory` and `degenerate-dangling-dropin`
+  specifically: their transcripts, `scenario.meta`, and materialized content
+  agree with the fresh, race-fixed captures above. Do not re-capture them
+  casually, but the reason is "already re-verified this session", not
+  "guaranteed stable forever" - re-verify mechanically before relying on that
+  again in a future session, the same discipline this whole section exists
+  to enforce on itself.

@@ -1,3 +1,10 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/10-baseline.conf	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
 === CAT-CONFIG ===
 # /etc/sysctl.d/10-baseline.conf
 kernel.randomize_va_space = 0
