@@ -129,7 +129,7 @@ use rulesteward_core::oracle_corpus::{
     CorpusMode, resolve_corpus_root, sentinel_banner, sentinel_count,
 };
 use rulesteward_sudoers::oracle::{
-    VisudoVerdict, classify_visudo, project_ast, project_cvtsudoers_json,
+    UnclassifiedVisudo, VisudoVerdict, classify_visudo, project_ast, project_cvtsudoers_json,
 };
 use rulesteward_sudoers::parser::parse;
 use serde_json::Value;
@@ -388,16 +388,54 @@ fn classify_visudo_rejects_on_nonzero_rc_with_error_evidence() {
 
 #[test]
 fn classify_visudo_is_fail_closed_when_rc_and_evidence_disagree() {
+    // Both cases below have an IN-CONTRACT rc (0 or 1); it is the STDOUT
+    // evidence that disagrees with it. `.is_err()` alone cannot tell this
+    // reason apart from "rc outside the visudo(8) 0/1 exit-code contract" -
+    // a mutant that flips the `rc == 0 || rc == 1` / `==`-to-`!=` condition
+    // deciding between the two `reason` strings still returns `Err` either
+    // way, so it survives unless the exact reason is pinned. `reason` is the
+    // operator-facing explanation of WHY classification failed: a wrong
+    // reason here points the next session at the wrong subsystem (the
+    // capture/tool-version vs. the parse itself).
+    //
     // rc says accept, but there is no "parsed OK" evidence: never guess.
-    assert!(classify_visudo(0, "", "").is_err());
+    assert_eq!(
+        classify_visudo(0, "", "").expect_err("rc 0 with no parsed-OK evidence must be Err"),
+        UnclassifiedVisudo {
+            rc: 0,
+            reason: "rc and parsed-OK evidence disagree",
+        }
+    );
     // rc says reject, but the evidence claims success: never guess.
-    assert!(classify_visudo(1, "stdin: parsed OK\n", "").is_err());
+    assert_eq!(
+        classify_visudo(1, "stdin: parsed OK\n", "")
+            .expect_err("rc 1 with parsed-OK evidence must be Err"),
+        UnclassifiedVisudo {
+            rc: 1,
+            reason: "rc and parsed-OK evidence disagree",
+        }
+    );
 }
 
 #[test]
 fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
-    assert!(classify_visudo(2, "", "some other error").is_err());
-    assert!(classify_visudo(127, "", "").is_err());
+    // Both cases below have an rc OUTSIDE {0, 1}, so the reason must be the
+    // contract-violation string, not the evidence-disagreement one - see the
+    // sibling test's comment for why `.is_err()` alone cannot distinguish them.
+    assert_eq!(
+        classify_visudo(2, "", "some other error").expect_err("rc 2 must be Err"),
+        UnclassifiedVisudo {
+            rc: 2,
+            reason: "rc outside the visudo(8) 0/1 exit-code contract",
+        }
+    );
+    assert_eq!(
+        classify_visudo(127, "", "").expect_err("rc 127 must be Err"),
+        UnclassifiedVisudo {
+            rc: 127,
+            reason: "rc outside the visudo(8) 0/1 exit-code contract",
+        }
+    );
 }
 
 // ---------------------------------------------------------------------------
