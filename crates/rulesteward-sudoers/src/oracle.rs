@@ -93,8 +93,10 @@ pub struct CvtsudoersProjectionError {
 /// Recovers the real `visudo` verdict from one row of raw captured facts.
 ///
 /// `Ok(Accept)` iff `rc == 0` AND stdout contains `parsed OK`; `Ok(Reject)` iff
-/// `rc != 0` AND stdout does NOT contain `parsed OK`; every other combination is
-/// `Err(UnclassifiedVisudo)`.
+/// `rc == 1` AND stdout does NOT contain `parsed OK`; every other combination
+/// (including any `rc` outside `{0, 1}`, per `visudo(8)`'s own exit-code
+/// contract of 0 on success / 1 on error - see [`UnclassifiedVisudo`]) is
+/// `Err(UnclassifiedVisudo)`, never guessed.
 ///
 /// `stderr` is accepted so the corpus row is passed whole and a future
 /// diagnostic-level check needs no signature change; today it does not

@@ -6,7 +6,10 @@ re-derivation - there is no second, separately-maintained capture path).
 
 ## What is captured
 
-30 scenario directories (22 `accept-*`, 8 `reject-*`), each holding:
+32 scenario directories (24 `accept-*`, 8 `reject-*`) - 30 captured
+2026-07-25, plus 2 more `accept-*` scenarios added 2026-07-26 (review found
+L2's original xfail table was empty for the wrong reason; see section 5),
+each holding:
 
 - `input.sudoers` - the raw sudoers source, fed unchanged over stdin.
 - `el8.json` / `el9.json` / `el10.json` - one JSON document per target,
@@ -130,10 +133,43 @@ instead folds `role`/`type` into the `Options` array as normal
 `accept-selinux-role-type`/`el8` is in `L3_EL8_INVALID_JSON_SCOPE_OUT` in the
 Tier-1 test rather than an L3 comparison.
 
-### 5. `-c` vs `-s` (strict): no divergence found on any of the three images
+### 5. `-c` vs `-s` (strict): DOES diverge - the original sweep missed it
 
-See the Tier-1 test's module doc "L2" section. `L2_XFAIL` is empty by
-measurement, not assumption.
+**Corrected 2026-07-26** (found in review; this replaces the original
+2026-07-25 claim of "no divergence found", which was wrong): `-s` is
+documented in `man 8 visudo` by its actual effect -
+"If an alias is referenced but not actually defined or if there is a cycle in
+an alias, visudo will consider this a syntax error" - which is alias-graph
+checking, not file mode/ownership (that is `-O`/`-P`, a claim the original text
+made and got backwards). The original ~25-probe sweep (duplicate aliases,
+unused aliases, unknown `Defaults` names, malformed hostnames, relative paths,
+missing `@include` targets, cross-namespace alias-name collisions) never tried
+either construct the man page says `-s` actually checks, so "no divergence"
+was an artifact of which inputs were tried, not a property of `-s` itself.
+
+Probed live against all three images (2026-07-26):
+
+- `alice ALL = NOSUCHALIAS` (an undefined `Cmnd_Alias` reference, scenario
+  `accept-undefined-alias-ref`): `-c` rc 0, stdout `stdin: parsed OK`, stderr a
+  `Cmnd_Alias "NOSUCHALIAS" referenced but not defined` diagnostic (el8
+  prefixes it `Warning:`; el9/el10 print the same message with no prefix - a
+  label-verbosity difference not seen on any other captured scenario in this
+  corpus). `-c -s` rc 1, stdout EMPTY, stderr the SAME diagnostic text (el8
+  prefixes it `Error:` instead). rc / stdout-emptiness / message content are
+  identical across all three images; only the `Warning:`/`Error:` prefix
+  differs by target.
+- `User_Alias A = B` / `User_Alias B = A` / `A ALL = ALL` (a 2-alias cycle,
+  scenario `accept-alias-cycle`): same rc/stdout/stderr pattern (`cycle in
+  User_Alias "A"`), identical on all three images.
+
+Both are now committed scenarios, captured with `capture_sudoers.sh` like
+every other row (there is no second, hand-authored capture path), and listed
+in `L2_XFAIL`. `cvtsudoers -f json` returns rc 0 with valid JSON for both
+(`{"cmndalias": "NOSUCHALIAS"}` / `{"useralias": "A"}`, both within the
+already-measured key shapes in section 6), and RuleSteward's own parser does
+not flag either `Malformed` (confirmed directly against
+`rulesteward_sudoers::parser::parse`), so both also flow through L1 and L3 as
+ordinary CLEAN comparisons - no L1 or L3 xfail entry needed, only L2.
 
 ### 6. `cvtsudoers -f json` JSON key shapes (non-expanded)
 
@@ -155,7 +191,33 @@ RuleSteward's own AST keeps every sigil/negation glued to the raw token
 (`ast.rs`: "kept verbatim"). The Tier-1 test's structure-only projection
 normalizes BOTH sides to the bare value (strip a leading `!`, then a leading
 `%`/`+`/`#`) rather than reconstructing sigils on the `cvtsudoers` side, per
-the task's "structure-only, full-fidelity is a follow-up" framing.
+the task's "structure-only, full-fidelity is a follow-up" framing. No corpus
+row exercises the `!negated` shape (see section 7); it is pinned instead by
+dedicated unit tests (`project_ast_strips_negation_and_sigil_from_users`,
+`project_cvtsudoers_json_ignores_negated_companion_flag`) in the Tier-1 test.
+
+### 7. Two follow-up observations (recorded 2026-07-26, NOT acted on this session)
+
+- **Some "clean" L3 comparisons are empty-vs-empty and cannot fail.** The
+  three `accept-defaults-*` scenarios (`accept-defaults-global`,
+  `accept-defaults-negated`, `accept-defaults-scoped-host`) have no
+  `User_Specs` at all, so both `project_ast` and `project_cvtsudoers_json`
+  trivially agree at `tuple_count == 0` with empty `users`/`hosts`/`commands`
+  - 9 of the 66 `L3_CLEAN_FLOOR` comparisons exercise nothing an incorrect
+    implementation could get wrong. `TUPLE_COUNT_ANCHORS` in the Tier-1 test
+    pins non-zero values elsewhere in the corpus (including
+    `accept-defaults-global` itself, pinned at 0 deliberately, alongside
+    non-zero anchors) so an always-0 `tuple_count` cannot pass on every row.
+  - No corpus change is needed to fix this; it is a property of which
+    scenarios happen to be Defaults-only, not a gap in coverage.
+- **`cvtsudoers_expanded` is captured but never read.** Every scenario's JSON
+  document stores the `cvtsudoers -f json -e` (alias-EXPANDED) result
+  alongside the un-expanded one, but `read_target` / `OracleDoc` in the
+  Tier-1 test only reads `cvtsudoers` (unexpanded), matching this session's
+  un-expanded `project_ast` / `project_cvtsudoers_json` contract. It is
+  stored for a follow-up that compares against the expanded view (e.g. to
+  validate alias resolution against `RuleSteward`'s own alias-walk lints),
+  not something this session's structure-only projection needs.
 
 ## Scenario list
 
@@ -166,7 +228,9 @@ the task's "structure-only, full-fidelity is a follow-up" framing.
 `user-alias-basic`, `user-alias-multi-spec`, `host-alias`, `cmnd-alias`,
 `runas-alias`, `multi-hostgroup`, `multi-user-list`,
 `user-list-whitespace-bug` (L3 xfail #538), `uid-subject`, `group-subject`,
-`continuation-line`, `netgroup-subject`.
+`continuation-line`, `netgroup-subject`, `undefined-alias-ref` (L2 xfail,
+added 2026-07-26 - see section 5), `alias-cycle` (L2 xfail, added
+2026-07-26 - see section 5).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -

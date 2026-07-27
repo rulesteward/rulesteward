@@ -16,9 +16,10 @@
 //!   error when rc and evidence text disagree).
 //! - `classify_visudo(rc: i32, stdout: &str, stderr: &str) ->
 //!   Result<VisudoVerdict, UnclassifiedVisudo>`: `Ok(Accept)` iff `rc == 0` AND
-//!   `stdout` contains `"parsed OK"`; `Ok(Reject)` iff `rc != 0` AND `stdout` does
-//!   NOT contain `"parsed OK"`; anything else (rc and evidence disagree, e.g. a
-//!   captured rc of 2+, or rc==0 with no "parsed OK" text) is
+//!   `stdout` contains `"parsed OK"`; `Ok(Reject)` iff `rc == 1` AND `stdout`
+//!   does NOT contain `"parsed OK"`; anything else (rc and evidence disagree,
+//!   e.g. a captured rc of 2+, per `visudo(8)`'s own 0-on-success/1-on-error
+//!   exit-code contract, or rc==0 with no "parsed OK" text) is
 //!   `Err(UnclassifiedVisudo)` - fail-closed, never guessed.
 //! - `StructureProjection { tuple_count: usize, users: Vec<String>, hosts:
 //!   Vec<String>, commands: Vec<String> }`: a STRUCTURE-ONLY (not full-fidelity;
@@ -70,14 +71,22 @@
 //!    outside #538's two documented gaps; see PROVENANCE.md), so L1 is a clean
 //!    regression layer with an EMPTY xfail table.
 //! 2. **L2 (the strict gate)**: does `visudo -c -s -f -` agree with `visudo -c
-//!    -f -`? Measured (2026-07-25, ~25 varied probes across all three images:
-//!    duplicate aliases, unused aliases, unknown `Defaults` names, malformed
-//!    hostnames, relative paths, missing `@include` targets, cross-namespace
-//!    alias-name collisions): `-s` and `-c` never diverge over STDIN input on
-//!    any of the three images. This is plausibly because `-s`'s real-world
-//!    value is file mode/ownership checking, which cannot be exercised via `-f
-//!    -`. So L2's xfail table is EMPTY too - this is a genuine, surprising
-//!    finding surfaced in the PR report, not an assumption.
+//!    -f -`? It does NOT always: `man 8 visudo` documents `-s`'s real value -
+//!    "If an alias is referenced but not actually defined or if there is a
+//!    cycle in an alias, visudo will consider this a syntax error" - which is
+//!    alias-graph checking, not file mode/ownership (that is `-O`/`-P`). The
+//!    original ~25-probe sweep (2026-07-25: duplicate aliases, unused aliases,
+//!    unknown `Defaults` names, malformed hostnames, relative paths, missing
+//!    `@include` targets, cross-namespace alias-name collisions) never tried
+//!    either construct `-s` actually checks, so its "no divergence" finding
+//!    was an artifact of which inputs were tried, not a property of `-s`.
+//!    Confirmed live (2026-07-26, all three images): an undefined alias
+//!    reference (`accept-undefined-alias-ref`: `alice ALL = NOSUCHALIAS`) and
+//!    an alias cycle (`accept-alias-cycle`: `User_Alias A = B` / `User_Alias
+//!    B = A` / `A ALL = ALL`) both parse clean under the default gate (rc 0,
+//!    stdout `parsed OK`, a `Warning:`-level diagnostic on stderr) but are
+//!    REJECTED under `-s` (rc 1, stdout EMPTY, an `Error:`-level diagnostic
+//!    naming the same alias). Both scenarios are in `L2_XFAIL`.
 //! 3. **L3 (structure-only projection)**: for every scenario where the oracle
 //!    ACCEPTS and `cvtsudoers -f json`'s stdout parses as JSON, does
 //!    `project_ast` agree with `project_cvtsudoers_json`? Two KNOWN, grounded
@@ -124,16 +133,41 @@ use serde_json::Value;
 
 const SENTINEL: &str = "RS-DIFF-SUDOERS";
 
-/// Named floor, derived from the corpus actually captured 2026-07-25: 22
-/// `accept-*` + 8 `reject-*` scenario directories.
-const SCENARIO_FLOOR: usize = 30;
+/// Named floor, derived from the corpus actually captured: 22 `accept-*` + 8
+/// `reject-*` scenario directories captured 2026-07-25, plus 2 more
+/// `accept-*` scenarios (`accept-undefined-alias-ref`, `accept-alias-cycle`)
+/// added 2026-07-26 to give L2 a real (non-vacuous) divergence - see the
+/// module doc's L2 section.
+const SCENARIO_FLOOR: usize = 32;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
-/// comparisons. Measured 2026-07-25: 22 accept scenarios x 3 targets = 66
-/// candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid JSON) = 65
-/// attempted; minus 5 xfail hits (selinux on el9+el10, whitespace-bug on all
-/// 3) = 60 clean structural matches.
-const L3_CLEAN_FLOOR: usize = 60;
+/// comparisons. Measured: 24 accept scenarios x 3 targets = 72 candidate
+/// pairs; minus 1 scoped-out (el8 `SELinux` invalid JSON) = 71 attempted;
+/// minus 5 xfail hits (selinux on el9+el10, whitespace-bug on all 3) = 66
+/// clean structural matches. (The 2 scenarios added 2026-07-26 for L2 also
+/// flow through L3 as ordinary clean matches - confirmed directly against
+/// `parser::parse`: neither produces a `Malformed` line, and neither token
+/// shape collides with either known L3 divergence - so they raise this floor
+/// from 60 to 66 rather than needing a new xfail entry.)
+const L3_CLEAN_FLOOR: usize = 66;
+
+/// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
+/// User_Specs\[\] length)`, confirmed directly against the committed corpus
+/// (2026-07-26, `python3 -c 'import json; ...'` counting `User_Specs` per
+/// scenario's `el9.json`). Without an absolute pin, `tuple_count == 0` on
+/// BOTH sides for every scenario (an always-empty `project_ast` paired with
+/// an always-empty `project_cvtsudoers_json`) would satisfy the `==`
+/// comparison everywhere, silently disabling the one axis the module doc's
+/// `alice h1 = /bin/ls : h2 = /bin/id` finding is grounded on. Mixes a
+/// multi-host-group line, two single-host-group lines sharing an alias, a
+/// single plain line, and a Defaults-only file with no `User_Specs` at all,
+/// so an implementation cannot pass by hardcoding one particular count.
+const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
+    ("accept-multi-hostgroup", 2),
+    ("accept-user-alias-multi-spec", 2),
+    ("accept-basic-all-grant", 1),
+    ("accept-defaults-global", 0),
+];
 
 /// Grounded EMPTY: see the module doc's L1 section. L1 has its OWN xfail
 /// table, deliberately separate from [`L2_XFAIL`]: L1 compares our parser's
@@ -144,10 +178,12 @@ const L3_CLEAN_FLOOR: usize = 60;
 /// even though nothing about L1 itself changed.
 const L1_XFAIL: &[&str] = &[];
 
-/// Grounded EMPTY: see the module doc's L2 section. Kept as a named const (not
-/// a bare `0`) so a future divergence is added here explicitly rather than by
-/// loosening an inline literal.
-const L2_XFAIL: &[&str] = &[];
+/// Known `-s`-vs-default divergences: see the module doc's L2 section and
+/// `PROVENANCE.md` section 5. Grounded in `man 8 visudo`'s own description of
+/// `-s` (alias-graph checking: undefined references and cycles), not
+/// assumed - both scenarios were probed live against all three images before
+/// being added here.
+const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 
 /// L3 structural-projection divergences: `(scenario_id, issue_number)`. Both
 /// ground #538; do NOT fix #538 in this lane.
@@ -339,6 +375,108 @@ fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
 }
 
 // ---------------------------------------------------------------------------
+// Direct unit coverage of `project_ast` / `project_cvtsudoers_json` -
+// independent of the corpus. The corpus itself never exercises the fail-closed
+// `Err` arm of `project_cvtsudoers_json` (every captured document uses one of
+// the 9 measured key shapes) or the `!`-negation clause of either projector
+// (no corpus row contains a `!`-negated subject outside a `Defaults` line), so
+// an implementation that never constructs `CvtsudoersProjectionError`, or that
+// strips only `%+#` and never `!`, would pass the whole corpus-driven suite.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn project_ast_strips_negation_and_sigil_from_users() {
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file = rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: "!alice !%wheel ALL = ALL\n".to_string(),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..24,
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec!["!alice".to_string(), "!%wheel".to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::All,
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    let proj = project_ast(&file);
+    assert!(
+        sorted_eq(&proj.users, &["alice".to_string(), "wheel".to_string()]),
+        "a leading `!` negation must be stripped (in addition to the `%` sigil \
+         already stripped), got {:?}",
+        proj.users
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_ignores_negated_companion_flag() {
+    let doc = serde_json::json!({
+        "User_Specs": [
+            {
+                "User_List": [{ "username": "alice", "negated": true }],
+                "Host_List": [{ "hostname": "ALL" }],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+            }
+        ]
+    });
+    let proj = project_cvtsudoers_json(&doc).expect("known key shapes must not error");
+    assert_eq!(
+        proj.users,
+        vec!["alice".to_string()],
+        "a companion \"negated\": true must not change the extracted bare value"
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_is_fail_closed_on_unknown_user_list_key() {
+    let doc = serde_json::json!({
+        "User_Specs": [
+            {
+                "User_List": [{ "nosuchkey": "x" }],
+                "Host_List": [{ "hostname": "ALL" }],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+            }
+        ]
+    });
+    let err = project_cvtsudoers_json(&doc).expect_err("an unknown User_List key must be rejected");
+    assert!(
+        err.location.contains("User_List"),
+        "expected the error to identify User_List, got location={:?}",
+        err.location
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_is_fail_closed_on_unknown_commands_key() {
+    let doc = serde_json::json!({
+        "User_Specs": [
+            {
+                "User_List": [{ "username": "alice" }],
+                "Host_List": [{ "hostname": "ALL" }],
+                "Cmnd_Specs": [{ "Commands": [{ "nosuchkey": "x" }] }]
+            }
+        ]
+    });
+    let err = project_cvtsudoers_json(&doc).expect_err("an unknown Commands key must be rejected");
+    assert!(
+        err.location.contains("Command"),
+        "expected the error to identify Cmnd_Specs[].Commands, got location={:?}",
+        err.location
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Positive control: the oracle itself must not be broken.
 // ---------------------------------------------------------------------------
 
@@ -383,6 +521,19 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
         assert!(
             !broken,
             "positive control failed on target {target}: the oracle itself is broken"
+        );
+        // `a != r` alone would also pass with the two control inputs SWAPPED
+        // (Reject-vs-Accept still satisfies inequality). Pin each side to its
+        // named role so that specific misconfiguration is caught too.
+        assert_eq!(
+            accept_verdict,
+            Ok(VisudoVerdict::Accept),
+            "target {target}: {POSITIVE_CONTROL_ACCEPT} must classify as Accept, got {accept_verdict:?}"
+        );
+        assert_eq!(
+            reject_verdict,
+            Ok(VisudoVerdict::Reject),
+            "target {target}: {POSITIVE_CONTROL_REJECT} must classify as Reject, got {reject_verdict:?}"
         );
     }
 }
@@ -458,6 +609,11 @@ fn l1_f01_matches_visudo_verdict_per_target() {
                 // (our parser vs visudo's default gate) it was never measured
                 // against. This branch is unreachable today only because the
                 // table is empty; it mirrors the selinux-corpus guard shape.
+                assert_ne!(
+                    ours_rejects, oracle_rejects,
+                    "L1 {id} ({target}): expected a KNOWN F01-vs-oracle divergence, but they \
+                     agreed; update L1_XFAIL"
+                );
                 xfail_hit.push(id.clone());
                 continue;
             }
@@ -482,8 +638,10 @@ fn l1_f01_matches_visudo_verdict_per_target() {
     );
     assert_eq!(
         xfail_hit.len(),
-        L1_XFAIL.len(),
-        "every L1_XFAIL scenario must have been enumerated and hit"
+        L1_XFAIL.len() * TARGETS.len(),
+        "every L1_XFAIL scenario must have been enumerated and hit on every target \
+         (the push sits inside the per-target loop, so each entry contributes up to \
+         TARGETS.len() hits)"
     );
 }
 
@@ -535,15 +693,21 @@ fn l2_strict_gate_matches_default_gate() {
     // the raw scenario-directory count is not the same claim as "this many
     // comparisons actually happened".
     announce(&root, mode, compared);
+    // Every L2_XFAIL entry is a REAL, confirmed divergence (see the module
+    // doc's L2 section), so those pairs are deliberately excluded from
+    // `compared`; the floor must subtract them rather than assume every pair
+    // agrees.
+    let l2_clean_floor = SCENARIO_FLOOR * TARGETS.len() - L2_XFAIL.len() * TARGETS.len();
     assert!(
-        compared >= SCENARIO_FLOOR * TARGETS.len(),
-        "expected >= {} L2 comparisons, got {compared}",
-        SCENARIO_FLOOR * TARGETS.len()
+        compared >= l2_clean_floor,
+        "expected >= {l2_clean_floor} clean L2 comparisons, got {compared}"
     );
     assert_eq!(
         xfail_hit.len(),
-        L2_XFAIL.len(),
-        "every L2_XFAIL scenario must have been enumerated and hit"
+        L2_XFAIL.len() * TARGETS.len(),
+        "every L2_XFAIL scenario must have been enumerated and hit on every target \
+         (the push sits inside the per-target loop, so each entry contributes up to \
+         TARGETS.len() hits)"
     );
 }
 
@@ -615,6 +779,29 @@ fn l3_structure_projection_matches_cvtsudoers() {
             let cvt_proj = project_cvtsudoers_json(&cvt_json).unwrap_or_else(|e| {
                 panic!("L3 {id} ({target}): project_cvtsudoers_json failed: {e:?}")
             });
+
+            // `tuple_count` is otherwise only checked for RELATIVE equality
+            // below, which an always-0-on-both-sides projection would satisfy
+            // for every scenario. Pin the ABSOLUTE value on both sides for a
+            // few scenarios confirmed directly against the corpus, so a
+            // never-incremented tuple_count cannot pass everywhere.
+            if let Some((_, expected)) = TUPLE_COUNT_ANCHORS
+                .iter()
+                .find(|(sid, _)| *sid == id.as_str())
+            {
+                assert_eq!(
+                    cvt_proj.tuple_count, *expected,
+                    "L3 {id} ({target}): tuple_count anchor - cvtsudoers side expected \
+                     {expected}, got {}",
+                    cvt_proj.tuple_count
+                );
+                assert_eq!(
+                    ast_proj.tuple_count, *expected,
+                    "L3 {id} ({target}): tuple_count anchor - our AST side expected \
+                     {expected}, got {}",
+                    ast_proj.tuple_count
+                );
+            }
 
             let matches = ast_proj.tuple_count == cvt_proj.tuple_count
                 && sorted_eq(&ast_proj.users, &cvt_proj.users)
@@ -720,10 +907,24 @@ fn l3_structure_projection_matches_cvtsudoers() {
         L3_EL8_INVALID_JSON_SCOPE_OUT.len(),
         "every L3_EL8_INVALID_JSON_SCOPE_OUT pair must have been enumerated and confirmed"
     );
+    // A scope-out `continue`s BEFORE the xfail check ever runs for that
+    // (scenario, target) pair, so only a scope-out entry whose scenario id is
+    // ALSO in L3_XFAIL steals a hit from `xfail_hit`. Blindly subtracting
+    // `L3_EL8_INVALID_JSON_SCOPE_OUT.len()` (as this used to) is only correct
+    // by coincidence when every scope-out entry happens to name an L3_XFAIL
+    // scenario; compute the actual INTERSECTION instead so a future scope-out
+    // entry for a scenario NOT in L3_XFAIL cannot silently make this
+    // assertion pass while xfail_hit is short by one.
+    let scope_out_xfail_overlap = L3_EL8_INVALID_JSON_SCOPE_OUT
+        .iter()
+        .filter(|(scope_id, _)| L3_XFAIL.iter().any(|(xfail_id, _)| xfail_id == scope_id))
+        .count();
     assert_eq!(
         xfail_hit.len(),
-        L3_XFAIL.len() * TARGETS.len() - L3_EL8_INVALID_JSON_SCOPE_OUT.len(),
-        "every L3_XFAIL scenario must have been enumerated and xfailed on every non-scoped-out \
-         target (2 scenarios x 3 targets, minus the 1 el8 scope-out pair = 5)"
+        L3_XFAIL.len() * TARGETS.len() - scope_out_xfail_overlap,
+        "every L3_XFAIL scenario must have been enumerated and xfailed on every target not \
+         stolen by an overlapping L3_EL8_INVALID_JSON_SCOPE_OUT entry (2 scenarios x 3 targets, \
+         minus {scope_out_xfail_overlap} scope-out/xfail overlap = {})",
+        L3_XFAIL.len() * TARGETS.len() - scope_out_xfail_overlap
     );
 }

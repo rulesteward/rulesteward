@@ -1,0 +1,3 @@
+User_Alias A = B
+User_Alias B = A
+A ALL = ALL
