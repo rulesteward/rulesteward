@@ -109,8 +109,13 @@ pub enum Unusable {
 /// not an accept of the original line.
 #[must_use]
 pub fn product_verdict(line: &str) -> Verdict {
-    let _ = line;
-    todo!("session 9k-1 Lane A: adapter over parser::parse_rules_str")
+    match crate::parser::parse_rules_str(line) {
+        Ok(rules) if rules.len() == 1 => Verdict::Accept,
+        // Comment-stripped to nothing (`Ok(vec![])`), defensively more than
+        // one rule from a single physical line, or a parse error: none of
+        // these is an accept of the original line.
+        _ => Verdict::Reject,
+    }
 }
 
 /// Recovers the real `auditctl -R` verdict from one row of raw captured facts.
@@ -136,9 +141,101 @@ pub fn product_verdict(line: &str) -> Verdict {
 /// companion must never enter the complaint table.
 #[must_use]
 pub fn classify_capture(line: &str, rc: i32, stdout: &str, stderr: &str) -> CaptureVerdict {
-    let _ = (line, rc, stdout, stderr);
-    todo!("session 9k-1 Lane A: raw-facts classifier, truth table in the session plan")
+    // 1. rc gate. `rc == 1` is the only value that can carry a real verdict;
+    // {0, 4} are safety/environment outcomes and anything else is unexpected.
+    match rc {
+        0 => return CaptureVerdict::Unusable(Unusable::Loaded),
+        4 => return CaptureVerdict::Unusable(Unusable::NoCapability),
+        1 => {}
+        _ => return CaptureVerdict::Unusable(Unusable::UnexpectedRc),
+    }
+
+    // 2. Accept probe. MUST precede the complaint probe: an accepted
+    // add-shaped line's stderr also carries the companion
+    // "There was an error in line N of <file>" string, which must never be
+    // read as a parse complaint on its own (see
+    // `companion_string_alone_is_not_an_accept_probe`).
+    if stderr.contains(ADD_RULE_NETLINK_REFUSED) {
+        return CaptureVerdict::Accept;
+    }
+
+    // 3. Sandbox-limited probes: a feature-bitmap query this sandbox's
+    // blocked `AUDIT_GET` cannot complete, not a genuine parse complaint
+    // about the rule's own content.
+    if SANDBOX_LIMITED_SUBSTRINGS
+        .iter()
+        .any(|substr| stderr.contains(substr))
+    {
+        return CaptureVerdict::Unusable(Unusable::SandboxLimited);
+    }
+
+    // 4. Complaint table: a genuine, cited `auditctl` parse diagnostic.
+    if let Some(&complaint) = KNOWN_PARSE_COMPLAINTS
+        .iter()
+        .find(|&&substr| stderr.contains(substr))
+    {
+        return CaptureVerdict::Reject { complaint };
+    }
+
+    // 5. Silence (rc 1, both streams empty). Conclusive evidence of a parse
+    // refusal only when `silence_is_conclusive` says this line's leading
+    // flag is not on the silent-success-path denylist.
+    if stdout.is_empty() && stderr.is_empty() {
+        return if silence_is_conclusive(line) {
+            CaptureVerdict::Reject {
+                complaint: SILENT_REFUSAL_COMPLAINT,
+            }
+        } else {
+            CaptureVerdict::Unusable(Unusable::SilentNonAddLine)
+        };
+    }
+
+    // 6. rc 1 with non-empty output matching no known table entry: a hard
+    // failure, never silently absorbed as an ordinary reject.
+    CaptureVerdict::Unusable(Unusable::UnrecognisedDiagnostic)
 }
+
+/// The substring `handle_request`/`auditctl.c` prints when an add-shaped
+/// rule's (`-w`/`-a`) netlink send fails for ANY reason - including, under
+/// this unprivileged capture sandbox, `EPERM` on a rule that in fact parsed
+/// successfully. Its presence therefore proves the line reached the netlink
+/// call, i.e. parsing succeeded; see [`classify_capture`]'s accept probe.
+const ADD_RULE_NETLINK_REFUSED: &str = "Error sending add rule data request";
+
+/// Feature-bitmap-gated diagnostics that report a LIMITATION of this capture
+/// sandbox (a blocked `AUDIT_GET` netlink query, `libaudit.c`'s
+/// `audit_get_features()`) rather than a property of the rule's own content.
+/// See [`Unusable::SandboxLimited`] and this module's `UNOBSERVABLE`
+/// counterparts (`rocky9-filesystem-list` / `reset-lost-probe`) in the replay
+/// test.
+const SANDBOX_LIMITED_SUBSTRINGS: &[&str] = &[
+    "filter is not supported by the kernel",
+    "Field option not supported by kernel:",
+];
+
+/// Known `auditctl` parse-complaint diagnostics, each naming the field/value
+/// problem it found while parsing a rule's CONTENT. Every string here is
+/// emitted via `err_msgtab`'s direct-`fprintf` `audit_number_to_errmsg` path
+/// (`errormsg.h`), which is why each is visible even under `-R`'s
+/// `MSG_SYSLOG` mode (see `PROVENANCE.md` "`MSG_SYSLOG` under -R"). At most
+/// one entry can ever match a given stderr, since each names a distinct
+/// field/value problem.
+const KNOWN_PARSE_COMPLAINTS: &[&str] = &[
+    "-F unknown field:",
+    "-C unknown field:",
+    "-F value should be number for",
+    "Permission can only contain",
+];
+
+/// Placeholder complaint attached to a [`CaptureVerdict::Reject`] recovered
+/// from silence alone (rc 1, empty stdout and stderr, a line whose leading
+/// flag is NOT on [`SILENT_SUCCESS_LEADING_FLAGS`]). Unlike the
+/// [`KNOWN_PARSE_COMPLAINTS`] case, there is no captured diagnostic text to
+/// name here - the evidence for this verdict is the absence of the loud
+/// accept probe, not a matched substring - so this constant exists only to
+/// satisfy `Reject`'s `&'static str` field. No test asserts on its content;
+/// the divergence tables compare on the `Reject` variant alone.
+const SILENT_REFUSAL_COMPLAINT: &str = "(no diagnostic text: rc=1 with empty stdout/stderr, refused during parsing before any netlink send)";
 
 /// Leading `auditctl` flags whose SUCCESS path performs its netlink round trip
 /// directly inside `setopt()`'s own `case` arm, with no distinct print on
