@@ -129,8 +129,8 @@ const CONTROL_REJECT_ID: &str = "control-reject";
 /// id here is expected to diverge identically on el8/el9/el10 (no version
 /// split has ever been observed in this corpus), so the per-id hit count is
 /// asserted to be exactly 3 - one per EL major - by
-/// `xfail_hit_counts_match_exactly_three_per_id`. A divergence that stops
-/// reproducing on some target must fail the suite, not go quiet.
+/// [`assert_hit_exactly_three`]. A divergence that stops reproducing on some
+/// target must fail the suite, not go quiet.
 ///
 /// Every entry states whether it is a genuine blind spot (nothing downstream
 /// catches it) or covered elsewhere; none of these 18 are caught by an
