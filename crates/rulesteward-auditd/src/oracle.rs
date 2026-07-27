@@ -395,7 +395,7 @@ fn normalise_leading_flag(leading: &str) -> &str {
         return leading;
     }
     for &short_opt in SHORT_OPTS_WITH_ATTACHED_ARG {
-        if leading.len() > short_opt.len() && leading.starts_with(short_opt) {
+        if leading.starts_with(short_opt) {
             return short_opt;
         }
     }
