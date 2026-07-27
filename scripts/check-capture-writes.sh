@@ -115,7 +115,7 @@ fi
 # session 9k-1 integration-gate commit, once the auditd, sysctld and sudoers
 # lanes have all merged and their capture_*.sh files are on this branch. Until
 # then a zero scan is the honest state of the branch, not a passing gate.
-readonly EXPECTED_CAPTURE_SCRIPTS=0
+readonly EXPECTED_CAPTURE_SCRIPTS=3
 
 # Deliberately NOT overridable from the environment. An env var that can lower
 # this constant is a switch that silently turns the gate's only anti-vacuity
