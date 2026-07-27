@@ -69,11 +69,17 @@ pub struct StructureProjection {
     /// `:`-separated host group, matching `cvtsudoers -f json`'s `User_Specs[]`
     /// array 1:1.
     pub tuple_count: usize,
-    /// Every subject token, sigil-stripped to its bare value.
+    /// Every subject token, negation-stripped and, for a sigil'd value,
+    /// prefixed with its `"<type>:"` tag (see [`project_ast`]'s doc comment's
+    /// "Type tags" discussion); a bare token (plain name, `ALL`, or an
+    /// unexpanded alias reference) is untagged.
     pub users: Vec<String>,
-    /// Every host token, sigil-stripped to its bare value.
+    /// Every host token, negation-stripped and, for a sigil'd value (only
+    /// `+netgroup` occurs on the host side), prefixed with its `"<type>:"`
+    /// tag; a bare token (hostname, `ALL`, alias reference, or network
+    /// address) is untagged.
     pub hosts: Vec<String>,
-    /// Every command token.
+    /// Every command token, with a leading `!` negation stripped.
     pub commands: Vec<String>,
 }
 
@@ -126,11 +132,50 @@ pub fn classify_visudo(
 
 /// Projects `RuleSteward`'s parsed sudoers AST into the comparable structure view.
 ///
-/// `CmndItem::All` projects to the literal string `ALL`. A subject or host
-/// token's negation and sigil (`!`, then one of `%+#`) are stripped so the value
-/// is comparable to `cvtsudoers`' bare values. For every host-group tuple the
-/// SHARED `UserSpec` user list is pushed once, matching `cvtsudoers`' per-tuple
-/// duplication of `User_List`.
+/// `CmndItem::All` projects to the literal string `ALL`. A subject, host, or
+/// command token's leading `!` negation is stripped first: a negated command
+/// like `!/usr/bin/su` needs it, and so does the literal `Cmnd("!ALL")` token
+/// `parser.rs` produces for `!ALL` (it compares the raw text against `ALL`
+/// before any negation strip, so the strip must recover the bare `ALL`
+/// afterward). After the `!` strip, a subject/host token also gets a
+/// `"<type>:"` prefix derived
+/// from any remaining sigil (see "Type tags" below); a command token does
+/// not (commands carry no `%+#` sigil in the sudoers grammar). For every
+/// host-group tuple the SHARED `UserSpec` user list is pushed once, matching
+/// `cvtsudoers`' per-tuple duplication of `User_List`.
+///
+/// # Type tags
+///
+/// Both sides of this differential previously reduced every subject/host to
+/// its bare value only, discarding which sigil (here) or which distinct
+/// `cvtsudoers` JSON key (in [`project_cvtsudoers_json`]) produced it. That
+/// erasure was symmetric - thrown away by both projectors - so it canceled
+/// exactly: a `project_ast` that dropped a sigil entirely (reading `%wheel`
+/// as if it were the plain user `wheel`) still matched `cvtsudoers`'
+/// `{"usergroup": "wheel"}` once both sides reduced to the bare string
+/// `"wheel"`, proving nothing about sigil handling. Fix: after the `!` strip,
+/// - `%group` (users only) -> `"usergroup:<group>"`.
+/// - `%#gid` (users only) -> `"usergid:<gid>"` - BOTH sigils stripped, and
+///   the digits canonicalized (see below).
+/// - `+netgroup` (users and hosts) -> `"netgroup:<name>"`.
+/// - `#uid` (users only) -> `"userid:<uid>"`, digits canonicalized.
+/// - any other token (a plain username/hostname, the `ALL` keyword, an
+///   unexpanded `User_Alias`/`Host_Alias` reference, or a `networkaddr`
+///   host) -> untagged, the bare value itself. Distinguishing a plain name
+///   from an alias reference would need cross-referencing the file's own
+///   alias definitions, which this projector does not do; a `networkaddr`
+///   host has no leading sigil to derive a tag from. Both are deliberately
+///   left untagged, matching [`project_cvtsudoers_json`]'s inability to tell
+///   `username` from `useralias` either.
+///
+/// # uid/gid canonicalization
+///
+/// `sudo_strtoid` parses a `#uid`/`%#gid` subject in base 10, so `#0100`
+/// means uid 100 and `cvtsudoers` reports the canonical decimal as a JSON
+/// number (`{"userid": 100}`, no leading zero). A textual sigil-strip alone
+/// would produce `"0100"`, matching neither the canonical value nor the
+/// right type once tags exist, so the digits are parsed and re-rendered in
+/// decimal rather than only stripped.
 #[must_use]
 pub fn project_ast(file: &SudoersFile) -> StructureProjection {
     let mut tuple_count = 0usize;
@@ -142,15 +187,15 @@ pub fn project_ast(file: &SudoersFile) -> StructureProjection {
         let LineKind::UserSpec(spec) = &line.kind else {
             continue;
         };
-        let stripped_users: Vec<String> = spec.users.iter().map(|u| strip_sigil(u)).collect();
+        let stripped_users: Vec<String> = spec.users.iter().map(|u| tag_member(u)).collect();
         for group in &spec.host_groups {
             tuple_count += 1;
             users.extend(stripped_users.iter().cloned());
-            hosts.extend(group.hosts.iter().map(|h| strip_sigil(h)));
+            hosts.extend(group.hosts.iter().map(|h| tag_member(h)));
             for cmnd_spec in &group.cmnd_specs {
                 let cmnd = match &cmnd_spec.cmnd {
                     CmndItem::All => "ALL".to_string(),
-                    CmndItem::Cmnd(raw) => raw.clone(),
+                    CmndItem::Cmnd(raw) => strip_command_negation(raw),
                 };
                 commands.push(cmnd);
             }
@@ -165,27 +210,73 @@ pub fn project_ast(file: &SudoersFile) -> StructureProjection {
     }
 }
 
-/// Strips a single optional leading `!` negation, then a single optional
-/// leading sigil among `%+#`, from a subject/host token - so it compares
-/// against `cvtsudoers`' bare values (see [`project_ast`]'s doc comment).
-fn strip_sigil(token: &str) -> String {
-    let after_bang = token.strip_prefix('!').unwrap_or(token);
-    let after_sigil = after_bang
-        .strip_prefix('%')
-        .or_else(|| after_bang.strip_prefix('+'))
-        .or_else(|| after_bang.strip_prefix('#'))
-        .unwrap_or(after_bang);
-    after_sigil.to_string()
+/// Strips a single leading `!` negation from a command token, recovering the
+/// bare command (or, for the literal `Cmnd("!ALL")` token, the bare `ALL`
+/// keyword) that `cvtsudoers` reports via `{"command": ..., "negated":
+/// true}` (see [`project_ast`]'s doc comment).
+fn strip_command_negation(raw: &str) -> String {
+    raw.strip_prefix('!').unwrap_or(raw).to_string()
+}
+
+/// Strips a leading `!` negation, then derives the `cvtsudoers`-comparable,
+/// type-tagged value for a subject/host token (see [`project_ast`]'s doc
+/// comment's "Type tags" and "uid/gid canonicalization" sections). Shared by
+/// both users and hosts: `+netgroup` is valid on either side, and
+/// `cvtsudoers`' `print_member_json_int` keys `typestr` on member TYPE, not
+/// on which list it appears in, so tagging hosts with the same rules as
+/// users costs nothing even though `%`/`%#`/`#` do not occur there in
+/// practice.
+fn tag_member(token: &str) -> String {
+    let token = token.strip_prefix('!').unwrap_or(token);
+    if let Some(digits) = token.strip_prefix("%#") {
+        return format!("usergid:{}", canonicalize_decimal(digits));
+    }
+    if let Some(name) = token.strip_prefix('%') {
+        return format!("usergroup:{name}");
+    }
+    if let Some(name) = token.strip_prefix('+') {
+        return format!("netgroup:{name}");
+    }
+    if let Some(digits) = token.strip_prefix('#') {
+        return format!("userid:{}", canonicalize_decimal(digits));
+    }
+    token.to_string()
+}
+
+/// Parses a uid/gid digit string in base 10 (matching `sudo_strtoid`) and
+/// re-renders it canonically, so a leading-zero token (`#0100`) compares
+/// equal to `cvtsudoers`' JSON-number report (`{"userid": 100}`). Falls back
+/// to the original digits, unchanged, if they do not parse as an integer:
+/// `project_ast` is infallible today (see its signature) and must never
+/// panic on an unexpected token.
+fn canonicalize_decimal(digits: &str) -> String {
+    digits
+        .parse::<u64>()
+        .map_or_else(|_| digits.to_string(), |n| n.to_string())
 }
 
 /// Projects a `cvtsudoers -f json` document into the comparable structure view.
 ///
 /// Fail-closed on any `User_Specs[]` element whose `User_List` / `Host_List` /
-/// `Cmnd_Specs[].Commands` entries do not match a key shape measured against the
-/// real tool (`username`, `useralias`, `usergroup`, `netgroup`, `userid`,
-/// `hostname`, `hostalias`, `command`, `cmndalias`). A companion
-/// `"negated": true` is ignored, mirroring the sigil stripping [`project_ast`]
-/// performs.
+/// `Cmnd_Specs[].Commands` entries do not match a key shape measured against
+/// the real tool: `User_List` accepts `username`, `useralias`, `usergroup`,
+/// `netgroup`, `userid` (a JSON number), and `usergid` (a JSON number);
+/// `Host_List` accepts `hostname`, `hostalias`, `netgroup`, and
+/// `networkaddr`; `Cmnd_Specs[].Commands` accepts `command` and `cmndalias`.
+/// `print_member_json_int` (the real `cvtsudoers` source) keys `typestr` on
+/// member TYPE, not on which list a member appears in, so `netgroup`
+/// legitimately appears in both `User_List` and `Host_List`. A companion
+/// `"negated": true` is ignored, mirroring the negation stripping
+/// [`project_ast`] performs.
+///
+/// The extracted value carries the same `"<type>:"` prefix `project_ast`
+/// derives from a sigil (see that function's "Type tags" doc section):
+/// `usergroup` / `netgroup` -> `"usergroup:<value>"` / `"netgroup:<value>"`;
+/// `userid` / `usergid` (JSON numbers) -> `"userid:<n>"` / `"usergid:<n>"`;
+/// `username`, `useralias`, `hostname`, `hostalias`, and `networkaddr` all
+/// stay untagged (this projector cannot tell a plain name from an alias
+/// reference, nor a network address from any other bare host token, any
+/// more than [`project_ast`] can).
 pub fn project_cvtsudoers_json(
     json: &Value,
 ) -> Result<StructureProjection, CvtsudoersProjectionError> {
@@ -244,28 +335,45 @@ pub fn project_cvtsudoers_json(
     })
 }
 
-/// Extracts a `User_List[]` element's bare value: `username` / `useralias` /
-/// `usergroup` / `netgroup` (all strings), or `userid` (a JSON number,
-/// stringified). Any companion `"negated": true` is ignored - it mirrors
-/// [`project_ast`]'s own sigil-strip normalization and does not change the
-/// extracted value.
+/// Extracts a `User_List[]` element's type-tagged value: `username` /
+/// `useralias` stay untagged (this projector cannot tell them apart);
+/// `usergroup` / `netgroup` gain a `"<type>:"` prefix; `userid` / `usergid`
+/// (JSON numbers) are stringified and prefixed the same way. Any companion
+/// `"negated": true` is ignored - it mirrors [`project_ast`]'s own negation
+/// stripping and does not change the extracted value.
 fn extract_user_list_value(elem: &Value) -> Option<String> {
-    for key in ["username", "useralias", "usergroup", "netgroup"] {
+    for key in ["username", "useralias"] {
         if let Some(s) = elem.get(key).and_then(Value::as_str) {
             return Some(s.to_string());
         }
     }
-    elem.get("userid")
-        .filter(|v| v.is_number())
-        .map(ToString::to_string)
+    if let Some(s) = elem.get("usergroup").and_then(Value::as_str) {
+        return Some(format!("usergroup:{s}"));
+    }
+    if let Some(s) = elem.get("netgroup").and_then(Value::as_str) {
+        return Some(format!("netgroup:{s}"));
+    }
+    if let Some(n) = elem.get("userid").filter(|v| v.is_number()) {
+        return Some(format!("userid:{n}"));
+    }
+    if let Some(n) = elem.get("usergid").filter(|v| v.is_number()) {
+        return Some(format!("usergid:{n}"));
+    }
+    None
 }
 
-/// Extracts a `Host_List[]` element's bare value: `hostname` / `hostalias`.
+/// Extracts a `Host_List[]` element's type-tagged value: `hostname` /
+/// `hostalias` / `networkaddr` stay untagged (none carries a distinguishing
+/// sigil on the AST side); `netgroup` gains the same `"netgroup:"` prefix a
+/// user-side netgroup does.
 fn extract_host_list_value(elem: &Value) -> Option<String> {
-    for key in ["hostname", "hostalias"] {
+    for key in ["hostname", "hostalias", "networkaddr"] {
         if let Some(s) = elem.get(key).and_then(Value::as_str) {
             return Some(s.to_string());
         }
+    }
+    if let Some(s) = elem.get("netgroup").and_then(Value::as_str) {
+        return Some(format!("netgroup:{s}"));
     }
     None
 }
