@@ -258,12 +258,11 @@ pub fn project_ast(file: &SudoersFile) -> StructureProjection {
 /// has the bang-run AND any whitespace immediately following it trimmed -
 /// `cvtsudoers` reports a negated command trimmed too (`alice ALL = !
 /// /usr/bin/su` -> `{"command": "/usr/bin/su", "negated": true}`, no leading
-/// space). Each `!` is a single ASCII byte, so byte-length arithmetic is
-/// exact.
+/// space). Each `!` is a single ASCII byte, so `bang_count` is always a valid
+/// byte index and slicing `token` at it lands on a char boundary.
 fn resolve_bang_run(token: &str) -> (bool, &str) {
-    let after_bangs = token.trim_start_matches('!');
-    let bang_count = token.len() - after_bangs.len();
-    let remainder = after_bangs.trim_start();
+    let bang_count = token.bytes().take_while(|&b| b == b'!').count();
+    let remainder = token[bang_count..].trim_start();
     (bang_count % 2 == 1, remainder)
 }
 
