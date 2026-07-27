@@ -1,6 +1,6 @@
 name: sysctld-oracle-drift
 
-# Weekly LIVE differential drift check for the sysctld backend (issue #593,
+# Weekly LIVE differential drift check for the sysctld backend (epic #499,
 # session 9k-1 Lane B): re-derives the sysctl.d/sysctl.conf precedence +
 # masking oracle from a REAL systemd-sysctl binary (in the shared
 # rs-oracle{8,9,10} containers) and fails on drift against the shipped
@@ -22,12 +22,14 @@ name: sysctld-oracle-drift
 # dependency on the runner, so it is invoked the same way `just diff-sysctld`
 # does locally: `bash scripts/rs-oracle-diff.sh sysctld`.
 #
-# Cron slot: Mondays 08:00 UTC (the auditd-stig-drift.yml comment reserves
+# Cron slot: Mondays 09:00 UTC (the auditd-stig-drift.yml comment reserves
 # Wednesday for itself and notes Monday as the sysctld slot; sshd-stig-drift
-# and sshd-probe-drift already own Tuesday/Wednesday).
+# and sshd-probe-drift already own Tuesday/Wednesday). Offset by an hour from
+# 08:00 because cis-drift.yml already occupies Monday 08:00 UTC exactly;
+# stig-drift.yml's Monday 06:00 UTC is also free of collision.
 on:
   schedule:
-    - cron: "0 8 * * 1" # Mondays 08:00 UTC
+    - cron: "0 9 * * 1" # Mondays 09:00 UTC
   workflow_dispatch:
 
 # Least privilege: read the code, and write issues (to open/update the drift tracker).
@@ -69,10 +71,19 @@ jobs:
         id: check
         run: |
           set +e
-          bash scripts/rs-oracle-diff.sh sysctld > drift.txt 2> drift.err
+          # scripts/rs-oracle-diff.sh writes its evidence (the DRIFT line, the
+          # failing test's tail, and finish()'s evidence-path line) to STDERR;
+          # its only stdout write is the rc-0 "OK (0 drift, N scenarios)" line.
+          # A drift.txt/drift.err split (copied from auditd-stig-drift.yml,
+          # where it is correct because that tool's own DRIFT line is on
+          # stdout) would leave the issue body below embedding an EMPTY code
+          # fence on every real drift - the ONE thing this workflow exists to
+          # report. Redirect both into ONE file so program order is preserved
+          # (they share a single file description; no interleaving hazard,
+          # unlike the docker two-stream demux the capture script had to fix).
+          bash scripts/rs-oracle-diff.sh sysctld > drift.txt 2>&1
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          cat drift.err
           cat drift.txt
           # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 =
           # tool/environment error - docker/image missing despite

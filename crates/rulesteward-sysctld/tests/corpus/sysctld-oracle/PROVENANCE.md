@@ -22,8 +22,10 @@ Each scenario is a directory containing:
   parallel to `images` by position), `key` (the dotted sysctl key this
   scenario tracks, or the literal `NONE` for a scenario that compares the
   REJECT signal instead of a merged value), `xfail_issue` (empty, or an issue
-  number - see `XFAIL` in `sysctld_corpus_oracle.rs`), `comment` (free text
-  grounding the scenario).
+  number - DOCUMENTATION ONLY, no code reads this field; the enforced XFAIL
+  truth is the `const XFAIL` table in `sysctld_corpus_oracle.rs`, which is
+  itself guarded by an `assert_eq!` that every entry was hit exactly once),
+  `comment` (free text grounding the scenario).
 - `tree.plan` - TSV `TYPE\tRELPATH\tARG` lines, one entry per line, split by a
   line consisting of exactly `---` into two sections:
   - **Materialize section** (before `---`): what to build. `TYPE` is one of

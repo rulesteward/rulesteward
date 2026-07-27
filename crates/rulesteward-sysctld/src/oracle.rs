@@ -46,10 +46,21 @@
 //! since the guard's job is to protect the standard search-path locations
 //! where the actual precedence/masking logic runs, not arbitrary
 //! scenario-specific paths.
+//!
+//! # Never split this file into an `oracle/` directory
+//!
+//! `.cargo/mutants.toml`'s `examine_globs` allowlist names this exact file
+//! path (`crates/rulesteward-sysctld/src/oracle.rs`). Splitting it into a
+//! directory (`oracle/mod.rs` plus submodules) makes that glob match NOTHING,
+//! silently reinstating the exact vacuity this extraction was built to
+//! close: a `cargo mutants` summary reads "0 mutants examined" identically to
+//! "every mutant caught". If this file ever genuinely needs splitting, update
+//! the `mutants.toml` glob in the SAME commit and confirm `total_mutants > 0`
+//! for the new path afterward - never trust the exit code alone.
 
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, symlink};
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// The four standard `sysctl.d` search directories, matching `crate::system`'s
 /// own `search_dirs` (rank irrelevant here - the equivalence guard only needs
@@ -145,6 +156,14 @@ pub fn parse_tree_plan(text: &str) -> (Vec<InvEntry>, Vec<InvEntry>) {
 /// copying regular-file content from `content_dir`. Ports `materialize.sh`
 /// exactly - see that file's doc comment for the one shared algorithm
 /// description both sides implement.
+///
+/// `#[doc(hidden)]`: this function WRITES to `root` on the caller's behalf
+/// and trusts every `relpath` it is given (see the fail-closed checks below
+/// for what it does reject). It has exactly one caller today
+/// (`tests/sysctld_corpus_oracle.rs`, always with a fresh `tempfile::tempdir()`)
+/// and no product caller - it is test-support infrastructure, not a general
+/// "materialize a plan onto any path" API a future feature should build on.
+#[doc(hidden)]
 pub fn materialize(root: &Path, content_dir: &Path, entries: &[InvEntry]) {
     for d in STANDARD_DIRS {
         fs::create_dir_all(root.join(d)).unwrap_or_else(|e| panic!("mkdir {d}: {e}"));
@@ -154,6 +173,36 @@ pub fn materialize(root: &Path, content_dir: &Path, entries: &[InvEntry]) {
             !e.relpath.starts_with("lib/"),
             "tree.plan declares a path under lib/ ({}) - the merged-usr alias is \
              created automatically and must never be declared directly",
+            e.relpath
+        );
+        // Fail-closed against a relpath that could escape `root` entirely:
+        // `Path::join` REPLACES the base when given an absolute path, `..`
+        // components traverse lexically and `create_dir_all` below actually
+        // creates whatever that resolves to, and a truncated plan line (a
+        // bare "d" with nothing after the tab) yields an EMPTY relpath whose
+        // `.parent()` is `root`'s own PARENT. This matters because `root` is
+        // not always committed, reviewed data - `RS_ORACLE_CORPUS_SYSCTLD`
+        // repoints this same replay at a freshly captured, not-yet-trusted
+        // tree in fresh mode. Same family as the `lib/` guard above and the
+        // `/dev/null`-only symlink-target guard below; this closes the gap
+        // between them.
+        assert!(
+            !e.relpath.is_empty(),
+            "tree.plan entry has an empty relpath (a truncated plan line?) - refusing to \
+             materialize onto root's own parent directory"
+        );
+        assert!(
+            !e.relpath.starts_with('/'),
+            "tree.plan declares an absolute relpath ({}) - Path::join would replace `root` \
+             entirely instead of nesting under it",
+            e.relpath
+        );
+        assert!(
+            !Path::new(&e.relpath)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir)),
+            "tree.plan declares a relpath containing '..' ({}) - this would let \
+             materialization escape `root`",
             e.relpath
         );
         let dest = root.join(&e.relpath);
@@ -192,7 +241,8 @@ pub fn materialize(root: &Path, content_dir: &Path, entries: &[InvEntry]) {
     }
     let lib = root.join("lib");
     let _ = fs::remove_file(&lib);
-    fs::create_dir_all(root.join("usr/lib")).unwrap();
+    let usr_lib = root.join("usr/lib");
+    fs::create_dir_all(&usr_lib).unwrap_or_else(|e| panic!("mkdir {}: {e}", usr_lib.display()));
     symlink("usr/lib", &lib).unwrap_or_else(|e| panic!("symlink lib -> usr/lib: {e}"));
 }
 
@@ -232,10 +282,18 @@ pub fn compute_inventory(root: &Path) -> Vec<InvEntry> {
             detail: String::new(),
         });
         let dirpath = root.join(d);
+        // `.flatten()` would silently DROP a per-entry read_dir error instead
+        // of naming it - not a false pass (a dropped entry shortens the
+        // inventory, so the vendored assert_eq! still fires), but it fails as
+        // a confusing "materializers have diverged" instead of the real
+        // "read_dir entry failed: EACCES".
         let mut names: Vec<_> = fs::read_dir(&dirpath)
             .unwrap_or_else(|e| panic!("read_dir {}: {e}", dirpath.display()))
-            .flatten()
-            .map(|e| e.file_name())
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| panic!("read_dir entry under {}: {e}", dirpath.display()))
+                    .file_name()
+            })
             .collect();
         names.sort();
         for name in names {
@@ -274,10 +332,11 @@ pub fn compute_inventory(root: &Path) -> Vec<InvEntry> {
 // ---------------------------------------------------------------------------
 
 /// Slice out the `SYSTEMD_LOG_LEVEL=debug` apply-mode section of a captured
-/// transcript (between the `=== APPLY-DEBUG ===` and the next `=== ` marker,
-/// or end of string). Panics if the marker is absent - fail-closed parsing
-/// (CONTRIBUTING rule 3): a transcript missing this section cannot yield a
-/// verdict at all, which must not be silently read as "unset".
+/// transcript (between the `=== APPLY-DEBUG ===` and the next `=== ` marker
+/// AT THE START OF A LINE, or end of string). Panics if the marker is absent.
+/// This is fail-closed parsing (CONTRIBUTING rule 3): a transcript missing
+/// this section cannot yield a verdict at all, which must not be silently
+/// read as "unset".
 #[must_use]
 pub fn apply_debug_section(transcript: &str) -> &str {
     let start_marker = "=== APPLY-DEBUG ===";
@@ -286,7 +345,16 @@ pub fn apply_debug_section(transcript: &str) -> &str {
         .unwrap_or_else(|| panic!("transcript has no '{start_marker}' section"))
         + start_marker.len();
     let rest = &transcript[start..];
-    let end = rest.find("=== ").unwrap_or(rest.len());
+    // Anchored to a line start ("\n=== ", not bare "=== "): an unanchored
+    // search would truncate the section early if any real daemon log line
+    // happened to contain "=== " mid-line. The failure direction matters -
+    // a truncated section reads as "key never set" (None), which is a
+    // LEGITIMATE expected value for some scenarios (e.g.
+    // slot-symlink-absent-divergence), so a silent truncation would not even
+    // look wrong on its own. Defence in depth: that scenario also pins
+    // RuleSteward's own value independently in
+    // tests/sysctld_corpus_oracle.rs, but this is the right fix regardless.
+    let end = rest.find("\n=== ").unwrap_or(rest.len());
     &rest[..end]
 }
 
@@ -300,6 +368,17 @@ pub fn apply_debug_section(transcript: &str) -> &str {
 /// transcript text directly instead of going through this helper.
 #[must_use]
 pub fn dotted_to_procpath(key: &str) -> String {
+    // The name promises a general conversion; the body is a trivial replace.
+    // sysctl's real separator rule is genuinely asymmetric (`parser.rs`'s
+    // `canonical_key` implements it), so a key that already contains a `/`
+    // is exactly the shape this function is NOT equipped to handle correctly
+    // - turn that comment into something a test run can actually fail.
+    debug_assert!(
+        !key.contains('/'),
+        "dotted_to_procpath: {key:?} already contains '/' - this is a TRIVIAL dot-to-slash \
+         replace, not canonical_key's asymmetric first-separator rule; a key with a literal \
+         '/' needs that real canonicalization instead"
+    );
     key.replace('.', "/")
 }
 
