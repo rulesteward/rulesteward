@@ -295,6 +295,12 @@ for the frozen-contract text these ground.
   compares the raw token literally against `ALL`, so `!ALL` parses as
   `CmndItem::Cmnd("!ALL")`, never `CmndItem::All`. New scenarios:
   `accept-negated-command`, `accept-negated-all`.
+  **CORRECTED 2026-07-27 (round 3): this bullet, taken alone, reads as if
+  negation were now fully covered by these two scenarios. It was NOT.** The
+  fix landed here merely STRIPPED `!` (discarding it) rather than marking it
+  - the exact symmetric-erasure shape the very next bullet below (type tags)
+  closes for sigils, reintroduced on the axis this round created. See section
+  14 for the real fix.
 - **`Host_List` rejected shapes the tool really emits.** `alice +webservers =
   /bin/ls` and `alice 192.168.0.0/24 = /bin/ls` both parse (rc 0);
   `cvtsudoers` emits `{"netgroup": "webservers"}` / `{"networkaddr":
@@ -382,6 +388,103 @@ byte-identical** (unaffected by adding the 6 new ones). The 6 new scenarios'
 own captured JSON matches the live probes this section's findings are
 grounded on, verified directly (rc, stdout, and the exact `cvtsudoers` JSON
 shape) for all three targets before being committed.
+
+### 14. Round-3 review: negation is a Kleene star and was never really covered; a shared tagger mistags hosts
+
+Found in a THIRD adversarial round against the (by-then-landed) implementation
+of sections 10-13. All measurements below re-confirmed live against all three
+images before being acted on. `L3_CLEAN_FLOOR` / `SCENARIO_FLOOR` are
+UNCHANGED by this section - every fix here needed zero new corpus rows (see
+each finding).
+
+- **The compensating-error class, reintroduced (REQUIRED fix).** Both
+  projectors stripped a leading `!` and DISCARDED it rather than marking it -
+  the identical erasure shape section 10's type-tag fix closed for sigils,
+  reintroduced on the one axis that same round created. Measured directly
+  against the committed corpus: `project_ast` on `accept-negated-command` was
+  byte-equal to `project_ast` on the same file with the `!` removed, and to
+  `project_cvtsudoers_json` on the SAME captured JSON. `!` is deny-vs-allow -
+  "may run `su`" and "may run anything except `su`" projected identically.
+  Fixed by marking a negated value with a `"!"` prefix OUTERMOST (applied
+  after any type tag: `"!usergroup:wheel"`, never `"usergroup:!wheel"`).
+  `project_cvtsudoers_json_ignores_negated_companion_flag`'s prior assertion
+  (that the flag must NOT change the value) pinned this exact bug and was
+  REVERSED - a STRENGTHENING under the frozen-tests rule, correcting a test
+  that encoded wrong behavior, never a weakening. Both existing negation
+  scenarios (`accept-negated-command`, `accept-negated-all`) already carry
+  `"negated": true` on BOTH sides of the captured JSON, so this needed ZERO
+  corpus churn.
+- **Negation is a Kleene star, not a single character (REQUIRED fix, same
+  pass as above).** `man 5 sudoers`: `'!'* command` / `'!'* user` / `'!'*
+  host` - "An odd number of `!` operators negate the value of the item; an
+  even number just cancel each other out." Confirmed live: `!!/usr/bin/su` ->
+  `{"command": "/usr/bin/su"}` (no `negated` key, cancels); `!!!/usr/bin/su`
+  -> `negated: true`. The original single-character strip got BOTH the value
+  and the parity wrong for anything but exactly one `!`. Fixed by PARITY
+  COUNTING (count the leading `!`s, mark iff odd, strip them all) on
+  subjects, hosts, and commands alike. Also confirmed live: `alice ALL = !
+  /usr/bin/su` (a literal space after the bang) still negates, and
+  `cvtsudoers` reports the TRIMMED command - `parser::parse` keeps the raw
+  token `Cmnd("! /usr/bin/su")` verbatim, space included, so negation
+  resolution must also trim whitespace immediately after the bang-run.
+- **A `#`-prefixed hostname is not a userid (REQUIRED doc correction; impl
+  fix TAKEN, not parked).** `man 5 sudoers`'s `Host ::=` production has no
+  `#user-ID` alternative. `alice #1000 = /bin/ls` is accepted live (all three
+  images) and `cvtsudoers` reports `{"hostname": "#1000"}`, untagged - but
+  the shared sigil-tagging helper used for both users and hosts is unaware of
+  which side it is on, and would read the leading `#` as the userid sigil,
+  tagging it `"userid:1000"`. The implementation's own doc comment (in
+  `oracle.rs`) claimed tagging hosts with the user rules "costs nothing even
+  though `%`/`%#`/`#` do not occur there in practice" - HALF true: `%`/`%#`
+  really are syntax errors on all three images, but `#` is NOT, so that claim
+  is empirically false and must be corrected by whoever lands this fix (this
+  project treats a false comment as its own defect class, regardless of
+  whether the surrounding code is also being touched). Taken as a required
+  fix rather than parked (unlike the uid/gid item below) because it is small,
+  needs zero corpus churn (a hand-built unit test suffices - no existing
+  corpus row uses a `#`-prefixed hostname), and is a real, live-confirmed
+  correctness gap, not an exotic edge case.
+- **`canonicalize_decimal`'s domain is wider than sudo's uid type - PARKED,
+  not fixed (my call as test-author).** Confirmed live: `#2147483648` (2^31)
+  is accepted as `{"userid": 2147483648}`, but `#4294967295` (`(uid_t)-1`)
+  and above make `cvtsudoers` exit rc 0 with a stderr warning and FALL BACK
+  to treating the whole token as a literal username, `#` retained
+  (`{"username": "#4294967295"}`). An unbounded `u64` parse instead produces
+  `"userid:4294967295"`. Parked rather than fixed: exotic input (needs a uid
+  at or past `(uid_t)-1`), and a LOUD failure today (a clean value mismatch)
+  rather than a silent compensating error or a panic, so the round-3 boundary
+  (this protocol bounds the ATL at roughly 2-3 rounds) is better spent
+  elsewhere. Tracked as a follow-up: bound `canonicalize_decimal` at
+  `(uid_t)-1` = 4294967295 exclusive, falling back to the untagged, original
+  token above it.
+
+Scoping honesty, corrected: as of this section, negation IS covered (Kleene
+star, marked on all three token kinds) and the host-`#`-mistagging bug is
+closed too. What remains genuinely open: alias resolution and `networkaddr`
+shape-detection (section 10), tags/runas (section 10), and the uid/gid
+domain bound immediately above - all deliberately narrower, documented,
+parked scopes, not silent gaps.
+
+### 15. Two more backlog leads found in round 3, not this lane's work
+
+- **`#-1 ALL = ALL`**: real `visudo` accepts it (rc 0, `parsed OK`) and
+  `cvtsudoers` reports `{"username": "#-1"}` (a negative "uid" falls back to
+  a literal username, same shape as the out-of-range case above), but
+  `rulesteward_sudoers::parser::parse` classifies the ENTIRE LINE as a
+  `Comment` - confirmed directly. A parser-side gap (the `#` at the start of
+  a `User_List` token is apparently read as a comment marker before the
+  UID-subject disambiguation applies), not an `oracle.rs` one.
+- **`usergroup\:wheel ALL = ALL`**: `cvtsudoers` unescapes the backslash and
+  reports a literal username `{"username": "usergroup:wheel"}` - BYTE-
+  IDENTICAL to what a type-tagged `usergroup:` value looks like. Confirmed
+  directly this is NOT a silent false-clean today: `rulesteward_sudoers`'s
+  own AST keeps the raw token WITH its backslash
+  (`users: ["usergroup\\:wheel"]`), which does not match `cvtsudoers`'
+  unescaped form either as a plain string or as a tag, so it produces a LOUD
+  mismatch rather than a false pass. `:` is therefore NOT a reserved
+  namespace this differential can rely on - noted for the corpus backlog,
+  not acted on (no corpus row exercises it; would need backslash-unescaping
+  in the parser to even reach the comparison meaningfully).
 
 ## Scenario list
 

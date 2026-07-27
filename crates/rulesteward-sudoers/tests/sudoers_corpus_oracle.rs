@@ -38,16 +38,15 @@
 //!   commands.
 //! - `project_ast(file: &rulesteward_sudoers::ast::SudoersFile) ->
 //!   StructureProjection`: `CmndItem::All` projects to the literal string
-//!   `"ALL"`. Every subject/host/COMMAND token's leading `!` negation is
-//!   stripped first (widened 2026-07-27: the original contract stripped `!`
-//!   from subjects/hosts only, so a negated command like `!/usr/bin/su` kept
-//!   its `!` on the AST side while `cvtsudoers` reports `{"command":
-//!   "/usr/bin/su", "negated": true}` - an unxfailed divergence that panics
-//!   the instant a corpus row exercises it; `accept-negated-command` /
-//!   `accept-negated-all` are two such rows). After the `!` strip, a
+//!   `"ALL"`. Every subject/host/COMMAND token's leading `!`-RUN is resolved
+//!   by PARITY (see "Negation" below - NOT a single-character strip) and, if
+//!   the parity is odd, the projected value is marked (a `"!"` prefix on the
+//!   FINAL value, outermost - see "Negation"). After negation is resolved, a
 //!   subject/host token ALSO gets the type tag described in "Type tags"
-//!   below; a command token does not (commands are not implicated in the
-//!   type-tag finding - see that section).
+//!   below (a HOST token never gets `usergroup:`/`usergid:`/`userid:` - only
+//!   `+netgroup` is valid host-side sigil syntax, so e.g. a literal hostname
+//!   `#1000` stays untagged, matching `cvtsudoers`); a command token does not
+//!   get a type tag (commands carry no `%+#` sigil in the sudoers grammar).
 //! - `project_cvtsudoers_json(json: &serde_json::Value) ->
 //!   Result<StructureProjection, CvtsudoersProjectionError>`: fail-closed on any
 //!   `User_Specs[]` element whose `User_List`/`Host_List`/`Cmnd_Specs->Commands`
@@ -66,13 +65,20 @@
 //!       an IP/CIDR host - `accept-host-networkaddr`). `print_member_json_int`
 //!       (the real `cvtsudoers` source) keys `typestr` on member TYPE, not on
 //!       which list it appears in, so `netgroup` legitimately appears in BOTH
-//!       `User_List` and `Host_List`.
+//!       `User_List` and `Host_List`. A `Host_List` `hostname` value can look
+//!       exactly like a `#uid`/`%group` token (e.g. `#1000`) without BEING one,
+//!       since `man 5 sudoers`'s `Host ::=` production has no such
+//!       alternative, so it stays untagged there regardless of what it would
+//!       mean in `User_List`.
 //!     - `Cmnd_Specs[].Commands[]`: `{"command": S}` / `{"cmndalias": S}`.
 //!
-//!   Extract the bare string value regardless of which key is present, then
-//!   apply the SAME type tag described below (ignore any companion
-//!   `"negated": true`, which mirrors this test's own `!`-strip normalization
-//!   on the AST side - see `project_ast` above).
+//!   Extract the bare string value regardless of which key is present, apply
+//!   the SAME type tag described below, THEN mark negation outermost (a
+//!   companion `"negated": true` -> a `"!"` prefix on the whole value) - see
+//!   "Negation" below. `project_ast` and `project_cvtsudoers_json` must agree
+//!   on ORDER (mark negation last, outside any type tag) or a negated,
+//!   sigil'd value would compare unequal for a reason that has nothing to do
+//!   with negation.
 //!
 //! ## Type tags (added 2026-07-27)
 //!
@@ -132,6 +138,68 @@
 //! `StructureProjection` axis (not a same-shape widening of `users`/`hosts`),
 //! which is a bigger surface than this dispatch's scope; left for a follow-up.
 //!
+//! **Scoping honesty (corrected 2026-07-27):** an earlier version of this
+//! module doc and `PROVENANCE.md` described the round-2 fix (this "Type
+//! tags" section) as if negation were now covered too. It was NOT - see
+//! "Negation" immediately below, which covers it for THIS round. What
+//! remains genuinely open after this round: alias resolution and
+//! `networkaddr` shape-detection (both just above) and tags/runas (just
+//! above); a `#uid` value outside sudo's representable range (see "uid/gid
+//! canonicalization"'s closing note) is ALSO left open, deliberately, as a
+//! narrower, documented follow-up.
+//!
+//! ## Negation (added 2026-07-27)
+//!
+//! Both projectors stripped a leading `!` and then DISCARDED it, rather than
+//! marking it - the SAME symmetric-erasure shape "Type tags" above closes for
+//! sigils, reintroduced on the one axis that round created: a `project_ast`
+//! that dropped negation ENTIRELY still matched `cvtsudoers`' `{"command":
+//! "X", "negated": true}`, since both sides reduced to the bare `"X"`.
+//! Measured against the committed corpus: `project_ast` on
+//! `accept-negated-command` / `accept-negated-all` was BYTE-EQUAL to
+//! `project_ast` on the same file with the `!` removed, and to
+//! `project_cvtsudoers_json` on the SAME captured JSON. `!` is deny-vs-allow
+//! in sudoers - "may run `su`" and "may run anything except `su`" must not
+//! project identically.
+//!
+//! Fix: after resolving negation (see below), a NEGATED value's projection is
+//! marked with a `"!"` prefix on the WHOLE value, outermost (applied AFTER
+//! any type tag, so a negated group subject is `"!usergroup:wheel"`, not
+//! `"usergroup:!wheel"`); an un-negated value is unmarked, exactly as before.
+//! `project_ast` and `project_cvtsudoers_json` must apply the mark in the
+//! SAME position or a negated, sigil'd value compares unequal for a reason
+//! having nothing to do with negation.
+//!
+//! **Negation is a Kleene star, not a single character** (`man 5 sudoers`:
+//! `'!'* command` / `'!'* user` / `'!'* host` - "An odd number of `!`
+//! operators negate the value of the item; an even number just cancel each
+//! other out"). Confirmed live (all three images): `!!/usr/bin/su` ->
+//! `{"command": "/usr/bin/su"}` with NO `negated` key (even count, cancels);
+//! `!!!/usr/bin/su` -> `negated: true` (odd count). A SINGLE-character strip
+//! (the original, wrong contract) recovers `!/usr/bin/su` from `!!` and
+//! `!!/usr/bin/su` from `!!!` - neither the right VALUE nor the right parity.
+//! The fix is PARITY COUNTING (count the leading `!`s, mark iff the count is
+//! odd, strip them all), not a single strip, on subjects, hosts, AND
+//! commands alike.
+//!
+//! Whitespace after the bang-run: confirmed live, `alice ALL = !
+//! /usr/bin/su` (a literal space before the command) still negates and
+//! `cvtsudoers` reports the TRIMMED command (`{"command": "/usr/bin/su",
+//! "negated": true}`, no leading space) - `parser.rs` keeps the raw token
+//! `Cmnd("! /usr/bin/su")` verbatim, space included, so the negation
+//! resolution must trim ANY whitespace immediately after the bang-run before
+//! taking the remainder as the base value, matching the real tool.
+//!
+//! This REVERSES `project_cvtsudoers_json_ignores_negated_companion_flag`'s
+//! prior assertion (that a `"negated": true` companion must NOT change the
+//! extracted value) - that assertion pinned the exact symmetric-erasure bug
+//! this section closes, so reversing it is a STRENGTHENING under the
+//! frozen-tests rule (correcting a test that encoded WRONG behavior), never
+//! a weakening. Both existing negation corpus rows (`accept-negated-command`,
+//! `accept-negated-all`) already have `"negated": true` on BOTH sides of the
+//! captured JSON, so this needs ZERO corpus churn - no new scenario, no floor
+//! change.
+//!
 //! ## uid/gid canonicalization (added 2026-07-27)
 //!
 //! `sudo_strtoid` parses a `#uid`/`%#gid` subject in BASE 10, so `#0100` means
@@ -141,6 +209,21 @@
 //! neither the canonical value nor, once type tags exist, the right type.
 //! Both projectors must CANONICALIZE (parse as an integer, re-render in
 //! decimal) rather than only strip the sigil text.
+//!
+//! **Left open, deliberately parked (found 2026-07-27):** sudo's uid type is
+//! NARROWER than the `u64` this contract implies. Confirmed live (all three
+//! images): `#2147483648` (2^31) is accepted as `{"userid": 2147483648}`, but
+//! `#4294967295` (`(uid_t)-1`) and above make `cvtsudoers` exit rc 0 with a
+//! stderr warning ("user-ID invalid value" / "user-ID value too large") and
+//! FALL BACK to treating the whole token as a literal username, `#` kept
+//! (`{"username": "#4294967295"}`). A `canonicalize_decimal` with no upper
+//! bound produces `"userid:4294967295"` instead. Exotic input (needs a uid
+//! at or past `(uid_t)-1`) and a LOUD failure today (a clean value mismatch,
+//! not a silent pass or a panic) rather than a compensating error, so this
+//! session parks it rather than adding the bound - tracked as a follow-up
+//! issue (upper-bound `canonicalize_decimal` at `(uid_t)-1` = 4294967295,
+//! exclusive, and fall back to the untagged, un-canonicalized original token
+//! above it) rather than fixed here.
 //!
 //! # Three layers
 //!
@@ -549,7 +632,13 @@ fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn project_ast_strips_negation_and_sigil_from_users_and_hosts() {
+fn project_ast_marks_negation_and_tags_sigil_on_users_and_hosts() {
+    // Renamed 2026-07-27 (was `..._strips_negation_and_sigil_...`): review
+    // found negation was being STRIPPED AND DISCARDED, the exact
+    // symmetric-erasure shape "Type tags" closes for sigils, reintroduced on
+    // the axis that fix created. Negation must be MARKED (a `"!"` prefix on
+    // the final value, outermost), not merely removed - see the module doc's
+    // "Negation" section. This is a STRENGTHENING of this same test.
     use rulesteward_sudoers::ast::{
         CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
     };
@@ -575,42 +664,42 @@ fn project_ast_strips_negation_and_sigil_from_users_and_hosts() {
     };
 
     let proj = project_ast(&file);
-    // "!alice" has no sigil after the `!` strip, so it stays untagged;
-    // "!%wheel" has the `%` sigil, so it now carries the `usergroup:` type
-    // tag (updated 2026-07-27 - see the module doc's "Type tags" section;
-    // this is a STRENGTHENING of this same test, not a new one, since the
-    // old bare "wheel" expectation is no longer the correct contract).
+    // "!alice" has no sigil, so it stays untagged but IS marked negated;
+    // "!%wheel" has the `%` sigil, so it carries the `usergroup:` type tag
+    // AND the negation mark, with the mark OUTERMOST.
     assert!(
         sorted_eq(
             &proj.users,
-            &["alice".to_string(), "usergroup:wheel".to_string()]
+            &["!alice".to_string(), "!usergroup:wheel".to_string()]
         ),
-        "a leading `!` negation must be stripped from USERS (in addition to \
-         the `%` sigil, which now yields a `usergroup:` type tag rather than \
-         a bare value), got {:?}",
+        "a leading `!` on USERS must be MARKED on the projected value (not \
+         silently discarded), and the mark must be OUTSIDE any type tag, \
+         got {:?}",
         proj.users
     );
-    // A projector with two independent strip helpers (one for users, one for
-    // hosts) could strip `!` on the user side and forget it on the host
-    // side; the users assertion above cannot see that. "!web1" has no
-    // recognized host sigil, so it stays untagged.
+    // A projector with two independent negation helpers (one for users, one
+    // for hosts) could mark negation on the user side and forget it on the
+    // host side; the users assertion above cannot see that.
     assert!(
-        sorted_eq(&proj.hosts, &["web1".to_string()]),
-        "a leading `!` negation must ALSO be stripped from HOSTS, got {:?}",
+        sorted_eq(&proj.hosts, &["!web1".to_string()]),
+        "a leading `!` on HOSTS must ALSO be marked, got {:?}",
         proj.hosts
     );
 }
 
 #[test]
-fn project_ast_strips_negation_from_commands() {
-    // MISS (review, 2026-07-27): `!`-negation was stripped from subjects and
-    // hosts but NOT from commands, even though real sudoers allows negating a
-    // command (`alice ALL = !/usr/bin/su`) and `cvtsudoers` reports it as
+fn project_ast_marks_negation_on_commands() {
+    // MISS (review, 2026-07-27): `!`-negation on commands was being stripped
+    // and DISCARDED (real sudoers allows negating a command,
+    // `alice ALL = !/usr/bin/su`, and `cvtsudoers` reports it as
     // `{"command": "/usr/bin/su", "negated": true}` - confirmed live against
-    // all three images. `accept-negated-command` / `accept-negated-all` are
-    // now committed corpus rows for this; both unit-pinned here too since the
-    // corpus alone (a single, possibly-panic-aborted L3 run) cannot cleanly
-    // attribute a failure to this ONE cause among several new ones.
+    // all three images), so a negated and an un-negated command projected
+    // IDENTICALLY - measured directly against the committed corpus:
+    // `project_ast` on `accept-negated-command` was byte-equal to the
+    // un-negated form. `!` is deny-vs-allow; this is the single most
+    // security-relevant axis in sudoers. `accept-negated-command` /
+    // `accept-negated-all` are committed corpus rows for this (unchanged by
+    // this fix - see module doc "Negation", zero corpus churn).
     use rulesteward_sudoers::ast::{
         CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
     };
@@ -635,26 +724,206 @@ fn project_ast_strips_negation_from_commands() {
         }],
     };
 
+    let plain = project_ast(&file_for(CmndItem::Cmnd("/usr/bin/su".to_string())));
     let negated_path = project_ast(&file_for(CmndItem::Cmnd("!/usr/bin/su".to_string())));
     assert_eq!(
         negated_path.commands,
-        vec!["/usr/bin/su".to_string()],
-        "a leading `!` on a COMMAND token must be stripped like it already is \
-         for subjects/hosts, got {:?}",
+        vec!["!/usr/bin/su".to_string()],
+        "a leading `!` on a COMMAND must be MARKED on the projected value, \
+         got {:?}",
         negated_path.commands
+    );
+    // The exact killing assertion for the round-1 defect this reintroduced:
+    // a projector that discards negation makes these two equal.
+    assert_ne!(
+        plain.commands, negated_path.commands,
+        "\"alice may run su\" and \"alice may run anything except su\" must \
+         NOT project identically - plain={:?} negated={:?}",
+        plain.commands, negated_path.commands
     );
 
     // `parser.rs:936` compares the raw token literally against `ALL`, so
     // `!ALL` parses as `CmndItem::Cmnd("!ALL")`, never `CmndItem::All` -
-    // confirmed directly against `parser::parse`. The `!` strip must still
-    // recover the bare `"ALL"` from that raw `Cmnd` token.
+    // confirmed directly against `parser::parse`. The mark must still be
+    // recovered from that raw `Cmnd` token.
     let negated_all = project_ast(&file_for(CmndItem::Cmnd("!ALL".to_string())));
     assert_eq!(
         negated_all.commands,
-        vec!["ALL".to_string()],
+        vec!["!ALL".to_string()],
         "a leading `!` on the literal `Cmnd(\"!ALL\")` token must be \
-         stripped to recover the bare ALL, got {:?}",
+         recovered and marked, got {:?}",
         negated_all.commands
+    );
+}
+
+#[test]
+fn project_ast_negation_is_kleene_star_not_a_single_strip() {
+    // `man 5 sudoers`: `'!'* command` etc - "An odd number of `!` operators
+    // negate the value of the item; an even number just cancel each other
+    // out." Confirmed live (all three images): `!!/usr/bin/su` ->
+    // `{"command": "/usr/bin/su"}` with NO `negated` key; `!!!/usr/bin/su` ->
+    // `negated: true`. A single-character strip (the pre-round-3 contract)
+    // gets both the VALUE and the PARITY wrong for anything but exactly one
+    // `!`. Covers commands, users, and hosts - `strip_command_negation` /
+    // `tag_member` are separate functions and could parity-count one while
+    // still single-stripping the other.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file_for = |user: &str, host: &str, cmnd: &str| rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: format!("{user} {host} = {cmnd}\n"),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..(user.len() + host.len() + cmnd.len() + 5),
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec![user.to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec![host.to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::Cmnd(cmnd.to_string()),
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    // Even count (two `!`s): cancels out, unmarked, on all three token kinds.
+    let even = project_ast(&file_for("!!alice", "!!web1", "!!/usr/bin/su"));
+    assert_eq!(
+        even.users,
+        vec!["alice".to_string()],
+        "an EVEN count of `!` on a USER must cancel out (unmarked), got {:?}",
+        even.users
+    );
+    assert_eq!(
+        even.hosts,
+        vec!["web1".to_string()],
+        "an EVEN count of `!` on a HOST must cancel out (unmarked), got {:?}",
+        even.hosts
+    );
+    assert_eq!(
+        even.commands,
+        vec!["/usr/bin/su".to_string()],
+        "an EVEN count of `!` on a COMMAND must cancel out (unmarked), got {:?}",
+        even.commands
+    );
+
+    // Odd count (three `!`s): negates, marked, on all three token kinds.
+    let odd = project_ast(&file_for("!!!alice", "!!!web1", "!!!/usr/bin/su"));
+    assert_eq!(
+        odd.users,
+        vec!["!alice".to_string()],
+        "an ODD count of `!` on a USER must negate (marked), got {:?}",
+        odd.users
+    );
+    assert_eq!(
+        odd.hosts,
+        vec!["!web1".to_string()],
+        "an ODD count of `!` on a HOST must negate (marked), got {:?}",
+        odd.hosts
+    );
+    assert_eq!(
+        odd.commands,
+        vec!["!/usr/bin/su".to_string()],
+        "an ODD count of `!` on a COMMAND must negate (marked), got {:?}",
+        odd.commands
+    );
+}
+
+#[test]
+fn project_ast_trims_whitespace_after_the_bang_run() {
+    // Confirmed live (all three images): `alice ALL = ! /usr/bin/su` (a
+    // literal space between the bang and the command) still negates AND
+    // `cvtsudoers` reports the TRIMMED command
+    // (`{"command": "/usr/bin/su", "negated": true}`, no leading space) -
+    // `parser::parse` keeps the raw token `Cmnd("! /usr/bin/su")` verbatim,
+    // space included (confirmed directly), so negation resolution must trim
+    // whitespace immediately after the bang-run, not just strip the `!`s.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file = rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: "alice ALL = ! /usr/bin/su\n".to_string(),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..26,
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec!["alice".to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::Cmnd("! /usr/bin/su".to_string()),
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    let proj = project_ast(&file);
+    assert_eq!(
+        proj.commands,
+        vec!["!/usr/bin/su".to_string()],
+        "whitespace between the bang-run and the command must be TRIMMED, \
+         matching cvtsudoers' trimmed report, got {:?}",
+        proj.commands
+    );
+}
+
+#[test]
+fn project_ast_distinguishes_which_of_two_commands_is_negated() {
+    // `alice ALL = /bin/ls, !/bin/su`: confirmed live, cvtsudoers reports
+    // `Commands: [{"command": "/bin/ls"}, {"command": "/bin/su", "negated":
+    // true}]` - two independent `Cmnd_Spec`s in ONE host-group, only the
+    // second negated. `parser::parse` confirmed to produce two separate
+    // `CmndSpec`s (`Cmnd("/bin/ls")`, `Cmnd("!/bin/su")`), so this is a
+    // straightforward per-spec application of the negation mark, not a new
+    // mechanism - included because a bulk (whole-line) negation mistake
+    // would not be caught by the single-command tests above.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file = rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: "alice ALL = /bin/ls, !/bin/su\n".to_string(),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..30,
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec!["alice".to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![
+                        CmndSpec {
+                            runas: None,
+                            tags: vec![],
+                            cmnd: CmndItem::Cmnd("/bin/ls".to_string()),
+                        },
+                        CmndSpec {
+                            runas: None,
+                            tags: vec![],
+                            cmnd: CmndItem::Cmnd("!/bin/su".to_string()),
+                        },
+                    ],
+                }],
+            }),
+        }],
+    };
+
+    let proj = project_ast(&file);
+    assert_eq!(
+        proj.commands,
+        vec!["/bin/ls".to_string(), "!/bin/su".to_string()],
+        "exactly one of the two commands must be marked negated, got {:?}",
+        proj.commands
     );
 }
 
@@ -775,7 +1044,7 @@ fn project_ast_canonicalizes_and_tags_uid_and_gid_subjects() {
 }
 
 #[test]
-fn project_ast_tags_host_netgroup_but_not_networkaddr() {
+fn project_ast_tags_host_netgroup_but_not_networkaddr_or_hash_prefixed_hostname() {
     // `+netgroup` is a valid HOST token too (not just a subject), and is
     // symmetric with the user-side netgroup finding above: a `project_ast`
     // that dropped the `+` would pass vacuously against `cvtsudoers`'
@@ -785,6 +1054,15 @@ fn project_ast_tags_host_netgroup_but_not_networkaddr() {
     // for the user side). `192.168.0.0/24`-style network addresses have no
     // leading sigil, so they are NOT tagged (see module doc) -
     // `accept-host-networkaddr` stays untagged on both sides.
+    //
+    // MISS (review, 2026-07-27): `man 5 sudoers`'s `Host ::=` production has
+    // NO `#user-ID` alternative - `#` is not a valid host-side sigil at all,
+    // just an unusual first character in an otherwise-plain hostname.
+    // `alice #1000 = /bin/ls` is accepted live (all three images) and
+    // `cvtsudoers` reports `{"hostname": "#1000"}`, untagged. A shared
+    // sigil-tagging helper used for both users and hosts, unaware of which
+    // side it is on, would wrongly read the leading `#` as the userid sigil
+    // and tag it `"userid:1000"`.
     use rulesteward_sudoers::ast::{
         CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
     };
@@ -820,24 +1098,127 @@ fn project_ast_tags_host_netgroup_but_not_networkaddr() {
          derive a type from), got {:?}",
         networkaddr.hosts
     );
+
+    let hash_hostname = project_ast(&file_for("#1000"));
+    assert_eq!(
+        hash_hostname.hosts,
+        vec!["#1000".to_string()],
+        "a HOST token starting with `#` is a plain (if unusual) hostname, \
+         NOT a userid sigil - `Host ::=` has no such alternative - so it \
+         must stay untagged, got {:?}",
+        hash_hostname.hosts
+    );
 }
 
 #[test]
-fn project_cvtsudoers_json_ignores_negated_companion_flag() {
-    let doc = serde_json::json!({
-        "User_Specs": [
-            {
-                "User_List": [{ "username": "alice", "negated": true }],
+fn project_cvtsudoers_json_marks_negated_companion_flag() {
+    // REVERSED 2026-07-27 (was `..._ignores_negated_companion_flag`, which
+    // asserted the companion flag must NOT change the value): review found
+    // that assertion pinned the exact symmetric-erasure bug the round-2
+    // type-tag fix closed for sigils, reintroduced here - the oracle DOES
+    // distinguish "alice" from "NOT alice" via this flag, and RuleSteward
+    // must too. Reversing a test that encoded WRONG behavior is a
+    // STRENGTHENING under the frozen-tests rule, never a weakening - see the
+    // module doc's "Negation" section for the full reasoning and grounding.
+    let doc_for = |negated: bool| {
+        let mut user_elem = serde_json::json!({ "username": "alice" });
+        if negated {
+            user_elem["negated"] = serde_json::json!(true);
+        }
+        serde_json::json!({
+            "User_Specs": [{
+                "User_List": [user_elem],
                 "Host_List": [{ "hostname": "ALL" }],
                 "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
-            }
-        ]
+            }]
+        })
+    };
+
+    let plain = project_cvtsudoers_json(&doc_for(false)).expect("known key shapes must not error");
+    let negated = project_cvtsudoers_json(&doc_for(true)).expect("known key shapes must not error");
+
+    assert_eq!(
+        negated.users,
+        vec!["!alice".to_string()],
+        "a companion \"negated\": true MUST mark the extracted value \
+         (a `!` prefix, outermost), got {:?}",
+        negated.users
+    );
+    assert_ne!(
+        plain.users, negated.users,
+        "\"alice\" and \"NOT alice\" must not project identically - \
+         plain={:?} negated={:?}",
+        plain.users, negated.users
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_marks_negation_on_hosts_and_commands() {
+    // Same finding as the User_List test above, applied to the other two
+    // arrays - a projector could mark negation for users and forget it for
+    // hosts/commands.
+    let host_doc = |negated: bool| {
+        let mut host_elem = serde_json::json!({ "hostname": "web1" });
+        if negated {
+            host_elem["negated"] = serde_json::json!(true);
+        }
+        serde_json::json!({
+            "User_Specs": [{
+                "User_List": [{ "username": "alice" }],
+                "Host_List": [host_elem],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+            }]
+        })
+    };
+    let plain_host = project_cvtsudoers_json(&host_doc(false)).expect("must not error");
+    let negated_host = project_cvtsudoers_json(&host_doc(true)).expect("must not error");
+    assert_eq!(negated_host.hosts, vec!["!web1".to_string()]);
+    assert_ne!(plain_host.hosts, negated_host.hosts);
+
+    let cmnd_doc = |negated: bool| {
+        let mut cmnd_elem = serde_json::json!({ "command": "/usr/bin/su" });
+        if negated {
+            cmnd_elem["negated"] = serde_json::json!(true);
+        }
+        serde_json::json!({
+            "User_Specs": [{
+                "User_List": [{ "username": "alice" }],
+                "Host_List": [{ "hostname": "ALL" }],
+                "Cmnd_Specs": [{ "Commands": [cmnd_elem] }]
+            }]
+        })
+    };
+    let plain_cmnd = project_cvtsudoers_json(&cmnd_doc(false)).expect("must not error");
+    let negated_cmnd = project_cvtsudoers_json(&cmnd_doc(true)).expect("must not error");
+    assert_eq!(
+        negated_cmnd.commands,
+        vec!["!/usr/bin/su".to_string()],
+        "the reviewer's named killing assertion: {{\"command\":\"X\",\"negated\":true}} \
+         must project != {{\"command\":\"X\"}}, got {:?}",
+        negated_cmnd.commands
+    );
+    assert_ne!(plain_cmnd.commands, negated_cmnd.commands);
+}
+
+#[test]
+fn project_cvtsudoers_json_negation_mark_is_outside_the_type_tag() {
+    // Ordering matters: `project_ast` and `project_cvtsudoers_json` must
+    // agree on whether the `!` goes before or after a type tag, or a
+    // negated, sigil'd value compares unequal for a reason that has nothing
+    // to do with negation. Module doc "Negation": the mark goes OUTERMOST.
+    let doc = serde_json::json!({
+        "User_Specs": [{
+            "User_List": [{ "usergroup": "wheel", "negated": true }],
+            "Host_List": [{ "hostname": "ALL" }],
+            "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+        }]
     });
     let proj = project_cvtsudoers_json(&doc).expect("known key shapes must not error");
     assert_eq!(
         proj.users,
-        vec!["alice".to_string()],
-        "a companion \"negated\": true must not change the extracted bare value"
+        vec!["!usergroup:wheel".to_string()],
+        "negation must be marked OUTSIDE the type tag, got {:?}",
+        proj.users
     );
 }
 
