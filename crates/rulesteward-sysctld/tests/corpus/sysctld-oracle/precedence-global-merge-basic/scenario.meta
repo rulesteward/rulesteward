@@ -1,0 +1,7 @@
+id: precedence-global-merge-basic
+category: precedence
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: global alphabetic merge regardless of directory: usr/lib/sysctl.d/99-z.conf (rank 3, lowest precedence dir) sorts after etc/sysctl.d/10-a.conf (rank 0) and wins (W03-a). Compliant value 2 in etc is overridden by non-compliant 0 in usr/lib.

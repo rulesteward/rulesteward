@@ -1,0 +1,7 @@
+id: slot-symlink-standard-applied
+category: slot-symlink
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: the standard distro 99-sysctl.conf -> ../sysctl.conf symlink present and correct: systemd-sysctl applies /etc/sysctl.conf at the 99 slot. Both RuleSteward and the real oracle apply kernel.randomize_va_space=0.

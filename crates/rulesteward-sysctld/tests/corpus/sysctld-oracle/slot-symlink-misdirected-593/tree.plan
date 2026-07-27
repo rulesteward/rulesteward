@@ -1,0 +1,9 @@
+f	etc/rs9k1-hidden.conf	
+l	etc/sysctl.d/99-sysctl.conf	../rs9k1-hidden.conf
+---
+d	etc/sysctl.d	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
+l	etc/sysctl.d/99-sysctl.conf	../rs9k1-hidden.conf

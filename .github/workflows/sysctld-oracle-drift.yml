@@ -1,0 +1,139 @@
+name: sysctld-oracle-drift
+
+# Weekly LIVE differential drift check for the sysctld backend (epic #499,
+# session 9k-1 Lane B): re-derives the sysctl.d/sysctl.conf precedence +
+# masking oracle from a REAL systemd-sysctl binary (in the shared
+# rs-oracle{8,9,10} containers) and fails on drift against the shipped
+# parser/lints. On drift, open/update a tracking issue (it never edits code).
+# The on-demand path is `just diff-sysctld`.
+#
+# This is the LIVE tier only - the OFFLINE tier (a plain `cargo test` over the
+# committed corpus under
+# crates/rulesteward-sysctld/tests/corpus/sysctld-oracle/) has no skip path
+# at all and already runs in `just test` / `just ci` on every PR. See
+# CONTRIBUTING.md "Differential oracle contract" for the two-tier split and
+# the exit-code contract this job depends on (0 clean, 1 drift, 2
+# tool/environment error, 3 a legitimate skip - promoted to 2 below since CI
+# always builds the oracle images itself).
+#
+# Unlike the older probe/STIG drift jobs (auditd-stig-drift.yml,
+# sshd-probe-drift.yml), which invoke their tool's cargo binary directly, this
+# lane's driver (scripts/rs-oracle-diff.sh) is plain bash with no `just`
+# dependency on the runner, so it is invoked the same way `just diff-sysctld`
+# does locally: `bash scripts/rs-oracle-diff.sh sysctld`.
+#
+# Cron slot: Mondays 09:00 UTC (the auditd-stig-drift.yml comment reserves
+# Wednesday for itself and notes Monday as the sysctld slot; sshd-stig-drift
+# and sshd-probe-drift already own Tuesday/Wednesday). Offset by an hour from
+# 08:00 because cis-drift.yml already occupies Monday 08:00 UTC exactly;
+# stig-drift.yml's Monday 06:00 UTC is also free of collision.
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Mondays 09:00 UTC
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI always builds the rs-oracle images below, so a missing docker/image
+  # here is a real tool error, never an honest local-dev skip. Fail-closed
+  # parsing lives in scripts/rs-oracle-required.sh - any non-empty value that
+  # is not an explicit off-switch (0/false/no/off) means required; comparing
+  # against the literal "1" would be fail-open (see that script's header).
+  RS_ORACLE_REQUIRED: "1"
+
+jobs:
+  drift:
+    name: sysctld precedence/masking drift vs live systemd-sysctl (rs-oracle8/9/10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: sysctld-oracle-drift
+      - name: Build the shared rs-oracle8/9/10 images
+        # Shared by all three session 9k-1 lanes (auditd/sysctld/sudoers) - see
+        # tools/oracle-images/README.md. A build failure here (e.g. a Rocky repo
+        # hiccup) fails the job distinctly from a drift.
+        run: |
+          set -euo pipefail
+          for v in 8 9 10; do
+            docker build -t "rs-oracle${v}" "tools/oracle-images/dockerfiles/${v}"
+          done
+      - name: Live drift check vs the shipped sysctld parser/lints
+        id: check
+        run: |
+          set +e
+          # scripts/rs-oracle-diff.sh writes its evidence (the DRIFT line, the
+          # failing test's tail, and finish()'s evidence-path line) to STDERR;
+          # its only stdout write is the rc-0 "OK (0 drift, N scenarios)" line.
+          # A drift.txt/drift.err split (copied from auditd-stig-drift.yml,
+          # where it is correct because that tool's own DRIFT line is on
+          # stdout) would leave the issue body below embedding an EMPTY code
+          # fence on every real drift - the ONE thing this workflow exists to
+          # report. Redirect both into ONE file so program order is preserved
+          # (they share a single file description; no interleaving hazard,
+          # unlike the docker two-stream demux the capture script had to fix).
+          bash scripts/rs-oracle-diff.sh sysctld > drift.txt 2>&1
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). ANY other code (2 =
+          # tool/environment error - docker/image missing despite
+          # RS_ORACLE_REQUIRED, a malformed scenario, an unexpectedly-writable
+          # /proc/sys safety abort, a cargo build failure, etc.) = fail the job
+          # loudly rather than guess.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "scripts/rs-oracle-diff.sh sysctld did not exit cleanly (rc=$RC; see logs" \
+               "above): docker may be unavailable, an rs-oracle image may have failed to" \
+               "build, the committed corpus itself may be red, or the harness may no longer" \
+               "compile against the rulesteward-sysctld API. See CONTRIBUTING.md" \
+               "'Differential oracle contract' for the exit-code table." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create sysctld-oracle-drift --color FBCA04 \
+            --description "sysctld precedence/masking drift vs live systemd-sysctl" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`just diff-sysctld\` run found the shipped sysctld parser/lints"
+            echo "no longer match what a live systemd-sysctl daemon does."
+            echo
+            echo "To investigate: run \`just diff-sysctld\` locally (needs docker + the"
+            echo "\`rs-oracle8/9/10\` images - see tools/oracle-images/README.md), inspect the"
+            echo "retained evidence directory the driver prints on a non-zero exit, reconcile"
+            echo "\`crates/rulesteward-sysctld/src/system.rs\` (precedence/masking) or"
+            echo "\`crates/rulesteward-sysctld/src/parser.rs\` (grammar) against the real"
+            echo "daemon's behavior, refresh the committed corpus under"
+            echo "\`crates/rulesteward-sysctld/tests/corpus/sysctld-oracle/\` by re-running"
+            echo "\`capture_sysctld.sh\`, re-gate (adversarial + mutation), and confirm"
+            echo "\`just diff-sysctld\` reports 0 drift."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label sysctld-oracle-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "sysctld drift: live systemd-sysctl daemon has changes" \
+              --label sysctld-oracle-drift --body-file issue-body.md
+          fi

@@ -1,0 +1,7 @@
+id: slot-symlink-dangling
+category: slot-symlink
+images: rs-oracle10
+targets: rhel10
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: 99-sysctl.conf -> ../sysctl.conf is DANGLING (no /etc/sysctl.conf exists): slot_symlink_ok() canonicalize fails -> false (not applied via the etc/sysctl.conf channel), matching the real oracle which silently skips a dangling .conf entry entirely (confirmed: no 'Parsing' line, no error, apply exits 0). Confirming (non-divergent): only 10-real.conf's value applies on both sides.

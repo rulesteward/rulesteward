@@ -1,0 +1,7 @@
+id: precedence-clean-merge-no-conflict
+category: precedence
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: positive control: four independent keys across all four directories, no basename collisions, no cross-directory override - every value applies as written. Confirms the merge does not spuriously drop or override unrelated keys.

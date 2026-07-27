@@ -1,0 +1,7 @@
+id: slot-symlink-absent-divergence
+category: slot-symlink
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: no 99-sysctl.conf slot at all: systemd-sysctl never reads /etc/sysctl.conf (confirmed: no 'Parsing /etc/sysctl.conf' debug line), so procps (which reads it dead-last) and systemd DIVERGE (W03-b). Effective value here (nothing else sets the key): unset for systemd.

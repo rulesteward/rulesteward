@@ -1,0 +1,7 @@
+id: key-grammar-asymmetric-separator
+category: key-grammar
+images: rs-oracle9
+targets: rhel9
+key: net.ipv4.conf.lo.forwarding
+xfail_issue: 
+comment: asymmetric separator canonicalization: a dot-first key (net.ipv4.conf.lo.forwarding) and a slash-first key (net/ipv4/conf/lo/forwarding) in two different files are the SAME canonical key to the real oracle (confirmed: 'Overwriting earlier assignment of net/ipv4/conf/lo/forwarding'), matching RuleSteward's canonical_key() model exactly. Not a STIG/CIS-tracked key; compared via the apply-debug transcript directly rather than a W02/W04 message.

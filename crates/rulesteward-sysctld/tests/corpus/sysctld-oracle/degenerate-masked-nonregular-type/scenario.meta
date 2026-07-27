@@ -1,0 +1,7 @@
+id: degenerate-masked-nonregular-type
+category: degenerate
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: type-agnostic masking: usr/lib/sysctl.d/50-x.conf is a .conf-NAMED DIRECTORY (not a file), masked by the regular file etc/sysctl.d/50-x.conf with the same basename. Confirmed: real oracle 'Skipping overridden file' - masking is decided by NAME lookup before the masked entry's type is even inspected, matching RuleSteward's enumerate() exactly (masking check precedes the is_file()/is_symlink() content-decision).

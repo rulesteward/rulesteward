@@ -1,0 +1,7 @@
+id: key-grammar-malformed-line-reject
+category: key-grammar
+images: rs-oracle10
+targets: rhel10
+key: NONE
+xfail_issue: 
+comment: the REJECT side of the corpus-wide two-sided positive control: a bare non-assignment line ('this is not valid', no '='). The real oracle logs a parse rejection ('Line is not an assignment, ignoring') and exits nonzero; RuleSteward emits sysctld-F01 for the same line. If a corpus capture ever shows NO reject-signal anywhere, the ORACLE-BROKEN guard fires.

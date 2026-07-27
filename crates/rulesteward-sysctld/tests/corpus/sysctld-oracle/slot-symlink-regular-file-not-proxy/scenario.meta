@@ -1,0 +1,7 @@
+id: slot-symlink-regular-file-not-proxy
+category: slot-symlink
+images: rs-oracle8
+targets: rhel8
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: 99-sysctl.conf exists as a REGULAR FILE (not a symlink) with its own real content: slot_symlink_ok() correctly returns false (a regular file canonicalizes to itself, != etc/sysctl.conf), and BOTH RuleSteward and the real oracle instead treat it as a normal drop-in contributing its own assignment. Confirming (non-divergent).

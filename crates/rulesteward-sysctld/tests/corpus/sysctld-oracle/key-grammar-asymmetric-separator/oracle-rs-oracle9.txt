@@ -1,0 +1,25 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/10-dotfirst.conf	
+f	etc/sysctl.d/20-slashfirst.conf	
+d	run/sysctl.d	
+d	usr/local/lib/sysctl.d	
+d	usr/lib/sysctl.d	
+l	lib	usr/lib
+=== CAT-CONFIG ===
+# /etc/sysctl.d/10-dotfirst.conf
+net.ipv4.conf.lo.forwarding = 1
+
+# /etc/sysctl.d/20-slashfirst.conf
+net/ipv4/conf/lo/forwarding = 0
+cat-config RC=0
+=== APPLY-DEBUG ===
+Parsing /etc/sysctl.d/10-dotfirst.conf
+Parsing /etc/sysctl.d/20-slashfirst.conf
+Overwriting earlier assignment of net/ipv4/conf/lo/forwarding at '/etc/sysctl.d/20-slashfirst.conf:1'.
+Setting '/proc/sys/net/ipv4/conf/lo/forwarding' to '0'
+Couldn't write '0' to 'net/ipv4/conf/lo/forwarding', ignoring: Read-only file system
+apply RC=0
+=== VERSION ===
+systemd 252 (252-67.el9_8.4.rocky.0.1)
++PAM +AUDIT +SELINUX -APPARMOR +IMA +SMACK +SECCOMP +GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT -QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK +XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified

@@ -1,0 +1,7 @@
+id: degenerate-conf-named-directory
+category: degenerate
+images: rs-oracle9
+targets: rhel9
+key: kernel.dmesg_restrict
+xfail_issue: 
+comment: a .conf-NAMED DIRECTORY: --cat-config hard-aborts on it (never reaches 60-after.conf, exits 1), while the real applier logs 'Failed to read file ..., ignoring: Is a directory' and CONTINUES to 60-after.conf (still exits 1, but with all subsequent keys applied). This is oracle-fidelity finding (a) in PROVENANCE.md. RuleSteward's own model (enumerate(): a .conf-named directory claims+masks its basename, contributes no assignments, never aborts) matches the APPLIER, not cat-config - confirming the CONTRIBUTING guidance to model the applier.
