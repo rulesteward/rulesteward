@@ -49,6 +49,16 @@ a known version divergence" rule asks for; it happens to be a package-metadata
 divergence rather than a behavioral one, because no behavioral one exists
 between el9 and el10 for this oracle's surface.
 
+**Directly confirmed against this corpus's own 30 scenarios, not just the
+exploratory probe above (2026-07-25):** diffing every scenario's `el9.json`
+against its `el10.json`, field-for-field except `target`/`sudo_rpm`, across
+all 30/30 scenarios (22 accept + 8 reject) shows zero differences. el9 and
+el10 are therefore behaviourally IDENTICAL for sudoers parsing on this
+corpus's own captured data, not merely on the separate ~25-construct probe;
+`target` and `sudo_rpm` are the only fields that legitimately differ per
+version, which is exactly why the per-version control rests on `rpm -q sudo`
+rather than on any observable oracle behavior.
+
 ### 2. el8 genuinely rejects newer-than-1.9.5p2 syntax; this corpus avoids it
 
 el8 ships `sudo-1.9.5p2` (grammar version 48) vs el9/el10's `sudo-1.9.17p2`

@@ -1,6 +1,6 @@
 //! Data-driven `sudoers(5)` differential-oracle corpus (#538, session 9k-1 Lane C).
 //!
-//! Checks RuleSteward's own answer (the hand-rolled `parser::parse` + the not-yet-
+//! Checks `RuleSteward`'s own answer (the hand-rolled `parser::parse` + the not-yet-
 //! written `oracle` projection/classification helpers) against a REAL `visudo` /
 //! `cvtsudoers` (sudo 1.9.x, Rocky 8/9/10) verdict captured per scenario, rather
 //! than a hand-authored expectation - see CONTRIBUTING.md "Differential oracle
@@ -50,9 +50,10 @@
 //!     - `User_List[]`: `{"username": S}` / `{"useralias": S}` (an unexpanded
 //!       `User_Alias`/`Cmnd_Alias` reference keeps the alias NAME here) /
 //!       `{"usergroup": S}` (bare, no `%`) / `{"netgroup": S}` (bare, no `+`) /
-//!       `{"userid": N}` (a JSON NUMBER, no `#| - stringify it).
+//!       `{"userid": N}` (a JSON NUMBER, no `#` - stringify it).
 //!     - `Host_List[]`: `{"hostname": S}` / `{"hostalias": S}`.
 //!     - `Cmnd_Specs[].Commands[]`: `{"command": S}` / `{"cmndalias": S}`.
+//!
 //!   Extract the bare string value regardless of which key is present (ignore
 //!   any companion `"negated": true`, which mirrors this test's own sigil-strip
 //!   normalization on the AST side - see `project_ast` above).
@@ -87,10 +88,11 @@
 //!        becomes ONE garbage `CmndItem::Cmnd` token instead of the real command.
 //!      - `accept-user-list-whitespace-bug`: `classify_user_spec`'s
 //!        `split_first_word` on the first host-group segment assumes the
-//!        User_List has no INTERNAL whitespace; `bob, ALL ALL=(ALL) ALL` splits
+//!        `User_List` has no INTERNAL whitespace; `bob, ALL ALL=(ALL) ALL` splits
 //!        at the first whitespace after `bob,`, dropping `ALL` from the user
 //!        list and merging it into the host list as one garbage `"ALL ALL"`
 //!        token.
+//!
 //!    `el8`'s `cvtsudoers -f json` emits INVALID JSON for `SELinux_Spec`
 //!    (measured 2026-07-25: a JSON array containing bare `"role": "..."` pairs
 //!    with no wrapping object - `serde_json` rejects it), so
@@ -126,6 +128,22 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-*` + 8 `reject-*` scenario directories.
 const SCENARIO_FLOOR: usize = 30;
 
+/// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
+/// comparisons. Measured 2026-07-25: 22 accept scenarios x 3 targets = 66
+/// candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid JSON) = 65
+/// attempted; minus 5 xfail hits (selinux on el9+el10, whitespace-bug on all
+/// 3) = 60 clean structural matches.
+const L3_CLEAN_FLOOR: usize = 60;
+
+/// Grounded EMPTY: see the module doc's L1 section. L1 has its OWN xfail
+/// table, deliberately separate from [`L2_XFAIL`]: L1 compares our parser's
+/// F01 verdict against visudo's DEFAULT gate, while L2 compares visudo's
+/// default gate against its STRICT gate - two different comparisons, so an L2
+/// divergence is not evidence of an L1 divergence. Reusing `L2_XFAIL` for L1
+/// would silently exempt an L1 comparison the moment an L2 entry is added,
+/// even though nothing about L1 itself changed.
+const L1_XFAIL: &[&str] = &[];
+
 /// Grounded EMPTY: see the module doc's L2 section. Kept as a named const (not
 /// a bare `0`) so a future divergence is added here explicitly rather than by
 /// loosening an inline literal.
@@ -158,11 +176,23 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
     resolve_corpus_root("RS_ORACLE_CORPUS_SUDOERS", &default)
 }
 
-/// Print the two mandatory sentinel lines. Called at the start of every
-/// corpus-driven test (not just one), so the banner survives regardless of
-/// which test the default parallel runner happens to execute or schedule
-/// first - `scripts/rs-oracle-diff.sh` only requires the line to appear
-/// somewhere in the combined `--nocapture` output.
+/// Print the two mandatory sentinel lines. Called in every corpus-driven test
+/// (not just one), so the banner survives regardless of which test the
+/// default parallel runner happens to execute or schedule first -
+/// `scripts/rs-oracle-diff.sh` only requires the line to appear somewhere in
+/// the combined `--nocapture` output.
+///
+/// `scenario_count` MUST be the number of comparisons this test actually
+/// performed, never the raw corpus directory count: a corpus of entirely
+/// unusable or entirely skipped rows would still satisfy the driver's
+/// `scenarios=0` anti-vacuity guard if this reported directory count, while
+/// comparing nothing. `positive_control_oracle_accepts_and_rejects_distinctly`
+/// and `per_version_identity_control` call this FIRST, before anything that
+/// could panic, with a fixed count known upfront (they always attempt the
+/// same fixed number of checks). The three corpus-loop tests (L1/L2/L3) call
+/// this AFTER their comparison loop, with the real accumulated `compared`
+/// tally, since how much they compare is data-dependent (L3 legitimately
+/// skips reject-verdict and scope-out rows) and cannot be known in advance.
 fn announce(root: &Path, mode: CorpusMode, scenario_count: usize) {
     eprintln!("{}", sentinel_banner(SENTINEL, mode, root));
     eprintln!("{}", sentinel_count(SENTINEL, scenario_count));
@@ -238,10 +268,11 @@ fn read_target(root: &Path, id: &str, target: &str) -> OracleDoc {
             .to_string()
     };
     let field_rc = |field: &str| -> i32 {
-        v[field]["rc"]
+        let raw = v[field]["rc"]
             .as_i64()
-            .unwrap_or_else(|| panic!("{}: missing integer {field}.rc", path.display()))
-            as i32
+            .unwrap_or_else(|| panic!("{}: missing integer {field}.rc", path.display()));
+        i32::try_from(raw)
+            .unwrap_or_else(|_| panic!("{}: {field}.rc {raw} does not fit in i32", path.display()))
     };
 
     OracleDoc {
@@ -315,7 +346,11 @@ fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
 fn positive_control_oracle_accepts_and_rejects_distinctly() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    announce(&root, mode, ids.len());
+    // This test always attempts exactly TARGETS.len() checks (one
+    // accept-vs-reject distinctness comparison per target), regardless of
+    // corpus size, so the true count is known upfront - not `ids.len()`,
+    // which is the unrelated corpus-directory count.
+    announce(&root, mode, TARGETS.len());
     assert!(
         ids.len() >= SCENARIO_FLOOR,
         "expected >= {SCENARIO_FLOOR} scenarios, found {}",
@@ -341,9 +376,8 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
         };
         if broken {
             eprintln!(
-                "{SENTINEL}: ORACLE-BROKEN target={target} accept({POSITIVE_CONTROL_ACCEPT})={:?} \
-                 reject({POSITIVE_CONTROL_REJECT})={:?} came back the same (or unclassifiable)",
-                accept_verdict, reject_verdict
+                "{SENTINEL}: ORACLE-BROKEN target={target} accept({POSITIVE_CONTROL_ACCEPT})={accept_verdict:?} \
+                 reject({POSITIVE_CONTROL_REJECT})={reject_verdict:?} came back the same (or unclassifiable)"
             );
         }
         assert!(
@@ -362,8 +396,11 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
 #[test]
 fn per_version_identity_control() {
     let (root, mode) = corpus_root();
-    let ids = scenarios(&root);
-    announce(&root, mode, ids.len());
+    // Three fixed pairwise sudo_rpm identity checks (el8-el9, el9-el10,
+    // el8-el10), always attempted regardless of corpus size - the true count
+    // is known upfront, so this test never needs `scenarios(&root)` at all.
+    let identity_pairs = TARGETS.len() * (TARGETS.len() - 1) / 2;
+    announce(&root, mode, identity_pairs);
 
     let el8 = read_target(&root, POSITIVE_CONTROL_ACCEPT, "el8").sudo_rpm;
     let el9 = read_target(&root, POSITIVE_CONTROL_ACCEPT, "el9").sudo_rpm;
@@ -390,7 +427,6 @@ fn per_version_identity_control() {
 fn l1_f01_matches_visudo_verdict_per_target() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    announce(&root, mode, ids.len());
     assert!(
         ids.len() >= SCENARIO_FLOOR,
         "expected >= {SCENARIO_FLOOR} scenarios, found {}",
@@ -415,10 +451,13 @@ fn l1_f01_matches_visudo_verdict_per_target() {
                     .unwrap_or_else(|e| panic!("L1 {id} ({target}): oracle unclassifiable: {e:?}"));
             let oracle_rejects = oracle_verdict == VisudoVerdict::Reject;
 
-            if L2_XFAIL.contains(&id.as_str()) {
-                // L2_XFAIL is unused here (L1 has its own, currently-empty
-                // table); this branch is unreachable but mirrors the
-                // selinux-corpus guard shape.
+            if L1_XFAIL.contains(&id.as_str()) {
+                // L1_XFAIL is its OWN table (currently empty), kept separate
+                // from L2_XFAIL so that an L2 divergence (visudo default vs
+                // strict gate) can never silently exempt an L1 comparison
+                // (our parser vs visudo's default gate) it was never measured
+                // against. This branch is unreachable today only because the
+                // table is empty; it mirrors the selinux-corpus guard shape.
                 xfail_hit.push(id.clone());
                 continue;
             }
@@ -432,6 +471,10 @@ fn l1_f01_matches_visudo_verdict_per_target() {
         }
     }
 
+    // Print AFTER the loop, using the real tally: L1's xfail table may not
+    // stay empty forever, and reporting the raw scenario-directory count
+    // would overstate what was actually compared the moment it grows.
+    announce(&root, mode, compared);
     assert!(
         compared >= SCENARIO_FLOOR * TARGETS.len(),
         "expected >= {} L1 comparisons, got {compared}",
@@ -439,9 +482,8 @@ fn l1_f01_matches_visudo_verdict_per_target() {
     );
     assert_eq!(
         xfail_hit.len(),
-        0,
-        "L1 has no known xfails; every scenario x target must agree exactly (see module doc's \
-         L1 grounding note on why this corpus avoids el8-vs-el9/10 version-gated syntax)"
+        L1_XFAIL.len(),
+        "every L1_XFAIL scenario must have been enumerated and hit"
     );
 }
 
@@ -453,7 +495,6 @@ fn l1_f01_matches_visudo_verdict_per_target() {
 fn l2_strict_gate_matches_default_gate() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    announce(&root, mode, ids.len());
 
     let mut compared = 0usize;
     let mut xfail_hit: Vec<String> = Vec::new();
@@ -490,6 +531,10 @@ fn l2_strict_gate_matches_default_gate() {
         }
     }
 
+    // Print AFTER the loop, using the real tally, for the same reason as L1:
+    // the raw scenario-directory count is not the same claim as "this many
+    // comparisons actually happened".
+    announce(&root, mode, compared);
     assert!(
         compared >= SCENARIO_FLOOR * TARGETS.len(),
         "expected >= {} L2 comparisons, got {compared}",
@@ -512,7 +557,6 @@ fn l2_strict_gate_matches_default_gate() {
 fn l3_structure_projection_matches_cvtsudoers() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    announce(&root, mode, ids.len());
 
     let mut compared = 0usize;
     let mut xfail_hit: Vec<String> = Vec::new();
@@ -532,6 +576,22 @@ fn l3_structure_projection_matches_cvtsudoers() {
                 // cover them. Not a scope-out, just out of L3's domain.
                 continue;
             }
+
+            // Fail-closed: a nonzero cvtsudoers exit means its stdout cannot be
+            // trusted for the structural comparison, regardless of whether
+            // that stdout happens to parse as syntactically valid JSON.
+            // Measured across the whole committed corpus (2026-07-25): every
+            // oracle-ACCEPT row, including the el8 SELinux_Spec scope-out
+            // below, has cvtsudoers_rc == 0 - that scope-out is a
+            // serialization defect (valid run, malformed JSON text), not an
+            // invocation failure, so gating on rc here cannot collide with it.
+            assert_eq!(
+                doc.cvtsudoers_rc, 0,
+                "L3 {id} ({target}): cvtsudoers exited {} (nonzero) on an oracle-ACCEPT \
+                 scenario; its stdout cannot be trusted for the structural comparison: \
+                 stdout={:?}",
+                doc.cvtsudoers_rc, doc.cvtsudoers_stdout
+            );
 
             let cvt_parsed: Result<Value, _> = serde_json::from_str(&doc.cvtsudoers_stdout);
             if L3_EL8_INVALID_JSON_SCOPE_OUT.contains(&(id.as_str(), target)) {
@@ -644,11 +704,13 @@ fn l3_structure_projection_matches_cvtsudoers() {
         }
     }
 
-    // Measured 2026-07-25: 22 accept scenarios x 3 targets = 66 candidate
-    // pairs; minus 1 scoped-out (el8 SELinux invalid JSON) = 65 attempted;
-    // minus 5 xfail hits (selinux on el9+el10, whitespace-bug on all 3) = 60
-    // clean structural matches.
-    const L3_CLEAN_FLOOR: usize = 60;
+    // Print AFTER the loop, using the real tally. This is the layer the
+    // vacuous-pass risk concretely applies to: reject scenarios, the el8
+    // scope-out, and xfail hits are all LEGITIMATE skips that reduce
+    // `compared` well below the raw scenario-directory count, so reporting
+    // `ids.len()` here would overstate what L3 actually compared.
+    announce(&root, mode, compared);
+
     assert!(
         compared >= L3_CLEAN_FLOOR,
         "expected >= {L3_CLEAN_FLOOR} clean L3 comparisons, got {compared}"

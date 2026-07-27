@@ -43,11 +43,24 @@
 #   is cheap at this corpus's scale (30 scenarios x 3 targets x 4 programs).
 #   All four calls for one (scenario, target) pair happen inside a SINGLE
 #   `docker run`, delimited by plain-text markers the host parses back apart.
+# - Every write (the output dir, each scenario dir, the copied input, each
+#   per-target JSON document) goes through scripts/rs-capture-guard.sh
+#   (`rs_checked` / `rs_checked_write`), which aborts the WHOLE capture with
+#   rc 2 the instant one fails, rather than continuing past it and producing
+#   a truncated corpus that still reports success (see that script's header
+#   for the "Disk quota exceeded" incident this defends against). The script
+#   ends with `rs_capture_verify_output` as an independent recount. A docker
+#   invocation's own nonzero exit is NOT a write, and is deliberately left as
+#   a soft per-(scenario,target) skip (tracked via `status`), same as before.
 
 set -uo pipefail
 
 OUT="${1:?usage: capture_sudoers.sh <output-dir>}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
+REPO_ROOT="$(cd "${SELF_DIR}/../../../../.." && pwd)" || exit 2
+# shellcheck disable=SC1091
+. "${REPO_ROOT}/scripts/rs-capture-guard.sh"
+rs_capture_guard_init "capture_sudoers"
 
 declare -A IMAGE_FOR=([el8]=rs-oracle8 [el9]=rs-oracle9 [el10]=rs-oracle10)
 TARGETS=(el8 el9 el10)
@@ -62,10 +75,7 @@ if ! docker image inspect "${IMAGES[@]}" >/dev/null 2>&1; then
     exit 3
 fi
 
-mkdir -p "$OUT" || {
-    echo "capture_sudoers: could not create output dir $OUT" >&2
-    exit 2
-}
+rs_checked mkdir -p "$OUT"
 
 # The sudo rpm version is a per-TARGET constant (not per-scenario); read it once
 # per target rather than once per (scenario, target) pair (90 redundant docker
@@ -73,13 +83,23 @@ mkdir -p "$OUT" || {
 declare -A RPM_FOR
 for target in "${TARGETS[@]}"; do
     image="${IMAGE_FOR[$target]}"
+    rs_capture_context "rpm-version/$target"
+    # Do NOT wrap this in rs_checked: the invocation lives inside a `$(...)`
+    # command substitution, which runs in its OWN subshell - an `exit` there
+    # would terminate only that subshell, not this script (see
+    # rs-capture-guard.sh's own header on this exact hazard). Capture the
+    # exit code directly and react at the TOP level instead.
     rpm_ver="$(docker run --rm --network=none "$image" rpm -q sudo 2>/dev/null)"
+    rpm_rc=$?
+    if [ "$rpm_rc" -ne 0 ]; then
+        rs_capture_die "target '$target': rpm -q sudo exited $rpm_rc inside $image"
+    fi
     if [ -z "$rpm_ver" ]; then
-        echo "capture_sudoers: target '$target': could not read the sudo rpm version" >&2
-        exit 2
+        rs_capture_die "target '$target': rpm -q sudo exited 0 but printed nothing"
     fi
     RPM_FOR[$target]="$rpm_ver"
 done
+rs_capture_context
 
 # The fixed (content-independent) container-side driver. Reads stdin ONCE,
 # then runs each of the four oracle programs against the SAME in-memory
@@ -205,22 +225,16 @@ for scen_dir in "$SELF_DIR"/*/; do
         continue
     fi
     scenario_count=$((scenario_count + 1))
-    mkdir -p "$OUT/$scen" || {
-        echo "capture_sudoers: could not create $OUT/$scen" >&2
-        status=2
-        continue
-    }
+    rs_capture_context "$scen"
+    rs_checked mkdir -p "$OUT/$scen"
     # The fresh corpus still needs the scenario's input alongside the oracle
     # results, since the Tier-1 test reads `input.sudoers` from the SAME
     # resolved corpus root regardless of committed/fresh mode.
-    cp "$input" "$OUT/$scen/input.sudoers" || {
-        echo "capture_sudoers: could not copy $input" >&2
-        status=2
-        continue
-    }
+    rs_checked cp "$input" "$OUT/$scen/input.sudoers"
 
     for target in "${TARGETS[@]}"; do
         image="${IMAGE_FOR[$target]}"
+        rs_capture_context "$scen/$target"
         blob="$(docker run --rm -i --network=none "$image" bash -c "$CONTAINER_SCRIPT" <"$input" 2>/dev/null)"
         run_rc=$?
         if [ "$run_rc" -ne 0 ] || [ -z "$blob" ]; then
@@ -234,6 +248,18 @@ for scen_dir in "$SELF_DIR"/*/; do
             status=2
             continue
         fi
+        # `rs_checked_write` owns the redirect and checks the write
+        # internally, but the WRITE side of a pipe still runs in its OWN
+        # implicit subshell (bash puts every pipeline stage, including the
+        # last, in a subshell unless `shopt -s lastpipe` is set with job
+        # control on - neither is true in a plain script; empirically
+        # confirmed: a bare `foo | fn_that_exits_2` leaves the ENCLOSING
+        # script running). So an internal failure there would otherwise be
+        # swallowed exactly like the original bug this guard exists to
+        # catch. `set -o pipefail` (already on, top of file) is what makes
+        # `$?` after the pipe reflect that failure; the explicit check below
+        # is what actually stops the CAPTURE rather than silently
+        # continuing past it.
         {
             printf '{\n'
             printf '  "target": "%s",\n' "$target"
@@ -246,7 +272,11 @@ for scen_dir in "$SELF_DIR"/*/; do
             printf ',\n'
             render_field "cvtsudoers_expanded" "$SEC_CVTSUDOERS_E"
             printf '\n}\n'
-        } >"$OUT/$scen/$target.json"
+        } | rs_checked_write "$OUT/$scen/$target.json"
+        write_rc=$?
+        if [ "$write_rc" -ne 0 ]; then
+            rs_capture_die "writing $OUT/$scen/$target.json exited $write_rc"
+        fi
         unset SEC_VISUDO SEC_VISUDO_STRICT SEC_CVTSUDOERS SEC_CVTSUDOERS_E
     done
 done
@@ -255,6 +285,13 @@ if [ "$scenario_count" -eq 0 ]; then
     echo "capture_sudoers: found zero scenario directories under $SELF_DIR" >&2
     exit 2
 fi
+
+# Independent recount (layer 2 of rs-capture-guard.sh): 1 input.sudoers plus
+# one JSON document per target, per scenario. Catches a write that was never
+# wrapped at all, regardless of what the code path above claims happened.
+rs_capture_context
+expected_files=$((scenario_count * (1 + ${#TARGETS[@]})))
+rs_capture_verify_output "$OUT" "$expected_files"
 
 echo "capture_sudoers: captured $scenario_count scenarios x ${#TARGETS[@]} targets into $OUT" >&2
 exit "$status"
