@@ -130,14 +130,15 @@ jobs:
       # (session 9k-1) Capture-write guard: every Tier-2 capture script
       # (crates/*/tests/corpus/*/capture_*.sh) must route every write through
       # rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) instead of
-      # a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd or an unwrapped
-      # `cat >` redirect - the class of bug that let a Tier-2 capture continue
-      # past `cp: Disk quota exceeded` and exit 0 having written a truncated
+      # a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd, an unwrapped
+      # `cat`/`echo`/`printf` redirect, or a `{ ...; } >>file` group-command
+      # redirect - the class of bug that let a Tier-2 capture continue past
+      # `cp: Disk quota exceeded` and exit 0 having written a truncated
       # corpus. Cheap static check (bash + awk, no cargo build), so it lives
-      # here in the lint tier alongside the other guards. Zero capture scripts
-      # exist on this branch yet (the auditd/sysctld/sudoers lanes have not
-      # merged theirs), which is why the gate's own EXPECTED_CAPTURE_SCRIPTS
-      # floor is 0 today - see scripts/check-capture-writes.sh's header.
+      # here in the lint tier alongside the other guards. All three lanes
+      # (auditd/sysctld/sudoers) have merged their capture_*.sh files as of
+      # the 9k-1 integration commit, so the gate's own EXPECTED_CAPTURE_SCRIPTS
+      # floor is 3 - see scripts/check-capture-writes.sh's header.
       - name: Capture-write guard (bare writes in Tier-2 capture scripts)
         run: bash scripts/check-capture-writes.sh
 

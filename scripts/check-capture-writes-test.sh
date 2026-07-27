@@ -9,11 +9,13 @@
 #
 #   Discovery glob: ROOT/crates/*/tests/corpus/*/capture_*.sh
 #   A write (cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd as the first word of
-#   a command segment, or a `cat` segment with a bare `>`/`>>` redirect) is a
-#   violation unless the segment's command word is `rs_checked` /
-#   `rs_checked_write`, the line is a whole-line comment, the write sits
-#   inside a here-doc BODY, or the line (or the line immediately above) carries
-#   'capture-write-exempt: <reason>' with a non-empty reason.
+#   a command segment; a `cat`/`echo`/`printf` segment with a bare `>`/`>>`
+#   redirect; or the closing-brace tail of a `{ ...; } >>file` group-command
+#   redirect) is a violation unless the segment's command word is
+#   `rs_checked` / `rs_checked_write` / `rs_checked_append_write`, the line is
+#   a whole-line comment, the write sits inside a here-doc BODY, or the line
+#   (or the line immediately above) carries 'capture-write-exempt: <reason>'
+#   with a non-empty reason.
 #
 #   EXIT CODES
 #     0 - clean (N>0 scripts, 0 violations; or 0 expected and 0 found, which
@@ -44,8 +46,8 @@ GATE="${REPO_ROOT}/scripts/check-capture-writes.sh"
 # grows an environment switch that could lower its floor in production. Same
 # positive-control idiom as scripts/rs-oracle-diff-test.sh.
 #
-# Most cases below (1-11, 13, 14, 15) are testing violation-detection or
-# root-handling behaviour that has nothing to do with EXPECTED_CAPTURE_SCRIPTS
+# Most cases below (1-11, 13, 14, 15, 17-21) are testing violation-detection
+# or root-handling behaviour that has nothing to do with EXPECTED_CAPTURE_SCRIPTS
 # - their synthetic fixture trees carry 0-2 capture scripts, a count that has
 # no reason to track whatever the shipped constant happens to be on this
 # branch. They run against GATE_FLOOR0 (set up below, floor forced to 0) so
@@ -387,6 +389,73 @@ else
         note_fail "case16_real_tree: message does not report scanning exactly ${shipped_floor} capture script(s) (got: $(cat "${real_tree_out}" 2>/dev/null || echo '<no output>'))"
     fi
 fi
+
+# ---------------------------------------------------------------------------
+# Cases 17-21 (integration-gate remediation, session 9k-1): the gate now also
+# catches a bare redirect out of `echo`/`printf`, and the tail of a
+# `{ ...; } >>file` group-command block - not just `cat`. These three forms
+# are exactly what escaped the ORIGINAL version of this gate in
+# crates/rulesteward-auditd/tests/corpus/auditd-oracle/capture_auditd.sh (a
+# bare `{ ...; } >>"${out}"` header write and a bare `printf ... >>"${out}"`
+# per row). Run against GATE_UNDER_TEST (still the floor-0 copy from cases
+# 1-11/13/14/15; case16 above used the real ${GATE} directly and never
+# touched this variable).
+# ---------------------------------------------------------------------------
+write_capture_script case17 capture_thing.sh <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "row" >>"$dst"
+EOF
+run_case "case17_printf_redirect_caught" case17 1
+assert_output_contains "case17_printf_redirect_caught" "capture_thing.sh:2:" \
+    "message names the file and line"
+assert_output_contains "case17_printf_redirect_caught" 'printf' \
+    "message quotes the violating command"
+
+write_capture_script case18 capture_thing.sh <<'EOF'
+#!/usr/bin/env bash
+echo "row" >>"$dst"
+EOF
+run_case "case18_echo_redirect_caught" case18 1
+assert_output_contains "case18_echo_redirect_caught" "capture_thing.sh:2:" \
+    "message names the file and line"
+
+write_capture_script case19 capture_thing.sh <<'EOF'
+#!/usr/bin/env bash
+{
+    echo "a"
+    echo "b"
+} >>"$dst"
+EOF
+run_case "case19_group_block_redirect_caught" case19 1
+assert_output_contains "case19_group_block_redirect_caught" "capture_thing.sh:5:" \
+    "message names the closing-brace line, where the group's own redirect lives"
+
+# ---------------------------------------------------------------------------
+# Case: piping into `rs_checked_append_write` is accepted - the append-mode
+# sibling of `rs_checked_write` for a capture that appends one row per loop
+# iteration rather than writing the whole file at once.
+# ---------------------------------------------------------------------------
+write_capture_script case20 capture_thing.sh <<'EOF'
+#!/usr/bin/env bash
+. "${REPO_ROOT}/scripts/rs-capture-guard.sh"
+rs_capture_guard_init "capture_test"
+printf 'row\n' | rs_checked_append_write "$dst"
+EOF
+run_case "case20_rs_checked_append_write_accepted" case20 0
+
+# ---------------------------------------------------------------------------
+# Case (THE ARROW-NOTATION REGRESSION CONTROL): an `echo`/`printf` line whose
+# quoted STRING ARGUMENT contains a documentation arrow ('\t'->TAB, a mapping
+# note) reads as a bare '>' to this line-level scanner but is not a redirect -
+# must NOT be flagged. This exact shape shipped in capture_auditd.sh's header
+# comment describing its byte-escaping scheme; the first version of the
+# echo/printf detection above flagged it as a false positive.
+# ---------------------------------------------------------------------------
+write_capture_script case21 capture_thing.sh <<'EOF'
+#!/usr/bin/env bash
+echo "# rule/stdout/stderr use '\t'->TAB, '\n'->LF (see esc_field)."
+EOF
+run_case "case21_arrow_notation_not_flagged" case21 0
 
 echo ""
 echo "----------------------------------------"

@@ -14,6 +14,7 @@
 #   rs_capture_die <msg...>         - print label[/context]: msg, exit 2
 #   rs_checked <cmd> [args...]      - run cmd; exit 2 if it fails or rc==0 args
 #   rs_checked_write <dest>         - write stdin to dest; exit 2 on failure
+#   rs_checked_append_write <dest>  - append stdin to dest; exit 2 on failure
 #   rs_capture_verify_output <dir> <min_entries>
 #                                   - count regular files under dir
 #                                     (recursively); exit 2 if fewer than
@@ -21,10 +22,10 @@
 #                                     non-numeric, or if dir does not exist
 #
 # Every case below runs the function under test in a SUBSHELL, because
-# rs_checked / rs_checked_write / rs_capture_verify_output / rs_capture_die
-# all call `exit` on failure - calling them directly in this script's own
-# process would abort the whole suite on the first failing case instead of
-# recording it.
+# rs_checked / rs_checked_write / rs_checked_append_write /
+# rs_capture_verify_output / rs_capture_die all call `exit` on failure -
+# calling them directly in this script's own process would abort the whole
+# suite on the first failing case instead of recording it.
 #
 # Run with no arguments; safe to run locally or in CI.
 
@@ -354,6 +355,42 @@ out="${TMPROOT}/case14b.out"
 rc=0
 ( source "${GUARD}"; rs_capture_guard_init "" ) >"${out}" 2>&1 || rc=$?
 assert_rc "case14b_guard_init_empty_label_exits_2" 2 "${rc}" "${out}"
+
+# ---------------------------------------------------------------------------
+# Case (session 9k-1 integration remediation): rs_checked_append_write
+# APPENDS rather than truncating - two calls against the same destination
+# must both survive in the file, in order. This is the append-mode sibling
+# of rs_checked_write, added because a Tier-2 capture that emits one row per
+# loop iteration cannot use the truncating form for every row.
+# ---------------------------------------------------------------------------
+dest15="${TMPROOT}/case15-out.txt"
+out="${TMPROOT}/case15.out"
+rc=0
+(
+    source "${GUARD}"
+    rs_capture_guard_init "case15"
+    printf 'first\n' | rs_checked_append_write "${dest15}"
+    printf 'second\n' | rs_checked_append_write "${dest15}"
+) >"${out}" 2>&1 || rc=$?
+assert_rc "case15_rs_checked_append_write_succeeds" 0 "${rc}" "${out}"
+if [[ -f "${dest15}" ]] && [[ "$(cat "${dest15}")" == $'first\nsecond' ]]; then
+    note_pass "case15_rs_checked_append_write_appends_both_calls"
+else
+    note_fail "case15_rs_checked_append_write_appends_both_calls: got '$(cat "${dest15}" 2>/dev/null || echo '<missing>')'"
+fi
+
+# ---------------------------------------------------------------------------
+# Case: rs_checked_append_write to an unwritable path exits 2. Same
+# ENOENT-not-EACCES reasoning as case5 (root-safe).
+# ---------------------------------------------------------------------------
+out="${TMPROOT}/case16.out"
+rc=0
+(
+    source "${GUARD}"
+    rs_capture_guard_init "case16"
+    printf 'x' | rs_checked_append_write "${TMPROOT}/no-such-dir/out.txt"
+) >"${out}" 2>&1 || rc=$?
+assert_rc "case16_rs_checked_append_write_unwritable_path_exits_2" 2 "${rc}" "${out}"
 
 echo ""
 echo "----------------------------------------"

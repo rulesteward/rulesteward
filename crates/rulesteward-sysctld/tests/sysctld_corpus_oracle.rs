@@ -547,6 +547,21 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
     // image), and read only from those three scenarios' own transcripts above -
     // see that collection site for why keying by image was wrong.
     let banners: Vec<(&String, &String)> = version_banners.iter().collect();
+    // Fewer than 3 banners means the per-version divergence control below
+    // cannot even run (a missing or malformed baseline-vendor-inventory-
+    // el{8,9,10} scenario), which is the SAME "the positive control cannot do
+    // its job" failure class as the pairwise-identical check further down,
+    // not ordinary product drift - so it gets the same {SENTINEL}: ORACLE-
+    // BROKEN treatment rather than being left to fail as an unmarked assert
+    // that scripts/rs-oracle-diff.sh's grep would misclassify as rc 1 DRIFT.
+    if banners.len() < 3 {
+        eprintln!(
+            "{SENTINEL}: ORACLE-BROKEN found only {} captured --version banner(s) for the \
+             baseline-vendor-inventory-el{{8,9,10}} scenarios (expected >= 3); the per-version \
+             divergence control cannot run without all three",
+            banners.len()
+        );
+    }
     assert!(
         banners.len() >= 3,
         "expected >= 3 captured --version banners (one per baseline-vendor-inventory-el{{8,9,10}} \
@@ -558,8 +573,8 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
         for j in (i + 1)..banners.len() {
             assert_ne!(
                 banners[i].1, banners[j].1,
-                "ORACLE-BROKEN: {} and {} captured IDENTICAL --version banners - the three \
-                 rs-oracle images are secretly the same file",
+                "{SENTINEL}: ORACLE-BROKEN {} and {} captured IDENTICAL --version banners - the \
+                 three rs-oracle images are secretly the same file",
                 banners[i].0, banners[j].0
             );
         }

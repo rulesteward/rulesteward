@@ -116,6 +116,26 @@ rs_checked_write() {
     fi
 }
 
+# Append stdin to a file, aborting with rc 2 if the write fails.
+#
+# The append-mode sibling of rs_checked_write, for a capture that builds a
+# file across a loop (one header, then one row per iteration) rather than in
+# a single write. Same reasoning as rs_checked_write: `rs_checked printf ...
+# >>f` binds the redirect to `rs_checked`, not to `printf`, so this form owns
+# the redirect itself and can check it.
+rs_checked_append_write() {
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+        rs_capture_die "rs_checked_append_write needs exactly one non-empty destination path"
+    fi
+    local dest="$1"
+    if ! cat >>"${dest}"; then
+        rs_capture_die "could not append to ${dest}"
+    fi
+    if [ ! -f "${dest}" ]; then
+        rs_capture_die "appended to ${dest} but it does not exist afterwards"
+    fi
+}
+
 # End-of-script assertion: the capture really produced output.
 #
 # `min_entries` is the number of regular files expected under `dir`, counted

@@ -26,13 +26,35 @@
 # one of these as a bare command starts the segment; `rs_checked cp ...`
 # starts the segment with `rs_checked`, so the write command is never in
 # command position at all and nothing needs to be special-cased for it).
-# A `cat` segment that redirects into a file with a bare `>`/`>>` (rather
-# than piping its output into `rs_checked_write`) is a violation of the same
-# shape - `rs_checked_write` exists precisely because `rs_checked cat > f`
-# cannot work (the shell binds the redirect to `rs_checked`, not to `cat`;
-# see rs-capture-guard.sh's own comment on that function). fd-only redirects
-# (`2>`, `>&`) and a discard to `/dev/null` are not writes this gate cares
-# about and are not flagged.
+#
+# A `cat`, `echo`, or `printf` segment that redirects into a file with a bare
+# `>`/`>>` (rather than piping its output into `rs_checked_write` /
+# `rs_checked_append_write`) is a violation of the same shape -
+# `rs_checked_write` exists precisely because `rs_checked cat > f` cannot
+# work (the shell binds the redirect to `rs_checked`, not to `cat`; see
+# rs-capture-guard.sh's own comment on that function) - and the same is true
+# of `echo`/`printf`, the two other commands these capture scripts use to
+# emit corpus content. fd-only redirects (`2>`, `>&`) and a discard to
+# `/dev/null` are not writes this gate cares about and are not flagged.
+#
+# A line consisting of a bare closing brace `}` followed by a redirect (the
+# tail of a `{ echo ...; echo ...; } >>file` group command) is a violation of
+# the same shape too: the group's individual commands may each look
+# unremarkable, but the WRITE is the group's own redirect, which sits alone
+# on this line - session 9k-1 Lane A shipped exactly this (a whole `{ ...; }`
+# header block appended into a corpus file with no rc check at all). Only the
+# bare `}...>` shape is matched (never `)...>`, which no capture script in
+# this repo currently uses for a real file write) - see "no speculative
+# abstraction": this gate special-cases only demonstrated shapes, not every
+# compound command bash can redirect.
+#
+# Deliberately NOT generalised to "any command followed by a bare redirect":
+# several capture scripts legitimately redirect a long-lived subprocess's
+# output straight into a corpus file (e.g. `docker start -a "$cid" >"$out"`)
+# and rely on an independent CONTENT check afterward rather than routing
+# through rs_checked_write - `cat`/`echo`/`printf`/a `}` group are the
+# specific shapes this gate flags because they are the ones this project has
+# actually gotten wrong.
 #
 # A shell command "segment" is whatever sits between the separators
 # `&&`, `||`, `;`, `|`, `(` and the keywords `then`, `else`, `do`. Checking
@@ -82,13 +104,20 @@
 # EXPECTED_CAPTURE_SCRIPTS below is the number of capture_*.sh files this
 # branch is expected to carry. Scanning FEWER than that is a hard failure -
 # a capture script vanishing (deleted, renamed, moved out of the glob shape)
-# must not silently shrink what this gate checks. Scanning exactly zero
-# when the constant is also zero is not a failure: today, on this branch,
-# the auditd/sysctld/sudoers lanes that own capture_*.sh files have not
-# merged yet, so a zero scan is this branch's honest state. That case still
-# prints an explicit "nothing to check" line rather than an "OK, all clean"
-# line, so the two can never be confused - the exact ambiguity that let
-# `just diff-fapolicyd` report success while checking nothing (#572).
+# must not silently shrink what this gate checks. As of session 9k-1's
+# integration commit, the auditd/sysctld/sudoers lanes have all merged their
+# capture_*.sh files, so the shipped floor below is 3 and a real scan of 3 is
+# this branch's honest, expected state - a scan of 0 is now a hard failure
+# (exit 2), not a pass.
+#
+# Scanning exactly zero is CLEAN only when the constant is ALSO zero (a state
+# this shipped script is not in; only a `sed`-ed COPY of it, as
+# check-capture-writes-test.sh's floor-0 cases use, or a future branch that
+# has deliberately lowered the floor back down, ever exercises that path).
+# That case still prints an explicit "nothing to check" line rather than an
+# "OK, all clean" line, so the two can never be confused - the exact
+# ambiguity that let `just diff-fapolicyd` report success while checking
+# nothing (#572).
 #
 # EXIT CODES
 #   0 - clean: either N>0 capture scripts scanned with 0 violations, or
@@ -111,10 +140,13 @@ if [[ ! -d "${ROOT}" ]]; then
     exit 2
 fi
 
-# Number of Tier-2 capture scripts expected to exist. RAISE THIS TO 3 in the
-# session 9k-1 integration-gate commit, once the auditd, sysctld and sudoers
-# lanes have all merged and their capture_*.sh files are on this branch. Until
-# then a zero scan is the honest state of the branch, not a passing gate.
+# Number of Tier-2 capture scripts expected to exist. Raised from 0 to 3 in
+# the session 9k-1 integration-gate commit, now that the auditd, sysctld and
+# sudoers lanes have all merged their capture_*.sh files onto this branch.
+# Change this only DELIBERATELY (a lane's capture script is added, removed,
+# or renamed out of the glob shape) - never to paper over a scan that came
+# back lower than expected, since that constant is the only thing standing
+# between "checked nothing" and "checked everything" for this gate.
 readonly EXPECTED_CAPTURE_SCRIPTS=3
 
 # Deliberately NOT overridable from the environment. An env var that can lower
@@ -144,14 +176,22 @@ if [[ "${scanned}" -lt "${EXPECTED_CAPTURE_SCRIPTS}" ]]; then
     exit 2
 fi
 
+# Reachable only when EXPECTED_CAPTURE_SCRIPTS is ALSO 0: the floor check
+# above already exits 2 for any scanned < EXPECTED_CAPTURE_SCRIPTS, so
+# "scanned == 0" survives past it only if the constant itself is 0. On the
+# shipped floor of 3 above, that never happens against the real tree - this
+# branch is exercised today only via check-capture-writes-test.sh's floor-0
+# gate copy (a future branch that legitimately lowers the floor back to 0
+# would also reach it for real). Kept, not deleted, for exactly that reason:
+# it is still correct product behaviour, not dead code.
 if [[ "${scanned}" -eq 0 ]]; then
     echo "check-capture-writes: 0 capture scripts found under" >&2
-    echo "  ${ROOT}/crates/*/tests/corpus/*/capture_*.sh. Nothing was scanned - and" >&2
-    echo "  that is the honest state of this branch today (session 9k-1's lanes have" >&2
-    echo "  not merged their capture_*.sh files yet), NOT the same thing as 'every" >&2
-    echo "  capture script is clean'. Raise EXPECTED_CAPTURE_SCRIPTS once real" >&2
-    echo "  capture scripts land, so a future accidental deletion fails loudly" >&2
-    echo "  instead of quietly returning to this same message." >&2
+    echo "  ${ROOT}/crates/*/tests/corpus/*/capture_*.sh. Nothing was scanned, which is" >&2
+    echo "  NOT the same thing as 'every capture script is clean' - it prints this" >&2
+    echo "  explicit message instead of an 'OK' line so the two can never be" >&2
+    echo "  confused. Only reachable when EXPECTED_CAPTURE_SCRIPTS is also 0; raise" >&2
+    echo "  it back once real capture scripts exist again, so a future accidental" >&2
+    echo "  deletion fails loudly instead of quietly returning to this message." >&2
     echo "check-capture-writes: nothing to check (0 capture scripts, 0 expected)"
     exit 0
 fi
@@ -251,11 +291,22 @@ BEGIN {
             hit = ""
             if (seg ~ /^(cp|mv|install|mkdir|rmdir|ln|truncate|tee|dd)([[:space:]]|$)/) {
                 hit = seg
-            } else if (seg ~ /^cat([[:space:]]|$)/) {
-                # A bare '>'/'>>' redirect out of `cat`, excluding fd-only
-                # forms (`2>`, `>&`) and a discard to /dev/null - none of
-                # those write bytes this gate needs verified.
-                if (seg ~ />/ && seg !~ /[0-9]>/ && seg !~ />&/ && seg !~ />[[:space:]]*\/dev\/null/) {
+            } else if (seg ~ /^(cat|echo|printf)([[:space:]]|$)/) {
+                # A bare '>'/'>>' redirect out of `cat`/`echo`/`printf`,
+                # excluding fd-only forms (`2>`, `>&`), a discard to
+                # /dev/null, and a `->` arrow (documentation prose describing
+                # an escaping/mapping scheme - e.g. "'\t'->TAB" - reads as a
+                # bare '>' to this line-level scan but is not a redirect at
+                # all) - none of those write bytes this gate needs verified.
+                if (seg ~ />/ && seg !~ /[0-9]>/ && seg !~ />&/ && seg !~ />[[:space:]]*\/dev\/null/ && seg !~ /->/) {
+                    hit = seg
+                }
+            } else if (seg ~ /^\}[[:space:]]*>/) {
+                # The tail of a `{ ...; } >>file` group-command redirect: the
+                # write is this line's redirect alone, regardless of what the
+                # group's individual commands look like. Same fd/devnull/arrow
+                # exclusions as above.
+                if (seg !~ /[0-9]>/ && seg !~ />&/ && seg !~ />[[:space:]]*\/dev\/null/ && seg !~ /->/) {
                     hit = seg
                 }
             }
@@ -267,7 +318,7 @@ BEGIN {
                 if (cur_has_bare_marker) {
                     printf "%s:%d: bare write (%s) has a capture-write-exempt: marker but NO stated reason - a hatch needs 'capture-write-exempt: <reason>', not just the bare token. Line: %s\n", FILENAME, lineno, hit, cur_line
                 } else {
-                    printf "%s:%d: bare write (%s) is not routed through rs_checked / rs_checked_write - wrap it, or add 'capture-write-exempt: <reason>' on this line or the line above. Line: %s\n", FILENAME, lineno, hit, cur_line
+                    printf "%s:%d: bare write (%s) is not routed through rs_checked / rs_checked_write / rs_checked_append_write - wrap it, or add 'capture-write-exempt: <reason>' on this line or the line above. Line: %s\n", FILENAME, lineno, hit, cur_line
                 }
             }
         }

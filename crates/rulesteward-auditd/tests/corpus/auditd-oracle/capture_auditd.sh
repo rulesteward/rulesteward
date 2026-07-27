@@ -178,6 +178,16 @@ while IFS=$'\t' read -r id class rule_b64; do
     printf '%s' "${rule}" >"${RULEFILE}"
     auditctl -R "${RULEFILE}" >/tmp/o 2>/tmp/e
     rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        # CLAUDE.md "rc 0 = the rule LOADED, so netlink is live (ABORT)": the
+        # rule just reached the REAL kernel ruleset. check_canary only probes
+        # AUDIT_GET (`auditctl -s`), so a runtime that permits ADD while
+        # denying GET would sail past every canary call and still be caught
+        # here - this is the only check with the actual blast radius covered.
+        # Abort THIS ENTIRE capture immediately; do not test another line.
+        echo "RULE_ADD_LIVE_ABORT id=${id}"
+        exit 0
+    fi
     so="$(cat /tmp/o)"
     se="$(cat /tmp/e)"
     rule_len=${#rule}
@@ -434,6 +444,7 @@ build_scenario_table() {
 capture_image() {
     local image="$1" elname="$2"
     local out="${OUTDIR}/${elname}.tsv"
+    local write_rc
     rs_capture_context "${image}"
 
     local audit_version
@@ -450,20 +461,39 @@ capture_image() {
     if printf '%s\n' "${raw}" | grep -qF "CANARY_LIVE_ABORT"; then
         rs_capture_die "SAFETY ABORT - auditctl -s canary SUCCEEDED on ${image} (netlink is live, host reachable); refusing to capture further"
     fi
+    if printf '%s\n' "${raw}" | grep -qF "RULE_ADD_LIVE_ABORT"; then
+        rs_capture_die "SAFETY ABORT - a rule line's 'auditctl -R' LOADED (rc 0) on ${image} even though the -s canary reported netlink inert; refusing to capture further (an ADD succeeding here means the HOST ruleset may just have been mutated - CLAUDE.md 'rc 0 = the rule LOADED, so netlink is live (ABORT)')"
+    fi
     if ! printf '%s\n' "${raw}" | grep -qF "ALL_DONE"; then
         rs_capture_die "container run for ${image} did not reach ALL_DONE; output was: ${raw}"
     fi
 
-    if ! : >"${out}"; then
-        rs_capture_die "could not create ${out}"
-    fi
+    # Both the header and every row are written via the rs-capture-guard
+    # pipe-in wrappers rather than a bare `>`/`>>` redirect (session 9k-1
+    # integration remediation: a bare `{ ...; } >>"${out}"` header block and a
+    # bare `printf ... >>"${out}"` per row both bypassed rs_checked, so a
+    # failed write here - the exact "cp: Disk quota exceeded, keep going,
+    # exit 0" shape rs-capture-guard.sh was built to catch - would have
+    # continued past a truncated corpus rather than aborting).
+    #
+    # Each pipe is followed by an explicit exit-status check (matching
+    # capture_sudoers.sh's own `write_rc=$?` pattern and its comment): a bare
+    # `foo | fn_that_exits_2` leaves the CALLING script running, because
+    # `exit` inside the pipeline's last stage only terminates that stage's
+    # subshell, not this script - `set -o pipefail` (top of file) is what
+    # makes `$?` reflect the failure afterward, but only an explicit check
+    # here actually stops the capture rather than silently continuing past it.
     {
         echo "# rs-diff-auditd corpus"
         echo "# target=${elname} image=${image} audit_version=${audit_version}"
         echo "# captured=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "# columns: target id class rc rule_len out_len err_len rule stdout stderr (exact split('\\t'), 10 fields)"
         echo "# rule/stdout/stderr use '\\\\'->'\\', '\\t'->TAB, '\\n'->LF, '\\r'->CR, '\\xHH'->that byte, '\\0'->the empty string (see capture_auditd.sh esc_field)."
-    } >>"${out}"
+    } | rs_checked_write "${out}"
+    write_rc=$?
+    if [ "${write_rc}" -ne 0 ]; then
+        rs_capture_die "writing header to ${out} exited ${write_rc}"
+    fi
 
     local line rest id class rc rule_len out_len err_len rule so se
     local row_count=0
@@ -474,7 +504,11 @@ capture_image() {
             IFS=$'\t' read -r id class rc rule_len out_len err_len rule so se <<<"${rest}"
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "${image}" "${id}" "${class}" "${rc}" "${rule_len}" "${out_len}" "${err_len}" \
-                "${rule}" "${so}" "${se}" >>"${out}"
+                "${rule}" "${so}" "${se}" | rs_checked_append_write "${out}"
+            write_rc=$?
+            if [ "${write_rc}" -ne 0 ]; then
+                rs_capture_die "appending row for id=${id} to ${out} exited ${write_rc}"
+            fi
             row_count=$((row_count + 1))
             ;;
         esac
@@ -484,13 +518,19 @@ capture_image() {
         rs_capture_die "0 ROW lines captured for ${image}; corpus would be empty"
     fi
     echo "capture_auditd: ${image} -> ${row_count} rows" >&2
+    CAPTURED_IMAGES=$((CAPTURED_IMAGES + 1))
     rs_capture_context
 }
 
+CAPTURED_IMAGES=0
 build_scenario_table || exit $?
 capture_image rs-oracle8 el8
 capture_image rs-oracle9 el9
 capture_image rs-oracle10 el10
 
-rs_capture_verify_output "${OUTDIR}" 3
+# The number this script itself computed while capturing (one per
+# capture_image call that completed without dying), never a hardcoded
+# literal - rs-capture-guard.sh's own contract for rs_capture_verify_output's
+# min_entries argument.
+rs_capture_verify_output "${OUTDIR}" "${CAPTURED_IMAGES}"
 exit 0
