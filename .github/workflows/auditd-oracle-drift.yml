@@ -68,10 +68,9 @@ jobs:
         id: check
         run: |
           set +e
-          just diff-auditd > drift.txt 2> drift.err
+          just diff-auditd > drift.txt 2>&1
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          cat drift.err
           cat drift.txt
           # rc: 0 = no drift, 1 = drift (open issue). Any other code (2 = tool/
           # environment error - including the safety canary firing, or the
