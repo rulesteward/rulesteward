@@ -39,10 +39,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GATE="${REPO_ROOT}/scripts/check-capture-writes.sh"
 
-# The gate binary each case runs. Normally the real one; a case that needs the
-# gate's own constants changed points this at a `sed`ed COPY instead, so the
-# shipped script never grows an environment switch that could lower its floor
-# in production. Same positive-control idiom as scripts/rs-oracle-diff-test.sh.
+# The gate binary each case runs. A case that needs the gate's own constants
+# changed points this at a `sed`ed COPY instead, so the shipped script never
+# grows an environment switch that could lower its floor in production. Same
+# positive-control idiom as scripts/rs-oracle-diff-test.sh.
+#
+# Most cases below (1-11, 13, 14, 15) are testing violation-detection or
+# root-handling behaviour that has nothing to do with EXPECTED_CAPTURE_SCRIPTS
+# - their synthetic fixture trees carry 0-2 capture scripts, a count that has
+# no reason to track whatever the shipped constant happens to be on this
+# branch. They run against GATE_FLOOR0 (set up below, floor forced to 0) so
+# they exercise the SAME violation-scanning code path regardless of how many
+# real capture_*.sh files this branch has merged. Only case12 (floor-unmet)
+# needs a DIFFERENT floor, and only case16 (the real tree) must run the
+# actual shipped, unmodified gate - both override GATE_UNDER_TEST locally.
 GATE_UNDER_TEST="${GATE}"
 
 TMPROOT="$(mktemp -d)"
@@ -106,6 +116,33 @@ assert_output_contains() {
         note_fail "${name}: ${desc} (got: $(cat "${out}" 2>/dev/null || echo '<no output>'))"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# Violation-detection gate copy: floor forced to 0.
+#
+# Cases 1-11, 13, 14 and 15 test whether a bare write is caught, what the
+# message says, and how a missing-root or dirty-sibling tree is handled -
+# none of that is about EXPECTED_CAPTURE_SCRIPTS. Their fixtures carry 0-2
+# capture scripts, which is unrelated to (and must not be made to track)
+# whatever the shipped gate's floor is on this branch. They run against a
+# COPY of the gate with the floor forced to 0, so a fixture with 1 or 2
+# scripts always clears the floor check and reaches the actual scan.
+#
+# Same `cmp -s` guard idiom as case12 below: if EXPECTED_CAPTURE_SCRIPTS is
+# ever renamed or reformatted, the substitution silently edits nothing, and
+# GATE_UNDER_TEST is deliberately left pointed at the real, unmodified
+# ${GATE} in that event - so every case below fails LOUDLY (rc mismatches
+# against the shipped floor) instead of quietly validating nothing.
+# ---------------------------------------------------------------------------
+GATE_FLOOR0="${TMPROOT}/check-capture-writes-floor0.sh"
+sed -E 's/^readonly EXPECTED_CAPTURE_SCRIPTS=[0-9]+$/readonly EXPECTED_CAPTURE_SCRIPTS=0/' \
+    "${GATE}" >"${GATE_FLOOR0}"
+chmod +x "${GATE_FLOOR0}"
+if cmp -s "${GATE}" "${GATE_FLOOR0}"; then
+    note_fail "gate_floor0_setup: the floor substitution edited nothing; EXPECTED_CAPTURE_SCRIPTS was renamed or reformatted, so cases 1-11/13/14/15 will run against the unmodified (real-floor) gate and fail loudly on their own rc checks"
+else
+    GATE_UNDER_TEST="${GATE_FLOOR0}"
+fi
 
 # ---------------------------------------------------------------------------
 # Case: a bare `cp` is caught.
@@ -251,16 +288,22 @@ assert_output_contains "case11_hatch_without_reason_rejected" "NO stated reason"
 # Case (THE ANTI-VACUITY CASE): EXPECTED_CAPTURE_SCRIPTS unmet -> exit 2, not
 # a pass.
 #
-# Exercised against a `sed`ed COPY of the gate rather than an environment
-# override, so the shipped script carries no switch that could lower its floor
-# outside this suite. The `cmp` check is what keeps this honest: if the
-# constant is ever renamed or reformatted the substitution silently matches
-# nothing, and this case would then be running an UNMODIFIED gate whose floor
-# of 0 is trivially met - a green case testing the opposite of what it claims.
+# This fixture provides 0 capture scripts, so any floor forced strictly above
+# 0 makes the floor unmet - the exact value (2) is arbitrary, chosen only to
+# be visibly different from both 0 and the shipped constant. Exercised
+# against a `sed`ed COPY of the gate rather than an environment override, so
+# the shipped script carries no switch that could lower its floor outside
+# this suite. The `cmp` check is what keeps this honest: if
+# EXPECTED_CAPTURE_SCRIPTS is ever renamed or reformatted, the substitution
+# silently edits nothing, and this case would then run the UNMODIFIED gate -
+# whose real floor might still coincidentally exceed this fixture's 0
+# scripts and report "unmet" for the wrong reason, masking the fact that the
+# intended substitution never took effect. The `cmp -s` comparison, not this
+# case's exit code, is what surfaces that.
 # ---------------------------------------------------------------------------
 mkdir -p "${TMPROOT}/case12/crates/fake/tests/corpus/scenario"
 GATE_FLOOR2="${TMPROOT}/check-capture-writes-floor2.sh"
-sed 's/^readonly EXPECTED_CAPTURE_SCRIPTS=0$/readonly EXPECTED_CAPTURE_SCRIPTS=2/' \
+sed -E 's/^readonly EXPECTED_CAPTURE_SCRIPTS=[0-9]+$/readonly EXPECTED_CAPTURE_SCRIPTS=2/' \
     "${GATE}" >"${GATE_FLOOR2}"
 chmod +x "${GATE_FLOOR2}"
 if cmp -s "${GATE}" "${GATE_FLOOR2}"; then
@@ -270,13 +313,18 @@ else
     run_case "case12_expected_floor_unmet" case12 2
     assert_output_contains "case12_expected_floor_unmet" "expected at least" \
         "message states the unmet floor"
-    GATE_UNDER_TEST="${GATE}"
+    GATE_UNDER_TEST="${GATE_FLOOR0}"
 fi
 
 # ---------------------------------------------------------------------------
-# Case: zero capture scripts found, with the SHIPPED (unoverridden) floor of
-# 0, is clean but must say "nothing to check" - never an "OK, all clean" line
-# that could be confused with a real, positive scan.
+# Case: zero capture scripts found, with the floor forced to 0 (GATE_FLOOR0,
+# same copy cases 1-11 use), is clean but must say "nothing to check" - never
+# an "OK, all clean" line that could be confused with a real, positive scan.
+# This is no longer the SHIPPED floor (that floor is whatever
+# EXPECTED_CAPTURE_SCRIPTS currently is on this branch - see case16 for the
+# case that pins the shipped value against the real repo); this case is
+# purely about the "0 expected, 0 found" message wording, which is exercised
+# the same way regardless of what the shipped constant says.
 # ---------------------------------------------------------------------------
 mkdir -p "${TMPROOT}/case13/crates/fake/tests/corpus/scenario"
 run_case "case13_zero_expected_zero_found" case13 0
@@ -307,19 +355,37 @@ assert_output_contains "case15_one_dirty_sibling_fails_the_scan" "capture_dirty.
     "message names the specific dirty file"
 
 # ---------------------------------------------------------------------------
-# Case: THE REAL TREE, with no ROOT argument, must be clean. On this branch
-# today that means 0 capture scripts (the auditd/sysctld/sudoers lanes have
-# not merged their capture_*.sh files yet), so this doubles as this suite's
-# own dogfood confirmation that "0 expected, 0 found" is really what ships.
+# Case: THE REAL TREE, with no ROOT argument and the REAL, unmodified shipped
+# gate (never GATE_UNDER_TEST), must be clean AND must report scanning
+# exactly EXPECTED_CAPTURE_SCRIPTS scripts. This is the case whose absence
+# let the floor raise from 0 to 3 go unnoticed by this suite until `just ci`
+# actually ran the real gate against the real tree - every other case here
+# runs against a synthetic fixture, so none of them would have caught a
+# lane's capture_*.sh silently vanishing from the real repository. An
+# rc-only check would not catch that either: if EXPECTED_CAPTURE_SCRIPTS were
+# ever accidentally lowered while a script actually vanished, rc could still
+# come back 0. So the expected count is read directly out of the constant
+# (never hardcoded a second time here) and asserted against the message,
+# meaning the two literally cannot drift apart from each other.
 # ---------------------------------------------------------------------------
-real_tree_out="${TMPROOT}/case16_real_tree.out"
-real_tree_rc=0
-(cd "${REPO_ROOT}" && bash "${GATE}") >"${real_tree_out}" 2>&1 || real_tree_rc=$?
-if [[ "${real_tree_rc}" -eq 0 ]]; then
-    note_pass "case16_real_tree (exit 0)"
+shipped_floor="$(grep -oE '^readonly EXPECTED_CAPTURE_SCRIPTS=[0-9]+' "${GATE}" | grep -oE '[0-9]+$')"
+if [[ -z "${shipped_floor}" ]]; then
+    note_fail "case16_real_tree: could not read EXPECTED_CAPTURE_SCRIPTS out of ${GATE} - the constant declaration was not found in the expected 'readonly EXPECTED_CAPTURE_SCRIPTS=<N>' shape"
 else
-    note_fail "case16_real_tree: expected exit 0, got ${real_tree_rc}"
-    sed 's/^/    | /' "${real_tree_out}" || true
+    real_tree_out="${TMPROOT}/case16_real_tree.out"
+    real_tree_rc=0
+    (cd "${REPO_ROOT}" && bash "${GATE}") >"${real_tree_out}" 2>&1 || real_tree_rc=$?
+    if [[ "${real_tree_rc}" -eq 0 ]]; then
+        note_pass "case16_real_tree (exit 0)"
+    else
+        note_fail "case16_real_tree: expected exit 0, got ${real_tree_rc}"
+        sed 's/^/    | /' "${real_tree_out}" || true
+    fi
+    if grep -qF "${shipped_floor} capture script(s) scanned" "${real_tree_out}" 2>/dev/null; then
+        note_pass "case16_real_tree: message reports scanning exactly the shipped floor (${shipped_floor}) capture script(s)"
+    else
+        note_fail "case16_real_tree: message does not report scanning exactly ${shipped_floor} capture script(s) (got: $(cat "${real_tree_out}" 2>/dev/null || echo '<no output>'))"
+    fi
 fi
 
 echo ""
