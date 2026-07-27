@@ -84,9 +84,12 @@
 //!    reference (`accept-undefined-alias-ref`: `alice ALL = NOSUCHALIAS`) and
 //!    an alias cycle (`accept-alias-cycle`: `User_Alias A = B` / `User_Alias
 //!    B = A` / `A ALL = ALL`) both parse clean under the default gate (rc 0,
-//!    stdout `parsed OK`, a `Warning:`-level diagnostic on stderr) but are
-//!    REJECTED under `-s` (rc 1, stdout EMPTY, an `Error:`-level diagnostic
-//!    naming the same alias). Both scenarios are in `L2_XFAIL`.
+//!    stdout `parsed OK`, a diagnostic naming the alias on stderr - el8
+//!    prefixes it `Warning:`, el9/el10 print the bare `stdin:L:C:` message
+//!    with no prefix) but are REJECTED under `-s` (rc 1, stdout EMPTY, the
+//!    same diagnostic - el8 prefixed `Error:` - naming the same alias). Both
+//!    scenarios are in `L2_XFAIL`; see `PROVENANCE.md` section 5 for the
+//!    full rc/stdout/stderr shape per target.
 //! 3. **L3 (structure-only projection)**: for every scenario where the oracle
 //!    ACCEPTS and `cvtsudoers -f json`'s stdout parses as JSON, does
 //!    `project_ast` agree with `project_cvtsudoers_json`? Two KNOWN, grounded
@@ -143,13 +146,13 @@ const SCENARIO_FLOOR: usize = 32;
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons. Measured: 24 accept scenarios x 3 targets = 72 candidate
 /// pairs; minus 1 scoped-out (el8 `SELinux` invalid JSON) = 71 attempted;
-/// minus 5 xfail hits (selinux on el9+el10, whitespace-bug on all 3) = 66
-/// clean structural matches. (The 2 scenarios added 2026-07-26 for L2 also
-/// flow through L3 as ordinary clean matches - confirmed directly against
-/// `parser::parse`: neither produces a `Malformed` line, and neither token
-/// shape collides with either known L3 divergence - so they raise this floor
-/// from 60 to 66 rather than needing a new xfail entry.)
-const L3_CLEAN_FLOOR: usize = 66;
+/// minus 11 xfail hits (4 scenarios x 3 targets, minus the 1 el8
+/// scope-out/xfail overlap - see `L3_XFAIL`) = 60 clean structural matches.
+/// (The 2 scenarios added 2026-07-26 for L2 also flow through L3 as ordinary
+/// clean matches - confirmed directly against `parser::parse`: neither
+/// produces a `Malformed` line, and neither token shape collides with any
+/// known L3 divergence.)
+const L3_CLEAN_FLOOR: usize = 60;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -162,11 +165,19 @@ const L3_CLEAN_FLOOR: usize = 66;
 /// multi-host-group line, two single-host-group lines sharing an alias, a
 /// single plain line, and a Defaults-only file with no `User_Specs` at all,
 /// so an implementation cannot pass by hardcoding one particular count.
+///
+/// `accept-multi-user-list` (`alice,bob ALL = /bin/ls`: 2 users, 1 tuple) is
+/// deliberately included because, without it, `tuple_count == users.len()`
+/// on every OTHER anchor here (2/2, 2/2, 1/1, 0/0) - a symmetric
+/// `tuple_count = users.len()` implementation would satisfy all four
+/// without ever counting host-groups at all. This anchor breaks that
+/// coincidence for free.
 const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
     ("accept-multi-hostgroup", 2),
     ("accept-user-alias-multi-spec", 2),
     ("accept-basic-all-grant", 1),
     ("accept-defaults-global", 0),
+    ("accept-multi-user-list", 1),
 ];
 
 /// Grounded EMPTY: see the module doc's L1 section. L1 has its OWN xfail
@@ -185,11 +196,26 @@ const L1_XFAIL: &[&str] = &[];
 /// being added here.
 const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 
-/// L3 structural-projection divergences: `(scenario_id, issue_number)`. Both
-/// ground #538; do NOT fix #538 in this lane.
+/// L3 structural-projection divergences: `(scenario_id, issue_number)`. All
+/// four ground #538; do NOT fix #538 in this lane.
+///
+/// `accept-notbefore` and `accept-timeout-option` were found in review
+/// (2026-07-26): `parser::parse_cmnd_spec`'s tag loop recognizes only `TAG:`
+/// syntax, so an `=`-form option (`NOTBEFORE=`, `TIMEOUT=`, and - the
+/// already-documented case - `ROLE=`/`TYPE=`) is not recognized as a tag at
+/// all and gets glued onto the following text as ONE garbage command token
+/// (`"NOTBEFORE=20260101000000Z /usr/bin/ls"`, `"TIMEOUT=30 /usr/bin/ls"`),
+/// while `cvtsudoers` correctly splits the option into its own `Options`
+/// entry and reports the bare command (`/usr/bin/ls`). This is the SAME
+/// defect class as `accept-selinux-role-type`, not a new one - both were
+/// previously in the corpus with their VISUDO VERDICT confirmed identical
+/// across targets (PROVENANCE.md section 2), but their STRUCTURAL
+/// projection was never checked before L3's `tuple_count` anchors existed.
 const L3_XFAIL: &[(&str, u32)] = &[
     ("accept-selinux-role-type", 538),
     ("accept-user-list-whitespace-bug", 538),
+    ("accept-notbefore", 538),
+    ("accept-timeout-option", 538),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -385,21 +411,21 @@ fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn project_ast_strips_negation_and_sigil_from_users() {
+fn project_ast_strips_negation_and_sigil_from_users_and_hosts() {
     use rulesteward_sudoers::ast::{
         CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
     };
 
     let file = rulesteward_sudoers::ast::SudoersFile {
         path: PathBuf::from("/etc/sudoers"),
-        source: "!alice !%wheel ALL = ALL\n".to_string(),
+        source: "!alice,!%wheel !web1 = ALL\n".to_string(),
         lines: vec![LogicalLine {
             line: 1,
-            span: 0..24,
+            span: 0..26,
             kind: LineKind::UserSpec(UserSpec {
                 users: vec!["!alice".to_string(), "!%wheel".to_string()],
                 host_groups: vec![HostGroup {
-                    hosts: vec!["ALL".to_string()],
+                    hosts: vec!["!web1".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
                         tags: vec![],
@@ -413,9 +439,17 @@ fn project_ast_strips_negation_and_sigil_from_users() {
     let proj = project_ast(&file);
     assert!(
         sorted_eq(&proj.users, &["alice".to_string(), "wheel".to_string()]),
-        "a leading `!` negation must be stripped (in addition to the `%` sigil \
-         already stripped), got {:?}",
+        "a leading `!` negation must be stripped from USERS (in addition to \
+         the `%` sigil already stripped), got {:?}",
         proj.users
+    );
+    // A projector with two independent strip helpers (one for users, one for
+    // hosts) could strip `!` on the user side and forget it on the host
+    // side; the users assertion above cannot see that.
+    assert!(
+        sorted_eq(&proj.hosts, &["web1".to_string()]),
+        "a leading `!` negation must ALSO be stripped from HOSTS, got {:?}",
+        proj.hosts
     );
 }
 
@@ -458,6 +492,32 @@ fn project_cvtsudoers_json_is_fail_closed_on_unknown_user_list_key() {
 }
 
 #[test]
+fn project_cvtsudoers_json_is_fail_closed_on_unknown_host_list_key() {
+    // The contract names THREE arrays (`User_List` / `Host_List` /
+    // `Cmnd_Specs[].Commands`); each has a DIFFERENT known-key set (5 / 2 /
+    // 2), so an implementation naturally needs three distinct match arms and
+    // this is the one the other two tests here do not exercise. Verified: an
+    // implementation that stays fail-closed on User_List and Commands but
+    // silently accepts (or skips) an unrecognized Host_List key adds no
+    // failure without this test.
+    let doc = serde_json::json!({
+        "User_Specs": [
+            {
+                "User_List": [{ "username": "alice" }],
+                "Host_List": [{ "nosuchkey": "x" }],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+            }
+        ]
+    });
+    let err = project_cvtsudoers_json(&doc).expect_err("an unknown Host_List key must be rejected");
+    assert!(
+        err.location.contains("Host_List"),
+        "expected the error to identify Host_List, got location={:?}",
+        err.location
+    );
+}
+
+#[test]
 fn project_cvtsudoers_json_is_fail_closed_on_unknown_commands_key() {
     let doc = serde_json::json!({
         "User_Specs": [
@@ -473,6 +533,58 @@ fn project_cvtsudoers_json_is_fail_closed_on_unknown_commands_key() {
         err.location.contains("Command"),
         "expected the error to identify Cmnd_Specs[].Commands, got location={:?}",
         err.location
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
+    // Each of the three tests above only checks its OWN error in isolation
+    // via `.contains(...)`, so a single constant location string covering
+    // all three arrays (e.g. "User_List/Host_List/Cmnd_Specs[].Commands")
+    // would satisfy every `.contains(...)` check individually while telling
+    // an operator nothing about WHICH array actually had the bad element.
+    // Confirm the three `location` values are pairwise distinct instead.
+    let user_list_err = project_cvtsudoers_json(&serde_json::json!({
+        "User_Specs": [{
+            "User_List": [{ "nosuchkey": "x" }],
+            "Host_List": [{ "hostname": "ALL" }],
+            "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+        }]
+    }))
+    .expect_err("an unknown User_List key must be rejected");
+
+    let host_list_err = project_cvtsudoers_json(&serde_json::json!({
+        "User_Specs": [{
+            "User_List": [{ "username": "alice" }],
+            "Host_List": [{ "nosuchkey": "x" }],
+            "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+        }]
+    }))
+    .expect_err("an unknown Host_List key must be rejected");
+
+    let commands_err = project_cvtsudoers_json(&serde_json::json!({
+        "User_Specs": [{
+            "User_List": [{ "username": "alice" }],
+            "Host_List": [{ "hostname": "ALL" }],
+            "Cmnd_Specs": [{ "Commands": [{ "nosuchkey": "x" }] }]
+        }]
+    }))
+    .expect_err("an unknown Commands key must be rejected");
+
+    assert_ne!(
+        user_list_err.location, host_list_err.location,
+        "User_List and Host_List errors must report DIFFERENT locations, both got {:?}",
+        user_list_err.location
+    );
+    assert_ne!(
+        host_list_err.location, commands_err.location,
+        "Host_List and Commands errors must report DIFFERENT locations, both got {:?}",
+        host_list_err.location
+    );
+    assert_ne!(
+        user_list_err.location, commands_err.location,
+        "User_List and Commands errors must report DIFFERENT locations, both got {:?}",
+        user_list_err.location
     );
 }
 
@@ -865,6 +977,46 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             "L3 {id} ({target}): our AST must have merged two host tokens into \
                              one garbage whitespace-containing token; got {:?}",
                             ast_proj.hosts
+                        );
+                    }
+                    "accept-notbefore" => {
+                        assert!(
+                            cvt_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
+                            "L3 {id} ({target}): the oracle must show the real command \
+                             /usr/bin/ls; got {:?}",
+                            cvt_proj.commands
+                        );
+                        assert!(
+                            !ast_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
+                            "L3 {id} ({target}): our AST must NOT show the clean command \
+                             (the NOTBEFORE= tag-loop gap swallows it); got {:?}",
+                            ast_proj.commands
+                        );
+                        assert!(
+                            ast_proj.commands.iter().any(|c| c.contains("NOTBEFORE=")),
+                            "L3 {id} ({target}): our AST's garbage command token must contain \
+                             the swallowed NOTBEFORE= text; got {:?}",
+                            ast_proj.commands
+                        );
+                    }
+                    "accept-timeout-option" => {
+                        assert!(
+                            cvt_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
+                            "L3 {id} ({target}): the oracle must show the real command \
+                             /usr/bin/ls; got {:?}",
+                            cvt_proj.commands
+                        );
+                        assert!(
+                            !ast_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
+                            "L3 {id} ({target}): our AST must NOT show the clean command \
+                             (the TIMEOUT= tag-loop gap swallows it); got {:?}",
+                            ast_proj.commands
+                        );
+                        assert!(
+                            ast_proj.commands.iter().any(|c| c.contains("TIMEOUT=")),
+                            "L3 {id} ({target}): our AST's garbage command token must contain \
+                             the swallowed TIMEOUT= text; got {:?}",
+                            ast_proj.commands
                         );
                     }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),

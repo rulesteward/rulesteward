@@ -73,7 +73,16 @@ upstream after 1.9.5p2) both `visudo -c` REJECT on el8 but ACCEPT on
 el9/el10. `TIMEOUT=`, `NOTBEFORE=`/`NOTAFTER=`, `sha256:` command digests,
 and all of `EXEC`/`NOEXEC`/`FOLLOW`/`NOFOLLOW`/`LOG_INPUT`/`LOG_OUTPUT`/
 `MAIL`/`SETENV`/`NOPASSWD`/`PASSWD` tags, and `ROLE=`/`TYPE=` SELinux specs,
-were confirmed IDENTICAL (accept) across all three targets.
+were confirmed IDENTICAL (accept) across all three targets - true of
+`visudo`'s VERDICT (which is why all of these are in the corpus at all), but
+NOT of the STRUCTURAL projection: `TIMEOUT=` and `NOTBEFORE=` (like the
+already-documented `ROLE=`/`TYPE=`) are `=`-form options that
+`parser::parse_cmnd_spec`'s tag loop does not recognize (it only recognizes
+`TAG:` syntax), so they get glued onto the following text as one garbage
+command token instead of being split into their own option and a clean
+command. Found in review 2026-07-26; `accept-notbefore` and
+`accept-timeout-option` are now in `L3_XFAIL` alongside
+`accept-selinux-role-type` - see section 8.
 
 This corpus deliberately contains NO version-gated-newer construct (no
 `INTERCEPT`, no regex `Cmnd_Alias`, no `LOG_SUBCMDS`), because RuleSteward's
@@ -193,7 +202,8 @@ normalizes BOTH sides to the bare value (strip a leading `!`, then a leading
 `%`/`+`/`#`) rather than reconstructing sigils on the `cvtsudoers` side, per
 the task's "structure-only, full-fidelity is a follow-up" framing. No corpus
 row exercises the `!negated` shape (see section 7); it is pinned instead by
-dedicated unit tests (`project_ast_strips_negation_and_sigil_from_users`,
+dedicated unit tests
+(`project_ast_strips_negation_and_sigil_from_users_and_hosts`,
 `project_cvtsudoers_json_ignores_negated_companion_flag`) in the Tier-1 test.
 
 ### 7. Two follow-up observations (recorded 2026-07-26, NOT acted on this session)
@@ -203,7 +213,7 @@ dedicated unit tests (`project_ast_strips_negation_and_sigil_from_users`,
   `accept-defaults-negated`, `accept-defaults-scoped-host`) have no
   `User_Specs` at all, so both `project_ast` and `project_cvtsudoers_json`
   trivially agree at `tuple_count == 0` with empty `users`/`hosts`/`commands`
-  - 9 of the 66 `L3_CLEAN_FLOOR` comparisons exercise nothing an incorrect
+  - 9 of the 60 `L3_CLEAN_FLOOR` comparisons exercise nothing an incorrect
     implementation could get wrong. `TUPLE_COUNT_ANCHORS` in the Tier-1 test
     pins non-zero values elsewhere in the corpus (including
     `accept-defaults-global` itself, pinned at 0 deliberately, alongside
@@ -219,12 +229,64 @@ dedicated unit tests (`project_ast_strips_negation_and_sigil_from_users`,
   validate alias resolution against `RuleSteward`'s own alias-walk lints),
   not something this session's structure-only projection needs.
 
+### 8. `accept-notbefore` and `accept-timeout-option` share #538's `=`-form-option bug
+
+Found in review (2026-07-26): the frozen `L3_CLEAN_FLOOR` this test carried
+(66) was unreachable by ANY implementation honouring the frozen contract -
+the true clean count is 60. Cause: `accept-notbefore`
+(`carol ALL = NOTBEFORE=20260101000000Z /usr/bin/ls`) and
+`accept-timeout-option` (`bob ALL = (root) TIMEOUT=30 /usr/bin/ls`) were
+selected for section 2's el8-vs-el9/10 verdict comparison, but neither was
+ever checked at the STRUCTURAL (L3) level before `TUPLE_COUNT_ANCHORS` made
+that level meaningful. Confirmed directly against
+`rulesteward_sudoers::parser::parse`:
+
+```
+accept-notbefore:      cmnd: Cmnd("NOTBEFORE=20260101000000Z /usr/bin/ls")
+accept-timeout-option: cmnd: Cmnd("TIMEOUT=30 /usr/bin/ls")
+```
+
+while `cvtsudoers -f json` (all three targets, both scenarios) splits the
+option into its own `Options` entry and reports the bare command:
+
+`accept-notbefore`:
+
+```json
+"Options": [{ "notbefore": "20260101000000Z" }],
+"Commands": [{ "command": "/usr/bin/ls" }]
+```
+
+`accept-timeout-option`:
+
+```json
+"runasusers": [{ "username": "root" }],
+"Options": [{ "command_timeout": 30 }],
+"Commands": [{ "command": "/usr/bin/ls" }]
+```
+
+This is `parser::parse_cmnd_spec`'s tag loop recognizing only `TAG:` syntax
+and swallowing any `=`-form option into the command token - EXACTLY the
+`ROLE=`/`TYPE=` defect already documented for `accept-selinux-role-type`
+(section 4 / this file's original #538 grounding), not a new divergence
+class. Both are now in `L3_XFAIL` alongside it. `L3_CLEAN_FLOOR` corrected
+66 -> 60 (72 candidates - 1 el8 scope-out - 11 xfail hits [4 scenarios x 3
+targets, minus the 1 scope-out/xfail overlap]).
+
+### 9. Full corpus re-derived live and diffed byte-for-byte (2026-07-26)
+
+Independent verification (review): re-ran `capture_sudoers.sh` against a
+fresh scratch directory and diffed all 128 files (32 scenarios x 4 files)
+against the committed corpus. **128 of 128 byte-identical.** This confirms
+the corpus is genuinely oracle-derived (not hand-edited after capture) and
+that the `rs-oracle{8,9,10}` images have not drifted since capture.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
 `nopasswd-specific`, `plain-specific-command`, `runas-noexec`,
-`selinux-role-type` (L3 xfail #538), `timeout-option`, `notbefore`,
-`defaults-global`, `defaults-negated`, `defaults-scoped-host`,
+`selinux-role-type` (L3 xfail #538), `timeout-option` (L3 xfail #538, found
+2026-07-26 - see section 8), `notbefore` (L3 xfail #538, found 2026-07-26 -
+see section 8), `defaults-global`, `defaults-negated`, `defaults-scoped-host`,
 `user-alias-basic`, `user-alias-multi-spec`, `host-alias`, `cmnd-alias`,
 `runas-alias`, `multi-hostgroup`, `multi-user-list`,
 `user-list-whitespace-bug` (L3 xfail #538), `uid-subject`, `group-subject`,
