@@ -63,6 +63,42 @@ pub struct UnclassifiedVisudo {
 /// follow-up, not this session. `users` / `hosts` / `commands` are flat,
 /// file-wide token lists; the test compares them as multisets, so neither
 /// projector needs to sort internally.
+///
+/// # Why a plain `String`, not a `Member { negated, kind, value }` struct
+///
+/// Considered and settled (2026-07-27, per-task review): keep the string
+/// encoding. Three reasons:
+/// - The `!` mark cannot collide by construction: [`resolve_bang_run`]
+///   consumes the ENTIRE leading bang-run, so its `remainder` provably never
+///   starts with `!`, and the `cvtsudoers` side reports negation via the
+///   companion `"negated"` flag rather than by leaving a `!` in the value.
+///   Injective on both sides - a structural property, not luck.
+/// - The `"<type>:"` tag CAN theoretically collide with a literal value that
+///   happens to contain a colon (see `PROVENANCE.md` section 15's
+///   `usergroup\:wheel` finding), but the recorded outcome is a LOUD
+///   mismatch, not a silent pass - a silent pass would need BOTH projectors
+///   to independently produce the SAME colliding string from DIFFERENT
+///   inputs, which is not what that finding shows.
+/// - Nothing in this codebase ever parses these strings back apart. They are
+///   built once (by exactly these two functions) and compared once (by the
+///   Tier-1 test's `sorted_eq`). That makes this an ENCODING, not a
+///   stringly-typed interface - and an encoding may be a string when the
+///   only operation performed on it is equality.
+///
+/// **Promotion triggers** (any one of these means revisit the encoding, not
+/// a reflexive "strings are always wrong" review comment):
+/// 1. The moment `PROVENANCE.md` section 15's `usergroup\:wheel` backlog item
+///    lands - i.e. the parser starts UNESCAPING `\:` - the `:` collision
+///    stops being loud and becomes SILENT, because both sides would then
+///    produce the identical unescaped literal `"usergroup:wheel"`. See the
+///    note left directly on that backlog entry.
+/// 2. A FOURTH orthogonal bit needs to be carried on a member (e.g. `runas`
+///    or `tags`, see the "Type tags" doc section's closing paragraph on why
+///    those are NOT carried today). Three bits in one string (value, type,
+///    negation) is the ceiling this encoding was sized for.
+/// 3. A failure message ever needs to say WHICH bit differed - a
+///    `Vec<String>` diff cannot distinguish "the negation disagreed" from
+///    "the type tag disagreed" from "the bare value disagreed".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureProjection {
     /// Number of `(User_List, Host_List, Cmnd_Specs)` tuples, one per
@@ -87,16 +123,22 @@ pub struct StructureProjection {
     pub commands: Vec<String>,
 }
 
-/// Fail-closed error: a `cvtsudoers -f json` element did not match any key shape
-/// measured against the real tool.
+/// Fail-closed error: some part of a `cvtsudoers -f json` document did not
+/// match a shape measured against the real tool - an element whose key set
+/// matches no recognized member type, a `User_List` / `Host_List` /
+/// `Cmnd_Specs` / `Commands` value that is present but is not a JSON array,
+/// or a `negated` value that is present but is not a JSON boolean.
 ///
-/// Silently skipping an unknown shape would shrink the projection and let the
-/// comparison pass for the wrong reason.
+/// Silently accepting an unmeasured shape (skipping the element, treating a
+/// non-array as empty, treating a non-bool `negated` as `false`) would
+/// shrink or reshape the projection and let the comparison pass for the
+/// wrong reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CvtsudoersProjectionError {
-    /// Which array the unknown element appeared in.
+    /// Which array, or other JSON path, the unexpected value was found at.
     pub location: &'static str,
-    /// The offending element, rendered for the failure message.
+    /// The offending value (or its containing element), rendered for the
+    /// failure message.
     pub element: String,
 }
 
@@ -114,11 +156,8 @@ pub struct CvtsudoersProjectionError {
 pub fn classify_visudo(
     rc: i32,
     stdout: &str,
-    stderr: &str,
+    _stderr: &str,
 ) -> Result<VisudoVerdict, UnclassifiedVisudo> {
-    // stderr does not participate in the decision today (see the doc comment);
-    // accepted only so the corpus row can be passed whole.
-    let _ = stderr;
     let parsed_ok = stdout.contains("parsed OK");
     if rc == 0 && parsed_ok {
         return Ok(VisudoVerdict::Accept);
@@ -260,6 +299,17 @@ pub fn project_ast(file: &SudoersFile) -> StructureProjection {
 /// /usr/bin/su` -> `{"command": "/usr/bin/su", "negated": true}`, no leading
 /// space). Each `!` is a single ASCII byte, so `bang_count` is always a valid
 /// byte index and slicing `token` at it lands on a char boundary.
+///
+/// `trim_start()` runs unconditionally, even when `bang_count == 0` (a token
+/// with no leading `!` at all). That is a documented ASSUMPTION, not a
+/// verified invariant of this function alone: it relies on every caller's
+/// upstream tokenizer already trimming whitespace before a zero-bang token
+/// can reach here, which is true TODAY (`parser.rs`'s `comma_split` trims
+/// every user/host token, and `rest.trim()` trims every command token before
+/// either reaches this function), so the unconditional trim is currently a
+/// no-op on that path rather than a masking risk. It would stop being a
+/// no-op, and become a real (if still one-sided) normalization, only if a
+/// caller ever stopped pre-trimming its tokens.
 fn resolve_bang_run(token: &str) -> (bool, &str) {
     let bang_count = token.bytes().take_while(|&b| b == b'!').count();
     let remainder = token[bang_count..].trim_start();
@@ -344,12 +394,14 @@ fn tag_host_sigil(token: &str) -> String {
     token.to_string()
 }
 
-/// Parses a uid/gid digit string in base 10 (matching `sudo_strtoid`) and
-/// re-renders it canonically, so a leading-zero token (`#0100`) compares
-/// equal to `cvtsudoers`' JSON-number report (`{"userid": 100}`). Falls back
-/// to the original digits, unchanged, if they do not parse as an integer:
-/// `project_ast` is infallible today (see its signature) and must never
-/// panic on an unexpected token.
+/// Parses a uid/gid digit string in base 10, matching `sudo_strtoid`'s
+/// base-10 rule, but NOT its `uid_t` domain bound (see `PROVENANCE.md`
+/// section 14 for that parked divergence: this parses as `u64`, `sudo_strtoid`
+/// as `uid_t`), and re-renders it canonically, so a leading-zero token
+/// (`#0100`) compares equal to `cvtsudoers`' JSON-number report
+/// (`{"userid": 100}`). Falls back to the original digits, unchanged, if they
+/// do not parse as an integer: `project_ast` is infallible today (see its
+/// signature) and must never panic on an unexpected token.
 fn canonicalize_decimal(digits: &str) -> String {
     digits
         .parse::<u64>()
@@ -358,19 +410,27 @@ fn canonicalize_decimal(digits: &str) -> String {
 
 /// Projects a `cvtsudoers -f json` document into the comparable structure view.
 ///
-/// Fail-closed on any `User_Specs[]` element whose `User_List` / `Host_List` /
-/// `Cmnd_Specs[].Commands` entries do not match a key shape measured against
-/// the real tool: `User_List` accepts `username`, `useralias`, `usergroup`,
-/// `netgroup`, `userid` (a JSON number), and `usergid` (a JSON number);
-/// `Host_List` accepts `hostname`, `hostalias`, `netgroup`, and
-/// `networkaddr`; `Cmnd_Specs[].Commands` accepts `command` and `cmndalias`.
-/// `print_member_json_int` (the real `cvtsudoers` source) keys `typestr` on
-/// member TYPE, not on which list a member appears in, so `netgroup`
-/// legitimately appears in both `User_List` and `Host_List`. A companion
-/// `"negated": true` MARKS the extracted value with an outermost `"!"`
-/// prefix (see [`project_ast`]'s "Negation" doc section) - it is no longer
-/// ignored; `project_ast` resolves the same `!` by PARITY on its own AST
-/// side, and the two must agree.
+/// Fail-closed at two levels, both via [`CvtsudoersProjectionError`]:
+/// - CONTAINER level (see [`get_array`]): `User_Specs`, `User_List`,
+///   `Host_List`, `Cmnd_Specs`, and `Commands` may each be legitimately
+///   ABSENT (e.g. a Defaults-only document omits `User_Specs` entirely), but
+///   a key that IS present must be array-shaped; present-and-not-an-array is
+///   an unmeasured shape, not a second way to spell "absent".
+/// - ELEMENT level: any `User_List` / `Host_List` / `Cmnd_Specs[].Commands`
+///   entries that do not match a key shape measured against the real tool:
+///   `User_List` accepts `username`, `useralias`, `usergroup`, `netgroup`,
+///   `userid` (a JSON number), and `usergid` (a JSON number); `Host_List`
+///   accepts `hostname`, `hostalias`, `netgroup`, and `networkaddr`;
+///   `Cmnd_Specs[].Commands` accepts `command` and `cmndalias`.
+///   `print_member_json_int` (the real `cvtsudoers` source) keys `typestr` on
+///   member TYPE, not on which list a member appears in, so `netgroup`
+///   legitimately appears in both `User_List` and `Host_List`. A companion
+///   `"negated"` key MARKS the extracted value with an outermost `"!"`
+///   prefix (see [`project_ast`]'s "Negation" doc section) - it is no longer
+///   ignored; `project_ast` resolves the same `!` by PARITY on its own AST
+///   side, and the two must agree. `negated` may likewise be legitimately
+///   ABSENT (defaults to un-negated) but must be a JSON boolean if present
+///   (see [`mark_negated`]).
 ///
 /// The extracted value carries the same `"<type>:"` prefix `project_ast`
 /// derives from a sigil (see that function's "Type tags" doc section),
@@ -391,42 +451,42 @@ pub fn project_cvtsudoers_json(
 
     // A file with no `User_Specs` at all (e.g. a Defaults-only document) omits
     // the key entirely rather than emitting an empty array; that is zero
-    // tuples, not a shape error. `.into_iter().flatten()` on the
-    // `Option<&Vec<_>>` yields nothing in that case, with no need for a
-    // placeholder empty Vec.
-    let specs = json.get("User_Specs").and_then(Value::as_array);
+    // tuples, not a shape error - see `get_array`'s doc comment for why that
+    // is `Ok(None)` rather than the same `None` a wrong-shaped-but-PRESENT
+    // key would also produce.
+    let specs = get_array(json, "User_Specs")?;
 
     for spec in specs.into_iter().flatten() {
         tuple_count += 1;
 
-        let user_list = spec.get("User_List").and_then(Value::as_array);
+        let user_list = get_array(spec, "User_List")?;
         for elem in user_list.into_iter().flatten() {
             let value = extract_user_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
                 location: "User_List",
                 element: elem.to_string(),
             })?;
-            users.push(mark_negated(value, elem));
+            users.push(mark_negated(value, elem)?);
         }
 
-        let host_list = spec.get("Host_List").and_then(Value::as_array);
+        let host_list = get_array(spec, "Host_List")?;
         for elem in host_list.into_iter().flatten() {
             let value = extract_host_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
                 location: "Host_List",
                 element: elem.to_string(),
             })?;
-            hosts.push(mark_negated(value, elem));
+            hosts.push(mark_negated(value, elem)?);
         }
 
-        let cmnd_specs = spec.get("Cmnd_Specs").and_then(Value::as_array);
+        let cmnd_specs = get_array(spec, "Cmnd_Specs")?;
         for cmnd_spec in cmnd_specs.into_iter().flatten() {
-            let cmnd_list = cmnd_spec.get("Commands").and_then(Value::as_array);
+            let cmnd_list = get_array(cmnd_spec, "Commands")?;
             for elem in cmnd_list.into_iter().flatten() {
                 let value =
                     extract_command_value(elem).ok_or_else(|| CvtsudoersProjectionError {
                         location: "Cmnd_Specs[].Commands",
                         element: elem.to_string(),
                     })?;
-                commands.push(mark_negated(value, elem));
+                commands.push(mark_negated(value, elem)?);
             }
         }
     }
@@ -439,10 +499,41 @@ pub fn project_cvtsudoers_json(
     })
 }
 
+/// Reads `json[key]` expected to hold an array, distinguishing the key being
+/// legitimately ABSENT from the key being PRESENT but not an array. `key`
+/// doubles as the [`CvtsudoersProjectionError::location`] label on the
+/// fail-closed path, since the two are the same JSON path in every caller
+/// below.
+///
+/// `Ok(None)` means "absent" (e.g. a Defaults-only document omits
+/// `User_Specs` entirely - that is zero tuples, not a shape error).
+/// `Ok(Some(_))` means present and array-shaped. `Err` means present but not
+/// an array - an unmeasured shape that must fail closed rather than being
+/// silently treated the same as a legitimate absence (which
+/// `.and_then(Value::as_array)` alone cannot distinguish: both a missing key
+/// and a present-non-array value produce `None`).
+fn get_array<'a>(
+    json: &'a Value,
+    key: &'static str,
+) -> Result<Option<&'a [Value]>, CvtsudoersProjectionError> {
+    match json.get(key) {
+        None => Ok(None),
+        Some(v) => Ok(Some(v.as_array().map(Vec::as_slice).ok_or_else(|| {
+            CvtsudoersProjectionError {
+                location: key,
+                element: v.to_string(),
+            }
+        })?)),
+    }
+}
+
 /// Extracts a `User_List[]` element's type-tagged value: `username` /
 /// `useralias` stay untagged (this projector cannot tell them apart);
 /// `usergroup` / `netgroup` gain a `"<type>:"` prefix; `userid` / `usergid`
-/// (JSON numbers) are stringified and prefixed the same way. Does NOT
+/// are read via [`Value::as_u64`] (never rendered through `Value`'s `Display`
+/// impl, which prints the raw JSON text - `1e3` would print as `"1000.0"`,
+/// not matching `canonicalize_decimal`'s `u64`-based `"1000"` on the AST
+/// side) and prefixed the same way as the string-valued keys above. Does NOT
 /// resolve a companion `"negated": true` - the caller applies that mark
 /// afterward, OUTSIDE this type tag (see [`mark_negated`] and
 /// [`project_ast`]'s "Negation" ordering).
@@ -458,10 +549,10 @@ fn extract_user_list_value(elem: &Value) -> Option<String> {
     if let Some(s) = elem.get("netgroup").and_then(Value::as_str) {
         return Some(format!("netgroup:{s}"));
     }
-    if let Some(n) = elem.get("userid").filter(|v| v.is_number()) {
+    if let Some(n) = elem.get("userid").and_then(Value::as_u64) {
         return Some(format!("userid:{n}"));
     }
-    if let Some(n) = elem.get("usergid").filter(|v| v.is_number()) {
+    if let Some(n) = elem.get("usergid").and_then(Value::as_u64) {
         return Some(format!("usergid:{n}"));
     }
     None
@@ -500,10 +591,22 @@ fn extract_command_value(elem: &Value) -> Option<String> {
 /// an already type-tagged value, iff `elem` carried a companion
 /// `"negated": true` - the cvt-side half of the same ordering `project_ast`
 /// applies via [`resolve_bang_run`] on its own AST tokens.
-fn mark_negated(value: String, elem: &Value) -> String {
-    let negated = elem
-        .get("negated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if negated { format!("!{value}") } else { value }
+///
+/// A genuinely absent `negated` key defaults to `false` (a measured fact:
+/// `cvtsudoers` omits the key rather than emitting `"negated": false` for an
+/// un-negated member). A `negated` key that IS present but is not a JSON
+/// boolean is a DIFFERENT, unmeasured shape and fails closed rather than
+/// being read as `false` by the same fallback - negation is the
+/// deny-vs-allow axis, the most security-relevant bit this module carries,
+/// so guessing on its unrecognized shape is exactly the kind of silent
+/// fail-open this module's fail-closed thesis rules out elsewhere.
+fn mark_negated(value: String, elem: &Value) -> Result<String, CvtsudoersProjectionError> {
+    let negated = match elem.get("negated") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| CvtsudoersProjectionError {
+            location: "negated",
+            element: elem.to_string(),
+        })?,
+    };
+    Ok(if negated { format!("!{value}") } else { value })
 }

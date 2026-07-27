@@ -1,16 +1,17 @@
 //! Data-driven `sudoers(5)` differential-oracle corpus (#538, session 9k-1 Lane C).
 //!
-//! Checks `RuleSteward`'s own answer (the hand-rolled `parser::parse` + the not-yet-
-//! written `oracle` projection/classification helpers) against a REAL `visudo` /
-//! `cvtsudoers` (sudo 1.9.x, Rocky 8/9/10) verdict captured per scenario, rather
-//! than a hand-authored expectation - see CONTRIBUTING.md "Differential oracle
-//! contract". This is the Tier-1 (offline) replay half; `capture_sudoers.sh` +
-//! `just diff-sudoers` (`scripts/rs-oracle-diff.sh sudoers`) is the Tier-2 (live)
-//! half, re-pointing this SAME test at a freshly captured corpus via
-//! `RS_ORACLE_CORPUS_SUDOERS`.
+//! Checks `RuleSteward`'s own answer (the hand-rolled `parser::parse` + the
+//! `oracle` projection/classification helpers in `src/oracle.rs`) against a REAL
+//! `visudo` / `cvtsudoers` (sudo 1.9.x, Rocky 8/9/10) verdict captured per
+//! scenario, rather than a hand-authored expectation - see CONTRIBUTING.md
+//! "Differential oracle contract". This is the Tier-1 (offline) replay half;
+//! `capture_sudoers.sh` + `just diff-sudoers` (`scripts/rs-oracle-diff.sh
+//! sudoers`) is the Tier-2 (live) half, re-pointing this SAME test at a freshly
+//! captured corpus via `RS_ORACLE_CORPUS_SUDOERS`.
 //!
-//! # Frozen API this test requires from `rulesteward_sudoers::oracle` (NOT YET
-//! WRITTEN - this test is the spec; it will not compile until it lands)
+//! # Frozen API this test requires from `rulesteward_sudoers::oracle` (landed in
+//! `00d543f`; this section remains the single best description of the frozen
+//! contract, so it is retitled rather than deleted now that the oracle exists)
 //!
 //! - `VisudoVerdict::{Accept, Reject}` + `UnclassifiedVisudo` (the fail-closed
 //!   error when rc and evidence text disagree).
@@ -823,7 +824,7 @@ fn project_ast_negation_is_kleene_star_not_a_single_strip() {
     // `{"command": "/usr/bin/su"}` with NO `negated` key; `!!!/usr/bin/su` ->
     // `negated: true`. A single-character strip (the pre-round-3 contract)
     // gets both the VALUE and the PARITY wrong for anything but exactly one
-    // `!`. Covers commands, users, and hosts - `strip_command_negation` /
+    // `!`. Covers commands, users, and hosts - `resolve_command_negation` /
     // `tag_member` are separate functions and could parity-count one while
     // still single-stripping the other.
     use rulesteward_sudoers::ast::{
@@ -2032,8 +2033,10 @@ fn l3_structure_projection_matches_cvtsudoers() {
         xfail_hit.len(),
         L3_XFAIL.len() * TARGETS.len() - scope_out_xfail_overlap,
         "every L3_XFAIL scenario must have been enumerated and xfailed on every target not \
-         stolen by an overlapping L3_EL8_INVALID_JSON_SCOPE_OUT entry (2 scenarios x 3 targets, \
+         stolen by an overlapping L3_EL8_INVALID_JSON_SCOPE_OUT entry ({} scenarios x {} targets, \
          minus {scope_out_xfail_overlap} scope-out/xfail overlap = {})",
+        L3_XFAIL.len(),
+        TARGETS.len(),
         L3_XFAIL.len() * TARGETS.len() - scope_out_xfail_overlap
     );
 }

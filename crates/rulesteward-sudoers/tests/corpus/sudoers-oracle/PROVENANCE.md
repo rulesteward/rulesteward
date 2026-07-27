@@ -487,6 +487,14 @@ parked scopes, not silent gaps.
   namespace this differential can rely on - noted for the corpus backlog,
   not acted on (no corpus row exercises it; would need backslash-unescaping
   in the parser to even reach the comparison meaningfully).
+  **Coupling note for whoever fixes this backlog item:** the moment the
+  parser starts unescaping `\:`, this collision stops being loud and becomes
+  SILENT, because both projectors would then produce the identical
+  unescaped literal `"usergroup:wheel"` from different inputs. This is
+  promotion trigger 1 of 3 for `StructureProjection`'s "keep the string
+  encoding, not a structured `Member` type" decision - see that struct's doc
+  comment in `src/oracle.rs`. Re-derive whether the string encoding still
+  holds before landing this fix.
 
 ### 16. Round 4: the compensating-error class is CLOSED; one parser-level miss remains, tracked outside this lane
 
