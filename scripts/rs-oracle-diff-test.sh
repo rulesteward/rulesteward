@@ -148,6 +148,11 @@ else
     suppress_banner="${STUB_TEST_NO_COMMITTED_BANNER:-0}"
 fi
 [ "${suppress_banner}" = "1" ] || echo "${SENTINEL}: mode=${mode} corpus=${root}"
+# Emits an EXTRA vacuous announcement BEFORE the real one, modelling a suite
+# whose parallel libtest threads each announce their own count and one of whose
+# tests compared nothing. The real (non-zero) line lands last on purpose: that
+# is the ordering under which a `tail -1` sampler reports success.
+[ "${STUB_TEST_ZERO_COUNT_FIRST:-0}" = "1" ] && echo "${SENTINEL}: scenarios=0"
 [ "${STUB_TEST_NO_COUNT:-0}" = "1" ] || echo "${SENTINEL}: scenarios=${scen}"
 [ "${STUB_TEST_ORACLE_BROKEN:-0}" = "1" ] && \
     echo "${SENTINEL}: ORACLE-BROKEN accept and reject controls returned the same verdict"
@@ -265,6 +270,13 @@ run_all_cases() {
         STUB_TEST_NO_COUNT=1
     run_case unparseable_count 2 "unparseable scenario count" \
         STUB_TEST_FRESH_SCENARIOS=many
+
+    # One vacuous announcement among several live ones must still be rc 2. The
+    # zero line is emitted FIRST and a healthy count LAST, which is exactly the
+    # thread ordering under which sampling only the final line reports success.
+    # Every announcement is checked, so the position cannot matter.
+    run_case zero_count_among_live_ones 2 "an announcement reported 0 scenarios" \
+        STUB_TEST_ZERO_COUNT_FIRST=1
 
     # A capture that exits 0 having written nothing must be rc 2, not rc 1. The
     # stub test binary is indifferent to the corpus contents, so with the guard
@@ -398,6 +410,9 @@ run_positive_control sentinel-guard-removed \
     env_var_typo_caught no_banner_at_all
 
 # shellcheck disable=SC2016
+run_positive_control zero-count-guard-removed \
+    's|^    if \[ "${one}" -eq 0 \]; then|    if false; then|' \
+    zero_scenarios zero_count_among_live_ones
 run_positive_control empty-capture-guard-removed \
     's|^if \[ "${#FRESH_FILES\[@\]}" -eq 0 \]; then|if false; then|' \
     capture_wrote_nothing capture_wrote_only_empty_dirs

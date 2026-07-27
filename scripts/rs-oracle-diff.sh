@@ -315,18 +315,53 @@ if grep -qF "${SENTINEL}: ORACLE-BROKEN" "${LOG_FRESH}"; then
     die 2 "the corpus positive control failed: the oracle itself is broken, so neither 'clean' nor 'drift' would be a truthful verdict"
 fi
 
-count_line="$(grep -F "${SENTINEL}: scenarios=" "${LOG_FRESH}" | tail -1)"
-if [ -z "${count_line}" ]; then
+# EVERY `scenarios=` announcement is checked, not just the last one, and the
+# reported figure is their SUM.
+#
+# This was an order-dependent FAIL-OPEN. A test binary runs its cases on
+# parallel libtest threads, so a suite with several announcing tests emits
+# several `scenarios=` lines in a nondeterministic order (sudoers emits five,
+# two of which are small fixed constants). `tail -1` therefore sampled a RANDOM
+# one of N and applied the zero-check to that sample alone: a test that compared
+# NOTHING would slip past whenever some sibling's line happened to land last.
+# That is precisely the "nothing fired vs nothing ran" confusion this guard
+# exists to prevent, reintroduced inside the guard itself. It also made the
+# success line's count a coin flip - `OK (0 drift, 3 scenarios)` was reachable
+# after 240 real comparisons, which is a false success line rather than a
+# suppressed failure, but the rc convention requires that count to be honest
+# evidence.
+#
+# Refusing on ANY zero announcement (not just a zero sum) is deliberate: one
+# vacuous test among several live ones is exactly the case a sum would hide.
+# Stripped with `${line##*=}` rather than sed: this driver runs in minimal
+# environments (its own harness test deliberately supplies a PATH with no sed),
+# so the extraction must stay inside shell builtins. `grep` is already a
+# dependency above; nothing new may be added.
+#
+# The loop is fed by a heredoc, NOT a pipe: a `while read` on the right-hand
+# side of a pipe runs in a subshell, so both accumulators would be discarded at
+# `done` and the guard would silently see zero announcements.
+count_lines="$(grep -F "${SENTINEL}: scenarios=" "${LOG_FRESH}")"
+SCENARIOS=0
+count_seen=0
+while IFS= read -r count_line; do
+    [ -n "${count_line}" ] || continue
+    one="${count_line##*=}"
+    case "${one}" in
+    '' | *[!0-9]*)
+        die 2 "unparseable scenario count '${one}' in a '${SENTINEL}: scenarios=' line"
+        ;;
+    esac
+    if [ "${one}" -eq 0 ]; then
+        die 2 "an announcement reported 0 scenarios; 'nothing fired' and 'nothing ran' are not the same verdict"
+    fi
+    SCENARIOS=$((SCENARIOS + one))
+    count_seen=$((count_seen + 1))
+done <<EOF
+${count_lines}
+EOF
+if [ "${count_seen}" -eq 0 ]; then
     die 2 "the fresh run printed no '${SENTINEL}: scenarios=' line; the scenario count cannot be confirmed non-zero"
-fi
-SCENARIOS="${count_line##*=}"
-case "${SCENARIOS}" in
-'' | *[!0-9]*)
-    die 2 "unparseable scenario count in '${count_line}'"
-    ;;
-esac
-if [ "${SCENARIOS}" -eq 0 ]; then
-    die 2 "the fresh capture yielded 0 scenarios; 'nothing fired' and 'nothing ran' are not the same verdict"
 fi
 
 case "${fresh_rc}" in
